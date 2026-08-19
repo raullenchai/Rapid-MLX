@@ -78,9 +78,6 @@ def test_render_banner_matches_spec():
         "rapid-mlx agents claude-code --setup --base-url http://localhost:8000/v1"
         in out
     )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://localhost:8000/v1" in out
-    )
     assert "rapid-mlx connect openai-python" in out
 
 
@@ -238,16 +235,6 @@ def test_connect_claude_code_points_at_setup(monkeypatch):
     assert "rapid-mlx agents claude-code --setup" in out
 
 
-def test_connect_continue_points_at_setup(monkeypatch):
-    monkeypatch.setattr(
-        connect,
-        "resolve_endpoints",
-        lambda **kw: connect.ServerEndpoints("localhost", 8000, model=None),
-    )
-    out = _run_connect(target="continue")
-    assert "rapid-mlx agents continue --setup" in out
-
-
 def test_connect_unknown_target_exits(monkeypatch):
     monkeypatch.setattr(
         connect,
@@ -263,7 +250,7 @@ def test_connect_unknown_target_exits(monkeypatch):
         )
     assert exc.value.code == 1
     # The helpful supported-target list is printed before exiting.
-    assert "Supported: claude-code, continue, openai-python" in buf.getvalue()
+    assert "Supported: claude-code, openai-python" in buf.getvalue()
 
 
 # --- P1 fixes applied after #1872 revert ------------------------------------
@@ -282,18 +269,6 @@ def test_claude_remote_endpoint_passthrough(monkeypatch):
     out = _run_connect(target="claude-code")
     assert "http://mini.local:9000/v1" in out
     assert "rapid-mlx agents claude-code --setup" in out
-    assert "--base-url http://mini.local:9000/v1" in out
-
-
-def test_continue_remote_endpoint_passthrough(monkeypatch):
-    """`--host/--port` must flow into the suggested `--base-url` for continue."""
-    monkeypatch.setattr(
-        connect,
-        "resolve_endpoints",
-        lambda **kw: connect.ServerEndpoints("mini.local", 9000, model=None),
-    )
-    out = _run_connect(target="continue")
-    assert "http://mini.local:9000/v1" in out
     assert "--base-url http://mini.local:9000/v1" in out
 
 
@@ -373,9 +348,6 @@ def test_render_banner_connect_carries_remote_endpoint():
     assert (
         "rapid-mlx agents claude-code --setup "
         "--base-url http://mini.local:9000/v1" in out
-    )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://mini.local:9000/v1" in out
     )
 
 
@@ -488,9 +460,8 @@ def test_banner_already_bracketed_host_not_double_bracketed():
 def test_point_command_base_url_is_shell_quoted():
     """``rapid-mlx connect <agent>`` output must shell-quote --base-url.
 
-    ``_print_point_command`` is what ``connect claude-code`` / ``connect
-    continue`` render, and it carries the same copy-paste security contract as
-    the banner.
+    ``_print_point_command`` is what ``connect claude-code`` renders, and it
+    carries the same copy-paste security contract as the banner.
     """
     from vllm_mlx.cli import _print_point_command
 

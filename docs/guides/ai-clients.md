@@ -82,14 +82,17 @@ config, plus an honest test-backed [support matrix](../agents/matrix.md):
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | CLI / TUI / web | `rapid-mlx agents dsh --setup` | Verified | Tier-1 release gate; generic `openai-completions` provider, never `deepseek-official`. Needs Node 22.15+ |
 | [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `rapid-mlx agents claude-code --setup` | Compatible | Safe diff/confirm/backup flow; uses Anthropic `/v1/messages` |
-| [Cursor](https://cursor.com) | IDE | `RAPID_MLX_API_KEY=your-secret rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; public HTTPS and server auth are required |
-| [Continue.dev](https://continue.dev) | IDE Extension | `rapid-mlx agents continue --setup` | Compatible | Safe diff/confirm/backup flow; VS Code / JetBrains |
+| [Cursor](https://cursor.com) | IDE | `rapid-mlx agents cursor` (prints GUI steps) | Not compatible locally | Settings are in an internal DB + macOS keychain, so setup is manual; BYOK requests pass through Cursor's servers, requiring public HTTPS and server auth |
+| [Kilo Code](https://github.com/Kilo-Org/kilocode) | IDE Extension | `rapid-mlx agents kilo-code` | Compatible | VS Code / JetBrains; the maintained successor to Continue.dev |
 | [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
 
-Rapid-MLX rejects explicit local/private Cursor addresses, but it does not use
-your Mac's DNS result as proof that Cursor's backend can reach a hostname.
-Split-horizon DNS may look different from Cursor's network, so verify the
-authenticated HTTPS endpoint from an external network before configuring it.
+Cursor cannot be configured by writing a file: its OpenAI base URL is a field
+inside one large reactive-storage blob in `state.vscdb` and the key lives in
+the macOS keychain. `rapid-mlx agents cursor` prints the GUI steps instead.
+Note also that Cursor's own backend issues the request, so a local endpoint is
+unreachable and your Mac's DNS result is not proof that Cursor can resolve a
+hostname — verify the authenticated HTTPS endpoint from an external network
+before configuring it.
 
 ### Web UIs
 

@@ -94,9 +94,9 @@ print(client.chat.completions.create(
 rapid-mlx launch claude-code
 ```
 
-With a server running (step 3), this patches Claude Code's local config (`~/.claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cline` or `continue-dev` for the other IDE clients, or run `rapid-mlx launch list` to see what's detected on this machine.
+With a server running (step 3), this patches Claude Code's local config (`~/.claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cline` for the other IDE client, or run `rapid-mlx launch list` to see every supported integration and what's detected on this machine.
 
-> **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, set `RAPID_MLX_API_KEY=your-secret` for both `rapid-mlx serve ...` and `rapid-mlx launch cursor --server-url https://your-public-host`. This is no longer a fully local connection; never expose an unauthenticated server. Rapid-MLX rejects explicit local/private addresses but cannot verify reachability from Cursor's network, whose DNS view may differ from your Mac.
+> **Cursor:** Cursor is setup-guide only — run `rapid-mlx agents cursor` for the steps. Its provider settings live in an internal database and the macOS keychain rather than a config file, so there is nothing Rapid-MLX can safely write. Cursor also routes BYOK requests through its own servers, which cannot reach `localhost`: using it means exposing the server through an authenticated public HTTPS tunnel, which is no longer a fully local connection. Never expose an unauthenticated server.
 
 > **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio (TTS, STT, voice cloning), video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
@@ -209,7 +209,7 @@ Also: word-level timestamps on transcription, and local text-to-music at
 | **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 10 agents auto-configure via `agents <name> --setup` once the server is up (12 wire-verified total, 5 Tier-1) — see [Agent support](#agent-support). |
 | **Benchmark your Mac** | `rapid-mlx bench qwen3.5-9b-4bit --submit` | Standardized B=1 bench, opens a PR to publish your row on [rapidmlx.com](https://rapidmlx.com). |
 
-→ [One-shot IDE setup](https://rapidmlx.com/docs/cli.html#launch) with `rapid-mlx launch <claude-code|cline|continue-dev>`
+→ [One-shot IDE setup](https://rapidmlx.com/docs/cli.html#launch) with `rapid-mlx launch <claude-code|cline>`
 
 ---
 

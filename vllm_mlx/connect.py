@@ -135,14 +135,17 @@ class ServerEndpoints:
 
 # The ``--setup`` verbs printed in the human banner's "Connect:" section.
 # Each row is ``(app label, command prefix, OpenAI endpoint?)``. Rows that
-# point a first-class agent at the server (`claude-code`, `continue`) take an
-# OpenAI-style ``/v1`` base URL and get ``--base-url <url>`` appended so the
-# copied command targets the *actual* running server, not the localhost
-# default the agent would otherwise assume. ``openai-python`` writes no config
-# and just prints a snippet, so it carries no ``--base-url``.
+# point a first-class agent at the server (`claude-code`) take an OpenAI-style
+# ``/v1`` base URL and get ``--base-url <url>`` appended so the copied command
+# targets the *actual* running server, not the localhost default the agent
+# would otherwise assume. ``openai-python`` writes no config and just prints a
+# snippet, so it carries no ``--base-url``.
+#
+# Deliberately short: this is the "Ready:" banner, printed on every serve, not
+# the integration catalogue. ``rapid-mlx launch list`` is the complete one.
+# The Continue row was dropped when that integration was removed upstream.
 _CONNECT_ROWS: list[tuple[str, str, bool]] = [
     ("Claude Code", "rapid-mlx agents claude-code --setup", True),
-    ("Continue", "rapid-mlx agents continue --setup", True),
     ("Python", "rapid-mlx connect openai-python", False),
 ]
 

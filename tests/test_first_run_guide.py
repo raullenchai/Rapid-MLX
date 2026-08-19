@@ -118,22 +118,20 @@ def test_detected_agents_prefers_claude_code(monkeypatch):
     monkeypatch.setattr(
         "vllm_mlx.launch.ADAPTERS",
         {
-            "continue-dev": _Adapter(True),
+            "cline": _Adapter(True),
             "claude-code": _Adapter(True),
-            "cline": _Adapter(False),
         },
     )
     agents = fr.detected_agents()
     assert agents[0] == "claude-code"  # preference order leads
-    assert "continue-dev" in agents
-    assert "cline" not in agents  # not detected
+    assert "cline" in agents
     assert fr.preferred_agent() == "claude-code"
 
 
-def test_cursor_is_not_recommended_for_local_first_run(monkeypatch):
+def test_undetected_adapters_are_not_recommended(monkeypatch):
     monkeypatch.setattr(
         "vllm_mlx.launch.ADAPTERS",
-        {"cursor": _Adapter(True), "claude-code": _Adapter(False)},
+        {"cline": _Adapter(False), "claude-code": _Adapter(False)},
     )
     assert fr.detected_agents() == []
     assert fr.preferred_agent() is None

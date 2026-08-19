@@ -79,9 +79,6 @@ async def test_ready_banner_emitted_when_bind_fields_set():
         "rapid-mlx agents claude-code --setup "
         "--base-url http://localhost:8765/v1" in out
     )
-    assert (
-        "rapid-mlx agents continue --setup --base-url http://localhost:8765/v1" in out
-    )
     assert "rapid-mlx connect openai-python" in out
     # `ready` flag must be flipped before the banner so /health/ready and
     # the banner agree on the moment of readiness.

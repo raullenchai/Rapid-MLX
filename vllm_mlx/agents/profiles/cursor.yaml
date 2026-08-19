@@ -1,0 +1,74 @@
+name: cursor
+display_name: "Cursor"
+repo: "getcursor/cursor"
+stars: 30000
+
+# Cursor is a setup GUIDE, not a config writer, and that is deliberate.
+#
+# `rapid-mlx launch cursor` used to write three keys into Cursor's
+# `settings.json`: `cursor.aiprovider.openai.baseUrl` / `.apiKey` /
+# `.model`. Verified against Cursor 3.16.29: that namespace does not
+# exist anywhere in Cursor's configuration schema. The writes were
+# inert — the command reported success and Cursor never read them.
+#
+# Cursor's real BYOK state lives in two places, neither of which is a
+# config file a third party can safely write:
+#
+#   * `openAIBaseUrl` and `useOpenAIKey` are fields inside ONE ~360 KB
+#     JSON blob in `state.vscdb` (SQLite), under the key
+#     `...reactiveStorageServiceImpl.persistentStorage.applicationUser`.
+#     Cursor keeps that blob in memory while running and rewrites it on
+#     change, so an external edit is both undocumented and racy.
+#   * The API key goes to the macOS keychain ("Cursor Safe Storage",
+#     item `cursorAuth/openAIKey`) via SecretStorage. The plaintext
+#     fallback in `state.vscdb` is used only where SecretStorage is
+#     unavailable, which is never the case on macOS.
+#
+# There is an env-var path (`CURSOR_LOCAL_AGENT_BASE_URL` /
+# `CURSOR_LOCAL_AGENT_API_KEY`) but the desktop build ships
+# `localMode: !1` hardcoded, so those candidates are never consulted.
+# The settings GUI is the only supported route, hence type: manual.
+config:
+  type: manual
+  template: |
+    Cursor stores its provider settings in an internal database and the
+    macOS keychain, so this cannot be scripted. Configure it by hand in
+    Cursor's settings, under Models:
+
+    1. Turn on "Use OpenAI API key" and paste your RAPID_MLX_API_KEY
+    2. Turn on "Override OpenAI Base URL" and set it to:
+         {base_url}
+    3. Add {model_id} to the model list
+    4. Cursor validates the key against the endpoint when you save it,
+       so start Rapid-MLX before this step or the save is rejected
+
+    IMPORTANT: step 2 will fail with a localhost URL. Cursor's own
+    backend makes the provider request, not your Mac, so the endpoint
+    must be reachable from the public internet over HTTPS. Put your
+    Rapid-MLX server behind an authenticated HTTPS tunnel and use that
+    tunnel's URL, not http://127.0.0.1:8000/v1.
+
+models:
+  # Cursor drives Agent mode with heavy multi-turn tool calling, so the
+  # small models that are fine for chat struggle here. It also pays a
+  # round trip through Cursor's backend on every request, which makes a
+  # slow local model feel far worse than it does in a local client.
+  recommended:
+    - "qwen3-coder-30b-4bit"
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+
+streaming:
+  extra_tool_tags: []
+  max_tools: 25
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "Cursor cannot reach localhost. BYOK requests are issued by Cursor's servers, not your machine, so a loopback or private-network URL will never connect — an authenticated public HTTPS tunnel is required."
+  - "Because the request leaves your machine, a local endpoint exposed for Cursor MUST require an API key. Never put an unauthenticated Rapid-MLX server on a public URL."
+  - "Enabling your own key does not make Cursor local. Cursor's own confirmation dialog says several features — Tab, Apply from Chat, and Agent — require custom models that cannot be billed to an API key, so those keep using Cursor's backend and models."
+  - "Cursor verifies the endpoint when you save. If verification fails, check the tunnel from outside your network first; a URL that works in your browser may still be invisible to Cursor's backend under split-horizon DNS."
+  - "`rapid-mlx launch cursor` no longer exists. Earlier versions wrote cursor.aiprovider.* keys into settings.json that Cursor has never read; the keys were removed rather than left to look like a working integration."

@@ -20,15 +20,11 @@ class IntegrationTarget:
 _LAUNCH_NAMES = {
     "cline": "Cline",
     "claude-code": "Claude Code",
-    "continue-dev": "Continue.dev",
-    "cursor": "Cursor",
 }
-_PROFILE_TO_LAUNCH = {"continue": "continue-dev"}
+_PROFILE_TO_LAUNCH: dict[str, str] = {}
 _CONFIG_DESTINATIONS = {
     "cline": "~/.cline/data/",
     "claude-code": "~/.claude/settings.json",
-    "continue-dev": "~/.continue/config.json",
-    "cursor": "Cursor's VS Code settings",
 }
 
 

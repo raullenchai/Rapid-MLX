@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from vllm_mlx.launch import _common as launch_common
-from vllm_mlx.launch import claude_code, continue_dev
+from vllm_mlx.launch import claude_code
 
 
 @dataclass(frozen=True)
@@ -149,14 +149,6 @@ def build_setup_plan(
         after = claude_code.patched_config(before, base_url, model)
         return SetupPlan(
             "claude-code", "Claude Code", path, before, after, base_url, model
-        )
-    if agent in {"continue", "continue-dev"}:
-        path = continue_dev.current_config_path()
-        assert path is not None
-        before = launch_common.load_json_lenient(path)
-        after = continue_dev.patched_config(before, base_url, model)
-        return SetupPlan(
-            "continue", "Continue.dev", path, before, after, base_url, model
         )
     if agent in {"deepseek-harness", "dsh"}:
         path = _dsh_settings_path()

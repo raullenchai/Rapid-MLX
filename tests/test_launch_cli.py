@@ -27,8 +27,6 @@ from vllm_mlx.launch import (
     _common,
     claude_code,
     cline,
-    continue_dev,
-    cursor,
 )
 from vllm_mlx.launch import cli as launch_cli
 
@@ -64,14 +62,6 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     # claude_code: replace the two module constants.
     monkeypatch.setattr(claude_code, "_CLAUDE_STATE_DIR", tmp_path / ".claude")
     monkeypatch.setattr(claude_code, "_CONFIG_DIR", tmp_path / ".claude")
-
-    # continue_dev: replace the config dir.
-    monkeypatch.setattr(continue_dev, "_CONFIG_DIR", tmp_path / ".continue")
-
-    fake_cursor_dir = tmp_path / "Cursor/User"
-    monkeypatch.setattr(cursor, "_candidate_dirs", lambda: [fake_cursor_dir])
-    monkeypatch.setattr(cursor, "_CONFIG_DIR_MAC", fake_cursor_dir)
-    monkeypatch.setattr(cursor, "_CONFIG_DIR_LINUX", fake_cursor_dir)
 
     # Also redirect which() and mac_app_installed() so detect() doesn't
     # find the dev machine's real client installs.
@@ -306,131 +296,6 @@ class TestClaudeCode:
 
 
 # --------------------------------------------------------------------
-# Continue.dev adapter
-# --------------------------------------------------------------------
-
-
-class TestContinueDev:
-    def test_detect_false_when_no_continue_dir(self, fake_home):
-        assert continue_dev.detect() is False
-
-    def test_detect_true_when_dir_exists(self, fake_home):
-        (fake_home / ".continue").mkdir()
-        assert continue_dev.detect() is True
-
-    def test_appends_new_model_entry(self, fake_home):
-        (fake_home / ".continue").mkdir()
-        cfg = continue_dev.current_config_path()
-        cfg.write_text(
-            json.dumps(
-                {
-                    "models": [
-                        {"title": "Anthropic", "provider": "anthropic"},
-                    ],
-                    "customCommands": [{"name": "test"}],
-                }
-            )
-        )
-        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-4b-4bit")
-        data = json.loads(cfg.read_text())
-        assert len(data["models"]) == 2
-        rapid = next(m for m in data["models"] if m["title"] == "rapid-mlx")
-        assert rapid["provider"] == "openai"
-        assert rapid["model"] == "qwen3.5-4b-4bit"
-        assert rapid["apiBase"] == "http://127.0.0.1:8000/v1"
-        # Other model preserved.
-        assert any(m["title"] == "Anthropic" for m in data["models"])
-        # Other top-level keys preserved.
-        assert data["customCommands"] == [{"name": "test"}]
-
-    def test_rerun_replaces_in_place_not_duplicates(self, fake_home):
-        (fake_home / ".continue").mkdir()
-        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-a")
-        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-b")
-        cfg = continue_dev.current_config_path()
-        data = json.loads(cfg.read_text())
-        rapid_entries = [m for m in data["models"] if m.get("title") == "rapid-mlx"]
-        assert len(rapid_entries) == 1
-        assert rapid_entries[0]["model"] == "model-b"
-
-
-# --------------------------------------------------------------------
-# Cursor adapter (public HTTPS endpoints only)
-# --------------------------------------------------------------------
-
-
-class TestCursor:
-    def test_detect_false_when_nothing_installed(self, fake_home):
-        assert cursor.detect() is False
-
-    def test_detect_true_when_user_dir_exists(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        assert cursor.detect() is True
-
-    def test_write_sets_dotted_keys(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        path = cursor.write_or_patch_config(
-            "https://rapid.example.com",
-            "qwen3.5-9b-4bit",
-            api_key="cursor-secret",
-        )
-        data = json.loads(path.read_text())
-        assert data["cursor.aiprovider.openai.baseUrl"] == (
-            "https://rapid.example.com/v1"
-        )
-        assert data["cursor.aiprovider.openai.model"] == "qwen3.5-9b-4bit"
-        assert data["cursor.aiprovider.openai.apiKey"] == "cursor-secret"
-
-    def test_preserves_unrelated_settings(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        cfg = cursor.current_config_path()
-        cfg.write_text(json.dumps({"editor.fontSize": 14}))
-        cursor.write_or_patch_config(
-            "https://rapid.example.com", "alias", api_key="cursor-secret"
-        )
-        assert json.loads(cfg.read_text())["editor.fontSize"] == 14
-
-    @pytest.mark.parametrize(
-        "server_url",
-        [
-            "http://rapid.example.com",
-            "https://127.0.0.1:8000",
-            "https://rapid.local:8000",
-        ],
-    )
-    def test_direct_write_rejects_non_public_endpoint(self, fake_home, server_url):
-        config_path = fake_home / "Cursor/User/settings.json"
-        with pytest.raises(ValueError):
-            cursor.write_or_patch_config(
-                server_url,
-                "alias",
-                api_key="cursor-secret",
-                config_path=config_path,
-            )
-        assert not config_path.exists()
-
-    def test_direct_write_requires_api_key(self, fake_home):
-        config_path = fake_home / "Cursor/User/settings.json"
-        with pytest.raises(ValueError, match="RAPID_MLX_API_KEY"):
-            cursor.write_or_patch_config(
-                "https://rapid.example.com", "alias", config_path=config_path
-            )
-        assert not config_path.exists()
-
-    @pytest.mark.parametrize(
-        "server_url",
-        [
-            "https://rapid.example.com?token=value",
-            "https://rapid.example.com#settings",
-        ],
-    )
-    def test_rejects_query_and_fragment(self, fake_home, server_url):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        with pytest.raises(ValueError, match="query string or fragment"):
-            cursor.write_or_patch_config(server_url, "alias")
-
-
-# --------------------------------------------------------------------
 # Atomic-write + backup primitives
 # --------------------------------------------------------------------
 
@@ -633,9 +498,16 @@ class TestLaunchCommand:
         assert excinfo.value.code == 0
         targets = json.loads(capsys.readouterr().out)
         ids = [target["id"] for target in targets]
-        assert len(ids) == len(set(ids)) == 15
+        assert len(ids) == len(set(ids)) == 14
         assert "deepseek-harness" in ids
-        assert ids[:4] == ["cline", "claude-code", "continue-dev", "cursor"]
+        assert ids[:2] == ["cline", "claude-code"]
+        # Cursor is present, but as a guide-only profile: its provider
+        # settings are not a config file we could write. See
+        # ``agents/profiles/cursor.yaml``.
+        cursor_target = next(t for t in targets if t["id"] == "cursor")
+        assert cursor_target["kind"] == "adapter_profile"
+        assert cursor_target["config_path"] is None
+        assert "continue" not in ids and "continue-dev" not in ids
         assert {target["kind"] for target in targets} == {
             "config_writer",
             "adapter_profile",
@@ -650,181 +522,6 @@ class TestLaunchCommand:
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "unknown client" in err
-
-    def test_cursor_explains_localhost_is_unsupported(self, fake_home, capsys):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(_make_args(client="cursor"))
-        assert excinfo.value.code == 2
-        err = capsys.readouterr().err
-        assert "publicly reachable HTTPS" in err
-        assert "Cursor's servers" in err
-
-    @pytest.mark.parametrize(
-        "server_url",
-        [
-            "https://127.0.0.1:8000",
-            "https://192.168.1.20:8000",
-            "https://rapid.local:8000",
-        ],
-    )
-    def test_cursor_rejects_private_https_endpoints(
-        self, fake_home, capsys, server_url
-    ):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url=server_url)
-            )
-        assert excinfo.value.code == 2
-        assert "cannot reach" in capsys.readouterr().err
-
-    def test_cursor_accepts_public_https_endpoint(self, fake_home, capsys, monkeypatch):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-secret")
-        launch_cli.launch_command(
-            _make_args(
-                client="cursor",
-                server_url="https://rapid.example.com",
-                dry_run=True,
-            )
-        )
-        out = capsys.readouterr().out
-        assert "[dry-run] cursor: detected=True" in out
-
-    def test_cursor_does_not_infer_backend_routability_from_local_dns(
-        self, fake_home, capsys, monkeypatch
-    ):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-secret")
-        with patch("socket.getaddrinfo") as resolver:
-            launch_cli.launch_command(
-                _make_args(
-                    client="cursor",
-                    server_url="https://rapid.example.com",
-                    dry_run=True,
-                )
-            )
-        resolver.assert_not_called()
-
-    def test_cursor_rejects_shorthand_loopback_address(self, fake_home, capsys):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url="https://127.1")
-            )
-        assert excinfo.value.code == 2
-        assert "cannot reach" in capsys.readouterr().err
-
-    @pytest.mark.parametrize(
-        ("server_url", "error_text"),
-        [
-            ("https://rapid.example.com:0", "non-zero HTTPS port"),
-            ("https://rapid.example.com?token=value", "query string or fragment"),
-            ("https://rapid.example.com#settings", "query string or fragment"),
-        ],
-    )
-    def test_cursor_rejects_malformed_public_url_components(
-        self, fake_home, capsys, server_url, error_text
-    ):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url=server_url)
-            )
-        assert excinfo.value.code == 2
-        assert error_text in capsys.readouterr().err
-
-    @pytest.mark.parametrize(
-        "server_url",
-        [
-            "https://[",
-            "https://127.0.0.1\\@example.com",
-            "https://user:password@example.com",
-            "https://%31%32%37.0.0.1",
-            "https://例子.测试",
-        ],
-    )
-    def test_cursor_rejects_ambiguous_authority_without_traceback(
-        self, fake_home, capsys, server_url
-    ):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url=server_url)
-            )
-        assert excinfo.value.code == 2
-        err = capsys.readouterr().err
-        assert "launch:" in err
-        assert "Traceback" not in err
-
-    def test_cursor_canonicalizes_validated_url(self, fake_home, capsys, monkeypatch):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-secret")
-        launch_cli.launch_command(
-            _make_args(
-                client="cursor",
-                server_url="https://EXAMPLE.COM.:443/api/",
-            )
-        )
-        config = json.loads(cursor.current_config_path().read_text())
-        assert config["cursor.aiprovider.openai.baseUrl"] == (
-            "https://example.com:443/api/v1"
-        )
-        assert config["cursor.aiprovider.openai.apiKey"] == "cursor-secret"
-
-    def test_cursor_public_endpoint_requires_api_key(self, fake_home, capsys):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url="https://example.com")
-            )
-        assert excinfo.value.code == 2
-        err = capsys.readouterr().err
-        assert "require RAPID_MLX_API_KEY" in err
-        assert "unauthenticated" in err
-
-    def test_cursor_uses_api_key_from_environment(self, fake_home, capsys, monkeypatch):
-        monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-env-secret")
-        (fake_home / "Cursor/User").mkdir(parents=True)
-
-        launch_cli.launch_command(
-            _make_args(client="cursor", server_url="https://rapid.example.com")
-        )
-
-        config = json.loads(cursor.current_config_path().read_text())
-        assert config["cursor.aiprovider.openai.apiKey"] == "cursor-env-secret"
-
-    def test_cursor_rejects_multicast_address(self, fake_home, capsys):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url="https://224.0.0.1")
-            )
-        assert excinfo.value.code == 2
-        assert "cannot reach" in capsys.readouterr().err
-
-    def test_cursor_rejects_ipv6_site_local_address(self, fake_home, capsys):
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(client="cursor", server_url="https://[fec0::1]")
-            )
-        assert excinfo.value.code == 2
-        assert "cannot reach" in capsys.readouterr().err
-
-    def test_all_skips_cursor_for_default_local_endpoint(self, fake_home, capsys):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(_make_args(all=True))
-        assert excinfo.value.code == 1
-        err = capsys.readouterr().err
-        assert "cursor: skipped" in err
-        assert "publicly reachable HTTPS" in err
-        assert "no supported clients detected" in err
-
-    def test_all_reports_cursor_skipped_without_api_key(self, fake_home, capsys):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        with pytest.raises(SystemExit) as excinfo:
-            launch_cli.launch_command(
-                _make_args(all=True, server_url="https://rapid.example.com")
-            )
-        assert excinfo.value.code == 1
-        err = capsys.readouterr().err
-        assert "cursor: skipped" in err
-        assert "require RAPID_MLX_API_KEY" in err
 
     def test_missing_client_and_no_all_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:
@@ -945,19 +642,6 @@ class TestLaunchCommand:
         err = capsys.readouterr().err
         assert "Skipping --start-server" in err
 
-    def test_continue_is_an_alias_for_continue_dev(self, fake_home, capsys):
-        """``launch continue`` must resolve exactly like ``launch
-        continue-dev`` (#2082): ``rapid-mlx agents`` calls the same
-        product ``continue``, so both slugs are accepted here. The
-        canonical registry id stays ``continue-dev``."""
-        (fake_home / ".continue").mkdir()
-        launch_cli.launch_command(_make_args(client="continue-dev", dry_run=True))
-        canonical_out = capsys.readouterr().out
-        launch_cli.launch_command(_make_args(client="continue", dry_run=True))
-        alias_out = capsys.readouterr().out
-        assert alias_out == canonical_out
-        assert "continue-dev: detected=True" in alias_out
-
     def test_uses_original_alias_when_resolved(self, fake_home, capsys):
         """When ``main()`` rewrites ``args.model`` from alias to HF id,
         the launch command should patch with the ORIGINAL alias so the
@@ -1000,9 +684,10 @@ def test_launch_help_text_is_registered(tmp_path):
     assert args.client == "list"
 
 
-def test_launch_help_lists_canonical_name_with_alias_noted():
-    """The client help keeps ``continue-dev`` as the canonical name and
-    notes the ``continue`` alias (#2082)."""
+def test_launch_help_lists_supported_clients():
+    """The client help lists exactly the registry ids. Cursor and
+    Continue.dev were removed from ``launch`` (they are not writable
+    config files), so they must not reappear in the help text."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command")
     from vllm_mlx.launch.cli import register
@@ -1011,8 +696,8 @@ def test_launch_help_lists_canonical_name_with_alias_noted():
     # argparse wraps help text at arbitrary columns; normalize whitespace
     # before matching so the assertion doesn't depend on wrap width.
     help_text = " ".join(sub.choices["launch"].format_help().split())
-    assert "continue-dev" in help_text
-    assert "Aliases: continue (for continue-dev)" in help_text
+    assert "Supported: cline, claude-code." in help_text
+    assert "continue" not in help_text
 
 
 @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "abc"])
@@ -1048,4 +733,4 @@ def test_launch_rejects_api_key_on_command_line():
 
     register(sub)
     with pytest.raises(SystemExit):
-        parser.parse_args(["launch", "cursor", "--api-key", "leaked-secret"])
+        parser.parse_args(["launch", "cline", "--api-key", "leaked-secret"])

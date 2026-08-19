@@ -32,12 +32,14 @@ Agent integrations can be configured without hand-editing dotfiles:
 ```bash
 # Preview the exact change (never writes)
 rapid-mlx agents claude-code --setup --dry-run
-rapid-mlx agents continue --setup --dry-run
 
 # Confirm interactively, back up existing config, write atomically, and verify
 rapid-mlx agents claude-code --setup
-rapid-mlx agents continue --setup
 ```
+
+Clients whose settings are not a writable config file — Cursor, whose provider
+state lives in an internal database and the macOS keychain — have no `--setup`.
+Running `rapid-mlx agents cursor` prints the manual steps instead.
 
 Use `--yes` for an explicitly non-interactive apply. `--no-check` skips only
 the post-write server health/model check; preview, merge, backup, and atomic

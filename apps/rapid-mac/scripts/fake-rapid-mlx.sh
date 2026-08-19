@@ -51,8 +51,7 @@ if sys.argv[1:] == ["launch", "list", "--json"]:
     print(json.dumps([
         {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.cline/data/"},
         {"id": "claude-code", "name": "Claude Code", "kind": "config_writer", "config_path": "~/.claude/settings.json"},
-        {"id": "continue-dev", "name": "Continue.dev", "kind": "config_writer", "config_path": "~/.continue/config.json"},
-        {"id": "cursor", "name": "Cursor", "kind": "config_writer", "config_path": "~/Library/Application Support/Cursor/User/settings.json"},
+        {"id": "cursor", "name": "Cursor", "kind": "adapter_profile", "config_path": None},
         {"id": "aider", "name": "Aider", "kind": "adapter_profile", "config_path": None},
         {"id": "codex", "name": "Codex CLI", "kind": "adapter_profile", "config_path": None},
         {"id": "hermes", "name": "Hermes Agent", "kind": "adapter_profile", "config_path": None},

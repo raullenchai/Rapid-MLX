@@ -9,20 +9,18 @@ from vllm_mlx.agents.setup import (
     build_setup_plan,
     verify_server,
 )
-from vllm_mlx.launch import claude_code, continue_dev
+from vllm_mlx.launch import claude_code
 
 
 @pytest.fixture
-def setup_paths(tmp_path, monkeypatch):
+def setup_path(tmp_path, monkeypatch):
     claude_path = tmp_path / "claude" / "settings.json"
-    continue_path = tmp_path / "continue" / "config.json"
     monkeypatch.setattr(claude_code, "current_config_path", lambda: claude_path)
-    monkeypatch.setattr(continue_dev, "current_config_path", lambda: continue_path)
-    return claude_path, continue_path
+    return claude_path
 
 
-def test_claude_plan_is_side_effect_free_and_uses_bare_base(setup_paths):
-    claude_path, _ = setup_paths
+def test_claude_plan_is_side_effect_free_and_uses_bare_base(setup_path):
+    claude_path = setup_path
     claude_path.parent.mkdir(parents=True)
     claude_path.write_text('{"permissions":{"allow":["Read"]}}')
 
@@ -36,26 +34,24 @@ def test_claude_plan_is_side_effect_free_and_uses_bare_base(setup_paths):
     assert "ANTHROPIC_API_KEY" in plan.diff()
 
 
-def test_continue_apply_preserves_models_and_creates_backup(setup_paths):
-    _, continue_path = setup_paths
-    continue_path.parent.mkdir(parents=True)
-    continue_path.write_text(
-        json.dumps({"models": [{"title": "Existing", "provider": "ollama"}]})
+def test_apply_preserves_unrelated_keys_and_creates_backup(setup_path):
+    claude_path = setup_path
+    claude_path.parent.mkdir(parents=True)
+    claude_path.write_text(json.dumps({"permissions": {"allow": ["Read"]}}))
+    plan = build_setup_plan(
+        "claude-code", "http://localhost:8000/v1", "qwen3.5-9b-4bit"
     )
-    plan = build_setup_plan("continue", "http://localhost:8000", "qwen3.5-9b-4bit")
 
     apply_setup_plan(plan)
 
-    data = json.loads(continue_path.read_text())
-    assert any(model["title"] == "Existing" for model in data["models"])
-    rapid = next(model for model in data["models"] if model["title"] == "rapid-mlx")
-    assert rapid["apiBase"] == "http://localhost:8000/v1"
-    assert rapid["model"] == "qwen3.5-9b-4bit"
-    assert len(list(continue_path.parent.glob("config.json.bak.*"))) == 1
+    data = json.loads(claude_path.read_text())
+    assert data["permissions"] == {"allow": ["Read"]}
+    assert data["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:8000"
+    assert len(list(claude_path.parent.glob("settings.json.bak.*"))) == 1
 
 
-def test_apply_refuses_file_changed_after_preview(setup_paths):
-    claude_path, _ = setup_paths
+def test_apply_refuses_file_changed_after_preview(setup_path):
+    claude_path = setup_path
     claude_path.parent.mkdir(parents=True)
     claude_path.write_text("{}")
     plan = build_setup_plan("claude-code", "http://localhost:8000", "model")
@@ -214,27 +210,27 @@ def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
     captured = {}
     monkeypatch.setattr(cli, "agents_command", lambda args: captured.update(vars(args)))
     monkeypatch.setattr(
-        "sys.argv", ["rapid-mlx", "agents", "continue", "--setup", "--dry-run"]
+        "sys.argv", ["rapid-mlx", "agents", "claude-code", "--setup", "--dry-run"]
     )
     cli.main()
-    assert captured["agent_name"] == "continue"
+    assert captured["agent_name"] == "claude-code"
     assert captured["setup"] is True
     assert captured["dry_run"] is True
     assert captured["yes"] is False
 
 
 def test_cli_reports_saved_config_when_connection_check_fails(
-    setup_paths, monkeypatch, capsys
+    setup_path, monkeypatch, capsys
 ):
     import vllm_mlx.cli as cli
 
-    _, continue_path = setup_paths
+    claude_path = setup_path
     monkeypatch.setattr(
         "sys.argv",
         [
             "rapid-mlx",
             "agents",
-            "continue",
+            "claude-code",
             "--setup",
             "--yes",
             "--model",
@@ -250,7 +246,7 @@ def test_cli_reports_saved_config_when_connection_check_fails(
         cli.main()
 
     assert exit_info.value.code == 1
-    assert continue_path.exists()
+    assert claude_path.exists()
     output = capsys.readouterr().out
     assert "Configuration was saved, but the connection check failed" in output
     assert "Setup incomplete" not in output

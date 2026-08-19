@@ -46,7 +46,7 @@ FIRST_RUN_MODEL_SIZE = "~3.1 GB"
 
 # Preference order when several coding agents are detected: claude-code is the
 # ICP, so it leads. Others follow in a stable order.
-_AGENT_PREFERENCE = ("claude-code", "cline", "continue-dev")
+_AGENT_PREFERENCE = ("claude-code", "cline")
 
 _DOCS_URL = "https://rapidmlx.com/docs/"
 
@@ -135,12 +135,7 @@ def detected_agents() -> list[str]:
     try:
         from vllm_mlx.launch import ADAPTERS
 
-        # Cursor cannot use the local default endpoint; it only works when the
-        # user explicitly provides a public HTTPS tunnel. Do not recommend a
-        # one-shot local launch command that will necessarily be rejected.
-        found = {
-            name for name, a in ADAPTERS.items() if name != "cursor" and _safe_detect(a)
-        }
+        found = {name for name, a in ADAPTERS.items() if _safe_detect(a)}
     except Exception:
         return []
     ordered = [n for n in _AGENT_PREFERENCE if n in found]

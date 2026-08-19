@@ -43,10 +43,6 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true

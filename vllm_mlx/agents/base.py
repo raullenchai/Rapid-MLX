@@ -18,7 +18,15 @@ from dataclasses import dataclass, field, replace
 class AgentConfigSpec:
     """How to configure the agent to point at our API."""
 
-    type: str  # "yaml" | "json" | "env" | "toml"
+    # "yaml" | "json" | "env" | "toml" | "manual"
+    #
+    # "manual" means the client has no config file we can honestly write:
+    # its provider settings live behind a GUI, in the OS keychain, or in an
+    # undocumented internal store. The ``template`` is then prose — rendered
+    # as instructions rather than as file content. Cursor is the case that
+    # forced this: its OpenAI base URL lives inside a single reactive-storage
+    # JSON blob in ``state.vscdb`` and the key in the macOS keychain.
+    type: str
     path: str | None = None  # config file path (for yaml/json/toml)
     template: str | None = None  # config file template with {base_url}, {model_id}
     env_vars: dict[str, str] | None = None  # env vars for "env" type

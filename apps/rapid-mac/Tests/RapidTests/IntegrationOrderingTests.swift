@@ -19,8 +19,7 @@ struct IntegrationOrderingTests {
         [
             target("cline", .configWriter),
             target("claude-code", .configWriter),
-            target("continue-dev", .configWriter),
-            target("cursor", .configWriter),
+            target("cursor", .adapterProfile),
             target("langchain", .adapterProfile),
             target("codex", .adapterProfile),
             target("hermes", .adapterProfile),
@@ -48,7 +47,7 @@ struct IntegrationOrderingTests {
     func unpinnedRowsAreUndisturbed() {
         let ordered = IntegrationCatalog.displayOrdered(registryOrder).map(\.id)
         let rest = ordered.filter { !IntegrationCatalog.leadingIntegrations.contains($0) }
-        #expect(rest == ["cline", "continue-dev", "cursor", "langchain", "hermes"])
+        #expect(rest == ["cline", "cursor", "langchain", "hermes"])
     }
 
     @Test("A missing pinned row is skipped, not faked")

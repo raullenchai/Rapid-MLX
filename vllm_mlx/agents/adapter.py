@@ -516,7 +516,14 @@ def get_setup_instructions(
     lines.append(f"## 2. Configure {profile.display_name}")
     lines.append("")
 
-    if cfg.type == "env":
+    if cfg.type == "manual":
+        # A client whose provider settings live behind its GUI, in an
+        # encrypted store, or in an undocumented internal blob — there is
+        # no file we could honestly tell the user to write. The template
+        # is rendered as prose (already parameterised with the real base
+        # URL and model), not fenced as a config file.
+        lines.append(rendered.rstrip())
+    elif cfg.type == "env":
         lines.append("```bash")
         for key, val in rendered.items():
             lines.append(f"export {key}={val}")

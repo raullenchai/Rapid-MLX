@@ -34,7 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import ADAPTERS, CLIENT_ALIASES, canonical_client, cursor
+from . import ADAPTERS
 
 # Where we drop the PID of a ``--start-server`` subprocess. Pulled out
 # so tests can monkeypatch it to a tmp_path and assert the file's
@@ -49,8 +49,6 @@ def _print_list(*, as_json: bool = False) -> int:
 
         cline           detected
         claude-code     not detected
-        continue-dev    detected
-        cursor          not detected
 
     Always returns 0 — listing is a read-only inspect command.
     """
@@ -64,7 +62,6 @@ def _print_list(*, as_json: bool = False) -> int:
     for name, adapter in ADAPTERS.items():
         status = "detected" if adapter.detect() else "not detected"
         print(f"  {name.ljust(width)}{status}")
-    print("\nNote: cursor requires an explicit public HTTPS --server-url.")
     return 0
 
 
@@ -133,10 +130,6 @@ def launch_command(args: argparse.Namespace) -> None:
     passed ``--dry-run`` we describe what we *would* do and exit 0
     without touching disk.
     """
-    # Accept alias spellings (``continue`` for ``continue-dev``) before
-    # any registry lookup — see CLIENT_ALIASES and issue #2082.
-    args.client = canonical_client(args.client)
-
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
@@ -157,28 +150,10 @@ def launch_command(args: argparse.Namespace) -> None:
 
     server_url = args.server_url
     api_key = os.environ.get("RAPID_MLX_API_KEY")
-    cursor_server_url: str | None = None
-    cursor_reason: str | None = None
-    if args.all or args.client == "cursor":
-        try:
-            cursor_server_url = cursor.canonical_server_url(server_url)
-        except ValueError as exc:
-            cursor_reason = str(exc)
 
     targets: list[str]
     if args.all:
-        if ADAPTERS["cursor"].detect() and (cursor_reason is not None or not api_key):
-            skip_reason = cursor_reason or (
-                "public endpoints require RAPID_MLX_API_KEY; never expose an "
-                "unauthenticated server"
-            )
-            print(f"  cursor: skipped — {skip_reason}", file=sys.stderr)
-        targets = [
-            name
-            for name, adapter in ADAPTERS.items()
-            if adapter.detect()
-            and (name != "cursor" or (cursor_server_url is not None and bool(api_key)))
-        ]
+        targets = [name for name, adapter in ADAPTERS.items() if adapter.detect()]
         if not targets:
             print(
                 "launch: no supported clients detected on this machine. "
@@ -187,23 +162,6 @@ def launch_command(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
     else:
-        if args.client == "cursor":
-            if cursor_reason is not None:
-                print(
-                    f"launch: {cursor_reason}. BYOK requests are routed through "
-                    "Cursor's servers; use a public HTTPS tunnel or choose "
-                    "claude-code, cline, or continue-dev for a local connection.",
-                    file=sys.stderr,
-                )
-                sys.exit(2)
-            if not api_key:
-                print(
-                    "launch: Cursor public endpoints require RAPID_MLX_API_KEY. "
-                    "Start Rapid-MLX with the same key; "
-                    "never expose an unauthenticated server to the internet.",
-                    file=sys.stderr,
-                )
-                sys.exit(2)
         if args.client not in ADAPTERS:
             supported = ", ".join(ADAPTERS.keys())
             print(
@@ -223,7 +181,6 @@ def launch_command(args: argparse.Namespace) -> None:
     # Same pattern as ``share_command`` in ``vllm_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
     model = original_alias or args.model or _resolve_default_model()
-    effective_cursor_url = cursor_server_url or server_url
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
         for name in targets:
@@ -251,7 +208,7 @@ def launch_command(args: argparse.Namespace) -> None:
             continue
         try:
             config_kwargs = {
-                "server_url": effective_cursor_url if name == "cursor" else server_url,
+                "server_url": server_url,
                 "model": model,
             }
             if api_key:
@@ -307,10 +264,11 @@ def register(subparsers) -> None:
         "launch",
         help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
         description=(
-            "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
-            "and write/patch its config to route at the "
-            "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
-            "supported. Cursor requires a public HTTPS --server-url."
+            "Detect an IDE client (Cline, Claude Code) and write/patch its "
+            "config to route at the rapid-mlx server. Use `rapid-mlx launch "
+            "list` to see what's supported. Clients whose settings are not a "
+            "writable config file — Cursor, for one — are covered by "
+            "`rapid-mlx agents <name>` instead."
         ),
     )
     p.add_argument(
@@ -319,13 +277,7 @@ def register(subparsers) -> None:
         default=None,
         help=(
             'Client to configure (or "list" to print the detection matrix). '
-            "Supported: "
-            + ", ".join(ADAPTERS.keys())
-            + ". Aliases: "
-            + ", ".join(
-                f"{alias} (for {target})" for alias, target in CLIENT_ALIASES.items()
-            )
-            + "."
+            "Supported: " + ", ".join(ADAPTERS.keys()) + "."
         ),
     )
     p.add_argument(

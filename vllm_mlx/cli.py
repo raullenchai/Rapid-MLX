@@ -8507,12 +8507,12 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code, Continue and DSH have first-class setup flows. They
-        # preview an exact diff, require consent, back up existing config,
-        # write atomically, and verify the server afterwards. The generic
-        # profile writer below still lacks the diff/consent/backup half, but
-        # it does honour --dry-run, so a preview never writes on either path.
-        if profile.name in {"claude-code", "continue", "deepseek-harness"}:
+        # Claude Code and DSH have first-class setup flows. They preview an
+        # exact diff, require consent, back up existing config, write
+        # atomically, and verify the server afterwards. The generic profile
+        # writer below still lacks the diff/consent/backup half, but it does
+        # honour --dry-run, so a preview never writes on either path.
+        if profile.name in {"claude-code", "deepseek-harness"}:
             from vllm_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,
@@ -8674,12 +8674,8 @@ def _connect_target(args, eps):
             "Claude Code", "agents claude-code --setup", eps.openai_url
         )
         return
-    if target in {"continue", "continue-dev"}:
-        _print_point_command("Continue.dev", "agents continue --setup", eps.openai_url)
-        return
-
     print(f"  Unknown connect target: {args.target}")
-    print("  Supported: claude-code, continue, openai-python")
+    print("  Supported: claude-code, openai-python")
     sys.exit(1)
 
 
@@ -10819,7 +10815,7 @@ Examples:
     _register_share(subparsers)
 
     # Launch subcommand — one-shot bootstrap that patches IDE/agent
-    # client configs (Cline, Claude Code, Continue, Cursor) to route
+    # client configs (Cline, Claude Code) to route
     # at the local rapid-mlx server. See GH issue #566 for motivation.
     # Registered AFTER share so the help-text ordering reads
     # serve→…→share→launch, matching the rough "more common first" flow.

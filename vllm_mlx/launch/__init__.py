@@ -1,21 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 """``rapid-mlx launch <client>`` — one-shot bootstrap.
 
-Detects whether the named client (Cline, Claude Code CLI, Continue,
-or Cursor with a public HTTPS endpoint)
-is installed on this machine, then writes/patches the client's
-local config so it routes traffic at the local rapid-mlx OpenAI-
-compatible server (default ``http://127.0.0.1:8000/v1``). Optionally
-spawns ``rapid-mlx serve`` in the background so a user goes from a
-fresh install to "Cline talking to my Mac" in one command.
+Detects whether the named client (Cline or the Claude Code CLI) is
+installed on this machine, then writes/patches the client's local
+config so it routes traffic at the local rapid-mlx OpenAI-compatible
+server (default ``http://127.0.0.1:8000/v1``). Optionally spawns
+``rapid-mlx serve`` in the background so a user goes from a fresh
+install to "Cline talking to my Mac" in one command.
+
+Membership in :data:`ADAPTERS` is a factual claim: *this client reads a
+documented config file, and writing that file makes the client use our
+server*. Two clients were removed for failing it:
+
+* **Cursor** — its provider settings are fields inside one large
+  reactive-storage JSON blob in ``state.vscdb`` plus a macOS keychain
+  entry, and the ``cursor.aiprovider.*`` keys the adapter used to write
+  do not exist in Cursor's schema at all. It is now an adapter profile
+  (``rapid-mlx agents cursor``) that prints GUI setup steps.
+* **Continue.dev** — the upstream project went read-only on
+  2026-06-19. Kilo Code (``rapid-mlx agents kilo-code``) is the
+  maintained successor and speaks the same OpenAI-compatible API.
 
 The implementation lives in per-client modules so each adapter's
 config-shape knowledge stays narrow:
 
 * :mod:`vllm_mlx.launch.cline` — Cline VS Code extension
 * :mod:`vllm_mlx.launch.claude_code` — Claude Code CLI (Anthropic SDK)
-* :mod:`vllm_mlx.launch.continue_dev` — Continue.dev VS Code/JetBrains
-* :mod:`vllm_mlx.launch.cursor` — Cursor via a public HTTPS endpoint
 
 All adapters expose the same surface (:func:`detect`,
 :func:`current_config_path`, :func:`write_or_patch_config`) so the
@@ -28,48 +38,15 @@ cline`` shape we're copying — same OpenAI-compatible plumbing, same
 one-verb UX).
 """
 
-from . import claude_code, cline, continue_dev, cursor
+from . import claude_code, cline
 
 # Registry consumed by ``vllm_mlx.launch.cli`` — order is the
 # display order in ``rapid-mlx launch list``. Keys are the
 # user-facing client names accepted on the CLI (kebab-case so
-# ``claude-code`` matches the client's common command name;
-# ``continue`` would collide with the Python keyword so we use
-# ``continue-dev``).
+# ``claude-code`` matches the client's common command name).
 ADAPTERS: dict[str, object] = {
     "cline": cline,
     "claude-code": claude_code,
-    "continue-dev": continue_dev,
-    "cursor": cursor,
 }
 
-# Alternate user-facing spellings, normalized before the ``ADAPTERS``
-# lookup. ``rapid-mlx agents`` calls the same product ``continue`` (its
-# profile is ``continue.yaml``), so users reasonably type either slug in
-# either subcommand — see issue #2082. The canonical ids above stay
-# unchanged: config files and detection logic key on them.
-CLIENT_ALIASES: dict[str, str] = {
-    "continue": "continue-dev",
-}
-
-
-def canonical_client(name: str | None) -> str | None:
-    """Normalize a user-typed client slug to its canonical ``ADAPTERS`` key.
-
-    Unknown names pass through unchanged so the caller's "unknown
-    client" error handling still sees exactly what the user typed.
-    """
-    if name is None:
-        return None
-    return CLIENT_ALIASES.get(name, name)
-
-
-__all__ = [
-    "ADAPTERS",
-    "CLIENT_ALIASES",
-    "canonical_client",
-    "claude_code",
-    "cline",
-    "continue_dev",
-    "cursor",
-]
+__all__ = ["ADAPTERS", "claude_code", "cline"]
