@@ -1,5 +1,7 @@
 # Image Benchmarks
 
+> **Legacy measurements** (noted 2026-08-18): the numbers below are from early 2026 and have not been re-run since.
+
 ## Running Image Benchmarks
 
 The shipped `rapid-mlx bench` subcommand benches text generation only. The

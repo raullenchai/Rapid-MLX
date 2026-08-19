@@ -22,8 +22,10 @@ installs) the right Python automatically. Upgrade later with
 curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
-Auto-installs Python if needed, then `pipx install rapid-mlx`. Good fallback
-if you don't want to install `uv` first.
+Auto-installs Python (via Homebrew) if needed, then creates a self-contained
+virtual environment at `~/.rapid-mlx` and symlinks the CLI entry points
+(`rapid-mlx`, `rapid-mlx-chat`, `rapid-mlx-bench`) into `~/.local/bin`. Good
+fallback if you don't want to install `uv` first.
 
 ## Install with Homebrew
 
@@ -62,8 +64,11 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 | `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
 | `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
-| `guided` | `pip install 'rapid-mlx[guided]'` | outlines (~80 MB) for schema-constrained JSON |
-| `all` | `pip install 'rapid-mlx[all]'` | Everything above (~1.1 GB) |
+| `video` | `pip install 'rapid-mlx[video]'` | mlx-video + imageio for video generation (LTX-2.3 T2V/I2V with audio); requires Python 3.11+ |
+| `image` | `pip install 'rapid-mlx[image]'` | mflux for text-to-image / image edit (FLUX.1-schnell, Qwen-Image); requires Python 3.11+ |
+| `mtp` | `pip install 'rapid-mlx[mtp]'` | pillow for MTP speculative decoding (Gemma 4 assistant drafters) |
+| `guided` | `pip install 'rapid-mlx[guided]'` | Legacy no-op kept for compatibility — llguidance ships in the core install (it replaced outlines in 0.10) |
+| `all` | `pip install 'rapid-mlx[all]'` | vision + dflash + audio + embeddings + chat (~1.1 GB); `video` / `image` / `mtp` are installed separately |
 
 Homebrew installs the text-only package and does not provide Python extras.
 To switch a Homebrew installation to DFlash, use an isolated tool install:
@@ -83,7 +88,7 @@ rapid-mlx version
 # Self-diagnostic (works without downloading a model)
 rapid-mlx doctor
 
-# Smallest interactive smoke test (downloads ~2.5 GB on first run)
+# Smallest interactive smoke test (downloads ~3 GB on first run)
 rapid-mlx chat qwen3.5-4b-4bit
 ```
 
