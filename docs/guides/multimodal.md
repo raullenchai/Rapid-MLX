@@ -245,16 +245,29 @@ When you send an image to the model, the vision encoder processes it into embedd
 
 The cache uses content-based hashing (similar to LMCache) to identify identical images regardless of how they're provided (URL, base64, or file path).
 
-### Enabling the Cache
+### Default Behavior
+
+The cache is engine-internal and enabled by default — there is no serve flag
+to turn it on. When you start a multimodal server, every request automatically
+benefits from it:
 
 ```bash
-# Enable with default settings (512 MB max)
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --enable-mllm-cache
+rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+```
 
-# With custom memory limit
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
-    --enable-mllm-cache \
-    --mllm-cache-max-mb 1024
+Defaults: up to 50 entries and 2048 MB of cache memory, with LRU eviction.
+
+If you use the Python API directly, you can opt out or resize the cache when
+constructing the model:
+
+```python
+from vllm_mlx.models import MLXMultimodalLM
+
+mllm = MLXMultimodalLM(
+    "mlx-community/Qwen3-VL-4B-Instruct-3bit",
+    enable_cache=True,   # default
+    cache_size=50,       # max cache entries
+)
 ```
 
 ### Python API
@@ -262,8 +275,8 @@ rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
 ```python
 from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
 
-# Create cache manager
-cache = MLLMPrefixCacheManager(max_memory_mb=512)
+# Create cache manager (max_memory_mb defaults to 2048)
+cache = MLLMPrefixCacheManager(max_entries=50, max_memory_mb=2048)
 
 # Store embeddings and KV cache after processing
 cache.store(
@@ -271,7 +284,7 @@ cache.store(
     prompt="Describe this image",
     vision_embeddings=embeddings,
     kv_cache=kv_state,
-    num_tokens=128
+    token_ids=token_ids,  # full token sequence, e.g. from the processor
 )
 
 # Fetch from cache on subsequent requests
@@ -284,11 +297,13 @@ if entry:
 
 ### Cache Statistics
 
+`get_stats()` returns a plain dictionary:
+
 ```python
 stats = cache.get_stats()
-print(f"Hit rate: {stats.hit_rate:.1%}")
-print(f"Memory used: {stats.memory_used_mb:.1f} MB")
-print(f"Tokens saved: {stats.tokens_saved}")
+print(f"Hit rate: {stats['hit_rate']:.1%}")
+print(f"Memory used: {stats['memory_used_mb']:.1f} MB")
+print(f"Tokens saved: {stats['tokens_saved']}")
 ```
 
 ### Memory Management

@@ -2464,6 +2464,89 @@ def _resolve_hybrid_cache_entries(
     return explicit_value
 
 
+def _config_declares_sliding_window(config: dict | None) -> bool:
+    """True if the checkpoint config declares sliding-window (local) attention.
+
+    Gemma-2/3/4 and other local-attention families run their sliding layers on
+    ``RotatingKVCache``, which reports ``is_trimmable() == False`` once the ring
+    has rotated past its window (the front is overwritten, so a trim-then-
+    continue would reconstruct wrong KV — see ``memory_cache`` ``_layer_forbids_
+    trim``). Such a cache is non-trimmable but still REUSABLE at an exact token
+    boundary, so these models need the bounded trim-free snapshot path — exactly
+    like the recurrent-state families — or every agentic turn re-prefills the
+    whole accumulated context (#2061).
+
+    The signal is read straight off the checkpoint config so it is
+    architecture-driven rather than a name list: it covers the whole sliding-
+    window family, future additions, and bare local paths that resolve to no
+    alias.
+
+    The LANGUAGE backbone's attention config is authoritative — VLM checkpoints
+    nest it under ``text_config``, so that is judged first and alone when it
+    carries a signal (a top-level ``sliding_window`` scalar on such a checkpoint
+    is often a vision/default value unrelated to the LM's attention). Within the
+    chosen config, ``layer_types`` (Gemma-3/4's explicit per-layer attention
+    kinds) is authoritative: a config listing only ``full_attention`` is NOT
+    sliding even if it also carries a leftover ``sliding_window`` value (that
+    field is inert without a sliding layer to apply it). A bare positive
+    ``sliding_window`` is consulted only as the fallback for older configs that
+    omit ``layer_types``. Only if the nested language config carries no signal
+    at all does the top level get a look, for checkpoints that place attention
+    fields at the root.
+    """
+    if not isinstance(config, dict):
+        return False
+
+    def _level_signal(cfg: object) -> bool | None:
+        """True/False if ``cfg`` declares sliding-window state, None if it
+        carries no attention signal at all (so the caller may look elsewhere)."""
+        if not isinstance(cfg, dict):
+            return None
+        layer_types = [
+            lt for lt in (cfg.get("layer_types") or []) if isinstance(lt, str)
+        ]
+        if layer_types:
+            return any("sliding" in lt for lt in layer_types)
+        # Qwen2 / Mistral carry a ``sliding_window`` scalar but gate it behind an
+        # explicit ``use_sliding_window`` flag — a positive scalar with the flag
+        # off is inert, so honour the disable before the legacy scalar. Treating
+        # it as active would auto-allocate bounded snapshots and regress memory.
+        if cfg.get("use_sliding_window") is False:
+            return False
+        sliding_window = cfg.get("sliding_window")
+        if isinstance(sliding_window, int):
+            return sliding_window > 0
+        return None
+
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        nested = _level_signal(text_config)
+        if nested is not None:
+            return nested
+    return bool(_level_signal(config))
+
+
+def _resolve_checkpoint_config(model_name: str, profile) -> dict | None:
+    """Read the checkpoint ``config.json`` for ``model_name`` offline.
+
+    Works for a bare local path or HF repo id directly, and for a registered
+    alias by resolving it to its ``hf_path`` (the alias name itself is not a
+    readable checkpoint dir). Never touches the network — mirrors the offline
+    metadata probes ``is_mllm_model`` already relies on.
+    """
+    from .api.utils import read_model_metadata
+
+    metadata = read_model_metadata(model_name)
+    if metadata is not None and metadata.config:
+        return metadata.config
+    hf_path = getattr(profile, "hf_path", None) if profile is not None else None
+    if isinstance(hf_path, str) and hf_path and hf_path != model_name:
+        metadata = read_model_metadata(hf_path)
+        if metadata is not None and metadata.config:
+            return metadata.config
+    return None
+
+
 def _needs_bounded_trim_free_reuse(model_name: str) -> bool:
     """Whether this model's cache can reuse prefixes but not trim exact hits."""
     from .model_aliases import resolve_profile as _resolve_alias
@@ -2492,6 +2575,20 @@ def _needs_bounded_trim_free_reuse(model_name: str) -> bool:
         # so no throttle, no snapshot path, no wedge.
         if profile.is_hybrid_explicit and not profile.is_hybrid:
             return True
+
+    # Sliding-window attention families (Gemma-2/3/4, …) carry RotatingKVCache
+    # local-attention layers that go non-trimmable once the ring rotates past
+    # their window, so — like the recurrent families above — they can only
+    # reuse a prefix through the bounded snapshot path, never the ordinary
+    # trimmable prefix cache. Without this, --enable-prefix-cache is a silent
+    # no-op for them and every agentic turn re-prefills the whole accumulated
+    # context (#2061). Detected from the checkpoint config (architecture-driven,
+    # so it also covers a bare local path that resolves to no alias, which is
+    # exactly how #2061 was served). This does NOT touch routing — is_hybrid is
+    # untouched, so no throttle and no hybrid allocation path / wedge.
+    if _config_declares_sliding_window(_resolve_checkpoint_config(model_name, profile)):
+        return True
+
     return is_deepseek_v4_0731(model_name)
 
 

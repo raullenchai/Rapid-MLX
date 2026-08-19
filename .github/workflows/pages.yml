@@ -1,9 +1,27 @@
 name: Sync install.sh to GitHub Pages
 
+# rapidmlx.com/install.sh is a Cloudflare Worker proxy over this repo's
+# GitHub Pages. The README and SECURITY.md promise the served script is a
+# byte-identical mirror of install.sh AT THE RELEASE COMMIT — and the
+# cosign/SHA256SUMS verification recipe only checks out if that holds. So
+# the sync fires on release tags, not on every push to main: publishing
+# main here leaked unreleased installer content to every user and made the
+# documented hash verification fail against the release assets.
+#
+# The ``v*`` tag is created with RELEASE_PAT (a real user) by
+# auto-release.yml precisely so tag-push events fire downstream workflows
+# — this one included. A ref written with the default GITHUB_TOKEN would
+# not trigger it.
+
 on:
   push:
-    branches: [main]
-    paths: [install.sh]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release tag whose install.sh to publish, e.g. v0.12.15 (release tags only)"
+        required: true
+        type: string
 
 jobs:
   sync:
@@ -11,7 +29,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      # A manual dispatch may only publish from an existing release tag —
+      # never a branch or PR ref. Without this, anyone with workflow-run
+      # permission could point the mirror at unreviewed code and silently
+      # break the release-commit contract the checkout below relies on.
+      - name: Validate dispatch ref is an existing release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF: ${{ github.event.inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::ref must be a release tag like v0.12.15 (got: ${REF})"
+            exit 1
+          fi
+          if ! git ls-remote --exit-code --tags \
+               "https://github.com/${GITHUB_REPOSITORY}.git" \
+               "refs/tags/${REF}" > /dev/null; then
+            echo "::error::refs/tags/${REF} does not exist in ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # Tag pushes check out the tag by default; a manual dispatch is
+          # pinned into the tag namespace explicitly (refs/tags/<input>), so
+          # a branch — even one named like a version — can never be published.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.ref) || github.ref }}
 
       - name: Prepare pages directory
         run: |
