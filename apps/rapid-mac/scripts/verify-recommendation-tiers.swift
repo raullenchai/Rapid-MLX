@@ -125,9 +125,9 @@ check(picks(forPhysicalRAMGB: 96)[1].alias == "qwen3.6-35b-4bit", "96GB fast is 
 check(picks(forPhysicalRAMGB: 256)[1].alias == "qwen3.6-35b-4bit", "256GB (96 tier) fast is qwen3.6-35b-4bit")
 
 print("Capability column: a smart pick never DISPLAYS weaker than its own fast alt (codex r8 MAJOR):")
-// 64 GB: the 8-bit smart pick is floored at its 4-bit alt's 87 % — an 8-bit
-// quant can't read weaker than its own 4-bit (that made "Best pick" look
-// worse than "Faster"). Pin smart >= alt for every tier that carries an alt.
+// 64 GB: the smart pick (qwen3.8-27b-4bit) reads 92 %, above its
+// qwen3.6-35b-4bit alt's 87 % — "Best pick" must never look worse than
+// "Faster". Pin smart >= alt for every tier that carries an alt.
 for ram in [8.0, 16.0, 18.0, 24.0, 32.0, 48.0, 64.0, 96.0] {
     let ps = picks(forPhysicalRAMGB: ram)
     if ps.count == 2, ps[1].caveat == nil {
@@ -145,8 +145,8 @@ for (a, b) in zip(floors, floors.dropFirst()) {
     let cb = picks(forPhysicalRAMGB: b)[0].capabilityPct
     check(cb >= ca, "\(Int(b))GB smart (\(cb)%) >= \(Int(a))GB smart (\(ca)%)")
 }
-// 18 GB mirrors 16 GB (bonsai smart + lfm2.5 fast) — the old gemma-4-12b that
-// read 72 % (below 16 GB's 86 %) was dropped from the tier picks.
+// 18 GB steps up from 16 GB (qwen3.5-9b smart at 82 %, over 16 GB's
+// qwen3.5-4b at 78 %); the old gemma-4-12b pick was dropped from the tiers.
 check(picks(forPhysicalRAMGB: 18)[0].alias == "qwen3.5-9b-4bit" && picks(forPhysicalRAMGB: 18)[0].capabilityPct == 82, "18GB smart = qwen9 82%")
 check(!tiers.flatMap(\.picks).contains { $0.alias == "gemma-4-12b-4bit" }, "gemma-4-12b is no longer a tier pick")
 

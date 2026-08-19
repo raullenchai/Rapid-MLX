@@ -4571,9 +4571,12 @@ def _run_submit_flow(
             # in mlx-vlm (the model classes are vision-aware even for the
             # text-only checkpoints), so a bare ``pip install rapid-mlx``
             # without the ``[vision]`` extras hits this every time. The
-            # README still recommends ``gemma-4-*`` aliases so newcomers
-            # would otherwise see a raw traceback and conclude the model
-            # is broken — translate to an actionable hint. Placed BEFORE
+            # ``gemma-4-*`` aliases are still in the served catalog (no
+            # recommendation surface points at them anymore, but
+            # ``rapid-mlx models`` lists them), so anyone picking one on
+            # a base install would otherwise see a raw traceback and
+            # conclude the model is broken — translate to an actionable
+            # hint. Placed BEFORE
             # the broader ``OSError`` clause so a future maintainer can't
             # accidentally make the broad branch swallow it (Codex PR
             # #600 round-1 BLOCKING).

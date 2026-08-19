@@ -8,7 +8,8 @@ tokens WITHOUT the same scrub — joined SSE deltas decoded as
 ``` ```json\\n{...}\\n``` ``` and ``json.loads`` failed for any SDK
 consumer assembling ``delta.content`` into a string.
 
-Marisol (0.8TODO r2 H-07) caught the regression: same prompt + same
+Marisol (r2 H-07, tracked in the 0.8-era local TODO, since removed —
+see git history) caught the regression: same prompt + same
 model + ``response_format={"type":"json_object"}`` + ``stream=True``
 produced fenced output while the non-stream path produced bare JSON.
 
