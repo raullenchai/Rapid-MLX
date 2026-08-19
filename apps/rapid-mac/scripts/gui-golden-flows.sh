@@ -40,7 +40,7 @@ Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progre
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, image-generation, audio-readiness, all
+       browse-all-destination, chat-document-attachment, image-generation, dictation, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -100,7 +100,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -4330,6 +4330,92 @@ flow_audio_readiness() {
     cleanup_persona
 }
 
+# Dictation is its own product journey, not merely the landing state of Audio.
+# Keep this separate from audio-readiness so a regression in its controls is
+# named directly in CI. Microphone and Accessibility grants are intentionally
+# not faked: their TCC state belongs to the host. The stable contract is that
+# every setup control is reachable, raw recordings remain opt-in, local
+# vocabulary edits work, mode round-trips preserve the pane, and opening it
+# alone never downloads or starts a model.
+flow_dictation() {
+    log "flow: dictation"
+    start_persona dictation \
+        RAPID_GUI_GOLDEN_MODE=1
+    dismiss_first_run
+    see_main "$OUT/chat.json"
+    press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation-open.json" \
+        || die "Sidebar.Audio is not pressable"
+
+    local i controls_ready=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/dictation.json"
+        if jq -e '[.data.ui_elements[]?
+                   | .identifier // ""
+                   | select(. == "Dictation.Model"
+                            or . == "Dictation.Hotkey"
+                            or . == "Dictation.Enable"
+                            or . == "Dictation.NewTerm"
+                            or . == "Dictation.AddTerm"
+                            or . == "Dictation.ArchiveAudio")]
+                  | unique | length == 6' "$OUT/dictation.json" >/dev/null; then
+            controls_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$controls_ready" == 1 ]] \
+        || die "Dictation did not expose its complete setup surface"
+    [[ "$(element_field "$OUT/dictation.json" Dictation.Model value)" == "fake-whisper-small" ]] \
+        || die "Dictation did not select the available transcription model"
+    [[ "$(element_field "$OUT/dictation.json" Dictation.Hotkey value)" == "Right ⌘" ]] \
+        || die "Dictation did not expose the safe right-hand default hotkey"
+    [[ "$(element_field "$OUT/dictation.json" Dictation.ArchiveAudio value)" != "1" ]] \
+        || die "Dictation retained raw microphone recordings without opt-in"
+
+    press "$OUT/dictation.json" Dictation.ArchiveAudio "$OUT/archive-on-press.json" \
+        || die "Keep recordings is not pressable"
+    see_main "$OUT/archive-on.json"
+    [[ "$(element_field "$OUT/archive-on.json" Dictation.ArchiveAudio value)" == "1" ]] \
+        || die "Keep recordings accepted a press but did not turn on"
+    press "$OUT/archive-on.json" Dictation.ArchiveAudio "$OUT/archive-off-press.json" \
+        || die "Keep recordings is not pressable after enabling"
+    see_main "$OUT/archive-off.json"
+    [[ "$(element_field "$OUT/archive-off.json" Dictation.ArchiveAudio value)" != "1" ]] \
+        || die "Keep recordings did not return to its privacy-safe default"
+
+    "$AX_DRIVER" set-value "$APP_PID" Dictation.NewTerm "GoldenTerm2049" \
+        > "$OUT/vocabulary-type.json" \
+        || die "Dictation vocabulary field rejected input"
+    see_main "$OUT/vocabulary-ready.json"
+    press "$OUT/vocabulary-ready.json" Dictation.AddTerm "$OUT/vocabulary-add.json" \
+        || die "Dictation Add term is not pressable after input"
+    wait_identifier Dictation.RemoveTerm.GoldenTerm2049 "$OUT/vocabulary-added.json" \
+        || die "Dictation Add term produced no removable vocabulary chip"
+    press "$OUT/vocabulary-added.json" Dictation.RemoveTerm.GoldenTerm2049 \
+        "$OUT/vocabulary-remove.json" \
+        || die "Dictation vocabulary remove is not pressable"
+    see_main "$OUT/vocabulary-removed.json"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Dictation.RemoveTerm.GoldenTerm2049")' \
+             "$OUT/vocabulary-removed.json" >/dev/null; then
+        die "Dictation vocabulary term remained after Remove"
+    fi
+
+    press "$OUT/vocabulary-removed.json" Audio.Mode.Speech "$OUT/speech.json" \
+        || die "Speech mode is not pressable from Dictation"
+    wait_identifier Audio.Speech.ModelPicker "$OUT/speech-ready.json"
+    press "$OUT/speech-ready.json" Audio.Mode.Dictation "$OUT/dictation-return.json" \
+        || die "Dictation mode is not pressable after visiting Speech"
+    wait_identifier Dictation.Enable "$OUT/dictation-restored.json"
+    if jq -e -s 'any(.[]; .event == "server_started")' "$OUT/fake-events.jsonl" \
+        >/dev/null 2>&1; then
+        die "Opening and configuring Dictation started a model before dictation"
+    fi
+
+    log "  setup controls, privacy toggle, vocabulary, and mode round-trip produced effects"
+    log "  dictation OK"
+    cleanup_persona
+}
+
 
 if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
     RESULT_WRITTEN=1
@@ -4360,6 +4446,7 @@ case "$FLOW" in
     browse-all-destination) flow_browse_all_destination ;;
     chat-document-attachment) flow_chat_document_attachment ;;
     image-generation) flow_image_generation ;;
+    dictation) flow_dictation ;;
     audio-readiness) flow_audio_readiness ;;
     resident-load-rejected) flow_resident_load_rejected ;;
     launch-integrations) flow_launch_integrations ;;
@@ -4386,6 +4473,7 @@ case "$FLOW" in
         flow_browse_all_destination
         flow_chat_document_attachment
         flow_image_generation
+        flow_dictation
         flow_audio_readiness
         flow_resident_load_rejected
         flow_launch_integrations

@@ -105,6 +105,19 @@ struct DictationTests {
         #expect(vocabulary.terms.count == 1)
     }
 
+    @MainActor
+    @Test("a quick add then remove cannot resurrect the older snapshot")
+    func vocabularyPersistencePreservesMutationOrder() async {
+        let store = Self.tempStore()
+        let vocabulary = DictationVocabulary(storeURL: store)
+        vocabulary.add("GoldenTerm2049")
+        vocabulary.remove("GoldenTerm2049")
+        await vocabulary.waitForPersistence()
+
+        let reloaded = DictationVocabulary(storeURL: store)
+        #expect(reloaded.terms.isEmpty)
+    }
+
     /// Suggestions exist because nobody maintains a word list by hand. The
     /// filter has to keep invented names — the ones ASR actually gets wrong —
     /// and drop ordinary words a model already knows, since every kept term

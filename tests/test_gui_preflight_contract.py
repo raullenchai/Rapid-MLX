@@ -111,6 +111,7 @@ def test_peekaboo_requirement_is_default_deny():
         "low-memory-choice",
         "chat-document-attachment",
         "image-generation",
+        "dictation",
         "audio-readiness",
         "window-close-prompt",
         "resident-load-rejected",

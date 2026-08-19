@@ -409,6 +409,12 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/audio-readiness
 
+      - name: 'Golden flow: dictation'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow dictation
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/dictation
+
       - name: 'Golden flow: settings-mtp'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow settings-mtp
@@ -477,7 +483,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GOLDEN_ROOT"])
-          expected = 24
+          expected = 25
           results = sorted(root.glob("*/result.json"))
           failures = []
           for path in results:

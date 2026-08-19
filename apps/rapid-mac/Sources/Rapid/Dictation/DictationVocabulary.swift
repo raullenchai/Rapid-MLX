@@ -46,6 +46,10 @@ final class DictationVocabulary {
     }
 
     private let storeURL: URL
+    /// Preserve mutation order on disk. Independent detached writes can finish
+    /// out of order, so a quick Add → Remove may otherwise resurrect the term
+    /// on the next launch when the older Add snapshot lands last.
+    private let persistenceQueue = DispatchQueue(label: "ai.rapidmlx.dictation-vocabulary")
 
     init(storeURL: URL? = nil) {
         self.storeURL = storeURL ?? Self.defaultStoreURL()
@@ -132,6 +136,14 @@ final class DictationVocabulary {
 
     func dismissSuggestion(_ text: String) {
         suggestions.removeAll { $0 == text }
+    }
+
+    /// Wait until all mutations queued before this call have reached disk.
+    /// Used by deterministic tests and any future shutdown flush path.
+    func waitForPersistence() async {
+        await withCheckedContinuation { continuation in
+            persistenceQueue.async { continuation.resume() }
+        }
     }
 
     private nonisolated static func discoverCandidates() -> [String] {
@@ -236,7 +248,7 @@ final class DictationVocabulary {
     private func save() {
         let url = storeURL
         let snapshot = terms
-        Task.detached(priority: .utility) {
+        persistenceQueue.async {
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
