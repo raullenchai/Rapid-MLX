@@ -114,7 +114,7 @@ struct AudioCatalogTests {
         #expect(source.contains("@Environment(DownloadManager.self) private var downloads"))
         #expect(source.contains(".task(id: downloads.cacheGeneration)"),
                 "The Audio view may stay mounted while Settings downloads a model.")
-        #expect(source.contains("WAV, MP3, M4A, AAC, FLAC, or MP4 - up to 25 MB"))
+        #expect(source.contains("WAV, MP3, M4A, AAC, FLAC, MP4, AIFF, or CAF - up to 25 MB"))
         #expect(!source.contains("OGG, Opus, WebM"),
                 "The desktop sidecar does not bundle ffmpeg for these formats.")
     }

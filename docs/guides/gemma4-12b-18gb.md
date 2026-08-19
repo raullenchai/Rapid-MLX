@@ -297,7 +297,9 @@ Two things follow for anyone tuning this:
       Assistant sidecars are reserved for future validated support and do
       not make this model eligible.
 
-  This is the fail-closed gate from `specdecoding.md` (cli.py), and no
+  This is the fail-closed gate from
+  [`docs/specdecoding-validation-notes.md`](../specdecoding-validation-notes.md)
+  (cli.py), and no
   flag bypasses it. Enabling MTP here is a feature to implement, not a
   flag to set. Two upstream reference points for whoever does:
   Google's design has the MTP head cross-attend the *main model's* KVs
@@ -327,4 +329,5 @@ reports ~90 % faster generation on the aider polyglot benchmark for
 Gemma 4 12B nvfp4 on an M5 Max. The 36.0 tok/s here is within that band
 for an M3 Pro at 4-bit, reached with SuffixDecoding rather than MTP —
 rapid-mlx's Gemma 4 assistant-sidecar MTP path is documented as failing
-greedy-lossless validation and fails closed (see `specdecoding.md`).
+greedy-lossless validation and fails closed (see
+[`docs/specdecoding-validation-notes.md`](../specdecoding-validation-notes.md)).

@@ -1,6 +1,6 @@
 # Telemetry → Golden Profile design doc
 
-Status: **draft** · Author: raullen + Claude · Date: 2026-06-06
+Status: **implemented** (statused 2026-08-18) · Author: raullen + Claude · Date: 2026-06-06
 
 This doc covers Phase 2 of the opt-in telemetry pipeline first sketched
 in [Issue #236](https://github.com/raullenchai/Rapid-MLX/issues/236).
@@ -44,9 +44,11 @@ What we explicitly do **not** want:
 | `redact.py` | Bucket primitives (`bucket_tokens`, `bucket_ttft_ms`, `bucket_tps`, `bucket_memory_gb`), `normalize_model_path` (passes `org/name`, redacts local paths), `hash_flag_names` (names only, never values), `fingerprint_traceback` (16-hex of `class_name + basename:func:lineno`, no message text, no module path), `platform_info` (chip + memory rounded to GB + OS major.minor + python major.minor). |
 | `cli.py:3133` | `rapid-mlx telemetry {status,enable,disable,preview,reset}` subcommand. |
 
-Phase 1 has **no event call sites** — `is_enabled()` exists, but
-nothing calls it to actually emit. The package compiles, has tests,
-and ships dark.
+Phase 1 originally shipped with **no event call sites** — the package
+compiled, had tests, and shipped dark. That is no longer true: emission
+is live. `vllm_mlx/telemetry/emit.py` provides the emit path and it is
+wired from `vllm_mlx/routes/chat.py` (request/error events behind the
+consent gate).
 
 ### 2.2 Server (`~/work/Rapid-MLX-telemetry-worker/`) — deployed
 

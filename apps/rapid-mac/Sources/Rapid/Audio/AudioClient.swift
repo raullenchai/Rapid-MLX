@@ -336,7 +336,10 @@ struct AudioClient {
 
     private static func safeExtension(_ raw: String) -> String {
         let lower = raw.lowercased()
-        let allowed = Set(["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "webm", "mp4"])
+        let allowed = Set([
+            "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "webm", "mp4",
+            "aif", "aiff", "aifc", "caf",
+        ])
         return allowed.contains(lower) ? lower : "audio"
     }
 
@@ -366,7 +369,8 @@ enum AudioUploadTranscoder {
     private static let bytesPerFrame = 2
 
     static func requiresWAV(_ fileExtension: String) -> Bool {
-        ["m4a", "mp4", "aac"].contains(fileExtension.lowercased())
+        ["m4a", "mp4", "aac", "aif", "aiff", "aifc", "caf"]
+            .contains(fileExtension.lowercased())
     }
 
     /// Decode Apple-native compressed containers and normalize them to the

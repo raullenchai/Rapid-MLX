@@ -46,7 +46,7 @@ Not every PR runs the full gauntlet. Skip rules:
 | Dependabot / version-bump bot | satisfied by the bump itself | codex single round on the diff | mandatory — read the dep CHANGELOG | unchanged | unchanged |
 | `chore: bump version to X.Y.Z` (release) | satisfied by linking the commits being shipped | n/a (just the version bump) | bundle-level audit at release time, see [`releasing.md`](releasing.md) | unchanged | unchanged |
 | Revert PR | must name the regression / commit being reverted | targeted tests for the affected area | n/a unless deps reverted | unchanged | unchanged |
-| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (`bench --tier check`) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
+| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (live benchmark vs baseline) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
 | Embargoed security fix | filed under coordinated-disclosure process; PR opens against private fork | full gauntlet but in private | mandatory | mandatory | merge with disclosure window |
 
 For first-time contributors learning the ropes: relax tone, not standards. Walk them through fixes instead of closing; that builds the contributor base.
@@ -56,9 +56,9 @@ For first-time contributors learning the ropes: relax tone, not standards. Walk 
 - Read the PR description. If "what" or "why" is unclear, ask before touching anything.
 - Confirm `git status` clean; branch rebased on latest `raullenchai/main`. Heavy divergence → ask the contributor to rebase first.
 - **Identify blast radius** (this gates which later steps fire):
-  - **Inference-touching** (`vllm_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `vllm_mlx/runtime/`, `vllm_mlx/agents/`) → all gates required, including `make check` and Anthropic-compat round-trip.
-  - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → the version-bump guard now only fires to *block* a stray `version` change, not to require one; surface PRs ship with **no** version bump (release is cut later in a dedicated bump PR). `make check` skip OK if no behavior change in generation path.
-  - **Dev-only** (bench scripts, dev tooling, CI workflows, docs, tests) → `make check` skip OK; full unit + lint still required.
+  - **Inference-touching** (`vllm_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `vllm_mlx/runtime/`, `vllm_mlx/agents/`) → all gates required, including the Step 8 live benchmark baseline and the Anthropic-compat round-trip.
+  - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → the version-bump guard now only fires to *block* a stray `version` change, not to require one; surface PRs ship with **no** version bump (release is cut later in a dedicated bump PR). Step 8 skip OK if no behavior change in generation path.
+  - **Dev-only** (bench scripts, dev tooling, CI workflows, docs, tests) → Step 8 skip OK; full unit + lint still required.
 
 - **Verify required PR-template fields** are filled. If any are missing, **request fill-in before review begins** — don't silently start reading the diff with the contributor unaware of the gap. Required fields:
   - Necessity field, non-empty and concrete (not "improve quality").
@@ -138,7 +138,7 @@ Never assume — confirm. Document any confirmed pre-existing fails in the PR de
 python3.12 -m scripts.pr_validate.pr_validate <PR#> --verbose
 ```
 
-Multi-step pipeline: `fetch → deepseek_review → supply_chain → lint → targeted_tests → full_unit → stress_e2e_bench`. See [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md).
+Eleven-step pipeline: `fetch → test_plan_check → cl_description_quality → supply_chain → test_env_check → review_vocabulary → codex_review → lint → targeted_tests → full_unit → stress_e2e_bench`. The **canonical** step list, gating logic, and env-var overrides live in [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md) — if this doc and that README disagree, the README wins.
 
 ## Step 7 — Supply-chain audit
 
@@ -294,9 +294,9 @@ The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-valid
 | 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | mutation spot-check | mutation testing is the cheap manual step |
 | 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, mandatory GHA SHA pinning, parser microbench) | — | full coverage |
 | 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | `pr_validate.full_unit` on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
-| 6 — pr_validate | **pipeline** (7 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
+| 6 — pr_validate | **pipeline** (8 of 11 steps; `codex_review` self-skips on CI — see step 2) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
 | 7 — supply chain | `pr_validate.supply_chain` (auto) + mandatory GHA SHA pinning | license drift + transitive deps still need a human read | partial automation; pip-audit is automated |
-| 8 — bench `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
+| 8 — live benchmark baseline (`pr_validate` `stress_e2e_bench`) | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
 | 9 — Anthropic-compat | — | **M3** (needs MLX + live server) | parser/router PRs only — covered by `make release-check-m3` |
 | 10 — CI gate | `ci.yml` aggregation + `pr-validate.yml` scorecard | — | full coverage |
 | 11 — PR description audit | `pr_validate.cl_description_quality` (auto in pr-validate.yml) | final read | automated rejects empty bodies and bad titles |
@@ -327,7 +327,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 - **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
 - **`skip-version-bump` label** — the label is now the escape hatch for intentionally changing the `version` line outside a titled bump PR (including a rollback correction that should not publish). `version-check.yml` subscribes to `labeled` / `unlabeled` (and `edited` for title changes), so adding or removing the label — or re-titling the PR — automatically refires the guard; no close/reopen or empty push needed. (This supersedes the old `gotcha_skip_version_bump_label_after_run` close-reopen workaround, which applied to the pre-inversion workflow that didn't subscribe to label events.)
 - **A/B classify validation-surfaced bugs** — when `pr_validate` or codex surfaces a bug, replay against base/main before deciding it's PR-introduced. Pre-existing bugs are follow-up issues, not PR scope creep. Memory: `feedback_pr_scope_ab_classify_first`.
-- **Codex+DeepSeek convergence asymmetry** — codex converges in ~9 rounds, DeepSeek is asymptotic. Run codex to convergence, then ONE DeepSeek round. Memory: `codex_deepseek_convergence_asymmetry`.
+- **Codex vs DeepSeek review convergence** — codex converges in a small bounded number of rounds; DeepSeek is asymptotic (each round surfaces fresh nits). This is why `pr_validate`'s adversarial review step is `codex_review`, not the retired DeepSeek step. Run codex to convergence. Memory: `codex_deepseek_convergence_asymmetry`.
 - **Pre-existing pre-existing flake confirmation** — use a worktree, not `git stash`. The stash pattern leaves work stashed if pytest crashes mid-run.
 
 ## Tracked SOP improvements

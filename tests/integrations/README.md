@@ -67,7 +67,8 @@ the Muse note below).
 > real inference in this PR.
 
 Support ≡ a real integration test that boots the server + real model + real
-client flow, not just a YAML profile. See `workflow.md` W3 taxonomy §B.3.
+client flow, not just a YAML profile. The strict-xfail rules live in
+`conftest.py`.
 
 ### Pre-flight verdict — commercial CLI top-10 finalization
 
@@ -205,7 +206,7 @@ The PASS / XFAIL results below are from the 2026-07-06 serial pilot run on
 the 0.10.2 four-family matrix. The 0.11.0 Hy3 column is `xfail(strict=True)`
 across the board (Ultra-only — see the Hy3 note above); its always-on
 coverage is `test_hy3_offline.py`, not these live cells. Empty (🔲) cells
-will be filled by the 0.10.6 Phase 4 plumbing per `0.10-TODO.md`.
+have no live coverage yet.
 
 > **Muse column provenance (2026-08-10).** The Muse Glimmer column below
 > is from a real 30B-4bit boot on the M3 mini, not the 2026-07-06 pilot.
