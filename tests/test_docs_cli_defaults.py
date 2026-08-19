@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.cli import build_parser
+# vllm_mlx.cli transitively imports mlx, which only installs on Apple
+# Silicon — on the Linux validation runner this whole module skips (the
+# pin still runs on every macOS CI leg and locally).
+_cli = pytest.importorskip("vllm_mlx.cli", reason="requires mlx (Apple Silicon only)")
+build_parser = _cli.build_parser
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
