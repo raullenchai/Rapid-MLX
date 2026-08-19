@@ -19,6 +19,17 @@ final class AudioViewModel {
             case .textToSpeech: return "Text to Speech"
             }
         }
+
+        /// The AX identifier suffix, kept separate from ``label`` so the
+        /// harness never has to quote a control name: the golden flows address
+        /// controls by identifier as bare shell words, and the labels now carry
+        /// spaces ("Speech to Text").
+        var axName: String {
+            switch self {
+            case .speechToText: return "SpeechToText"
+            case .textToSpeech: return "TextToSpeech"
+            }
+        }
     }
 
     var mode: Mode = .speechToText

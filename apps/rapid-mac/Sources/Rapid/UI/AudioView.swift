@@ -151,7 +151,7 @@ struct AudioView: View {
                     .init(
                         value: $0,
                         title: $0.label,
-                        identifier: "Audio.Mode.\($0.label)"
+                        identifier: "Audio.Mode.\($0.axName)"
                     )
                 },
                 accessibilityLabel: "Audio mode"

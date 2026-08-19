@@ -11,8 +11,8 @@ AXApplication title="Rapid-MLX"
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXGroup id="Audio.Mode" desc="Audio mode" enabled=true
-            AXButton id="Audio.Mode.Speech" desc="Speech" enabled=true
-            AXButton id="Audio.Mode.Transcription" desc="Transcription" enabled=true
+            AXButton id="Audio.Mode.SpeechToText" desc="Speech to Text" enabled=true
+            AXButton id="Audio.Mode.TextToSpeech" desc="Text to Speech" enabled=true
           AXScrollArea
             AXHeading desc="Speech, Create spoken audio with a model and one of its built-in voices." enabled=true
             AXHeading desc="Text" enabled=true

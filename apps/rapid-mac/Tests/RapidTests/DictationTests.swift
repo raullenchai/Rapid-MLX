@@ -90,7 +90,7 @@ struct DictationTests {
         vocabulary.setActive("herdr", false)
         vocabulary.noteCorrection(to: "herdr")
 
-        let promoted = try? #require(vocabulary.terms.first)
+        let promoted = vocabulary.terms.first
         #expect(promoted?.text == "herdr")
         #expect(promoted?.isActive == true)
         #expect(promoted?.corrections == 1)
@@ -187,6 +187,38 @@ struct DictationTests {
         #expect(codes == [54, 61])   // kVK_RightCommand, kVK_RightOption
         #expect(!DictationHotkey.Trigger.allCases.contains { $0.keyCode == 55 })
         #expect(DictationHotkey.Trigger.rightCommand.label == "Right ⌘")
+    }
+
+    // MARK: - Audio mode
+
+    /// Speech to Text is the default because it is the mode people reach for
+    /// many times a day, and the golden flow now asserts the Audio tab opens
+    /// on it. Pinning it here says so in the cheap test rather than only in a
+    /// GUI journey that takes a build and a runner to fail.
+    @MainActor
+    @Test("Audio opens on Speech to Text, with Text to Speech second")
+    func audioModeDefault() {
+        #expect(AudioViewModel.Mode.allCases == [.speechToText, .textToSpeech])
+        let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
+        #expect(viewModel.mode == .speechToText)
+    }
+
+    /// The AX identifier is derived from `axName`, not from `label`, precisely
+    /// so it survives labels that contain spaces: the golden-flow harness
+    /// addresses controls as bare shell words (`press … Audio.Mode.SpeechToText`),
+    /// and a space would split the argument and make the control unreachable.
+    @MainActor
+    @Test("audio mode AX names are single shell words")
+    func audioModeIdentifiersAreShellSafe() {
+        for mode in AudioViewModel.Mode.allCases {
+            #expect(!mode.axName.contains(" "))
+            #expect(mode.axName.allSatisfy { $0.isLetter || $0.isNumber })
+        }
+        #expect(AudioViewModel.Mode.speechToText.axName == "SpeechToText")
+        #expect(AudioViewModel.Mode.textToSpeech.axName == "TextToSpeech")
+        // The labels are the human-facing strings and do carry spaces — which
+        // is the whole reason the two are separate.
+        #expect(AudioViewModel.Mode.speechToText.label == "Speech to Text")
     }
 
     // MARK: - Helpers
