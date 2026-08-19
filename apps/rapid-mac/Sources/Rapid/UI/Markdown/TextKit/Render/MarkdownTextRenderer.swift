@@ -298,6 +298,33 @@ final class MarkdownTextRenderer {
             .foregroundColor: options.textColor,
         ]
 
+        // Inline math becomes one attachment character. Falling through to the
+        // prose path when rasterising fails is deliberate: an unparseable body
+        // renders as the `$…$` the author typed, which is worse than a formula
+        // and much better than a blank.
+        if let latex = run.math,
+           let image = InlineMathImage.image(
+               latex: latex,
+               pointSize: options.textPointSize,
+               color: options.textColor
+           ) {
+            let attachment = InlineMathAttachment(
+                latex: latex, image: image, pointSize: options.textPointSize
+            )
+            let string = NSMutableAttributedString(attachment: attachment)
+            string.addAttributes(
+                [.paragraphStyle: paragraphStyle],
+                range: NSRange(location: 0, length: string.length)
+            )
+            if let link = run.link {
+                string.addAttribute(
+                    .link, value: link,
+                    range: NSRange(location: 0, length: string.length)
+                )
+            }
+            return string
+        }
+
         if run.isInlineCode {
             attributes[.font] = NSFont.monospacedSystemFont(
                 ofSize: options.textPointSize - 1, weight: .regular
