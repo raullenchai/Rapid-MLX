@@ -42,8 +42,6 @@ logger = logging.getLogger(__name__)
 _BYTES_PER_MB = 1024 * 1024
 _DEFAULT_MEMORY_PERCENT = 0.20  # 20% of available RAM
 _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
-_MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
-
 # #1100 codex round 6 (#3): replace-mode stage-then-swap transiently holds BOTH
 # the existing live cache AND the fully-staged new blob until the atomic swap
 # (the DELIBERATE cost of the "corrupt source leaves existing cache intact"
@@ -109,7 +107,6 @@ _TOKENS_FORMAT_VERSION_IN_INDEX = 3  # bumped from 2
 # wire-format width is the only sound way to make tokens.bin portable
 # across the heterogeneous fleet (codex r10-D systematic fix). Writer
 # uses struct.pack into bytes; reader uses struct.unpack_from a slice.
-_TOKEN_STRUCT_FMT = "<i"
 _TOKEN_BYTES = 4
 
 # mlx-lm's prompt-cache serializer forwards the flattened cache state directly

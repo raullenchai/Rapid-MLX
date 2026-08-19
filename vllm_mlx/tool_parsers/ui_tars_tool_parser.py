@@ -375,35 +375,6 @@ def has_ui_tars_system_prompt(messages: list) -> bool:
     return False
 
 
-# Verbs UI-TARS may emit. The set is a superset of the desktop
-# (``COMPUTER_USE_DOUBAO``) and mobile (``MOBILE_USE_DOUBAO``) action
-# spaces in ``codes/ui_tars/prompt.py``. Verbs not in this set are still
-# parsed and surfaced verbatim — we intentionally don't gate on the list
-# so a future UI-TARS revision that adds a verb won't silently drop calls
-# during the upgrade window.
-_KNOWN_VERBS: frozenset[str] = frozenset(
-    {
-        # Desktop / Computer-Use
-        "click",
-        "left_double",
-        "right_single",
-        "drag",
-        "hotkey",
-        "type",
-        "scroll",
-        "wait",
-        "finished",
-        "done",
-        "call_user",
-        # Mobile additions
-        "long_press",
-        "open_app",
-        "press_home",
-        "press_back",
-    }
-)
-
-
 # Action line: ``Action: verb(kwargs)`` — verb identifier, parenthesized
 # args body. Body may span newlines (e.g. ``type(content='line1\nline2')``)
 # but must end on a balanced ``)``. We match minimally and use a manual
@@ -1139,14 +1110,6 @@ def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
 # Computer-Use specs don't share a drag wire format, so the single
 # key-mapping pass below has lane-specific drag handling. Centralized
 # here so the two adapters can't drift on key naming.
-
-# Single-point key rename (shared across Anthropic + Responses). The
-# UI-TARS-native ``point`` → spec ``coordinate``. ``start_point`` /
-# ``end_point`` are intentionally OMITTED from this map because the
-# two-point handling is lane-aware (see ``translate_to_*`` helpers).
-_UI_TARS_TO_SPEC_KEY_MAP: dict[str, str] = {
-    "point": "coordinate",
-}
 
 
 def translate_to_anthropic_spec_keys(args: dict[str, Any]) -> dict[str, Any]:
