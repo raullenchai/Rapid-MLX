@@ -362,6 +362,127 @@ final class TelemetryTests {
         #expect(p.arch == "arm64" || p.arch == "x86_64" || p.arch == "unknown")
     }
 
+    // MARK: - Machine identity (chip + bucketed memory)
+
+    @Test("currentPlatform now reports a chip brand so desktop machines appear in the per-chip breakdown")
+    func platformCarriesChip() {
+        let p = TelemetryClient.currentPlatform()
+        // Every CI + dev host this runs on is a real Mac, so the sysctl
+        // key resolves — the whole point of this change is that the
+        // field is populated (was nil/absent before) so desktop
+        // machines stop being invisible next to CLI ones.
+        let chip = try! #require(p.chip)
+        #expect(!chip.isEmpty)
+        // Apple Silicon brand strings start with "Apple" (e.g.
+        // "Apple M4 Max"); on the arm64 CI fleet this pins that the
+        // value is the real brand, not the generic arch fallback.
+        #if arch(arm64)
+        #expect(chip.hasPrefix("Apple"))
+        #endif
+    }
+
+    @Test("currentPlatform chip matches the raw sysctl brand string the engine also reads")
+    func platformChipMatchesSysctl() {
+        #if arch(x86_64)
+        // Do not transmit Intel's detailed SKU/frequency-bearing brand string.
+        #expect(TelemetryClient.chipBrand() == "Intel")
+        #else
+        // Read the same key the engine shells out to
+        // (`sysctl -n machdep.cpu.brand_string`) and confirm the Swift
+        // reader returns the byte-identical, whitespace-trimmed value —
+        // so desktop + CLI bucket into the same analytics label.
+        var size = 0
+        _ = sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var buffer = [CChar](repeating: 0, count: size)
+        _ = sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let raw = String(bytes: bytes, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(TelemetryClient.chipBrand() == raw)
+        #endif
+    }
+
+    @Test("currentPlatform reports bucketed memory matching this host's rounded physical RAM")
+    func platformCarriesBucketedMemory() {
+        let p = TelemetryClient.currentPlatform()
+        let mem = try! #require(p.memory_gb)
+        // Bucket is the rounded physical RAM — strictly positive on any
+        // real machine, and it must equal the bucket of the raw byte
+        // count (no raw bytes ever leave the process).
+        #expect(mem > 0)
+        let expected = TelemetryClient.bucketMemoryGB(
+            ProcessInfo.processInfo.physicalMemory
+        )
+        #expect(mem == expected)
+    }
+
+    @Test("bucketMemoryGB rounds to coarse GB tiers exactly like the engine's bucket_memory_gb")
+    func memoryBucketingMatchesEngineTiers() {
+        let giB: UInt64 = 1024 * 1024 * 1024
+        // Whole-GiB Mac configs map to their integer GB (the common case).
+        #expect(TelemetryClient.bucketMemoryGB(8 * giB) == 8)
+        #expect(TelemetryClient.bucketMemoryGB(16 * giB) == 16)
+        #expect(TelemetryClient.bucketMemoryGB(24 * giB) == 24)
+        #expect(TelemetryClient.bucketMemoryGB(64 * giB) == 64)
+        #expect(TelemetryClient.bucketMemoryGB(128 * giB) == 128)
+        // Non-positive clamps to 0 (mirrors the engine's `<= 0` guard).
+        #expect(TelemetryClient.bucketMemoryGB(0) == 0)
+        // Sub-GB rounds to nearest (0.4 GiB → 0, 0.6 GiB → 1).
+        #expect(TelemetryClient.bucketMemoryGB(UInt64(0.4 * Double(giB))) == 0)
+        #expect(TelemetryClient.bucketMemoryGB(UInt64(0.6 * Double(giB))) == 1)
+        // Round-half-to-even: 1.5 → 2, 2.5 → 2 — mirrors Python round().
+        #expect(TelemetryClient.bucketMemoryGB(UInt64(1.5 * Double(giB))) == 2)
+        #expect(TelemetryClient.bucketMemoryGB(UInt64(2.5 * Double(giB))) == 2)
+    }
+
+    @Test("session_start encodes chip + memory_gb when present (parity with the engine platform shape)")
+    func platformEncodesMachineFields() throws {
+        let event = TelemetryEvent.sessionStart(
+            version: "0.5.12",
+            platform: TelemetryEvent.Platform(
+                app: "rapid-desktop",
+                os: "macos",
+                os_version: "26.0.0",
+                arch: "arm64",
+                chip: "Apple M4 Max",
+                memory_gb: 48
+            )
+        )
+        let data = try JSONEncoder().encode(event)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let platform = try #require(json["platform"] as? [String: Any])
+        #expect(platform["app"] as? String == "rapid-desktop")
+        #expect(platform["chip"] as? String == "Apple M4 Max")
+        #expect(platform["memory_gb"] as? Int == 48)
+    }
+
+    @Test("chip + memory_gb are omitted on the wire when nil so the addition is backward-compatible")
+    func platformOmitsMachineFieldsWhenNil() throws {
+        // A build that couldn't read the brand (chip == nil) must not
+        // emit a null/placeholder key — the field is simply absent, so
+        // an older worker sees the exact legacy 4-field platform shape.
+        let event = TelemetryEvent.sessionStart(
+            version: "0.5.12",
+            platform: TelemetryEvent.Platform(
+                app: "rapid-desktop",
+                os: "macos",
+                os_version: "26.0.0",
+                arch: "arm64"
+            )
+        )
+        let data = try JSONEncoder().encode(event)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let platform = try #require(json["platform"] as? [String: Any])
+        #expect(platform["chip"] == nil)
+        #expect(platform["memory_gb"] == nil)
+        // The discriminator the CLI-vs-App split must key off stays set.
+        #expect(platform["app"] as? String == "rapid-desktop")
+    }
+
     // MARK: - Crash marker directory
 
     @Test("crash marker directory is created on demand under Application Support")

@@ -1,9 +1,12 @@
 # Tier 0 + Pinned Prefix Cache Implementation Plan
 
-**Status**: Planned
+**Status**: Done (statused 2026-08-18 — `gc_control` shipped in
+`vllm_mlx/config/server_config.py`, prefix pinning shipped as
+`pin_prefix()` / `unpin_prefix()` in `vllm_mlx/prefix_cache.py`)
 **Target**: MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB (serving OpenClaw)
 **Branch**: `feat-minimax-parser`
-**Baseline**: See [README benchmark section](../../README.md#baseline-benchmark--minimax-m25-on-m3-ultra)
+**Baseline**: MiniMax-M2.5-4bit row in [evals/SCORECARD.md](../../evals/SCORECARD.md)
+(the README benchmark section this plan originally linked has since been removed)
 
 ## Context
 

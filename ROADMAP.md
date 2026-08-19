@@ -1,5 +1,11 @@
 # Rapid-MLX Optimization Roadmap
 
+> **Historical snapshot, March 2026** — this document is no longer
+> maintained. It is preserved with light annotations marking items that
+> have since shipped (each tagged "shipped"); see the
+> [release notes](docs/release-notes/) for the authoritative record of
+> what has shipped since.
+
 > Goal: For every popular model on Apple Silicon, Rapid-MLX should be the fastest engine — **zero configuration required**. Users pick a model, we auto-apply the best optimizations.
 
 ## Strategy
@@ -21,13 +27,13 @@
 | **KV Cache Quantization** | 1.0-1.3x + 4x memory | Shipped | `--kv-cache-quantization`. Quantizes prefix cache entries. |
 | **MTP (Qwen3-Next)** | 1.2-2.1x decode | Shipped | BatchedEngine with `--enable-mtp`. |
 | **Tool Call Recovery** | N/A (reliability) | Shipped | 17 parsers, auto-recovery. |
+| **Standard Speculative Decode** | 1.5-2.3x decode | Shipped | `--speculative-config` (shipped after this snapshot). |
 
 ### To Implement
 
 | Priority | Technique | Expected Speedup | Effort | Applicable Models |
 |----------|-----------|-----------------|--------|-------------------|
 | **P1** | MTP optimistic mode | 1.4x decode | Low | Qwen3-Next, Qwen3.5, DeepSeek-V3, Nemotron |
-| **P1** | Standard Speculative Decode | 1.5-2.3x decode | Medium | Any model with small draft variant |
 | **P1** | Auto-Optimization per model | N/A | Medium | All models — auto-detect and apply best technique |
 | **P2** | EAGLE-3 on Metal | 3-6.5x decode | High | Qwen3-32B, Qwen3-8B, GPT-OSS, Llama-3 |
 | **P3** | ReDrafter | 1.4-1.5x | Medium | Needs training heads per model (Apple has MLX code) |
@@ -177,7 +183,7 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 - **llama.cpp**: Can't load Qwen3.5 (rope.dimension_sections mismatch); Phi-4 works at 55 tok/s with 80% tool calls
 - **Llama-4-Scout**: Failed with dimension mismatch (mlx-lm compatibility)
 - **GLM-4.7-Flash**: Loaded from external SSD, 60 tok/s, 100% tool calling
-- Created model profiles: `memory/knowledge/model_profiles.md`
+- Created per-model profiles (private working notes, not in this repo)
 - Updated README with multi-model comparison table
 
 ### 2026-03-14: Extended benchmark sweep (6 more models)

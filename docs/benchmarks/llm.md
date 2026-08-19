@@ -1,5 +1,7 @@
 # LLM Benchmarks
 
+> **Legacy measurements** (noted 2026-08-18): the tables below were collected in early 2026 against a pre-rename model set and have not been re-run since.
+
 ## Running LLM Benchmarks
 
 ```bash
