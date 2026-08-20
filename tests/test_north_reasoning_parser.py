@@ -263,6 +263,32 @@ class TestStreaming:
             if msg and msg.content:
                 assert "<|" not in msg.content
 
+    def test_streaming_split_end_thinking_marker(self, parser):
+        # <|END_THINKING|> split across deltas must not leak marker bytes
+        # into reasoning nor swallow the answer (codex r2 BLOCKING #1).
+        reasoning, content = _stream(
+            parser,
+            ["cot<", "|END_THINKING|>", START_TEXT, "answer", END_TEXT],
+        )
+        assert reasoning == "cot"
+        assert content == "answer"
+
+    def test_streaming_spill_before_start_text(self, parser):
+        # Channel spill before <|START_TEXT|> with no thinking closer:
+        # mirror of the non-streaming ("spill", "answer") split (codex r2
+        # BLOCKING #2).
+        reasoning, content = _stream(
+            parser,
+            ["spill", START_TEXT, "answer", END_TEXT],
+        )
+        assert reasoning == "spill"
+        assert content == "answer"
+
+    def test_implicit_reasoning_until_close_is_set(self, parser):
+        # North templates prime thinking unconditionally — same contract
+        # pair as DeepSeek-R1-Distill (codex r2 BLOCKING #3).
+        assert parser.implicit_reasoning_until_close is True
+
     def test_streaming_direct_answer_shape(self, parser):
         # No thinking block at all: <|START_TEXT|> arrives first (split
         # across deltas) — mirror of the non-streaming direct-answer
