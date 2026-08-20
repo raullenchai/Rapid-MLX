@@ -58,10 +58,70 @@ enum SVGPreview {
         // Prose or source that merely mentions `<svg` is not a document. The
         // document has to *open* with a tag — an XML prolog, comment or
         // doctype all satisfy that, a `let markup = "…"` does not.
-        guard code.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") else {
+        guard code.unicodeScalars.first(where: { !$0.properties.isWhitespace })?.value == 60 else {
             return false
         }
+        // The lexer is linear, so do not run it for every token in a growing
+        // stream. A normal document is only eligible when its final non-space
+        // bytes are `</svg>`; the root-only form is checked from the front.
+        guard hasClosingRootSuffix(code) || isSelfClosingRoot(code) else { return false }
         return hasCompleteSVGRoot(in: code)
+    }
+
+    private nonisolated static func hasClosingRootSuffix(_ code: String) -> Bool {
+        let tail = code.utf8.reversed().drop(while: isASCIIWhitespace).prefix(6).reversed()
+        guard tail.count == 6 else { return false }
+        return zip(tail, Array("</svg>".utf8)).allSatisfy {
+            lowercasedASCII($0.0) == $0.1
+        }
+    }
+
+    private nonisolated static func isSelfClosingRoot(_ code: String) -> Bool {
+        let bytes = code.utf8
+        var index = bytes.startIndex
+        while index < bytes.endIndex, isASCIIWhitespace(bytes[index]) {
+            bytes.formIndex(after: &index)
+        }
+        let opening = Array("<svg".utf8)
+        for expected in opening {
+            guard index < bytes.endIndex,
+                  lowercasedASCII(bytes[index]) == expected else { return false }
+            bytes.formIndex(after: &index)
+        }
+        guard index < bytes.endIndex, isNameBoundary(bytes[index]) else { return false }
+
+        var quote: UInt8?
+        var previousNonSpace: UInt8?
+        while index < bytes.endIndex {
+            let byte = bytes[index]
+            if let currentQuote = quote {
+                if byte == currentQuote { quote = nil }
+            } else if byte == 34 || byte == 39 {
+                quote = byte
+            } else if byte == 62 {
+                bytes.formIndex(after: &index)
+                while index < bytes.endIndex, isASCIIWhitespace(bytes[index]) {
+                    bytes.formIndex(after: &index)
+                }
+                return previousNonSpace == 47 && index == bytes.endIndex
+            } else if !isASCIIWhitespace(byte) {
+                previousNonSpace = byte
+            }
+            bytes.formIndex(after: &index)
+        }
+        return false
+    }
+
+    private nonisolated static func lowercasedASCII(_ byte: UInt8) -> UInt8 {
+        (65...90).contains(byte) ? byte + 32 : byte
+    }
+
+    private nonisolated static func isASCIIWhitespace(_ byte: UInt8) -> Bool {
+        byte == 9 || byte == 10 || byte == 13 || byte == 32
+    }
+
+    private nonisolated static func isNameBoundary(_ byte: UInt8) -> Bool {
+        byte == 47 || byte == 62 || isASCIIWhitespace(byte)
     }
 
     /// Avoid the expensive parse until the streamed root is whole. This tiny
@@ -77,14 +137,6 @@ enum SVGPreview {
         func starts(with token: [UInt8], at offset: Int) -> Bool {
             offset + token.count <= bytes.count
                 && bytes[offset..<(offset + token.count)].elementsEqual(token)
-        }
-
-        func lowercasedASCII(_ byte: UInt8) -> UInt8 {
-            (65...90).contains(byte) ? byte + 32 : byte
-        }
-
-        func isNameBoundary(_ byte: UInt8) -> Bool {
-            byte == 47 || byte == 62 || byte == 9 || byte == 10 || byte == 13 || byte == 32
         }
 
         while index < bytes.count {
@@ -150,7 +202,9 @@ enum SVGPreview {
                         tail -= 1
                     }
                     if tail > nameStart, bytes[tail - 1] == 47 {
-                        return svgDepth == 0
+                        if svgDepth == 0 { return true }
+                        index = end + 1
+                        continue
                     }
                     svgDepth += 1
                 }

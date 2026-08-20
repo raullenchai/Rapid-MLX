@@ -82,6 +82,11 @@ struct SVGPreviewTests {
         #expect(SVGPreview.looksLikeSVG(code: code, language: "svg"))
     }
 
+    @Test("A self-closing nested SVG does not hide the outer closing root")
+    func nestedSelfClosingSVGIsAccepted() {
+        #expect(SVGPreview.looksLikeSVG(code: "<svg><svg/></svg>", language: "svg"))
+    }
+
     @Test("Nothing to preview", arguments: [
         "", "   ", "print(\"hello\")", "<html><body>hi</body></html>",
     ])
@@ -218,6 +223,8 @@ struct AppKitSVGAssumptionTests {
     func remoteReferenceIsNotFetched() async throws {
         let probe = try #require(LocalRequestProbe())
         defer { probe.stop() }
+        #expect(probe.recordControlConnection(), "the listener did not observe its positive control")
+        let baseline = probe.requestCount
         let svg = """
             <svg xmlns="http://www.w3.org/2000/svg" \
             xmlns:xlink="http://www.w3.org/1999/xlink" \
@@ -236,12 +243,11 @@ struct AppKitSVGAssumptionTests {
         image.draw(in: NSRect(x: 0, y: 0, width: 100, height: 100))
         NSGraphicsContext.restoreGraphicsState()
 
-        // `newConnectionHandler` fires asynchronously on a background queue,
-        // so reading the count on the next line is a race the leaking case
-        // wins: measured against a renderer that really does fetch, the
-        // immediate read is 0 and the settled read is 3. Wait for it.
-        try await Task.sleep(for: .milliseconds(600))
-        #expect(probe.requestCount == 0, "the SVG renderer reached the network")
+        // A second known connection is a deterministic barrier through the
+        // listener after drawing. Exactly one new request must be the control;
+        // any renderer request makes the delta larger.
+        #expect(probe.recordControlConnection(), "the listener lost its control connection")
+        #expect(probe.requestCount == baseline + 1, "the SVG renderer reached the network")
     }
 }
 
@@ -269,6 +275,7 @@ final class LocalRequestProbe: @unchecked Sendable {
     /// that failure loud rather than silent.
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
+        private let connection = DispatchSemaphore(value: 0)
         private var count = 0
         var value: Int {
             lock.lock()
@@ -279,7 +286,33 @@ final class LocalRequestProbe: @unchecked Sendable {
             lock.lock()
             count += 1
             lock.unlock()
+            connection.signal()
         }
+        func wait() -> Bool { connection.wait(timeout: .now() + 2) == .success }
+    }
+
+    /// Make a known loopback connection and wait until the listener handler
+    /// has counted it. This proves the negative assertion is observing a live
+    /// listener and provides an ordering barrier after the image draw.
+    func recordControlConnection() -> Bool {
+        let ready = DispatchSemaphore(value: 0)
+        let connection = NWConnection(
+            host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!, using: .tcp
+        )
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready, .failed: ready.signal()
+            default: break
+            }
+        }
+        connection.start(queue: .global())
+        guard ready.wait(timeout: .now() + 2) == .success else {
+            connection.cancel()
+            return false
+        }
+        let observed = counter.wait()
+        connection.cancel()
+        return observed
     }
 
     init?() {
