@@ -46,6 +46,8 @@ final class MarkdownCodeBlockView: NSView {
     private func setUpHeader() {
         headerLabel.font = .systemFont(ofSize: 11, weight: .medium)
         headerLabel.textColor = .secondaryLabelColor
+        headerLabel.lineBreakMode = .byTruncatingTail
+        headerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         headerLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(headerLabel)
 
@@ -75,6 +77,9 @@ final class MarkdownCodeBlockView: NSView {
             previewButton.trailingAnchor.constraint(
                 equalTo: copyButton.leadingAnchor, constant: -RapidTheme.Space.md),
             previewButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
+            headerLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: previewButton.leadingAnchor,
+                constant: -RapidTheme.Space.md),
             headerLabel.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: options.codeHeaderInsets.leading),
             headerLabel.topAnchor.constraint(
@@ -223,18 +228,15 @@ final class MarkdownCodeBlockView: NSView {
             x: options.codeInsets.leading,
             y: headerHeight + options.codeInsets.top
         )
-        // `respectFlipped: true` is not optional here. This view is
-        // `isFlipped`, and the short `draw(in:)` overload does not compensate
-        // — it paints the image bottom-up into a top-down coordinate system,
-        // so every preview came out upside down and mirrored. It shipped that
-        // way in the SVG preview, where a roughly symmetrical test document
-        // hid it; a flowchart with text made it obvious immediately.
+        // The image must retain its own bottom-up orientation while AppKit
+        // maps the destination into this flipped view. Asking NSImage to also
+        // respect the flipped context applies the flip twice.
         previewImage.draw(
             in: CGRect(origin: origin, size: size),
             from: .zero,
             operation: .sourceOver,
             fraction: 1,
-            respectFlipped: true,
+            respectFlipped: false,
             hints: nil
         )
         return true

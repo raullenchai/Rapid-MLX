@@ -436,7 +436,9 @@ struct PreviewOrientationTests {
             firstRow { $0.blueComponent > 0.7 && $0.redComponent < 0.3 },
             "no blue band found — the preview did not draw"
         )
-        #expect(red < blue, "the preview is upside down: blue (bottom of the document) drew above red")
+        // Bitmap rows count from the bottom even though the source view is
+        // flipped, so the visually higher red band has the larger row index.
+        #expect(red > blue, "the preview is upside down: blue (bottom of the document) drew above red")
     }
 }
 
