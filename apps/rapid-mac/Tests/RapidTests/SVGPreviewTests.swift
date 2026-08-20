@@ -51,6 +51,22 @@ struct SVGPreviewTests {
         #expect(SVGPreview.looksLikeSVG(code: svg, language: "python"))
     }
 
+    @Test("A self-closing SVG root is complete enough to attempt")
+    func selfClosingRootIsPreviewable() {
+        #expect(SVGPreview.looksLikeSVG(code: #"<svg viewBox="0 0 10 10"/>"#, language: nil))
+    }
+
+    /// Once `<svg` arrives, streaming can flush hundreds of times before the
+    /// closing root. None of those partial states should synchronously invoke
+    /// AppKit's parser on the main thread.
+    @Test("An incomplete SVG is not ready for parsing")
+    func incompleteRootIsNotPreviewable() {
+        #expect(!SVGPreview.looksLikeSVG(
+            code: #"<svg viewBox="0 0 10 10"><path d="M0 0""#,
+            language: "svg"
+        ))
+    }
+
     @Test("Nothing to preview", arguments: [
         "", "   ", "print(\"hello\")", "<html><body>hi</body></html>",
     ])

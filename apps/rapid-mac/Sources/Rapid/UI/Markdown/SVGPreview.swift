@@ -39,9 +39,9 @@ enum SVGPreview {
 
     /// Is this code block worth attempting a preview for?
     ///
-    /// A cheap pre-filter, not a decision: ``image(from:)`` is the authority,
-    /// and this only exists so a plain Swift block does not pay for a parse on
-    /// every streaming flush. Two conditions, both about the content.
+    /// A cheap pre-filter, not a decision: ``image(from:)`` is the authority.
+    /// Besides rejecting ordinary code, it waits for a likely closing root so
+    /// an incomplete streamed document is not reparsed on every token flush.
     ///
     /// The language tag is deliberately ignored. Models label SVG as `svg`,
     /// `xml`, `html`, or nothing at all, and an allowlist was tried and
@@ -52,11 +52,43 @@ enum SVGPreview {
     nonisolated static func looksLikeSVG(code: String, language: String?) -> Bool {
         guard code.utf8.count <= maximumSourceBytes else { return false }
         let head = code.prefix(2_048)
-        guard head.range(of: "<svg", options: .caseInsensitive) != nil else { return false }
+        guard let svgStart = head.range(of: "<svg", options: .caseInsensitive)?.lowerBound else {
+            return false
+        }
         // Prose or source that merely mentions `<svg` is not a document. The
         // document has to *open* with a tag — an XML prolog, comment or
         // doctype all satisfy that, a `let markup = "…"` does not.
-        return code.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<")
+        guard code.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") else {
+            return false
+        }
+        return hasLikelyClosingRoot(in: code, startingAt: svgStart)
+    }
+
+    /// Avoid the expensive parse until the streamed root is plausibly whole.
+    /// This is intentionally only a heuristic; ``NSImage`` still decides
+    /// whether the complete-looking source is valid SVG.
+    private nonisolated static func hasLikelyClosingRoot(
+        in code: String, startingAt svgStart: String.Index
+    ) -> Bool {
+        if let tagEnd = code[svgStart...].firstIndex(of: ">") {
+            let openingTag = code[svgStart..<tagEnd]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if openingTag.hasSuffix("/") { return true }
+        }
+
+        var searchStart = svgStart
+        while searchStart < code.endIndex,
+              let closing = code.range(
+                  of: "</svg",
+                  options: .caseInsensitive,
+                  range: searchStart..<code.endIndex
+              ) {
+            guard closing.upperBound < code.endIndex else { return false }
+            let next = code[closing.upperBound]
+            if next == ">" || next.isWhitespace { return true }
+            searchStart = closing.upperBound
+        }
+        return false
     }
 
     /// The rendered document, or nil when it will not parse.
