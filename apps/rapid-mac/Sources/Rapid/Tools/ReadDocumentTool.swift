@@ -42,6 +42,22 @@ enum ReadDocumentTool {
     /// Maximum `grep` hits reported in one call. Bounds the result size when a
     /// pattern matches on nearly every line.
     static let maxGrepMatches = 10
+    /// Longest `grep` pattern accepted.
+    ///
+    /// A regex is code the model supplies and this process runs over as much
+    /// as 20,000,000 characters. Pattern length is the one cheap proxy for how
+    /// much nesting and alternation that code can contain, so it is capped
+    /// before compilation rather than after the damage.
+    static let maxGrepPatternLength = 200
+    /// Wall-clock ceiling on a single `grep` scan.
+    ///
+    /// The match LIMIT alone does not bound the work: a pattern that matches
+    /// nothing scans the whole extract regardless, and one that backtracks
+    /// (`(a+)+b`) can spend unbounded time inside a single match attempt.
+    /// NSRegularExpression's enumeration block is the only place this code
+    /// regains control, so the deadline is checked there and a scan that
+    /// overruns returns what it found instead of running to completion.
+    static let grepTimeBudget: TimeInterval = 2.0
     /// Token ceiling for an outline response. Roughly a third of a page slice:
     /// an outline is a map, and one that fills the context defeats its purpose.
     static let outlineTokenBudget = 2_000
@@ -308,12 +324,46 @@ enum ReadDocumentTool {
 
     // MARK: - Grep
 
+    /// Search the extract for `pattern`, returning at most
+    /// ``maxGrepMatches`` passages.
+    ///
+    /// ## Why this enumerates instead of collecting
+    ///
+    /// The obvious spelling, ``NSRegularExpression/matches(in:options:range:)``
+    /// followed by ``prefix(maxGrepMatches)``, allocates an
+    /// `NSTextCheckingResult` for EVERY match before ten are kept. The pattern
+    /// is model-supplied and the extract may hold 20,000,000 characters, so
+    /// `.` alone would materialize twenty million objects to return ten
+    /// passages — a resource exhaustion any document able to reach the model
+    /// can trigger. Enumeration with an early `stop` never holds more than the
+    /// current match.
+    ///
+    /// ## Why a deadline as well as a match cap
+    ///
+    /// The cap bounds OUTPUT, not WORK. A pattern that matches nothing still
+    /// scans the entire extract, and one that backtracks (`(a+)+$`) can spend
+    /// unbounded time inside a single match attempt without ever producing a
+    /// result to count. ``.reportProgress`` makes the enumeration block fire
+    /// periodically DURING such an attempt with a nil result, which is the
+    /// only point at which this code can regain control; checking the deadline
+    /// there bounds both shapes. ``maxGrepPatternLength`` caps how much
+    /// nesting the pattern can express in the first place.
+    ///
+    /// A truncated scan is reported as such rather than presented as a
+    /// complete match count, so the model is never told a document contains
+    /// exactly the number of hits that happened to fit in the budget.
     static func grepResult(
         tool: String,
         id: String,
         entry: DocumentContentCache.Entry,
         pattern: String
     ) -> ToolCallResult {
+        guard pattern.count <= maxGrepPatternLength else {
+            return err(
+                tool,
+                "grep pattern is too long (\(pattern.count) characters, limit \(maxGrepPatternLength)). Search for a distinctive phrase instead of an elaborate expression."
+            )
+        }
         let regex: NSRegularExpression
         do {
             regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
@@ -327,27 +377,32 @@ enum ReadDocumentTool {
         // cannot produce an offset the caller can't reuse.
         let text = entry.text
         let ns = text as NSString
-        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: ns.length))
-        guard !matches.isEmpty else {
-            return ToolCallResult(
-                toolCallID: "",
-                content: jsonString([
-                    "document_id": id,
-                    "filename": entry.filename,
-                    "grep": pattern,
-                    "match_count": 0,
-                    "total_chars": entry.count,
-                    "note": "No match for '\(pattern)' in this document. Try a broader pattern, or read sequentially with offset=0.",
-                ]),
-                isError: false
-            )
-        }
-
+        let deadline = Date().addingTimeInterval(grepTimeBudget)
         var passages: [[String: Any]] = []
         var budgetLeft = charBudget
-        for match in matches.prefix(maxGrepMatches) {
-            guard budgetLeft > 0 else { break }
-            guard let range = Range(match.range, in: text) else { continue }
+        var searchComplete = true
+
+        regex.enumerateMatches(
+            in: text,
+            options: [.reportProgress],
+            range: NSRange(location: 0, length: ns.length)
+        ) { match, _, stop in
+            // Fires with a nil match while a single attempt is still running.
+            // Both paths must honour the deadline or the interruption point is
+            // only reachable by patterns that are already cheap.
+            if Date() >= deadline {
+                searchComplete = false
+                stop.pointee = true
+                return
+            }
+            guard let match else { return }
+            guard passages.count < maxGrepMatches, budgetLeft > 0 else {
+                searchComplete = false
+                stop.pointee = true
+                return
+            }
+            guard let range = Range(match.range, in: text) else { return }
+
             let lower = text.index(
                 range.lowerBound,
                 offsetBy: -grepContextRadius,
@@ -362,25 +417,46 @@ enum ReadDocumentTool {
             if passage.count > budgetLeft { passage = String(passage.prefix(budgetLeft)) }
             budgetLeft -= passage.count
             passages.append([
-                "offset": text.distance(from: text.startIndex, to: lower),
+                // Checkpoint-based rather than `distance(from: startIndex)`:
+                // the linear spelling would walk the whole prefix per hit.
+                "offset": entry.characterOffset(of: lower),
                 "match": String(text[range]),
                 "text": passage,
             ])
+        }
+
+        guard !passages.isEmpty else {
+            var payload: [String: Any] = [
+                "document_id": id,
+                "filename": entry.filename,
+                "grep": pattern,
+                "match_count": 0,
+                "search_complete": searchComplete,
+                "total_chars": entry.count,
+            ]
+            payload["note"] = searchComplete
+                ? "No match for '\(pattern)' in this document. Try a broader pattern, or read sequentially with offset=0."
+                : "Search for '\(pattern)' was stopped after \(Int(grepTimeBudget))s without finding a match — the pattern is too expensive to run over this document. Try a plain phrase instead of an elaborate expression."
+            return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
         }
 
         var payload: [String: Any] = [
             "document_id": id,
             "filename": entry.filename,
             "grep": pattern,
-            "match_count": matches.count,
+            "match_count": passages.count,
+            "search_complete": searchComplete,
             "passages": passages,
             "total_chars": entry.count,
         ]
         if let pages = entry.pageCount { payload["total_pages"] = pages }
-        if matches.count > passages.count {
-            payload["note"] = "Showing \(passages.count) of \(matches.count) matches. Narrow the pattern, or use the 'offset' of a passage to read around it sequentially."
-        } else {
+        if searchComplete {
             payload["note"] = "Each passage includes surrounding context. Use a passage 'offset' with read_document to read forward from there."
+        } else {
+            // "at least": the scan stopped early, so the true total is unknown
+            // and reporting `passages.count` as THE count would be a claim this
+            // search never established.
+            payload["note"] = "Showing the first \(passages.count) matches; the document contains at least that many and the search stopped before reaching the end. Narrow the pattern, or use the 'offset' of a passage to read around it sequentially."
         }
         return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
     }

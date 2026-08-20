@@ -213,6 +213,108 @@ struct ReadDocumentToolTests {
         #expect(passages.count <= ReadDocumentTool.maxGrepMatches)
         let emitted = passages.reduce(0) { $0 + (($1["text"] as? String)?.count ?? 0) }
         #expect(emitted <= ReadDocumentTool.charBudget)
+        // The scan stopped at the cap, so the count is a floor, not a total.
+        #expect(json["search_complete"] as? Bool == false)
+        #expect((json["note"] as? String)?.contains("at least") == true)
+    }
+
+    // MARK: - Adversarial grep
+    //
+    // `grep` runs a MODEL-SUPPLIED regular expression over an extract that may
+    // hold ``ChatFileAttachment/maxExtractedCharacters``. Everything below is
+    // about that combination: the pattern is untrusted input, the corpus is at
+    // the size limit, and a document can carry an instruction telling the model
+    // which pattern to send. These are resource bounds, not correctness nits.
+
+    /// The largest extract the app will ever hold, filled with distinct lines
+    /// so a pattern cannot be answered from a shared prefix.
+    private func maximumSizeText() -> String {
+        // Built by repeating a large pre-sized block rather than appending in a
+        // `while text.count < limit` loop: `String.count` walks the whole string
+        // every iteration, which makes the obvious spelling quadratic and hangs
+        // the test long before it can assert anything about grep.
+        var block = ""
+        for line in 0..<10_000 {
+            block += "line \(line) of the maximum size document\n"
+        }
+        let blockLength = block.count
+        let repeats = ChatFileAttachment.maxExtractedCharacters / blockLength + 1
+        return String(
+            String(repeating: block, count: repeats)
+                .prefix(ChatFileAttachment.maxExtractedCharacters)
+        )
+    }
+
+    @Test("A match-everything pattern over a maximum-size document stays bounded")
+    func grepDoesNotMaterializeEveryMatch() async throws {
+        // The regression: `matches(in:)` allocated an NSTextCheckingResult for
+        // EVERY hit before ten were kept, so '.' over a 20,000,000-character
+        // extract meant twenty million objects to return ten passages — a
+        // locally triggerable memory/CPU exhaustion. Enumeration with an early
+        // stop must finish this in the time it takes to find ten matches, not
+        // the time it takes to scan the document.
+        let cache = freshCache()
+        let id = store(maximumSizeText(), in: cache)
+
+        let started = Date()
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "."], cache: cache)
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        #expect(passages.count <= ReadDocumentTool.maxGrepMatches)
+        // Generous next to the seconds a full materialization takes, but far
+        // below it — this fails loudly if the early stop is ever removed.
+        #expect(elapsed < ReadDocumentTool.grepTimeBudget * 2)
+    }
+
+    @Test("A backtracking pattern is abandoned at the time budget, not run to completion")
+    func grepStopsCatastrophicBacktracking() async throws {
+        // The match cap alone does not bound WORK: this pattern produces no
+        // match at all, so nothing is ever counted, and a naive engine spends
+        // exponential time inside one attempt. `.reportProgress` is the only
+        // point at which this code regains control mid-attempt.
+        let cache = freshCache()
+        let id = store(String(repeating: "a", count: 40_000) + "\n", in: cache)
+
+        let started = Date()
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "(a+)+b"], cache: cache)
+        )
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < ReadDocumentTool.grepTimeBudget * 3)
+        // Whatever it found, it must not claim the document was fully searched.
+        if json["search_complete"] as? Bool == false {
+            #expect((json["note"] as? String)?.contains("stopped") == true)
+        }
+    }
+
+    @Test("An over-long grep pattern is refused before it is compiled")
+    func grepPatternLengthIsCapped() async throws {
+        // Pattern length is the cheap proxy for how much nesting and
+        // alternation the model can hand this engine, so it is bounded before
+        // compilation rather than after the scan has already begun.
+        let cache = freshCache()
+        let id = store("content", in: cache)
+        let pattern = String(repeating: "(a|b)", count: 200)
+
+        let result = await run(["document_id": id.uuidString, "grep": pattern], cache: cache)
+        #expect(result.isError)
+        #expect(result.content.contains("too long"))
+    }
+
+    @Test("A completed grep says so, so a full count is distinguishable from a floor")
+    func grepReportsWhetherTheScanFinished() async throws {
+        let cache = freshCache()
+        let id = store("alpha\nbeta\ngamma\n", in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "beta"], cache: cache)
+        )
+        #expect(json["match_count"] as? Int == 1)
+        #expect(json["search_complete"] as? Bool == true)
     }
 
     // MARK: - Cache round-trip

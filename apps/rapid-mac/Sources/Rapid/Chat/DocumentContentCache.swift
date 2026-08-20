@@ -113,6 +113,26 @@ final class DocumentContentCache: @unchecked Sendable {
             )
         }
 
+        /// Inverse of ``index(atCharacterOffset:)``: the Character offset of an
+        /// index the caller already holds.
+        ///
+        /// The obvious spelling — ``text.distance(from: text.startIndex, to:)``
+        /// — walks the whole prefix, so reporting ten `grep` hits near the end
+        /// of a 20,000,000-character extract would walk 200,000,000 Characters
+        /// to produce ten integers. Binary-searching the same checkpoints the
+        /// forward lookup uses bounds it to a stride's worth of stepping.
+        func characterOffset(of index: String.Index) -> Int {
+            // Last checkpoint at or before `index`.
+            var low = 0
+            var high = characterCheckpoints.count - 1
+            while low < high {
+                let mid = (low + high + 1) / 2
+                if characterCheckpoints[mid] <= index { low = mid } else { high = mid - 1 }
+            }
+            return low * Self.checkpointStride
+                + text.distance(from: characterCheckpoints[low], to: index)
+        }
+
         private static func makeCharacterCheckpoints(
             _ text: String
         ) -> ([String.Index], Int) {
