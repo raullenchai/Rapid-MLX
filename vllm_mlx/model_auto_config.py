@@ -357,6 +357,17 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # Cohere North family (North-Mini-Code) — <|START_THINKING|> /
+    # <|END_THINKING|> reasoning markers with <|START_TEXT|> content
+    # wrappers. No tool parser yet: North's <|START_ACTION|> tool format
+    # has no parser in the registry.
+    (
+        re.compile(r"north[-_]?mini", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser="north",
+        ),
+    ),
     # MiniMax M2.5
     (
         re.compile(r"minimax", re.IGNORECASE),

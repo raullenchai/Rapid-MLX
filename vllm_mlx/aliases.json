@@ -1,12 +1,14 @@
 {
   "north-mini-code-4bit": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
+    "reasoning_parser": "north",
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false
   },
   "north-mini-code-bf16": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
+    "reasoning_parser": "north",
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false
