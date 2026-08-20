@@ -112,6 +112,15 @@ struct SVGPreviewTests {
         #expect(abs(size.width / size.height - 100.0 / 4_000.0) < 0.01)
     }
 
+    /// Independent integral rounding used to collapse the short dimension to
+    /// zero, leaving the button in Preview mode while the source still drew.
+    @Test("An extreme aspect ratio keeps both dimensions drawable")
+    func extremeAspectRatioStaysDrawable() {
+        let size = SVGPreview.drawSize(for: CGSize(width: 1, height: 4_000), inWidth: 400)
+        #expect(size.width > 0)
+        #expect(size.height == SVGPreview.maximumHeight)
+    }
+
     @Test("Degenerate sizes produce nothing to draw", arguments: [
         CGSize(width: 0, height: 100), CGSize(width: 100, height: 0), CGSize.zero,
     ])

@@ -88,8 +88,8 @@ enum SVGPreview {
             1
         )
         return CGSize(
-            width: (imageSize.width * scale).rounded(.down),
-            height: (imageSize.height * scale).rounded(.down)
+            width: imageSize.width * scale,
+            height: imageSize.height * scale
         )
     }
 }

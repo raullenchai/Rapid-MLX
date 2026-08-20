@@ -257,7 +257,7 @@ final class MarkdownCodeBlockView: NSView {
         invalidateIntrinsicContentSize()
         // The block stack sizes rows from `height(forWidth:)`, so the row has
         // to be re-measured rather than merely redrawn.
-        (superview as? NSView)?.needsLayout = true
+        superview?.needsLayout = true
     }
 
     @objc private func copyCode() {
