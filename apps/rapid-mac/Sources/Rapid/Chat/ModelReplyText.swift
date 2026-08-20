@@ -63,9 +63,9 @@ enum ModelReplyText {
             .filter { !$0.isEmpty }
     }
 
-    /// Drops a leading `Label:` / `标题：` and the separator after it.
-    /// Matching is case-insensitive and the separator may be a colon, a
-    /// full-width colon, a dash or an em dash.
+    /// Drops a leading `Label:` and the separator after it. Matching is
+    /// case-insensitive and the separator may be a colon, a full-width colon
+    /// (which a CJK keyboard produces), a dash or an em dash.
     nonisolated static func strippingLabel(_ line: String, labels: [String]) -> String {
         let lowered = line.lowercased()
         for label in labels where lowered.hasPrefix(label.lowercased()) {
@@ -140,7 +140,7 @@ enum ModelReplyText {
     /// Openings a model uses when it is talking to you instead of answering.
     private static let refusalPrefixes = [
         "i ", "i'm", "i'd", "sure", "here", "here's", "certainly", "of course",
-        "as an", "okay", "ok,", "understood", "好的", "当然", "抱歉", "作为",
+        "as an", "okay", "ok,", "understood",
     ]
 
     nonisolated static func looksLikeRefusal(_ line: String) -> Bool {
