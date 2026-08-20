@@ -141,6 +141,7 @@ struct SVGPreviewTests {
         #"<svg><style>@import url(https://example.com/a.css)</style></svg>"#,
         #"<svg><filter id="f"><feGaussianBlur stdDeviation="9"/></filter></svg>"#,
         #"<svg><script>alert(1)</script></svg>"#,
+        #"<!DOCTYPE svg [<!ENTITY x "boom">]><svg><text>&x;</text></svg>"#,
     ])
     func unsafeConstructsRenderNothing(_ code: String) {
         #expect(SVGPreview.image(from: code) == nil)

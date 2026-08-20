@@ -9,8 +9,7 @@ import AppKit
 /// whatever size it is drawn. Measured on this codebase's deployment target
 /// family — a triangle's hypotenuse has a one-pixel antialiased edge at 64pt
 /// and still one pixel at 512pt, so it is genuinely vector and not an upscaled
-/// bitmap. Gradients, `transform`, `clipPath`, `<text>`, dashes, embedded
-/// dashes and transforms all render.
+/// bitmap. Gradients, `transform`, `clipPath`, `<text>` and dashes all render.
 ///
 /// The alternative considered was exyte/SVGView, which is what ChatGPT ships
 /// for its *icons* (its code-block preview is a sandboxed WebView, a much
@@ -259,6 +258,14 @@ enum SVGPreview {
         private var rejected = false
 
         static func accepts(_ data: Data) -> Bool {
+            // Reject declarations before XMLParser can expand internal
+            // entities; delegate limits run too late for a "billion laughs"
+            // payload.
+            let source = String(decoding: data, as: UTF8.self)
+            guard source.range(of: "<!doctype", options: .caseInsensitive) == nil,
+                  source.range(of: "<!entity", options: .caseInsensitive) == nil else {
+                return false
+            }
             let validator = SafeSVGValidator()
             let parser = XMLParser(data: data)
             parser.delegate = validator
