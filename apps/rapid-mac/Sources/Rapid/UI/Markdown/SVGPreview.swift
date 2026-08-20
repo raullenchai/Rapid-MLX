@@ -69,45 +69,58 @@ enum SVGPreview {
     }
 
     private nonisolated static func hasClosingRootSuffix(_ code: String) -> Bool {
-        let tail = code.utf8.reversed().drop(while: isASCIIWhitespace).prefix(6).reversed()
-        guard tail.count == 6 else { return false }
-        return zip(tail, Array("</svg>".utf8)).allSatisfy {
-            lowercasedASCII($0.0) == $0.1
+        // XML comments and processing instructions may legally follow the
+        // root. Bound the look-back so this remains constant work per flush.
+        let tail = String(code.suffix(2_048))
+        guard let closing = tail.range(of: "</svg", options: [.caseInsensitive, .backwards]),
+              closing.upperBound < tail.endIndex else { return false }
+        let boundary = tail[closing.upperBound]
+        guard boundary == ">" || boundary.isWhitespace,
+              let end = tail[closing.upperBound...].firstIndex(of: ">") else { return false }
+        return containsOnlyXMLTrivia(tail[tail.index(after: end)...])
+    }
+
+    private nonisolated static func containsOnlyXMLTrivia(_ suffix: Substring) -> Bool {
+        var rest = suffix[...]
+        while true {
+            rest = rest.drop(while: { $0.isWhitespace })
+            if rest.isEmpty { return true }
+            if rest.hasPrefix("<!--"), let end = rest.range(of: "-->") {
+                rest = rest[end.upperBound...]
+            } else if rest.hasPrefix("<?"), let end = rest.range(of: "?>") {
+                rest = rest[end.upperBound...]
+            } else {
+                return false
+            }
         }
     }
 
     private nonisolated static func isSelfClosingRoot(_ code: String) -> Bool {
-        let bytes = code.utf8
-        var index = bytes.startIndex
-        while index < bytes.endIndex, isASCIIWhitespace(bytes[index]) {
-            bytes.formIndex(after: &index)
-        }
-        let opening = Array("<svg".utf8)
-        for expected in opening {
-            guard index < bytes.endIndex,
-                  lowercasedASCII(bytes[index]) == expected else { return false }
-            bytes.formIndex(after: &index)
-        }
-        guard index < bytes.endIndex, isNameBoundary(bytes[index]) else { return false }
-
-        var quote: UInt8?
-        var previousNonSpace: UInt8?
-        while index < bytes.endIndex {
-            let byte = bytes[index]
-            if let currentQuote = quote {
-                if byte == currentQuote { quote = nil }
-            } else if byte == 34 || byte == 39 {
-                quote = byte
-            } else if byte == 62 {
-                bytes.formIndex(after: &index)
-                while index < bytes.endIndex, isASCIIWhitespace(bytes[index]) {
-                    bytes.formIndex(after: &index)
+        let head = code.prefix(2_048)
+        var searchStart = head.startIndex
+        while searchStart < head.endIndex,
+              let opening = head.range(
+                  of: "<svg", options: .caseInsensitive,
+                  range: searchStart..<head.endIndex
+              ) {
+            let candidate = code[opening.lowerBound...]
+            var quote: Character?
+            var previousNonSpace: Character?
+            for index in candidate.indices {
+                let character = candidate[index]
+                if let currentQuote = quote {
+                    if character == currentQuote { quote = nil }
+                } else if character == "\"" || character == "'" {
+                    quote = character
+                } else if character == ">" {
+                    let rest = candidate[candidate.index(after: index)...]
+                    if previousNonSpace == "/", containsOnlyXMLTrivia(rest) { return true }
+                    break
+                } else if !character.isWhitespace {
+                    previousNonSpace = character
                 }
-                return previousNonSpace == 47 && index == bytes.endIndex
-            } else if !isASCIIWhitespace(byte) {
-                previousNonSpace = byte
             }
-            bytes.formIndex(after: &index)
+            searchStart = opening.upperBound
         }
         return false
     }
