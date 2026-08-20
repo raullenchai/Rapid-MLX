@@ -96,6 +96,12 @@ struct SVGPreviewTests {
         #expect(SVGPreview.looksLikeSVG(code: code, language: "svg"))
     }
 
+    @Test("Long trailing XML trivia does not hide a completed root")
+    func longTrailingCommentIsAccepted() {
+        let code = "<svg></svg><!--" + String(repeating: " generated", count: 300) + " -->"
+        #expect(SVGPreview.looksLikeSVG(code: code, language: "svg"))
+    }
+
     @Test("Nothing to preview", arguments: [
         "", "   ", "print(\"hello\")", "<html><body>hi</body></html>",
     ])

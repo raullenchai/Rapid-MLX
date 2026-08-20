@@ -68,9 +68,16 @@ enum SVGPreview {
     }
 
     private nonisolated static func hasClosingRootSuffix(_ code: String) -> Bool {
-        // XML comments and processing instructions may legally follow the
-        // root. Bound the look-back so this remains constant work per flush.
-        let tail = String(code.suffix(2_048))
+        let trimmed = code.drop(while: { $0.isWhitespace }).reversed()
+            .drop(while: { $0.isWhitespace }).reversed()
+        // Only do the full backwards check at a plausible document boundary,
+        // not after every streamed token. Comments may be arbitrarily long,
+        // so the eventual completed boundary must not use a fixed look-back.
+        let ending = String(trimmed.suffix(6)).lowercased()
+        guard ending == "</svg>" || ending.hasSuffix("-->") || ending.hasSuffix("?>") else {
+            return false
+        }
+        let tail = String(trimmed)
         guard let closing = tail.range(of: "</svg", options: [.caseInsensitive, .backwards]),
               closing.upperBound < tail.endIndex else { return false }
         let boundary = tail[closing.upperBound]
