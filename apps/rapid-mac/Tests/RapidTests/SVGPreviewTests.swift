@@ -646,4 +646,37 @@ struct PreviewRelayoutTests {
         // number `height(forWidth:)` would return.
         #expect(view.frame.height != before, "the row was never re-measured")
     }
+
+    @Test("Replacing an open preview remeasures its hosted row")
+    func replacingOpenPreviewRemeasuresTheHostedRow() throws {
+        let wide = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="300" height="60" viewBox="0 0 300 60">
+              <rect width="300" height="60" fill="teal"/>
+            </svg>
+            """
+        let tall = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="100" height="300" viewBox="0 0 100 300">
+              <rect width="100" height="300" fill="teal"/>
+            </svg>
+            """
+        let view = MarkdownCodeBlockView(options: MarkdownOptions())
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        view.configure(code: wide, language: "svg", options: MarkdownOptions())
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 900))
+        host.addSubview(view)
+        host.layoutSubtreeIfNeeded()
+        host.needsLayout = false
+        let button = try #require(
+            view.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "CodeBlock.Preview" }
+        )
+        _ = button.target?.perform(button.action, with: button)
+        let before = view.height(forWidth: 400)
+
+        view.configure(code: tall, language: "svg", options: MarkdownOptions())
+
+        #expect(view.height(forWidth: 400) > before)
+        #expect(view.intrinsicContentSize.height == view.height(forWidth: view.bounds.width))
+        #expect(host.needsLayout)
+    }
 }

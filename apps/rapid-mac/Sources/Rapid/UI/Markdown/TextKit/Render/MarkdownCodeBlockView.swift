@@ -98,7 +98,6 @@ final class MarkdownCodeBlockView: NSView {
     }
 
     public func configure(code: String, language: String?, options: MarkdownOptions) {
-        let previousHeaderHeight = headerHeight
         self.code = code
         self.language = language
         self.options = options
@@ -119,8 +118,11 @@ final class MarkdownCodeBlockView: NSView {
         layer?.cornerRadius = options.codeCornerRadius
         applyAppearanceDependentColors()
         needsDisplay = true
-        invalidateIntrinsicContentSize()
-        if headerHeight != previousHeaderHeight { invalidateLayoutChain() }
+        // Both source text and an already-open preview can change height on a
+        // streaming reconfiguration (including a new SVG aspect ratio). The
+        // SwiftUI representable will not necessarily remeasure an AppKit row
+        // merely because its header height stayed the same.
+        invalidateLayoutChain()
     }
 
     /// Paint the card fill and border for the CURRENT appearance.
