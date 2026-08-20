@@ -1323,6 +1323,21 @@ class BatchedEngine(BaseEngine):
 
             self._model_load_executor.submit(fuse_gate_up, self._model).result()
 
+            # Fuse the four GatedDeltaNet input projections into one
+            # quantized matmul at decode widths, byte-exact (see
+            # vllm_mlx/gdn_in_proj_fusion.py; measured +2.0%/+0.9% decode
+            # on Qwen3.8-27B, M3 Ultra / M2 Pro). Same executor/branch
+            # rationale as fuse_gate_up above; non-GDN models are a cheap
+            # no-op. Skipped under MTP spec-decode: the MTP chunk-split
+            # verification path (spec_decode/mtp/cache_patch.py) reads
+            # the split in_proj_* attributes directly, which fusion
+            # deletes.
+            _sc = self._scheduler_config
+            if _sc is None or getattr(_sc, "spec_decode", "none") != "mtp":
+                from ..gdn_in_proj_fusion import fuse_gdn_in_proj
+
+                self._model_load_executor.submit(fuse_gdn_in_proj, self._model).result()
+
         # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
         # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is
         # built so ``_install_mtp_vendored`` in scheduler.py sees the

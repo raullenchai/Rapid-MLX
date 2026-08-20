@@ -152,6 +152,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # parser fires, which tier engages — none of that changes. Read by
         # ``gdn_prefill.install()`` only.
         "RAPID_MLX_GDN_PREFILL",
+        # Opt-out of the GDN input-projection fusion
+        # (vllm_mlx/gdn_in_proj_fusion.py). Same shape as
+        # MOE_GATE_UP_FUSION — a bit-exact launch-count optimization on an
+        # already-selected model, not a routing decision: which model
+        # loads, which parser fires, which tier engages — none of that
+        # changes. Read by ``gdn_in_proj_fusion.fuse_gdn_in_proj()`` only.
+        "RAPID_MLX_GDN_IN_PROJ_FUSION",
         # Opt-in re-quantization of the lm_head when serving fp8-block
         # checkpoints through the load-time mxfp8 repack
         # (vllm_mlx/fp8_repack.py). A precision/speed knob on an

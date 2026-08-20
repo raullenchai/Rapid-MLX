@@ -140,6 +140,14 @@ enum DevSnapshot {
                     // router. Missing it trapped the harness here, one
                     // capture after the MCP fix above.
                     .environment(settingsRouter)
+                    // ``ImagesView`` also reads ``DownloadManager`` (the
+                    // per-model download state behind its readiness banner /
+                    // "get this model" action). Same rule as ``settingsRouter``
+                    // above: without it the harness traps with "No Observable
+                    // object of type DownloadManager found" on the first images
+                    // capture, one screen after the content-* captures that DO
+                    // inject it — writing zero PNGs from here on.
+                    .environment(downloads)
                     .frame(width: width, height: height)
             )
         }
