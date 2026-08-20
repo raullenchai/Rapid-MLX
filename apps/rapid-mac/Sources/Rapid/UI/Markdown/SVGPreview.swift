@@ -74,7 +74,8 @@ enum SVGPreview {
         // not after every streamed token. Comments may be arbitrarily long,
         // so the eventual completed boundary must not use a fixed look-back.
         let ending = String(trimmed.suffix(6)).lowercased()
-        guard ending == "</svg>" || ending.hasSuffix("-->") || ending.hasSuffix("?>") else {
+        guard endsWithClosingSVGTag(trimmed)
+                || ending.hasSuffix("-->") || ending.hasSuffix("?>") else {
             return false
         }
         let tail = String(trimmed)
@@ -84,6 +85,15 @@ enum SVGPreview {
         guard boundary == ">" || boundary.isWhitespace,
               let end = tail[closing.upperBound...].firstIndex(of: ">") else { return false }
         return containsOnlyXMLTrivia(tail[tail.index(after: end)...])
+    }
+
+    private nonisolated static func endsWithClosingSVGTag<C: BidirectionalCollection>(
+        _ source: C
+    ) -> Bool where C.Element == Character {
+        var reversed = source.reversed()[...]
+        guard reversed.first == ">" else { return false }
+        reversed = reversed.dropFirst().drop(while: { $0.isWhitespace })
+        return String(reversed.prefix(5).reversed()).lowercased() == "</svg"
     }
 
     private nonisolated static func containsOnlyXMLTrivia(_ suffix: Substring) -> Bool {
