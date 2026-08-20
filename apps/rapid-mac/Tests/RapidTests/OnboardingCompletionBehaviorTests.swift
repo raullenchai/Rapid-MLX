@@ -120,6 +120,31 @@ struct OnboardingCompletionBehaviorTests {
         coord._testingReset()
     }
 
+    @Test("#2033 finding 1 (codex follow-up) — skipping during the beat invalidates the pending start")
+    func skipDuringSkippingDownloadInvalidatesPendingStart() {
+        // `startCachedModel(_:)`'s delayed hand-off is an unstructured
+        // `Task` that is not cancelled by dismissal, and its own guard
+        // (`guard case .skippingDownload = coordinator.phase else { return }`)
+        // is the ONLY thing standing between a user who has already left
+        // onboarding and a `server.start` call landing 650ms later against
+        // a model they walked away from. This pins the guard's precondition
+        // at the coordinator level, independent of the real timer: once
+        // `skipForNow()` runs mid-beat, `phase` must no longer read
+        // `.skippingDownload`, so the pending task's guard — whenever it
+        // actually fires — takes the early-return branch.
+        let coord = makeCoordinator()
+        coord.advanceToChooseModel()
+        coord.enterSkippingDownload()
+        #expect(coord.phase == .skippingDownload, "sanity: the beat is active")
+
+        coord.skipForNow()
+
+        if case .skippingDownload = coord.phase {
+            Issue.record("phase is still .skippingDownload after skipForNow() — the pending startCachedModel(_:) task's guard would still pass and start a model the user already dismissed onboarding for")
+        }
+        coord._testingReset()
+    }
+
     @Test("Starting and Ready are both Step 4 — including a load failure")
     func startingAndReadyAreStepFour() {
         let coord = makeCoordinator()

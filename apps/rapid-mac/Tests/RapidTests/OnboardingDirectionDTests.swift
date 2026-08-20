@@ -79,7 +79,8 @@ struct OnboardingDirectionDTests {
     /// with a hard shell swap for a different reason (05.1.A's "no modal
     /// card floating over a live app"), but the swap is *also* a complete
     /// fix for finding 2: ``ReadinessBanner`` is built only inside
-    /// ``ChatView``/``ImagesView``/``AudioView``/``LaunchView``, none of
+    /// ``ChatView``/``ImagesView``/``AudioView``/``ConnectToolsView`` (the
+    /// Launch tab's page-mode view), none of
     /// which mount while ``productionShell`` is swapped out — so
     /// `Readiness.Action` cannot exist on screen while onboarding owns the
     /// window, full stop, independent of which Step 2 verb the wizard's own
@@ -91,6 +92,17 @@ struct OnboardingDirectionDTests {
     /// otherwise lets the wizard and the production shell mount together)
     /// should fail a test that says "two Start buttons", not just "wrong
     /// presentation style".
+    ///
+    /// Codex review: the original version of this test only scanned the
+    /// wizard's own two files, which proves the wizard doesn't build a
+    /// second Start CTA but says nothing about the shell root itself doing
+    /// so — a ``ReadinessBanner(`` added directly inside ``onboardingShell``
+    /// (rather than routed through ``ChatView``/``ImagesView``/
+    /// ``AudioView``/``ConnectToolsView`` as today) would sail past it.
+    /// ``ContentView.swift`` never constructs either type directly today —
+    /// confirmed by grep before adding this assertion — so scanning the
+    /// whole file is a sound, simply-stated invariant rather than one that
+    /// happens to hold only inside a sub-region a text search can't isolate.
     @Test("#2033 finding 2 — the wizard never mounts the shared readiness band")
     func onboardingNeverMountsTheSharedReadinessBand() throws {
         // Same shell-exclusivity pin as above, restated as its own contract:
@@ -99,6 +111,10 @@ struct OnboardingDirectionDTests {
         let content = try Self.strippedSource("Sources/Rapid/UI/ContentView.swift")
         #expect(content.contains("ifquickstartVisible{onboardingShell}else{productionShell}"),
                 "the root must swap the whole shell, not overlay one on the other")
+        #expect(!content.contains("ReadinessBanner("),
+                "ContentView.swift must not construct the shared readiness band directly — it is routed through ChatView/ImagesView/AudioView/ConnectToolsView, none of which mount while onboardingShell owns the window")
+        #expect(!content.contains("ModelReadiness("),
+                "ContentView.swift must not derive a ModelReadiness value directly")
 
         // The wizard's own two files must never independently construct the
         // shared readiness band or its action — that is the ONLY way a

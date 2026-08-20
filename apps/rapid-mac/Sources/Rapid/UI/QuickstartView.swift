@@ -1024,6 +1024,21 @@ Open the picker any time to switch models.
     func skipForNow() {
         clearPendingReady()
         awaitingWelcomeSeed = false
+        // Codex review (#2033 finding 1): ``startCachedModel(_:)``'s
+        // ``Phase/skippingDownload`` beat is an unstructured `Task` that is
+        // NOT cancelled by the view disappearing, and its own guard only
+        // checks that `phase` is still `.skippingDownload` — which it still
+        // was, because this method used to leave `phase` untouched. Without
+        // this, dismissing onboarding during the 650ms beat did not stop
+        // the pending task: it fired `enterStarting()` and `server.start`
+        // 650ms later against a model the user had already walked away
+        // from, and left the production shell's Start CTA gated by
+        // `ModelPickerBar.isQuickstartInFlight` for the rest of the
+        // session. Flipping the phase away from `.skippingDownload` here
+        // makes that guard do what it was always meant to.
+        if case .skippingDownload = phase {
+            phase = .dismissed
+        }
     }
 
     /// External clearer for the awaiting-seed provenance flag. Called
