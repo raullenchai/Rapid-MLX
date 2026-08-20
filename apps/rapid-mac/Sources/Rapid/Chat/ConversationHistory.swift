@@ -147,6 +147,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, title, messages, branches, activeLeafID, branchChoices
         case createdAt, updatedAt, isPinned, isArchived, hasCustomTitle
+        case hasGeneratedTitle
         case customInstructions, folderID
     }
 
@@ -189,6 +190,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(isArchived, forKey: .isArchived)
         try c.encode(hasCustomTitle, forKey: .hasCustomTitle)
+        try c.encode(hasGeneratedTitle, forKey: .hasGeneratedTitle)
         try c.encodeIfPresent(customInstructions, forKey: .customInstructions)
         try c.encodeIfPresent(folderID, forKey: .folderID)
     }
