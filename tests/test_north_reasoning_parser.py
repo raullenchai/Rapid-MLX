@@ -137,6 +137,95 @@ def _stream(parser, deltas):
     return reasoning, content
 
 
+class TestChatRouteStreaming:
+    """Route-level regression: the live 2026-08-20 dogfood repro streamed
+    the whole North output (CoT + literal markers) as ``delta.content``
+    because the casual-chat auto-disable resolved thinking to False and
+    the postprocessor bypassed the parser."""
+
+    def test_stream_splits_reasoning_and_strips_markers(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class NorthPlainEngine:
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def stream_chat(self, messages, **kwargs):
+                deltas = [
+                    "Provide answer: 4.",
+                    END_THINK,
+                    START_TEXT,
+                    "4",
+                    END_TEXT,
+                ]
+                acc = ""
+                for i, d in enumerate(deltas):
+                    acc += d
+                    yield GenerationOutput(
+                        text=acc,
+                        new_text=d,
+                        prompt_tokens=4,
+                        completion_tokens=i + 1,
+                        finished=(i == len(deltas) - 1),
+                        finish_reason="stop" if i == len(deltas) - 1 else None,
+                    )
+
+        cfg = reset_config()
+        try:
+            cfg.engine = NorthPlainEngine()
+            cfg.model_name = "north-test"
+            cfg.model_registry = None
+            cfg.reasoning_parser = get_parser("north")()
+            cfg.reasoning_parser_name = "north"
+            cfg.tool_parser = None
+            cfg.no_thinking = False
+
+            app = FastAPI()
+            app.include_router(chat_router)
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "north-test",
+                    "messages": [{"role": "user", "content": "2+2?"}],
+                    "stream": True,
+                    "max_tokens": 100,
+                },
+            )
+            reasoning_parts, content_parts = [], []
+            for raw in resp.text.split("\n\n"):
+                for line in raw.splitlines():
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(line[len("data: ") :])
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in chunk.get("choices", []):
+                        delta = choice.get("delta", {})
+                        if delta.get("reasoning_content"):
+                            reasoning_parts.append(delta["reasoning_content"])
+                        if delta.get("content"):
+                            content_parts.append(delta["content"])
+            reasoning = "".join(reasoning_parts)
+            content = "".join(content_parts)
+            assert reasoning == "Provide answer: 4."
+            assert content == "4"
+            assert "<|" not in content
+        finally:
+            reset_config()
+
+
 class TestStreaming:
     def test_streaming_simple_flow(self, parser):
         reasoning, content = _stream(
@@ -173,6 +262,15 @@ class TestStreaming:
             msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
             if msg and msg.content:
                 assert "<|" not in msg.content
+
+    def test_sanitize_when_thinking_disabled_is_set(self, parser):
+        """North templates ignore ``enable_thinking`` and always pre-open
+        the thinking channel; the postprocessor's thinking-off bypass
+        (e.g. after the casual-chat auto-disable) must therefore keep the
+        parser engaged — this flag is the contract the streaming gate
+        checks. Live repro: with the flag absent, every streamed delta
+        (CoT + literal markers) shipped as ``delta.content``."""
+        assert parser.sanitize_when_thinking_disabled is True
 
     def test_streaming_lone_angle_in_answer_survives(self, parser):
         # A genuine "<" in the answer that never becomes a marker must be

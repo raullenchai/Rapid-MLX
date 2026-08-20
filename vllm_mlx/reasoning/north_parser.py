@@ -56,6 +56,16 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
     (both full-output and streaming, with cross-delta marker buffering).
     """
 
+    # North chat templates do not consult ``enable_thinking`` — they
+    # unconditionally end the generation prompt inside
+    # ``<|START_THINKING|>``, so the model emits a thought trace even
+    # when the route resolved thinking to False (e.g. the casual-chat
+    # auto-disable). Keep the parser engaged in that case or the raw
+    # chain of thought and the literal channel markers stream into
+    # ``delta.content`` (2026-08-20 dogfood repro). Same contract as
+    # DeepSeek-V4 / DeepSeek-R1 / Muse.
+    sanitize_when_thinking_disabled = True
+
     @property
     def start_token(self) -> str:
         return "<|START_THINKING|>"
