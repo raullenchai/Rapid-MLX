@@ -104,15 +104,18 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         raise SystemExit(2)
 
     missing = []
+    setup_hint = None
     if _is_ltx25_name(model_name):
         from ..video.ltx25 import (
             LTX25_RUNTIME_COMMIT,
+            LTX25_RUNTIME_REPOSITORY,
             LTX25BackendError,
             prepare_ltx25_runtime,
             resolve_ltx25_runtime,
         )
 
         runtime = resolve_ltx25_runtime()
+        runtime_missing = runtime is None
         if runtime is None:
             missing.append(
                 "the pinned LTX-2.5 runtime "
@@ -125,6 +128,16 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
                 prepare_ltx25_runtime(runtime)
             except LTX25BackendError:
                 missing.append("a provisioned pinned LTX-2.5 runtime")
+                runtime_missing = True
+        if runtime_missing:
+            setup_hint = (
+                "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
+                f"    git clone --branch ltx25 {LTX25_RUNTIME_REPOSITORY}\n"
+                f"    git -C ltx-2-mlx checkout {LTX25_RUNTIME_COMMIT}\n"
+                "    uv sync --project ltx-2-mlx\n"
+                '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
+                f"rapid-mlx serve {model_name}\n"
+            )
     elif _is_cogvideox_name(model_name):
         cogvideox_modules = {
             "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
@@ -154,6 +167,8 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             "\n  Error: video generation requires " + " and ".join(missing) + ".\n",
             file=sys.stderr,
         )
+        if setup_hint is not None:
+            print(setup_hint, file=sys.stderr)
         raise SystemExit(2)
 
 

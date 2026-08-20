@@ -89,7 +89,54 @@ def test_ltx25_runtime_preflight_requires_uv(
     with pytest.raises(SystemExit, match="2"):
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
-    assert "uv (`brew install uv`)" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "uv (`brew install uv`)" in error
+    # The runtime itself resolved, so the clone/checkout walkthrough is noise.
+    assert "git clone" not in error
+
+
+def test_ltx25_missing_runtime_prints_setup_walkthrough(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
+    monkeypatch.setattr(
+        video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
+    )
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+
+    with pytest.raises(SystemExit, match="2"):
+        video_lane.require_video_runtime_or_exit("ltx-2.5-mlx-q8")
+
+    error = capsys.readouterr().err
+    assert "docs/guides/video-generation.md" in error
+    assert f"git clone --branch ltx25 {ltx25.LTX25_RUNTIME_REPOSITORY}" in error
+    assert f"git -C ltx-2-mlx checkout {ltx25.LTX25_RUNTIME_COMMIT}" in error
+    assert "uv sync --project ltx-2-mlx" in error
+    assert (
+        'RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
+        "rapid-mlx serve ltx-2.5-mlx-q8" in error
+    )
+
+
+def test_ltx25_unprovisioned_runtime_prints_setup_walkthrough(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
+
+    def boom(executable: str) -> None:
+        raise ltx25.LTX25BackendError("uv sync failed")
+
+    monkeypatch.setattr(ltx25, "prepare_ltx25_runtime", boom)
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+
+    with pytest.raises(SystemExit, match="2"):
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = capsys.readouterr().err
+    assert "a provisioned pinned LTX-2.5 runtime" in error
+    assert "git clone" in error
+    assert "uv sync --project ltx-2-mlx" in error
 
 
 def test_ltx25_runtime_override_must_be_executable(
