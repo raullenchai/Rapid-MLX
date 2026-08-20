@@ -110,7 +110,18 @@ struct BackgroundCompletionClient {
         defer { timeout.cancel() }
 
         do {
-            try await work.value
+            // `work` is unstructured, so it does not inherit cancellation from
+            // whoever is awaiting it, and `work.value` is not itself a
+            // cancellation-aware suspension point. Without this handler,
+            // cancelling the caller left the request running for the whole
+            // deadline — measured at 6.3s against a server that never
+            // answered, holding an engine admission slot in front of the turn
+            // the reader had just asked for.
+            try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+            }
         } catch {
             return nil
         }

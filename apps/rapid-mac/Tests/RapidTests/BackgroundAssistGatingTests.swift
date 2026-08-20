@@ -226,8 +226,8 @@ struct BackgroundAssistGatingTests {
 
     // MARK: - Which turn gets a title
 
-    @Test("Only the first exchange is titled")
-    func onlyFirstExchangeIsTitled() {
+    @Test("The first exchange is recognisable")
+    func firstExchangeIsRecognisable() {
         #expect(ChatViewModel.isFirstExchange([ask, answer()]))
         #expect(!ChatViewModel.isFirstExchange([ask, answer(), ask, answer()]))
         #expect(!ChatViewModel.isFirstExchange([]))
@@ -261,9 +261,28 @@ struct BackgroundAssistGatingTests {
         #expect(!ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "vision", active: 0), alias: "m"))
     }
 
-    @Test("A busy model refuses")
-    func busyModelRefuses() {
-        #expect(!ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "text", active: 1), alias: "m"))
+    /// A busy text model is the normal case, not a reason to refuse.
+    ///
+    /// There was an `activeRequests > 0` clause here and it was wrong twice
+    /// over: continuous batching is why this feature is affordable, and the
+    /// only writer of `residency` polls every five seconds — so at a turn
+    /// boundary the freshest snapshot was taken *during* the answer, and any
+    /// reply streaming for five seconds or more looked busy. It silently
+    /// disabled both features on exactly the long answers follow-ups are for.
+    @Test("A busy text model still allows")
+    func busyTextModelAllows() {
+        #expect(ChatViewModel.laneAllowsBackgroundWork(
+            snapshot(modality: "text", active: 3), alias: "m"
+        ))
+    }
+
+    /// The serialised lane refuses whether it is busy or not — that clause is
+    /// the one carrying the rationale.
+    @Test("A serialised lane refuses even when idle")
+    func visionLaneRefusesWhenIdle() {
+        #expect(!ChatViewModel.laneAllowsBackgroundWork(
+            snapshot(modality: "vision", active: 0), alias: "m"
+        ))
     }
 
     /// A sidecar too old to report residency would otherwise disable both
@@ -294,17 +313,43 @@ struct BackgroundAssistGatingTests {
         model.devSeedMessages([ask, last])
         model.publishFollowUps("A one?\nB two?\nC three?", anchoredTo: last.id, excluding: "")
         #expect(model.followUp == .ready(["A one?", "B two?", "C three?"]))
+        // Both halves, or the rail would never mount: `ChatView` keys on the
+        // anchor, so a `.ready` state with no anchor is a combination the
+        // screen can never show.
+        #expect(model.followUpAnchorID == last.id)
     }
 
-    @Test("Nothing parseable leaves the rail empty")
-    func unparseableSuggestionsLeaveItEmpty() {
+    /// Starts from `.ready`, because the previous version of this test
+    /// asserted `.idle` on a model that was already `.idle` — it passed with
+    /// the entire body of `publishFollowUps` replaced by a no-op.
+    @Test("Nothing parseable puts the rail away")
+    func unparseableSuggestionsClearTheRail() {
         let model = ChatViewModel()
         let last = answer()
         model.devSeedMessages([ask, last])
+
+        model.publishFollowUps("A one?\nB two?\nC three?", anchoredTo: last.id, excluding: "")
+        #expect(model.followUp == .ready(["A one?", "B two?", "C three?"]))
+        #expect(model.followUpAnchorID == last.id)
+
         model.publishFollowUps("Here are some ideas for you.", anchoredTo: last.id, excluding: "")
         #expect(model.followUp == .idle)
+        // The anchor goes too: the rail is mounted on it and holds 40pt
+        // whatever it shows, so leaving it set is an empty band under the
+        // answer until the next turn.
+        #expect(model.followUpAnchorID == nil)
+    }
+
+    @Test("A nil reply puts the rail away")
+    func nilReplyClearsTheRail() {
+        let model = ChatViewModel()
+        let last = answer()
+        model.devSeedMessages([ask, last])
+        model.publishFollowUps("A one?\nB two?\nC three?", anchoredTo: last.id, excluding: "")
+        #expect(model.followUp != .idle)
         model.publishFollowUps(nil, anchoredTo: last.id, excluding: "")
         #expect(model.followUp == .idle)
+        #expect(model.followUpAnchorID == nil)
     }
 }
 
@@ -388,5 +433,60 @@ struct FollowUpSuggestionRailSourceTests {
         let text = try source("Sources/Rapid/Chat/BackgroundCompletionClient.swift")
         #expect(text.contains("enableThinking:false"))
         #expect(text.contains("tools:nil"))
+    }
+}
+
+/// Whether a conversation still wants a title.
+///
+/// The gate used to be "is this the first exchange", which forfeits the one
+/// chance permanently: `send` cancels the outstanding call, so a reader who
+/// replies within the fifteen-second deadline leaves the conversation on its
+/// derived title forever. `hasGeneratedTitle` already means "a title has
+/// landed", so gating on that keeps the once-per-conversation promise while
+/// letting a cancelled or failed attempt be retried on the next turn.
+@MainActor
+@Suite("Title retry")
+struct TitleRetryTests {
+
+    private func isolatedStore() throws -> (root: URL, file: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-title-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return (root, root.appendingPathComponent("conversations.json"))
+    }
+
+    @Test("A conversation whose first attempt failed is still eligible later")
+    func retriedAfterAFailedFirstAttempt() throws {
+        let store = try isolatedStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let model = ChatViewModel(conversationStoreURL: store.file)
+        model.send("first question", alias: "test-model")
+        model.stopAndPersist()
+        let id = model.activeConversationID
+
+        // The first attempt produced nothing — cancelled, or unparseable.
+        #expect(model.conversations.first { $0.id == id }?.hasGeneratedTitle == false)
+
+        // A second turn. The conversation is no longer a first exchange, but
+        // it still has no title, so it is still eligible.
+        model.send("second question", alias: "test-model")
+        model.stopAndPersist()
+        model.applyGeneratedTitle("Euler's theorem", to: id)
+        #expect(model.conversations.first { $0.id == id }?.title == "Euler's theorem")
+    }
+
+    /// And once one lands, it is never asked for again.
+    @Test("A titled conversation stops being eligible")
+    func notRetriedOnceTitled() throws {
+        let store = try isolatedStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let model = ChatViewModel(conversationStoreURL: store.file)
+        model.send("first question", alias: "test-model")
+        model.stopAndPersist()
+        let id = model.activeConversationID
+
+        model.applyGeneratedTitle("First name", to: id)
+        model.applyGeneratedTitle("Second name", to: id)
+        #expect(model.conversations.first { $0.id == id }?.title == "First name")
     }
 }
