@@ -151,9 +151,12 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
         ) from exc
 
 
-# Basic-auth URLs (https://user:token@index.example) can appear in uv's
-# package-index error output; redact the credential part before display.
-_CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/\s:@]+:[^/\s@]+@")
+# URLs with userinfo (https://user:token@index.example, including
+# percent-encoded forms like https://build%40corp:s3cret@…) can appear in
+# uv's package-index error output; redact the ENTIRE userinfo before
+# display — anything between ``scheme://`` and ``@`` is treated as
+# potentially credential-bearing.
+_CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
 
 
 def _sanitize_diagnostic(text: str) -> str:
@@ -174,20 +177,27 @@ def _stderr_tail(stream: io.BufferedRandom) -> str:
         return ""
 
 
+def _bounded(text: str) -> str:
+    return text[:300] + "…" if len(text) > 300 else text
+
+
 def _provisioning_failure_detail(exc: Exception) -> str:
-    """Compress a provisioning failure into one actionable line."""
+    """Compress a provisioning failure into one actionable, sanitized line.
+
+    EVERY exception-derived string passes through ``_sanitize_diagnostic``
+    and the length bound — ``OSError`` messages can embed paths or
+    environment-derived text with the same control-sequence/credential
+    exposure as uv's stderr.
+    """
     if isinstance(exc, subprocess.TimeoutExpired):
         return f"`uv sync --frozen` timed out after {int(exc.timeout)}s"
     if isinstance(exc, subprocess.CalledProcessError):
         detail = f"`uv sync --frozen` failed with exit code {exc.returncode}"
         stderr = _sanitize_diagnostic((exc.stderr or "").strip())
         if stderr:
-            tail = " | ".join(stderr.splitlines()[-3:])
-            if len(tail) > 300:
-                tail = tail[:300] + "…"
-            detail += f" ({tail})"
+            detail += f" ({_bounded(' | '.join(stderr.splitlines()[-3:]))})"
         return detail
-    return str(exc) or type(exc).__name__
+    return _bounded(_sanitize_diagnostic(str(exc))) or type(exc).__name__
 
 
 def prepare_ltx25_runtime(executable: str) -> Path:

@@ -214,6 +214,29 @@ def test_ltx25_provisioning_detail_sanitizes_stderr(
     assert "https://***@index.example/simple/foo" in message
 
 
+def test_ltx25_sanitize_redacts_percent_encoded_userinfo() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "failed to fetch https://build%40corp:s3cret@index.example/simple/"
+    )
+    assert "s3cret" not in out
+    assert "build%40corp" not in out
+    assert "https://***@index.example/simple/" in out
+
+
+def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
+    from vllm_mlx.video.ltx25 import _provisioning_failure_detail
+
+    exc = OSError(
+        "\x1b[31mdisk full\x1b[0m at https://user:tok3n@mirror.example/x " + "p" * 500
+    )
+    detail = _provisioning_failure_detail(exc)
+    assert "\x1b" not in detail
+    assert "tok3n" not in detail
+    assert len(detail) <= 301
+
+
 def test_ltx25_stderr_tail_is_bounded() -> None:
     """Only a bounded tail of uv stderr is ever read back into memory."""
     import tempfile
