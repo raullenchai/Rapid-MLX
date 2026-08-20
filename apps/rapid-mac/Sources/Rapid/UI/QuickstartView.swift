@@ -1103,6 +1103,46 @@ Open the picker any time to switch models.
         phase = .skippingDownload
     }
 
+    /// True iff a cached-model start begun during ``Phase/skippingDownload``
+    /// is still authorized to hand off to ``enterStarting()``.
+    private var isSkippingDownloadStillPending: Bool {
+        if case .skippingDownload = phase { return true }
+        return false
+    }
+
+    /// Waits out the ``Phase/skippingDownload`` beat, then hands off to
+    /// ``enterStarting()`` and runs `onAuthorized` — UNLESS the phase moved
+    /// on in the meantime (dismissal, a different pick), in which case this
+    /// is a no-op.
+    ///
+    /// `startCachedModel(_:)` calls this instead of inlining the
+    /// sleep-then-guard itself specifically so the guard is something a
+    /// test can drive directly. pr_validate codex_review (#2033 follow-up)
+    /// on the original fix: a test that only re-derives "phase left
+    /// .skippingDownload" as a SEPARATE check from the production code's
+    /// own guard proves nothing about that guard — remove the guard entirely
+    /// and such a test keeps passing. Calling this exact method (with
+    /// `duration: .zero` to skip the real wait) is what closes that: the
+    /// test and production run the identical guarded path, not two copies
+    /// of the same condition that can silently drift apart.
+    func afterSkippingDownloadBeat(
+        duration: Duration,
+        onAuthorized: () async -> Void
+    ) async {
+        // Unstructured by construction at the call site (`Task { @MainActor
+        // in ... }` in `startCachedModel(_:)`) — NOT cancelled by the view
+        // disappearing, and `try?` here deliberately does not observe
+        // cancellation either (there is no cooperative cancellation point to
+        // race against). The `isSkippingDownloadStillPending` check below is
+        // the ONLY thing that stops this from starting a model the user has
+        // already walked away from; `skipForNow()` is what makes dismissal
+        // flip it to false.
+        try? await Task.sleep(for: duration)
+        guard isSkippingDownloadStillPending else { return }
+        enterStarting()
+        await onAuthorized()
+    }
+
     /// Record a terminal failure. Does NOT flip ``done`` so the next
     /// surface render shows Quickstart again (with "Retry" if the
     /// failure was the download, plain "Get started" otherwise).
@@ -4014,18 +4054,12 @@ struct QuickstartView: View {
     private func startCachedModel(_ cached: ModelEntry) {
         coordinator.enterSkippingDownload()
         Task { @MainActor in
-            try? await Task.sleep(for: Self.skippingDownloadBeat)
-            // The surface can only have left ``skippingDownload`` by moving
-            // on (Escape/Skip drops the whole surface, which cancels this
-            // task's continuation on the next await; a stale re-entry is
-            // defensive, matching the guards throughout this file). Don't
-            // clobber whatever state it reached instead.
-            guard case .skippingDownload = coordinator.phase else { return }
-            coordinator.enterStarting()
-            await server.start(
-                alias: cached.alias,
-                hfPath: cached.hfRepo
-            )
+            await coordinator.afterSkippingDownloadBeat(duration: Self.skippingDownloadBeat) {
+                await server.start(
+                    alias: cached.alias,
+                    hfPath: cached.hfRepo
+                )
+            }
         }
     }
 

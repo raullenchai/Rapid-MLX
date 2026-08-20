@@ -801,8 +801,12 @@ struct Step2ModelSelectionBehaviorTests {
             body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterSkippingDownload()"),
             "the cached route must lead to ServerManager.start via the #2033 finding-1 beat, not a second implementation"
         )
-        #expect(body.contains("coordinator.enterStarting()awaitserver.start("),
-                "the beat must still hand off to the same ServerManager.start call")
+        #expect(
+            body.contains("awaitcoordinator.afterSkippingDownloadBeat(duration:Self.skippingDownloadBeat){awaitserver.start("),
+            "the beat must hand off to ServerManager.start through the same guarded coordinator method a test can drive directly (#2033 codex follow-up)"
+        )
+        #expect(body.contains("guardisSkippingDownloadStillPendingelse{return}enterStarting()awaitonAuthorized()"),
+                "afterSkippingDownloadBeat itself must still call enterStarting() before authorizing the caller's action")
     }
 
     // MARK: - 8. Escape and Back priority

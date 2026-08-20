@@ -121,27 +121,49 @@ struct OnboardingCompletionBehaviorTests {
     }
 
     @Test("#2033 finding 1 (codex follow-up) — skipping during the beat invalidates the pending start")
-    func skipDuringSkippingDownloadInvalidatesPendingStart() {
-        // `startCachedModel(_:)`'s delayed hand-off is an unstructured
-        // `Task` that is not cancelled by dismissal, and its own guard
-        // (`guard case .skippingDownload = coordinator.phase else { return }`)
-        // is the ONLY thing standing between a user who has already left
-        // onboarding and a `server.start` call landing 650ms later against
-        // a model they walked away from. This pins the guard's precondition
-        // at the coordinator level, independent of the real timer: once
-        // `skipForNow()` runs mid-beat, `phase` must no longer read
-        // `.skippingDownload`, so the pending task's guard — whenever it
-        // actually fires — takes the early-return branch.
+    func skipDuringSkippingDownloadInvalidatesPendingStart() async {
+        // pr_validate codex_review (round 1 on this fix): a version of this
+        // test that only re-derived "phase left .skippingDownload" as a
+        // check SEPARATE from `startCachedModel(_:)`'s own guard proved
+        // nothing about that guard — deleting the guard entirely left such
+        // a test green. `afterSkippingDownloadBeat(duration:onAuthorized:)`
+        // is the exact method `startCachedModel(_:)` calls in production
+        // (with the real 650ms constant); calling it here too — with
+        // `duration: .zero` so the test doesn't actually wait — means this
+        // test and production share the identical guarded code path rather
+        // than two copies of the same condition that can silently drift
+        // apart. Delete the guard inside that method and this goes red.
         let coord = makeCoordinator()
         coord.advanceToChooseModel()
         coord.enterSkippingDownload()
-        #expect(coord.phase == .skippingDownload, "sanity: the beat is active")
 
         coord.skipForNow()
 
-        if case .skippingDownload = coord.phase {
-            Issue.record("phase is still .skippingDownload after skipForNow() — the pending startCachedModel(_:) task's guard would still pass and start a model the user already dismissed onboarding for")
+        var authorized = false
+        await coord.afterSkippingDownloadBeat(duration: .zero) {
+            authorized = true
         }
+        #expect(!authorized,
+                "afterSkippingDownloadBeat ran onAuthorized after skipForNow() dismissed onboarding mid-beat — it would have called enterStarting() and server.start against a model the user already walked away from")
+        coord._testingReset()
+    }
+
+    @Test("#2033 finding 1 (codex follow-up) — the beat still hands off when nothing interrupts it")
+    func skippingDownloadBeatProceedsWhenUninterrupted() async {
+        // The companion happy-path case for the test above: without a
+        // dismissal, `afterSkippingDownloadBeat` must still reach Step 4
+        // and run `onAuthorized` — the guard exists to invalidate a
+        // SPECIFIC intervening event, not to block the ordinary route.
+        let coord = makeCoordinator()
+        coord.advanceToChooseModel()
+        coord.enterSkippingDownload()
+
+        var authorized = false
+        await coord.afterSkippingDownloadBeat(duration: .zero) {
+            authorized = true
+        }
+        #expect(authorized, "onAuthorized must still run when nothing interrupted the beat")
+        #expect(coord.step.displayNumber == 4, "and the coordinator must have reached Step 4")
         coord._testingReset()
     }
 
