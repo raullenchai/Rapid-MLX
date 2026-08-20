@@ -118,13 +118,13 @@ def test_ltx25_missing_runtime_prints_setup_walkthrough(
     )
 
 
-def test_ltx25_unprovisioned_runtime_prints_setup_walkthrough(
+def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
 
     def boom(executable: str) -> None:
-        raise ltx25.LTX25BackendError("uv sync failed")
+        raise ltx25.LTX25BackendError("uv sync failed with exit code 1")
 
     monkeypatch.setattr(ltx25, "prepare_ltx25_runtime", boom)
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
@@ -135,8 +135,11 @@ def test_ltx25_unprovisioned_runtime_prints_setup_walkthrough(
 
     error = capsys.readouterr().err
     assert "a provisioned pinned LTX-2.5 runtime" in error
-    assert "git clone" in error
-    assert "uv sync --project ltx-2-mlx" in error
+    # The underlying failure reason is the actionable part.
+    assert "uv sync failed with exit code 1" in error
+    assert "docs/guides/video-generation.md" in error
+    # The checkout already resolved — re-cloning is not the fix.
+    assert "git clone" not in error
 
 
 def test_ltx25_runtime_override_must_be_executable(

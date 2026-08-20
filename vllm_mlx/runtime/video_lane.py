@@ -115,21 +115,13 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         )
 
         runtime = resolve_ltx25_runtime()
-        runtime_missing = runtime is None
         if runtime is None:
             missing.append(
                 "the pinned LTX-2.5 runtime "
                 f"(commit {LTX25_RUNTIME_COMMIT}; see the video generation guide)"
             )
-        if shutil.which("uv") is None:
-            missing.append("uv (`brew install uv`)")
-        elif runtime is not None:
-            try:
-                prepare_ltx25_runtime(runtime)
-            except LTX25BackendError:
-                missing.append("a provisioned pinned LTX-2.5 runtime")
-                runtime_missing = True
-        if runtime_missing:
+            # The checkout is absent (or at the wrong revision): the full
+            # clone walkthrough is the actionable next step.
             setup_hint = (
                 "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
                 f"    git clone --branch ltx25 {LTX25_RUNTIME_REPOSITORY}\n"
@@ -138,6 +130,18 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
                 '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
                 f"rapid-mlx serve {model_name}\n"
             )
+        if shutil.which("uv") is None:
+            missing.append("uv (`brew install uv`)")
+        elif runtime is not None:
+            try:
+                prepare_ltx25_runtime(runtime)
+            except LTX25BackendError as exc:
+                # The checkout already resolved — re-cloning is not the fix.
+                # Surface the underlying provisioning failure instead.
+                missing.append(
+                    f"a provisioned pinned LTX-2.5 runtime ({exc}; "
+                    "see docs/guides/video-generation.md)"
+                )
     elif _is_cogvideox_name(model_name):
         cogvideox_modules = {
             "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
