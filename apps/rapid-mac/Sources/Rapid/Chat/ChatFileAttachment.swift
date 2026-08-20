@@ -355,6 +355,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let id = self.id
         let pageCount = document.pageCount
         cache.beginPending(id)
+        // Taken BEFORE the extraction, so a removal at any point during it
+        // invalidates the result. Checking cancellation just before publishing
+        // would not: the task can be descheduled between the check and the
+        // write, and `remove` can complete in that window.
+        let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
             // ``recognizePages`` passes selectable text straight through and
@@ -372,16 +377,17 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     .prefix(Self.maxExtractedCharacters)
             )
             guard !bounded.isEmpty else { return }
-            // A cancelled pass must not publish. The document was cancelled
-            // because it is being deleted, and ``put`` would re-create on disk
-            // the plaintext ``remove`` just deleted.
-            guard !Task.isCancelled else { return }
-            cache.put(id, entry: DocumentContentCache.Entry(
-                filename: filename,
-                text: bounded,
-                pageCount: pageCount,
-                outline: Self.resolvingOutlineOffsets(outline, in: bounded)
-            ))
+            // Conditional: a no-op if the document was removed while this ran.
+            cache.publish(
+                id,
+                entry: DocumentContentCache.Entry(
+                    filename: filename,
+                    text: bounded,
+                    pageCount: pageCount,
+                    outline: Self.resolvingOutlineOffsets(outline, in: bounded)
+                ),
+                ifGenerationIs: generation
+            )
         }
         cache.registerExtraction(id, task: extraction)
     }
@@ -439,6 +445,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         // ~0.69 s/page a 529-page scan is ~6 minutes of Vision and PDFKit
         // work, and before the handle was kept, removing the attachment left
         // all of it running with nothing to show for it.
+        //
+        // Cancellation is an efficiency measure only. What guarantees a removed
+        // document is not resurrected is the generation taken here, BEFORE the
+        // work starts, and validated inside the cache at publish time — a task
+        // can be descheduled between any cancellation check and its write.
+        let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
             let full = Self.collapsingLayoutNoise(
@@ -452,20 +464,20 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 full.trimmingCharacters(in: .whitespacesAndNewlines)
                     .prefix(Self.maxExtractedCharacters)
             )
-            // Cancellation here is a DELETION request, not a wind-down:
-            // ``remove`` cancels and then deletes, so publishing the pages
-            // recognized so far would re-create the plaintext it just removed.
-            guard !Task.isCancelled else { return }
-            // Never publish something SHORTER than the preview already on
-            // screen — a run that ended early still must not shrink the
-            // document the model can see.
+            // A cancelled run returns only the pages it reached. Publishing
+            // that is right — partial recognized text beats none — but never
+            // publish something SHORTER than the preview already on screen.
             guard bounded.count > previewLength else { return }
-            cache.put(id, entry: DocumentContentCache.Entry(
-                filename: filename,
-                text: bounded,
-                pageCount: pageCount,
-                outline: Self.resolvingOutlineOffsets(outline, in: bounded)
-            ))
+            cache.publish(
+                id,
+                entry: DocumentContentCache.Entry(
+                    filename: filename,
+                    text: bounded,
+                    pageCount: pageCount,
+                    outline: Self.resolvingOutlineOffsets(outline, in: bounded)
+                ),
+                ifGenerationIs: generation
+            )
         }
         cache.registerExtraction(id, task: extraction)
     }

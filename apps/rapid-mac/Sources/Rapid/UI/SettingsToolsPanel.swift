@@ -212,7 +212,12 @@ struct SettingsToolsPanel: View {
         case "weather":
             return "Gets the current weather for a place you name."
         case "read_document":
-            return "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac."
+            // States the retention window because it is the one thing about
+            // this tool a user cannot discover by using it: everything else is
+            // visible in the transcript, but "the full text is kept for N days,
+            // then you are asked to attach the file again" is only observable
+            // by waiting a quarter and being surprised.
+            return "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation."
         default:
             return fallback
         }

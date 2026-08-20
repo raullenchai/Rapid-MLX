@@ -268,6 +268,131 @@ struct DocumentCacheLifecycleTests {
         #expect(cache.get(id)?.text == "this quarter's report")
     }
 
+    // MARK: - Deletion vs. a publish already in flight
+
+    @Test("A publish that began before removal cannot resurrect the document")
+    func removalBeatsAnInFlightPublish() throws {
+        // The TOCTOU this closes, deterministically rather than by timing:
+        //
+        //   1. extraction finishes its work and its cancellation check passes
+        //   2. the user removes the document — memory cleared, <uuid>.json gone
+        //   3. extraction resumes and publishes
+        //
+        // Moving the cancellation check closer to the write only narrows step
+        // 2's window; it cannot close it, because the task can be descheduled
+        // between ANY check and the write that follows. So the guarantee lives
+        // in the cache: a publish presents the generation it started with, and
+        // removal invalidates it.
+        //
+        // Interleaving the calls directly is what makes this a proof rather
+        // than a stress test — no sleeps, no scheduler dependence.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let id = UUID()
+        // Step 1: the extraction takes its token and completes its work.
+        let generation = cache.generation(for: id)
+
+        // Step 2: the user deletes the document while that publish is pending.
+        cache.remove(id)
+
+        // Step 3: the extraction resumes and tries to publish. It must fail.
+        let published = cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(
+                filename: "confidential.pdf",
+                text: "PRIVATE CONTENTS THE USER DELETED"
+            ),
+            ifGenerationIs: generation
+        )
+
+        #expect(published == false)
+        #expect(cache.get(id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+        // And the words themselves are nowhere in the cache directory.
+        let remaining = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        for name in remaining {
+            let contents = (try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)) ?? ""
+            #expect(!contents.contains("PRIVATE CONTENTS"))
+        }
+    }
+
+    @Test("A publish begun after removal is a normal re-attach and succeeds")
+    func removalDoesNotPoisonTheIDForever() throws {
+        // The tombstone must not become a permanent ban: re-attaching the same
+        // document (or the extraction of a genuinely later attach) has to work.
+        // A generation taken AFTER the removal is current, so it publishes.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(filename: "a.txt", text: "first"))
+        cache.remove(id)
+
+        let generation = cache.generation(for: id)
+        let published = cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(filename: "a.txt", text: "attached again"),
+            ifGenerationIs: generation
+        )
+
+        #expect(published)
+        #expect(cache.get(id)?.text == "attached again")
+    }
+
+    @Test("Repeated removals each invalidate a publish that straddles them")
+    func everyRemovalInvalidates() throws {
+        // A generation, not a boolean flag: remove/re-attach/remove must not
+        // let a publish from the FIRST attach land after the second removal.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let id = UUID()
+        let firstGeneration = cache.generation(for: id)
+        cache.remove(id)
+        let secondGeneration = cache.generation(for: id)
+        cache.remove(id)
+
+        #expect(!cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(filename: "a.txt", text: "stale one"),
+            ifGenerationIs: firstGeneration
+        ))
+        #expect(!cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(filename: "a.txt", text: "stale two"),
+            ifGenerationIs: secondGeneration
+        ))
+        #expect(cache.get(id) == nil)
+    }
+
+    @Test("A removal racing a real extraction never leaves the document behind", .timeLimit(.minutes(2)))
+    func concurrentRemovalDuringRealExtraction() async throws {
+        // The deterministic tests above prove the ordering property. This one
+        // exercises the same property through the REAL attach path, where the
+        // publish is a background OCR task rather than a direct call — the
+        // wiring is what is under test here, not the algorithm.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let url = try makeScannedPDF(pages: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(cache.hasRegisteredExtraction(attachment.id))
+
+        cache.remove(attachment.id)
+
+        // Well past the point the extraction would have published.
+        try? await Task.sleep(for: .seconds(5))
+        #expect(cache.get(attachment.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, attachment.id).path))
+    }
+
     // MARK: - Cancellation
 
     /// A PDF whose pages are IMAGES of text, so the only way to read it back

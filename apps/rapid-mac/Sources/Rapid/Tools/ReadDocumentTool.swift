@@ -120,7 +120,7 @@ enum ReadDocumentTool {
         // for that work rather than reporting a document the user can plainly
         // see as missing.
         guard let entry = cache.getAwaitingCompletion(id) else {
-            return err(tool, "no attached document with id \(rawID) — it may be from an older conversation whose cached text has expired. Ask the user to attach the file again.")
+            return err(tool, "no attached document with id \(rawID) — Rapid keeps the full text of an attachment for \(DocumentContentCache.retentionDays) days, and this one has expired (or was deleted). Tell the user the document is no longer available to read and ask them to attach the file again.")
         }
 
         if args.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "outline" {

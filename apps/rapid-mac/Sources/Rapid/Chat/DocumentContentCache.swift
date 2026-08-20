@@ -175,6 +175,15 @@ final class DocumentContentCache: @unchecked Sendable {
     private var store: [String: Entry] = [:]
     private var order: [String] = []          // LRU: front = oldest
     private var totalBytes = 0
+    /// How many times each document has been removed, guarded by
+    /// ``memoryLock``. A publish presents the generation it started with, so a
+    /// removal that lands mid-extraction invalidates the result instead of
+    /// racing it. Kept after the entry itself is gone — the whole point is that
+    /// it outlives the deletion it records.
+    ///
+    /// Bounded in practice by the number of documents removed in one launch,
+    /// and each entry is a UUID string plus a counter.
+    private var removalGeneration: [String: UInt64] = [:]
 
     private let maxEntries: Int
     private let maxBytes: Int
@@ -184,6 +193,15 @@ final class DocumentContentCache: @unchecked Sendable {
     private let diskDirectory: URL?
     private let maxDiskEntries: Int
     private let maxDiskBytes: Int
+    /// How long an untouched extract is retained, in days.
+    ///
+    /// A USER-VISIBLE policy, not an implementation bound: past this window a
+    /// conversation reopened from the sidebar still shows its attachment and
+    /// its preview, but ``read_document`` can no longer reach the rest and the
+    /// user is asked to attach the file again. Stated here so the tool's
+    /// expiry message and the retention it describes cannot drift apart.
+    static let retentionDays = 90
+
     /// How long an untouched extract may sit on disk before the sweep deletes
     /// it, regardless of how much room the caps still allow.
     ///
@@ -193,11 +211,11 @@ final class DocumentContentCache: @unchecked Sendable {
     /// the wrong default for a store holding the complete text of whatever the
     /// user dropped into a chat — a contract, a medical letter, a payslip.
     ///
-    /// Ninety days is long enough that reopening last quarter's conversation
-    /// still works and short enough that a document is not retained
-    /// indefinitely by accident. Expiry is not data loss: the attachment's
-    /// preview is still in the transcript, and ``read_document`` tells the
-    /// user to attach the file again.
+    /// ``retentionDays`` is long enough that reopening last quarter's
+    /// conversation still works and short enough that a document is not
+    /// retained indefinitely by accident. Expiry is not data loss: the
+    /// attachment's preview is still in the transcript, and ``read_document``
+    /// tells the user to attach the file again.
     private let diskTTL: TimeInterval
 
     /// Production initialiser — persists to
@@ -212,7 +230,7 @@ final class DocumentContentCache: @unchecked Sendable {
         self.diskDirectory = Self.defaultDiskDirectory()
         self.maxDiskEntries = 64
         self.maxDiskBytes = 512 * 1024 * 1024
-        self.diskTTL = 90 * 24 * 60 * 60
+        self.diskTTL = TimeInterval(Self.retentionDays) * 24 * 60 * 60
         sweepDiskOnInitialization()
     }
 
@@ -225,7 +243,7 @@ final class DocumentContentCache: @unchecked Sendable {
         diskDirectory: URL?,
         maxDiskEntries: Int = 64,
         maxDiskBytes: Int = 512 * 1024 * 1024,
-        diskTTL: TimeInterval = 90 * 24 * 60 * 60
+        diskTTL: TimeInterval = TimeInterval(DocumentContentCache.retentionDays) * 24 * 60 * 60
     ) {
         self.maxEntries = maxEntries
         self.maxBytes = maxBytes
@@ -410,6 +428,11 @@ final class DocumentContentCache: @unchecked Sendable {
             memoryLock.unlock()
             return e
         }
+        // Taken before the disk read for the same reason a publish takes it
+        // before its slow work: this read ends in an insertion, and a removal
+        // that lands while it is in flight must invalidate that insertion
+        // rather than be undone by it.
+        let generationBefore = removalGeneration[k] ?? 0
         memoryLock.unlock()
 
         // Memory miss: fall back to the persistent tier. A hit here is a
@@ -425,26 +448,82 @@ final class DocumentContentCache: @unchecked Sendable {
             touch(k)
             return current
         }
+        // Removed while the disk read was in flight: this is a copy of a
+        // document the user has since deleted. Returning it is a stale read;
+        // caching it would be a resurrection.
+        guard (removalGeneration[k] ?? 0) == generationBefore else { return nil }
         insertLocked(k, entry: e)
         return e
     }
 
+    /// Publish an extract under `id`.
+    ///
+    /// Refuses to publish a document that has been removed. This is the
+    /// authoritative half of the deletion guarantee, and it has to live HERE
+    /// rather than at the call site: a background pass that checks
+    /// ``Task/isCancelled`` and then calls this can be descheduled in between,
+    /// and by the time it resumes ``remove`` may have run to completion. That
+    /// interleaving —
+    ///
+    ///   1. extraction sees `isCancelled == false`
+    ///   2. ``remove`` cancels, clears memory, deletes `<uuid>.json`
+    ///   3. extraction resumes and publishes
+    ///
+    /// — resurrects the plaintext of a document the user deleted. No amount of
+    /// moving the check closer to the write closes it; the check and the write
+    /// must be atomic with respect to removal. ``removalGeneration`` under
+    /// ``memoryLock`` is what makes them so: a publish carries the generation
+    /// it began with, and any removal in between invalidates it.
     func put(_ id: UUID, entry: Entry) {
+        publish(id, entry: entry, ifGenerationIs: generation(for: id))
+    }
+
+    /// The removal generation for `id` — the token a publish must present to
+    /// prove no deletion happened while it was working.
+    ///
+    /// A caller that will publish LATER should take this EARLY (before the
+    /// slow work), so that a removal at any point during that work invalidates
+    /// the result.
+    func generation(for id: UUID) -> UInt64 {
+        memoryLock.lock(); defer { memoryLock.unlock() }
+        return removalGeneration[Self.key(for: id)] ?? 0
+    }
+
+    /// Conditional publish: install `entry` only if `id` has not been removed
+    /// since `expected` was taken.
+    ///
+    /// - Returns: `true` when the entry was published.
+    @discardableResult
+    func publish(_ id: UUID, entry: Entry, ifGenerationIs expected: UInt64) -> Bool {
         let k = Self.key(for: id)
         memoryLock.lock()
+        guard (removalGeneration[k] ?? 0) == expected else {
+            // Removed while this extraction was running. Dropping the result is
+            // the whole point: the user deleted this document.
+            memoryLock.unlock()
+            return false
+        }
         insertLocked(k, entry: entry)
         let shouldPersist = diskDirectory != nil
         memoryLock.unlock()
+        guard shouldPersist else { return true }
+
         // Disk I/O happens OUTSIDE the memory lock: writing the document + the
         // LRU sweep touch the filesystem, which we don't want to serialise the
         // (fast) in-memory paging path behind.
         //
-        // Unlike ``BrowseContentCache`` there is no write-ordering token here:
-        // a document is immutable once extracted, so two puts for the same
-        // UUID carry identical bytes and a "stale" write cannot lose data.
-        if shouldPersist {
-            writeToDisk(k, entry: entry)
-        }
+        // That reopens the same race against the disk tier alone, so the
+        // generation is rechecked while holding BOTH locks, in the same order
+        // ``remove`` takes them. A removal that lands here either runs entirely
+        // before this check (and is seen) or entirely after this write (and
+        // deletes it) — there is no interleaving that leaves the file behind.
+        diskLock.lock(); defer { diskLock.unlock() }
+        memoryLock.lock()
+        let stillValid = (removalGeneration[k] ?? 0) == expected
+        memoryLock.unlock()
+        guard stillValid else { return false }
+        writeToDiskLocked(k, entry: entry)
+        return true
     }
 
     /// Forget a document completely: the hot copy, the persisted plaintext, and
@@ -455,21 +534,33 @@ final class DocumentContentCache: @unchecked Sendable {
     /// user can tell, so the extract must go with it rather than lingering in
     /// Application Support until unrelated LRU pressure evicts it.
     ///
-    /// Cancelling first matters: a background OCR pass that is still running
-    /// calls ``put`` when it finishes, which would re-create the file we just
-    /// deleted. Ordering the cancel ahead of the delete closes that window.
+    /// Deletion is authoritative and does NOT depend on the extraction task
+    /// noticing that it was cancelled. Bumping ``removalGeneration`` — under
+    /// the same lock a publish validates against — is what makes a concurrent
+    /// ``put`` a no-op, whether it has already passed its cancellation check or
+    /// not. Cancellation is then purely an efficiency measure: it stops minutes
+    /// of Vision work whose result would now be discarded anyway.
+    ///
+    /// Returns without waiting for the cancelled task to unwind. It cannot
+    /// resurrect anything, and blocking the main actor for up to a second on an
+    /// attachment-removal click to await a page already in flight would be a
+    /// visible hang for no gain.
     ///
     /// Safe to call for an id that was never cached — the common case for a
     /// conversation restored from history, whose extracts aged out long ago.
     func remove(_ id: UUID) {
-        cancelExtraction(id)
         let k = Self.key(for: id)
+        // Invalidate FIRST. From this instant no publish can land, so the two
+        // deletions below cannot be raced by an extraction mid-flight.
         memoryLock.lock()
+        removalGeneration[k] = (removalGeneration[k] ?? 0) &+ 1
         if let old = store.removeValue(forKey: k) {
             totalBytes -= old.text.utf8.count
             order.removeAll { $0 == k }
         }
         memoryLock.unlock()
+
+        cancelExtraction(id)
 
         guard let dir = diskDirectory else { return }
         diskLock.lock(); defer { diskLock.unlock() }
@@ -553,9 +644,11 @@ final class DocumentContentCache: @unchecked Sendable {
         return entry
     }
 
-    private func writeToDisk(_ key: String, entry: Entry) {
+    /// Write an entry to the persistent tier. ``diskLock`` MUST already be
+    /// held — ``publish`` holds it across its final generation recheck so that
+    /// a concurrent ``remove`` cannot slip between the check and this write.
+    private func writeToDiskLocked(_ key: String, entry: Entry) {
         guard let dir = diskDirectory else { return }
-        diskLock.lock(); defer { diskLock.unlock() }
 
         let fm = FileManager.default
         // Best-effort persistence: a failure just means this document won't
