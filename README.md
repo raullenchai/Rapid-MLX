@@ -364,11 +364,11 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 
 ### Star History
 
-<a href="https://star-history.com/#raullenchai/Rapid-MLX&Date">
+<a href="https://star-history.dera.page/#raullenchai/Rapid-MLX&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=raullenchai/Rapid-MLX&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=raullenchai/Rapid-MLX&type=Date" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=raullenchai/Rapid-MLX&type=Date" />
   </picture>
 </a>
 
