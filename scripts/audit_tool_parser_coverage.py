@@ -71,6 +71,7 @@ MATRIX_EXEMPT: dict[str, str] = {
     "granite3": "alias of granite",
     "glm4": "alias of glm47",
     "meetkai": "alias of functionary",
+    "cohere_north": "alias of north",
     # TODOs — parser registered, no canonical model in matrix yet. Each
     # entry is a follow-up ticket. Adding a real golden_models.yaml entry
     # for any of these REMOVES the corresponding TODO line (failure mode:
@@ -96,6 +97,12 @@ MATRIX_EXEMPT: dict[str, str] = {
         "a local-wheel run on 256 GB Apple Silicon cover it meanwhile."
     ),
     "functionary": "TODO: add Functionary-medium model to golden_models",
+    "north": (
+        "TODO(#1898): add North-Mini-Code to golden_models after its "
+        "supported/experimental 4-bit profile gains comparative memory, "
+        "throughput, and agent-task results. Parser unit, hostile-value, "
+        "streaming-parity, and real 32 GB agent-loop dogfood cover it meanwhile."
+    ),
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
     "minicpm": (

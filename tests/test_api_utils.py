@@ -23,6 +23,7 @@ from vllm_mlx.api.utils import (
     extract_multimodal_content,
     is_mllm_model,
     is_vlm_model,
+    sanitize_output,
     validate_content_blocks_for_capabilities,
 )
 
@@ -72,6 +73,13 @@ class TestCleanOutputText:
         text = "<|im_start|>assistant\nHello world<|im_end|><|endoftext|>"
         result = clean_output_text(text)
         assert result == "assistant\nHello world"
+
+    @pytest.mark.parametrize(
+        "token",
+        ["<|reserved_special_token_0|>", "<|extra_0|>", "<|foo2>"],
+    )
+    def test_final_sanitizer_removes_digit_bearing_lowercase_tokens(self, token):
+        assert sanitize_output(f"before {token} after") == "before  after"
 
     def test_preserves_think_tags(self):
         text = "<think>Let me think about this.</think>The answer is 42."
