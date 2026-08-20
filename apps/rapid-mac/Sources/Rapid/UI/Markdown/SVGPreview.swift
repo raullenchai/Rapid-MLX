@@ -52,7 +52,7 @@ enum SVGPreview {
     nonisolated static func looksLikeSVG(code: String, language: String?) -> Bool {
         guard code.utf8.count <= maximumSourceBytes else { return false }
         let head = code.prefix(2_048)
-        guard let svgStart = head.range(of: "<svg", options: .caseInsensitive)?.lowerBound else {
+        guard head.range(of: "<svg", options: .caseInsensitive) != nil else {
             return false
         }
         // Prose or source that merely mentions `<svg` is not a document. The
@@ -61,32 +61,101 @@ enum SVGPreview {
         guard code.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<") else {
             return false
         }
-        return hasLikelyClosingRoot(in: code, startingAt: svgStart)
+        return hasCompleteSVGRoot(in: code)
     }
 
-    /// Avoid the expensive parse until the streamed root is plausibly whole.
-    /// This is intentionally only a heuristic; ``NSImage`` still decides
-    /// whether the complete-looking source is valid SVG.
-    private nonisolated static func hasLikelyClosingRoot(
-        in code: String, startingAt svgStart: String.Index
-    ) -> Bool {
-        if let tagEnd = code[svgStart...].firstIndex(of: ">") {
-            let openingTag = code[svgStart..<tagEnd]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if openingTag.hasSuffix("/") { return true }
+    /// Avoid the expensive parse until the streamed root is whole. This tiny
+    /// lexer ignores comments, CDATA, declarations and quoted attributes, so
+    /// text such as `<!-- </svg> -->` cannot trigger a parse on every flush.
+    /// ``NSImage`` remains the authority on whether the completed source is
+    /// valid SVG.
+    private nonisolated static func hasCompleteSVGRoot(in code: String) -> Bool {
+        let bytes = Array(code.utf8)
+        var index = 0
+        var svgDepth = 0
+
+        func starts(with token: [UInt8], at offset: Int) -> Bool {
+            offset + token.count <= bytes.count
+                && bytes[offset..<(offset + token.count)].elementsEqual(token)
         }
 
-        var searchStart = svgStart
-        while searchStart < code.endIndex,
-              let closing = code.range(
-                  of: "</svg",
-                  options: .caseInsensitive,
-                  range: searchStart..<code.endIndex
-              ) {
-            guard closing.upperBound < code.endIndex else { return false }
-            let next = code[closing.upperBound]
-            if next == ">" || next.isWhitespace { return true }
-            searchStart = closing.upperBound
+        func lowercasedASCII(_ byte: UInt8) -> UInt8 {
+            (65...90).contains(byte) ? byte + 32 : byte
+        }
+
+        func isNameBoundary(_ byte: UInt8) -> Bool {
+            byte == 47 || byte == 62 || byte == 9 || byte == 10 || byte == 13 || byte == 32
+        }
+
+        while index < bytes.count {
+            guard bytes[index] == 60 else { index += 1; continue } // `<`
+
+            if starts(with: Array("<!--".utf8), at: index) {
+                guard let end = bytes[(index + 4)...].firstRange(of: Array("-->".utf8)) else {
+                    return false
+                }
+                index = end.upperBound
+                continue
+            }
+            if starts(with: Array("<![CDATA[".utf8), at: index) {
+                guard let end = bytes[(index + 9)...].firstRange(of: Array("]]>".utf8)) else {
+                    return false
+                }
+                index = end.upperBound
+                continue
+            }
+
+            // Find the tag end without treating `>` inside a quoted attribute
+            // or declaration as markup.
+            var end = index + 1
+            var quote: UInt8?
+            var bracketDepth = 0
+            while end < bytes.count {
+                let byte = bytes[end]
+                if let currentQuote = quote {
+                    if byte == currentQuote { quote = nil }
+                } else if byte == 34 || byte == 39 {
+                    quote = byte
+                } else if byte == 91 {
+                    bracketDepth += 1
+                } else if byte == 93, bracketDepth > 0 {
+                    bracketDepth -= 1
+                } else if byte == 62, bracketDepth == 0 {
+                    break
+                }
+                end += 1
+            }
+            guard end < bytes.count else { return false }
+
+            var nameStart = index + 1
+            let isClosing = nameStart < end && bytes[nameStart] == 47
+            if isClosing { nameStart += 1 }
+            while nameStart < end, [9, 10, 13, 32].contains(bytes[nameStart]) {
+                nameStart += 1
+            }
+            let isSVG = nameStart + 3 <= end
+                && lowercasedASCII(bytes[nameStart]) == 115
+                && lowercasedASCII(bytes[nameStart + 1]) == 118
+                && lowercasedASCII(bytes[nameStart + 2]) == 103
+                && (nameStart + 3 == end || isNameBoundary(bytes[nameStart + 3]))
+
+            if isSVG {
+                if isClosing {
+                    guard svgDepth > 0 else { index = end + 1; continue }
+                    svgDepth -= 1
+                    if svgDepth == 0 { return true }
+                } else {
+                    var tail = end
+                    while tail > nameStart, [9, 10, 13, 32].contains(bytes[tail - 1]) {
+                        tail -= 1
+                    }
+                    if tail > nameStart, bytes[tail - 1] == 47 {
+                        return svgDepth == 0
+                    }
+                    svgDepth += 1
+                }
+            }
+            index = end + 1
         }
         return false
     }

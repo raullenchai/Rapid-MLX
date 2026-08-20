@@ -25,11 +25,6 @@ final class MarkdownCodeBlockView: NSView {
     private var previewSource: String?
     private var isShowingPreview = false
 
-    /// Set synchronously by the detector: this block might have a picture, so
-    /// the header has to make room for the button whether or not the fence
-    /// carried a language tag.
-    private var isPreviewCandidate = false
-
     public override var isFlipped: Bool { true }
 
     public init(options: MarkdownOptions) {
@@ -154,7 +149,7 @@ final class MarkdownCodeBlockView: NSView {
     /// behind them. Source text hid this because it is left-aligned and
     /// rarely reaches that corner; a full-width image reaches it every time.
     private var headerHeight: CGFloat {
-        guard !(language?.isEmpty ?? true) || isPreviewCandidate else { return 0 }
+        guard !(language?.isEmpty ?? true) || previewImage != nil else { return 0 }
         return options.codeHeaderInsets.top + 16 + options.codeHeaderInsets.bottom
     }
 
@@ -251,8 +246,7 @@ final class MarkdownCodeBlockView: NSView {
     /// cheap `looksLikeSVG` check short-circuits before the parse, so a plain
     /// Swift block costs one substring search per flush and nothing else.
     private func updatePreviewAvailability() {
-        isPreviewCandidate = SVGPreview.looksLikeSVG(code: code, language: language)
-        guard isPreviewCandidate else {
+        guard SVGPreview.looksLikeSVG(code: code, language: language) else {
             previewButton.isHidden = true
             previewImage = nil
             previewSource = nil

@@ -67,6 +67,21 @@ struct SVGPreviewTests {
         ))
     }
 
+    @Test("Closing-root text in non-markup does not finish a stream", arguments: [
+        "<svg><!-- </svg> -->",
+        "<svg><![CDATA[</svg>]]>",
+        #"<svg data-example="</svg>">"#,
+    ])
+    func fakeClosingRootIsIgnored(_ code: String) {
+        #expect(!SVGPreview.looksLikeSVG(code: code, language: "svg"))
+    }
+
+    @Test("A real closing root after ignored text finishes the stream")
+    func closingRootAfterCommentIsAccepted() {
+        let code = "<svg><!-- </svg> --><text>ok</text></svg>"
+        #expect(SVGPreview.looksLikeSVG(code: code, language: "svg"))
+    }
+
     @Test("Nothing to preview", arguments: [
         "", "   ", "print(\"hello\")", "<html><body>hi</body></html>",
     ])
@@ -338,9 +353,10 @@ struct PreviewOrientationTests {
 
         // Sample inside the picture, not at the card's midpoint: a 100pt
         // document is never upscaled, so it occupies the left of a 300pt card
-        // and the centre column misses it entirely. `pixelsWide` is twice the
-        // point width on this rep, hence the doubling.
-        let column = Int((options.codeInsets.leading + 50) * 2)
+        // and the centre column misses it entirely. Convert points using the
+        // cache representation's actual scale (1x and 2x are both possible).
+        let pixelScale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let column = Int((options.codeInsets.leading + 50) * pixelScale)
 
         // Red is the document's top band, so it has to appear above blue.
         func firstRow(where matches: (NSColor) -> Bool) -> Int? {
@@ -405,6 +421,20 @@ struct MarkdownCodeBlockPreviewTests {
         let tagged = block(svg, "svg")
         let untagged = block(svg, nil)
         #expect(untagged.height(forWidth: 400) == tagged.height(forWidth: 400))
+    }
+
+    @Test("An invalid untagged document does not reserve an empty header")
+    func invalidUntaggedDocumentHasNoHeader() {
+        let code = "<svg><broken></svg>"
+        let invalid = block(code, nil)
+        let options = MarkdownOptions()
+        let renderer = MarkdownTextRenderer(options: options)
+        renderer.setCode(code, language: nil)
+        let contentWidth = 400 - options.codeInsets.leading - options.codeInsets.trailing
+        let expectedHeight = options.codeInsets.top
+            + renderer.measureHeight(width: contentWidth) + options.codeInsets.bottom
+        #expect(previewButton(in: invalid)?.isHidden == true)
+        #expect(invalid.height(forWidth: 400) == expectedHeight)
     }
 
     @Test("An SVG block offers a preview")
