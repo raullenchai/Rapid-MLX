@@ -313,6 +313,10 @@ enum SVGPreview {
                 // Namespace identifiers name vocabularies; they are not
                 // dereferenced resources.
                 if key == "xmlns" || key.hasPrefix("xmlns:") { continue }
+                // CSS escapes can disguise both `url` and its scheme. Inline
+                // CSS and escaped presentation values are outside the safe
+                // subset rather than being normalized by a second CSS parser.
+                if key == "style" || value.contains("\\") { rejected = true }
                 if (key == "href" || key.hasSuffix(":href"))
                     && !trimmed.isEmpty && !trimmed.hasPrefix("#") {
                     rejected = true

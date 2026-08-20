@@ -150,6 +150,7 @@ struct SVGPreviewTests {
         #"<svg><script>alert(1)</script></svg>"#,
         #"<!DOCTYPE svg [<!ENTITY x "boom">]><svg><text>&x;</text></svg>"#,
         #"<?xml-stylesheet href="https://example.com/a.css"?><svg/>"#,
+        #"<svg><rect fill="u\72l(h\74tp\3a\2f\2fexample.com/a)"/></svg>"#,
     ])
     func unsafeConstructsRenderNothing(_ code: String) {
         #expect(SVGPreview.image(from: code) == nil)
@@ -259,7 +260,7 @@ struct AppKitSVGAssumptionTests {
             <svg xmlns="http://www.w3.org/2000/svg" \
             xmlns:xlink="http://www.w3.org/1999/xlink" \
             viewBox="0 0 100 100" width="100" height="100">
-              <image xlink:href="http://127.0.0.1:\(probe.port)/leak.png" width="100" height="100"/>
+              <use xlink:href="http://127.0.0.1:\(probe.port)/leak.svg#shape"/>
             </svg>
             """
         #expect(SVGPreview.image(from: svg) == nil, "external resources must be rejected")
