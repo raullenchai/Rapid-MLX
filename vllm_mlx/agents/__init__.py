@@ -36,10 +36,6 @@ _LOADED = False
 _PROFILE_ALIASES = {
     "claude": "claude-code",
     "dsh": "deepseek-harness",
-    # ``rapid-mlx launch`` calls the same product ``continue-dev`` (the
-    # launch registry avoids the bare Python keyword in its module
-    # names), so both slugs must resolve here too — see issue #2082.
-    "continue-dev": "continue",
 }
 
 PROFILES_DIR = Path(__file__).parent / "profiles"

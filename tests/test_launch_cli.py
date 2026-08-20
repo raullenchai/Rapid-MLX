@@ -1043,7 +1043,7 @@ def test_launch_help_lists_supported_clients():
     # argparse wraps help text at arbitrary columns; normalize whitespace
     # before matching so the assertion doesn't depend on wrap width.
     help_text = " ".join(sub.choices["launch"].format_help().split())
-    assert "Supported: cline, claude-code." in help_text
+    assert "Supported: cline, claude-code, openhands." in help_text
     assert "continue" not in help_text
 
 

@@ -10643,8 +10643,8 @@ Examples:
         nargs="?",
         default=None,
         help=(
-            "Agent name (e.g. codex, opencode, qwen-code, aider; "
-            "continue-dev is accepted for continue). Omit to list all."
+            "Agent name (e.g. codex, opencode, qwen-code, aider). "
+            "Omit to list all."
         ),
     )
     agents_parser.add_argument(
