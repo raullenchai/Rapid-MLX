@@ -325,14 +325,23 @@ enum SVGPreview {
                     .contains(where: lower.contains) {
                     rejected = true
                 }
-                // Local paint references such as `url(#gradient)` are safe;
-                // every other CSS URL form is resource-bearing.
-                if lower.contains("url(") && !lower.contains("url(#") {
-                    rejected = true
-                }
+                if !Self.containsOnlyLocalCSSURLs(lower) { rejected = true }
                 if key == "d", value.utf8.count > 64 * 1024 { rejected = true }
             }
             if rejected { parser.abortParsing() }
+        }
+
+        private static func containsOnlyLocalCSSURLs(_ value: String) -> Bool {
+            var rest = value[...]
+            while let marker = rest.range(of: "url(") {
+                let targetStart = marker.upperBound
+                guard let close = rest[targetStart...].firstIndex(of: ")") else { return false }
+                let target = rest[targetStart..<close]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard target.hasPrefix("#") else { return false }
+                rest = rest[rest.index(after: close)...]
+            }
+            return true
         }
 
         func parser(

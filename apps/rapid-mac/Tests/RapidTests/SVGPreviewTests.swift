@@ -151,6 +151,7 @@ struct SVGPreviewTests {
         #"<!DOCTYPE svg [<!ENTITY x "boom">]><svg><text>&x;</text></svg>"#,
         #"<?xml-stylesheet href="https://example.com/a.css"?><svg/>"#,
         #"<svg><rect fill="u\72l(h\74tp\3a\2f\2fexample.com/a)"/></svg>"#,
+        #"<svg><rect fill="url(#safe) url(https://example.com/a)"/></svg>"#,
     ])
     func unsafeConstructsRenderNothing(_ code: String) {
         #expect(SVGPreview.image(from: code) == nil)
