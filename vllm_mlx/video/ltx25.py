@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -150,13 +151,36 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
         ) from exc
 
 
+# Basic-auth URLs (https://user:token@index.example) can appear in uv's
+# package-index error output; redact the credential part before display.
+_CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/\s:@]+:[^/\s@]+@")
+
+
+def _sanitize_diagnostic(text: str) -> str:
+    """Make subprocess output safe to print: no control sequences (terminal
+    escape injection), no embedded index credentials."""
+    text = _CREDENTIAL_URL_RE.sub(r"\1***@", text)
+    return "".join(ch if ch.isprintable() or ch in " \t\n" else " " for ch in text)
+
+
+def _stderr_tail(stream: io.BufferedRandom) -> str:
+    """Read a bounded tail from a spooled stderr file (never the whole body)."""
+    try:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - 4096))
+        return stream.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ""
+
+
 def _provisioning_failure_detail(exc: Exception) -> str:
     """Compress a provisioning failure into one actionable line."""
     if isinstance(exc, subprocess.TimeoutExpired):
         return f"`uv sync --frozen` timed out after {int(exc.timeout)}s"
     if isinstance(exc, subprocess.CalledProcessError):
         detail = f"`uv sync --frozen` failed with exit code {exc.returncode}"
-        stderr = (exc.stderr or "").strip()
+        stderr = _sanitize_diagnostic((exc.stderr or "").strip())
         if stderr:
             tail = " | ".join(stderr.splitlines()[-3:])
             if len(tail) > 300:
@@ -183,20 +207,30 @@ def prepare_ltx25_runtime(executable: str) -> Path:
             cache = tempfile.TemporaryDirectory(prefix="rapidmlx-ltx25-runtime-")
             workspace = Path(cache.name)
             _materialize_runtime(Path(executable).parents[2], workspace)
-            subprocess.run(
-                [
-                    str(Path(uv).absolute()),
-                    "sync",
-                    "--frozen",
-                    "--project",
-                    str(workspace),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=1800,
-            )
+            # stderr goes to a temp file, not PIPE: a noisy dependency build
+            # must never buffer unbounded output in the server's memory. Only
+            # a bounded tail is read back, and only on failure.
+            with tempfile.TemporaryFile() as uv_stderr:
+                try:
+                    subprocess.run(
+                        [
+                            str(Path(uv).absolute()),
+                            "sync",
+                            "--frozen",
+                            "--project",
+                            str(workspace),
+                        ],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=uv_stderr,
+                        timeout=1800,
+                    )
+                except subprocess.CalledProcessError as run_exc:
+                    # Real runs route stderr to the file, so the exception
+                    # carries none; keep any stderr already attached.
+                    if not run_exc.stderr:
+                        run_exc.stderr = _stderr_tail(uv_stderr)
+                    raise
             interpreter = workspace / ".venv" / "bin" / "python"
             if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
                 raise LTX25BackendError(

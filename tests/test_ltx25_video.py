@@ -184,6 +184,48 @@ def test_ltx25_provisioning_error_includes_uv_failure_detail(
     assert "lockfile out of date" in message
 
 
+def test_ltx25_provisioning_detail_sanitizes_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control sequences and index credentials in uv output must not reach
+    the terminal (escape injection / credential exposure)."""
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def failing_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.CalledProcessError(
+            1,
+            ["uv", "sync"],
+            stderr=(
+                "\x1b[31merror\x1b[0m: failed to fetch "
+                "https://build:s3cret@index.example/simple/foo\n"
+            ),
+        )
+
+    monkeypatch.setattr(ltx25.subprocess, "run", failing_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    message = str(excinfo.value)
+    assert "\x1b" not in message
+    assert "s3cret" not in message
+    assert "https://***@index.example/simple/foo" in message
+
+
+def test_ltx25_stderr_tail_is_bounded() -> None:
+    """Only a bounded tail of uv stderr is ever read back into memory."""
+    import tempfile
+
+    with tempfile.TemporaryFile() as f:
+        f.write(b"x" * 100_000 + b"\nfinal line\n")
+        tail = ltx25._stderr_tail(f)
+
+    assert len(tail) <= 4096
+    assert "final line" in tail
+
+
 def test_ltx25_provisioning_timeout_detail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
