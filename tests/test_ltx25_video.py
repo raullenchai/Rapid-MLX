@@ -238,6 +238,17 @@ def test_ltx25_sanitize_redacts_query_tokens_and_bearer() -> None:
     assert "https://index.example/simple?token=***" in out
 
 
+def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "config error: token=\"quoted-s3cret\" password='single-s3cret' left"
+    )
+    assert "quoted-s3cret" not in out
+    assert "single-s3cret" not in out
+    assert "left" in out
+
+
 def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
     from vllm_mlx.video.ltx25 import _provisioning_failure_detail
 

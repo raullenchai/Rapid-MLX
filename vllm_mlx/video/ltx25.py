@@ -162,7 +162,7 @@ _CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
 # errors can echo back.
 _CREDENTIAL_PARAM_RE = re.compile(
     r"(?i)\b((?:api[-_]?)?(?:token|secret|password|passwd|key|credential)s?"
-    r"\s*[=:]\s*)[^&\s\"']+"
+    r"\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^&\s\"']+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")
 
