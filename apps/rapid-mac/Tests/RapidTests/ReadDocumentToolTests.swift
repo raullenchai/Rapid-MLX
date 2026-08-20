@@ -218,6 +218,27 @@ struct ReadDocumentToolTests {
         #expect((json["note"] as? String)?.contains("at least") == true)
     }
 
+    @Test("A single whole-document grep match is independently bounded")
+    func wholeDocumentMatchIsBounded() async throws {
+        let cache = freshCache()
+        let id = store(String(repeating: "a", count: 100_000), in: cache)
+
+        let result = await run(
+            ["document_id": id.uuidString, "grep": "(?s).*"],
+            cache: cache
+        )
+        let json = try payload(result)
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        let first = try #require(passages.first)
+        let match = try #require(first["match"] as? String)
+
+        #expect(match.count == ReadDocumentTool.maxGrepMatchCharacters)
+        #expect(first["match_truncated"] as? Bool == true)
+        #expect((first["text"] as? String)?.count ?? 0 <= ReadDocumentTool.charBudget)
+        #expect(result.content.count < ReadDocumentTool.charBudget
+            + ReadDocumentTool.maxGrepMatchCharacters + 2_000)
+    }
+
     // MARK: - Adversarial grep
     //
     // `grep` runs a MODEL-SUPPLIED regular expression over an extract that may

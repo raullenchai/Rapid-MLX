@@ -98,11 +98,12 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(toolRows.allSatisfy { !$0.content.contains("budget exhausted") })
     }
 
-    @Test("The document budget is finite and reports its own exhaustion")
+    @Test("The document budget removes the tool and forces synthesis")
     func documentBudgetIsItselfCapped() async throws {
-        // A model that keeps paging forever must still be stopped — and told
-        // which budget ran out, so it can say what it has not read.
-        ToolLoopBudgetProtocol.reset(documentReads: 40)
+        // The stub requests read_document whenever it is offered. It has no
+        // voluntary round cap, so only removing the exhausted tool from the
+        // next request can terminate this loop.
+        ToolLoopBudgetProtocol.reset(documentReads: .max)
         let registry = CountingToolRegistry(toolName: "read_document")
         let model = ChatViewModel(
             client: ChatStreamClient(
@@ -120,8 +121,19 @@ struct ToolLoopBudgetIntegrationTests {
 
         #expect(!model.isStreaming)
         #expect(registry.runCount == 12)
+        #expect(ToolLoopBudgetProtocol.requestBodies.count == 13)
+        #expect(model.messages.last?.content == "Here is the answer from the evidence.")
+        #expect(model.messages.last?.status == .complete)
+        #expect(model.lastError == nil)
         let toolRows = model.messages.filter { $0.role == .tool }
-        #expect(toolRows.contains { $0.content.contains("Document-read budget exhausted") })
+        #expect(toolRows.count == 12)
+        #expect(toolRows.allSatisfy { !$0.content.contains("budget exhausted") })
+
+        let finalBody = try #require(ToolLoopBudgetProtocol.requestBodies.last)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: finalBody) as? [String: Any]
+        )
+        #expect(json["tools"] == nil)
     }
 }
 
@@ -185,6 +197,8 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
         let body = readBody(from: request)
         Self.requestBodies.append(body)
         let requestNumber = Self.requestBodies.count
+        let requestJSON = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        let offersTools = requestJSON?["tools"] != nil
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -194,7 +208,14 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
 
         let stream: String
-        if Self.sendsBatchedCalls, requestNumber == 1 {
+        if !offersTools {
+            stream = """
+            data: {"choices":[{"delta":{"content":"Here is the answer from the evidence."},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """
+        } else if Self.sendsBatchedCalls, requestNumber == 1 {
             let calls = (1...5).map { index in
                 "{\"index\":\(index - 1),\"id\":\"call_\(index)\",\"type\":\"function\",\"function\":{\"name\":\"\(Self.toolName)\",\"arguments\":\"{}\"}}"
             }.joined(separator: ",")

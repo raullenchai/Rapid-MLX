@@ -157,6 +157,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     private enum CodingKeys: String, CodingKey {
         case id, filename, kind, extractedText, sourceByteCount
         case pageCount, rowCount, columnCount, wasTruncated, totalCharacterCount
+        case totalIsPending
     }
 
     /// Hand-written so a history file written before the preview/full-text
@@ -175,11 +176,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         rowCount = try c.decodeIfPresent(Int.self, forKey: .rowCount)
         columnCount = try c.decodeIfPresent(Int.self, forKey: .columnCount)
         wasTruncated = try c.decodeIfPresent(Bool.self, forKey: .wasTruncated) ?? false
-        // A persisted attachment always has a settled total: background
-        // extraction finishes long before a conversation is written back, and
-        // a pre-split history stored its whole extract inline.
+        // Old histories have neither total field: before deferred extraction,
+        // the inline extract was the whole retained document. New histories
+        // explicitly preserve a pending total so an attachment saved while its
+        // background pass is running is not mistaken for a complete document.
+        let totalIsPending = try c.decodeIfPresent(Bool.self, forKey: .totalIsPending) ?? false
         let storedTotal = try c.decodeIfPresent(Int.self, forKey: .totalCharacterCount)
-        totalCharacterCount = max(extractedText.count, storedTotal ?? extractedText.count)
+        totalCharacterCount = totalIsPending
+            ? nil
+            : max(extractedText.count, storedTotal ?? extractedText.count)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -194,6 +199,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         try c.encodeIfPresent(columnCount, forKey: .columnCount)
         try c.encode(wasTruncated, forKey: .wasTruncated)
         try c.encodeIfPresent(totalCharacterCount, forKey: .totalCharacterCount)
+        if totalCharacterCount == nil { try c.encode(true, forKey: .totalIsPending) }
     }
 
     /// Build an attachment from a complete extract: register the full text in
@@ -284,6 +290,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     /// under three seconds and still yields a usable preview. The rest is
     /// recognized on the same background pass that finishes text PDFs.
     private static let eagerOCRPageCount = 4
+    /// Opening pages inspected while looking for the eager OCR preview. A
+    /// cover, separator, or several blank leaves must not make a readable scan
+    /// look empty, but synchronous recognition still needs a firm ceiling.
+    private static let maxEagerOCRProbePages = 8
 
     /// Upper bound on captured outline rows. A real 302-page book has 289;
     /// this stops a generated PDF with a pathological bookmark tree from
@@ -396,9 +406,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     ///
     /// Split out from the text path because the economics are different by two
     /// orders of magnitude: reading selectable text is ~0.006 s/page, while
-    /// recognition is ~0.69 s/page. Only ``eagerOCRPageCount`` pages are
-    /// recognized synchronously — enough for a preview — and the remainder
-    /// runs on the same background pass a large text PDF uses.
+    /// recognition is ~0.69 s/page. At most ``maxEagerOCRProbePages`` opening
+    /// pages are inspected synchronously, stopping once
+    /// ``eagerOCRPageCount`` readable pages have supplied a preview. The
+    /// remainder runs on the same background pass a large text PDF uses.
     private init(
         scannedPDF document: PDFDocument,
         filename: String,
@@ -406,16 +417,30 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         cache: DocumentContentCache,
         outline: [DocumentContentCache.OutlineNode]
     ) throws {
-        let eagerLimit = min(Self.eagerOCRPageCount, document.pageCount)
-        let head = PDFTextRecognizer.recognizePages(of: document, range: 0..<eagerLimit)
+        let probeLimit = min(Self.maxEagerOCRProbePages, document.pageCount)
+        var recognizedPages: [String] = []
+        var pagesInspected = 0
+        for pageIndex in 0..<probeLimit {
+            let recognized = PDFTextRecognizer.recognizePages(
+                of: document,
+                range: pageIndex..<(pageIndex + 1)
+            )
+            pagesInspected = pageIndex + 1
+            guard !recognized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            recognizedPages.append(recognized)
+            if recognizedPages.count == Self.eagerOCRPageCount { break }
+        }
+        let head = recognizedPages.joined(separator: "\n\n")
         guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // Recognition found nothing legible on the opening pages. This is
-            // the honest "cannot read this" case: blank scans, pure diagrams,
-            // or a language Vision does not cover.
+            // Recognition found nothing legible in the bounded opening probe.
+            // This is the honest "cannot read this" case: blank scans, pure
+            // diagrams, or a language Vision does not cover.
             throw ValidationError.noExtractableText(.pdf)
         }
 
-        let isComplete = eagerLimit == document.pageCount
+        let isComplete = pagesInspected == document.pageCount
         try self.init(
             fullText: Self.collapsingLayoutNoise(head),
             filename: filename,
@@ -432,10 +457,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let pageCount = document.pageCount
         let previewLength = head.count
         cache.beginPending(id)
-        // `document` is handed over to the task and never touched here again,
-        // so the transfer is safe even though PDFDocument is not Sendable.
-        // Re-opening it inside the task instead would re-parse a 33 MB file.
-        nonisolated(unsafe) let handoff = document
         // `.utility`, not `.background`: the model may ask to read this
         // document seconds from now and blocks until recognition finishes.
         // `.background` is for work nobody awaits, and macOS throttles it hard
@@ -453,9 +474,14 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
+            // PDFDocument is not Sendable. Recreate it from Sendable bytes in
+            // this worker so no PDFKit object crosses the concurrency boundary
+            // or remains reachable from the importing task.
+            guard let workerDocument = PDFDocument(data: data),
+                  workerDocument.pageCount == pageCount else { return }
             let full = Self.collapsingLayoutNoise(
                 PDFTextRecognizer.recognizePages(
-                    of: handoff,
+                    of: workerDocument,
                     range: 0..<pageCount,
                     onPageComplete: { cache.reportProgress(id) }
                 )
@@ -673,7 +699,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             rowCount: rowCount,
             columnCount: columnCount,
             wasTruncated: wasTruncated,
-            totalCharacterCount: totalCharacterCount
+            totalCharacterCount: totalCharacterCount,
+            totalIsPending: totalCharacterCount == nil
         )
     }
 

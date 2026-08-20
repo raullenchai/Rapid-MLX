@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PDFKit
 import Testing
 @testable import Rapid
 
@@ -10,6 +11,33 @@ struct ChatFileAttachmentTests {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(fileExtension)
+    }
+
+    private func scannedPDFWithBlankFrontMatter() throws -> URL {
+        let document = PDFDocument()
+        let size = NSSize(width: 612, height: 300)
+        for index in 0..<5 {
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.white.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            if index == 4 {
+                ("READABLE PAGE FIVE REVENUE 2026" as NSString).draw(
+                    in: NSRect(x: 35, y: 90, width: size.width - 70, height: 100),
+                    withAttributes: [
+                        .font: NSFont.systemFont(ofSize: 32, weight: .bold),
+                        .foregroundColor: NSColor.black,
+                    ]
+                )
+            }
+            image.unlockFocus()
+            if let page = PDFPage(image: image) {
+                document.insert(page, at: document.pageCount)
+            }
+        }
+        let url = temporaryURL(extension: "pdf")
+        try #require(document.dataRepresentation()).write(to: url)
+        return url
     }
 
     @Test("CSV parser accepts quoted commas and embedded newlines")
@@ -91,6 +119,23 @@ struct ChatFileAttachmentTests {
             #expect(error == .noExtractableText(.pdf))
             #expect(error.localizedDescription.contains("No readable text"))
         }
+    }
+
+    @Test("Blank front matter does not hide readable scanned pages", .timeLimit(.minutes(1)))
+    func blankLeadingScanPagesAreProbed() throws {
+        let url = try scannedPDFWithBlankFrontMatter()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let rawText = PDFDocument(url: url)?.page(at: 4)?.string ?? ""
+        #expect(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        let attachment = try ChatFileAttachment(
+            contentsOf: url,
+            cache: DocumentContentCache(diskDirectory: nil)
+        )
+        #expect(attachment.pageCount == 5)
+        #expect(attachment.extractedText.localizedCaseInsensitiveContains("revenue"))
+        #expect(attachment.extractedText.contains("[Page 5]"))
     }
 
     @Test("Document text is sent to the model but stays out of visible prose")
@@ -196,6 +241,52 @@ struct ChatFileAttachmentTests {
         #expect(fitted.allSatisfy { $0.hasUnshownContent })
         #expect(fitted.allSatisfy { !$0.wasTruncated })
         #expect(fitted.allSatisfy { $0.totalCharacterCount == 20_000 })
+    }
+
+    @Test("A fitted preview preserves an extraction whose total is still pending")
+    func fittedPreviewPreservesPendingTotal() throws {
+        let pending = try ChatFileAttachment(
+            filename: "scan.pdf",
+            kind: .pdf,
+            extractedText: String(repeating: "opening page ", count: 1_000),
+            sourceByteCount: 20_000,
+            pageCount: 80,
+            totalIsPending: true
+        )
+
+        let fitted = try #require(ChatFileAttachment.fittedForMessage([pending]).first)
+        #expect(fitted.totalCharacterCount == nil)
+        #expect(fitted.hasUnshownContent)
+        #expect(fitted.promptText.contains("read_document"))
+    }
+
+    @Test("A pending total survives history encoding without changing legacy decoding")
+    func pendingTotalIsCodable() throws {
+        let pending = try ChatFileAttachment(
+            filename: "scan.pdf",
+            kind: .pdf,
+            extractedText: "[Page 1]\nOpening text",
+            sourceByteCount: 10_000,
+            pageCount: 40,
+            totalIsPending: true
+        )
+        let restored = try JSONDecoder().decode(
+            ChatFileAttachment.self,
+            from: JSONEncoder().encode(pending)
+        )
+        #expect(restored.totalCharacterCount == nil)
+        #expect(restored.hasUnshownContent)
+
+        let legacy = """
+        {"id":"\(UUID().uuidString)","filename":"old.txt","kind":"txt",\
+        "extractedText":"whole legacy text","sourceByteCount":17}
+        """
+        let restoredLegacy = try JSONDecoder().decode(
+            ChatFileAttachment.self,
+            from: Data(legacy.utf8)
+        )
+        #expect(restoredLegacy.totalCharacterCount == restoredLegacy.extractedText.count)
+        #expect(!restoredLegacy.hasUnshownContent)
     }
 
     @Test("Import work is bounded before any selected file is opened")

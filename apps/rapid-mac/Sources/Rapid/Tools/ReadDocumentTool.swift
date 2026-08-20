@@ -42,6 +42,10 @@ enum ReadDocumentTool {
     /// Maximum `grep` hits reported in one call. Bounds the result size when a
     /// pattern matches on nearly every line.
     static let maxGrepMatches = 10
+    /// Maximum characters copied into a passage's `match` field. The passage
+    /// itself is budgeted separately, but a pattern such as `(?s).*` can make
+    /// the raw match span the entire 20-million-character document.
+    static let maxGrepMatchCharacters = 1_000
     /// Longest `grep` pattern accepted.
     ///
     /// A regex is code the model supplies and this process runs over as much
@@ -413,16 +417,25 @@ enum ReadDocumentTool {
                 offsetBy: grepContextRadius,
                 limitedBy: text.endIndex
             ) ?? text.endIndex
-            var passage = String(text[lower..<upper])
-            if passage.count > budgetLeft { passage = String(passage.prefix(budgetLeft)) }
+            let passageUpper = text.index(
+                lower,
+                offsetBy: budgetLeft,
+                limitedBy: upper
+            ) ?? upper
+            let passage = String(text[lower..<passageUpper])
             budgetLeft -= passage.count
-            passages.append([
+            let matchPrefix = text[range].prefix(maxGrepMatchCharacters)
+            var passagePayload: [String: Any] = [
                 // Checkpoint-based rather than `distance(from: startIndex)`:
                 // the linear spelling would walk the whole prefix per hit.
                 "offset": entry.characterOffset(of: lower),
-                "match": String(text[range]),
+                "match": String(matchPrefix),
                 "text": passage,
-            ])
+            ]
+            if matchPrefix.endIndex < range.upperBound {
+                passagePayload["match_truncated"] = true
+            }
+            passages.append(passagePayload)
         }
 
         guard !passages.isEmpty else {

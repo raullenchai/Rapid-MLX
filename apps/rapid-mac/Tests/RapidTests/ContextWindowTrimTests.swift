@@ -165,6 +165,38 @@ struct ContextWindowTrimTests {
         #expect(!trimmed.contains { ($0.toolCalls?.isEmpty == false) })
     }
 
+    @Test("An oversized current tool round keeps its complete user-anchored chain")
+    func oversizedToolResultKeepsCurrentTurnIntact() {
+        var toolCall = ChatMessage(role: .assistant)
+        toolCall.toolCalls = [
+            ToolCall(id: "read-1", name: "read_document", arguments: "{\"offset\":0}")
+        ]
+        let toolResult = ChatMessage(
+            role: .tool,
+            content: String(repeating: "document page content ", count: 1_000),
+            toolCallID: "read-1"
+        )
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "old question"),
+            ChatMessage(role: .assistant, content: "old answer"),
+            ChatMessage(role: .user, content: "summarize the attached report"),
+            toolCall,
+            toolResult,
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history,
+            contextWindow: 8_000
+        )
+
+        #expect(trimmed.count == 3)
+        #expect(trimmed[0].role == .user)
+        #expect(trimmed[0].content == "summarize the attached report")
+        #expect(trimmed[1].toolCalls?.first?.id == "read-1")
+        #expect(trimmed[2].role == .tool)
+        #expect(trimmed[2].toolCallID == "read-1")
+    }
+
     @Test("All-assistant prefix collapses to just the last user message")
     func collapsesToLastUserWhenAllNonUserBeforeIt() {
         // Pathological shape: massive assistant/tool turns ahead of

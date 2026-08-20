@@ -1762,9 +1762,10 @@ final class ChatViewModel {
     ///     newest-to-oldest accumulating ``content.count / 4`` tokens,
     ///     stop when adding the next row would exceed the budget, and
     ///     drop everything before that cut point.
-    ///   * The most recent message (the current user turn) is always
-    ///     kept — even if it alone overshoots the budget, since
-    ///     dropping it would mean sending no question at all.
+    ///   * The complete turn beginning at the most recent user message is
+    ///     always kept — even if it overshoots the budget. During a tool loop,
+    ///     the newest row is a tool result rather than the user question, and
+    ///     neither half of that chain is valid on its own.
     ///   * After cutting, drop leading non-user rows so the kept tail
     ///     never starts mid-tool-chain (a bare ``tool`` or
     ///     ``assistant(tool_calls)`` row at the head of a wire body is
@@ -1815,26 +1816,25 @@ final class ChatViewModel {
         let systemTokens = system.map(perRowCost) ?? 0
         let bodyBudget = max(1, budget - systemTokens)
 
-        var keep: [ChatMessage] = []
-        var running = 0
-        for msg in body.reversed() {
+        // Anchor the mandatory tail at the latest user row. On an ordinary
+        // request that is just the current question; during tool use it also
+        // includes every assistant(tool_calls) and tool-result row after it.
+        // Keeping that tail as a unit prevents an oversized tool result from
+        // being restored as an orphan after the leading-row cleanup below.
+        guard let currentTurnStart = body.lastIndex(where: { $0.role == .user }) else {
+            return system.map { [$0] } ?? []
+        }
+        var keep = Array(body[currentTurnStart...])
+        var running = keep.reduce(0) { $0 + perRowCost($1) }
+        for msg in body[..<currentTurnStart].reversed() {
             let cost = perRowCost(msg)
-            if keep.isEmpty {
-                keep.append(msg)
-                running += cost
-                continue
-            }
             if running + cost > bodyBudget { break }
-            keep.append(msg)
+            keep.insert(msg, at: 0)
             running += cost
         }
-        keep.reverse()
 
         while let first = keep.first, first.role != .user {
             keep.removeFirst()
-        }
-        if keep.isEmpty, let last = body.last {
-            keep = [last]
         }
         if let sys = system {
             keep.insert(sys, at: 0)
@@ -2406,14 +2406,16 @@ final class ChatViewModel {
             // ``servingAlias`` is the protected startup/default engine and is
             // no longer authoritative once secondary models are resident.
             let wireAlias = alias
-            // Once the general budget is spent the surface NARROWS to the
-            // document tools rather than staying whole: the separate document
-            // allowance exists to finish reading an attachment, not to hand
-            // back a second general budget. Advertising a tool we would then
-            // refuse at dispatch would just burn a round on a rejected call.
+            // Each allowance narrows the advertised surface independently.
+            // The document quota exists to finish reading an attachment, not
+            // to hand back a second general budget; once it is spent, leaving
+            // read_document advertised would let rejected calls loop forever.
             var offered = enabledDefinitions
             if toolExecutionsLeft == 0 {
                 offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
+            }
+            if documentReadsLeft == 0 {
+                offered = offered.filter { !Self.documentToolNames.contains($0.function.name) }
             }
             // Nothing left to offer is the same state as a spent budget: enter
             // the synthesis round so the model is told to answer, instead of

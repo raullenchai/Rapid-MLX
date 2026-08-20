@@ -342,6 +342,47 @@ struct DocumentCacheLifecycleTests {
         #expect(cache.get(id)?.text == "attached again")
     }
 
+    @Test("A task cannot register after its pending extraction already finished")
+    func completedExtractionCannotLeaveARegisteredTask() async {
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let id = UUID()
+        cache.beginPending(id)
+        cache.finishPending(id)
+
+        let completed = Task.detached {}
+        await completed.value
+        #expect(!cache.registerExtraction(id, task: completed))
+        #expect(!cache.hasRegisteredExtraction(id))
+    }
+
+    @Test("Progress from another document does not extend a stalled wait")
+    func progressIsScopedToItsDocument() async {
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let stalled = UUID()
+        let advancing = UUID()
+        cache.put(stalled, entry: .init(filename: "stalled.pdf", text: "partial A"))
+        cache.put(advancing, entry: .init(filename: "advancing.pdf", text: "partial B"))
+        cache.beginPending(stalled)
+        cache.beginPending(advancing)
+
+        let progress = Task.detached {
+            for _ in 0..<12 {
+                try? await Task.sleep(for: .milliseconds(40))
+                cache.reportProgress(advancing)
+            }
+            cache.finishPending(advancing)
+        }
+
+        let started = Date()
+        let entry = cache.getAwaitingCompletion(stalled, stallTimeout: 0.15)
+        let elapsed = Date().timeIntervalSince(started)
+        cache.finishPending(stalled)
+        await progress.value
+
+        #expect(entry?.text == "partial A")
+        #expect(elapsed < 0.4)
+    }
+
     @Test("Repeated removals each invalidate a publish that straddles them")
     func everyRemovalInvalidates() throws {
         // A generation, not a boolean flag: remove/re-attach/remove must not

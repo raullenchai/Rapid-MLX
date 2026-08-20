@@ -293,6 +293,7 @@ final class DocumentContentCache: @unchecked Sendable {
         let k = Self.key(for: id)
         pendingSignal.lock()
         pending.insert(k)
+        progressGenerations[k] = 0
         pendingSignal.unlock()
     }
 
@@ -301,13 +302,10 @@ final class DocumentContentCache: @unchecked Sendable {
         let k = Self.key(for: id)
         pendingSignal.lock()
         pending.remove(k)
+        progressGenerations.removeValue(forKey: k)
+        extractionTasks.removeValue(forKey: k)
         pendingSignal.broadcast()
         pendingSignal.unlock()
-        // The handle is dead weight once the task has returned; dropping it
-        // here is what keeps this map from growing for the life of the process.
-        taskLock.lock()
-        extractionTasks[k] = nil
-        taskLock.unlock()
     }
 
     // MARK: - Cancelling an extraction
@@ -322,23 +320,24 @@ final class DocumentContentCache: @unchecked Sendable {
     /// ``Task.isCancelled`` between pages — this is what makes that check
     /// reachable.
     private var extractionTasks: [String: Task<Void, Never>] = [:]
-    private let taskLock = NSLock()
 
     /// Hand the cache the task extracting `id` so it can be cancelled later.
     ///
     /// Registration races the task itself: a short document can finish (and
     /// call ``finishPending``) before the caller gets here, and storing the
-    /// handle then would leave a completed task in the map forever. Checking
-    /// pending under the lock keeps the map to genuinely live work.
-    func registerExtraction(_ id: UUID, task: Task<Void, Never>) {
+    /// handle then would leave a completed task in the map forever. The pending
+    /// check and handle insertion use the same lock as finish cleanup, making
+    /// that decision atomic and keeping the map to genuinely live work.
+    @discardableResult
+    func registerExtraction(_ id: UUID, task: Task<Void, Never>) -> Bool {
         let k = Self.key(for: id)
         pendingSignal.lock()
-        let stillRunning = pending.contains(k)
+        let registered = pending.contains(k)
+        if registered {
+            extractionTasks[k] = task
+        }
         pendingSignal.unlock()
-        guard stillRunning else { return }
-        taskLock.lock()
-        extractionTasks[k] = task
-        taskLock.unlock()
+        return registered
     }
 
     /// Stop the background extraction of `id`, if one is running.
@@ -353,9 +352,9 @@ final class DocumentContentCache: @unchecked Sendable {
     /// than left to time out.
     func cancelExtraction(_ id: UUID) {
         let k = Self.key(for: id)
-        taskLock.lock()
+        pendingSignal.lock()
         let task = extractionTasks.removeValue(forKey: k)
-        taskLock.unlock()
+        pendingSignal.unlock()
         task?.cancel()
     }
 
@@ -363,7 +362,7 @@ final class DocumentContentCache: @unchecked Sendable {
     /// Exists for tests asserting the lifecycle; production code cancels
     /// unconditionally rather than asking first.
     func hasRegisteredExtraction(_ id: UUID) -> Bool {
-        taskLock.lock(); defer { taskLock.unlock() }
+        pendingSignal.lock(); defer { pendingSignal.unlock() }
         return extractionTasks[Self.key(for: id)] != nil
     }
 
@@ -385,26 +384,38 @@ final class DocumentContentCache: @unchecked Sendable {
     private func waitForPending(_ id: UUID, stallTimeout: TimeInterval) {
         let k = Self.key(for: id)
         pendingSignal.lock(); defer { pendingSignal.unlock() }
+        var observedGeneration = progressGenerations[k] ?? 0
+        var deadline = Date().addingTimeInterval(stallTimeout)
         while pending.contains(k) {
-            let generationBefore = progressGeneration
-            let deadline = Date().addingTimeInterval(stallTimeout)
             pendingSignal.wait(until: deadline)
             guard pending.contains(k) else { return }
-            // Woken by a timeout with no progress recorded: the task is stuck
-            // or gone. Return what is cached rather than blocking forever.
-            if progressGeneration == generationBefore, Date() >= deadline { return }
+            let currentGeneration = progressGenerations[k] ?? 0
+            if currentGeneration != observedGeneration {
+                observedGeneration = currentGeneration
+                deadline = Date().addingTimeInterval(stallTimeout)
+            } else if Date() >= deadline {
+                // Woken by a timeout with no progress for THIS document: the
+                // task is stuck or gone. Broadcasts from other documents do
+                // not reset its deadline.
+                return
+            }
         }
     }
 
     /// Bumped by ``reportProgress(_:)`` so a waiter can distinguish "still
     /// working" from "stalled" without knowing anything about the work.
-    private var progressGeneration: UInt64 = 0
+    private var progressGenerations: [String: UInt64] = [:]
 
     /// Signal that a long extraction is still advancing. Cheap enough to call
     /// per page.
     func reportProgress(_ id: UUID) {
+        let k = Self.key(for: id)
         pendingSignal.lock()
-        progressGeneration &+= 1
+        guard pending.contains(k) else {
+            pendingSignal.unlock()
+            return
+        }
+        progressGenerations[k, default: 0] &+= 1
         pendingSignal.broadcast()
         pendingSignal.unlock()
     }
