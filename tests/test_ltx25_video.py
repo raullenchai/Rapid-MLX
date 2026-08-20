@@ -225,6 +225,19 @@ def test_ltx25_sanitize_redacts_percent_encoded_userinfo() -> None:
     assert "https://***@index.example/simple/" in out
 
 
+def test_ltx25_sanitize_redacts_query_tokens_and_bearer() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "fetch https://index.example/simple?token=s3cret&x=1 failed; "
+        "api_key=abc123 Authorization: Bearer eyJhbGci.xyz"
+    )
+    assert "s3cret" not in out
+    assert "abc123" not in out
+    assert "eyJhbGci" not in out
+    assert "https://index.example/simple?token=***" in out
+
+
 def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
     from vllm_mlx.video.ltx25 import _provisioning_failure_detail
 

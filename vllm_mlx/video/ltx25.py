@@ -157,12 +157,23 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
 # display — anything between ``scheme://`` and ``@`` is treated as
 # potentially credential-bearing.
 _CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
+# Token-bearing query parameters / assignments (``?token=…``,
+# ``access_key=…``, ``Authorization: Bearer …``) that package-index
+# errors can echo back.
+_CREDENTIAL_PARAM_RE = re.compile(
+    r"(?i)\b((?:api[-_]?)?(?:token|secret|password|passwd|key|credential)s?"
+    r"\s*[=:]\s*)[^&\s\"']+"
+)
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")
 
 
 def _sanitize_diagnostic(text: str) -> str:
     """Make subprocess output safe to print: no control sequences (terminal
-    escape injection), no embedded index credentials."""
+    escape injection), no embedded index credentials (URL userinfo,
+    token-bearing query params, bearer headers)."""
     text = _CREDENTIAL_URL_RE.sub(r"\1***@", text)
+    text = _CREDENTIAL_PARAM_RE.sub(r"\1***", text)
+    text = _BEARER_RE.sub(r"\1***", text)
     return "".join(ch if ch.isprintable() or ch in " \t\n" else " " for ch in text)
 
 
