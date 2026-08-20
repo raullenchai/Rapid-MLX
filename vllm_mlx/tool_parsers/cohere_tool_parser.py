@@ -53,13 +53,23 @@ class NorthToolParser(ToolParser):
         )
 
     @staticmethod
-    def _arguments(call: dict[str, Any]) -> str:
+    def _arguments(call: dict[str, Any]) -> str | None:
+        """Return canonical object-root arguments, or reject the call.
+
+        OpenAI tool-call arguments must encode a JSON object.  North usually
+        emits that object directly, but some checkpoints serialize it once
+        before placing it in the action envelope.  Accept either form while
+        rejecting malformed JSON and scalar/list/null roots.
+        """
         arguments = call.get("parameters", call.get("arguments", {}))
         if isinstance(arguments, str):
-            return arguments
-        return json.dumps(
-            arguments if arguments is not None else {}, ensure_ascii=False
-        )
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(arguments, dict):
+            return None
+        return json.dumps(arguments, ensure_ascii=False)
 
     @classmethod
     def _parse_action(cls, body: str) -> list[dict[str, Any]]:
@@ -73,15 +83,21 @@ class NorthToolParser(ToolParser):
         calls = []
         for entry in entries:
             if not isinstance(entry, dict):
-                continue
+                return []
             name = entry.get("tool_name") or entry.get("name") or entry.get("function")
             if not isinstance(name, str) or not name:
-                continue
+                return []
+            arguments = cls._arguments(entry)
+            if arguments is None:
+                # Treat an action envelope atomically.  Executing the valid
+                # subset would hide the rejected bytes and can turn a partly
+                # malformed model response into a different operation list.
+                return []
             calls.append(
                 {
                     "id": cls._tool_id(entry),
                     "name": name,
-                    "arguments": cls._arguments(entry),
+                    "arguments": arguments,
                 }
             )
         return calls
@@ -150,6 +166,16 @@ class NorthToolParser(ToolParser):
             name = function.get("name") if isinstance(function, dict) else None
             if isinstance(name, str) and name:
                 names.add(name)
+        choice = request.get("tool_choice")
+        if isinstance(choice, dict):
+            function = choice.get("function")
+            selected = (
+                function.get("name")
+                if isinstance(function, dict)
+                else choice.get("name")
+            )
+            if isinstance(selected, str) and selected:
+                names.intersection_update({selected})
         return frozenset(names)
 
     @classmethod
@@ -237,12 +263,16 @@ class NorthToolParser(ToolParser):
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
         if self.START not in model_output:
-            # Some decode paths have already consumed the action control
-            # tokens. Keep mlx-lm's bare-payload fallback, but only accept
-            # entries that still carry Cohere's tool-name fields.
-            calls = self._parse_action(model_output.strip())
-            if calls and self._calls_are_declared(calls, request):
-                return ExtractedToolCallInformation(True, calls, None)
+            # A JSON-shaped assistant answer is not authenticated North wire
+            # evidence.  Never promote it merely because it names a declared
+            # tool, and make the rejection authoritative so the shared raw-
+            # JSON fallback cannot resurrect it after this parser declines.
+            return ExtractedToolCallInformation(
+                False,
+                [],
+                model_output,
+                rejection_authoritative=True,
+            )
 
         calls: list[dict[str, Any]] = []
         content_parts: list[str] = []
@@ -279,8 +309,7 @@ class NorthToolParser(ToolParser):
             # A complete North envelope is a positive wire-format match.  Its
             # policy or syntax rejection is authoritative: feeding the same
             # bytes to the generic raw-JSON scanner can resurrect an
-            # undeclared call from inside the envelope.  A format miss (no
-            # North opener) deliberately remains fallback-compatible.
+            # undeclared or malformed call from inside the envelope.
             return ExtractedToolCallInformation(
                 False,
                 [],

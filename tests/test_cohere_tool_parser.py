@@ -108,23 +108,46 @@ def test_incomplete_action_remains_plain_content_until_closed() -> None:
     assert parser.flush_held_content(text) == text
 
 
-def test_marker_stripped_action_payload_uses_checkpoint_compatible_fallback() -> None:
+def test_unframed_action_payload_stays_content_without_wire_provenance() -> None:
     parser = NorthToolParser(None)
-
-    result = parser.extract_tool_calls(
+    wire = (
         '[{"tool_call_id":"north-a","function":"read_file",'
         '"arguments":{"path":"/etc/hostname"}}]'
     )
 
-    assert result.tools_called is True
-    assert result.content is None
-    assert result.tool_calls == [
-        {
-            "id": "north-a",
-            "name": "read_file",
-            "arguments": json.dumps({"path": "/etc/hostname"}),
-        }
-    ]
+    result = parser.extract_tool_calls(wire, _request("read_file"))
+
+    assert result.tools_called is False
+    assert result.content == wire
+    assert result.tool_calls == []
+    assert result.rejection_authoritative is True
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "auto",
+        "required",
+        {"type": "function", "function": {"name": "delete_file"}},
+    ],
+)
+def test_nonstream_service_never_repromotes_unframed_sensitive_call(
+    tool_choice,
+) -> None:
+    cfg = get_config()
+    saved = (cfg.enable_auto_tool_choice, cfg.tool_call_parser)
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "north"
+    request_dict = _request("delete_file", tool_choice=tool_choice)
+    request = SimpleNamespace(model_dump=lambda: request_dict)
+    wire = '[{"tool_name":"delete_file","parameters":{"path":"/tmp/example"}}]'
+    try:
+        content, calls = helpers._run_tool_parser(wire, request)
+    finally:
+        cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved
+
+    assert calls is None
+    assert content == wire
 
 
 def test_north_specific_aliases_share_the_same_rapid_native_parser() -> None:
@@ -144,6 +167,89 @@ def test_declared_tool_is_promoted() -> None:
 
     assert result.tools_called is True
     assert [call["name"] for call in result.tool_calls] == ["read_file"]
+
+
+def test_json_encoded_object_arguments_are_normalized() -> None:
+    parser = NorthToolParser(None)
+    wire = (
+        "<|START_ACTION|>"
+        + json.dumps(
+            {
+                "tool_name": "read_file",
+                "arguments": json.dumps({"path": "/tmp/a"}),
+            }
+        )
+        + "<|END_ACTION|>"
+    )
+
+    result = parser.extract_tool_calls(wire, _request("read_file"))
+
+    assert result.tools_called is True
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"path": "/tmp/a"}
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "auto",
+        "required",
+        {"type": "function", "function": {"name": "danger"}},
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_arguments",
+    [
+        "not-json",
+        json.dumps("json-string-root"),
+        ["list-root"],
+        7,
+        None,
+    ],
+)
+def test_non_object_arguments_fail_closed_with_streaming_parity(
+    tool_choice,
+    invalid_arguments,
+) -> None:
+    request = _request("danger", tool_choice=tool_choice)
+    wire = (
+        "<|START_ACTION|>"
+        + json.dumps({"tool_name": "danger", "arguments": invalid_arguments})
+        + "<|END_ACTION|>"
+    )
+
+    nonstream = NorthToolParser(None).extract_tool_calls(wire, request)
+    streaming = NorthToolParser(None).extract_tool_calls_streaming(
+        "", wire, wire, request=request
+    )
+
+    assert nonstream.tools_called is False
+    assert nonstream.tool_calls == []
+    assert nonstream.content == wire
+    assert nonstream.rejection_authoritative is True
+    assert streaming == {"content": wire}
+
+
+def test_mixed_valid_and_invalid_calls_fail_entire_envelope_closed() -> None:
+    request = _request("read_file", "danger")
+    wire = (
+        "<|START_ACTION|>"
+        + json.dumps(
+            [
+                {"tool_name": "read_file", "arguments": {"path": "/tmp/a"}},
+                {"tool_name": "danger", "arguments": ["not", "an", "object"]},
+            ]
+        )
+        + "<|END_ACTION|>"
+    )
+
+    nonstream = NorthToolParser(None).extract_tool_calls(wire, request)
+    streaming = NorthToolParser(None).extract_tool_calls_streaming(
+        "", wire, wire, request=request
+    )
+
+    assert nonstream.tools_called is False
+    assert nonstream.content == wire
+    assert streaming == {"content": wire}
 
 
 def test_undeclared_tool_stays_text() -> None:

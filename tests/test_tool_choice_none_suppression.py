@@ -243,6 +243,27 @@ class TestStreamingTextParserSuppression:
 
         assert [event for event in events if event.type == "tool_call"] == []
 
+    @pytest.mark.parametrize(
+        "tool_choice",
+        [
+            "auto",
+            "required",
+            {"type": "function", "function": {"name": "GetWeather"}},
+        ],
+    )
+    def test_north_unframed_declared_json_stays_stream_content(self, tool_choice):
+        pp = _make_pp(tool_choice, parser="north")
+        wire = (
+            '[{"tool_name":"GetWeather",'
+            '"arguments":{"location":"Rome"}}]'
+        )
+
+        calls, content, finish = _drive(pp, [_output(wire, finished=True)])
+
+        assert calls == []
+        assert content == wire
+        assert "tool_calls" not in finish
+
 
 class TestStreamingChannelRoutedSuppression:
     """Harmony/gemma4 surface structured calls on a dedicated channel that
