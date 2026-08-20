@@ -98,6 +98,7 @@ final class MarkdownCodeBlockView: NSView {
     }
 
     public func configure(code: String, language: String?, options: MarkdownOptions) {
+        let previousHeaderHeight = headerHeight
         self.code = code
         self.language = language
         self.options = options
@@ -119,6 +120,7 @@ final class MarkdownCodeBlockView: NSView {
         applyAppearanceDependentColors()
         needsDisplay = true
         invalidateIntrinsicContentSize()
+        if headerHeight != previousHeaderHeight { invalidateLayoutChain() }
     }
 
     /// Paint the card fill and border for the CURRENT appearance.
@@ -290,6 +292,10 @@ final class MarkdownCodeBlockView: NSView {
         needsDisplay = true
         // The block stack sizes rows from `height(forWidth:)`, so the row has
         // to be re-measured rather than merely redrawn.
+        invalidateLayoutChain()
+    }
+
+    private func invalidateLayoutChain() {
         invalidateIntrinsicContentSize()
         var ancestor = superview
         while let view = ancestor {
