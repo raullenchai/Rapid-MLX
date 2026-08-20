@@ -22,6 +22,7 @@ final class MarkdownCodeBlockView: NSView {
     /// re-parse on every pass. Nil means "not an SVG, or not yet valid" —
     /// which is what half a streamed document looks like.
     private var previewImage: NSImage?
+    private var previewSource: String?
     private var isShowingPreview = false
 
     /// Set synchronously by the detector: this block might have a picture, so
@@ -254,10 +255,14 @@ final class MarkdownCodeBlockView: NSView {
         guard isPreviewCandidate else {
             previewButton.isHidden = true
             previewImage = nil
+            previewSource = nil
             isShowingPreview = false
             return
         }
-        previewImage = SVGPreview.image(from: code)
+        if previewSource != code {
+            previewSource = code
+            previewImage = SVGPreview.image(from: code)
+        }
         // A document that does not parse yet — the usual case mid-stream —
         // offers no button. It appears when the last tag closes.
         previewButton.isHidden = (previewImage == nil)
