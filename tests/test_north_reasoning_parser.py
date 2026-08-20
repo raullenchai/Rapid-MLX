@@ -226,6 +226,84 @@ class TestChatRouteStreaming:
             reset_config()
 
 
+class TestChatRouteEofFlush:
+    def test_route_flushes_withheld_marker_tail_at_eof(self):
+        """Route-level never-drop contract (codex r3 BLOCKING): a stream
+        ending in a marker-like run must surface those bytes via the
+        StreamingPostProcessor EOF flush, not lose them."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import router as chat_router
+
+        class TruncatedTailEngine:
+            preserve_native_tool_format = False
+            is_mllm = False
+            supports_guided_generation = False
+            tokenizer = None
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "PROMPT"
+
+            async def stream_chat(self, messages, **kwargs):
+                deltas = ["cot", END_THINK, START_TEXT, "answer<|END_TE"]
+                acc = ""
+                for i, d in enumerate(deltas):
+                    acc += d
+                    yield GenerationOutput(
+                        text=acc,
+                        new_text=d,
+                        prompt_tokens=4,
+                        completion_tokens=i + 1,
+                        finished=(i == len(deltas) - 1),
+                        finish_reason="length" if i == len(deltas) - 1 else None,
+                    )
+
+        cfg = reset_config()
+        try:
+            cfg.engine = TruncatedTailEngine()
+            cfg.model_name = "north-test"
+            cfg.model_registry = None
+            cfg.reasoning_parser = get_parser("north")()
+            cfg.reasoning_parser_name = "north"
+            cfg.tool_parser = None
+            cfg.no_thinking = False
+
+            app = FastAPI()
+            app.include_router(chat_router)
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "north-test",
+                    "messages": [{"role": "user", "content": "2+2?"}],
+                    "stream": True,
+                    "max_tokens": 100,
+                },
+            )
+            content_parts = []
+            for raw in resp.text.split("\n\n"):
+                for line in raw.splitlines():
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(line[len("data: ") :])
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in chunk.get("choices", []):
+                        delta = choice.get("delta", {})
+                        if delta.get("content"):
+                            content_parts.append(delta["content"])
+            content = "".join(content_parts)
+            assert content.startswith("answer")
+            # The withheld tail must be flushed, not dropped.
+            assert "<|END_TE" in content
+        finally:
+            reset_config()
+
+
 class TestStreaming:
     def test_streaming_simple_flow(self, parser):
         reasoning, content = _stream(

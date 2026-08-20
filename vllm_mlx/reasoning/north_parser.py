@@ -78,6 +78,12 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
     # into user-visible content by terminal rescue).
     sanitize_when_thinking_disabled = True
     implicit_reasoning_until_close = True
+    # Opt in to the StreamingPostProcessor EOF flush (the UI-TARS
+    # hold-back pattern): the machine withholds marker-like suffixes
+    # across deltas, so the route must call ``finalize_streaming`` at
+    # end of stream or a trailing ``<|END_TE``-style run is dropped
+    # (codex r3 BLOCKING).
+    stream_eof_flush = True
 
     @property
     def start_token(self) -> str:

@@ -3829,15 +3829,21 @@ class StreamingPostProcessor:
         # mid-token, or the model genuinely produced bare
         # ``"Thought"`` text), those bytes are otherwise silently
         # dropped at EOF. Mirror the ``tool_parser.flush_held_content``
-        # pattern below but scope it to the UI-TARS reasoning
-        # parser specifically — other reasoning parsers
-        # (``qwen3`` / ``deepseek_r1`` / ``gemma4``) have their own
+        # pattern below but scope it via the ``stream_eof_flush``
+        # opt-in attribute (UI-TARS by name for back-compat; the North
+        # parser opts in — its marker-withhold machinery has the same
+        # end-of-stream shape). Other reasoning parsers (``qwen3`` /
+        # ``deepseek_r1`` / ``gemma4``) have their own
         # ``finalize_streaming`` semantics tied to specific call
-        # sites that this generic hook would clash with.
+        # sites that this generic hook would clash with, and do NOT
+        # set the attribute.
         if (
             self.reasoning_parser is not None
             and self.accumulated_text
-            and type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+            and (
+                type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+                or getattr(self.reasoning_parser, "stream_eof_flush", False)
+            )
         ):
             try:
                 final_msg = self.reasoning_parser.finalize_streaming(
