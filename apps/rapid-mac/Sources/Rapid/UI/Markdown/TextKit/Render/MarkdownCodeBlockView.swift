@@ -213,11 +213,19 @@ final class MarkdownCodeBlockView: NSView {
             x: options.codeInsets.leading,
             y: headerHeight + options.codeInsets.top
         )
+        // `respectFlipped: true` is not optional here. This view is
+        // `isFlipped`, and the short `draw(in:)` overload does not compensate
+        // — it paints the image bottom-up into a top-down coordinate system,
+        // so every preview came out upside down and mirrored. It shipped that
+        // way in the SVG preview, where a roughly symmetrical test document
+        // hid it; a flowchart with text made it obvious immediately.
         previewImage.draw(
             in: CGRect(origin: origin, size: size),
             from: .zero,
             operation: .sourceOver,
-            fraction: 1
+            fraction: 1,
+            respectFlipped: true,
+            hints: nil
         )
         return true
     }

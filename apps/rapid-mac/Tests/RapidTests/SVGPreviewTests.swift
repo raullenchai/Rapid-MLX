@@ -295,9 +295,11 @@ struct PreviewOrientationTests {
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
         view.configure(code: banded, language: "svg", options: options)
 
-        // No press: a renderable document opens as its picture. (This test
-        // used to press the button, and started failing the moment
-        // auto-reveal landed — which is the test doing its job.)
+        let button = try #require(
+            view.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "CodeBlock.Preview" }
+        )
+        _ = button.target?.perform(button.action, with: button)
         view.frame.size.height = view.height(forWidth: 300)
 
         let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
