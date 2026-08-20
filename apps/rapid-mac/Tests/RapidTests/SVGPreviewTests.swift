@@ -241,6 +241,8 @@ struct AppKitSVGAssumptionTests {
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
             image.draw(in: NSRect(x: 0, y: 0, width: CGFloat(pixels), height: CGFloat(pixels)))
             NSGraphicsContext.restoreGraphicsState()
+            #expect(rep.colorAt(x: 1, y: pixels / 2)?.alphaComponent ?? 0 > 0.9)
+            #expect(rep.colorAt(x: pixels - 2, y: pixels / 2)?.alphaComponent ?? 1 < 0.05)
             return (0..<pixels).count {
                 guard let colour = rep.colorAt(x: $0, y: pixels / 2) else { return false }
                 return colour.alphaComponent > 0.05 && colour.alphaComponent < 0.95
