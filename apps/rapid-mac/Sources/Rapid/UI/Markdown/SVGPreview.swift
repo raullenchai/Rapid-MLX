@@ -10,7 +10,7 @@ import AppKit
 /// family — a triangle's hypotenuse has a one-pixel antialiased edge at 64pt
 /// and still one pixel at 512pt, so it is genuinely vector and not an upscaled
 /// bitmap. Gradients, `transform`, `clipPath`, `<text>`, dashes, embedded
-/// `<style>` CSS and `feGaussianBlur` all render.
+/// dashes and transforms all render.
 ///
 /// The alternative considered was exyte/SVGView, which is what ChatGPT ships
 /// for its *icons* (its code-block preview is a sandboxed WebView, a much
@@ -35,7 +35,7 @@ enum SVGPreview {
 
     /// Refuse to even attempt anything larger. A model can emit a megabyte of
     /// path data, and the parse is synchronous on the main thread.
-    static let maximumSourceBytes = 512 * 1024
+    static let maximumSourceBytes = 128 * 1024
 
     /// Is this code block worth attempting a preview for?
     ///
@@ -235,11 +235,85 @@ enum SVGPreview {
     @MainActor
     static func image(from code: String) -> NSImage? {
         guard code.utf8.count <= maximumSourceBytes else { return nil }
-        guard let image = NSImage(data: Data(code.utf8)) else { return nil }
+        let data = Data(code.utf8)
+        guard SafeSVGValidator.accepts(data), let image = NSImage(data: data) else { return nil }
         let size = image.size
         guard size.width > 0, size.height > 0,
               size.width.isFinite, size.height.isFinite else { return nil }
         return image
+    }
+
+    /// A conservative boundary in front of AppKit's decoder. Vector
+    /// primitives remain available, but resource-bearing elements, external
+    /// entities, filters and excessive structure are refused before the
+    /// synchronous framework parser sees model-authored input.
+    private final class SafeSVGValidator: NSObject, XMLParserDelegate {
+        private static let maximumElements = 2_048
+        private static let maximumAttributes = 8_192
+        private static let forbiddenElements: Set<String> = [
+            "audio", "filter", "foreignobject", "iframe", "image", "script", "style", "video",
+        ]
+
+        private var elementCount = 0
+        private var attributeCount = 0
+        private var rejected = false
+
+        static func accepts(_ data: Data) -> Bool {
+            let validator = SafeSVGValidator()
+            let parser = XMLParser(data: data)
+            parser.delegate = validator
+            parser.shouldResolveExternalEntities = false
+            return parser.parse() && !validator.rejected
+        }
+
+        func parser(
+            _ parser: XMLParser, didStartElement elementName: String,
+            namespaceURI: String?, qualifiedName qName: String?,
+            attributes attributeDict: [String: String]
+        ) {
+            elementCount += 1
+            attributeCount += attributeDict.count
+            let localName = elementName.split(separator: ":").last?.lowercased() ?? ""
+            if elementCount > Self.maximumElements
+                || attributeCount > Self.maximumAttributes
+                || Self.forbiddenElements.contains(localName) {
+                rejected = true
+                parser.abortParsing()
+                return
+            }
+
+            for (name, value) in attributeDict {
+                let key = name.lowercased()
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lower = trimmed.lowercased()
+                // Namespace identifiers name vocabularies; they are not
+                // dereferenced resources.
+                if key == "xmlns" || key.hasPrefix("xmlns:") { continue }
+                if (key == "href" || key.hasSuffix(":href"))
+                    && !trimmed.isEmpty && !trimmed.hasPrefix("#") {
+                    rejected = true
+                }
+                if ["http:", "https:", "file:", "data:", "ftp:", "//"]
+                    .contains(where: lower.contains) {
+                    rejected = true
+                }
+                // Local paint references such as `url(#gradient)` are safe;
+                // every other CSS URL form is resource-bearing.
+                if lower.contains("url(") && !lower.contains("url(#") {
+                    rejected = true
+                }
+                if key == "d", value.utf8.count > 64 * 1024 { rejected = true }
+            }
+            if rejected { parser.abortParsing() }
+        }
+
+        func parser(
+            _ parser: XMLParser, foundExternalEntityDeclarationWithName name: String,
+            publicID: String?, systemID: String?
+        ) {
+            rejected = true
+            parser.abortParsing()
+        }
     }
 
     /// The size to draw `image` at inside `width`, preserving its aspect and

@@ -134,6 +134,18 @@ struct SVGPreviewTests {
         #expect(SVGPreview.image(from: code) == nil)
     }
 
+    @MainActor
+    @Test("Resource-bearing and expensive SVG constructs are refused", arguments: [
+        #"<svg><image href="https://example.com/a.png"/></svg>"#,
+        #"<svg><image href="data:image/png;base64,AA=="/></svg>"#,
+        #"<svg><style>@import url(https://example.com/a.css)</style></svg>"#,
+        #"<svg><filter id="f"><feGaussianBlur stdDeviation="9"/></filter></svg>"#,
+        #"<svg><script>alert(1)</script></svg>"#,
+    ])
+    func unsafeConstructsRenderNothing(_ code: String) {
+        #expect(SVGPreview.image(from: code) == nil)
+    }
+
     // MARK: - Fitting a vector to a column
 
     @Test("A large document is scaled down to the column")
@@ -241,21 +253,13 @@ struct AppKitSVGAssumptionTests {
               <image xlink:href="http://127.0.0.1:\(probe.port)/leak.png" width="100" height="100"/>
             </svg>
             """
-        let image = try #require(SVGPreview.image(from: svg))
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 100,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-        )!
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(x: 0, y: 0, width: 100, height: 100))
-        NSGraphicsContext.restoreGraphicsState()
+        #expect(SVGPreview.image(from: svg) == nil, "external resources must be rejected")
 
         // A second known connection is a deterministic barrier through the
         // listener after drawing. Exactly one new request must be the control;
         // any renderer request makes the delta larger.
         #expect(probe.recordControlConnection(), "the listener lost its control connection")
+        try await Task.sleep(for: .milliseconds(100))
         #expect(probe.requestCount == baseline + 1, "the SVG renderer reached the network")
     }
 }
@@ -297,13 +301,20 @@ final class LocalRequestProbe: @unchecked Sendable {
             lock.unlock()
             connection.signal()
         }
-        func wait() -> Bool { connection.wait(timeout: .now() + 2) == .success }
+        func wait(until expected: Int) -> Bool {
+            let deadline = DispatchTime.now() + 2
+            while value < expected {
+                if connection.wait(timeout: deadline) != .success { return false }
+            }
+            return true
+        }
     }
 
     /// Make a known loopback connection and wait until the listener handler
     /// has counted it. This proves the negative assertion is observing a live
     /// listener and provides an ordering barrier after the image draw.
     func recordControlConnection() -> Bool {
+        let expectedCount = counter.value + 1
         let ready = DispatchSemaphore(value: 0)
         let connection = NWConnection(
             host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!, using: .tcp
@@ -319,7 +330,7 @@ final class LocalRequestProbe: @unchecked Sendable {
             connection.cancel()
             return false
         }
-        let observed = counter.wait()
+        let observed = counter.wait(until: expectedCount)
         connection.cancel()
         return observed
     }
