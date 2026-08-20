@@ -105,17 +105,28 @@ def test_ltx25_missing_runtime_prints_setup_walkthrough(
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
 
     with pytest.raises(SystemExit, match="2"):
-        video_lane.require_video_runtime_or_exit("ltx-2.5-mlx-q8")
+        # A path-qualified name passes _is_ltx25_name; the walkthrough must
+        # not interpolate this user-controlled string into shell commands.
+        video_lane.require_video_runtime_or_exit("$(uname)/ltx-2.5-mlx-q8")
 
     error = capsys.readouterr().err
     assert "docs/guides/video-generation.md" in error
-    assert f"git clone --branch ltx25 {ltx25.LTX25_RUNTIME_REPOSITORY}" in error
+    # Conditional clone + unconditional fetch: the same block repairs an
+    # existing checkout pinned to a stale revision (plain clone would fail).
+    assert (
+        f"[ -d ltx-2-mlx ] || git clone --branch ltx25 "
+        f"{ltx25.LTX25_RUNTIME_REPOSITORY}" in error
+    )
+    assert "git -C ltx-2-mlx fetch --quiet origin" in error
     assert f"git -C ltx-2-mlx checkout {ltx25.LTX25_RUNTIME_COMMIT}" in error
     assert "uv sync --project ltx-2-mlx" in error
+    # Canonical alias only — the raw model_name must not appear in the
+    # copy-pastable command.
     assert (
         'RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
         "rapid-mlx serve ltx-2.5-mlx-q8" in error
     )
+    assert "$(uname)" not in error
 
 
 def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(

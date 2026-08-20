@@ -120,15 +120,22 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
                 "the pinned LTX-2.5 runtime "
                 f"(commit {LTX25_RUNTIME_COMMIT}; see the video generation guide)"
             )
-            # The checkout is absent (or at the wrong revision): the full
-            # clone walkthrough is the actionable next step.
+            # The checkout is absent or at the wrong revision: the full
+            # walkthrough is the actionable next step. The clone is
+            # conditional and the fetch unconditional so the same block also
+            # repairs an existing checkout pinned to a stale revision. The
+            # serve line uses the canonical alias — never the raw
+            # ``model_name``, which is user input and must not be
+            # interpolated into a copy-pastable shell command.
             setup_hint = (
                 "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
-                f"    git clone --branch ltx25 {LTX25_RUNTIME_REPOSITORY}\n"
+                f"    [ -d ltx-2-mlx ] || git clone --branch ltx25 "
+                f"{LTX25_RUNTIME_REPOSITORY}\n"
+                "    git -C ltx-2-mlx fetch --quiet origin\n"
                 f"    git -C ltx-2-mlx checkout {LTX25_RUNTIME_COMMIT}\n"
                 "    uv sync --project ltx-2-mlx\n"
                 '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
-                f"rapid-mlx serve {model_name}\n"
+                "rapid-mlx serve ltx-2.5-mlx-q8\n"
             )
         if shutil.which("uv") is None:
             missing.append("uv (`brew install uv`)")
