@@ -160,8 +160,12 @@ _CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
 # Token-bearing query parameters / assignments (``?token=…``,
 # ``access_key=…``, ``Authorization: Bearer …``) that package-index
 # errors can echo back.
+# Any identifier ENDING in a credential noun (token / secret / password /
+# passwd / key / credential, optional plural) — covers access_token,
+# client_secret, api-key, HF_TOKEN, AWS_SECRET_ACCESS_KEY, … without
+# enumerating prefixes. Values may be bare or quoted.
 _CREDENTIAL_PARAM_RE = re.compile(
-    r"(?i)\b((?:api[-_]?)?(?:token|secret|password|passwd|key|credential)s?"
+    r"(?i)((?<![\w-])[\w-]*(?:token|secret|password|passwd|key|credential)s?"
     r"\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^&\s\"']+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")

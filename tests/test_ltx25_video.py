@@ -249,6 +249,19 @@ def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
     assert "left" in out
 
 
+def test_ltx25_sanitize_redacts_prefixed_credential_names() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "access_token=at-s3cret client_secret=cs-s3cret "
+        "HF_TOKEN=hf-s3cret AWS_SECRET_ACCESS_KEY=aws-s3cret api-key: ak-s3cret"
+    )
+    for leak in ("at-s3cret", "cs-s3cret", "hf-s3cret", "aws-s3cret", "ak-s3cret"):
+        assert leak not in out
+    assert "access_token=***" in out
+    assert "client_secret=***" in out
+
+
 def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
     from vllm_mlx.video.ltx25 import _provisioning_failure_detail
 
