@@ -16,6 +16,8 @@ final class MarkdownCodeBlockView: NSView {
     private let headerLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton()
     private let previewButton = NSButton()
+    private var labelBeforePreviewConstraint: NSLayoutConstraint!
+    private var labelBeforeCopyConstraint: NSLayoutConstraint!
     private var didCopyResetWork: DispatchWorkItem?
 
     /// The parsed document, kept so `draw(_:)` and `height(forWidth:)` do not
@@ -73,13 +75,18 @@ final class MarkdownCodeBlockView: NSView {
         previewButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(previewButton)
 
+        labelBeforePreviewConstraint = headerLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: previewButton.leadingAnchor,
+            constant: -RapidTheme.Space.md)
+        labelBeforeCopyConstraint = headerLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: copyButton.leadingAnchor,
+            constant: -RapidTheme.Space.md)
+        labelBeforeCopyConstraint.isActive = true
+
         NSLayoutConstraint.activate([
             previewButton.trailingAnchor.constraint(
                 equalTo: copyButton.leadingAnchor, constant: -RapidTheme.Space.md),
             previewButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
-            headerLabel.trailingAnchor.constraint(
-                lessThanOrEqualTo: previewButton.leadingAnchor,
-                constant: -RapidTheme.Space.md),
             headerLabel.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: options.codeHeaderInsets.leading),
             headerLabel.topAnchor.constraint(
@@ -249,7 +256,7 @@ final class MarkdownCodeBlockView: NSView {
     /// Swift block costs one substring search per flush and nothing else.
     private func updatePreviewAvailability() {
         guard SVGPreview.looksLikeSVG(code: code, language: language) else {
-            previewButton.isHidden = true
+            setPreviewHidden(true)
             previewImage = nil
             previewSource = nil
             isShowingPreview = false
@@ -261,9 +268,15 @@ final class MarkdownCodeBlockView: NSView {
         }
         // A document that does not parse yet — the usual case mid-stream —
         // offers no button. It appears when the last tag closes.
-        previewButton.isHidden = (previewImage == nil)
+        setPreviewHidden(previewImage == nil)
         if previewImage == nil { isShowingPreview = false }
         previewButton.title = isShowingPreview ? "Code" : "Preview"
+    }
+
+    private func setPreviewHidden(_ hidden: Bool) {
+        previewButton.isHidden = hidden
+        labelBeforePreviewConstraint.isActive = !hidden
+        labelBeforeCopyConstraint.isActive = hidden
     }
 
     @objc private func togglePreview() {
