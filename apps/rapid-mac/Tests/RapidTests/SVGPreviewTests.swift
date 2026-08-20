@@ -301,7 +301,7 @@ struct AppKitSVGAssumptionTests {
 /// it wrote itself.
 final class LocalRequestProbe: @unchecked Sendable {
     private let listener: NWListener
-    private let counter = Counter()
+    private let counter: Counter
     let port: UInt16
 
     var requestCount: Int { counter.value }
@@ -372,12 +372,13 @@ final class LocalRequestProbe: @unchecked Sendable {
     }
 
     init?() {
+        let counter = Counter()
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         guard let listener = try? NWListener(using: parameters) else { return nil }
         self.listener = listener
+        self.counter = counter
 
-        let counter = self.counter
         listener.newConnectionHandler = { connection in
             counter.increment()
             connection.start(queue: .global())
