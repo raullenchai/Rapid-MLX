@@ -838,7 +838,7 @@ struct ContentView: View {
     /// Only the two terminal states let the shell back through.
     static func quickstartRetainsSurface(phase: QuickstartCoordinator.Phase) -> Bool {
         switch phase {
-        case .downloading, .starting, .failed, .lowDiskWarning, .ready:
+        case .downloading, .skippingDownload, .starting, .failed, .lowDiskWarning, .ready:
             return true
         case .idle, .dismissed:
             return false
