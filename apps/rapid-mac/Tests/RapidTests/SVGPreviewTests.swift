@@ -298,33 +298,49 @@ struct MarkdownCodeBlockPreviewTests {
     }
 
     /// The load-bearing one: the block stack lays rows out from
-    /// `height(forWidth:)`, so a preview that does not change this number is
-    /// a preview drawn on top of the next block.
-    @Test("Showing the preview makes the card taller")
-    func previewChangesHeight() throws {
-        let view = block(svg, "svg")
-        let collapsed = view.height(forWidth: 400)
+    /// `height(forWidth:)`, so a card whose body changed but whose height did
+    /// not is a card drawn over whatever comes next.
+    ///
+    /// Preview is a *mode*. Two documents with the same `viewBox` but wildly
+    /// different source lengths must preview at the same height — that is
+    /// true only if the picture replaced the source, and false for any
+    /// implementation that appends it.
+    @Test("The preview replaces the source rather than stacking under it")
+    func previewReplacesSource() throws {
+        let padded = svg.replacingOccurrences(
+            of: "<rect", with: String(repeating: "<!-- padding -->\n  ", count: 20) + "<rect"
+        )
+        let short = block(svg, "svg")
+        let long = block(padded, "svg")
 
-        let button = try #require(previewButton(in: view))
-        _ = button.target?.perform(button.action, with: button)
+        let shortSource = short.height(forWidth: 400)
+        let longSource = long.height(forWidth: 400)
+        #expect(longSource > shortSource, "the padded document should have a taller source")
 
-        let expanded = view.height(forWidth: 400)
-        #expect(expanded > collapsed)
-        // 100×50 scaled to fit, plus the gap above it.
-        #expect(expanded - collapsed == RapidTheme.Space.md + 50)
+        for view in [short, long] {
+            let button = try #require(previewButton(in: view))
+            _ = button.target?.perform(button.action, with: button)
+        }
+        #expect(short.height(forWidth: 400) == long.height(forWidth: 400))
+        // And the long one got shorter, which appending could never do.
+        #expect(long.height(forWidth: 400) < longSource)
 
-        // And pressing again puts it back.
-        _ = button.target?.perform(button.action, with: button)
-        #expect(view.height(forWidth: 400) == collapsed)
+        // Pressing again puts each source back.
+        for view in [short, long] {
+            let button = try #require(previewButton(in: view))
+            _ = button.target?.perform(button.action, with: button)
+        }
+        #expect(short.height(forWidth: 400) == shortSource)
+        #expect(long.height(forWidth: 400) == longSource)
     }
 
-    @Test("The button says what pressing it will do")
+    @Test("The button names the mode it switches to")
     func buttonTitleTracksState() throws {
         let view = block(svg, "svg")
         let button = try #require(previewButton(in: view))
         #expect(button.title == "Preview")
         _ = button.target?.perform(button.action, with: button)
-        #expect(button.title == "Hide preview")
+        #expect(button.title == "Code")
     }
 
     /// Re-configuring with a different language — which happens on every

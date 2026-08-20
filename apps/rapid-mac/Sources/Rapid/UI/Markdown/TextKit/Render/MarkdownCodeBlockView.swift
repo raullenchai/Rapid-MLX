@@ -144,19 +144,23 @@ final class MarkdownCodeBlockView: NSView {
     }
 
     public func height(forWidth width: CGFloat) -> CGFloat {
-        let textWidth = width - options.codeInsets.leading - options.codeInsets.trailing
-        let textHeight = renderer.measureHeight(width: max(0, textWidth))
-        return headerHeight + options.codeInsets.top + textHeight
-            + previewHeight(forWidth: max(0, textWidth)) + options.codeInsets.bottom
+        let contentWidth = max(0, width - options.codeInsets.leading - options.codeInsets.trailing)
+        return headerHeight + options.codeInsets.top
+            + bodyHeight(forWidth: contentWidth) + options.codeInsets.bottom
     }
 
-    /// The preview's contribution to the card, including the gap above it.
-    /// Zero unless the reader has asked for it AND the document parses.
-    private func previewHeight(forWidth textWidth: CGFloat) -> CGFloat {
-        guard isShowingPreview, let previewImage else { return 0 }
-        let size = SVGPreview.drawSize(for: previewImage.size, inWidth: textWidth)
-        guard size.height > 0 else { return 0 }
-        return RapidTheme.Space.md + size.height
+    /// The card shows the source or the picture, never both.
+    ///
+    /// Preview is a mode, not an addition. Stacking the two doubles the height
+    /// of every previewed block, and for anything but a toy document the
+    /// source dominates the card while the thing the reader asked to see is
+    /// pushed off the bottom of the window.
+    private func bodyHeight(forWidth contentWidth: CGFloat) -> CGFloat {
+        if isShowingPreview, let previewImage {
+            let size = SVGPreview.drawSize(for: previewImage.size, inWidth: contentWidth)
+            if size.height > 0 { return size.height }
+        }
+        return renderer.measureHeight(width: contentWidth)
     }
 
     public override var intrinsicContentSize: NSSize {
@@ -169,6 +173,9 @@ final class MarkdownCodeBlockView: NSView {
         guard bounds.width > 0, let context = NSGraphicsContext.current?.cgContext else { return }
 
         let textWidth = bounds.width - options.codeInsets.leading - options.codeInsets.trailing
+
+        if drawPreview(contentWidth: max(0, textWidth)) { return }
+
         renderer.textContainer.size = CGSize(
             width: max(0, textWidth), height: CGFloat.greatestFiniteMagnitude
         )
@@ -187,26 +194,24 @@ final class MarkdownCodeBlockView: NSView {
             return true
         }
         context.restoreGState()
-
-        drawPreview(textWidth: textWidth)
     }
 
-    /// Draw the SVG under the code, left-aligned to the same column.
+    /// Draw the SVG in place of the source, and report whether it did.
     ///
     /// No backing plate: the reader asked for the document to be shown, not
     /// for it to be shown on a canvas of our choosing. That does mean an SVG
     /// drawn entirely in black strokes is invisible against a dark card — a
     /// real cost, accepted because the alternative is a white rectangle
-    /// punched into every dark-mode transcript, and because a reader who
-    /// pressed Preview and saw nothing can press it again to read the source.
-    private func drawPreview(textWidth: CGFloat) {
-        guard isShowingPreview, let previewImage else { return }
-        let size = SVGPreview.drawSize(for: previewImage.size, inWidth: textWidth)
-        guard size.width > 0, size.height > 0 else { return }
-        let textHeight = renderer.measureHeight(width: max(0, textWidth))
+    /// punched into every dark-mode transcript, and because the source is one
+    /// press away.
+    @discardableResult
+    private func drawPreview(contentWidth: CGFloat) -> Bool {
+        guard isShowingPreview, let previewImage else { return false }
+        let size = SVGPreview.drawSize(for: previewImage.size, inWidth: contentWidth)
+        guard size.width > 0, size.height > 0 else { return false }
         let origin = CGPoint(
             x: options.codeInsets.leading,
-            y: headerHeight + options.codeInsets.top + textHeight + RapidTheme.Space.md
+            y: headerHeight + options.codeInsets.top
         )
         previewImage.draw(
             in: CGRect(origin: origin, size: size),
@@ -214,6 +219,7 @@ final class MarkdownCodeBlockView: NSView {
             operation: .sourceOver,
             fraction: 1
         )
+        return true
     }
 
     /// Re-decide whether this block can be previewed, and re-parse if so.
@@ -233,12 +239,12 @@ final class MarkdownCodeBlockView: NSView {
         // offers no button. It appears when the last tag closes.
         previewButton.isHidden = (previewImage == nil)
         if previewImage == nil { isShowingPreview = false }
-        previewButton.title = isShowingPreview ? "Hide preview" : "Preview"
+        previewButton.title = isShowingPreview ? "Code" : "Preview"
     }
 
     @objc private func togglePreview() {
         isShowingPreview.toggle()
-        previewButton.title = isShowingPreview ? "Hide preview" : "Preview"
+        previewButton.title = isShowingPreview ? "Code" : "Preview"
         needsDisplay = true
         invalidateIntrinsicContentSize()
         // The block stack sizes rows from `height(forWidth:)`, so the row has
