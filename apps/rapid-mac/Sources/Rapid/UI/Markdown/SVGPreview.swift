@@ -68,23 +68,23 @@ enum SVGPreview {
     }
 
     private nonisolated static func hasClosingRootSuffix(_ code: String) -> Bool {
-        let trimmed = code.drop(while: { $0.isWhitespace }).reversed()
-            .drop(while: { $0.isWhitespace }).reversed()
+        var trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         // Only do the full backwards check at a plausible document boundary,
         // not after every streamed token. Comments may be arbitrarily long,
         // so the eventual completed boundary must not use a fixed look-back.
-        let ending = String(trimmed.suffix(6)).lowercased()
-        guard endsWithClosingSVGTag(trimmed)
-                || ending.hasSuffix("-->") || ending.hasSuffix("?>") else {
-            return false
+        while !endsWithClosingSVGTag(trimmed) {
+            if trimmed.hasSuffix("-->"),
+               let start = trimmed.range(of: "<!--", options: .backwards) {
+                trimmed = String(trimmed[..<start.lowerBound])
+            } else if trimmed.hasSuffix("?>"),
+                      let start = trimmed.range(of: "<?", options: .backwards) {
+                trimmed = String(trimmed[..<start.lowerBound])
+            } else {
+                return false
+            }
+            trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let tail = String(trimmed)
-        guard let closing = tail.range(of: "</svg", options: [.caseInsensitive, .backwards]),
-              closing.upperBound < tail.endIndex else { return false }
-        let boundary = tail[closing.upperBound]
-        guard boundary == ">" || boundary.isWhitespace,
-              let end = tail[closing.upperBound...].firstIndex(of: ">") else { return false }
-        return containsOnlyXMLTrivia(tail[tail.index(after: end)...])
+        return true
     }
 
     private nonisolated static func endsWithClosingSVGTag<C: BidirectionalCollection>(
