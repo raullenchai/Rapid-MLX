@@ -267,12 +267,14 @@ enum SVGPreview {
     private final class SafeSVGValidator: NSObject, XMLParserDelegate {
         private static let maximumElements = 2_048
         private static let maximumAttributes = 8_192
+        private static let maximumDepth = 64
         private static let forbiddenElements: Set<String> = [
             "audio", "filter", "foreignobject", "iframe", "image", "script", "style", "video",
         ]
 
         private var elementCount = 0
         private var attributeCount = 0
+        private var depth = 0
         private var rejected = false
 
         static func accepts(_ data: Data) -> Bool {
@@ -298,9 +300,11 @@ enum SVGPreview {
         ) {
             elementCount += 1
             attributeCount += attributeDict.count
+            depth += 1
             let localName = elementName.split(separator: ":").last?.lowercased() ?? ""
             if elementCount > Self.maximumElements
                 || attributeCount > Self.maximumAttributes
+                || depth > Self.maximumDepth
                 || Self.forbiddenElements.contains(localName) {
                 rejected = true
                 parser.abortParsing()
@@ -330,6 +334,13 @@ enum SVGPreview {
                 if key == "d", value.utf8.count > 64 * 1024 { rejected = true }
             }
             if rejected { parser.abortParsing() }
+        }
+
+        func parser(
+            _ parser: XMLParser, didEndElement elementName: String,
+            namespaceURI: String?, qualifiedName qName: String?
+        ) {
+            depth -= 1
         }
 
         private static func containsOnlyLocalCSSURLs(_ value: String) -> Bool {

@@ -119,6 +119,14 @@ struct SVGPreviewTests {
         #expect(!SVGPreview.looksLikeSVG(code: huge, language: "svg"))
     }
 
+    @MainActor
+    @Test("An excessively nested document is refused")
+    func excessivelyNestedDocumentIsRejected() {
+        let code = "<svg>" + String(repeating: "<g>", count: 65)
+            + String(repeating: "</g>", count: 65) + "</svg>"
+        #expect(SVGPreview.image(from: code) == nil)
+    }
+
     // MARK: - Rendering
 
     @MainActor
@@ -364,7 +372,9 @@ final class LocalRequestProbe: @unchecked Sendable {
     }
 
     init?() {
-        guard let listener = try? NWListener(using: .tcp, on: .any) else { return nil }
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
+        guard let listener = try? NWListener(using: parameters) else { return nil }
         self.listener = listener
 
         let counter = self.counter
