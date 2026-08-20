@@ -1,0 +1,349 @@
+import AppKit
+import Foundation
+import PDFKit
+import Testing
+@testable import Rapid
+
+/// Lifecycle contracts for ``DocumentContentCache`` — how an extract is
+/// STOPPED and DELETED, as opposed to how it is read.
+///
+/// Both halves are privacy properties, not housekeeping. An entry holds the
+/// complete plaintext of a file the user attached, and the persistent tier
+/// keeps it in Application Support across launches. Before these paths existed:
+///
+///   * removing an attachment or deleting a conversation left `<uuid>.json`
+///     behind until unrelated LRU pressure happened to evict it, which for a
+///     handful of documents is never — a retention regression against the
+///     previous behaviour, where the extract lived inline in the conversation
+///     file and went with it; and
+///   * a multi-minute OCR pass ran on an unstructured ``Task.detached`` whose
+///     handle was discarded, so nothing could cancel it. Removing a 529-page
+///     scan left Vision and PDFKit working for minutes on a document nobody
+///     would read.
+@MainActor
+@Suite("Document cache lifecycle")
+struct DocumentCacheLifecycleTests {
+    /// A cache with its own temp directory, so the disk tier is genuinely
+    /// exercised without touching the user's real Application Support tree.
+    private func diskCache(
+        in directory: URL,
+        diskTTL: TimeInterval = 90 * 24 * 60 * 60
+    ) -> DocumentContentCache {
+        DocumentContentCache(diskDirectory: directory, diskTTL: diskTTL)
+    }
+
+    private func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("doc-cache-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    private func diskFile(_ directory: URL, _ id: UUID) -> URL {
+        directory.appendingPathComponent("\(id.uuidString).json", isDirectory: false)
+    }
+
+    // MARK: - Deletion
+
+    @Test("Removing a document deletes its persisted plaintext, not just the hot copy")
+    func removeDeletesTheDiskEntry() throws {
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "payslip.pdf",
+            text: "SALARY 12345 CONFIDENTIAL"
+        ))
+        #expect(FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+
+        cache.remove(id)
+
+        // Both tiers. A memory-only removal would still leave the plaintext on
+        // disk, where the next launch would load it straight back in.
+        #expect(cache.get(id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+    }
+
+    @Test("A removed document's text is not recoverable from the cache directory")
+    func removedTextIsGoneFromDisk() throws {
+        // The assertion the user actually cares about: not "the API returns
+        // nil" but "the words are no longer on my disk".
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "diagnosis.pdf",
+            text: "PATIENT NAME AND DIAGNOSIS"
+        ))
+        cache.remove(id)
+
+        let remaining = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        for name in remaining {
+            let contents = (try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)) ?? ""
+            #expect(!contents.contains("DIAGNOSIS"))
+        }
+    }
+
+    @Test("Removing a document that was never cached is a no-op, not a failure")
+    func removeOfUnknownIDIsHarmless() throws {
+        // The common case for a conversation restored from history, whose
+        // extracts aged out long ago: deletion must not care.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let kept = UUID()
+        cache.put(kept, entry: DocumentContentCache.Entry(filename: "keep.txt", text: "keep me"))
+
+        cache.remove(UUID())
+
+        #expect(cache.get(kept)?.text == "keep me")
+        #expect(FileManager.default.fileExists(atPath: diskFile(dir, kept).path))
+    }
+
+    @Test("Bulk removal deletes every listed document and leaves the rest")
+    func bulkRemovalIsScoped() throws {
+        // The shape conversation deletion needs: every attachment on every
+        // message goes, and nothing else does.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let doomed = [UUID(), UUID(), UUID()]
+        let survivor = UUID()
+        for id in doomed + [survivor] {
+            cache.put(id, entry: DocumentContentCache.Entry(filename: "d.txt", text: "text \(id)"))
+        }
+
+        cache.remove(contentsOf: doomed)
+
+        for id in doomed {
+            #expect(cache.get(id) == nil)
+            #expect(!FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+        }
+        #expect(cache.get(survivor) != nil)
+    }
+
+    // MARK: - Conversation deletion
+
+    @Test("Deleting a conversation deletes the documents attached to it")
+    func deletingConversationDeletesItsExtracts() throws {
+        // The privacy regression this closes: the conversation was the only
+        // place these attachments were visible, so after deleting it the user
+        // had no way to see — let alone remove — the extracts left behind.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conv-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        let viewModel = ChatViewModel(
+            conversationStoreURL: storeURL,
+            documentCache: cache
+        )
+
+        let attachment = try ChatFileAttachment(
+            filename: "contract.pdf",
+            kind: .pdf,
+            extractedText: "the whole agreement",
+            sourceByteCount: 1_000
+        )
+        cache.put(attachment.id, entry: DocumentContentCache.Entry(
+            filename: "contract.pdf",
+            text: "the whole agreement, at length"
+        ))
+        #expect(FileManager.default.fileExists(atPath: diskFile(dir, attachment.id).path))
+
+        viewModel.devSeedMessages([
+            ChatMessage(role: .user, content: "summarize", fileAttachments: [attachment])
+        ])
+        let conversationID = viewModel.activeConversationID
+        viewModel.deleteConversation(conversationID)
+
+        #expect(cache.get(attachment.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, attachment.id).path))
+    }
+
+    @Test("Deleting one conversation leaves another conversation's documents alone")
+    func deletingConversationIsScopedToItsOwnDocuments() throws {
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conv-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        let viewModel = ChatViewModel(
+            conversationStoreURL: storeURL,
+            documentCache: cache
+        )
+
+        func attach(_ name: String) throws -> ChatFileAttachment {
+            let attachment = try ChatFileAttachment(
+                filename: name,
+                kind: .txt,
+                extractedText: "preview of \(name)",
+                sourceByteCount: 100
+            )
+            cache.put(attachment.id, entry: DocumentContentCache.Entry(
+                filename: name,
+                text: "full text of \(name)"
+            ))
+            return attachment
+        }
+
+        // First conversation, then archived by starting a second one —
+        // ``newConversation`` persists the outgoing transcript on its way out.
+        let first = try attach("first.txt")
+        viewModel.devSeedMessages([
+            ChatMessage(role: .user, content: "one", fileAttachments: [first])
+        ])
+        let firstID = viewModel.activeConversationID
+        viewModel.newConversation()
+
+        let second = try attach("second.txt")
+        viewModel.devSeedMessages([
+            ChatMessage(role: .user, content: "two", fileAttachments: [second])
+        ])
+
+        viewModel.deleteConversation(firstID)
+
+        #expect(cache.get(first.id) == nil)
+        #expect(cache.get(second.id) != nil)
+    }
+
+    // MARK: - TTL
+
+    @Test("An extract older than the TTL is deleted even with room to spare")
+    func expiredEntriesAreSweptRegardlessOfCaps() throws {
+        // The caps are a SIZE policy: a user who attaches a few documents a
+        // year never reaches 64 entries or 512 MB, so without a TTL their
+        // plaintext stays on disk for the life of the install.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let stale = UUID()
+        do {
+            let seeding = diskCache(in: dir)
+            seeding.put(stale, entry: DocumentContentCache.Entry(
+                filename: "old.pdf",
+                text: "last year's tax return"
+            ))
+        }
+        // Backdate past any plausible TTL. The sweep reads modification time,
+        // which is also what a real months-old entry would carry.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-200 * 24 * 60 * 60)],
+            ofItemAtPath: diskFile(dir, stale).path
+        )
+
+        // A fresh cache sweeps on initialization — the launch path.
+        let cache = diskCache(in: dir)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, stale).path))
+        #expect(cache.get(stale) == nil)
+    }
+
+    @Test("An extract within the TTL survives the sweep")
+    func freshEntriesSurviveTheSweep() throws {
+        // Expiry must not be so eager that reopening a recent conversation
+        // stops working — that is the promise the persistent tier makes.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let id = UUID()
+        do {
+            let seeding = diskCache(in: dir)
+            seeding.put(id, entry: DocumentContentCache.Entry(
+                filename: "recent.pdf",
+                text: "this quarter's report"
+            ))
+        }
+
+        let cache = diskCache(in: dir)
+        #expect(cache.get(id)?.text == "this quarter's report")
+    }
+
+    // MARK: - Cancellation
+
+    /// A PDF whose pages are IMAGES of text, so the only way to read it back
+    /// is recognition — the multi-minute path cancellation exists for.
+    private func makeScannedPDF(pages: Int) throws -> URL {
+        let doc = PDFDocument()
+        for index in 0..<pages {
+            let size = NSSize(width: 612, height: 300)
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.white.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            ("Section \(index) heading text" as NSString).draw(
+                in: NSRect(x: 40, y: 40, width: size.width - 80, height: size.height - 80),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 28),
+                    .foregroundColor: NSColor.black,
+                ]
+            )
+            image.unlockFocus()
+            guard let page = PDFPage(image: image) else { continue }
+            doc.insert(page, at: doc.pageCount)
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("pdf")
+        guard let data = doc.dataRepresentation() else { throw CocoaError(.fileWriteUnknown) }
+        try data.write(to: url)
+        return url
+    }
+
+    @Test("A background extraction registers a handle that can cancel it", .timeLimit(.minutes(2)))
+    func extractionIsCancellable() async throws {
+        // The regression: both background passes used `Task.detached` and threw
+        // the handle away, so `PDFTextRecognizer`'s `Task.isCancelled` check
+        // was unreachable and no removal path could stop a running scan.
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let url = try makeScannedPDF(pages: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        // Past the eager OCR window, so a background pass is genuinely running.
+        #expect(attachment.totalCharacterCount == nil)
+        #expect(cache.hasRegisteredExtraction(attachment.id))
+
+        cache.cancelExtraction(attachment.id)
+        #expect(!cache.hasRegisteredExtraction(attachment.id))
+
+        // Cancelling releases any waiter rather than leaving it to time out:
+        // the task's own `defer` still clears the pending mark.
+        let started = Date()
+        _ = cache.getAwaitingCompletion(attachment.id, stallTimeout: 30)
+        #expect(Date().timeIntervalSince(started) < 20)
+    }
+
+    @Test("Removing a document cancels its extraction and keeps it deleted", .timeLimit(.minutes(2)))
+    func removalCancelsAndStaysDeleted() async throws {
+        // Ordering matters: a pass still running would call `put` when it
+        // finished and re-create the entry `remove` just deleted. Cancelling
+        // first — and refusing to publish once cancelled — closes that window.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let url = try makeScannedPDF(pages: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(cache.hasRegisteredExtraction(attachment.id))
+
+        cache.remove(attachment.id)
+        #expect(cache.get(attachment.id) == nil)
+
+        // Give the cancelled pass ample time to reach its publish point. If it
+        // published anyway, the document the user deleted would be back.
+        try? await Task.sleep(for: .seconds(3))
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, attachment.id).path))
+    }
+}

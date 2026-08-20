@@ -5,10 +5,28 @@ import Foundation
 ///
 /// This is the counterpart to ``BrowseContentCache``: same two-tier shape, same
 /// character-checkpoint pagination, but keyed by the attachment's UUID and with
-/// no TTL. A browsed page goes stale because the web changes underneath it; the
-/// text extracted from a file the user attached does not, and expiring it would
-/// break follow-up questions about a conversation the user reopens next week —
-/// exactly the persistence promise ``ChatFileAttachment`` makes.
+/// a far longer life. A browsed page goes stale because the web changes
+/// underneath it; the text extracted from a file the user attached does not,
+/// and expiring it quickly would break follow-up questions about a conversation
+/// the user reopens next week — exactly the persistence promise
+/// ``ChatFileAttachment`` makes.
+///
+/// ## This store holds plaintext, so deletion is part of its contract
+///
+/// An entry is the COMPLETE text of a document the user chose to hand over: a
+/// contract, a medical letter, a payslip. Two things follow, and neither is
+/// optional.
+///
+/// Deleting the user-visible thing must delete the extract. When a user removes
+/// an attachment or deletes a conversation, they have deleted the document as
+/// far as they can tell; leaving `<uuid>.json` in Application Support until
+/// unrelated LRU pressure happens to evict it is a retention the user never
+/// agreed to. ``remove(_:)`` is wired to both paths.
+///
+/// And an extract nobody deletes still expires (``diskTTL``). The size caps are
+/// a size policy, not a retention one — a user who attaches four documents a
+/// year would keep all of them forever, because nothing ever pushes past the
+/// caps.
 ///
 /// ## Why the full text lives here and not on ``ChatFileAttachment``
 ///
@@ -166,6 +184,21 @@ final class DocumentContentCache: @unchecked Sendable {
     private let diskDirectory: URL?
     private let maxDiskEntries: Int
     private let maxDiskBytes: Int
+    /// How long an untouched extract may sit on disk before the sweep deletes
+    /// it, regardless of how much room the caps still allow.
+    ///
+    /// The caps alone are a SIZE policy, not a retention one: a user who
+    /// attaches four documents a year keeps the plaintext of all of them
+    /// forever, because nothing ever pushes past 64 entries or 512 MB. That is
+    /// the wrong default for a store holding the complete text of whatever the
+    /// user dropped into a chat — a contract, a medical letter, a payslip.
+    ///
+    /// Ninety days is long enough that reopening last quarter's conversation
+    /// still works and short enough that a document is not retained
+    /// indefinitely by accident. Expiry is not data loss: the attachment's
+    /// preview is still in the transcript, and ``read_document`` tells the
+    /// user to attach the file again.
+    private let diskTTL: TimeInterval
 
     /// Production initialiser — persists to
     /// ``Application Support/Rapid/document-cache``.
@@ -179,6 +212,7 @@ final class DocumentContentCache: @unchecked Sendable {
         self.diskDirectory = Self.defaultDiskDirectory()
         self.maxDiskEntries = 64
         self.maxDiskBytes = 512 * 1024 * 1024
+        self.diskTTL = 90 * 24 * 60 * 60
         sweepDiskOnInitialization()
     }
 
@@ -190,13 +224,15 @@ final class DocumentContentCache: @unchecked Sendable {
         maxBytes: Int = 64 * 1024 * 1024,
         diskDirectory: URL?,
         maxDiskEntries: Int = 64,
-        maxDiskBytes: Int = 512 * 1024 * 1024
+        maxDiskBytes: Int = 512 * 1024 * 1024,
+        diskTTL: TimeInterval = 90 * 24 * 60 * 60
     ) {
         self.maxEntries = maxEntries
         self.maxBytes = maxBytes
         self.diskDirectory = diskDirectory
         self.maxDiskEntries = maxDiskEntries
         self.maxDiskBytes = maxDiskBytes
+        self.diskTTL = diskTTL
         sweepDiskOnInitialization()
     }
 
@@ -249,6 +285,68 @@ final class DocumentContentCache: @unchecked Sendable {
         pending.remove(k)
         pendingSignal.broadcast()
         pendingSignal.unlock()
+        // The handle is dead weight once the task has returned; dropping it
+        // here is what keeps this map from growing for the life of the process.
+        taskLock.lock()
+        extractionTasks[k] = nil
+        taskLock.unlock()
+    }
+
+    // MARK: - Cancelling an extraction
+
+    /// Handles on the background extraction of each pending document.
+    ///
+    /// Recognizing a 529-page scan is a ~6-minute job. Without a handle the
+    /// only way to stop one was to quit the app: an unstructured
+    /// ``Task.detached`` whose result is discarded has no parent to cancel it,
+    /// so removing the attachment left Vision and PDFKit chewing through pages
+    /// nobody would ever read. ``PDFTextRecognizer`` already checks
+    /// ``Task.isCancelled`` between pages — this is what makes that check
+    /// reachable.
+    private var extractionTasks: [String: Task<Void, Never>] = [:]
+    private let taskLock = NSLock()
+
+    /// Hand the cache the task extracting `id` so it can be cancelled later.
+    ///
+    /// Registration races the task itself: a short document can finish (and
+    /// call ``finishPending``) before the caller gets here, and storing the
+    /// handle then would leave a completed task in the map forever. Checking
+    /// pending under the lock keeps the map to genuinely live work.
+    func registerExtraction(_ id: UUID, task: Task<Void, Never>) {
+        let k = Self.key(for: id)
+        pendingSignal.lock()
+        let stillRunning = pending.contains(k)
+        pendingSignal.unlock()
+        guard stillRunning else { return }
+        taskLock.lock()
+        extractionTasks[k] = task
+        taskLock.unlock()
+    }
+
+    /// Stop the background extraction of `id`, if one is running.
+    ///
+    /// Returns once the task has been ASKED to stop, not once it has stopped:
+    /// recognition checks cancellation between pages, so the last page in
+    /// flight still finishes. Waiting for that here would block the caller —
+    /// the main actor, on an attachment-removal click — for up to a second.
+    ///
+    /// ``finishPending`` still runs on the cancelled task's own `defer`, so
+    /// any ``read_document`` call waiting on this document is released rather
+    /// than left to time out.
+    func cancelExtraction(_ id: UUID) {
+        let k = Self.key(for: id)
+        taskLock.lock()
+        let task = extractionTasks.removeValue(forKey: k)
+        taskLock.unlock()
+        task?.cancel()
+    }
+
+    /// True while a background extraction handle is registered for `id`.
+    /// Exists for tests asserting the lifecycle; production code cancels
+    /// unconditionally rather than asking first.
+    func hasRegisteredExtraction(_ id: UUID) -> Bool {
+        taskLock.lock(); defer { taskLock.unlock() }
+        return extractionTasks[Self.key(for: id)] != nil
     }
 
     private func isPending(_ id: UUID) -> Bool {
@@ -349,8 +447,44 @@ final class DocumentContentCache: @unchecked Sendable {
         }
     }
 
-    // MARK: - Memory tier (lock held by callers)
+    /// Forget a document completely: the hot copy, the persisted plaintext, and
+    /// any in-flight extraction still producing more of it.
+    ///
+    /// This is the deletion half of the store's contract. Removing an
+    /// attachment or deleting a conversation removes the document as far as the
+    /// user can tell, so the extract must go with it rather than lingering in
+    /// Application Support until unrelated LRU pressure evicts it.
+    ///
+    /// Cancelling first matters: a background OCR pass that is still running
+    /// calls ``put`` when it finishes, which would re-create the file we just
+    /// deleted. Ordering the cancel ahead of the delete closes that window.
+    ///
+    /// Safe to call for an id that was never cached — the common case for a
+    /// conversation restored from history, whose extracts aged out long ago.
+    func remove(_ id: UUID) {
+        cancelExtraction(id)
+        let k = Self.key(for: id)
+        memoryLock.lock()
+        if let old = store.removeValue(forKey: k) {
+            totalBytes -= old.text.utf8.count
+            order.removeAll { $0 == k }
+        }
+        memoryLock.unlock()
 
+        guard let dir = diskDirectory else { return }
+        diskLock.lock(); defer { diskLock.unlock() }
+        try? FileManager.default.removeItem(
+            at: dir.appendingPathComponent(Self.diskFileName(for: k), isDirectory: false)
+        )
+    }
+
+    /// Forget several documents — the shape conversation deletion needs, where
+    /// every attachment on every message goes at once.
+    func remove<S: Sequence>(contentsOf ids: S) where S.Element == UUID {
+        for id in ids { remove(id) }
+    }
+
+    // MARK: - Memory tier (lock held by callers)
     private func insertLocked(_ k: String, entry: Entry) {
         let cost = entry.text.utf8.count
         if let old = store[k] {
@@ -462,10 +596,17 @@ final class DocumentContentCache: @unchecked Sendable {
         }
     }
 
-    /// LRU sweep of the persistent tier keyed on file modification time: delete
-    /// the oldest ``.json`` files until both caps are satisfied. Conservative —
-    /// a directory-listing failure is a no-op, and only our own
-    /// ``<uuid>.json`` files are ever considered for deletion.
+    /// Sweep the persistent tier: delete anything past ``diskTTL``, then evict
+    /// oldest-first until both caps are satisfied.
+    ///
+    /// TTL runs unconditionally, before and independently of the caps. The caps
+    /// only fire under pressure, so on their own they let a handful of
+    /// documents — the ordinary usage pattern — keep their plaintext on disk
+    /// for the life of the install.
+    ///
+    /// Conservative in the same two ways as before: a directory-listing failure
+    /// is a no-op, and only our own ``<uuid>.json`` files are ever considered
+    /// for deletion.
     private func sweepDiskLocked(_ dir: URL) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -482,11 +623,20 @@ final class DocumentContentCache: @unchecked Sendable {
         }
         var files: [DiskFile] = []
         var totalDiskBytes = 0
+        let expiry = Date().addingTimeInterval(-diskTTL)
         for entry in entries {
             guard Self.isDiskCacheFileName(entry.lastPathComponent) else { continue }
             let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let modified = values?.contentModificationDate ?? .distantPast
             let size = values?.fileSize ?? 0
+            // Past the TTL: delete now rather than counting it toward caps it
+            // would only be evicted under. A file with no readable date has an
+            // unknowable age, and `.distantPast` deliberately expires it — an
+            // extract we cannot reason about is not one to keep indefinitely.
+            if modified < expiry {
+                try? fm.removeItem(at: entry)
+                continue
+            }
             files.append(DiskFile(url: entry, modified: modified, size: size))
             totalDiskBytes += size
         }

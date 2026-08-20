@@ -347,10 +347,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         // text under the same id. The PDFDocument is captured deliberately:
         // re-opening it later costs the full ~1.83s again, whereas PDFKit
         // serves already-parsed pages from this instance in ~0.004s.
+        //
+        // The handle goes to the cache rather than being discarded: this pass
+        // can run for minutes on a document with scanned plates, and removing
+        // the attachment must be able to stop it (see
+        // ``DocumentContentCache/cancelExtraction(_:)``).
         let id = self.id
         let pageCount = document.pageCount
         cache.beginPending(id)
-        Task.detached(priority: .utility) {
+        let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
             // ``recognizePages`` passes selectable text straight through and
             // only rasterizes pages that have none, so a mostly-typeset book
@@ -367,6 +372,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     .prefix(Self.maxExtractedCharacters)
             )
             guard !bounded.isEmpty else { return }
+            // A cancelled pass must not publish. The document was cancelled
+            // because it is being deleted, and ``put`` would re-create on disk
+            // the plaintext ``remove`` just deleted.
+            guard !Task.isCancelled else { return }
             cache.put(id, entry: DocumentContentCache.Entry(
                 filename: filename,
                 text: bounded,
@@ -374,6 +383,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 outline: Self.resolvingOutlineOffsets(outline, in: bounded)
             ))
         }
+        cache.registerExtraction(id, task: extraction)
     }
 
     /// Import a PDF with no text layer by recognizing its pages.
@@ -424,7 +434,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         // document seconds from now and blocks until recognition finishes.
         // `.background` is for work nobody awaits, and macOS throttles it hard
         // enough that even a six-page scan can overrun the tool's wait.
-        Task.detached(priority: .utility) {
+        //
+        // This is the pass the cancellation machinery exists for: at
+        // ~0.69 s/page a 529-page scan is ~6 minutes of Vision and PDFKit
+        // work, and before the handle was kept, removing the attachment left
+        // all of it running with nothing to show for it.
+        let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
             let full = Self.collapsingLayoutNoise(
                 PDFTextRecognizer.recognizePages(
@@ -437,9 +452,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 full.trimmingCharacters(in: .whitespacesAndNewlines)
                     .prefix(Self.maxExtractedCharacters)
             )
-            // A cancelled run returns only the pages it reached. Publishing
-            // that is right — partial recognized text beats none — but never
-            // publish something SHORTER than the preview already on screen.
+            // Cancellation here is a DELETION request, not a wind-down:
+            // ``remove`` cancels and then deletes, so publishing the pages
+            // recognized so far would re-create the plaintext it just removed.
+            guard !Task.isCancelled else { return }
+            // Never publish something SHORTER than the preview already on
+            // screen — a run that ended early still must not shrink the
+            // document the model can see.
             guard bounded.count > previewLength else { return }
             cache.put(id, entry: DocumentContentCache.Entry(
                 filename: filename,
@@ -448,6 +467,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 outline: Self.resolvingOutlineOffsets(outline, in: bounded)
             ))
         }
+        cache.registerExtraction(id, task: extraction)
     }
 
     /// Concatenate the selectable text of `range`, tagging each page so the
