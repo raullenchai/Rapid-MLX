@@ -321,6 +321,17 @@ enum SVGPreview {
             rejected = true
             parser.abortParsing()
         }
+
+        func parser(
+            _ parser: XMLParser, foundProcessingInstructionWithTarget target: String,
+            data: String?
+        ) {
+            // The XML declaration is handled by the parser itself. Any PI
+            // delivered here (notably `xml-stylesheet`) is an extension point
+            // that can carry a resource URL, so the preview refuses it.
+            rejected = true
+            parser.abortParsing()
+        }
     }
 
     /// The size to draw `image` at inside `width`, preserving its aspect and

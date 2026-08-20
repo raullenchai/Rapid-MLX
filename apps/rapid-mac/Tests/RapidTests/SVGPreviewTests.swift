@@ -142,6 +142,7 @@ struct SVGPreviewTests {
         #"<svg><filter id="f"><feGaussianBlur stdDeviation="9"/></filter></svg>"#,
         #"<svg><script>alert(1)</script></svg>"#,
         #"<!DOCTYPE svg [<!ENTITY x "boom">]><svg><text>&x;</text></svg>"#,
+        #"<?xml-stylesheet href="https://example.com/a.css"?><svg/>"#,
     ])
     func unsafeConstructsRenderNothing(_ code: String) {
         #expect(SVGPreview.image(from: code) == nil)
@@ -199,7 +200,7 @@ struct SVGPreviewTests {
 /// the design rests on, and if any stops holding, the right response is a
 /// different design rather than a patch.
 @MainActor
-@Suite("AppKit SVG rendering assumptions")
+@Suite("SVG rendering and input-safety assumptions")
 struct AppKitSVGAssumptionTests {
 
     /// Vector, not a bitmap at the document's nominal size. If this became an
@@ -235,13 +236,13 @@ struct AppKitSVGAssumptionTests {
         #expect(edgeWidth(at: 512) <= 2)
     }
 
-    /// The claim that makes this feature safe enough to ship without a
-    /// sandbox: a model-authored document cannot reach the network. Measured
-    /// here against a URL that would be recorded if it were ever requested.
+    /// The validator boundary that makes this feature safe enough to ship
+    /// without a sandbox: model-authored resource references are rejected
+    /// before AppKit receives them.
     ///
     /// If this ever starts fetching, a model could exfiltrate the transcript
     /// through an `<image>` URL, and the feature would need a network policy.
-    @Test("A remote reference is not fetched")
+    @Test("An external reference is rejected without a network request")
     func remoteReferenceIsNotFetched() async throws {
         let probe = try #require(LocalRequestProbe())
         defer { probe.stop() }
