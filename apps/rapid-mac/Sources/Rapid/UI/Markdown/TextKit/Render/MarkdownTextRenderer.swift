@@ -170,7 +170,15 @@ final class MarkdownTextRenderer {
             textLayoutManager.enumerateTextSegments(
                 in: textRange, type: .standard, options: []
             ) { _, frame, _, _ in
-                regions.append((url, frame))
+                // TextKit2 under the macOS 26 SDK reports the segment of a
+                // range that ends at the document's tail twice, with
+                // identical frames. Two rects for one segment means two
+                // cursor tracking areas for the same pixels, and it breaks
+                // the one-rect-per-rendered-line contract linkRects()
+                // promises its callers.
+                if regions.last?.url != url || regions.last?.rect != frame {
+                    regions.append((url, frame))
+                }
                 return true
             }
         }
