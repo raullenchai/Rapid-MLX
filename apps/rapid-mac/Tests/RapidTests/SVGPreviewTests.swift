@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Foundation
 import Network
 import Testing
@@ -183,7 +184,7 @@ struct AppKitSVGAssumptionTests {
     /// If this ever starts fetching, a model could exfiltrate the transcript
     /// through an `<image>` URL, and the feature would need a network policy.
     @Test("A remote reference is not fetched")
-    func remoteReferenceIsNotFetched() throws {
+    func remoteReferenceIsNotFetched() async throws {
         let probe = try #require(LocalRequestProbe())
         defer { probe.stop() }
         let svg = """
@@ -204,6 +205,11 @@ struct AppKitSVGAssumptionTests {
         image.draw(in: NSRect(x: 0, y: 0, width: 100, height: 100))
         NSGraphicsContext.restoreGraphicsState()
 
+        // `newConnectionHandler` fires asynchronously on a background queue,
+        // so reading the count on the next line is a race the leaking case
+        // wins: measured against a renderer that really does fetch, the
+        // immediate read is 0 and the settled read is 3. Wait for it.
+        try await Task.sleep(for: .milliseconds(600))
         #expect(probe.requestCount == 0, "the SVG renderer reached the network")
     }
 }
@@ -371,6 +377,20 @@ struct MarkdownCodeBlockPreviewTests {
         #expect(previewButton(in: view)?.isHidden == true)
     }
 
+    /// An untagged fence still reserves room for the button.
+    ///
+    /// `looksLikeSVG` ignores the language tag, so an untagged ``` block
+    /// holding an SVG gets a Preview button — but `headerHeight` used to
+    /// return zero without a tag, so the button was laid out over the card's
+    /// own content with nothing behind it. Once the picture is wide enough to
+    /// reach the top right, it paints underneath Preview and Copy.
+    @Test("An untagged fence reserves the same header as a tagged one")
+    func untaggedFenceReservesTheHeader() {
+        let tagged = block(svg, "svg")
+        let untagged = block(svg, nil)
+        #expect(untagged.height(forWidth: 400) == tagged.height(forWidth: 400))
+    }
+
     @Test("An SVG block offers a preview")
     func svgBlockHasButton() {
         let view = block(svg, "svg")
@@ -450,5 +470,59 @@ struct MarkdownCodeBlockPreviewTests {
         // behind a passing inequality.
         let fresh = block("print(\"hi\")", "swift")
         #expect(view.height(forWidth: 400) == fresh.height(forWidth: 400))
+    }
+}
+
+/// The layout chain, driven through a real SwiftUI host.
+///
+/// `togglePreview` flips internal state and calls
+/// `invalidateIntrinsicContentSize()` from an AppKit button action, with no
+/// SwiftUI state change anywhere — and the row's height is decided by
+/// `MarkdownCodeBlockRepresentable.sizeThatFits`. That the two connect was
+/// verified by hand and by nothing else: deleting the invalidation left every
+/// other test in this file green, because they call `height(forWidth:)`
+/// directly, which is a pure function of state the call does not touch.
+@MainActor
+@Suite("Preview relayout")
+struct PreviewRelayoutTests {
+
+    @Test("Pressing Preview resizes the row in a hosted stack")
+    func pressingPreviewResizesTheHostedRow() throws {
+        let svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" width="200" height="300">
+              <rect width="200" height="300" fill="teal"/>
+            </svg>
+            """
+        let result = MarkdownCompiler().compile("```svg\n\(svg)\n```")
+        let host = NSHostingView(
+            rootView: MarkdownBlockStack(result: result, options: MarkdownOptions())
+        )
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 900)
+        host.layoutSubtreeIfNeeded()
+
+        func card() -> MarkdownCodeBlockView? {
+            func search(_ view: NSView) -> MarkdownCodeBlockView? {
+                if let found = view as? MarkdownCodeBlockView { return found }
+                for child in view.subviews {
+                    if let found = search(child) { return found }
+                }
+                return nil
+            }
+            return search(host)
+        }
+        let view = try #require(card(), "the code block never mounted")
+        let before = view.frame.height
+        #expect(before > 0)
+
+        let button = try #require(
+            view.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "CodeBlock.Preview" }
+        )
+        _ = button.target?.perform(button.action, with: button)
+        host.layoutSubtreeIfNeeded()
+
+        // The frame SwiftUI assigned has to have changed — not merely the
+        // number `height(forWidth:)` would return.
+        #expect(view.frame.height != before, "the row was never re-measured")
     }
 }

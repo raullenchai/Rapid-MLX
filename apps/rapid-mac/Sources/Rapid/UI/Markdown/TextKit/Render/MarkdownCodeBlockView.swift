@@ -24,6 +24,11 @@ final class MarkdownCodeBlockView: NSView {
     private var previewImage: NSImage?
     private var isShowingPreview = false
 
+    /// Set synchronously by the detector: this block might have a picture, so
+    /// the header has to make room for the button whether or not the fence
+    /// carried a language tag.
+    private var isPreviewCandidate = false
+
     public override var isFlipped: Bool { true }
 
     public init(options: MarkdownOptions) {
@@ -138,8 +143,17 @@ final class MarkdownCodeBlockView: NSView {
         needsDisplay = true
     }
 
+    /// Room for the header row.
+    ///
+    /// Reserved for a language tag OR for a preview button, and the second
+    /// half was missing. ``SVGPreview/looksLikeSVG(code:language:)`` ignores
+    /// the tag, so an untagged ``` fence holding an SVG got a button laid out
+    /// with no room reserved — and once the picture is wide enough to reach
+    /// the top right, it paints underneath Preview and Copy with nothing
+    /// behind them. Source text hid this because it is left-aligned and
+    /// rarely reaches that corner; a full-width image reaches it every time.
     private var headerHeight: CGFloat {
-        guard !(language?.isEmpty ?? true) else { return 0 }
+        guard !(language?.isEmpty ?? true) || isPreviewCandidate else { return 0 }
         return options.codeHeaderInsets.top + 16 + options.codeHeaderInsets.bottom
     }
 
@@ -236,7 +250,8 @@ final class MarkdownCodeBlockView: NSView {
     /// cheap `looksLikeSVG` check short-circuits before the parse, so a plain
     /// Swift block costs one substring search per flush and nothing else.
     private func updatePreviewAvailability() {
-        guard SVGPreview.looksLikeSVG(code: code, language: language) else {
+        isPreviewCandidate = SVGPreview.looksLikeSVG(code: code, language: language)
+        guard isPreviewCandidate else {
             previewButton.isHidden = true
             previewImage = nil
             isShowingPreview = false
@@ -254,10 +269,9 @@ final class MarkdownCodeBlockView: NSView {
         isShowingPreview.toggle()
         previewButton.title = isShowingPreview ? "Code" : "Preview"
         needsDisplay = true
-        invalidateIntrinsicContentSize()
         // The block stack sizes rows from `height(forWidth:)`, so the row has
         // to be re-measured rather than merely redrawn.
-        superview?.needsLayout = true
+        invalidateIntrinsicContentSize()
     }
 
     @objc private func copyCode() {
