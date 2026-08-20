@@ -15,7 +15,14 @@ final class MarkdownCodeBlockView: NSView {
 
     private let headerLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton()
+    private let previewButton = NSButton()
     private var didCopyResetWork: DispatchWorkItem?
+
+    /// The parsed document, kept so `draw(_:)` and `height(forWidth:)` do not
+    /// re-parse on every pass. Nil means "not an SVG, or not yet valid" —
+    /// which is what half a streamed document looks like.
+    private var previewImage: NSImage?
+    private var isShowingPreview = false
 
     public override var isFlipped: Bool { true }
 
@@ -51,7 +58,22 @@ final class MarkdownCodeBlockView: NSView {
         copyButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(copyButton)
 
+        previewButton.title = "Preview"
+        previewButton.bezelStyle = .inline
+        previewButton.isBordered = false
+        previewButton.font = .systemFont(ofSize: 11, weight: .medium)
+        previewButton.contentTintColor = .secondaryLabelColor
+        previewButton.target = self
+        previewButton.action = #selector(togglePreview)
+        previewButton.isHidden = true
+        previewButton.setAccessibilityIdentifier("CodeBlock.Preview")
+        previewButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(previewButton)
+
         NSLayoutConstraint.activate([
+            previewButton.trailingAnchor.constraint(
+                equalTo: copyButton.leadingAnchor, constant: -RapidTheme.Space.md),
+            previewButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
             headerLabel.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: options.codeHeaderInsets.leading),
             headerLabel.topAnchor.constraint(
@@ -79,6 +101,7 @@ final class MarkdownCodeBlockView: NSView {
 
         headerLabel.stringValue = language?.capitalized ?? ""
         headerLabel.isHidden = (language?.isEmpty ?? true)
+        updatePreviewAvailability()
         layer?.cornerRadius = options.codeCornerRadius
         applyAppearanceDependentColors()
         needsDisplay = true
@@ -123,7 +146,17 @@ final class MarkdownCodeBlockView: NSView {
     public func height(forWidth width: CGFloat) -> CGFloat {
         let textWidth = width - options.codeInsets.leading - options.codeInsets.trailing
         let textHeight = renderer.measureHeight(width: max(0, textWidth))
-        return headerHeight + options.codeInsets.top + textHeight + options.codeInsets.bottom
+        return headerHeight + options.codeInsets.top + textHeight
+            + previewHeight(forWidth: max(0, textWidth)) + options.codeInsets.bottom
+    }
+
+    /// The preview's contribution to the card, including the gap above it.
+    /// Zero unless the reader has asked for it AND the document parses.
+    private func previewHeight(forWidth textWidth: CGFloat) -> CGFloat {
+        guard isShowingPreview, let previewImage else { return 0 }
+        let size = SVGPreview.drawSize(for: previewImage.size, inWidth: textWidth)
+        guard size.height > 0 else { return 0 }
+        return RapidTheme.Space.md + size.height
     }
 
     public override var intrinsicContentSize: NSSize {
@@ -154,6 +187,63 @@ final class MarkdownCodeBlockView: NSView {
             return true
         }
         context.restoreGState()
+
+        drawPreview(textWidth: textWidth)
+    }
+
+    /// Draw the SVG under the code, left-aligned to the same column.
+    ///
+    /// No backing plate: the reader asked for the document to be shown, not
+    /// for it to be shown on a canvas of our choosing. That does mean an SVG
+    /// drawn entirely in black strokes is invisible against a dark card — a
+    /// real cost, accepted because the alternative is a white rectangle
+    /// punched into every dark-mode transcript, and because a reader who
+    /// pressed Preview and saw nothing can press it again to read the source.
+    private func drawPreview(textWidth: CGFloat) {
+        guard isShowingPreview, let previewImage else { return }
+        let size = SVGPreview.drawSize(for: previewImage.size, inWidth: textWidth)
+        guard size.width > 0, size.height > 0 else { return }
+        let textHeight = renderer.measureHeight(width: max(0, textWidth))
+        let origin = CGPoint(
+            x: options.codeInsets.leading,
+            y: headerHeight + options.codeInsets.top + textHeight + RapidTheme.Space.md
+        )
+        previewImage.draw(
+            in: CGRect(origin: origin, size: size),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1
+        )
+    }
+
+    /// Re-decide whether this block can be previewed, and re-parse if so.
+    ///
+    /// Runs on every `configure`, which during a stream is every flush. The
+    /// cheap `looksLikeSVG` check short-circuits before the parse, so a plain
+    /// Swift block costs one substring search per flush and nothing else.
+    private func updatePreviewAvailability() {
+        guard SVGPreview.looksLikeSVG(code: code, language: language) else {
+            previewButton.isHidden = true
+            previewImage = nil
+            isShowingPreview = false
+            return
+        }
+        previewImage = SVGPreview.image(from: code)
+        // A document that does not parse yet — the usual case mid-stream —
+        // offers no button. It appears when the last tag closes.
+        previewButton.isHidden = (previewImage == nil)
+        if previewImage == nil { isShowingPreview = false }
+        previewButton.title = isShowingPreview ? "Hide preview" : "Preview"
+    }
+
+    @objc private func togglePreview() {
+        isShowingPreview.toggle()
+        previewButton.title = isShowingPreview ? "Hide preview" : "Preview"
+        needsDisplay = true
+        invalidateIntrinsicContentSize()
+        // The block stack sizes rows from `height(forWidth:)`, so the row has
+        // to be re-measured rather than merely redrawn.
+        (superview as? NSView)?.needsLayout = true
     }
 
     @objc private func copyCode() {
