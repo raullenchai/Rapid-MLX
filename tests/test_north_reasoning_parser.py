@@ -263,6 +263,44 @@ class TestStreaming:
             if msg and msg.content:
                 assert "<|" not in msg.content
 
+    def test_streaming_direct_answer_shape(self, parser):
+        # No thinking block at all: <|START_TEXT|> arrives first (split
+        # across deltas) — mirror of the non-streaming direct-answer
+        # branch (codex r1 BLOCKING #1).
+        reasoning, content = _stream(
+            parser,
+            ["<|STAR", "T_TEXT|>dir", "ect answer", END_TEXT],
+        )
+        assert reasoning == ""
+        assert content == "direct answer"
+
+    def test_streaming_direct_answer_with_leading_whitespace(self, parser):
+        reasoning, content = _stream(
+            parser,
+            ["\n ", START_TEXT, "ok", END_TEXT],
+        )
+        assert reasoning == ""
+        assert content == "ok"
+
+    def test_finalize_flushes_partial_marker_tail(self, parser):
+        # An answer that ends in a marker-like prefix is withheld by the
+        # streaming stripper; finalize must flush it, never drop it
+        # (codex r1 BLOCKING #2).
+        parser.reset_state()
+        accumulated = ""
+        outs = []
+        for delta in ["cot", END_THINK, START_TEXT, "answer<|END_TE"]:
+            prev = accumulated
+            accumulated += delta
+            msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
+            if msg:
+                outs.append(msg)
+        content = "".join(m.content for m in outs if m.content)
+        assert content == "answer"
+        fin = parser.finalize_streaming(accumulated)
+        assert fin is not None
+        assert (fin.content or "").endswith("<|END_TE")
+
     def test_sanitize_when_thinking_disabled_is_set(self, parser):
         """North templates ignore ``enable_thinking`` and always pre-open
         the thinking channel; the postprocessor's thinking-off bypass

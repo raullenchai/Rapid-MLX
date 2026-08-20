@@ -79,10 +79,17 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
         # TEXT-marker bytes withheld from the last streamed content delta
         # because they could be the head of a marker split across deltas.
         self._content_marker_carry = ""
+        # Streaming phase: "undecided" until the head of the stream shows
+        # whether this is a direct answer (``<|START_TEXT|>`` first — no
+        # thinking block) or the normal implicit-think shape; then
+        # "direct" (own content lane) or "thinking" (delegate to the
+        # think-tag state machine).
+        self._north_phase = "undecided"
 
     def reset_state(self):
         super().reset_state()
         self._content_marker_carry = ""
+        self._north_phase = "undecided"
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
         """North templates always pre-open the thinking channel, so a
@@ -129,25 +136,80 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
             content = _strip_text_markers(content).strip() or None
         return reasoning, content
 
-    def extract_reasoning_streaming(
-        self,
-        previous_text: str,
-        current_text: str,
-        delta_text: str,
-    ) -> DeltaMessage | None:
-        msg = super().extract_reasoning_streaming(
-            previous_text, current_text, delta_text
-        )
-        if msg is None or not msg.content:
-            return msg
-        merged = self._content_marker_carry + msg.content
+    def _emit_content_delta(self, text: str) -> DeltaMessage | None:
+        """Emit ``text`` on the content lane, stripping TEXT markers and
+        withholding a trailing partial-marker prefix until the next delta
+        (or the finalize flush) decides what it is."""
+        merged = self._content_marker_carry + text
         self._content_marker_carry = ""
         stripped = _strip_text_markers(merged)
         held = _partial_marker_suffix_len(stripped)
         if held:
             self._content_marker_carry = stripped[-held:]
             stripped = stripped[:-held]
+        if not stripped:
+            return None
+        return DeltaMessage(content=stripped)
+
+    def extract_reasoning_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        if self._north_phase == "direct":
+            return self._emit_content_delta(delta_text)
+        if self._north_phase == "undecided":
+            head = current_text.lstrip()
+            if not head or (
+                len(head) < len(_START_TEXT) and _START_TEXT.startswith(head)
+            ):
+                # Still ambiguous: everything so far could be the head of a
+                # direct-answer ``<|START_TEXT|>``. Withhold until decidable
+                # (bounded by the marker length plus leading whitespace).
+                return None
+            if head.startswith(_START_TEXT):
+                # Direct-answer shape: no thinking block — mirror the
+                # non-streaming branch and route the wrapped bytes to
+                # content (codex r1 BLOCKING #1).
+                self._north_phase = "direct"
+                return self._emit_content_delta(head[len(_START_TEXT) :])
+            # Normal implicit-think shape. Replay the (tiny, bounded)
+            # withheld head to the think-tag state machine as one delta so
+            # its own bookkeeping starts consistent.
+            self._north_phase = "thinking"
+            msg = super().extract_reasoning_streaming("", current_text, current_text)
+        else:
+            msg = super().extract_reasoning_streaming(
+                previous_text, current_text, delta_text
+            )
+        if msg is None or not msg.content:
+            return msg
+        content_msg = self._emit_content_delta(msg.content)
+        stripped = content_msg.content if content_msg is not None else None
         if not stripped and not msg.reasoning:
             return None
-        msg.content = stripped or None
+        msg.content = stripped
+        return msg
+
+    def finalize_streaming(self, accumulated_text: str, **kwargs):
+        """Flush any withheld partial-marker bytes at end of stream.
+
+        A trailing run like ``<|END_TE`` is withheld by the streaming
+        stripper because it could be a marker split across deltas; when
+        the stream ends without completing the marker, those bytes are
+        model output and must not be silently dropped (codex r1 BLOCKING
+        #2; same never-drop contract as #569).
+        """
+        try:
+            msg = super().finalize_streaming(accumulated_text, **kwargs)
+        except TypeError:
+            msg = super().finalize_streaming(accumulated_text)
+        carry = self._content_marker_carry
+        self._content_marker_carry = ""
+        if not carry:
+            return msg
+        if msg is None:
+            return DeltaMessage(content=carry)
+        msg.content = (msg.content or "") + carry
         return msg
