@@ -81,7 +81,18 @@ enum FollowUpSuggestion {
     ///
     /// `excluding` is the user's last message: a model that suggests the
     /// question just asked is offering to go in a circle.
-    nonisolated static func parse(_ raw: String, excluding lastUserMessage: String = "") -> [String] {
+    /// `excluding` is the user's last message — a model that suggests the
+    /// question just asked is offering to go in a circle. `reference` is what
+    /// the language check compares against; it defaults to `excluding` but
+    /// should be the answer being followed up on, which is longer and more
+    /// representative. A last user message of `SwiftUI?` in a Chinese chat is
+    /// not evidence that the chat is English.
+    nonisolated static func parse(
+        _ raw: String,
+        excluding lastUserMessage: String = "",
+        reference: String? = nil
+    ) -> [String] {
+        let reference = reference ?? lastUserMessage
         let excluded = ModelReplyText.collapsingWhitespace(lastUserMessage).lowercased()
         var seen = Set<String>()
         var questions: [String] = []
@@ -101,7 +112,7 @@ enum FollowUpSuggestion {
 
             questions.append(question)
             if questions.count == count {
-                return sharesScript(questions.joined(), lastUserMessage) ? questions : []
+                return sharesScript(questions, reference) ? questions : []
             }
         }
         return []
@@ -124,10 +135,16 @@ enum FollowUpSuggestion {
     /// measured. A Cyrillic or Arabic conversation may well have the same
     /// problem, but guessing at a failure mode nobody has watched would be
     /// writing a rule for a bug that has not been seen.
-    nonisolated static func sharesScript(_ suggestions: String, _ conversation: String) -> Bool {
+    nonisolated static func sharesScript(_ questions: [String], _ conversation: String) -> Bool {
         // An empty reference tells us nothing, so it cannot veto.
         guard conversation.contains(where: \.isLetter) else { return true }
-        return usesCJK(suggestions) == usesCJK(conversation)
+        let wanted = usesCJK(conversation)
+        // A majority, not "any scalar anywhere". The first version joined the
+        // questions and asked whether the result contained a CJK character, so
+        // one Chinese word inside one otherwise-English suggestion threw all
+        // three away.
+        let matching = questions.filter { usesCJK($0) == wanted }.count
+        return matching * 2 > questions.count
     }
 
     private nonisolated static func usesCJK(_ text: String) -> Bool {

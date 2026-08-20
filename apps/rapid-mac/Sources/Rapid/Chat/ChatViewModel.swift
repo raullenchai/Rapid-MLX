@@ -455,6 +455,10 @@ final class ChatViewModel {
     struct SettledTurn: Equatable {
         let assistantID: UUID
         let lastUserText: String
+        /// The answer being followed up on. Used as the language reference,
+        /// because it is longer and more representative of the conversation
+        /// than a user message that might be one English word.
+        let assistantText: String
     }
 
     /// The transcript ends in an answer a reader could act on, or nil.
@@ -475,7 +479,9 @@ final class ChatViewModel {
               (last.toolCalls?.isEmpty ?? true),
               let user = messages.last(where: { $0.role == .user })
         else { return nil }
-        return SettledTurn(assistantID: last.id, lastUserText: user.content)
+        return SettledTurn(
+            assistantID: last.id, lastUserText: user.content, assistantText: last.content
+        )
     }
 
     /// Is this the first exchange — the only one that gets a title?
@@ -497,16 +503,21 @@ final class ChatViewModel {
     /// otherwise disable both features permanently, and the damage on that
     /// path is already bounded by `max_tokens`, the deadline, and the fact
     /// that the reader's next send cancels us.
+    ///
+    /// There is deliberately no "is the model busy" clause. One was here and
+    /// was wrong twice over. On the batched text lane a busy model is the
+    /// normal case and costs nothing — continuous batching is why this
+    /// feature is affordable at all. And the only writer of `residency` polls
+    /// every five seconds (``ContentView``), so at a turn boundary the
+    /// freshest snapshot was taken *during* the answer: any reply that
+    /// streamed for five seconds or more was guaranteed to look busy, which
+    /// silently disabled both features on exactly the long answers follow-ups
+    /// exist for. On the serialised lane, `modality` already refuses.
     nonisolated static func laneAllowsBackgroundWork(
         _ residency: ModelResidencySnapshot, alias: String
     ) -> Bool {
-        if let modality = residency.modality(for: alias), modality != "text" {
-            return false
-        }
-        if let active = residency.activeRequests(for: alias), active > 0 {
-            return false
-        }
-        return true
+        guard let modality = residency.modality(for: alias) else { return true }
+        return modality == "text"
     }
 
     /// Ask the model to name this conversation and to propose what to ask
@@ -525,9 +536,13 @@ final class ChatViewModel {
         let conversationID = activeConversationID
         let epoch = conversationEpoch
         let transcript = messages
-        let needsTitle = Self.isFirstExchange(messages)
-            && conversations.first { $0.id == conversationID }
-                .map { !$0.hasCustomTitle && !$0.hasGeneratedTitle } == true
+        // Not "is this the first exchange": that forfeits the one chance
+        // permanently if the call is cancelled, which `send` does on the very
+        // next message. `hasGeneratedTitle` already means "a title has
+        // landed", so gating on it keeps the once-per-conversation promise
+        // while letting a cancelled or failed attempt be retried next turn.
+        let needsTitle = conversations.first { $0.id == conversationID }
+            .map { !$0.hasCustomTitle && !$0.hasGeneratedTitle } == true
 
         followUp = .pending
         followUpAnchorID = turn.assistantID
@@ -545,24 +560,38 @@ final class ChatViewModel {
             // conversation, so its double occupancy of the engine is a
             // once-ever event, while the chips are what the reader is waiting
             // to see on every turn.
-            async let titleReply: String? = needsTitle
-                ? client.complete(
-                    ConversationTitleSuggestion.messages(forFirstExchange: transcript) ?? [],
-                    target: target, maxTokens: 24, temperature: 0.2, deadline: .seconds(15)
-                )
+            let titlePrompt = needsTitle
+                ? ConversationTitleSuggestion.messages(forFirstExchange: transcript)
                 : nil
-            async let followUpReply: String? = client.complete(
-                FollowUpSuggestion.messages(forTurn: transcript) ?? [],
-                target: target, maxTokens: 96, temperature: 0.6, topP: 0.95,
-                deadline: .seconds(8)
-            )
+            async let titleReply: String? = {
+                guard let titlePrompt else { return nil }
+                return await client.complete(
+                    titlePrompt, target: target, maxTokens: 24,
+                    temperature: 0.2, deadline: .seconds(15)
+                )
+            }()
+            let followUpPrompt = FollowUpSuggestion.messages(forTurn: transcript)
+            async let followUpReply: String? = {
+                guard let followUpPrompt else { return nil }
+                return await client.complete(
+                    followUpPrompt, target: target, maxTokens: 96,
+                    temperature: 0.6, topP: 0.95, deadline: .seconds(8)
+                )
+            }()
 
             let (title, suggestions) = await (titleReply, followUpReply)
-            guard !Task.isCancelled, epoch == self.conversationEpoch else { return }
+            guard !Task.isCancelled, epoch == self.conversationEpoch else {
+                // Cancelled after the rail reserved its space. Without this it
+                // stays `.pending` — a blank band with no way out but a new
+                // turn.
+                self.clearFollowUps()
+                return
+            }
 
             if let title { self.applyGeneratedTitle(title, to: conversationID) }
             self.publishFollowUps(
-                suggestions, anchoredTo: turn.assistantID, excluding: turn.lastUserText
+                suggestions, anchoredTo: turn.assistantID,
+                excluding: turn.lastUserText, reference: turn.assistantText
             )
         }
     }
@@ -573,18 +602,43 @@ final class ChatViewModel {
     /// from a test without a server — the same reason
     /// ``finishStartupCancellation`` is its own method.
     func publishFollowUps(
-        _ raw: String?, anchoredTo anchorID: UUID, excluding lastUserText: String
+        _ raw: String?,
+        anchoredTo anchorID: UUID,
+        excluding lastUserText: String,
+        reference: String? = nil
     ) {
         // One condition covers a switched conversation, a deleted one, a new
         // turn, and an edit or retry that rewrote the tail.
         guard messages.last?.id == anchorID else {
-            followUp = .idle
-            followUpAnchorID = nil
+            clearFollowUps()
             return
         }
-        guard let raw else { followUp = .idle; return }
-        let questions = FollowUpSuggestion.parse(raw, excluding: lastUserText)
-        followUp = questions.isEmpty ? .idle : .ready(questions)
+        guard let raw else { clearFollowUps(); return }
+        let questions = FollowUpSuggestion.parse(
+            raw, excluding: lastUserText, reference: reference
+        )
+        guard !questions.isEmpty else { clearFollowUps(); return }
+        // Sets the anchor as well as the state. `scheduleBackgroundAssist`
+        // already set it before spawning, but publishing one without the other
+        // is a combination the screen can never show — ``ChatView`` mounts the
+        // rail on the anchor — so the two are written together here rather
+        // than depending on a caller having done half the job.
+        followUpAnchorID = anchorID
+        followUp = .ready(questions)
+    }
+
+    /// Put the rail away.
+    ///
+    /// Clearing the anchor as well as the state is the load-bearing half:
+    /// ``ChatView`` mounts the rail on the anchor alone, and the rail holds a
+    /// fixed 40pt whatever it is showing. Leaving the anchor set after a
+    /// failure — a deadline, unparseable output, a script mismatch, all of
+    /// which are common — left an empty band under the answer until the next
+    /// turn. Shrinking the document is safe; it is growth the scroll probe
+    /// cannot absorb.
+    func clearFollowUps() {
+        followUp = .idle
+        followUpAnchorID = nil
     }
 
     /// Land a machine-generated title. Silent on every rejection.
@@ -772,6 +826,7 @@ final class ChatViewModel {
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
         cancelInflightWork()
+        clearFollowUps()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
         // is what gets persisted and a mid-stream switch doesn't leave the
@@ -799,6 +854,7 @@ final class ChatViewModel {
         // still active, re-inserting the conversation we just removed.
         if id == activeConversationID {
             cancelInflightWork()
+            clearFollowUps()
             conversationEpoch &+= 1
             messages.removeAll()
             branchedAway.removeAll()
@@ -955,6 +1011,7 @@ final class ChatViewModel {
     /// error banner. The in-flight stream (if any) is cancelled first.
     func newConversation() {
         cancelInflightWork()
+        clearFollowUps()
         conversationEpoch &+= 1
         // Fix: without this a New Chat during a stream leaves the empty
         // chat stuck showing Stop (isStreaming never reset). Setting it
