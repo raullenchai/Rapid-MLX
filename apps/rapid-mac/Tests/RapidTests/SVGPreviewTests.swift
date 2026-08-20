@@ -309,8 +309,8 @@ final class LocalRequestProbe: @unchecked Sendable {
     /// that failure loud rather than silent.
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
-        private let connection = DispatchSemaphore(value: 0)
         private var count = 0
+        private var controls: [String: DispatchSemaphore] = [:]
         var value: Int {
             lock.lock()
             defer { lock.unlock() }
@@ -320,14 +320,19 @@ final class LocalRequestProbe: @unchecked Sendable {
             lock.lock()
             count += 1
             lock.unlock()
-            connection.signal()
         }
-        func wait(until expected: Int) -> Bool {
-            let deadline = DispatchTime.now() + 2
-            while value < expected {
-                if connection.wait(timeout: deadline) != .success { return false }
-            }
-            return true
+        func registerControl(_ token: String) -> DispatchSemaphore {
+            let observed = DispatchSemaphore(value: 0)
+            lock.lock()
+            controls[token] = observed
+            lock.unlock()
+            return observed
+        }
+        func acknowledgeControl(_ token: String) {
+            lock.lock()
+            let observed = controls.removeValue(forKey: token)
+            lock.unlock()
+            observed?.signal()
         }
     }
 
@@ -335,7 +340,8 @@ final class LocalRequestProbe: @unchecked Sendable {
     /// has counted it. This proves the negative assertion is observing a live
     /// listener and provides an ordering barrier after the image draw.
     func recordControlConnection() -> Bool {
-        let expectedCount = counter.value + 1
+        let token = UUID().uuidString
+        let observed = counter.registerControl(token)
         let ready = DispatchSemaphore(value: 0)
         let connection = NWConnection(
             host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!, using: .tcp
@@ -351,9 +357,10 @@ final class LocalRequestProbe: @unchecked Sendable {
             connection.cancel()
             return false
         }
-        let observed = counter.wait(until: expectedCount)
+        connection.send(content: Data("CONTROL:\(token)".utf8), completion: .contentProcessed { _ in })
+        let acknowledged = observed.wait(timeout: .now() + 2) == .success
         connection.cancel()
-        return observed
+        return acknowledged
     }
 
     init?() {
@@ -363,10 +370,18 @@ final class LocalRequestProbe: @unchecked Sendable {
         let counter = self.counter
         listener.newConnectionHandler = { connection in
             counter.increment()
-            // Accept then drop: the assertion is "did anything connect", and
-            // a connection that is never started is not reliably delivered.
             connection.start(queue: .global())
-            connection.cancel()
+            // `CONTROL:` plus a canonical UUID is exactly 44 UTF-8 bytes, so
+            // do not acknowledge a partial TCP receive as the control.
+            connection.receive(minimumIncompleteLength: 44, maximumLength: 44) {
+                data, _, _, _ in
+                if let data,
+                   let message = String(data: data, encoding: .utf8),
+                   message.hasPrefix("CONTROL:") {
+                    counter.acknowledgeControl(String(message.dropFirst("CONTROL:".count)))
+                }
+                connection.cancel()
+            }
         }
 
         let ready = DispatchSemaphore(value: 0)

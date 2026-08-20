@@ -68,21 +68,22 @@ enum SVGPreview {
     }
 
     private nonisolated static func hasClosingRootSuffix(_ code: String) -> Bool {
-        var trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = code[...]
+        while trimmed.last?.isWhitespace == true { trimmed.removeLast() }
         // Only do the full backwards check at a plausible document boundary,
         // not after every streamed token. Comments may be arbitrarily long,
         // so the eventual completed boundary must not use a fixed look-back.
         while !endsWithClosingSVGTag(trimmed) {
             if trimmed.hasSuffix("-->"),
                let start = trimmed.range(of: "<!--", options: .backwards) {
-                trimmed = String(trimmed[..<start.lowerBound])
+                trimmed = trimmed[..<start.lowerBound]
             } else if trimmed.hasSuffix("?>"),
                       let start = trimmed.range(of: "<?", options: .backwards) {
-                trimmed = String(trimmed[..<start.lowerBound])
+                trimmed = trimmed[..<start.lowerBound]
             } else {
                 return false
             }
-            trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+            while trimmed.last?.isWhitespace == true { trimmed.removeLast() }
         }
         return true
     }
