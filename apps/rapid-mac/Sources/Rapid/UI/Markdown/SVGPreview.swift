@@ -336,8 +336,14 @@ enum SVGPreview {
             while let marker = rest.range(of: "url(") {
                 let targetStart = marker.upperBound
                 guard let close = rest[targetStart...].firstIndex(of: ")") else { return false }
-                let target = rest[targetStart..<close]
+                var target = rest[targetStart..<close]
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                if target.count >= 2,
+                   let first = target.first, first == "'" || first == "\"",
+                   target.last == first {
+                    target.removeFirst()
+                    target.removeLast()
+                }
                 guard target.hasPrefix("#") else { return false }
                 rest = rest[rest.index(after: close)...]
             }

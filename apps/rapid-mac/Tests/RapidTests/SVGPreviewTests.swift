@@ -157,6 +157,13 @@ struct SVGPreviewTests {
         #expect(SVGPreview.image(from: code) == nil)
     }
 
+    @MainActor
+    @Test("Quoted local CSS fragment references remain safe")
+    func quotedLocalCSSURLRenders() {
+        let code = #"<svg width="10" height="10"><defs><linearGradient id="g"/></defs><rect width="10" height="10" fill="url('#g')"/></svg>"#
+        #expect(SVGPreview.image(from: code) != nil)
+    }
+
     // MARK: - Fitting a vector to a column
 
     @Test("A large document is scaled down to the column")
