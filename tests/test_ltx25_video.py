@@ -124,7 +124,14 @@ def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
 
     def boom(executable: str) -> None:
-        raise ltx25.LTX25BackendError("uv sync failed with exit code 1")
+        # Mirrors the message prepare_ltx25_runtime() actually raises for a
+        # failed `uv sync` (see test_ltx25_provisioning_error_includes_uv_
+        # failure_detail, which pins the production construction).
+        raise ltx25.LTX25BackendError(
+            "The pinned LTX-2.5 runtime could not be provisioned: "
+            "`uv sync --frozen` failed with exit code 2 "
+            "(error: lockfile out of date)"
+        )
 
     monkeypatch.setattr(ltx25, "prepare_ltx25_runtime", boom)
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
@@ -136,10 +143,52 @@ def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     error = capsys.readouterr().err
     assert "a provisioned pinned LTX-2.5 runtime" in error
     # The underlying failure reason is the actionable part.
-    assert "uv sync failed with exit code 1" in error
+    assert "`uv sync --frozen` failed with exit code 2" in error
+    assert "lockfile out of date" in error
     assert "docs/guides/video-generation.md" in error
     # The checkout already resolved — re-cloning is not the fix.
     assert "git clone" not in error
+
+
+def test_ltx25_provisioning_error_includes_uv_failure_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def failing_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.CalledProcessError(
+            2, ["uv", "sync"], stderr="error: lockfile out of date\n"
+        )
+
+    monkeypatch.setattr(ltx25.subprocess, "run", failing_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    message = str(excinfo.value)
+    assert "could not be provisioned" in message
+    assert "`uv sync --frozen` failed with exit code 2" in message
+    assert "lockfile out of date" in message
+
+
+def test_ltx25_provisioning_timeout_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def timing_out_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(["uv", "sync"], 1800)
+
+    monkeypatch.setattr(ltx25.subprocess, "run", timing_out_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    assert "timed out after 1800s" in str(excinfo.value)
 
 
 def test_ltx25_runtime_override_must_be_executable(

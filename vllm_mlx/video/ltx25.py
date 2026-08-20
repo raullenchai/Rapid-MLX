@@ -150,6 +150,22 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
         ) from exc
 
 
+def _provisioning_failure_detail(exc: Exception) -> str:
+    """Compress a provisioning failure into one actionable line."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"`uv sync --frozen` timed out after {int(exc.timeout)}s"
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = f"`uv sync --frozen` failed with exit code {exc.returncode}"
+        stderr = (exc.stderr or "").strip()
+        if stderr:
+            tail = " | ".join(stderr.splitlines()[-3:])
+            if len(tail) > 300:
+                tail = tail[:300] + "…"
+            detail += f" ({tail})"
+        return detail
+    return str(exc) or type(exc).__name__
+
+
 def prepare_ltx25_runtime(executable: str) -> Path:
     """Provision the pinned runtime once into a process-private workspace."""
     global _RUNTIME_CACHE
@@ -177,7 +193,8 @@ def prepare_ltx25_runtime(executable: str) -> Path:
                 ],
                 check=True,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
                 timeout=1800,
             )
             interpreter = workspace / ".venv" / "bin" / "python"
@@ -197,7 +214,8 @@ def prepare_ltx25_runtime(executable: str) -> Path:
             if cache is not None:
                 cache.cleanup()
             raise LTX25BackendError(
-                "The pinned LTX-2.5 runtime could not be provisioned."
+                "The pinned LTX-2.5 runtime could not be provisioned: "
+                + _provisioning_failure_detail(exc)
             ) from exc
         _RUNTIME_CACHE = cache
         return workspace
