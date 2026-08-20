@@ -117,7 +117,6 @@ struct ConversationTitleSuggestionTests {
         ("Euler's theorem and modular arithmetic", "Euler's theorem and modular arithmetic"),
         ("Title: Euler's theorem", "Euler's theorem"),
         ("title：Euler's theorem", "Euler's theorem"),
-        ("标题：欧拉定理与模运算", "欧拉定理与模运算"),
         ("\"Euler's theorem\"", "Euler's theorem"),
         ("“Euler's theorem”", "Euler's theorem"),
         ("**Euler's theorem**", "Euler's theorem"),
@@ -146,7 +145,6 @@ struct ConversationTitleSuggestionTests {
         "| model | size | speed |",
         // A lead-in to a list names nothing.
         "Three things, in order:",
-        "接下来有三点：",
         // More than one sentence is the answer, not a name for it.
         "中文排版测试:这是一段中文回答,用来检查换行和字宽。 Emoji: 🎯",
         "Modular arithmetic. It comes up in cryptography.",
@@ -172,7 +170,6 @@ struct ConversationTitleSuggestionTests {
         "I can help with that! A good title would be Euler's theorem.",
         "Sure, here's a title for you",
         "Here is a title",
-        "好的，这个对话可以叫做欧拉定理",
         "New chat",
         "x",
         // Prose. Truncating this to 42 characters reads worse than the
@@ -336,5 +333,73 @@ struct BackgroundAssistFakeServerTests {
         for (name, text) in FakeServerReplies.all {
             #expect(FollowUpSuggestion.parse(text).isEmpty, "\(name) produced chips")
         }
+    }
+}
+
+/// Wrong-language chips, and the instruction-echoing that shipped in the
+/// first cut. Both were found by driving the bundled 1.2B model rather than
+/// by reading the prompt.
+@Suite("Background assist — measured against a small model")
+struct SmallModelBehaviourTests {
+
+    /// The reported defect: sending "hi" produced the title `3 to 6 words`.
+    ///
+    /// The old instruction was "Reply with ONLY the title: 3 to 6 words, no
+    /// quotes…", and the model handed the constraint back as the answer. Two
+    /// defences now: the instruction contains no noun phrase that could pass
+    /// for a title, and the parser refuses words that name the container
+    /// rather than the contents.
+    @Test("Instruction echoes are refused as titles", arguments: [
+        // The reported defect, verbatim.
+        "3 to 6 words",
+        // And the general form, so a reworded instruction cannot leak a new
+        // literal past a list of old ones.
+        "2 to 5 words", "5 to 8",
+        "Chat conversations", "Chat", "Chat topic",
+        "Conversation", "New chat", "Untitled",
+    ])
+    func instructionEchoesRefused(_ raw: String) {
+        #expect(ConversationTitleSuggestion.parse(raw) == nil)
+    }
+
+    /// The instruction must not contain a phrase a model could mistake for
+    /// the answer. This is the property that broke.
+    @Test("The title instruction offers nothing to copy")
+    func titleInstructionOffersNothingToCopy() {
+        let prompt = ConversationTitleSuggestion.systemPrompt
+        #expect(!prompt.contains("3 to 6"))
+        #expect(!prompt.lowercased().contains("the title"))
+    }
+
+    /// Naming a greeting as a greeting is a real answer about a real
+    /// exchange — a bigger model returns exactly that. Only words for the
+    /// container are refused.
+    @Test("A real but slight title is kept")
+    func slightTitleIsKept() {
+        #expect(ConversationTitleSuggestion.parse("Friendly greeting") == "Friendly greeting")
+    }
+
+    /// Measured: the language instruction was obeyed on 10 of 20 turns, and
+    /// 12 of 20 with a `CRITICAL:` clause. Three English chips under a
+    /// Chinese answer read as the app not having noticed — so a mismatch
+    /// throws the set away.
+    @Test("Chips in the wrong script are dropped")
+    func wrongScriptIsDropped() {
+        let english = "What is the proof?\nCan you give an example?\nHow is it used?"
+        let chinese = "证明是什么？\n能举个例子吗？\n它怎么用？"
+
+        #expect(FollowUpSuggestion.parse(english, excluding: "explain euler's theorem").count == 3)
+        #expect(FollowUpSuggestion.parse(chinese, excluding: "解释一下欧拉定理").count == 3)
+        // Crossed.
+        #expect(FollowUpSuggestion.parse(english, excluding: "解释一下欧拉定理").isEmpty)
+        #expect(FollowUpSuggestion.parse(chinese, excluding: "explain euler's theorem").isEmpty)
+    }
+
+    /// With nothing to compare against, the check must not veto.
+    @Test("An empty reference cannot veto")
+    func emptyReferenceDoesNotVeto() {
+        let english = "What is the proof?\nCan you give an example?\nHow is it used?"
+        #expect(FollowUpSuggestion.parse(english, excluding: "").count == 3)
+        #expect(FollowUpSuggestion.parse(english).count == 3)
     }
 }

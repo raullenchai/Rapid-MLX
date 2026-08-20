@@ -42,9 +42,8 @@ enum FollowUpSuggestion {
     static let systemPrompt = """
         You suggest what the user might ask next. Reply with exactly 3 lines. \
         Each line is one short question the user could ask next — 3 to 10 \
-        words, written in the user's voice, ending in a question mark, in the \
-        same language as the conversation. No numbering, no bullets, no \
-        quotes, no other text.
+        words, ending in a question mark. No numbering, no bullets, no quotes, \
+        no other text. CRITICAL: write in the same language the user wrote in.
         """
 
     /// The last exchange, or nil when there isn't one to follow up on.
@@ -101,8 +100,41 @@ enum FollowUpSuggestion {
             guard key != excluded, seen.insert(key).inserted else { continue }
 
             questions.append(question)
-            if questions.count == count { return questions }
+            if questions.count == count {
+                return sharesScript(questions.joined(), lastUserMessage) ? questions : []
+            }
         }
         return []
+    }
+
+    /// Do the suggestions and the conversation use the same writing system?
+    ///
+    /// Prompting alone does not settle this. Measured over 20 turns on the
+    /// bundled 1.2B model, the instruction to match the user's language was
+    /// obeyed 10 times; adding a `CRITICAL:` clause took it to 12. Both
+    /// numbers mean a reader writing Chinese regularly gets three English
+    /// chips, which is worse than no chips — it reads as the app not having
+    /// noticed what they said.
+    ///
+    /// So the last word is a deterministic check rather than a better
+    /// sentence. A mismatch throws the whole set away, which is the failure
+    /// this feature already uses everywhere else.
+    ///
+    /// Scoped to CJK-versus-not because that is the mismatch that was
+    /// measured. A Cyrillic or Arabic conversation may well have the same
+    /// problem, but guessing at a failure mode nobody has watched would be
+    /// writing a rule for a bug that has not been seen.
+    nonisolated static func sharesScript(_ suggestions: String, _ conversation: String) -> Bool {
+        // An empty reference tells us nothing, so it cannot veto.
+        guard conversation.contains(where: \.isLetter) else { return true }
+        return usesCJK(suggestions) == usesCJK(conversation)
+    }
+
+    private nonisolated static func usesCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value)      // unified ideographs
+                || (0x3040...0x30FF).contains(scalar.value)  // kana
+                || (0xAC00...0xD7AF).contains(scalar.value)  // hangul
+        }
     }
 }
