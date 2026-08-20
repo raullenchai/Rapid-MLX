@@ -1,7 +1,7 @@
 import AppKit
-import SwiftUI
 import Foundation
 import Network
+import SwiftUI
 import Testing
 @testable import Rapid
 
