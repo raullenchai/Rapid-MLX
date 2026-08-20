@@ -207,19 +207,47 @@ struct AppKitSVGAssumptionTests {
 /// it wrote itself.
 final class LocalRequestProbe: @unchecked Sendable {
     private let listener: NWListener
+    private let counter = Counter()
     let port: UInt16
-    private let lock = NSLock()
-    private var count = 0
 
-    var requestCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
+    var requestCount: Int { counter.value }
+
+    /// The count lives in its own object so the connection handler can be
+    /// installed **before** `start()` without capturing a half-initialised
+    /// `self`. That ordering is not a style preference: `NWListener` requires
+    /// `newConnectionHandler` to be set before the listener starts, and an
+    /// earlier version of this class installed it afterwards to dodge a
+    /// compiler complaint about `self.port`. It never fired, so every
+    /// `requestCount == 0` assertion built on it passed for the wrong reason.
+    /// The positive control in `MermaidNetworkDenialTests` exists to make
+    /// that failure loud rather than silent.
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+        func increment() {
+            lock.lock()
+            count += 1
+            lock.unlock()
+        }
     }
 
     init?() {
         guard let listener = try? NWListener(using: .tcp, on: .any) else { return nil }
         self.listener = listener
+
+        let counter = self.counter
+        listener.newConnectionHandler = { connection in
+            counter.increment()
+            // Accept then drop: the assertion is "did anything connect", and
+            // a connection that is never started is not reliably delivered.
+            connection.start(queue: .global())
+            connection.cancel()
+        }
 
         let ready = DispatchSemaphore(value: 0)
         listener.stateUpdateHandler = { state in
@@ -235,20 +263,69 @@ final class LocalRequestProbe: @unchecked Sendable {
             return nil
         }
         port = resolved
-
-        // Installed after `port` is assigned: the handler captures `self`, and
-        // Swift will not let an escaping closure see a partially initialised
-        // instance.
-        let lock = self.lock
-        listener.newConnectionHandler = { [weak self] connection in
-            lock.lock()
-            self?.count += 1
-            lock.unlock()
-            connection.cancel()
-        }
     }
 
     func stop() { listener.cancel() }
+}
+
+/// Which way up the picture is.
+///
+/// This exists because it shipped wrong. `MarkdownCodeBlockView` is
+/// `isFlipped`, and `NSImage.draw(in:)` — the short overload — does not
+/// compensate, so every preview was painted upside down and mirrored. Twenty
+/// tests passed while it was broken: they asked whether an image existed,
+/// what size it was, and how tall the card became, and not one of them looked
+/// at the pixels.
+@MainActor
+@Suite("Preview orientation")
+struct PreviewOrientationTests {
+
+    /// Red across the top, blue across the bottom. Any flip swaps them.
+    private let banded = """
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+          <rect x="0" y="0" width="100" height="50" fill="#ff0000"/>
+          <rect x="0" y="50" width="100" height="50" fill="#0000ff"/>
+        </svg>
+        """
+
+    @Test("The preview is drawn the right way up")
+    func previewIsNotFlipped() throws {
+        let options = MarkdownOptions()
+        let view = MarkdownCodeBlockView(options: options)
+        view.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        view.configure(code: banded, language: "svg", options: options)
+
+        // No press: a renderable document opens as its picture. (This test
+        // used to press the button, and started failing the moment
+        // auto-reveal landed — which is the test doing its job.)
+        view.frame.size.height = view.height(forWidth: 300)
+
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+
+        // Sample inside the picture, not at the card's midpoint: a 100pt
+        // document is never upscaled, so it occupies the left of a 300pt card
+        // and the centre column misses it entirely. `pixelsWide` is twice the
+        // point width on this rep, hence the doubling.
+        let column = Int((options.codeInsets.leading + 50) * 2)
+
+        // Red is the document's top band, so it has to appear above blue.
+        func firstRow(where matches: (NSColor) -> Bool) -> Int? {
+            (0..<rep.pixelsHigh).first { y in
+                guard let colour = rep.colorAt(x: column, y: y) else { return false }
+                return matches(colour)
+            }
+        }
+        let red = try #require(
+            firstRow { $0.redComponent > 0.7 && $0.blueComponent < 0.3 },
+            "no red band found — the preview did not draw"
+        )
+        let blue = try #require(
+            firstRow { $0.blueComponent > 0.7 && $0.redComponent < 0.3 },
+            "no blue band found — the preview did not draw"
+        )
+        #expect(red < blue, "the preview is upside down: blue (bottom of the document) drew above red")
+    }
 }
 
 /// The wiring: does the button appear, and does the card grow when it is
