@@ -15,18 +15,21 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from hashlib import sha256
 from importlib.resources import files
 
 logger = logging.getLogger(__name__)
 
 _CANONICAL_MARKER = "Google Gemma 4 Canonical Chat Template"
-_STALE_SIGNATURES = (
-    "macro format_argument(argument, escape_keys=True)",
-    "<|tool_call>call:",
-    "namespace(prev_message_type=None)",
-)
-_FULL_GENERATION_CUE = "if not enable_thinking | default(false)"
 _GEMMA4_NAME_MARKERS = ("gemma-4", "gemma_4", "gemma4")
+_FULL_NAME_MARKERS = ("12b", "26b", "31b")
+_KNOWN_STALE_TEMPLATE_VARIANTS = {
+    # mlx-community E2B/E4B conversions (4/6/8-bit).
+    "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082": "compact",
+    # mlx-community 12B/26B/31B conversions (standard and most QAT variants).
+    "36e3a42e5cf14cd0020e72d92e1fdd9970f59b82170e421f0cbe1bb42bead3f0": "full",
+    "94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413": "full",
+}
 
 
 @lru_cache(maxsize=2)
@@ -56,10 +59,9 @@ def upgrade_stale_gemma4_chat_template(applicator, model_name: str = "") -> bool
 
     E2B/E4B use Google's compact canonical variant; 12B/26B/31B use the full
     variant.  Gemma identity must be present in the served name or tokenizer
-    metadata before template signatures are considered.  The old templates
-    retain the compact/full distinction in their final generation-cue block;
-    the model name also protects compact checkpoints whose publisher made
-    superficial edits to that block.
+    metadata before its exact template hash is considered.  Explicit E2B/E4B
+    and 12B/26B/31B identities choose compact/full directly; the audited hash
+    inventory supplies the fallback for unusually named local checkpoints.
     """
 
     owner = _template_owner(applicator)
@@ -79,13 +81,18 @@ def upgrade_stale_gemma4_chat_template(applicator, model_name: str = "") -> bool
     current = owner.chat_template
     if _CANONICAL_MARKER in current:
         return False
-    if not all(signature in current for signature in _STALE_SIGNATURES):
+    known_variant = _KNOWN_STALE_TEMPLATE_VARIANTS.get(
+        sha256(current.encode("utf-8")).hexdigest()
+    )
+    if known_variant is None:
         return False
 
-    compact_name = "e2b" in identity or "e4b" in identity
-    variant = (
-        "full" if _FULL_GENERATION_CUE in current and not compact_name else "compact"
-    )
+    if "e2b" in identity or "e4b" in identity:
+        variant = "compact"
+    elif any(marker in identity for marker in _FULL_NAME_MARKERS):
+        variant = "full"
+    else:
+        variant = known_variant
     owner.chat_template = _canonical_template(variant)
     logger.info(
         "Upgraded stale Gemma 4 chat template to bundled Google canonical "

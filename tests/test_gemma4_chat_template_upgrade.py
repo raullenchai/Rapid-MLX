@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 from tokenizers import Tokenizer, models
 from transformers import PreTrainedTokenizerFast
 
 from vllm_mlx.utils.chat_template import apply_chat_template
 from vllm_mlx.utils.gemma4_chat_template import (
+    _KNOWN_STALE_TEMPLATE_VARIANTS,
     _canonical_template,
     upgrade_stale_gemma4_chat_template,
 )
@@ -56,7 +59,19 @@ def _tools() -> list[dict]:
     ]
 
 
-def test_compact_and_full_stale_templates_select_matching_canonical_variant() -> None:
+def _allow_fixture_template(monkeypatch, template: str, variant: str) -> None:
+    monkeypatch.setitem(
+        _KNOWN_STALE_TEMPLATE_VARIANTS,
+        sha256(template.encode("utf-8")).hexdigest(),
+        variant,
+    )
+
+
+def test_compact_and_full_stale_templates_select_matching_canonical_variant(
+    monkeypatch,
+) -> None:
+    _allow_fixture_template(monkeypatch, _STALE_COMPACT, "compact")
+    _allow_fixture_template(monkeypatch, _STALE_FULL, "full")
     compact = _tokenizer(_STALE_COMPACT)
     full = _tokenizer(_STALE_FULL)
     metadata_only = _tokenizer(_STALE_FULL)
@@ -82,8 +97,11 @@ def test_current_canonical_and_unknown_custom_templates_are_preserved() -> None:
     assert custom.chat_template == custom_before
 
 
-def test_official_template_renders_null_and_normalized_openai_arguments() -> None:
+def test_official_template_renders_null_and_normalized_openai_arguments(
+    monkeypatch,
+) -> None:
     pytest.importorskip("jinja2")
+    _allow_fixture_template(monkeypatch, _STALE_FULL, "full")
     tokenizer = _tokenizer(_STALE_FULL)
     messages = [
         {"role": "user", "content": "List /tmp"},
@@ -119,8 +137,11 @@ def test_official_template_renders_null_and_normalized_openai_arguments() -> Non
     assert '{{"command"' not in rendered
 
 
-def test_official_template_restores_thinking_continuation_after_tool_result() -> None:
+def test_official_template_restores_thinking_continuation_after_tool_result(
+    monkeypatch,
+) -> None:
     pytest.importorskip("jinja2")
+    _allow_fixture_template(monkeypatch, _STALE_FULL, "full")
     tokenizer = _tokenizer(_STALE_FULL)
     messages = [
         {"role": "user", "content": "List /tmp"},
