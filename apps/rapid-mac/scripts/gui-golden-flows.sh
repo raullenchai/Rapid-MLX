@@ -4508,8 +4508,8 @@ flow_dictation() {
         see_main "$OUT/dictation-loading.json"
         if jq -e '.data.ui_elements[]?
                   | select(.identifier == "Dictation.Status"
-                           and ((.description // .value // .label // "") | tostring)
-                               | contains("Loading fake-whisper-small into memory"))' \
+                           and (((.description // .value // .label // "") | tostring)
+                                | contains("Loading fake-whisper-small into memory")))' \
                  "$OUT/dictation-loading.json" >/dev/null; then
             loading_seen=1; break
         fi
@@ -4527,8 +4527,8 @@ flow_dictation() {
         see_main "$OUT/dictation-ready.json"
         if jq -e '.data.ui_elements[]?
                   | select(.identifier == "Dictation.Status"
-                           and ((.description // .value // .label // "") | tostring)
-                               | startswith("Ready — press"))' \
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Ready — press")))' \
                  "$OUT/dictation-ready.json" >/dev/null; then
             ready_seen=1; break
         fi
