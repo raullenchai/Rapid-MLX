@@ -45,6 +45,20 @@ class TestRegistry:
         assert cfg.tool_call_parser is None
 
 
+class TestPromptThinkingPredicateMixedTemplate:
+    def test_mixed_marker_template_uses_all_pairs(self):
+        # A template whose source mentions BOTH marker families but whose
+        # active branch renders only the North pair must still be
+        # detected (codex on #2171: first-present-pair inspection bug).
+        from vllm_mlx.service.helpers import _should_start_in_thinking
+
+        template = (
+            "{# legacy: <think></think> #}"
+            "{% if add_generation_prompt %}<|START_THINKING|>{% endif %}"
+        )
+        assert _should_start_in_thinking(template, None, unconditional=True) is True
+
+
 class TestPromptThinkingPredicate:
     def test_north_template_detected_as_prompt_thinking(self):
         from vllm_mlx.service.helpers import _should_start_in_thinking
@@ -100,15 +114,28 @@ class TestExtractReasoning:
         assert reasoning == "cot"
         assert content == "partial answer"
 
-    def test_bare_json_response_routes_to_content(self, parser):
+    def test_bare_json_response_routes_to_content_in_json_mode(self, parser):
         # JSON-mode contract: North's template instructs structured
-        # responses to emit bare JSON with no channel markers (codex r4).
+        # responses to emit bare JSON with no channel markers — gated on
+        # the EXPLICIT request signal, not inferred from the first
+        # character (codex final-round #1).
+        parser.configure_request(json_mode=True)
         reasoning, content = parser.extract_reasoning('{"answer": 4}')
         assert reasoning is None
         assert content == '{"answer": 4}'
         reasoning, content = parser.extract_reasoning("\n[1, 2, 3]")
         assert reasoning is None
         assert content == "\n[1, 2, 3]"
+
+    def test_brace_headed_thought_stays_reasoning_without_json_mode(self, parser):
+        # Privacy: a chain of thought that merely opens with a brace must
+        # NOT bypass the reasoning split when the request did not ask for
+        # JSON output (codex final-round #1).
+        reasoning, content = parser.extract_reasoning(
+            '{"draft": 1} — no wait, let me reconsider'
+        )
+        assert content is None
+        assert reasoning is not None and reasoning.startswith('{"draft"')
 
     def test_no_marker_leakage_in_either_channel(self, parser):
         out = f"think{END_THINK}{START_TEXT}answer{END_TEXT}"
@@ -434,13 +461,27 @@ class TestStreaming:
 
     def test_streaming_bare_json_routes_to_content(self, parser):
         # JSON-mode streaming: bare JSON with no markers must stream on
-        # the content lane, not vanish into reasoning (codex r4).
-        reasoning, content = _stream(
-            parser,
-            ['{"ans', 'wer": ', "4}"],
-        )
-        assert reasoning == ""
-        assert content == '{"answer": 4}'
+        # the content lane, not vanish into reasoning — gated on the
+        # explicit request signal (codex final-round #1).
+        parser.reset_state()
+        parser.configure_request(json_mode=True)
+        accumulated = ""
+        rc, cc = [], []
+        for delta in ['{"ans', 'wer": ', "4}"]:
+            prev = accumulated
+            accumulated += delta
+            msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
+            if msg and msg.reasoning:
+                rc.append(msg.reasoning)
+            if msg and msg.content:
+                cc.append(msg.content)
+        assert "".join(rc) == ""
+        assert "".join(cc) == '{"answer": 4}'
+
+    def test_streaming_brace_thought_stays_reasoning_without_json_mode(self, parser):
+        reasoning, content = _stream(parser, ['{"draft"', ": 1} hmm"])
+        assert content == ""
+        assert reasoning.startswith('{"draft"')
 
     def test_streaming_split_end_thinking_marker(self, parser):
         # <|END_THINKING|> split across deltas must not leak marker bytes

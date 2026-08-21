@@ -365,6 +365,12 @@ class StreamingPostProcessor:
                             tools_requested=self.tools_requested,
                         )
                     )
+                if "json_mode" in configure_parameters:
+                    # Explicit response_format signal for parsers whose
+                    # template contracts change under JSON mode (North
+                    # emits bare JSON with no channel markers — codex
+                    # final-round #1 on #2171).
+                    configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
             if callable(_set):
@@ -2492,6 +2498,12 @@ class StreamingPostProcessor:
                             tools_requested=self.tools_requested,
                         )
                     )
+                if "json_mode" in configure_parameters:
+                    # Explicit response_format signal for parsers whose
+                    # template contracts change under JSON mode (North
+                    # emits bare JSON with no channel markers — codex
+                    # final-round #1 on #2171).
+                    configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             else:
                 self.reasoning_parser.reset_state()

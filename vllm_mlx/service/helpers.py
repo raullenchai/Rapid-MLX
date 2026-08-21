@@ -850,11 +850,14 @@ def _should_start_in_thinking(
     if enable_thinking is False and not unconditional:
         return False
     if unconditional:
-        marker_pair = next(
-            (pair for pair in _IMPLICIT_THINK_MARKER_PAIRS if pair[0] in chat_template),
-            None,
-        )
-        if marker_pair is None:
+        # Consider EVERY marker family present in the template source —
+        # a conditional template can contain both ``<think>`` and North
+        # markers, and inspecting only the first-present pair could pick
+        # the wrong family after rendering (codex on #2171).
+        present_pairs = [
+            pair for pair in _IMPLICIT_THINK_MARKER_PAIRS if pair[0] in chat_template
+        ]
+        if not present_pairs:
             return False
         # Use the same sandboxed Jinja compiler as Hugging Face tokenizers.
         # Rendering, unlike source scanning, honors assignments, macros,
@@ -895,10 +898,10 @@ def _should_start_in_thinking(
             return False
         # Priming means the rendered prompt ends *inside* a think block, not
         # merely that it contains a historical closed block.
-        opener, closer = marker_pair
-        if rendered.rfind(opener) <= rendered.rfind(closer):
-            return False
-        return True
+        return any(
+            rendered.rfind(opener) > rendered.rfind(closer)
+            for opener, closer in present_pairs
+        )
     return (
         any(opener in chat_template for opener, _ in _IMPLICIT_THINK_MARKER_PAIRS)
         and "add_generation_prompt" in chat_template
