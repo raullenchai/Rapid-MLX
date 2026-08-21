@@ -391,16 +391,9 @@ run_codex() {
   for _try in 1 2; do
     seed_repo codex
     TO "$AGENT_TO" codex exec "$TASK" --model "$ALIAS" \
-      --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-      >"$WORK/codex.$_try.log" 2>&1
+      --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check >/dev/null 2>&1
     [ "$(verify codex)" = PASS ] && { r=PASS; break; }
   done
-  if [ "$r" != PASS ]; then
-    for _log in "$WORK"/codex.*.log; do
-      echo "== $(basename "$_log") =="
-      cat "$_log"
-    done
-  fi
   echo "$r" > "$WORK/codex.result"
 }
 

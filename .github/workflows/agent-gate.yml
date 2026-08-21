@@ -78,82 +78,19 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - name: Prepare branch audit environment
-        run: |
-          /opt/homebrew/opt/python@3.12/bin/python3.12 -m venv /tmp/rapid-mlx-gemma4-audit-venv
-          /tmp/rapid-mlx-gemma4-audit-venv/bin/pip install -q .
-      - name: Gemma 4 canonical-template contract
-        run: |
-          set -euo pipefail
-          RMLX=/tmp/rapid-mlx-gemma4-audit-venv/bin/rapid-mlx
-          LOG=/tmp/rapid-mlx-gemma4-template-smoke.log
-          "$RMLX" serve gemma-4-e2b-8bit --no-mllm --no-thinking --port 8193 >"$LOG" 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 120); do
-            curl -fsS http://127.0.0.1:8193/v1/models >/dev/null 2>&1 && break
-            kill -0 "$server_pid" 2>/dev/null || { cat "$LOG"; exit 1; }
-            sleep 5
-          done
-          /tmp/rapid-mlx-gemma4-audit-venv/bin/python - <<'PY'
-          import httpx
-
-          base = "http://127.0.0.1:8193/v1/chat/completions"
-          tool = {
-              "type": "function",
-              "function": {
-                  "name": "list_files",
-                  "description": "List files",
-                  "parameters": {
-                      "type": "object",
-                      "properties": {"path": {"type": "string"}},
-                      "required": ["path"],
-                  },
-              },
-          }
-          first = httpx.post(
-              base,
-              json={
-                  "model": "gemma-4-e2b-8bit",
-                  "messages": [{"role": "user", "content": "List files."}],
-                  "tools": [tool],
-                  "tool_choice": "required",
-                  "max_tokens": 128,
-              },
-              timeout=120,
-          )
-          first.raise_for_status()
-          choice = first.json()["choices"][0]
-          assert choice["finish_reason"] == "tool_calls", choice
-          assert choice["message"]["tool_calls"][0]["function"]["name"] == "list_files", choice
-          second = httpx.post(
-              base,
-              json={
-                  "model": "gemma-4-e2b-8bit",
-                  "messages": [
-                      {"role": "user", "content": "List files and tell me the first filename."},
-                      {
-                          "role": "assistant",
-                          "content": "",
-                          "tool_calls": [{
-                              "id": "call_test",
-                              "type": "function",
-                              "function": {"name": "list_files", "arguments": '{"path":"."}'},
-                          }],
-                      },
-                      {"role": "tool", "tool_call_id": "call_test", "content": '["alpha.txt","beta.txt"]'},
-                  ],
-                  "tools": [tool],
-                  "max_tokens": 128,
-              },
-              timeout=120,
-          )
-          second.raise_for_status()
-          content = second.json()["choices"][0]["message"]["content"]
-          assert "alpha.txt" in content, content
-          print("Gemma 4 Studio contract PASS:", content)
-          PY
-          grep -q 'Upgraded stale Gemma 4 chat template.*variant=compact' "$LOG"
-      - name: Remove branch audit environment
-        if: always()
-        run: rm -rf /tmp/rapid-mlx-gemma4-audit-venv
+      - name: Tier-1 agent re-verification
+        env:
+          # The isolated audit venv on the Studio (python@3.12, pinned rapid-mlx).
+          # Phase 2 will (re)create this at the release version before the gate.
+          RAPID_MLX_VENV: /Users/raullenstudio/rapid-mlx-audit-venv
+          # Untrusted-ish input passed via env, never interpolated into the
+          # script line (matches the repo's auto-release.yml convention).
+          MODEL: ${{ inputs.model }}
+          # Turn on the release-gate extras in agent_smoke.sh: after the four
+          # agents pass, reuse the SAME warm serve to run the deep coherence
+          # golden (#1247) and a decode-throughput perf check — no second load.
+          RAPID_MLX_RELEASE_GATE: "1"
+          # Reviewed perf floor (tok/s). Blank → perf runs advisory (prints the
+          # number to review); set it here to enforce. Never a fabricated baseline.
+          RAPID_MLX_PERF_MIN_TPS: ${{ inputs.perf_min_tps }}
+        run: bash tests/integrations/agent_smoke.sh "$MODEL"
