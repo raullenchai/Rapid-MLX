@@ -3125,6 +3125,26 @@ class StreamingPostProcessor:
                 # chunk and the route then buffered that malformed ordering
                 # as the single finish event (#2182).
                 promoted_content = ""
+                # Usually parser content follows reasoning in the source
+                # delta (``thought-tail</think>answer``), but the shared
+                # think parser can also promote an earlier ``<tool_call>``
+                # out of reasoning.  In that shape ``content`` precedes
+                # the remaining reasoning bytes.  Recover that ordering
+                # from the untouched model delta before combining the
+                # cap spill with parser content.
+                content_precedes_overflow = False
+                if content:
+                    content_index = original_delta_text.find(content)
+                    if content_index < 0:
+                        stripped_content = content.strip()
+                        if stripped_content:
+                            content_index = original_delta_text.find(stripped_content)
+                    overflow_index = original_delta_text.rfind(overflow_content)
+                    content_precedes_overflow = (
+                        content_index >= 0
+                        and overflow_index >= 0
+                        and content_index < overflow_index
+                    )
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
                     # Codex round-10 BLOCKING #1: only mark the close-
@@ -3180,7 +3200,10 @@ class StreamingPostProcessor:
                 if flip_succeeded:
                     promoted_content += overflow_content
                 if promoted_content:
-                    content = promoted_content + (content or "")
+                    if content_precedes_overflow:
+                        content = (content or "") + promoted_content
+                    else:
+                        content = promoted_content + (content or "")
             # ``full_reasoning`` only needed within this block; release
             # the reference to drop the temporary view.
             del full_reasoning

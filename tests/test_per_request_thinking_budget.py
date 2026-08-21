@@ -473,6 +473,31 @@ class TestTextParserReasoningCap:
         assert finish[0].content == "erate4"
         assert finish[0].finish_reason == "stop"
 
+    def test_cap_spill_stays_after_earlier_promoted_tool_call(self):
+        """A tool call promoted from reasoning retains its source position.
+
+        The parser's promotion filter returns the earlier tool block as
+        content and the trailing prose as reasoning.  When that prose crosses
+        the cap, its overflow must stay after the tool block rather than being
+        unconditionally prepended to all parser content.
+        """
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output(f"<think>{tool_call}abcdefgh"))
+
+        assert [event.reasoning for event in events if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert [event.content for event in events if event.type == "content"] == [
+            f"{tool_call}efgh"
+        ]
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the
