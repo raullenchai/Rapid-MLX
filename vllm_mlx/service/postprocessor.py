@@ -3128,7 +3128,10 @@ class StreamingPostProcessor:
                     # this represents the model output "up to the cap
                     # firing point" from the parser's POV.
                     flip_previous = previous_text + kept_reasoning
-                    flip_delta = "</think>"
+                    # Parser-owned closer, same as the other two
+                    # injection sites (codex round-3 on #2171): north
+                    # flips on <|END_THINKING|>, not </think>.
+                    flip_delta = self._reasoning_close_marker()
                     flip_current = flip_previous + flip_delta
                     try:
                         flip_msg = self.reasoning_parser.extract_reasoning_streaming(
