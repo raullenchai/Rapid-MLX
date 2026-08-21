@@ -585,9 +585,7 @@ class TestTextParserReasoningCap:
         pp.reset()
 
         first = pp.process_chunk(_make_output("<think>abcd"))
-        final = pp.process_chunk(
-            _make_output("VISIBLE<think>overflow", finished=True)
-        )
+        final = pp.process_chunk(_make_output("VISIBLE<think>overflow", finished=True))
 
         assert [event.reasoning for event in first if event.type == "reasoning"] == [
             "abcd"
