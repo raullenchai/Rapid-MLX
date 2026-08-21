@@ -100,6 +100,16 @@ class TestExtractReasoning:
         assert reasoning == "cot"
         assert content == "partial answer"
 
+    def test_bare_json_response_routes_to_content(self, parser):
+        # JSON-mode contract: North's template instructs structured
+        # responses to emit bare JSON with no channel markers (codex r4).
+        reasoning, content = parser.extract_reasoning('{"answer": 4}')
+        assert reasoning is None
+        assert content == '{"answer": 4}'
+        reasoning, content = parser.extract_reasoning("\n[1, 2, 3]")
+        assert reasoning is None
+        assert content == "\n[1, 2, 3]"
+
     def test_no_marker_leakage_in_either_channel(self, parser):
         out = f"think{END_THINK}{START_TEXT}answer{END_TEXT}"
         reasoning, content = parser.extract_reasoning(out)
@@ -421,6 +431,16 @@ class TestStreaming:
             msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
             if msg and msg.content:
                 assert "<|" not in msg.content
+
+    def test_streaming_bare_json_routes_to_content(self, parser):
+        # JSON-mode streaming: bare JSON with no markers must stream on
+        # the content lane, not vanish into reasoning (codex r4).
+        reasoning, content = _stream(
+            parser,
+            ['{"ans', 'wer": ', "4}"],
+        )
+        assert reasoning == ""
+        assert content == '{"answer": 4}'
 
     def test_streaming_split_end_thinking_marker(self, parser):
         # <|END_THINKING|> split across deltas must not leak marker bytes

@@ -158,13 +158,20 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
             content = _strip_text_markers(after).strip() or None
             return reasoning, content
         if no_thinking_markers:
-            # No markers at all. The North chat template ends the prompt
-            # inside ``<|START_THINKING|>``, so marker-free output is a
-            # thought trace truncated before ``<|END_THINKING|>`` — the
-            # same routing the streaming path applies. ``content`` stays
-            # None so the truncated meta-cognition never ships as the
+            stripped_output = model_output.strip()
+            # North's chat template instructs JSON-mode/JSON-schema
+            # responses to emit BARE JSON with no channel markers, so a
+            # marker-free output whose head is a JSON delimiter is the
+            # structured answer, not a thought trace (codex r4).
+            if stripped_output.startswith(("{", "[")):
+                return None, model_output
+            # Otherwise: the template ends the prompt inside
+            # ``<|START_THINKING|>``, so marker-free output is a thought
+            # trace truncated before ``<|END_THINKING|>`` — the same
+            # routing the streaming path applies. ``content`` stays None
+            # so the truncated meta-cognition never ships as the
             # user-visible answer.
-            return model_output.strip() or None, None
+            return stripped_output or None, None
         reasoning, content = super().extract_reasoning(model_output, enable_thinking)
         if reasoning:
             reasoning = _strip_text_markers(reasoning).strip() or None
@@ -204,6 +211,16 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
             if text:
                 self._sm_reasoning_started = True
                 reasoning_parts.append(text)
+
+        # Bare-JSON detection (codex r4): North's template tells
+        # JSON-mode/JSON-schema responses to emit bare JSON with NO
+        # channel markers. If the first non-whitespace byte of the stream
+        # is a JSON delimiter and nothing has been routed yet, the whole
+        # stream is the structured answer — flip to content immediately.
+        if self._sm_phase == "thinking" and not self._sm_reasoning_started:
+            head = self._sm_buf.lstrip()
+            if head and head[0] in "{[":
+                self._sm_phase = "content"
 
         while True:
             if self._sm_phase == "thinking":
