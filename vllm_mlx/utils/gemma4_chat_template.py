@@ -82,8 +82,7 @@ def upgrade_stale_gemma4_chat_template(applicator, model_name: str = "") -> bool
     if not all(signature in current for signature in _STALE_SIGNATURES):
         return False
 
-    lowered_name = model_name.lower()
-    compact_name = "e2b" in lowered_name or "e4b" in lowered_name
+    compact_name = "e2b" in identity or "e4b" in identity
     variant = (
         "full" if _FULL_GENERATION_CUE in current and not compact_name else "compact"
     )

@@ -59,11 +59,15 @@ def _tools() -> list[dict]:
 def test_compact_and_full_stale_templates_select_matching_canonical_variant() -> None:
     compact = _tokenizer(_STALE_COMPACT)
     full = _tokenizer(_STALE_FULL)
+    metadata_only = _tokenizer(_STALE_FULL)
+    metadata_only.init_kwargs["name_or_path"] = "local/gemma-4-e2b"
 
     assert upgrade_stale_gemma4_chat_template(compact, "gemma-4-e2b-4bit")
     assert upgrade_stale_gemma4_chat_template(full, "gemma-4-26b-4bit")
+    assert upgrade_stale_gemma4_chat_template(metadata_only)
     assert compact.chat_template == _canonical_template("compact")
     assert full.chat_template == _canonical_template("full")
+    assert metadata_only.chat_template == _canonical_template("compact")
 
 
 def test_current_canonical_and_unknown_custom_templates_are_preserved() -> None:
