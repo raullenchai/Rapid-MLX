@@ -1,0 +1,434 @@
+import AppKit
+import WebKit
+
+/// Draws a Mermaid diagram, offscreen, and hands back a picture.
+///
+/// ## Why a web view at all, when the SVG preview needs none
+///
+/// ``SVGPreview`` argues — correctly, for the SVG a person or a model writes
+/// by hand — that AppKit renders SVG natively and a web view would be a much
+/// larger machine for no gain. Mermaid's output is a different animal.
+/// Measured against this exact library:
+///
+/// * `<foreignObject>` labels, which Mermaid uses for flowchart, class,
+///   state, ER, mindmap and journey diagrams, are **not drawn at all** by
+///   AppKit. The diagram comes out as empty boxes.
+/// * With `htmlLabels: false` the labels become native `<text>` and do draw,
+///   but land outside their shapes — AppKit does not honour the
+///   text-positioning attributes Mermaid relies on.
+/// * `marker` arrowheads are never drawn, in either mode.
+///
+/// So the picture has to come from the engine that agrees with the emitter.
+/// WebKit is that engine.
+///
+/// ## Why it is still not a live web view
+///
+/// The web view never enters the view hierarchy. It renders into an offscreen
+/// window, is snapshotted, and the result is an `NSImage` drawn by the same
+/// `draw(_:)` path the SVG preview uses. That keeps every property that made
+/// the SVG preview affordable: no accessibility subtree (so the 26 committed
+/// golden-flow baselines are untouched), no participation in layout, no
+/// asynchronous height arriving after `height(forWidth:)` has already
+/// answered, and nothing to tear down when the transcript rebuilds a row.
+///
+/// ## Network
+///
+/// Four layers, none of which is redundant — see ``MermaidHostPage``. Two of
+/// them are directly measured by `MermaidNetworkDenialTests`, which stands up
+/// a loopback listener and asserts nothing ever connects to it. The listener
+/// has a positive control, so an assertion that cannot fail is not mistaken
+/// for one that passes.
+@MainActor
+final class MermaidRenderer {
+
+    static let shared = MermaidRenderer()
+
+    enum Theme: String, Hashable {
+        case light
+        case dark
+
+        init(_ appearance: NSAppearance) {
+            let match = appearance.bestMatch(from: [.aqua, .darkAqua])
+            self = (match == .darkAqua) ? .dark : .light
+        }
+    }
+
+    private struct Key: Hashable {
+        let source: String
+        let theme: Theme
+    }
+
+    private enum Entry {
+        case image(NSImage)
+        /// Remembered as firmly as a success. Without this a malformed
+        /// diagram is retried on every appearance change and every rebuilt
+        /// row, forever.
+        case failed
+    }
+
+    /// Bounded. Diagrams recur — a conversation revisits the same one every
+    /// time the row is rebuilt — so a small cache carries most of the traffic.
+    private static let capacity = 32
+    private var cache: [Key: Entry] = [:]
+    private var order: [Key] = []
+    private var inFlight: [Key: Task<NSImage?, Never>] = [:]
+
+    /// Rendering happens in a window so WebKit has somewhere to draw. It is
+    /// never ordered front and never joins the app's window list in any way
+    /// the reader can see.
+    private var window: NSWindow?
+    private var webView: WKWebView?
+    private var loaded = false
+    /// The setup, shared by everyone who arrives while it is running.
+    ///
+    /// `@MainActor` does not stop reentrancy at a suspension point, and
+    /// `preparedWebView()` has three: compiling the rule list, waiting for the
+    /// page, and probing it. Without this, eight diagrams going final on the
+    /// same flush built eight web content processes, compiled eight rule
+    /// lists, and read and hashed the 3.4 MB library eight times — and since
+    /// `window` and `navigationPolicy` are single slots and
+    /// `WKWebView.navigationDelegate` is weak, seven of the eight ended up
+    /// with no host window and no navigation delegate at all. The fourth
+    /// layer of the network defence silently absent is not a cost, it is a
+    /// hole. Same shape as `inFlight` below, for the same reason.
+    private var setup: Task<WKWebView?, Never>?
+
+    /// How many web views this renderer has built. A test seam: the whole
+    /// point of ``setup`` is that this stays at one however many diagrams
+    /// arrive together, and there is no other way to see it.
+    private(set) var webViewsCreated = 0
+
+    /// After this many hard failures the feature turns itself off for the
+    /// session. A diagram that wedges or crashes the content process must not
+    /// be able to make the app respawn it in a loop.
+    private static let failureBudget = 3
+    private var failures = 0
+
+    private init() {}
+
+    // MARK: - The synchronous half
+
+    /// The picture, if it has already been drawn. This is what makes the
+    /// button's press synchronous: by the time it is visible, the answer is
+    /// in hand.
+    func cachedImage(source: String, theme: Theme) -> NSImage? {
+        guard case .image(let image)? = cache[Key(source: source, theme: theme)] else {
+            return nil
+        }
+        return image
+    }
+
+    /// Has this diagram already been tried and failed? Callers use it to stop
+    /// asking.
+    func isKnownBad(source: String, theme: Theme) -> Bool {
+        if case .failed? = cache[Key(source: source, theme: theme)] { return true }
+        return false
+    }
+
+    // MARK: - The asynchronous half
+
+    /// Draw it, or return nil.
+    ///
+    /// Concurrent callers for the same diagram share one render — a
+    /// conversation holding the same diagram twice pays once.
+    func image(source: String, theme: Theme) async -> NSImage? {
+        let key = Key(source: source, theme: theme)
+        switch cache[key] {
+        case .image(let image): return image
+        case .failed: return nil
+        case nil: break
+        }
+        if let running = inFlight[key] { return await running.value }
+
+        let task = Task { [weak self] () -> NSImage? in
+            guard let self else { return nil }
+            let image = await self.render(source: source, theme: theme)
+            self.store(image.map(Entry.image) ?? .failed, for: key)
+            self.inFlight[key] = nil
+            return image
+        }
+        inFlight[key] = task
+        return await task.value
+    }
+
+    private func store(_ entry: Entry, for key: Key) {
+        cache[key] = entry
+        order.append(key)
+        guard order.count > Self.capacity else { return }
+        cache.removeValue(forKey: order.removeFirst())
+    }
+
+    // MARK: - The web view
+
+    /// The tail of the render queue.
+    ///
+    /// One web view serves every diagram, and a render is two separate awaits
+    /// against it: `__rapidRender` draws into `#stage` and measures it, then
+    /// `takeSnapshot` reads the pixels back. Nothing between those two points
+    /// stopped a second diagram from starting, replacing the stage, and
+    /// leaving the first to photograph the second one's drawing.
+    ///
+    /// An answer with four diagrams settles them on one flush, so all four
+    /// start together — measured, three of the four came back holding a
+    /// neighbour's picture, on every run. The snapshot is also assigned the
+    /// size that *was* measured, so the wrong picture still arrives at the
+    /// right block's dimensions: it looks like a diagram that rendered as
+    /// something else, cropped.
+    private var tail: Task<Void, Never>?
+
+    private func render(source: String, theme: Theme) async -> NSImage? {
+        let previous = tail
+        let task = Task { @MainActor [weak self] () -> NSImage? in
+            _ = await previous?.value
+            guard let self else { return nil }
+            return await self.renderExclusively(source: source, theme: theme)
+        }
+        tail = Task { @MainActor in _ = await task.value }
+        return await task.value
+    }
+
+    /// Draws one diagram, with the web view to itself. Only ever called from
+    /// ``render(source:theme:)``, which is what guarantees that.
+    private func renderExclusively(source: String, theme: Theme) async -> NSImage? {
+        guard failures < Self.failureBudget else { return nil }
+        guard let webView = await preparedWebView() else { return nil }
+
+        let measured: (width: Int, height: Int)?
+        do {
+            let result = try await webView.callAsyncJavaScript(
+                "return await __rapidRender(source, theme);",
+                // Arguments, never interpolation: the source is
+                // model-authored and must not be able to become code.
+                arguments: ["source": source, "theme": theme.rawValue],
+                in: nil,
+                contentWorld: .page
+            )
+            guard let dictionary = result as? [String: Any],
+                  dictionary["ok"] as? Bool == true,
+                  let width = dictionary["width"] as? Int,
+                  let height = dictionary["height"] as? Int,
+                  width > 0, height > 0
+            else { return nil }
+            measured = (width, height)
+        } catch {
+            // A wedged render leaves the content process unusable; drop the
+            // whole thing so the next diagram starts clean.
+            failures += 1
+            teardown()
+            return nil
+        }
+        guard let measured else { return nil }
+
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = CGRect(x: 0, y: 0, width: measured.width, height: measured.height)
+        // Twice the point size: the result is a bitmap, and a preview that
+        // was crisp only on a non-Retina display would be a regression on
+        // every Mac this app supports.
+        configuration.snapshotWidth = NSNumber(value: measured.width * 2)
+
+        return await withCheckedContinuation { continuation in
+            webView.takeSnapshot(with: configuration) { image, _ in
+                guard let image else { continuation.resume(returning: nil); return }
+                // The snapshot arrives at pixel dimensions; restate it in
+                // points so `SVGPreview.drawSize` measures it the same way it
+                // measures a vector document.
+                image.size = CGSize(width: measured.width, height: measured.height)
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+    private func preparedWebView() async -> WKWebView? {
+        if let webView, loaded { return webView }
+        if let setup { return await setup.value }
+
+        let task = Task { [weak self] () -> WKWebView? in
+            guard let self else { return nil }
+            let view = await self.buildWebView()
+            self.setup = nil
+            return view
+        }
+        setup = task
+        return await task.value
+    }
+
+    private func buildWebView() async -> WKWebView? {
+        webViewsCreated += 1
+        guard let ruleList = await compiledRuleList() else {
+            // Setup failure counts against the budget too. Without this every
+            // distinct diagram re-attempts the whole thing — recompiling the
+            // rule list, re-reading and re-hashing 3.4 MB — forever.
+            failures += 1
+            // Fail closed. Without the rule list a subresource load would go
+            // straight to the network, and a preview that is silently
+            // unprotected is worse than one that is silently unavailable.
+            return nil
+        }
+        guard let library = MermaidLibrary.load() else {
+            failures += 1
+            return nil
+        }
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(
+            MermaidSchemeHandler(library: library), forURLScheme: MermaidHostPage.scheme
+        )
+        configuration.userContentController.add(ruleList)
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+
+        let view = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 1_400, height: 1_400),
+            configuration: configuration
+        )
+        let navigation = MermaidNavigationPolicy()
+        view.navigationDelegate = navigation
+        self.navigationPolicy = navigation
+
+        // WebKit will not paint, and `takeSnapshot` will not produce content,
+        // for a view that is in no window. The window is offscreen and never
+        // ordered front.
+        let host = NSWindow(
+            contentRect: view.frame, styleMask: [.borderless],
+            backing: .buffered, defer: false
+        )
+        host.isReleasedWhenClosed = false
+        host.contentView?.addSubview(view)
+        host.orderOut(nil)
+        window = host
+        webView = view
+
+        view.load(URLRequest(url: MermaidHostPage.hostPageURL))
+        guard await navigation.waitForLoad() else {
+            failures += 1
+            teardown()
+            return nil
+        }
+
+        // The check on the thing that actually fails: a truncated library
+        // resolves by name and then dies inside `render`.
+        let ready = try? await view.evaluateJavaScript("window.__rapidReady === true")
+        guard ready as? Bool == true else {
+            failures += 1
+            teardown()
+            return nil
+        }
+
+        loaded = true
+        return view
+    }
+
+    private var navigationPolicy: MermaidNavigationPolicy?
+
+    /// Test seam: put the renderer back to cold. Nothing in the app calls
+    /// this — the web view is dropped only when a render wedges it.
+    func resetForTesting() {
+        teardown()
+        cache.removeAll()
+        order.removeAll()
+        failures = 0
+        webViewsCreated = 0
+    }
+
+    private func teardown() {
+        webView?.navigationDelegate = nil
+        webView?.removeFromSuperview()
+        webView = nil
+        window?.close()
+        window = nil
+        navigationPolicy = nil
+        loaded = false
+    }
+
+    private func compiledRuleList() async -> WKContentRuleList? {
+        await withCheckedContinuation { continuation in
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "rapid-mermaid-deny-all",
+                encodedContentRuleList: MermaidHostPage.contentRuleListJSON
+            ) { list, _ in continuation.resume(returning: list) }
+                ?? continuation.resume(returning: nil)
+        }
+    }
+}
+
+/// Serves exactly two files, by name, from memory. Everything else fails.
+private final class MermaidSchemeHandler: NSObject, WKURLSchemeHandler {
+    private let library: Data
+
+    init(library: Data) { self.library = library }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        guard let url = task.request.url else {
+            task.didFailWithError(URLError(.badURL)); return
+        }
+        let body: Data
+        let mime: String
+        switch url.path {
+        case MermaidHostPage.hostPagePath:
+            body = Data(MermaidHostPage.html.utf8)
+            mime = "text/html"
+        case MermaidHostPage.libraryPath:
+            body = library
+            mime = "text/javascript"
+        default:
+            task.didFailWithError(URLError(.unsupportedURL))
+            return
+        }
+        task.didReceive(URLResponse(
+            url: url, mimeType: mime,
+            expectedContentLength: body.count, textEncodingName: "utf-8"
+        ))
+        task.didReceive(body)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+}
+
+/// Allows the one page and cancels everything else.
+final class MermaidNavigationPolicy: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var finished: Bool?
+
+    func waitForLoad() async -> Bool {
+        if let finished { return finished }
+        return await withCheckedContinuation { self.continuation = $0 }
+    }
+
+    private func settle(_ value: Bool) {
+        finished = value
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        decisionHandler(Self.policy(for: navigationAction.request.url))
+    }
+
+    /// The decision, as a function of the URL.
+    ///
+    /// Split out because the delegate itself is not reachable from a test —
+    /// an offscreen page never activates an anchor, so a test that renders a
+    /// `click … href` directive and asserts nothing connected passes whether
+    /// this layer exists or not. Asking the rule directly is the only way to
+    /// know it is there.
+    static func policy(for url: URL?) -> WKNavigationActionPolicy {
+        url?.scheme == MermaidHostPage.scheme ? .allow : .cancel
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { settle(true) }
+
+    func webView(
+        _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+    ) { settle(false) }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) { settle(false) }
+}
