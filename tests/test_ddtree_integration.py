@@ -92,6 +92,57 @@ def test_speculative_config_ddtree_preflight_falls_back_to_alias_defaults(
     assert args._ddtree_tree_budget == 24
 
 
+def test_unknown_4bit_target_can_explicitly_opt_in(monkeypatch, capsys) -> None:
+    from vllm_mlx.cli import (
+        _normalize_speculative_config_or_exit,
+        _preflight_ddtree_or_exit,
+    )
+
+    monkeypatch.setattr(
+        "vllm_mlx.speculative.ddtree.eligibility.have_runtime", lambda: True
+    )
+    args = _ddtree_cli_args(
+        model="user/Qwen3.5-9B-abliterated-4bit",
+        speculative_config=(
+            '{"method":"ddtree","model":"user/matching-drafter",'
+            '"num_speculative_tokens":8,"tree_budget":12}'
+        ),
+    )
+    _normalize_speculative_config_or_exit(args)
+    _, profile = _preflight_ddtree_or_exit(args)
+    assert profile.hf_path == args.model
+    assert args._ddtree_drafter_repo == "user/matching-drafter"
+    assert "Experimental DDTree" in capsys.readouterr().out
+
+
+def test_unverified_ddtree_requires_all_fields_even_with_residual_profile(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    from vllm_mlx.cli import (
+        _normalize_speculative_config_or_exit,
+        _preflight_ddtree_or_exit,
+    )
+    from vllm_mlx.model_aliases import AliasProfile
+
+    residual = AliasProfile(
+        hf_path="user/unverified",
+        supports_ddtree=False,
+        ddtree_draft_model="registry/residual",
+        ddtree_speculative_tokens=16,
+        ddtree_tree_budget=24,
+    )
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _: residual)
+    args = _ddtree_cli_args(
+        model="user/unverified",
+        speculative_config='{"method":"ddtree"}',
+    )
+    _normalize_speculative_config_or_exit(args)
+    with pytest.raises(SystemExit):
+        _preflight_ddtree_or_exit(args)
+
+
 def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> None:
     from vllm_mlx.cli import info_command
 
@@ -113,14 +164,14 @@ def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> No
     )
 
 
-def test_info_ddtree_marks_4bit_alias_ineligible(capsys) -> None:
+def test_info_ddtree_marks_4bit_alias_experimental(capsys) -> None:
     from vllm_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-9b-4bit"})()
     info_command(args)
     captured = capsys.readouterr()
     assert "DDTree eligibility" in captured.out
-    assert "ineligible" in captured.out
+    assert "experimental" in captured.out
     assert "4-bit" in captured.out
 
 
@@ -152,16 +203,16 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
         None,
     )
     assert eligible_row is not None
-    assert ddtree_cell(eligible_row) == "✓", (
-        f"DDTree column should be ✓: {eligible_row!r}"
+    assert ddtree_cell(eligible_row) == "verified", (
+        f"DDTree column should be verified: {eligible_row!r}"
     )
     ineligible_row = next(
         (line for line in lines if line.strip().startswith("qwen3.5-9b-4bit ")),
         None,
     )
     assert ineligible_row is not None
-    assert ddtree_cell(ineligible_row) == "—", (
-        f"DDTree column should be —: {ineligible_row!r}"
+    assert ddtree_cell(ineligible_row) == "exp", (
+        f"DDTree column should be exp: {ineligible_row!r}"
     )
 
 

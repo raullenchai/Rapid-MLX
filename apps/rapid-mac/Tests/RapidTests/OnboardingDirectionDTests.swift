@@ -66,6 +66,68 @@ struct OnboardingDirectionDTests {
                 "the setup surface must take the window's size, not a panel's")
     }
 
+    /// #2033 finding 2 — a first-time user reported two enabled "Start"
+    /// controls on Step 2 at once: the wizard's own footer primary
+    /// ("Start existing model") AND the shared ``ReadinessBanner``'s inline
+    /// `Readiness.Action`, both doing the same thing.
+    ///
+    /// That was true against the 0.12.15 build the issue was filed
+    /// against, which presented onboarding as a `.sheet` — a document-modal
+    /// panel that leaves the parent window (composer, ``ReadinessBanner``
+    /// and all) mounted and visible behind it. The Direction D rewrite
+    /// (``onboardingIsNotPresentedAsASheet`` above, #2063) replaced that
+    /// with a hard shell swap for a different reason (05.1.A's "no modal
+    /// card floating over a live app"), but the swap is *also* a complete
+    /// fix for finding 2: ``ReadinessBanner`` is built only inside
+    /// ``ChatView``/``ImagesView``/``AudioView``/``ConnectToolsView`` (the
+    /// Launch tab's page-mode view), none of
+    /// which mount while ``productionShell`` is swapped out — so
+    /// `Readiness.Action` cannot exist on screen while onboarding owns the
+    /// window, full stop, independent of which Step 2 verb the wizard's own
+    /// primary happens to show.
+    ///
+    /// This test exists so that invariant is asserted BY NAME, rather than
+    /// only implied by ``onboardingIsNotPresentedAsASheet`` pinning a
+    /// different rationale — a future change that reintroduces a sheet (or
+    /// otherwise lets the wizard and the production shell mount together)
+    /// should fail a test that says "two Start buttons", not just "wrong
+    /// presentation style".
+    ///
+    /// Codex review: the original version of this test only scanned the
+    /// wizard's own two files, which proves the wizard doesn't build a
+    /// second Start CTA but says nothing about the shell root itself doing
+    /// so — a ``ReadinessBanner(`` added directly inside ``onboardingShell``
+    /// (rather than routed through ``ChatView``/``ImagesView``/
+    /// ``AudioView``/``ConnectToolsView`` as today) would sail past it.
+    /// ``ContentView.swift`` never constructs either type directly today —
+    /// confirmed by grep before adding this assertion — so scanning the
+    /// whole file is a sound, simply-stated invariant rather than one that
+    /// happens to hold only inside a sub-region a text search can't isolate.
+    @Test("#2033 finding 2 — the wizard never mounts the shared readiness band")
+    func onboardingNeverMountsTheSharedReadinessBand() throws {
+        // Same shell-exclusivity pin as above, restated as its own contract:
+        // if this ever stops being an if/else over one condition, the two
+        // shells (and everything each one owns) could render together.
+        let content = try Self.strippedSource("Sources/Rapid/UI/ContentView.swift")
+        #expect(content.contains("ifquickstartVisible{onboardingShell}else{productionShell}"),
+                "the root must swap the whole shell, not overlay one on the other")
+        #expect(!content.contains("ReadinessBanner("),
+                "ContentView.swift must not construct the shared readiness band directly — it is routed through ChatView/ImagesView/AudioView/ConnectToolsView, none of which mount while onboardingShell owns the window")
+        #expect(!content.contains("ModelReadiness("),
+                "ContentView.swift must not derive a ModelReadiness value directly")
+
+        // The wizard's own two files must never independently construct the
+        // shared readiness band or its action — that is the ONLY way a
+        // second "Start" control could appear on a Quickstart screen.
+        for path in ["Sources/Rapid/UI/QuickstartView.swift", "Sources/Rapid/UI/OnboardingDirectionD.swift"] {
+            let view = try Self.strippedSource(path)
+            #expect(!view.contains("ReadinessBanner("),
+                    "\(path) must not embed the shared readiness band — Quickstart.Footer.Primary is the only Start CTA on a wizard screen")
+            #expect(!view.contains("ModelReadiness("),
+                    "\(path) must not derive a ModelReadiness value of its own")
+        }
+    }
+
     @Test("The setup surface fills whatever the window gives it")
     func setupSurfaceFillsTheWindow() throws {
         let view = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
@@ -565,9 +627,27 @@ struct OnboardingDirectionDTests {
         #expect(view.contains(#"identifier:"Quickstart.Step2.FindingFit""#))
         #expect(view.contains(".accessibilityIdentifier(identifier)"),
                 "the transient scaffold must apply the identifier it is given")
-        // Paper is explicit that neither may be dressed as a timed scan.
+        // Paper is explicit that neither of THESE two screens may be dressed
+        // as a timed scan: the chip/memory read and the catalogue load are
+        // each either already known or asynchronous for a real reason, so a
+        // fake delay on top of either would claim the app is doing work it
+        // is not. Scoped to the two screens plus the scaffolding only they
+        // use (``transientStep``/``transientFact``), not the whole file —
+        // ``QuickstartCoordinator/Phase/skippingDownload`` elsewhere in this
+        // file uses a fixed short dwell for a different, honest reason (it
+        // holds an already-known "nothing to download" fact on screen long
+        // enough to read, rather than pretending an unknown one took time to
+        // discover — see ``startCachedModel(_:)``, #2033 finding 1), and is
+        // deliberately outside this guard's target.
+        guard let start = view.range(of: "privatevarcheckingHardwareStep:someView"),
+              let end = view.range(of: "enumSelectionNarrative:Equatable{")
+        else {
+            Issue.record("could not isolate the two transient micro-stage screens")
+            return
+        }
+        let transientScreens = String(view[start.lowerBound..<end.lowerBound])
         for forbidden in ["Task.sleep", "DispatchQueue.main.asyncAfter", "repeatForever"] {
-            #expect(!view.contains(forbidden.replacingOccurrences(of: " ", with: "")),
+            #expect(!transientScreens.contains(forbidden.replacingOccurrences(of: " ", with: "")),
                     "the transient stages must not introduce an artificial delay (\(forbidden))")
         }
     }

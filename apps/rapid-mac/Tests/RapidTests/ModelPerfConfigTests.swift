@@ -44,6 +44,16 @@ struct ModelPerfConfigTests {
         #expect(store.launchFlags(forAlias: "qwen3.8-27b-mixed-3.5bpw").isEmpty)
     }
 
+    @Test("MTP presets are visibly experimental")
+    func mtpPresetIsExperimental() {
+        let preset = SpeculativeDecodingPreset(
+            method: .mtp,
+            model: "mlx-community/Qwen3.5-9B-MTP-4bit",
+            tokens: 2
+        )
+        #expect(preset.displayName == "Experimental MTP")
+    }
+
     @Test("Setting a knob then clearing it removes the row rather than pinning the default")
     func clearingAnOverrideRemovesTheRow() {
         let store = makeStore()

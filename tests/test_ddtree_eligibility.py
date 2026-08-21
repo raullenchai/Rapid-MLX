@@ -51,7 +51,7 @@ def test_check_rejects_moe_alias() -> None:
         check(p, alias="qwen3.6-35b-8bit")
 
 
-def test_check_rejects_4bit_main_model() -> None:
+def test_explicit_4bit_main_model_is_experimental() -> None:
     p = AliasProfile(
         hf_path="mlx-community/Qwen3.5-9B-4bit",
         supports_ddtree=True,
@@ -59,7 +59,18 @@ def test_check_rejects_4bit_main_model() -> None:
         ddtree_speculative_tokens=16,
         ddtree_tree_budget=24,
     )
-    with pytest.raises(DDTreeUnavailable, match="4-bit"):
+    r = report(
+        p,
+        alias="qwen3.5-9b-4bit",
+        explicit=True,
+        drafter_model=p.ddtree_draft_model,
+        speculative_tokens=16,
+        tree_budget=24,
+    )
+    assert r.reasons == ()
+    assert r.recommendation == "experimental"
+    assert "4-bit" in " ".join(r.warnings)
+    with pytest.raises(DDTreeUnavailable, match="explicit experimental opt-in"):
         check(p, alias="qwen3.5-9b-4bit")
 
 
@@ -72,10 +83,10 @@ def test_report_collects_all_failures() -> None:
     r = report(bad, alias="qwen3.6-35b-4bit")
     joined = " ".join(r.reasons)
     assert "MoE" in joined
-    assert "4-bit" in joined
-    assert "ddtree_draft_model" in joined
-    assert "ddtree_speculative_tokens" in joined
-    assert "ddtree_tree_budget" in joined
+    assert "4-bit" in " ".join(r.warnings)
+    assert "drafter" in joined
+    assert "num_speculative_tokens" in joined
+    assert "tree_budget" in joined
 
 
 def test_qwen3_5_9b_8bit_alias_passes_check() -> None:
@@ -93,7 +104,75 @@ def test_qwen3_5_9b_4bit_alias_fails_with_4bit_reason() -> None:
     assert profile is not None
     with pytest.raises(DDTreeUnavailable) as excinfo:
         check(profile, alias="qwen3.5-9b-4bit")
-    assert "4-bit" in str(excinfo.value)
+    assert "not DDTree-enabled" in str(excinfo.value)
+
+
+def test_unknown_4bit_path_explicit_opt_in_is_allowed() -> None:
+    profile = AliasProfile(hf_path="user/Qwen3.5-9B-abliterated-4bit")
+    result = report(
+        profile,
+        explicit=True,
+        drafter_model="user/Qwen3.5-9B-abliterated-DFlash",
+        speculative_tokens=16,
+        tree_budget=24,
+    )
+    assert result.recommendation == "experimental"
+    assert result.reasons == ()
+
+
+def test_check_preserves_none_success_contract() -> None:
+    assert check(_good_profile(), alias="qwen3.5-9b-8bit") is None
+
+
+def test_explicit_non_positive_tree_values_are_rejected() -> None:
+    profile = _good_profile()
+    for value in (0, -1):
+        with pytest.raises(DDTreeUnavailable, match="num_speculative_tokens"):
+            check(
+                profile,
+                explicit=True,
+                drafter_model=profile.ddtree_draft_model,
+                speculative_tokens=value,
+                tree_budget=24,
+            )
+        with pytest.raises(DDTreeUnavailable, match="tree_budget"):
+            check(
+                profile,
+                explicit=True,
+                drafter_model=profile.ddtree_draft_model,
+                speculative_tokens=16,
+                tree_budget=value,
+            )
+
+
+def test_unverified_explicit_check_does_not_inherit_residual_metadata() -> None:
+    profile = AliasProfile(
+        hf_path="user/unverified",
+        supports_ddtree=False,
+        ddtree_draft_model="registry/residual",
+        ddtree_speculative_tokens=16,
+        ddtree_tree_budget=24,
+    )
+    with pytest.raises(DDTreeUnavailable) as excinfo:
+        check(profile, explicit=True)
+    message = str(excinfo.value)
+    assert "drafter" in message
+    assert "num_speculative_tokens" in message
+    assert "tree_budget" in message
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"drafter_model": "user/different"},
+        {"speculative_tokens": 8},
+        {"tree_budget": 12},
+    ],
+)
+def test_verified_target_with_any_override_is_experimental(overrides) -> None:
+    result = report(_good_profile(), explicit=True, **overrides)
+    assert result.recommendation == "experimental"
+    assert result.warnings
 
 
 def test_runtime_patches_rope_parameters_without_copying_weights(

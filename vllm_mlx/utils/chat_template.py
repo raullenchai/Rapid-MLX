@@ -1259,6 +1259,13 @@ def apply_chat_template(
         ``apply_chat_template`` method.
     """
     from .deepseek_v4_0731 import encode_messages, is_deepseek_v4_0731
+    from .gemma4_chat_template import upgrade_stale_gemma4_chat_template
+
+    # Converted Gemma 4 checkpoints commonly retain the pre-2026-07-09
+    # template even though Google fixed null rendering and multi-turn tool
+    # continuation upstream.  Upgrade only that recognizable stale template;
+    # current canonical and custom templates are preserved.
+    upgrade_stale_gemma4_chat_template(template_applicator, model_name)
 
     is_deepseek_v4 = is_deepseek_v4_0731(model_name)
 

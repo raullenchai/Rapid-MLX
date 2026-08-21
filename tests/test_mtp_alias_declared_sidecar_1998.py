@@ -27,7 +27,32 @@ import pytest
 # real aliases (not fixtures) is deliberate — the bug was precisely that the
 # registry and the serve path disagreed, so the test has to read the registry.
 ALIAS_WITH_MTP = "qwen3.8-27b-mixed-3.5bpw"
-ALIAS_WITHOUT_MTP = "qwen3.6-35b-8bit"
+ALIAS_WITHOUT_MTP = "qwen3.5-27b-4bit"
+
+# Popular aliases with a published, architecture-matched sidecar and a
+# production-registered MTP injector.  This is intentionally curated rather
+# than inferred from the model name: adding an alias here is a product promise
+# that the GUI toggle can reach a real sidecar and boot path.
+EXPERIMENTAL_MTP_ALIASES = {
+    "qwen3.5-4b-4bit": "mlx-community/Qwen3.5-4B-MTP-4bit",
+    "qwen3.5-4b-6bit": "mlx-community/Qwen3.5-4B-MTP-4bit",
+    "qwen3.5-4b-8bit": "mlx-community/Qwen3.5-4B-MTP-4bit",
+    "qwen3.5-9b-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "qwen3.5-9b-6bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "qwen3.5-9b-8bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "qwen3.6-27b-4bit": "mlx-community/Qwen3.6-27B-MTP-4bit",
+    "qwen3.6-27b-6bit": "mlx-community/Qwen3.6-27B-MTP-4bit",
+    "qwen3.6-27b-8bit": "mlx-community/Qwen3.6-27B-MTP-4bit",
+    "qwen3.6-27b-ud": "mlx-community/Qwen3.6-27B-MTP-4bit",
+    "qwen3.6-27b": "mlx-community/Qwen3.6-27B-MTP-4bit",
+    "qwen3.6-35b-4bit": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
+    "qwen3.6-35b-6bit": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
+    "qwen3.6-35b-8bit": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
+    "qwen3.6-35b-ud": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
+    "qwen3.6-35b": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
+    "qwen3.8-27b-4bit": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "qwen3.8-27b-mixed-3.5bpw": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
+}
 
 
 def _args(**overrides):
@@ -77,6 +102,16 @@ def test_registry_precondition_the_alias_still_declares_mtp():
     other = resolve_profile(ALIAS_WITHOUT_MTP)
     assert other is not None
     assert not other.mtp_draft_model
+
+
+@pytest.mark.parametrize(("alias", "sidecar"), sorted(EXPERIMENTAL_MTP_ALIASES.items()))
+def test_popular_experimental_mtp_aliases_declare_a_real_preset(alias, sidecar):
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(alias)
+    assert profile is not None
+    assert profile.mtp_draft_model == sidecar
+    assert profile.mtp_speculative_tokens > 0
 
 
 # ------------------------------------------------------------------ the fix

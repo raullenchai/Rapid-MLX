@@ -618,10 +618,11 @@ def mtp_generate_step(
                 cache_commit=cur_commit,
                 want_hidden=_mtp_supports_hidden and K >= 2,
             )
-            # Materialize before chaining — the next iteration needs
-            # ``prev_tok.item()`` inside ``_step_mtp`` (via reshape,
-            # not .item(), but the MLX graph needs the value pinned).
-            mx.eval(d_tok)
+            # Keep the draft chain on-device.  ``prev_tok`` is consumed as an
+            # MLX array by the next head call; forcing ``mx.eval`` here adds
+            # one CPU/GPU synchronization per depth and defeats the purpose
+            # of batched verification.  The final verify round evaluates the
+            # complete draft graph once.
             draft_toks.append(d_tok)
             draft_lps.append(d_lp)
             draft_accept_lps.append(d_alp)
@@ -633,7 +634,6 @@ def mtp_generate_step(
             # ``hidden_last`` constant on injects that don't expose
             # ``return_hidden`` (Qwen 3.5 today).
             if d_hidden is not None:
-                mx.eval(d_hidden)
                 cur_hidden = d_hidden
             cur_commit = None
         return draft_toks, draft_lps, draft_accept_lps, xtc_draws

@@ -1711,8 +1711,11 @@ struct ModelPickerBar: View {
 
     /// Pure helper: ``true`` iff a Quickstart flow currently owns
     /// the Start CTA. Disabled phases are ``.lowDiskWarning``,
-    /// ``.downloading``, ``.starting`` and ``.ready`` (everything
-    /// between "Get started" and the user finishing setup). ``.idle`` /
+    /// ``.downloading``, ``.skippingDownload``, ``.starting`` and
+    /// ``.ready`` (everything between "Get started" and the user
+    /// finishing setup — ``.skippingDownload`` included, because
+    /// Escape can dismiss the full-window surface mid-beat without
+    /// touching the coordinator's phase). ``.idle`` /
     /// ``.dismissed`` / ``.failed`` release the gate — ``.idle`` means
     /// the user hasn't clicked yet (or dismissed the card),
     /// ``.dismissed`` means onboarding has released the frame,
@@ -1727,7 +1730,7 @@ struct ModelPickerBar: View {
     static func isQuickstartInFlight(phase: QuickstartCoordinator.Phase?) -> Bool {
         guard let phase else { return false }
         switch phase {
-        case .lowDiskWarning, .downloading, .starting, .ready:
+        case .lowDiskWarning, .downloading, .skippingDownload, .starting, .ready:
             return true
         case .idle, .dismissed, .failed:
             return false

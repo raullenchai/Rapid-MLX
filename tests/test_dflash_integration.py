@@ -158,6 +158,36 @@ def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
     assert _resolve_dflash_drafter_repo(args, profile) == "z-lab/Qwen3.5-27B-DFlash"
 
 
+def test_unverified_dflash_profile_cannot_inherit_residual_drafter() -> None:
+    from vllm_mlx.cli import _resolve_dflash_drafter_repo
+
+    args = _dflash_cli_args()
+    args._speculative_config = SimpleNamespace(method="dflash", model=None)
+    profile = SimpleNamespace(
+        supports_dflash=False,
+        dflash_draft_model="registry/residual-drafter",
+    )
+    assert _resolve_dflash_drafter_repo(args, profile) is None
+
+
+def test_programmatic_4bit_requires_explicit_experimental_opt_in(monkeypatch) -> None:
+    from vllm_mlx.speculative.dflash.eligibility import DFlashUnavailable
+    from vllm_mlx.speculative.dflash.server import run_dflash_server
+
+    monkeypatch.setattr("vllm_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    with pytest.raises(DFlashUnavailable, match="experimental_opt_in=True"):
+        run_dflash_server(
+            main_model_repo="user/target-4bit",
+            drafter_repo="user/drafter",
+            host="127.0.0.1",
+            port=8000,
+            served_model_name="target",
+            default_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="error",
+        )
+
+
 def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:
     from vllm_mlx.cli import _preflight_dflash_mutexes_or_exit
 
@@ -233,16 +263,16 @@ def test_info_dflash_block_skipped_for_unknown_alias(capsys) -> None:
     assert "DFlash eligibility" not in captured.out
 
 
-def test_info_dflash_marks_4bit_alias_ineligible(capsys) -> None:
+def test_info_dflash_marks_4bit_alias_experimental(capsys) -> None:
     """The default ``qwen3.5-27b-4bit`` alias points at the 4-bit variant and
-    must surface as ineligible with the right gate failing."""
+    must surface as explicit experimental opt-in."""
     from vllm_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-27b-4bit"})()
     info_command(args)
     captured = capsys.readouterr()
     assert "DFlash eligibility" in captured.out
-    assert "ineligible" in captured.out
+    assert "experimental" in captured.out
 
 
 def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> None:
@@ -290,8 +320,8 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
 
 def test_models_listing_renders_dflash_column(capsys) -> None:
     """``rapid-mlx models`` must show a ``DFlash`` column so users can
-    scan eligibility at a glance. The known-good alias renders ✓; a
-    non-DFlash alias renders —."""
+    scan recommendation at a glance. The known-good alias renders verified;
+    an unverified alias renders exp."""
     from vllm_mlx.cli import models_command
 
     models_command(None)
@@ -307,7 +337,11 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
         None,
     )
     assert eligible_row is not None, "qwen3.5-27b-8bit row missing"
-    assert "✓" in eligible_row, f"DFlash column should be ✓: {eligible_row!r}"
+    # DFlash is third-to-last: DDTree and Preset follow it. Parse the exact
+    # cell so a marker in either neighboring column cannot mask a regression.
+    assert eligible_row.split()[-3] == "verified", (
+        f"DFlash column should be verified: {eligible_row!r}"
+    )
 
     # A non-DFlash alias renders — in the DFlash column.
     ineligible_row = next(
@@ -315,7 +349,9 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
         None,
     )
     assert ineligible_row is not None, "qwen3.5-4b-4bit row missing"
-    assert "—" in ineligible_row, f"DFlash column should be —: {ineligible_row!r}"
+    assert ineligible_row.split()[-3] == "exp", (
+        f"DFlash column should be exp: {ineligible_row!r}"
+    )
 
 
 # =============================================================================

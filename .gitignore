@@ -117,6 +117,7 @@ tier*_benchmark.json
 test_golden_*.py
 gsm8k_*.json
 *.jinja
+!vllm_mlx/templates/*.jinja
 
 # Aider
 .aider*
