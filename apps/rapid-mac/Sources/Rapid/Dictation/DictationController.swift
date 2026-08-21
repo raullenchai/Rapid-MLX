@@ -47,6 +47,9 @@ final class DictationController {
     /// one slow" without a log dive.
     private(set) var lastLatencyDetail: String?
     private(set) var elapsed: TimeInterval = 0
+    /// The model is installed but not yet hot. This is user-visible readiness:
+    /// “on disk” alone is not enough to promise an immediate first dictation.
+    private(set) var isPreparingModel = false
     /// Set when the TCC row says Accessibility is granted but this process
     /// still cannot install an event tap — i.e. the grant landed after launch.
     private(set) var accessibilityNeedsRelaunch = false
@@ -305,6 +308,7 @@ final class DictationController {
         beginRecordingRequestID = nil
         prewarmTask?.cancel()
         prewarmTask = nil
+        isPreparingModel = false
         stopTicking()
         recorder.shutdown()
         hud.hide()
@@ -423,6 +427,7 @@ final class DictationController {
             return
         }
         var created: Task<Void, Never>!
+        isPreparingModel = true
         created = Task { [weak self] in
             await self?.performPrewarm()
             // Only the flight that still OWNS the slot may clear it. A
@@ -430,6 +435,7 @@ final class DictationController {
             // task a later enable started, or single-flight breaks.
             if let self, self.prewarmTask == created {
                 self.prewarmTask = nil
+                self.isPreparingModel = false
             }
         }
         prewarmTask = created
@@ -546,12 +552,37 @@ final class DictationController {
             return
         }
         let requestedAlias = modelAlias
-        // A probe still in flight would sit in front of this dictation in the
-        // engine's serial STT lane. Abandon it — if it already reached the
-        // sidecar, the weight load it triggered continues server-side and
-        // benefits the transcription that follows either way.
-        prewarmTask?.cancel()
-        prewarmTask = nil
+        // If enable-time prewarm is still running, or an LLM/VLM displaced the
+        // audio sidecar since then, pay that cold load before opening the mic.
+        // Cancelling a probe after it reached the sidecar cannot remove it from
+        // the engine's serial STT lane; the real transcription would simply
+        // queue behind it while the HUD misleadingly said “Transcribing…”.
+        if Self.shouldPrepareModelForRecording(
+            prewarmInFlight: prewarmTask != nil,
+            servingAlias: server.servingAlias,
+            requestedAlias: requestedAlias
+        ) {
+            hud.show(.loadingModel)
+            await prewarmModel()
+            guard !Task.isCancelled,
+                  beginRecordingRequestID == requestID,
+                  isEnabled,
+                  phase == .idle,
+                  modelAlias == requestedAlias
+            else {
+                hud.hide()
+                return
+            }
+            guard server.servingAlias == requestedAlias else {
+                lastError = "\(requestedAlias) couldn't start. There may not be enough memory to load it."
+                hud.update(.failed(message: "Couldn't start the model"))
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_600_000_000)
+                    if phase == .idle { hud.hide() }
+                }
+                return
+            }
+        }
         // Model Management changes the cache out of process from this
         // controller. Re-read disk facts on every hotkey press; trusting the
         // enable-time snapshot here could pass a stale repo to ``serve`` and
@@ -587,6 +618,17 @@ final class DictationController {
         phase = .starting
         hud.show(.starting)
         startTicking()
+    }
+
+    /// A same-alias sidecar plus a completed enable-time probe is the only hot
+    /// path. Any in-flight probe or process swap must finish before capture so
+    /// its latency cannot be attributed to transcription after the user talks.
+    nonisolated static func shouldPrepareModelForRecording(
+        prewarmInFlight: Bool,
+        servingAlias: String?,
+        requestedAlias: String
+    ) -> Bool {
+        prewarmInFlight || servingAlias != requestedAlias
     }
 
     /// Fresh cache truth used at the recording boundary. Internal so the

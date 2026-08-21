@@ -130,11 +130,15 @@ struct DictationView: View {
 
     private var statusColor: Color {
         guard controller.isEnabled else { return .secondary }
+        if controller.isPreparingModel { return .orange }
         return controller.phase == .off ? .orange : RapidTheme.green
     }
 
     private var statusHeadline: String {
         guard controller.isEnabled else { return "Dictation is off" }
+        if controller.isPreparingModel {
+            return "Loading \(controller.modelAlias) into memory…"
+        }
         return controller.phase == .off
             ? "Not listening — the hotkey isn't armed"
             : "Ready — press \(controller.trigger.label) in any app"
@@ -145,6 +149,9 @@ struct DictationView: View {
             return controller.readinessSnapshot.isReady
                 ? "Turn it on to dictate into any app."
                 : blockingReason
+        }
+        if controller.isPreparingModel {
+            return "The local model is warming up. Recording starts when it’s ready."
         }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {

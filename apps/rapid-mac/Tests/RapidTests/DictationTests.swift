@@ -366,6 +366,25 @@ struct DictationTests {
         #expect(await controller.modelIsOnDiskAfterRefresh("whisper-small"))
     }
 
+    @Test("recording waits for an active prewarm or a displaced audio sidecar")
+    func recordingPreparationBoundary() {
+        #expect(DictationController.shouldPrepareModelForRecording(
+            prewarmInFlight: true,
+            servingAlias: "qwen3-asr",
+            requestedAlias: "qwen3-asr"
+        ))
+        #expect(DictationController.shouldPrepareModelForRecording(
+            prewarmInFlight: false,
+            servingAlias: "qwen3-4b",
+            requestedAlias: "qwen3-asr"
+        ))
+        #expect(!DictationController.shouldPrepareModelForRecording(
+            prewarmInFlight: false,
+            servingAlias: "qwen3-asr",
+            requestedAlias: "qwen3-asr"
+        ))
+    }
+
     /// Only right-hand modifiers are offered. Left ⌘ rides along with ⌘C/⌘V/
     /// ⌘Tab dozens of times an hour, so "tapped on its own" cannot be detected
     /// reliably enough to arm a microphone with.
