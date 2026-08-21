@@ -539,6 +539,25 @@ class TestTextParserReasoningCap:
         assert events[0].reasoning == "abcd"
         assert events[0].content == f"{tool_call}efghANSWER"
 
+    def test_cap_crossing_before_tool_call_preserves_all_interleaved_segments(self):
+        """A cap split before a promoted tool does not move overflow after it."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(f"<think>abcdef{tool_call}ghijkl</think>ANSWER", finished=True)
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].reasoning == "abcd"
+        assert events[0].content == f"ef{tool_call}ghijklANSWER"
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the

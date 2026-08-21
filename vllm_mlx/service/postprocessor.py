@@ -3127,13 +3127,11 @@ class StreamingPostProcessor:
                 promoted_content = ""
                 # Usually parser content follows reasoning in the source
                 # delta (``thought-tail</think>answer``), but the shared
-                # think parser can also produce the three-part source order
-                # ``promoted tool call -> reasoning -> answer``.  Its explicit
-                # insertion boundary survives cross-chunk buffering; a boolean
-                # before/after flag cannot represent all three segments.
-                insertion_index = getattr(
-                    delta_msg, "reasoning_content_insert_index", None
-                )
+                # think parser can also interleave promoted tool calls with
+                # multiple reasoning spans.  Preserve its ordered source
+                # segments so a cap crossing in any span can reclassify the
+                # exact suffix without moving it across tool markup or answer.
+                source_segments = getattr(delta_msg, "source_segments", None)
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
                     # Codex round-10 BLOCKING #1: only mark the close-
@@ -3186,18 +3184,34 @@ class StreamingPostProcessor:
                     )
                     if isinstance(flip_content, str) and flip_content:
                         promoted_content += flip_content
-                if flip_succeeded:
+                if flip_succeeded and source_segments:
+                    # ``kept_reasoning`` is the prefix retained across all
+                    # reasoning segments.  Walk those segments in source order,
+                    # skip that prefix, and join every remaining reasoning byte
+                    # with the existing content segments.  Insert any parser
+                    # bytes released by the synthetic close exactly where the
+                    # first overflow byte begins.
+                    kept_chars = len(kept_reasoning)
+                    rebuilt_content: list[str] = []
+                    flip_inserted = False
+                    for channel, segment in source_segments:
+                        if channel == "content":
+                            rebuilt_content.append(segment)
+                            continue
+                        if kept_chars >= len(segment):
+                            kept_chars -= len(segment)
+                            continue
+                        if promoted_content and not flip_inserted:
+                            rebuilt_content.append(promoted_content)
+                            flip_inserted = True
+                        rebuilt_content.append(segment[kept_chars:])
+                        kept_chars = 0
+                    if promoted_content and not flip_inserted:
+                        rebuilt_content.insert(0, promoted_content)
+                    content = "".join(rebuilt_content) or content
+                elif flip_succeeded:
                     promoted_content += overflow_content
-                if promoted_content:
-                    if isinstance(insertion_index, int) and content:
-                        bounded_index = min(max(insertion_index, 0), len(content))
-                        content = (
-                            content[:bounded_index]
-                            + promoted_content
-                            + content[bounded_index:]
-                        )
-                    else:
-                        content = promoted_content + (content or "")
+                    content = promoted_content + (content or "")
             # ``full_reasoning`` only needed within this block; release
             # the reference to drop the temporary view.
             del full_reasoning

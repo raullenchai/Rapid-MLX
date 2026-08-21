@@ -23,16 +23,16 @@ class DeltaMessage:
     Note: reasoning and content should typically not both be non-None
     except during the transition chunk.
 
-    ``reasoning_content_insert_index`` records where content reclassified
-    from the reasoning lane belongs inside ``content``.  It preserves the
-    exceptional streaming shape ``promoted tool call -> reasoning -> answer``
-    without flattening that three-part order into a lossy before/after flag.
+    ``source_segments`` retains the ordered reasoning/content pieces when a
+    parser promotes markup from inside the reasoning lane.  Consumers that
+    reclassify only a suffix of reasoning can then rebuild interleaved shapes
+    such as ``reasoning -> tool call -> reasoning -> answer`` losslessly.
     """
 
     role: str | None = None
     content: str | None = None
     reasoning: str | None = None
-    reasoning_content_insert_index: int | None = None
+    source_segments: tuple[tuple[str, str], ...] | None = None
 
     @property
     def reasoning_content(self) -> str | None:

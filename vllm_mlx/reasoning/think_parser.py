@@ -1373,11 +1373,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # deltas so source ordering is retained uniformly.
         out_reasoning_parts: list[str] = []
         out_content_parts: list[str] = []
-        source_order: list[tuple[str, int]] = []
+        source_segments: list[tuple[str, str]] = []
 
         if r_in:
             self._absorb_reasoning_chunk(
-                r_in, out_reasoning_parts, out_content_parts, source_order
+                r_in, out_reasoning_parts, out_content_parts, source_segments
             )
 
         # Content channel: if we were buffering when content arrived,
@@ -1390,7 +1390,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
             # reasoning so no bytes are silently dropped.
             if self._reasoning_carry:
                 out_reasoning_parts.append(self._reasoning_carry)
-                source_order.append(("reasoning", len(self._reasoning_carry)))
+                source_segments.append(("reasoning", self._reasoning_carry))
                 self._reasoning_carry = ""
             if self._in_tool_call and self._tool_call_buffer:
                 flushed = self._tool_call_buffer
@@ -1401,34 +1401,20 @@ class BaseThinkingReasoningParser(ReasoningParser):
                     "(think ended before tool_call closed)"
                 )
                 out_content_parts.append(flushed)
-                source_order.append(("content", len(flushed)))
+                source_segments.append(("content", flushed))
             out_content_parts.append(c_in)
-            source_order.append(("content", len(c_in)))
+            if c_in:
+                source_segments.append(("content", c_in))
 
         new_r = "".join(out_reasoning_parts) or None
         new_c = "".join(out_content_parts) or None
         if new_r is None and new_c is None:
             return None
-        reasoning_content_insert_index = None
-        if new_r is not None and new_c is not None:
-            last_reasoning = max(
-                (
-                    index
-                    for index, (channel, _) in enumerate(source_order)
-                    if channel == "reasoning"
-                ),
-                default=-1,
-            )
-            reasoning_content_insert_index = sum(
-                length
-                for channel, length in source_order[:last_reasoning]
-                if channel == "content"
-            )
         return DeltaMessage(
             role=msg.role,
             reasoning=new_r,
             content=new_c,
-            reasoning_content_insert_index=reasoning_content_insert_index,
+            source_segments=tuple(source_segments) or None,
         )
 
     def _absorb_reasoning_chunk(
@@ -1436,7 +1422,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         text: str,
         out_reasoning: list[str],
         out_content: list[str],
-        source_order: list[tuple[str, int]],
+        source_segments: list[tuple[str, str]],
     ) -> None:
         """Walk one reasoning-channel chunk through the tool-call buffer.
 
@@ -1474,7 +1460,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 promoted = self._tool_call_buffer[: end_idx + len(_TOOL_CALL_END)]
                 tail = self._tool_call_buffer[end_idx + len(_TOOL_CALL_END) :]
                 out_content.append(promoted)
-                source_order.append(("content", len(promoted)))
+                source_segments.append(("content", promoted))
                 self._tool_call_buffer = ""
                 self._in_tool_call = False
                 logger.warning("Promoted streaming tool_call block from reasoning")
@@ -1493,10 +1479,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
                     self._reasoning_carry = remaining[-carry_len:]
                     if safe:
                         out_reasoning.append(safe)
-                        source_order.append(("reasoning", len(safe)))
+                        source_segments.append(("reasoning", safe))
                 else:
                     out_reasoning.append(remaining)
-                    source_order.append(("reasoning", len(remaining)))
+                    source_segments.append(("reasoning", remaining))
                 return
             # Structural guard — parity with non-streaming
             # ``_TOOL_CALL_UNCLOSED_RE`` (``<tool_call>\s*[\{<]``).
@@ -1521,7 +1507,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 if start_idx > 0:
                     prefix = remaining[:start_idx]
                     out_reasoning.append(prefix)
-                    source_order.append(("reasoning", len(prefix)))
+                    source_segments.append(("reasoning", prefix))
                 self._reasoning_carry = remaining[start_idx:]
                 return
             if probe[j] not in ("{", "<"):
@@ -1530,7 +1516,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 # ``remaining`` past the opener for another candidate.
                 prose = remaining[:after_start]
                 out_reasoning.append(prose)
-                source_order.append(("reasoning", len(prose)))
+                source_segments.append(("reasoning", prose))
                 remaining = remaining[after_start:]
                 continue
             # Real tool_call: emit prefix as reasoning, start buffering
@@ -1538,7 +1524,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
             if start_idx > 0:
                 prefix = remaining[:start_idx]
                 out_reasoning.append(prefix)
-                source_order.append(("reasoning", len(prefix)))
+                source_segments.append(("reasoning", prefix))
             self._in_tool_call = True
             self._tool_call_buffer = ""
             remaining = remaining[start_idx:]
