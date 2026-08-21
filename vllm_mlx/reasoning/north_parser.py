@@ -160,6 +160,13 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
         (codex final-round #1).
         """
         del enable_thinking, prompt_thinking_active  # template ignores both
+        # ``configure_request`` marks the start of a NEW request. The
+        # postprocessor's reset path calls it INSTEAD of ``reset_state``
+        # (they are mutually exclusive there), so the per-request machine
+        # state must be cleared here or a reused parser would carry the
+        # previous request's phase/buffer into the next stream (codex
+        # final-round-2 #1).
+        self.reset_state()
         self._json_mode = bool(json_mode)
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
@@ -195,12 +202,14 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
         if no_thinking_markers:
             stripped_output = model_output.strip()
             # North's chat template instructs JSON-mode/JSON-schema
-            # responses to emit BARE JSON with no channel markers — but
-            # ONLY when the request actually set a JSON ``response_format``
-            # (explicit signal via ``configure_request``): a thought trace
-            # that merely opens with a brace must not bypass the privacy
-            # split (codex final-round #1).
-            if self._json_mode and stripped_output.startswith(("{", "[")):
+            # responses to emit BARE JSON with no channel markers — under
+            # the EXPLICIT request signal (``configure_request``), a
+            # marker-free output IS the structured answer, whatever the
+            # JSON root type (object, array, string, number, boolean,
+            # null — codex final-round-2 #2). Without the signal, a
+            # thought trace that merely opens with a brace must not
+            # bypass the privacy split (codex final-round #1).
+            if self._json_mode:
                 return None, model_output
             # Otherwise: the template ends the prompt inside
             # ``<|START_THINKING|>``, so marker-free output is a thought
@@ -251,16 +260,18 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
 
         # Bare-JSON detection: only under an explicit request-level JSON
         # ``response_format`` (codex final-round #1) — North's template
-        # then instructs bare JSON with no channel markers. If the first
-        # non-whitespace byte is a JSON delimiter and nothing has been
-        # routed yet, the whole stream is the structured answer.
+        # then instructs bare JSON with NO channel markers, whatever the
+        # JSON root type (codex final-round-2 #2). Any head byte that is
+        # not marker-shaped (``<``) flips the stream to content; a
+        # ``<``-headed stream keeps the normal marker machinery so a
+        # model that thinks anyway still gets split.
         if (
             self._json_mode
             and self._sm_phase == "thinking"
             and not self._sm_reasoning_started
         ):
             head = self._sm_buf.lstrip()
-            if head and head[0] in "{[":
+            if head and not head.startswith("<"):
                 self._sm_phase = "content"
 
         while True:

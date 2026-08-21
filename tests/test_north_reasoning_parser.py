@@ -463,7 +463,6 @@ class TestStreaming:
         # JSON-mode streaming: bare JSON with no markers must stream on
         # the content lane, not vanish into reasoning — gated on the
         # explicit request signal (codex final-round #1).
-        parser.reset_state()
         parser.configure_request(json_mode=True)
         accumulated = ""
         rc, cc = [], []
@@ -477,6 +476,37 @@ class TestStreaming:
                 cc.append(msg.content)
         assert "".join(rc) == ""
         assert "".join(cc) == '{"answer": 4}'
+
+    def test_scalar_json_roots_route_to_content_in_json_mode(self, parser):
+        # JSON permits scalar roots — "ok", 42, true, null (codex
+        # final-round-2 #2).
+        for doc in ('"ok"', "42", "true", "null"):
+            parser.configure_request(json_mode=True)
+            reasoning, content = parser.extract_reasoning(doc)
+            assert reasoning is None, doc
+            assert content == doc
+
+    def test_streaming_scalar_json_routes_to_content(self, parser):
+        parser.configure_request(json_mode=True)
+        accumulated = ""
+        cc = []
+        for delta in ["tr", "ue"]:
+            prev = accumulated
+            accumulated += delta
+            msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
+            if msg and msg.content:
+                cc.append(msg.content)
+        assert "".join(cc) == "true"
+
+    def test_configure_request_resets_machine_state(self, parser):
+        # The postprocessor reset path calls configure_request INSTEAD of
+        # reset_state — a reused parser must not carry the previous
+        # request's phase/buffer (codex final-round-2 #1).
+        parser.extract_reasoning_streaming("", END_THINK, END_THINK)
+        assert parser._sm_phase == "content"
+        parser.configure_request(json_mode=False)
+        assert parser._sm_phase == "thinking"
+        assert parser._sm_buf == ""
 
     def test_streaming_brace_thought_stays_reasoning_without_json_mode(self, parser):
         reasoning, content = _stream(parser, ['{"draft"', ": 1} hmm"])
