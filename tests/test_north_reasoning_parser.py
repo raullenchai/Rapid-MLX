@@ -503,3 +503,60 @@ class TestStreaming:
             ["cot", END_THINK, START_TEXT, "a <", " b", END_TEXT],
         )
         assert content == "a < b"
+
+
+class TestContentPhaseConsumesGenuineCloser:
+    """codex round-4 MAJOR on this PR: a reasoning-cap forced close
+    flips the machine to "content" while the model — which never saw
+    the forged closer — still emits its genuine ``<|END_THINKING|>``
+    later. Content phase stripped only TEXT wrappers, so the genuine
+    closer shipped as literal visible bytes (and leaked incrementally
+    when split across deltas). Content phase now consumes it as a
+    structural no-op. Revert ``_strip_content_phase_markers`` /
+    ``_CONTENT_MARKERS`` in the content branch to see these go red."""
+
+    def _force_flip(self, parser):
+        # The cap machinery's forced close: parser sees its own closer
+        # and flips to content phase with nothing else in the buffer.
+        msg = parser.extract_reasoning_streaming("", END_THINK, END_THINK)
+        assert parser._sm_phase == "content"
+        return msg
+
+    def test_whole_genuine_closer_after_forced_flip(self, parser):
+        self._force_flip(parser)
+        reasoning, content = _stream_from_phase(
+            parser, ["erate", END_THINK, START_TEXT, "4", END_TEXT]
+        )
+        assert content == "erate4", (reasoning, content)
+        assert "<|" not in content
+
+    def test_split_genuine_closer_after_forced_flip(self, parser):
+        self._force_flip(parser)
+        reasoning, content = _stream_from_phase(
+            parser, ["erate<|END_THI", "NKING|>", "<|START_TEXT|>4<|END_TEXT|>"]
+        )
+        assert content == "erate4", (reasoning, content)
+        assert "<|" not in content
+
+    def test_split_closer_pending_at_eof_flushes_literally(self, parser):
+        # Never-drop at EOF still wins over marker withholding: if the
+        # stream dies mid-marker the held bytes are model output.
+        self._force_flip(parser)
+        reasoning, content = _stream_from_phase(parser, ["answer tail<|END_THI"])
+        final = parser.finalize_streaming("")
+        flushed = (final.content or "") if final else ""
+        assert content + flushed == "answer tail<|END_THI", (content, flushed)
+
+
+def _stream_from_phase(parser, deltas):
+    accumulated = ""
+    results = []
+    for delta in deltas:
+        prev = accumulated
+        accumulated += delta
+        msg = parser.extract_reasoning_streaming(prev, accumulated, delta)
+        if msg:
+            results.append(msg)
+    reasoning = "".join(m.reasoning for m in results if m.reasoning)
+    content = "".join(m.content for m in results if m.content)
+    return reasoning, content

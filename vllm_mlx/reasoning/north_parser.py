@@ -30,10 +30,22 @@ _END_TEXT = "<|END_TEXT|>"
 _TEXT_MARKERS = (_START_TEXT, _END_TEXT)
 _ALL_MARKERS = (_START_THINKING, _END_THINKING, _START_TEXT, _END_TEXT)
 _TEXT_MARKER_RE = re.compile(r"<\|(?:START|END)_TEXT\|>")
+# Content-phase strip: TEXT wrappers plus a genuine ``<|END_THINKING|>``.
+# After a reasoning-cap forced close flips the machine to "content", the
+# model (which never saw the forged closer) still emits its own
+# ``<|END_THINKING|>`` later; in content phase that marker is a
+# structural no-op and must never ship as visible bytes (codex round-4
+# MAJOR on #2171).
+_CONTENT_MARKER_RE = re.compile(r"<\|(?:(?:START|END)_TEXT|END_THINKING)\|>")
+_CONTENT_MARKERS = (_START_TEXT, _END_TEXT, _END_THINKING)
 
 
 def _strip_text_markers(text: str) -> str:
     return _TEXT_MARKER_RE.sub("", text)
+
+
+def _strip_content_phase_markers(text: str) -> str:
+    return _CONTENT_MARKER_RE.sub("", text)
 
 
 def _partial_marker_suffix_len(
@@ -212,10 +224,11 @@ class NorthReasoningParser(BaseThinkingReasoningParser):
                 self._sm_buf = cleaned[len(emit) :]
                 push_reasoning(emit)
                 break
-            # content phase: strip complete TEXT markers, withhold a
-            # trailing partial-marker prefix.
-            stripped = _strip_text_markers(self._sm_buf)
-            held = _partial_marker_suffix_len(stripped)
+            # content phase: strip complete TEXT markers and any genuine
+            # ``<|END_THINKING|>`` arriving after a forced close, withhold
+            # a trailing partial-marker prefix.
+            stripped = _strip_content_phase_markers(self._sm_buf)
+            held = _partial_marker_suffix_len(stripped, _CONTENT_MARKERS)
             emit = stripped[: len(stripped) - held] if held else stripped
             self._sm_buf = stripped[len(emit) :]
             if emit:
