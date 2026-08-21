@@ -20,7 +20,7 @@
 # missing — a package must never ship without its notice.
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
+if [[ $# -lt 4 ]]; then
     echo "usage: $0 <package-resolved> <checkouts-dir> <vendor-swiftmath-license> <out-dir>" >&2
     exit 2
 fi
@@ -101,6 +101,13 @@ stage_license() {
 #     (a local-path package, so it is not represented in Package.resolved and
 #     must not rely on an ephemeral checkout).
 stage_license "SwiftMath" "$VENDOR_SWIFTMATH_LICENSE"
+
+# Any further vendored notices, passed as trailing arguments. Same reasoning
+# as SwiftMath above: a vendored file is not in Package.resolved, so nothing
+# else would ever notice it was missing. Labelled by its directory name.
+for extra in "${@:5}"; do
+    stage_license "$(basename "$(dirname "$extra")")" "$extra"
+done
 
 # (b) Remote SPM packages linked into the binary. Drive off the *resolved pins*,
 #     not a scan of the checkout cache: that stages exactly the current
