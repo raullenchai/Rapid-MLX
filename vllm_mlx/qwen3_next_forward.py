@@ -83,8 +83,7 @@ def qwen3_next_streaming_forward(
                     mode=down_proj.mode,
                 )
                 output = (
-                    output
-                    + down_output[0] * scores[batch_idx, position, selected_idx]
+                    output + down_output[0] * scores[batch_idx, position, selected_idx]
                 )
             rows_l.append(output)
         rows_b.append(mx.stack(rows_l, axis=0))

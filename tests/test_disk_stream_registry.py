@@ -100,6 +100,7 @@ def test_get_adapter_returns_qwen3_next_adapter():
     assert adapter.moe_block_attr == "mlp"
 
     from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
+
     from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
 
     assert adapter.moe_block_cls is Qwen3NextSparseMoeBlock

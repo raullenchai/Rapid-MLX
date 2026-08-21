@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
 
 from vllm_mlx.expert_cache import ExpertCache
