@@ -538,6 +538,16 @@ class TestContentPhaseConsumesGenuineCloser:
     def _force_flip(self, parser):
         # The cap machinery's forced close: parser sees its own closer
         # and flips to content phase with nothing else in the buffer.
+        #
+        # These tests deliberately pin post-flip thought bytes
+        # ("erate") ARRIVING AS CONTENT. That is the reasoning-cap
+        # contract, not a leak: the cap (upstream vLLM #20859 backport)
+        # reroutes over-budget bytes to content precisely so no model
+        # output is ever silently dropped, and every think-tag parser
+        # behaves identically post-cap (probe-verified against qwen3 —
+        # same spill, same channel). A "discard until the genuine
+        # closer" state would silently destroy model bytes and diverge
+        # north from the whole parser family.
         msg = parser.extract_reasoning_streaming("", END_THINK, END_THINK)
         assert parser._sm_phase == "content"
         return msg

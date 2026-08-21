@@ -36,6 +36,18 @@ _TEXT_MARKER_RE = re.compile(r"<\|(?:START|END)_TEXT\|>")
 # ``<|END_THINKING|>`` later; in content phase that marker is a
 # structural no-op and must never ship as visible bytes (codex round-4
 # MAJOR on #2171).
+#
+# Two deliberate scope calls, per the reasoning-cap contract rather
+# than oversights:
+# * Post-flip thought bytes stay ON the content channel. The cap
+#   (upstream vLLM #20859 backport) reroutes over-budget bytes to
+#   content so nothing is silently dropped, and qwen3/deepseek spill
+#   identically post-cap — a discard-until-genuine-closer state would
+#   destroy model bytes and diverge north from the parser family.
+# * A literal ``<|END_THINKING|>`` the model intends as visible answer
+#   text is indistinguishable from the structural marker — the same
+#   documented limitation as the think-tag family's literal-tag caveat
+#   (it is a dedicated special token; models do not emit it as prose).
 _CONTENT_MARKER_RE = re.compile(r"<\|(?:(?:START|END)_TEXT|END_THINKING)\|>")
 _CONTENT_MARKERS = (_START_TEXT, _END_TEXT, _END_THINKING)
 
