@@ -47,6 +47,9 @@ final class DictationController {
     /// only when model bring-up took noticeable time. Answers "why was that
     /// one slow" without a log dive.
     private(set) var lastLatencyDetail: String?
+    /// Non-fatal preparation diagnostic. The sidecar is usable, but the
+    /// optional lazy-weight probe failed and the first dictation may be cold.
+    private(set) var lastWarmupWarning: String?
     private(set) var elapsed: TimeInterval = 0
     /// Set when the TCC row says Accessibility is granted but this process
     /// still cannot install an event tap — i.e. the grant landed after launch.
@@ -119,6 +122,7 @@ final class DictationController {
     private let audioCatalogLoader: @MainActor (URL) async -> [ModelEntry]?
     private let testingReadiness: Readiness?
     private let testingPrewarm: (@MainActor () async -> Bool)?
+    private let testingWarmup: (@MainActor () async -> Bool)?
     private let testingHotkeyStart: (@MainActor () -> Bool)?
     private let testingRecorderCancel: (@MainActor () -> Void)?
     private let testingTranscribeCancel: (@MainActor () -> Void)?
@@ -164,6 +168,7 @@ final class DictationController {
         testingPhase: Phase? = nil,
         testingReadiness: Readiness? = nil,
         testingPrewarm: (@MainActor () async -> Bool)? = nil,
+        testingWarmup: (@MainActor () async -> Bool)? = nil,
         testingHotkeyStart: (@MainActor () -> Bool)? = nil,
         testingRecorderCancel: (@MainActor () -> Void)? = nil,
         testingTranscribeCancel: (@MainActor () -> Void)? = nil,
@@ -178,6 +183,7 @@ final class DictationController {
         self.audioCatalogLoader = audioCatalogLoader
         self.testingReadiness = testingReadiness
         self.testingPrewarm = testingPrewarm
+        self.testingWarmup = testingWarmup
         self.testingHotkeyStart = testingHotkeyStart
         self.testingRecorderCancel = testingRecorderCancel
         self.testingTranscribeCancel = testingTranscribeCancel
@@ -485,20 +491,21 @@ final class DictationController {
     ///   flight already covers this call.
     @discardableResult
     private func prewarmModel(replacingCurrent: Bool = false) async -> Bool {
-        if replacingCurrent {
-            prewarmTask?.cancel()
-            prewarmTask = nil
-        }
-        // Single-flight. The check-and-assign below is MainActor-synchronous
-        // (no await between them), so concurrent triggers cannot both slip
-        // past: the second joins the task the first created instead of
-        // racing it through the engine's serial STT lane.
-        if let running = prewarmTask {
+        // Same-alias requests share one flight. A replacement creates a new
+        // flight immediately, but chains it behind the cancelled predecessor:
+        // ServerManager's stop/start sequence is not cancellation-aware, so
+        // waiting for it is what prevents model A from resuming after B and
+        // stealing the shared sidecar back.
+        if !replacingCurrent, let running = prewarmTask {
             return await running.value
         }
+        let predecessor = prewarmTask
+        if replacingCurrent { predecessor?.cancel() }
         let requestID = UUID()
         prewarmRequestID = requestID
         let created = Task { [weak self] in
+            if let predecessor { _ = await predecessor.value }
+            guard !Task.isCancelled else { return false }
             let succeeded = await self?.performPrewarm() ?? false
             // Only the flight that still OWNS the slot may clear it. A
             // cancelled predecessor finishing late must not null out the
@@ -526,7 +533,20 @@ final class DictationController {
             guard await ensureModelServing(alias: alias) else { return false }
             guard !Task.isCancelled, isEnabled, modelAlias == alias else { return false }
         }
-        return await warmUpEngine()
+        let warmed = await warmUpEngine()
+        guard !Task.isCancelled,
+              isEnabled,
+              modelAlias == alias,
+              server.servingAlias == alias else { return false }
+        if warmed {
+            lastWarmupWarning = nil
+        } else {
+            // Serving readiness is the hard boundary. The silence probe only
+            // moves lazy weight cost earlier; a transient HTTP failure must
+            // not make an otherwise healthy local model unusable.
+            lastWarmupWarning = "Model is ready, but its warmup probe failed. The first dictation may be slower."
+        }
+        return true
     }
 
     /// Forces the sidecar to load the STT weights by transcribing a beat of
@@ -535,6 +555,7 @@ final class DictationController {
     private func warmUpEngine() async -> Bool {
         guard phase == .idle || phase == .preparingModel else { return false }
         guard server.servingAlias == modelAlias else { return false }
+        if let testingWarmup { return await testingWarmup() }
         do {
             _ = try await client.transcribe(
                 audioData: Self.silentProbeWAV,

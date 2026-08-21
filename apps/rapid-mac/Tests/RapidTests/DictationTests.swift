@@ -493,6 +493,83 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("a failed optional weight probe still arms a serving model")
+    func failedWeightProbeStillArmsServingModel() async {
+        var hotkeyStartCount = 0
+        let entry = cachedAudioEntry(alias: "whisper-small")
+        let controller = DictationController(
+            server: ServerManager(
+                testingState: .ready(alias: "whisper-small"),
+                binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(
+                microphone: true,
+                accessibility: true,
+                modelSelected: true,
+                modelOnDisk: true
+            ),
+            testingWarmup: { false },
+            testingHotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            },
+            audioCatalogLoader: { _ in [entry] }
+        )
+
+        await controller.enable()
+
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
+        #expect(controller.lastWarmupWarning?.contains("first dictation may be slower") == true)
+    }
+
+    @MainActor
+    @Test("replacement preparation waits for the old server mutation")
+    func replacementPrewarmIsSerialized() async {
+        var starts = 0
+        var firstContinuation: CheckedContinuation<Bool, Never>?
+        var secondContinuation: CheckedContinuation<Bool, Never>?
+        let entries = [cachedAudioEntry(alias: "whisper-small"), cachedAudioEntry(alias: "qwen3-asr")]
+        let controller = DictationController(
+            server: ServerManager(
+                testingState: .ready(alias: "whisper-small"),
+                binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(
+                microphone: true,
+                accessibility: true,
+                modelSelected: true,
+                modelOnDisk: true
+            ),
+            testingPrewarm: {
+                starts += 1
+                if starts == 1 {
+                    return await withCheckedContinuation { firstContinuation = $0 }
+                }
+                return await withCheckedContinuation { secondContinuation = $0 }
+            },
+            testingHotkeyStart: { true },
+            audioCatalogLoader: { _ in entries }
+        )
+
+        let firstEnable = Task { await controller.enable() }
+        while firstContinuation == nil { await Task.yield() }
+        controller.modelAlias = "qwen3-asr"
+        for _ in 0..<20 { await Task.yield() }
+        #expect(starts == 1)
+
+        firstContinuation?.resume(returning: false)
+        while secondContinuation == nil { await Task.yield() }
+        #expect(starts == 2)
+        secondContinuation?.resume(returning: true)
+        await firstEnable.value
+    }
+
+    @MainActor
     private func readinessController(
         phase: DictationController.Phase = .off,
         prewarm: @escaping @MainActor () async -> Bool,
@@ -524,6 +601,18 @@ struct DictationTests {
             testingPrewarm: prewarm,
             testingHotkeyStart: hotkeyStart,
             audioCatalogLoader: { _ in [entry] }
+        )
+    }
+
+    private func cachedAudioEntry(alias: String) -> ModelEntry {
+        ModelEntry(
+            alias: alias,
+            hfRepo: "mlx-community/\(alias)",
+            sizeOnDisk: "461 MiB",
+            cached: true,
+            kind: .audio,
+            audioCapability: .transcription,
+            audioFamily: "whisper"
         )
     }
 

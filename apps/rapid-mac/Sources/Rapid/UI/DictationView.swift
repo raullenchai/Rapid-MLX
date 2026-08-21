@@ -160,6 +160,9 @@ struct DictationView: View {
         if let detail = controller.lastLatencyDetail {
             parts.append(detail)
         }
+        if let warning = controller.lastWarmupWarning {
+            parts.append(warning)
+        }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
