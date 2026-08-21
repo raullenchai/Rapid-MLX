@@ -498,6 +498,28 @@ class TestTextParserReasoningCap:
             f"{tool_call}efgh"
         ]
 
+    def test_cap_spill_stays_after_cross_chunk_promoted_tool_call(self):
+        """Promotion provenance survives a tool call buffered across SSE chunks."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = '<think><tool_call>{"name":"x",'
+        second = '"arguments":{}}</tool_call>abcdefgh'
+        assert pp.process_chunk(_make_output(first)) == []
+        events = pp.process_chunk(_make_output(second))
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        assert [event.reasoning for event in events if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert [event.content for event in events if event.type == "content"] == [
+            f"{tool_call}efgh"
+        ]
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the

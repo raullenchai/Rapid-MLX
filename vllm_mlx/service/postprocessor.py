@@ -3127,24 +3127,13 @@ class StreamingPostProcessor:
                 promoted_content = ""
                 # Usually parser content follows reasoning in the source
                 # delta (``thought-tail</think>answer``), but the shared
-                # think parser can also promote an earlier ``<tool_call>``
-                # out of reasoning.  In that shape ``content`` precedes
-                # the remaining reasoning bytes.  Recover that ordering
-                # from the untouched model delta before combining the
-                # cap spill with parser content.
-                content_precedes_overflow = False
-                if content:
-                    content_index = original_delta_text.find(content)
-                    if content_index < 0:
-                        stripped_content = content.strip()
-                        if stripped_content:
-                            content_index = original_delta_text.find(stripped_content)
-                    overflow_index = original_delta_text.rfind(overflow_content)
-                    content_precedes_overflow = (
-                        content_index >= 0
-                        and overflow_index >= 0
-                        and content_index < overflow_index
-                    )
+                # think parser can also promote an earlier, possibly
+                # cross-chunk ``<tool_call>`` out of reasoning.  Its explicit
+                # ordering bit survives that buffering; inspecting only the
+                # current model delta cannot recover a prior-chunk prefix.
+                content_precedes_overflow = (
+                    getattr(delta_msg, "content_precedes_reasoning", False) is True
+                )
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
                     # Codex round-10 BLOCKING #1: only mark the close-
