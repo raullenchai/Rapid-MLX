@@ -92,6 +92,7 @@ struct SidecarBuildScriptTests {
     @Test("Desktop sidecar bundles and smokes both audio lanes")
     func audioRuntimeIsBundled() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        let shim = try String(contentsOf: Self.shimURL, encoding: .utf8)
         let pyproject = try String(contentsOf: Self.pyprojectURL, encoding: .utf8)
 
         #expect(pyproject.contains("\naudio-desktop = ["),
@@ -100,6 +101,8 @@ struct SidecarBuildScriptTests {
         #expect(pyproject.contains(#""soundfile>=0.12.0""#))
         #expect(script.contains(#""${RAPID_MLX_SOURCE}[audio-desktop]""#),
                 "The desktop sidecar must install the bounded desktop audio dependency set.")
+        #expect(shim.contains("export RAPID_MLX_DESKTOP_SIDECAR=1"),
+                "Doctor needs sidecar provenance to validate audio-desktop instead of full audio.")
         #expect(script.contains("from mlx_audio.stt.utils import load_model"),
                 "The build smoke must import the transcription loader, not only mlx_audio's package root.")
         #expect(script.contains("from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor"),
@@ -132,6 +135,10 @@ struct SidecarBuildScriptTests {
 
     private static var appBuildScriptURL: URL {
         scriptURL.deletingLastPathComponent().appendingPathComponent("build.sh")
+    }
+
+    private static var shimURL: URL {
+        scriptURL.deletingLastPathComponent().appendingPathComponent("sidecar-shim.sh")
     }
 
     private static var pyprojectURL: URL {

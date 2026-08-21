@@ -265,6 +265,43 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
     assert broken.status is eh.CheckStatus.WARN
 
 
+def test_desktop_sidecar_checks_compact_audio_profile(monkeypatch):
+    """The signed sidecar validates [audio-desktop], not full [audio]."""
+    monkeypatch.setenv("RAPID_MLX_DESKTOP_SIDECAR", "1")
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    desktop_modules = {"mlx_audio", "soundfile"}
+    with (
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(
+            eh,
+            "_module_available",
+            side_effect=lambda module: module in desktop_modules,
+        ),
+    ):
+        section = eh.section_optional_packages()
+
+    audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
+    assert audio_row.status is eh.CheckStatus.OK
+    assert "desktop audio" in audio_row.label
+    assert "f5-tts-mlx" not in audio_row.label
+
+
+def test_desktop_sidecar_never_recommends_pip_mutation(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_DESKTOP_SIDECAR", "1")
+
+    with mock.patch.object(eh, "_safe_version", return_value=None):
+        section = eh.section_optional_packages()
+
+    audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
+    assert audio_row.status is eh.CheckStatus.WARN
+    assert "Rapid-MLX Desktop" in audio_row.label
+    assert "pip install" not in audio_row.label
+    assert "pip install" not in audio_row.detail
+
+
 # ---------------------------------------------------------------------------
 # Section: HuggingFace cache
 # ---------------------------------------------------------------------------

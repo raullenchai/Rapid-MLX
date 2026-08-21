@@ -139,6 +139,25 @@ _AUDIO_IMPORTS: tuple[tuple[str, str], ...] = (
     ("cn2an", "cn2an"),
 )
 
+# The signed macOS sidecar deliberately exposes only transcription and Qwen3
+# preset-voice speech.  Keep this matrix aligned with ``audio-desktop`` in
+# pyproject.toml; the full CLI profile above continues to cover every family
+# exposed by ``rapid-mlx[audio]``.
+_AUDIO_DESKTOP_IMPORTS: tuple[tuple[str, str], ...] = (
+    ("mlx-audio", "mlx_audio"),
+    ("soundfile", "soundfile"),
+)
+
+
+def _running_in_desktop_sidecar() -> bool:
+    """Return whether the desktop launcher selected the compact profile.
+
+    This is diagnostic provenance, not a security boundary.  The sidecar shim
+    owns the marker so ordinary Homebrew, pipx, uv, and virtualenv installs
+    retain the full ``audio`` contract.
+    """
+    return os.environ.get("RAPID_MLX_DESKTOP_SIDECAR") == "1"
+
 
 def _module_available(module: str) -> bool:
     """Return whether *module* is discoverable, without importing it."""
@@ -610,6 +629,11 @@ def section_updates(
 def section_optional_packages() -> Section:
     s = Section("Optional Packages")
     for dist, label, hint in OPTIONAL_PACKAGES:
+        desktop_audio = dist == "mlx-audio" and _running_in_desktop_sidecar()
+        if desktop_audio:
+            label = "mlx-audio (desktop audio)"
+            # Never recommend pip mutation of the signed/notarized sidecar.
+            hint = "reinstall or update Rapid-MLX Desktop"
         ver = _safe_version(dist)
         if ver:
             # #1255: mlx-vlm can install mlx-audio transitively without
@@ -632,7 +656,9 @@ def section_optional_packages() -> Section:
             if dist == "mlx-audio":
                 missing = [
                     distribution
-                    for distribution, module in _AUDIO_IMPORTS
+                    for distribution, module in (
+                        _AUDIO_DESKTOP_IMPORTS if desktop_audio else _AUDIO_IMPORTS
+                    )
                     if not _module_available(module)
                 ]
                 if missing:

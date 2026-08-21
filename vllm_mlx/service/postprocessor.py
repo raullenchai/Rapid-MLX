@@ -3117,6 +3117,14 @@ class StreamingPostProcessor:
             kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
             reasoning = kept_reasoning or None
             if overflow_content:
+                # The parser's reasoning bytes precede its content bytes in
+                # the source delta (``thought-tail</think>answer``).  Collect
+                # everything promoted at the cap boundary separately so it
+                # can be prepended to parser content below.  Appending the
+                # overflow produced ``answerthought-tail`` on a terminal
+                # chunk and the route then buffered that malformed ordering
+                # as the single finish event (#2182).
+                promoted_content = ""
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
                     # Codex round-10 BLOCKING #1: only mark the close-
@@ -3168,9 +3176,11 @@ class StreamingPostProcessor:
                         else None
                     )
                     if isinstance(flip_content, str) and flip_content:
-                        content = (content or "") + flip_content
+                        promoted_content += flip_content
                 if flip_succeeded:
-                    content = (content or "") + overflow_content
+                    promoted_content += overflow_content
+                if promoted_content:
+                    content = promoted_content + (content or "")
             # ``full_reasoning`` only needed within this block; release
             # the reference to drop the temporary view.
             del full_reasoning

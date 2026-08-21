@@ -446,6 +446,33 @@ class TestTextParserReasoningCap:
         pp.process_chunk(_make_output("more"))
         assert not parser.calls[2]["delta"].startswith("</think>")
 
+    def test_final_chunk_preserves_cap_spill_before_answer(self):
+        """#2182: parser content on the cap-hit final chunk is retained.
+
+        The Qwen parser withholds the last ambiguous byte from the first
+        chunk.  Once the cap is hit, that byte and the remaining thought
+        suffix spill to content before the real post-closer answer.  A final
+        engine chunk must keep all three pieces in source order.
+        """
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<think>delib"))
+        final = pp.process_chunk(_make_output("erate</think>4", finished=True))
+
+        assert [event.reasoning for event in first if event.type == "reasoning"] == [
+            "deli"
+        ]
+        assert [event.content for event in first if event.type == "content"] == ["b"]
+        finish = [event for event in final if event.type == "finish"]
+        assert len(finish) == 1
+        assert finish[0].content == "erate4"
+        assert finish[0].finish_reason == "stop"
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the
