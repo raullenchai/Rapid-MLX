@@ -336,7 +336,7 @@ class TestStreamingPromotion:
             "Done thinking.</think>ANSWER"
         )
 
-        reasoning, content = _stream(parser, text, chunk_sizes=[len(text)])
+        reasoning, content = _stream(parser, text, chunk_size=len(text))
 
         assert reasoning is not None
         assert "Need to call." in reasoning
