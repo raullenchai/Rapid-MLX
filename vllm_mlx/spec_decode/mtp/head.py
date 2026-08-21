@@ -147,11 +147,13 @@ def build_mtp_module(
             next_token_ids: mx.array,
             embed_tokens: nn.Embedding,
             cache: Any | None = None,
+            concat_order: str = "embedding_hidden",
         ) -> mx.array:
             embeds = embed_tokens(next_token_ids)  # (B, N, H)
             e = self.pre_fc_norm_embedding(embeds)
             h = self.pre_fc_norm_hidden(hidden_states)
-            fused = self.fc(mx.concatenate([e, h], axis=-1))  # (B, N, H)
+            parts = [e, h] if concat_order == "embedding_hidden" else [h, e]
+            fused = self.fc(mx.concatenate(parts, axis=-1))  # (B, N, H)
 
             if cache is None:
                 cache = [None] * len(self.layers)

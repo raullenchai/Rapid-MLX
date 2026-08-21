@@ -476,6 +476,9 @@ vllm_mlx = [
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.
     # Regenerate with scripts/gen_model_sizes.py when aliases change.
     "model_sizes.json",
+    # Canonical Google Gemma 4 chat templates used to repair stale converted
+    # checkpoints without a network fetch at serve time.
+    "templates/*.jinja",
     "agents/profiles/*.yaml",
     "kernels/*.metal",
     # Integration tests bundled inside the package so `rapid-mlx agents

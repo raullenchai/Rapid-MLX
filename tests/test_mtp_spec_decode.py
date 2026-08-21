@@ -2586,7 +2586,9 @@ def test_generator_rolls_back_verify_round_on_early_materialization_abort(
     def _boom_on_verify_sync(*_args, **_kwargs):
         nonlocal eval_calls
         eval_calls += 1
-        if eval_calls >= 2:
+        # Draft chaining stays lazy now, so the first materialization after
+        # resuming the generator is the batched target-verify boundary.
+        if eval_calls >= 1:
             raise RuntimeError("sentinel materialization abort")
 
     monkeypatch.setattr(generator_mod.mx, "eval", _boom_on_verify_sync)

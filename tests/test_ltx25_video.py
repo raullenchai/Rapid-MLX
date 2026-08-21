@@ -89,7 +89,255 @@ def test_ltx25_runtime_preflight_requires_uv(
     with pytest.raises(SystemExit, match="2"):
         video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
 
-    assert "uv (`brew install uv`)" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "uv (`brew install uv`)" in error
+    # The runtime itself resolved, so the clone/checkout walkthrough is noise.
+    assert "git clone" not in error
+
+
+def test_ltx25_missing_runtime_prints_setup_walkthrough(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
+    monkeypatch.setattr(
+        video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
+    )
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+
+    with pytest.raises(SystemExit, match="2"):
+        # A path-qualified name passes _is_ltx25_name; the walkthrough must
+        # not interpolate this user-controlled string into shell commands.
+        video_lane.require_video_runtime_or_exit("$(uname)/ltx-2.5-mlx-q8")
+
+    error = capsys.readouterr().err
+    assert "docs/guides/video-generation.md" in error
+    # Conditional clone (gated on a real Git checkout, not a bare
+    # directory) + unconditional fetch: the same block repairs an
+    # existing checkout pinned to a stale revision (plain clone would fail).
+    assert (
+        f"[ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
+        f"{ltx25.LTX25_RUNTIME_REPOSITORY}" in error
+    )
+    assert "git -C ltx-2-mlx fetch --quiet origin" in error
+    assert f"git -C ltx-2-mlx checkout {ltx25.LTX25_RUNTIME_COMMIT}" in error
+    assert "uv sync --project ltx-2-mlx" in error
+    # Canonical alias only — the raw model_name must not appear in the
+    # copy-pastable command.
+    assert (
+        'RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
+        "rapid-mlx serve ltx-2.5-mlx-q8" in error
+    )
+    assert "$(uname)" not in error
+
+
+def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
+
+    def boom(executable: str) -> None:
+        # Mirrors the message prepare_ltx25_runtime() actually raises for a
+        # failed `uv sync` (see test_ltx25_provisioning_error_includes_uv_
+        # failure_detail, which pins the production construction).
+        raise ltx25.LTX25BackendError(
+            "The pinned LTX-2.5 runtime could not be provisioned: "
+            "`uv sync --frozen` failed with exit code 2 "
+            "(error: lockfile out of date)"
+        )
+
+    monkeypatch.setattr(ltx25, "prepare_ltx25_runtime", boom)
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda name: "/usr/bin/uv")
+
+    with pytest.raises(SystemExit, match="2"):
+        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
+
+    error = capsys.readouterr().err
+    assert "a provisioned pinned LTX-2.5 runtime" in error
+    # The underlying failure reason is the actionable part.
+    assert "`uv sync --frozen` failed with exit code 2" in error
+    assert "lockfile out of date" in error
+    assert "docs/guides/video-generation.md" in error
+    # The checkout already resolved — re-cloning is not the fix.
+    assert "git clone" not in error
+
+
+def test_ltx25_provisioning_error_includes_uv_failure_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def failing_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.CalledProcessError(
+            2, ["uv", "sync"], stderr="error: lockfile out of date\n"
+        )
+
+    monkeypatch.setattr(ltx25.subprocess, "run", failing_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    message = str(excinfo.value)
+    assert "could not be provisioned" in message
+    assert "`uv sync --frozen` failed with exit code 2" in message
+    assert "lockfile out of date" in message
+
+
+def test_ltx25_provisioning_detail_sanitizes_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control sequences and index credentials in uv output must not reach
+    the terminal (escape injection / credential exposure)."""
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def failing_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.CalledProcessError(
+            1,
+            ["uv", "sync"],
+            stderr=(
+                "\x1b[31merror\x1b[0m: failed to fetch "
+                "https://build:s3cret@index.example/simple/foo\n"
+            ),
+        )
+
+    monkeypatch.setattr(ltx25.subprocess, "run", failing_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    message = str(excinfo.value)
+    assert "\x1b" not in message
+    assert "s3cret" not in message
+    assert "https://***@index.example/simple/foo" in message
+
+
+def test_ltx25_sanitize_redacts_percent_encoded_userinfo() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "failed to fetch https://build%40corp:s3cret@index.example/simple/"
+    )
+    assert "s3cret" not in out
+    assert "build%40corp" not in out
+    assert "https://***@index.example/simple/" in out
+
+
+def test_ltx25_sanitize_redacts_query_tokens_and_bearer() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "fetch https://index.example/simple?token=s3cret&x=1 failed; "
+        "api_key=abc123 Authorization: Bearer eyJhbGci.xyz"
+    )
+    assert "s3cret" not in out
+    assert "abc123" not in out
+    assert "eyJhbGci" not in out
+    assert "https://index.example/simple?token=***" in out
+
+
+def test_ltx25_sanitize_redacts_signed_url_params() -> None:
+    """Signed-URL auth params don't end in the classic credential
+    suffixes (codex on #2166): AWS presigned ``X-Amz-Signature``, Azure
+    SAS ``sig``/``sas``, generic ``auth``/``jwt`` must all redact, since
+    uv stderr can echo the full index URL query string."""
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "GET https://bucket.s3.example/wheel.whl"
+        "?X-Amz-Credential=AKIA%2F20260820&X-Amz-Signature=deadbeefcafe"
+        "&X-Amz-Expires=300 and https://acct.blob.example/pkg?sv=2024"
+        "&sig=Zm9vYmFy%3D and auth=topsecret9 jwt=eyJ0eXAi.abc"
+    )
+    assert "deadbeefcafe" not in out
+    assert "Zm9vYmFy" not in out
+    assert "topsecret9" not in out
+    assert "eyJ0eXAi" not in out
+    assert "X-Amz-Signature=***" in out
+    assert "sig=***" in out
+    # Non-credential params survive so the diagnostic stays useful.
+    assert "X-Amz-Expires=300" in out
+
+
+def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "config error: token=\"quoted-s3cret\" password='single-s3cret' left"
+    )
+    assert "quoted-s3cret" not in out
+    assert "single-s3cret" not in out
+    assert "left" in out
+
+
+def test_ltx25_sanitize_redacts_prefixed_credential_names() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "access_token=at-s3cret client_secret=cs-s3cret "
+        "HF_TOKEN=hf-s3cret AWS_SECRET_ACCESS_KEY=aws-s3cret api-key: ak-s3cret"
+    )
+    for leak in ("at-s3cret", "cs-s3cret", "hf-s3cret", "aws-s3cret", "ak-s3cret"):
+        assert leak not in out
+    assert "access_token=***" in out
+    assert "client_secret=***" in out
+
+
+def test_ltx25_sanitize_redacts_basic_auth_header() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "request failed; Authorization: Basic dXNlcjpwYXNz and "
+        "authorization: Digest response-s3cret"
+    )
+    assert "dXNlcjpwYXNz" not in out
+    assert "response-s3cret" not in out
+    assert "Authorization: Basic ***" in out
+
+
+def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
+    from vllm_mlx.video.ltx25 import _provisioning_failure_detail
+
+    exc = OSError(
+        "\x1b[31mdisk full\x1b[0m at https://user:tok3n@mirror.example/x " + "p" * 500
+    )
+    detail = _provisioning_failure_detail(exc)
+    assert "\x1b" not in detail
+    assert "tok3n" not in detail
+    assert len(detail) <= 301
+
+
+def test_ltx25_stderr_tail_is_bounded() -> None:
+    """Only a bounded tail of uv stderr is ever read back into memory."""
+    import tempfile
+
+    with tempfile.TemporaryFile() as f:
+        f.write(b"x" * 100_000 + b"\nfinal line\n")
+        tail = ltx25._stderr_tail(f)
+
+    assert len(tail) <= 4096
+    assert "final line" in tail
+
+
+def test_ltx25_provisioning_timeout_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ltx25, "_RUNTIME_CACHE", None)
+    monkeypatch.setattr(ltx25.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(ltx25, "_materialize_runtime", lambda repo, dest: None)
+
+    def timing_out_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(["uv", "sync"], 1800)
+
+    monkeypatch.setattr(ltx25.subprocess, "run", timing_out_run)
+
+    with pytest.raises(ltx25.LTX25BackendError) as excinfo:
+        ltx25.prepare_ltx25_runtime("/checkout/.venv/bin/ltx-2-mlx")
+
+    assert "timed out after 1800s" in str(excinfo.value)
 
 
 def test_ltx25_runtime_override_must_be_executable(

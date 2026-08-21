@@ -335,6 +335,10 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
     Qwen3-Next convention used by ``add_mtp_weights.py``). Try both.
     """
     candidates = (
+        # MTPLX packages the target trunk and its native head together.
+        # ``mlx_lm`` ignores this non-model shard while loading the trunk;
+        # the MTP injector consumes it explicitly.
+        sidecar_dir / "mtp.safetensors",
         sidecar_dir / "model-mtp.safetensors",
         sidecar_dir / "mtp" / "model.safetensors",
         sidecar_dir / "model.safetensors",
@@ -343,6 +347,51 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
         if c.exists():
             return c
     return None
+
+
+def _load_mtplx_runtime_contract(weights_file: Path) -> dict[str, Any]:
+    """Return the colocated MTPLX MTP contract, or an empty mapping.
+
+    Ordinary mlx-community sidecars have no runtime manifest and retain the
+    upstream mlx-lm PR #990 contract (pre-norm hidden, cache-relative MTP
+    positions).  MTPLX combined artifacts carry ``mtplx_runtime.json`` next
+    to ``mtp.safetensors``; silently treating their post-norm head as the
+    PR #990 variant produces plausible but low-acceptance drafts.  Read only
+    the closed contract fields we implement and fail closed on malformed
+    metadata.
+    """
+
+    import json
+
+    manifest = weights_file.parent / "mtplx_runtime.json"
+    if not manifest.is_file():
+        return {}
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.warning("[mtp.inject] could not read %s: %s", manifest, exc)
+        return {}
+    contract = payload.get("mtp_contract")
+    if not isinstance(contract, dict):
+        return {}
+    base_hidden = contract.get("base_hidden_variant", "pre_norm")
+    hidden = contract.get("hidden_variant", base_hidden)
+    concat = contract.get("concat_order", "embedding_hidden")
+    position = contract.get("mtp_position_mode", "cache")
+    if base_hidden not in {"pre_norm", "post_norm"}:
+        return {}
+    if hidden not in {"pre_norm", "post_norm"}:
+        return {}
+    if concat not in {"embedding_hidden", "hidden_embedding"}:
+        return {}
+    if position not in {"cache", "local", "absolute"}:
+        return {}
+    return {
+        "base_hidden_variant": base_hidden,
+        "hidden_variant": hidden,
+        "concat_order": concat,
+        "mtp_position_mode": position,
+    }
 
 
 def inject_mtp_support(
@@ -478,6 +527,12 @@ def inject_mtp_support(
                 mtp_sidecar,
             )
             return False
+
+    runtime_contract = (
+        _load_mtplx_runtime_contract(weights_file) if weights_file is not None else {}
+    )
+    base_hidden_variant = runtime_contract.get("base_hidden_variant", "pre_norm")
+    mtp_concat_order = runtime_contract.get("concat_order", "embedding_hidden")
 
     # --- Step 3: Match the MTP module's quantization to the SIDECAR ---
     # The packed weight/scales shapes of a ``QuantizedLinear`` are a
@@ -889,7 +944,8 @@ def inject_mtp_support(
                 out = self.lm_head(normed)
 
             if return_hidden:
-                return out, hidden_states
+                hidden = normed if base_hidden_variant == "post_norm" else hidden_states
+                return out, hidden
             return out
 
         def mtp_forward(
@@ -905,6 +961,7 @@ def inject_mtp_support(
                 next_token_ids,
                 self.model.embed_tokens,
                 mtp_cache,
+                concat_order=mtp_concat_order,
             )
             if self.args.tie_word_embeddings:
                 logits = self.model.embed_tokens.as_linear(mtp_out)
@@ -923,6 +980,7 @@ def inject_mtp_support(
                 next_token_ids,
                 self.model.embed_tokens,
                 mtp_cache,
+                concat_order=mtp_concat_order,
             )
             token = quantized_argmax(self.lm_head, mtp_out)
             if token is None:

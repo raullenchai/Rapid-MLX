@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
+from vllm_mlx.spec_decode.capability import looks_like_4bit
 
 
 class DFlashUnavailable(RuntimeError):  # noqa: N818 — domain-specific error name
@@ -42,6 +43,8 @@ class EligibilityReport:
     is_moe: bool
     is_4bit: bool
     has_drafter: bool
+    recommendation: str
+    warnings: tuple[str, ...]
     reasons: tuple[str, ...]  # all failing-gate reasons (empty if eligible)
 
 
@@ -52,24 +55,22 @@ def _looks_like_4bit(hf_path: str) -> bool:
     suffixes/segments. Mirrors the contract test's detection so a CLI
     error and a unit-test guard share one rule.
     """
-    lowered = hf_path.lower()
-    # Anchor the 4-bit infix on a leading hyphen so a model name like
-    # "Foo-4bit-attention" (where "4bit-" is part of the architecture
-    # tag rather than the quant suffix) doesn't get falsely flagged.
-    # "-4bit" handles both the trailing form and any mid-name segment.
-    if "-4bit" in lowered:
-        return True
-    if "mxfp4" in lowered or "nvfp4" in lowered:
-        return True
-    return False
+    return looks_like_4bit(hf_path)
 
 
-def report(profile: AliasProfile, alias: str | None = None) -> EligibilityReport:
+def report(
+    profile: AliasProfile,
+    alias: str | None = None,
+    *,
+    explicit: bool = False,
+    drafter_model: str | None = None,
+) -> EligibilityReport:
     """Compute the eligibility report without raising. Used by ``info``
     to render gate status — ``check`` is the raise-on-failure variant.
     """
     reasons: list[str] = []
-    if not profile.supports_dflash:
+    warnings: list[str] = []
+    if not profile.supports_dflash and not explicit:
         reasons.append(
             "alias is not DFlash-enabled (set supports_dflash=true in "
             "aliases.json after benching to validate ≥1.3× speedup)"
@@ -82,21 +83,44 @@ def report(profile: AliasProfile, alias: str | None = None) -> EligibilityReport
         )
     is_4bit = _looks_like_4bit(profile.hf_path)
     if is_4bit:
-        reasons.append(
+        warnings.append(
             f"main model hf_path={profile.hf_path!r} is 4-bit quantized; "
-            "DFlash regresses on 4-bit (use an 8-bit or higher variant)"
+            "this pair has not been performance-validated and may be slower"
         )
-    has_drafter = bool(profile.dflash_draft_model)
-    if profile.supports_dflash and not has_drafter:
+        if not explicit:
+            reasons.append("4-bit DFlash requires explicit experimental opt-in")
+    if explicit and not profile.supports_dflash:
+        has_drafter = bool(drafter_model)
+    else:
+        has_drafter = bool(drafter_model or profile.dflash_draft_model)
+    if not has_drafter:
         # Should be caught at JSON-load time by _coerce, but defend
         # against direct AliasProfile construction in tests/code.
-        reasons.append("supports_dflash is set but dflash_draft_model is empty")
+        reasons.append("DFlash requires an explicit drafter model")
+    curated_pair = (
+        not is_4bit
+        and profile.supports_dflash
+        and has_drafter
+        and (drafter_model is None or drafter_model == profile.dflash_draft_model)
+    )
+    if explicit and not curated_pair:
+        warnings.append(
+            "this target/drafter pair is experimental and has not been "
+            "performance-validated by Rapid-MLX; it may provide no speedup "
+            "or may be slower than autoregressive decoding"
+        )
     return EligibilityReport(
         alias=alias,
         supports_dflash=profile.supports_dflash,
         is_moe=profile.is_moe,
         is_4bit=is_4bit,
         has_drafter=has_drafter,
+        recommendation=(
+            "incompatible"
+            if profile.is_moe
+            else ("verified" if curated_pair else "experimental")
+        ),
+        warnings=tuple(warnings),
         reasons=tuple(reasons),
     )
 
@@ -121,10 +145,16 @@ def eligible_aliases() -> list[str]:
         return []
 
 
-def check(profile: AliasProfile, alias: str | None = None) -> None:
+def check(
+    profile: AliasProfile,
+    alias: str | None = None,
+    *,
+    explicit: bool = False,
+    drafter_model: str | None = None,
+) -> None:
     """Raise ``DFlashUnavailable`` with an actionable message if any
     eligibility gate fails. Returns ``None`` on success."""
-    r = report(profile, alias=alias)
+    r = report(profile, alias=alias, explicit=explicit, drafter_model=drafter_model)
     if not r.reasons:
         return
     header = f"DFlash unavailable for {alias!r}" if alias else "DFlash unavailable"

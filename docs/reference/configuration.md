@@ -35,6 +35,30 @@ category. The exhaustive flag list (every flag visible in
 | `--max-request-bytes` | Max HTTP request body size in bytes; oversized requests get HTTP 413 before parsing. 0 disables. (also via `RAPID_MLX_MAX_REQUEST_BYTES`) | 8 MiB (8388608) |
 | `--timeout` | Request timeout in seconds | `1800` |
 
+#### MLLM media input guards (environment only)
+
+`rapid-mlx` also hardens user-supplied image/video inputs against two
+security primitives; these are environment variables, not CLI flags:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS` | Set to `1` to refuse local-file image/video paths entirely (URLs and base64 only). Recommended for deployments exposed beyond the loopback boundary. | unset |
+| `RAPID_MLX_MEDIA_ROOT` | Required to enable local-file image/video inputs. Reads are confined to this directory tree; validated files are copied from a no-follow descriptor into server-owned temporary storage before decoding. | unset (local paths disabled) |
+
+By default, remote image/video URLs are validated at request time so they
+cannot resolve to loopback, RFC1918 private space, link-local (including the
+cloud metadata address `169.254.169.254`), multicast, or reserved addresses —
+on both the initial request and every redirect hop. When a media root is
+configured, local image/video paths are accepted only when they are confined
+regular files with a supported extension and a recognized media signature.
+
+This is an intentional security tightening for local paths: extensionless
+files and formats outside the documented image/video allowlist are rejected.
+Rename supported media to a conventional extension, or convert it first
+(`.jpg`, `.png`, `.webp`, `.avif`, `.mp4`, `.mov`, etc.). SVG is not accepted
+as raster image input. Set `RAPID_MLX_MEDIA_ROOT` to the narrowest directory
+needed by the application; leave it unset for URL/base64-only deployments.
+
 ### Admission and Batching Options
 
 | Option | Description | Default |
@@ -128,14 +152,29 @@ into the same config path.
 
 | Config | Description |
 |--------|-------------|
-| `{"method":"dflash"}` | Enable the DFlash single-user bridge on validated aliases. |
-| `{"method":"ddtree"}` | Enable experimental DDTree verification on validated aliases. |
+| `{"method":"dflash","model":"<drafter>"}` | Enable DFlash. Curated aliases may supply the drafter automatically; unknown/unverified targets require it explicitly. |
+| `{"method":"ddtree","model":"<drafter>","num_speculative_tokens":16,"tree_budget":24}` | Enable DDTree. Unknown/unverified targets require all structural inputs explicitly. |
 | `{"method":"dspark","num_speculative_tokens":5}` | Enable checkpoint-native DSpark for a local DeepSeek V4 Flash checkpoint. The token count must match the checkpoint's complete DSpark block. Greedy single-request decoding is accelerated; unsupported request shapes safely use baseline decoding. |
 | `{"method":"mtp"}` | Enable MTP speculative decoding for checkpoints accepted by the existing MTP eligibility gate. |
 | `{"method":"mtp","model":"<sidecar-head-repo>"}` | Attach a standalone MTP **sidecar head** (e.g. `mlx-community/Qwen3.6-27B-MTP-4bit`) to a full base checkpoint. The base must be MTP-eligible; the head repo goes in the `model` field — **not** in the `serve` positional. See [MTP sidecar heads are not standalone models](#mtp-sidecar-heads-are-not-standalone-models) below. Gemma 4 sidecar MTP remains disabled after its greedy-lossless A/B failed. |
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
+
+Rapid-MLX separates capability from recommendation. Registry flags identify
+combinations verified for correctness and performance; they control defaults,
+not operator permission. An explicit configuration may run an unverified or
+4-bit target after method-specific structural/runtime preflight, with an
+experimental warning. Such combinations remain default-off and may be slower
+or produce worse application-level output. True incompatibilities—missing or
+mismatched drafter metadata, unsupported verifiers, unavailable runtimes, and
+mutually exclusive modes—still fail before generation.
+
+Generate the all-alias/all-method policy report with:
+
+```bash
+python -m vllm_mlx.spec_decode.report
+```
 
 #### MTP is not free — measure before you enable it
 

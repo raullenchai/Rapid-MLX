@@ -1161,10 +1161,23 @@ flow_fresh_install() {
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
-    role_subtree_only "$OUT/consent-visible.json" AXSheet "$OUT/consent-sheet.json"
-    baseline fresh-install.consent "$OUT/consent-sheet.json"
+    # Consent owns the window as a full-window gate. It deliberately must not
+    # be an AppKit sheet: sheets prevent a fresh-install user from quitting
+    # normally before making a telemetry choice.
+    if jq -e '.data.ui_elements[]? | select(.role == "AXSheet")' \
+        "$OUT/consent-visible.json" >/dev/null; then
+        die "fresh-install consent regressed to a quit-blocking AXSheet"
+    fi
+    for hidden in Sidebar.NewChat Sidebar.Launch rapid.chat.compose; do
+        if jq -e --arg id "$hidden" '.data.ui_elements[]? | select(.identifier == $id)' \
+            "$OUT/consent-visible.json" >/dev/null; then
+            die "telemetry consent mounted production control $hidden behind the gate"
+        fi
+    done
+    role_subtree_only "$OUT/consent-visible.json" AXGroup "$OUT/consent-gate.json"
+    baseline fresh-install.consent "$OUT/consent-gate.json"
     # #1560: merely launching a fresh install must not inspect model caches
-    # behind the consent sheet. Give both SwiftUI catalog tasks time to run;
+    # behind the consent gate. Give both SwiftUI catalog tasks time to run;
     # the fake sidecar records every non-serve command before it exits.
     sleep 0.75
     if [[ -s "$OUT/fake-events.jsonl" ]] && jq -e \

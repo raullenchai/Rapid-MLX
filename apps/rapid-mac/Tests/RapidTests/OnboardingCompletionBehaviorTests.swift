@@ -93,6 +93,80 @@ struct OnboardingCompletionBehaviorTests {
         #expect(coord.step.displayNumber == 3)
     }
 
+    @Test("#2033 finding 1 — a cached pick passes through displayed Step 3, never 2 → 4")
+    func skippingDownloadPassesThroughStepThree() {
+        // Before this phase existed, ``startCachedModel(_:)`` called
+        // ``enterStarting()`` directly from ``.idle``: the displayed counter
+        // read 2, then — with nothing shown in between — 4. A first-time
+        // user watching that has no way to tell "this step was free" from
+        // "the app skipped something". The production route now holds on
+        // ``Phase/skippingDownload`` first, which this test pins at the
+        // coordinator level: every integer the rail can show must actually
+        // be reached, in order, with no jump.
+        let coord = makeCoordinator()
+        #expect(coord.step.displayNumber == 1, "starts at Welcome")
+        coord.advanceToChooseModel()
+        #expect(coord.step.displayNumber == 2, "Choose a model")
+
+        coord.enterSkippingDownload()
+        #expect(coord.step == .download, "the acknowledgement is still macro Step 3")
+        #expect(coord.step.displayNumber == 3, "the counter must land on 3, not skip it")
+        // Distinct from a real pull — no ``DownloadManager`` job exists for
+        // a cached model, so this must never read as ``.downloading``.
+        #expect(coord.phase != .downloading, "no fake download stage for a cached model")
+
+        coord.enterStarting()
+        #expect(coord.step.displayNumber == 4, "then, and only then, Step 4")
+        coord._testingReset()
+    }
+
+    @Test("#2033 finding 1 (codex follow-up) — skipping during the beat invalidates the pending start")
+    func skipDuringSkippingDownloadInvalidatesPendingStart() async {
+        // pr_validate codex_review (round 1 on this fix): a version of this
+        // test that only re-derived "phase left .skippingDownload" as a
+        // check SEPARATE from `startCachedModel(_:)`'s own guard proved
+        // nothing about that guard — deleting the guard entirely left such
+        // a test green. `afterSkippingDownloadBeat(duration:onAuthorized:)`
+        // is the exact method `startCachedModel(_:)` calls in production
+        // (with the real 650ms constant); calling it here too — with
+        // `duration: .zero` so the test doesn't actually wait — means this
+        // test and production share the identical guarded code path rather
+        // than two copies of the same condition that can silently drift
+        // apart. Delete the guard inside that method and this goes red.
+        let coord = makeCoordinator()
+        coord.advanceToChooseModel()
+        coord.enterSkippingDownload()
+
+        coord.skipForNow()
+
+        var authorized = false
+        await coord.afterSkippingDownloadBeat(duration: .zero) {
+            authorized = true
+        }
+        #expect(!authorized,
+                "afterSkippingDownloadBeat ran onAuthorized after skipForNow() dismissed onboarding mid-beat — it would have called enterStarting() and server.start against a model the user already walked away from")
+        coord._testingReset()
+    }
+
+    @Test("#2033 finding 1 (codex follow-up) — the beat still hands off when nothing interrupts it")
+    func skippingDownloadBeatProceedsWhenUninterrupted() async {
+        // The companion happy-path case for the test above: without a
+        // dismissal, `afterSkippingDownloadBeat` must still reach Step 4
+        // and run `onAuthorized` — the guard exists to invalidate a
+        // SPECIFIC intervening event, not to block the ordinary route.
+        let coord = makeCoordinator()
+        coord.advanceToChooseModel()
+        coord.enterSkippingDownload()
+
+        var authorized = false
+        await coord.afterSkippingDownloadBeat(duration: .zero) {
+            authorized = true
+        }
+        #expect(authorized, "onAuthorized must still run when nothing interrupted the beat")
+        #expect(coord.step.displayNumber == 4, "and the coordinator must have reached Step 4")
+        coord._testingReset()
+    }
+
     @Test("Starting and Ready are both Step 4 — including a load failure")
     func startingAndReadyAreStepFour() {
         let coord = makeCoordinator()
@@ -117,6 +191,7 @@ struct OnboardingCompletionBehaviorTests {
             .idle,
             .lowDiskWarning(freeBytes: 1, requiredBytes: 2),
             .downloading,
+            .skippingDownload,
             .starting,
             .ready,
             .dismissed,
@@ -177,6 +252,7 @@ struct OnboardingCompletionBehaviorTests {
         #expect(ContentView.quickstartRetainsSurface(phase: .ready),
                 "Ready must keep the full-window onboarding surface up")
         #expect(ContentView.quickstartRetainsSurface(phase: .downloading))
+        #expect(ContentView.quickstartRetainsSurface(phase: .skippingDownload))
         #expect(ContentView.quickstartRetainsSurface(phase: .starting))
         #expect(ContentView.quickstartRetainsSurface(
             phase: .failed(message: "x", origin: .download)
@@ -550,8 +626,10 @@ struct OnboardingCompletionBehaviorTests {
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.Memory.LoadAnyway")"#))
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.Memory.Cancel")"#))
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.Memory.SwitchToLowMemory")"#))
-        // A cached model still skips the download and goes straight to serve.
-        #expect(body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterStarting()"))
+        // A cached model still skips the download and goes straight to serve
+        // — via the acknowledgement beat (#2033 finding 1), not a fake
+        // download job.
+        #expect(body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterSkippingDownload()"))
     }
 
     @Test("A cached-model start still lands on Ready rather than completing itself")
@@ -560,7 +638,8 @@ struct OnboardingCompletionBehaviorTests {
         // lifecycle, so it must inherit the same ending: park on Ready,
         // wait for the user.
         let coord = makeCoordinator()
-        coord.enterStarting()          // startCachedModel's transition
+        coord.enterSkippingDownload()  // startCachedModel's first transition
+        coord.enterStarting()          // ...then the same serve hand-off
         coord.enterReady()             // server reports ready
         #expect(coord.phase == .ready)
         #expect(!coord.done, "a cached model must not complete onboarding on its own")

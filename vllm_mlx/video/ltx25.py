@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -150,6 +151,79 @@ def _materialize_runtime(repository: Path, destination: Path) -> None:
         ) from exc
 
 
+# URLs with userinfo (https://user:token@index.example, including
+# percent-encoded forms like https://build%40corp:s3cret@…) can appear in
+# uv's package-index error output; redact the ENTIRE userinfo before
+# display — anything between ``scheme://`` and ``@`` is treated as
+# potentially credential-bearing.
+_CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
+# Token-bearing query parameters / assignments (``?token=…``,
+# ``access_key=…``, ``Authorization: Bearer …``) that package-index
+# errors can echo back.
+# Any identifier ENDING in a credential noun (token / secret / password /
+# passwd / key / credential, optional plural) — covers access_token,
+# client_secret, api-key, HF_TOKEN, AWS_SECRET_ACCESS_KEY, … without
+# enumerating prefixes. Values may be bare or quoted.
+_CREDENTIAL_PARAM_RE = re.compile(
+    # Suffix set includes signed-URL auth params (codex on #2166):
+    # ``X-Amz-Signature=``, ``sig=`` (Azure SAS), ``sas=``, ``auth=``,
+    # ``jwt=`` — none of which end in the classic credential suffixes,
+    # and uv stderr can echo a full index URL query string verbatim.
+    r"(?i)((?<![\w-])[\w-]*"
+    r"(?:token|secret|password|passwd|key|credential|signature|sig|auth|sas|jwt)s?"
+    r"\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^&\s\"']+)"
+)
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")
+# Any ``Authorization:``-style header value regardless of scheme (Basic,
+# Digest, custom) — the scheme word is kept, the credential is redacted.
+_AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization\s*[=:]\s*[a-z0-9_-]+\s+)[^\s\"']+")
+
+
+def _sanitize_diagnostic(text: str) -> str:
+    """Make subprocess output safe to print: no control sequences (terminal
+    escape injection), no embedded index credentials (URL userinfo,
+    token-bearing query params, bearer headers)."""
+    text = _CREDENTIAL_URL_RE.sub(r"\1***@", text)
+    text = _AUTH_HEADER_RE.sub(r"\1***", text)
+    text = _CREDENTIAL_PARAM_RE.sub(r"\1***", text)
+    text = _BEARER_RE.sub(r"\1***", text)
+    return "".join(ch if ch.isprintable() or ch in " \t\n" else " " for ch in text)
+
+
+def _stderr_tail(stream: io.BufferedRandom) -> str:
+    """Read a bounded tail from a spooled stderr file (never the whole body)."""
+    try:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - 4096))
+        return stream.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ""
+
+
+def _bounded(text: str) -> str:
+    return text[:300] + "…" if len(text) > 300 else text
+
+
+def _provisioning_failure_detail(exc: Exception) -> str:
+    """Compress a provisioning failure into one actionable, sanitized line.
+
+    EVERY exception-derived string passes through ``_sanitize_diagnostic``
+    and the length bound — ``OSError`` messages can embed paths or
+    environment-derived text with the same control-sequence/credential
+    exposure as uv's stderr.
+    """
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"`uv sync --frozen` timed out after {int(exc.timeout)}s"
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = f"`uv sync --frozen` failed with exit code {exc.returncode}"
+        stderr = _sanitize_diagnostic((exc.stderr or "").strip())
+        if stderr:
+            detail += f" ({_bounded(' | '.join(stderr.splitlines()[-3:]))})"
+        return detail
+    return _bounded(_sanitize_diagnostic(str(exc))) or type(exc).__name__
+
+
 def prepare_ltx25_runtime(executable: str) -> Path:
     """Provision the pinned runtime once into a process-private workspace."""
     global _RUNTIME_CACHE
@@ -167,19 +241,30 @@ def prepare_ltx25_runtime(executable: str) -> Path:
             cache = tempfile.TemporaryDirectory(prefix="rapidmlx-ltx25-runtime-")
             workspace = Path(cache.name)
             _materialize_runtime(Path(executable).parents[2], workspace)
-            subprocess.run(
-                [
-                    str(Path(uv).absolute()),
-                    "sync",
-                    "--frozen",
-                    "--project",
-                    str(workspace),
-                ],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=1800,
-            )
+            # stderr goes to a temp file, not PIPE: a noisy dependency build
+            # must never buffer unbounded output in the server's memory. Only
+            # a bounded tail is read back, and only on failure.
+            with tempfile.TemporaryFile() as uv_stderr:
+                try:
+                    subprocess.run(
+                        [
+                            str(Path(uv).absolute()),
+                            "sync",
+                            "--frozen",
+                            "--project",
+                            str(workspace),
+                        ],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=uv_stderr,
+                        timeout=1800,
+                    )
+                except subprocess.CalledProcessError as run_exc:
+                    # Real runs route stderr to the file, so the exception
+                    # carries none; keep any stderr already attached.
+                    if not run_exc.stderr:
+                        run_exc.stderr = _stderr_tail(uv_stderr)
+                    raise
             interpreter = workspace / ".venv" / "bin" / "python"
             if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
                 raise LTX25BackendError(
@@ -197,7 +282,8 @@ def prepare_ltx25_runtime(executable: str) -> Path:
             if cache is not None:
                 cache.cleanup()
             raise LTX25BackendError(
-                "The pinned LTX-2.5 runtime could not be provisioned."
+                "The pinned LTX-2.5 runtime could not be provisioned: "
+                + _provisioning_failure_detail(exc)
             ) from exc
         _RUNTIME_CACHE = cache
         return workspace

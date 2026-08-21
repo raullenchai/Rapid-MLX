@@ -15,10 +15,15 @@ Features:
 
 import atexit
 import base64
+import fcntl
+import ipaddress
 import logging
 import math
 import os
 import re
+import shutil
+import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -26,10 +31,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import numpy as np
 import requests
+from requests.adapters import HTTPAdapter
 
 from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
 from vllm_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
@@ -527,6 +533,334 @@ def decode_base64_image(
     return base64.b64decode(base64_string)
 
 
+class RemoteMediaFetchError(ValueError):
+    """A user-supplied remote media URL was denied by the SSRF guard.
+
+    Subclasses ``ValueError`` so it surfaces as a clean HTTP 400 from the
+    route exception handlers instead of a raw 5xx.
+    """
+
+
+# RFC1918 private ranges, loopback, link-local (incl. the cloud metadata
+# address 169.254.169.254), multicast, unspecified, and reserved addresses are
+# never valid targets for a user-supplied remote media URL coming from a
+# network-facing process.
+def _is_blocked_address(ip_str: str) -> bool:
+    """Return True if ``ip_str`` is a private/loopback/link-local/etc address."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Unparseable address -> conservative deny.
+        return True
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _safe_remote_target(url: str) -> tuple[str, tuple[str, ...]]:
+    """Reject remote media URLs whose effective target is a blocked host.
+
+    This closes the SSRF primitive on user-supplied image/video URLs: the
+    request is refused when the target resolves to loopback, RFC1918 private
+    space, link-local (e.g. cloud metadata ``169.254.169.254``), multicast,
+    unspecified, or reserved addresses.
+
+    Returns the original hostname and one validated address. Callers must
+    connect to that returned address, rather than resolving the hostname a
+    second time, so DNS rebinding cannot race validation against connection.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise RemoteMediaFetchError(
+            f"Remote media URL must use http(s), got scheme {parsed.scheme!r}"
+        )
+    host = parsed.hostname
+    if not host:
+        raise RemoteMediaFetchError(f"Remote media URL has no host: {url[:80]!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise RemoteMediaFetchError("Remote media URL must not contain credentials")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise RemoteMediaFetchError(f"Invalid port in remote media URL: {url[:80]!r}")
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise RemoteMediaFetchError(f"Could not resolve remote media host {host!r}")
+    addresses: list[str] = []
+    for info in infos:
+        ip = info[4][0]
+        if _is_blocked_address(ip):
+            raise RemoteMediaFetchError(
+                "Remote media URL resolves to a blocked address "
+                f"(private/loopback/link-local/metadata): {ip}"
+            )
+        if ip not in addresses:
+            addresses.append(ip)
+    if not addresses:
+        raise RemoteMediaFetchError(
+            f"Remote media host resolved no addresses: {host!r}"
+        )
+    return host, tuple(addresses)
+
+
+def _assert_safe_remote_url(url: str) -> None:
+    """Validate a remote URL without issuing a request (test/public helper)."""
+    _safe_remote_target(url)
+
+
+class _PinnedHTTPSAdapter(HTTPAdapter):
+    """Connect to a validated IP while verifying TLS for the URL hostname."""
+
+    def __init__(self, server_hostname: str):
+        self._server_hostname = server_hostname
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["assert_hostname"] = self._server_hostname
+        pool_kwargs["server_hostname"] = self._server_hostname
+        return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+
+def _pinned_url(url: str, address: str) -> str:
+    """Replace a URL hostname with a validated address, retaining all else."""
+    parsed = urlsplit(url)
+    host = f"[{address}]" if ":" in address else address
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _guarded_request(
+    method: str, url: str, *, timeout: int, headers: dict, stream: bool
+):
+    """Issue ``method`` on ``url``, validating the host on every hop.
+
+    Redirects are followed manually (bounded) so each destination is checked
+    against the SSRF guard — otherwise a malicious or compromised host could
+    ``302`` us straight to ``http://169.254.169.254/...`` or an internal host.
+    """
+    session = requests.Session()
+    # Proxy environment variables would delegate target resolution to the
+    # proxy and defeat the validated-address connection invariant.
+    session.trust_env = False
+    current = url
+    seen = {current}
+    try:
+        for _ in range(6):  # initial request + up to 5 validated redirects
+            hostname, addresses = _safe_remote_target(current)
+            parsed = urlparse(current)
+            request_headers = dict(headers)
+            default_port = 443 if parsed.scheme == "https" else 80
+            host_header = f"[{hostname}]" if ":" in hostname else hostname
+            request_headers["Host"] = (
+                host_header
+                if parsed.port in (None, default_port)
+                else f"{host_header}:{parsed.port}"
+            )
+            if parsed.scheme == "https":
+                session.mount("https://", _PinnedHTTPSAdapter(hostname))
+            response = None
+            last_error = None
+            for address in addresses:
+                try:
+                    response = session.request(
+                        method,
+                        _pinned_url(current, address),
+                        timeout=timeout,
+                        headers=request_headers,
+                        stream=stream,
+                        allow_redirects=False,
+                        verify=True,
+                    )
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+            if response is None:
+                assert last_error is not None
+                raise last_error
+            if response.is_redirect or response.is_permanent_redirect:
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
+                    raise RemoteMediaFetchError("Remote media redirect has no location")
+                current = urljoin(current, location)
+                if current in seen:
+                    raise RemoteMediaFetchError("Remote media URL redirect loop")
+                seen.add(current)
+                continue
+            response._rapid_mlx_session = session
+            return response
+        raise RemoteMediaFetchError("Remote media URL redirected too many times")
+    except Exception:
+        session.close()
+        raise
+
+
+def _close_guarded_response(response) -> None:
+    """Close a guarded response and the private session that owns its pool."""
+    try:
+        response.close()
+    finally:
+        session = getattr(response, "_rapid_mlx_session", None)
+        if session is not None:
+            session.close()
+
+
+# Local media file reads are confined to regular files with a media extension
+# so a malicious caller cannot use the image/video path branch to read
+# arbitrary files (``/etc/passwd``, ``~/.ssh/id_rsa``, configs, secrets). The
+# extension allowlist is intentionally wide so local operators and the desktop
+# app can keep passing real image/video paths picked from the filesystem. For
+# remote-facing deployments set ``RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS=1`` to
+# refuse local files entirely (URLs / base64 only), or set
+# ``RAPID_MLX_MEDIA_ROOT`` to additionally confine reads to one directory
+# tree.
+_ALLOWED_MEDIA_EXTENSIONS = frozenset(
+    {
+        # images
+        ".jpg",
+        ".jpeg",
+        ".jfif",
+        ".png",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".heic",
+        ".heif",
+        ".avif",
+        # video
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".m4v",
+        ".mpg",
+        ".mpeg",
+        ".flv",
+        ".3gp",
+    }
+)
+
+
+def _has_media_signature(header: bytes) -> bool:
+    """Recognize common raster-image/video container signatures."""
+    if header.startswith(
+        (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"BM")
+    ):
+        return True
+    if header[:4] in (b"II*\x00", b"MM\x00*"):
+        return True
+    if header.startswith(b"RIFF") and header[8:12] in (b"WEBP", b"AVI "):
+        return True
+    if header.startswith(
+        (b"\x1aE\xdf\xa3", b"FLV", b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3")
+    ):
+        return True
+    # ISO base-media containers: MP4/MOV/M4V/3GP and HEIF/HEIC/AVIF.
+    return len(header) >= 12 and header[4:8] == b"ftyp"
+
+
+def _opened_fd_path(fd: int) -> Path:
+    """Return the kernel-resolved path of an open descriptor."""
+    if sys.platform == "darwin":
+        raw = fcntl.fcntl(fd, 50, b"\0" * 1024)  # F_GETPATH
+        return Path(raw.split(b"\0", 1)[0].decode())
+    return Path(os.readlink(f"/proc/self/fd/{fd}"))
+
+
+def _local_media_root() -> Path | None:
+    """Return the confinement root for local media reads, if configured."""
+    root = os.environ.get("RAPID_MLX_MEDIA_ROOT")
+    if not root:
+        return None
+    try:
+        resolved = Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Configured RAPID_MLX_MEDIA_ROOT is invalid") from exc
+    if not resolved.is_dir():
+        raise ValueError("Configured RAPID_MLX_MEDIA_ROOT is not a directory")
+    return resolved
+
+
+def _resolve_local_media(path: str) -> str | None:
+    """Return ``path`` if it is an allowed local media file, else None.
+
+    Guards: regular file only, a media extension only, and (when
+    ``RAPID_MLX_MEDIA_ROOT`` is set) resolved inside that root so ``..``
+    escapes, absolute paths elsewhere, and symlinks pointing outside are all
+    refused. ``RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS=1`` disables the local-file
+    branch entirely.
+    """
+    if os.environ.get("RAPID_MLX_DISABLE_LOCAL_MEDIA_PATHS") == "1":
+        return None
+    if not path or len(path) >= 4096:
+        return None
+    try:
+        supplied = Path(path).expanduser()
+        if supplied.is_symlink():
+            return None
+        candidate = supplied.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    if candidate.suffix.lower() not in _ALLOWED_MEDIA_EXTENSIONS:
+        return None
+    root = _local_media_root()
+    if root is None:
+        return None
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        logger.warning("Refusing media path outside allowed root %s: %s", root, path)
+        return None
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(candidate, flags)
+    except OSError:
+        return None
+    temp_file = None
+    try:
+        opened = _opened_fd_path(fd).resolve()
+        try:
+            opened.relative_to(root)
+        except ValueError:
+            return None
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size > MAX_VIDEO_SIZE:
+            return None
+        header = os.read(fd, 32)
+        if not _has_media_signature(header):
+            return None
+        os.lseek(fd, 0, os.SEEK_SET)
+        temp_file = tempfile.NamedTemporaryFile(
+            suffix=candidate.suffix.lower(), delete=False
+        )
+        with os.fdopen(os.dup(fd), "rb") as source:
+            shutil.copyfileobj(source, temp_file, length=1024 * 1024)
+        temp_file.close()
+        return _temp_manager.register(temp_file.name)
+    except Exception:
+        if temp_file is not None:
+            temp_file.close()
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+        raise
+    finally:
+        os.close(fd)
+
+
 def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) -> str:
     """
     Download image from URL and return local path.
@@ -548,51 +882,53 @@ def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) 
 
     # First, make a HEAD request to check Content-Length
     try:
-        head_response = requests.head(
-            url, timeout=timeout, headers=headers, allow_redirects=True, verify=True
+        head_response = _guarded_request(
+            "HEAD", url, timeout=timeout, headers=headers, stream=False
         )
-        content_length = head_response.headers.get("content-length")
+        try:
+            content_length = head_response.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                raise FileSizeExceededError(
+                    f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                    f"{max_size / 1024 / 1024:.1f} MB limit"
+                )
+        finally:
+            _close_guarded_response(head_response)
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
+    response = _guarded_request(
+        "GET", url, timeout=timeout, headers=headers, stream=True
+    )
+    try:
+        response.raise_for_status()
+
+        # Check Content-Length header from GET response
+        content_length = response.headers.get("content-length")
         if content_length and int(content_length) > max_size:
             raise FileSizeExceededError(
                 f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
                 f"{max_size / 1024 / 1024:.1f} MB limit"
             )
-    except requests.RequestException:
-        # HEAD request failed, proceed with GET and check during download
-        pass
 
-    response = requests.get(
-        url, timeout=timeout, headers=headers, stream=True, verify=True
-    )
-    response.raise_for_status()
+        # Determine extension from content type or URL
+        content_type = response.headers.get("content-type", "")
+        if "jpeg" in content_type or "jpg" in content_type:
+            ext = ".jpg"
+        elif "png" in content_type:
+            ext = ".png"
+        elif "gif" in content_type:
+            ext = ".gif"
+        elif "webp" in content_type:
+            ext = ".webp"
+        else:
+            path = urlparse(url).path
+            ext = Path(path).suffix or ".jpg"
 
-    # Check Content-Length header from GET response
-    content_length = response.headers.get("content-length")
-    if content_length and int(content_length) > max_size:
-        raise FileSizeExceededError(
-            f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
-            f"{max_size / 1024 / 1024:.1f} MB limit"
-        )
-
-    # Determine extension from content type or URL
-    content_type = response.headers.get("content-type", "")
-    if "jpeg" in content_type or "jpg" in content_type:
-        ext = ".jpg"
-    elif "png" in content_type:
-        ext = ".png"
-    elif "gif" in content_type:
-        ext = ".gif"
-    elif "webp" in content_type:
-        ext = ".webp"
-    else:
-        # Try to get from URL
-        path = urlparse(url).path
-        ext = Path(path).suffix or ".jpg"
-
-    # Save to temp file with size checking during download
-    temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    downloaded_size = 0
-    try:
+        # Save to temp file with size checking during download
+        temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        downloaded_size = 0
         for chunk in response.iter_content(chunk_size=8192):
             downloaded_size += len(chunk)
             if downloaded_size > max_size:
@@ -604,13 +940,15 @@ def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) 
                 )
             temp_file.write(chunk)
         temp_file.close()
-    except FileSizeExceededError:
-        raise
     except Exception:
+        if "temp_file" not in locals():
+            raise
         temp_file.close()
         if os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
         raise
+    finally:
+        _close_guarded_response(response)
 
     return _temp_manager.register(temp_file.name)
 
@@ -638,53 +976,55 @@ def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE)
 
     # First, make a HEAD request to check Content-Length
     try:
-        head_response = requests.head(
-            url, timeout=timeout, headers=headers, allow_redirects=True, verify=True
+        head_response = _guarded_request(
+            "HEAD", url, timeout=timeout, headers=headers, stream=False
         )
-        content_length = head_response.headers.get("content-length")
+        try:
+            content_length = head_response.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                raise FileSizeExceededError(
+                    f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                    f"{max_size / 1024 / 1024:.1f} MB limit"
+                )
+        finally:
+            _close_guarded_response(head_response)
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
+    response = _guarded_request(
+        "GET", url, timeout=timeout, headers=headers, stream=True
+    )
+    try:
+        response.raise_for_status()
+
+        # Check Content-Length header from GET response
+        content_length = response.headers.get("content-length")
         if content_length and int(content_length) > max_size:
             raise FileSizeExceededError(
                 f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
                 f"{max_size / 1024 / 1024:.1f} MB limit"
             )
-    except requests.RequestException:
-        # HEAD request failed, proceed with GET and check during download
-        pass
 
-    response = requests.get(
-        url, timeout=timeout, headers=headers, stream=True, verify=True
-    )
-    response.raise_for_status()
+        # Determine extension from content type or URL
+        content_type = response.headers.get("content-type", "")
+        if "mp4" in content_type:
+            ext = ".mp4"
+        elif "webm" in content_type:
+            ext = ".webm"
+        elif "avi" in content_type:
+            ext = ".avi"
+        elif "mov" in content_type or "quicktime" in content_type:
+            ext = ".mov"
+        elif "mkv" in content_type:
+            ext = ".mkv"
+        else:
+            path = urlparse(url).path
+            ext = Path(path).suffix or ".mp4"
 
-    # Check Content-Length header from GET response
-    content_length = response.headers.get("content-length")
-    if content_length and int(content_length) > max_size:
-        raise FileSizeExceededError(
-            f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
-            f"{max_size / 1024 / 1024:.1f} MB limit"
-        )
-
-    # Determine extension from content type or URL
-    content_type = response.headers.get("content-type", "")
-    if "mp4" in content_type:
-        ext = ".mp4"
-    elif "webm" in content_type:
-        ext = ".webm"
-    elif "avi" in content_type:
-        ext = ".avi"
-    elif "mov" in content_type or "quicktime" in content_type:
-        ext = ".mov"
-    elif "mkv" in content_type:
-        ext = ".mkv"
-    else:
-        # Try to get from URL
-        path = urlparse(url).path
-        ext = Path(path).suffix or ".mp4"
-
-    # Save to temp file (stream for larger files) with size checking
-    temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    downloaded_size = 0
-    try:
+        # Save to temp file (stream for larger files) with size checking
+        temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        downloaded_size = 0
         for chunk in response.iter_content(chunk_size=8192):
             downloaded_size += len(chunk)
             if downloaded_size > max_size:
@@ -696,13 +1036,15 @@ def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE)
                 )
             temp_file.write(chunk)
         temp_file.close()
-    except FileSizeExceededError:
-        raise
     except Exception:
+        if "temp_file" not in locals():
+            raise
         temp_file.close()
         if os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
         raise
+    finally:
+        _close_guarded_response(response)
 
     file_size = Path(temp_file.name).stat().st_size
     logger.info(
@@ -787,9 +1129,11 @@ def process_video_input(video: str | dict) -> str:
     if not video:
         raise ValueError("Empty video input")
 
-    # Check if it's a local file
-    if Path(video).exists():
-        return video
+    # Check if it's a local file (confined to regular media files; see
+    # ``_resolve_local_media`` for the extension / root-lockdown guards).
+    local = _resolve_local_media(video)
+    if local is not None:
+        return local
 
     # Check if it's a URL
     if is_url(video):
@@ -882,9 +1226,11 @@ def process_image_input(image: str | dict) -> str:
     if is_url(image):
         return download_image(image)
 
-    # Check if it's a local file (only for short strings that could be paths)
-    if len(image) < 4096 and Path(image).exists():
-        return image
+    # Local file path — only for short strings that resolve to a regular
+    # media file (extension / root-lockdown guards; see ``_resolve_local_media``).
+    local = _resolve_local_media(image)
+    if local is not None:
+        return local
 
     raise ValueError(f"Cannot process image: {image[:50]}...")
 

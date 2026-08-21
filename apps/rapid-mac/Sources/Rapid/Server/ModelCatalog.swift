@@ -61,7 +61,9 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
     let model: String?
     let tokens: Int?
 
-    var displayName: String { method == .mtp ? "MTP" : "Suffix decoding" }
+    var displayName: String {
+        method == .mtp ? "Experimental MTP" : "Suffix decoding"
+    }
 }
 
 /// One model in the rapid-mlx catalog. The picker UI groups cached vs.
