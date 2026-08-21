@@ -415,6 +415,7 @@ struct DictationTests {
         var continuation: CheckedContinuation<Bool, Never>?
         var hotkeyStartCount = 0
         let controller = readinessController(
+            phase: .idle,
             prewarm: {
                 await withCheckedContinuation { continuation = $0 }
             },
@@ -435,7 +436,46 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("changing models cancels an active capture before preparation")
+    func modelChangeCancelsActiveCapture() {
+        var cancellationCount = 0
+        let controller = DictationController(
+            server: ServerManager(testingState: .ready(alias: "whisper-small")),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingPhase: .recording,
+            testingRecorderCancel: { cancellationCount += 1 },
+            audioCatalogLoader: { _ in [] }
+        )
+
+        controller.modelAlias = "qwen3-asr"
+
+        #expect(cancellationCount == 1)
+        #expect(controller.phase == .preparingModel)
+    }
+
+    @MainActor
+    @Test("replaying a retained completed download keeps a ready hotkey armed")
+    func completedDownloadReplayIsIdempotent() async {
+        var prewarmCount = 0
+        let controller = readinessController(
+            phase: .idle,
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: { true }
+        )
+
+        await controller.modelDownloadDidFinish()
+
+        #expect(controller.phase == .idle)
+        #expect(prewarmCount == 0)
+    }
+
+    @MainActor
     private func readinessController(
+        phase: DictationController.Phase = .off,
         prewarm: @escaping @MainActor () async -> Bool,
         hotkeyStart: @escaping @MainActor () -> Bool
     ) -> DictationController {
@@ -455,6 +495,7 @@ struct DictationTests {
             ),
             testingEnabled: true,
             testingModelAlias: "whisper-small",
+            testingPhase: phase,
             testingReadiness: .init(
                 microphone: true,
                 accessibility: true,

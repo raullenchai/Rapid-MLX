@@ -198,6 +198,7 @@ struct DictationView: View {
                 .menuStyle(.button)
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
+                .disabled(controller.phase != .off && controller.phase != .idle)
                 .accessibilityLabel("Model")
                 .accessibilityValue(controller.modelAlias)
                 .accessibilityIdentifier("Dictation.Model")

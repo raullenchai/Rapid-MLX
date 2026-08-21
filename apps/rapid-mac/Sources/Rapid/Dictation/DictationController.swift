@@ -81,6 +81,7 @@ final class DictationController {
             // leaves the Enable switch stuck until something else refreshes.
             refreshReadiness()
             if isEnabled {
+                cancelActiveSessionForModelChange()
                 hotkey.stop()
                 phase = .preparingModel
             }
@@ -119,6 +120,7 @@ final class DictationController {
     private let testingReadiness: Readiness?
     private let testingPrewarm: (@MainActor () async -> Bool)?
     private let testingHotkeyStart: (@MainActor () -> Bool)?
+    private let testingRecorderCancel: (@MainActor () -> Void)?
 
     private var tickTimer: Timer?
     private var recordingStart: Date?
@@ -161,6 +163,7 @@ final class DictationController {
         testingReadiness: Readiness? = nil,
         testingPrewarm: (@MainActor () async -> Bool)? = nil,
         testingHotkeyStart: (@MainActor () -> Bool)? = nil,
+        testingRecorderCancel: (@MainActor () -> Void)? = nil,
         audioCatalogLoader: @escaping @MainActor (URL) async -> [ModelEntry]? = {
             await ModelCatalog.audioEntriesIfAvailable(binary: $0)
         }
@@ -173,6 +176,7 @@ final class DictationController {
         self.testingReadiness = testingReadiness
         self.testingPrewarm = testingPrewarm
         self.testingHotkeyStart = testingHotkeyStart
+        self.testingRecorderCancel = testingRecorderCancel
 
         let defaults = UserDefaults.standard
         self.isEnabled = testingEnabled ?? defaults.bool(forKey: Keys.enabled)
@@ -344,6 +348,27 @@ final class DictationController {
         recorder.shutdown()
         hud.hide()
         phase = .off
+    }
+
+    /// A model change cannot safely preserve an in-flight utterance: after
+    /// the swap it would be submitted to a different model. Tear the active
+    /// session down before entering preparation so the microphone cannot be
+    /// stranded behind a phase that ignores the stop hotkey.
+    private func cancelActiveSessionForModelChange() {
+        beginRecordingTask?.cancel()
+        beginRecordingTask = nil
+        beginRecordingRequestID = nil
+        if phase == .starting || phase == .recording {
+            if let testingRecorderCancel {
+                testingRecorderCancel()
+            } else {
+                recorder.cancelCapture()
+            }
+        }
+        stopTicking()
+        recordingStart = nil
+        capturingApp = nil
+        hud.hide()
     }
 
     /// Tear down the process-wide dictation service without changing the
@@ -553,6 +578,10 @@ final class DictationController {
     func modelDownloadDidFinish() async {
         await refreshModelCacheState()
         if isEnabled {
+            // DownloadManager retains its completed job. A recreated view can
+            // replay that completion, but a hot same-alias session must keep
+            // its working hotkey instead of needlessly disarming and probing.
+            guard phase != .idle || server.servingAlias != modelAlias else { return }
             await enable(replacingCurrentPrewarm: true)
         }
     }
