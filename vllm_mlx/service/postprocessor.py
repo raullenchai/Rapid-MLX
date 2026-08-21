@@ -1746,10 +1746,25 @@ class StreamingPostProcessor:
         if self.reasoning_parser is None:
             # Standard / channel-routed path doesn't need the injection.
             return delta_text
-        # Prepend the marker so the parser sees ``</think>`` BEFORE the
-        # next body bytes. The caller flips ``_reasoning_close_injected``
-        # only after the parser call succeeds.
-        return "</think>" + delta_text
+        # Prepend the marker so the parser sees its close token BEFORE
+        # the next body bytes. The caller flips
+        # ``_reasoning_close_injected`` only after the parser call
+        # succeeds. Ask the parser for ITS closer (codex round-2 MAJOR
+        # on #2171): north transitions on ``<|END_THINKING|>``, not
+        # ``</think>`` — a hard-coded ``</think>`` is swallowed as
+        # reasoning bytes and the cap latch then reroutes the rest of
+        # the thought trace to visible content.
+        return self._reasoning_close_marker() + delta_text
+
+    def _reasoning_close_marker(self) -> str:
+        """The configured parser's thinking-close token, for cap-hit
+        forced-close injection. Falls back to ``</think>`` for parsers
+        that don't expose ``end_token`` (the think-tag family default).
+        """
+        marker = getattr(self.reasoning_parser, "end_token", None)
+        if isinstance(marker, str) and marker:
+            return marker
+        return "</think>"
 
     def _forced_tool_choice_name(self) -> str | None:
         """Return the forced ``tool_choice`` function name, if any.
@@ -3598,7 +3613,9 @@ class StreamingPostProcessor:
         ):
             self._reasoning_close_injected = True
             previous_text = self.accumulated_text
-            injected_delta = "</think>"
+            # Same parser-owned closer as the mid-stream site (codex
+            # round-2 MAJOR on #2171) — north needs <|END_THINKING|>.
+            injected_delta = self._reasoning_close_marker()
             # Codex round-5 BLOCKING #1: build the parser's view of
             # ``current`` LOCALLY rather than mutating
             # ``self.accumulated_text``. Downstream (routes/chat.py
@@ -3842,7 +3859,17 @@ class StreamingPostProcessor:
             and self.accumulated_text
             and (
                 type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
-                or getattr(self.reasoning_parser, "stream_eof_flush", False)
+                # Strict ``is True``: the opt-in must be the literal class
+                # attribute (north sets ``stream_eof_flush = True``). A
+                # truthiness check fires for ANY object whose attribute
+                # lookup fabricates values (MagicMock doubles in tests,
+                # __getattr__-based proxies) and then calls
+                # ``finalize_streaming`` on parsers with re-parse
+                # semantics — re-releasing bytes the forced-close
+                # extraction already emitted (the exact duplicate-flush
+                # hazard test_finalize_does_not_emit_close_marker_
+                # through_parser_twice pins).
+                or getattr(self.reasoning_parser, "stream_eof_flush", False) is True
             )
         ):
             try:
