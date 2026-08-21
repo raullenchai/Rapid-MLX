@@ -1410,15 +1410,21 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 source_segments.append(("reasoning", self._reasoning_carry))
                 self._reasoning_carry = ""
             if self._in_tool_call and self._tool_call_buffer:
-                flushed = self._tool_call_buffer
+                flushed, trailing_reasoning = _split_unclosed_at_prose_boundary(
+                    self._tool_call_buffer
+                )
                 self._tool_call_buffer = ""
                 self._in_tool_call = False
                 logger.warning(
                     "Promoted unclosed streaming tool_call "
                     "(think ended before tool_call closed)"
                 )
-                out_content_parts.append(flushed)
-                source_segments.append(("content", flushed))
+                if flushed:
+                    out_content_parts.append(flushed)
+                    source_segments.append(("content", flushed))
+                if trailing_reasoning:
+                    out_reasoning_parts.append(trailing_reasoning)
+                    source_segments.append(("reasoning", trailing_reasoning))
             if segment:
                 out_content_parts.append(segment)
                 source_segments.append(("content", segment))
