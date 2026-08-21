@@ -218,8 +218,13 @@ def test_streaming_forwards_use_each_projections_quantization_parameters():
     """Mixed-quantization checkpoints must not reuse gate settings."""
     from vllm_mlx.disk_stream_patch import _streaming_moe_forward
     from vllm_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
+    from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
 
-    for forward in (_streaming_moe_forward, qwen2_moe_streaming_forward):
+    for forward in (
+        _streaming_moe_forward,
+        qwen2_moe_streaming_forward,
+        qwen3_next_streaming_forward,
+    ):
         source = inspect.getsource(forward)
         for projection in ("gate_proj", "up_proj", "down_proj"):
             assert f"group_size={projection}.group_size" in source
