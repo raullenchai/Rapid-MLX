@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pytest
 from tokenizers import Tokenizer, models
 from transformers import PreTrainedTokenizerFast
 
@@ -78,6 +79,7 @@ def test_current_canonical_and_unknown_custom_templates_are_preserved() -> None:
 
 
 def test_official_template_renders_null_and_normalized_openai_arguments() -> None:
+    pytest.importorskip("jinja2")
     tokenizer = _tokenizer(_STALE_FULL)
     messages = [
         {"role": "user", "content": "List /tmp"},
@@ -113,6 +115,7 @@ def test_official_template_renders_null_and_normalized_openai_arguments() -> Non
 
 
 def test_official_template_restores_thinking_continuation_after_tool_result() -> None:
+    pytest.importorskip("jinja2")
     tokenizer = _tokenizer(_STALE_FULL)
     messages = [
         {"role": "user", "content": "List /tmp"},
