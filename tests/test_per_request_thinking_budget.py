@@ -575,6 +575,27 @@ class TestTextParserReasoningCap:
         assert events[0].reasoning == "abcd"
         assert events[0].content == "efANSWER1ghijklANSWER2"
 
+    def test_cap_preserves_content_first_delta_without_source_segments(self):
+        """Parsers without provenance retain content before later overflow."""
+        from vllm_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
+
+        parser = DeepSeekV4ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<think>abcd"))
+        final = pp.process_chunk(
+            _make_output("VISIBLE<think>overflow", finished=True)
+        )
+
+        assert [event.reasoning for event in first if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert len(final) == 1
+        assert final[0].type == "finish"
+        assert final[0].content == "VISIBLEoverflow"
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the

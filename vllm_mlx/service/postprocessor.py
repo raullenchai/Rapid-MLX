@@ -3211,7 +3211,13 @@ class StreamingPostProcessor:
                     content = "".join(rebuilt_content) or content
                 elif flip_succeeded:
                     promoted_content += overflow_content
-                    content = promoted_content + (content or "")
+                    # Parsers without ordered provenance can emit mixed
+                    # content/reasoning deltas in content-first order (for
+                    # example DeepSeek V4 re-entering ``<think>`` after visible
+                    # prose). Preserve their historical content-first fallback;
+                    # think-tag parsers that need finer ordering provide
+                    # ``source_segments`` and take the exact rebuild above.
+                    content = (content or "") + promoted_content
             # ``full_reasoning`` only needed within this block; release
             # the reference to drop the temporary view.
             del full_reasoning
