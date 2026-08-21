@@ -121,12 +121,14 @@ final class DictationController {
     private let testingPrewarm: (@MainActor () async -> Bool)?
     private let testingHotkeyStart: (@MainActor () -> Bool)?
     private let testingRecorderCancel: (@MainActor () -> Void)?
+    private let testingTranscribeCancel: (@MainActor () -> Void)?
 
     private var tickTimer: Timer?
     private var recordingStart: Date?
     private var capturingApp: String?
     private var level: Float = 0
     private var transcribeTask: Task<Void, Never>?
+    private var transcribeRequestID: UUID?
     /// The on-disk revalidation between a hotkey tap and capture. Keeping the
     /// task cancellable means turning dictation off while the catalog CLI is
     /// running cannot let its stale continuation start the microphone later.
@@ -164,6 +166,7 @@ final class DictationController {
         testingPrewarm: (@MainActor () async -> Bool)? = nil,
         testingHotkeyStart: (@MainActor () -> Bool)? = nil,
         testingRecorderCancel: (@MainActor () -> Void)? = nil,
+        testingTranscribeCancel: (@MainActor () -> Void)? = nil,
         audioCatalogLoader: @escaping @MainActor (URL) async -> [ModelEntry]? = {
             await ModelCatalog.audioEntriesIfAvailable(binary: $0)
         }
@@ -177,6 +180,7 @@ final class DictationController {
         self.testingPrewarm = testingPrewarm
         self.testingHotkeyStart = testingHotkeyStart
         self.testingRecorderCancel = testingRecorderCancel
+        self.testingTranscribeCancel = testingTranscribeCancel
 
         let defaults = UserDefaults.standard
         self.isEnabled = testingEnabled ?? defaults.bool(forKey: Keys.enabled)
@@ -337,6 +341,7 @@ final class DictationController {
         hotkey.stop()
         transcribeTask?.cancel()
         transcribeTask = nil
+        transcribeRequestID = nil
         beginRecordingTask?.cancel()
         beginRecordingTask = nil
         beginRecordingRequestID = nil
@@ -364,6 +369,11 @@ final class DictationController {
             } else {
                 recorder.cancelCapture()
             }
+        } else if phase == .transcribing {
+            testingTranscribeCancel?()
+            transcribeTask?.cancel()
+            transcribeTask = nil
+            transcribeRequestID = nil
         }
         stopTicking()
         recordingStart = nil
@@ -414,17 +424,18 @@ final class DictationController {
     /// server has to swap the whole process instead. Getting this wrong fails
     /// at request time with nothing to distinguish it from a missing model.
     @discardableResult
-    private func ensureModelServing() async -> Bool {
-        guard !modelAlias.isEmpty else { return false }
+    private func ensureModelServing(alias requestedAlias: String? = nil) async -> Bool {
+        let alias = requestedAlias ?? modelAlias
+        guard !alias.isEmpty else { return false }
         // Only models already on disk get through. This is the choke point
         // that kills every silent-download path dictation used to have: the
         // server is never handed a repo to fetch, so the worst it can do is
         // fail fast on a missing model.
-        guard let facts = await catalogFacts(for: modelAlias), facts.cached else {
+        guard let facts = await catalogFacts(for: alias), facts.cached else {
             return false
         }
         return await server.ensureServing(
-            alias: modelAlias,
+            alias: alias,
             hfPath: facts.repo,
             residencyEligible: false
         )
@@ -512,7 +523,7 @@ final class DictationController {
         // that mutates the sidecar or touches the wire.
         guard !Task.isCancelled, isEnabled, modelAlias == alias else { return false }
         if server.servingAlias != alias {
-            guard await ensureModelServing() else { return false }
+            guard await ensureModelServing(alias: alias) else { return false }
             guard !Task.isCancelled, isEnabled, modelAlias == alias else { return false }
         }
         return await warmUpEngine()
@@ -701,16 +712,34 @@ final class DictationController {
         hud.update(.transcribing)
 
         let app = capturingApp
+        let alias = modelAlias
+        let requestID = UUID()
+        transcribeRequestID = requestID
         transcribeTask = Task { [weak self] in
-            await self?.transcribe(audio: audio, duration: duration, appName: app)
+            await self?.transcribe(
+                audio: audio,
+                duration: duration,
+                appName: app,
+                alias: alias,
+                requestID: requestID
+            )
         }
     }
 
-    private func transcribe(audio: Data, duration: TimeInterval, appName: String?) async {
+    private func transcribe(
+        audio: Data,
+        duration: TimeInterval,
+        appName: String?,
+        alias: String,
+        requestID: UUID
+    ) async {
         defer {
-            hud.hide()
-            phase = .idle
-            transcribeTask = nil
+            if transcribeRequestID == requestID {
+                hud.hide()
+                phase = .idle
+                transcribeTask = nil
+                transcribeRequestID = nil
+            }
         }
 
         let started = Date()
@@ -718,14 +747,15 @@ final class DictationController {
         // number when the cost can hide in catalog resolution, a model swap,
         // or inference. The split is surfaced in the Dictation tab.
         let ensureStarted = Date()
-        guard await ensureModelServing() else {
-            let facts = catalogByAlias[modelAlias]
+        guard await ensureModelServing(alias: alias) else {
+            guard transcribeRequestID == requestID, modelAlias == alias else { return }
+            let facts = catalogByAlias[alias]
             if facts == nil {
-                lastError = "\(modelAlias) isn't in the audio model catalog. Pick another model."
+                lastError = "\(alias) isn't in the audio model catalog. Pick another model."
             } else if facts?.cached != true {
-                lastError = "\(modelAlias) isn't downloaded. Open Rapid → Audio to download it."
+                lastError = "\(alias) isn't downloaded. Open Rapid → Audio to download it."
             } else {
-                lastError = "\(modelAlias) couldn't start. There may not be enough memory to swap models."
+                lastError = "\(alias) couldn't start. There may not be enough memory to swap models."
             }
             // The user is mid-flow in another app with only the HUD visible.
             // Leaving "Transcribing…" up while silently failing reads as a
@@ -734,7 +764,9 @@ final class DictationController {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              transcribeRequestID == requestID,
+              modelAlias == alias else { return }
         let ensureSeconds = Date().timeIntervalSince(ensureStarted)
 
         do {
@@ -742,13 +774,15 @@ final class DictationController {
             let requestStarted = Date()
             let result = try await client.transcribe(
                 audioData: audio,
-                model: modelAlias,
+                model: alias,
                 context: context.isEmpty ? nil : context,
                 port: server.activePort,
                 bearer: server.activeBearer
             )
             let requestSeconds = Date().timeIntervalSince(requestStarted)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  transcribeRequestID == requestID,
+                  modelAlias == alias else { return }
 
             let text = Self.tidy(result.text)
             guard !text.isEmpty else {
@@ -789,7 +823,9 @@ final class DictationController {
                 archiveAudio: archiveAudio
             )
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  transcribeRequestID == requestID,
+                  modelAlias == alias else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -802,11 +838,12 @@ final class DictationController {
     /// unsafe default.
     func retranscribe(_ entry: DictationHistory.Entry) async -> String? {
         guard let audio = history.audioData(for: entry), !modelAlias.isEmpty else { return nil }
-        guard await ensureModelServing() else { return nil }
+        let alias = modelAlias
+        guard await ensureModelServing(alias: alias), modelAlias == alias else { return nil }
         let context = vocabulary.contextPrompt
         guard let result = try? await client.transcribe(
             audioData: audio,
-            model: modelAlias,
+            model: alias,
             context: context.isEmpty ? nil : context,
             port: server.activePort,
             bearer: server.activeBearer

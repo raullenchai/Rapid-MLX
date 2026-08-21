@@ -455,6 +455,25 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("changing models invalidates an active transcription before preparation")
+    func modelChangeCancelsActiveTranscription() {
+        var cancellationCount = 0
+        let controller = DictationController(
+            server: ServerManager(testingState: .ready(alias: "whisper-small")),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingPhase: .transcribing,
+            testingTranscribeCancel: { cancellationCount += 1 },
+            audioCatalogLoader: { _ in [] }
+        )
+
+        controller.modelAlias = "qwen3-asr"
+
+        #expect(cancellationCount == 1)
+        #expect(controller.phase == .preparingModel)
+    }
+
+    @MainActor
     @Test("replaying a retained completed download keeps a ready hotkey armed")
     func completedDownloadReplayIsIdempotent() async {
         var prewarmCount = 0
