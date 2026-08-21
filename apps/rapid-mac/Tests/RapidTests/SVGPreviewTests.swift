@@ -473,9 +473,36 @@ struct PreviewOrientationTests {
             firstRow { $0.blueComponent > 0.7 && $0.redComponent < 0.3 },
             "no blue band found — the preview did not draw"
         )
-        // Bitmap rows count from the bottom even though the source view is
-        // flipped, so the visually higher red band has the larger row index.
-        #expect(red > blue, "the preview is upside down: blue (bottom of the document) drew above red")
+        // `NSBitmapImageRep` numbers rows from the top: row 0 is the visual
+        // top of the card, whatever the source view's `isFlipped` says. So an
+        // upright picture puts red — the document's top band — at the smaller
+        // row index. `rowOrderIsTopDown` below pins this, because believing
+        // the opposite is exactly how the preview shipped upside down.
+        #expect(red < blue, "the preview is upside down: blue (bottom of the document) drew above red")
+    }
+
+    /// Which end of an `NSBitmapImageRep` is the top.
+    ///
+    /// The orientation test above is only as good as its idea of row order,
+    /// and a wrong idea there is invisible: it makes the assertion demand the
+    /// bug. That happened — the row order was asserted from memory as
+    /// bottom-up, the expectation was inverted to match, and two rounds of
+    /// "fixes" then chased the inverted test by adding a second flip. So the
+    /// premise gets measured against a picture drawn with no flipping at all.
+    @Test("Bitmap rows are numbered from the top")
+    func rowOrderIsTopDown() throws {
+        let image = try #require(NSImage(data: Data(banded.utf8)))
+        let canvas = NSImage(size: CGSize(width: 100, height: 100))
+        canvas.lockFocus()
+        image.draw(in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        canvas.unlockFocus()
+        let tiff = try #require(canvas.tiffRepresentation)
+        let rep = try #require(NSBitmapImageRep(data: tiff))
+
+        let top = try #require(rep.colorAt(x: 50, y: 0))
+        let bottom = try #require(rep.colorAt(x: 50, y: rep.pixelsHigh - 1))
+        #expect(top.redComponent > 0.7, "row 0 is not the document's red top band")
+        #expect(bottom.blueComponent > 0.7, "the last row is not the document's blue bottom band")
     }
 }
 

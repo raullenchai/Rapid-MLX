@@ -232,20 +232,17 @@ final class MarkdownCodeBlockView: NSView {
     /// press away.
     @discardableResult
     private func drawPreview(contentWidth: CGFloat) -> Bool {
-        guard isShowingPreview, let previewImage,
-              let context = NSGraphicsContext.current?.cgContext else { return false }
+        guard isShowingPreview, let previewImage else { return false }
         let size = SVGPreview.drawSize(for: previewImage.size, inWidth: contentWidth)
         guard size.width > 0, size.height > 0 else { return false }
         let origin = CGPoint(
             x: options.codeInsets.leading,
             y: headerHeight + options.codeInsets.top
         )
-        // NSImage compensates for the flipped view. Mirror the destination
-        // coordinate space around this rect first so the image's document-top
-        // still lands at the view's visual top (pinned by the bitmap test).
-        context.saveGState()
-        context.translateBy(x: 0, y: 2 * origin.y + size.height)
-        context.scaleBy(x: 1, y: -1)
+        // `respectFlipped: true` is the whole of it. This view is `isFlipped`,
+        // and the short `draw(in:)` overload does not compensate — it paints
+        // the image bottom-up into a top-down coordinate space. Nothing else
+        // is needed, and mirroring the destination as well flips it back.
         previewImage.draw(
             in: CGRect(origin: origin, size: size),
             from: .zero,
@@ -254,7 +251,6 @@ final class MarkdownCodeBlockView: NSView {
             respectFlipped: true,
             hints: nil
         )
-        context.restoreGState()
         return true
     }
 
