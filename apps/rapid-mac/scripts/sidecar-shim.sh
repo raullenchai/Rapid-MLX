@@ -75,12 +75,6 @@ export PYTHONDONTWRITEBYTECODE=1
 # python ``-u`` flag below) makes every print flush immediately so
 # the matchers actually fire. v0.7.10 fix for the v0.7.9 regression.
 export PYTHONUNBUFFERED=1
-# Tell runtime diagnostics which dependency contract this interpreter ships.
-# The desktop bundle intentionally installs [audio-desktop], not the full
-# general-purpose [audio] extra; without an explicit provenance marker
-# ``rapid-mlx doctor`` cannot distinguish the signed sidecar from an ordinary
-# CLI virtualenv and recommends mutating the sealed app environment (#2185).
-export RAPID_MLX_DESKTOP_SIDECAR=1
 unset PYTHONSTARTUP
 
 exec "$ROOT/python/bin/python3.12" -P -u -s -m vllm_mlx.cli "$@"

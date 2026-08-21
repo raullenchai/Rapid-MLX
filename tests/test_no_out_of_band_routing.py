@@ -217,11 +217,6 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_TELEMETRY_REQUEST_SAMPLE",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
-        # Provenance marker exported only by the signed Desktop sidecar shim.
-        # Doctor uses it to validate the already-installed ``audio-desktop``
-        # dependency contract instead of the broader CLI ``audio`` extra. It
-        # does not select a model, parser, tier, engine, or request route.
-        "RAPID_MLX_DESKTOP_SIDECAR",
         # Skip the [Y/n] confirmation prompt before large model downloads
         # (UX knob for unattended/CI usage; not consulted by the engine).
         "RAPID_MLX_AUTO_PULL",
