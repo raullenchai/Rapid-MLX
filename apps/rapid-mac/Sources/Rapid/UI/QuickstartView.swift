@@ -232,6 +232,19 @@ final class QuickstartCoordinator {
         /// in the background. The card swaps to an inline progress
         /// view; ``progressView`` reads ``DownloadManager.job(for:)``.
         case downloading
+        /// The selected model is already on disk, so there is nothing to
+        /// pull — but the card still says so, for a fixed short beat,
+        /// before handing off to ``starting`` (#2033 finding 1).
+        ///
+        /// Without this phase, ``startCachedModel(_:)`` used to jump
+        /// straight from ``idle`` to ``starting``: the visible step
+        /// counter went 2 → 4 with nothing in between, which a
+        /// first-time user reads as a skipped step rather than as "this
+        /// one was free". Distinct from ``downloading`` on purpose — no
+        /// ``DownloadManager`` job exists for a cached model, and
+        /// reusing that phase would render its progress card against a
+        /// job that was never created.
+        case skippingDownload
         /// Download finished, ``ServerManager.start`` is in flight.
         case starting
         /// The selected model is serving and onboarding is STOPPED here,
@@ -603,10 +616,12 @@ Open the picker any time to switch models.
             case .welcome:     return .welcome
             case .chooseModel: return .chooseModel
             }
-        case .lowDiskWarning, .downloading:
+        case .lowDiskWarning, .downloading, .skippingDownload:
             // Insufficient disk is a download-time interstitial, not a step
             // of its own — the user is being asked about the pull they just
-            // authorised.
+            // authorised. ``skippingDownload`` belongs here too: it is the
+            // acknowledgement that Step 3 has nothing to do, not Step 3
+            // itself becoming something new.
             return .download
         case .starting, .ready, .dismissed:
             return .start
@@ -1009,6 +1024,21 @@ Open the picker any time to switch models.
     func skipForNow() {
         clearPendingReady()
         awaitingWelcomeSeed = false
+        // Codex review (#2033 finding 1): ``startCachedModel(_:)``'s
+        // ``Phase/skippingDownload`` beat is an unstructured `Task` that is
+        // NOT cancelled by the view disappearing, and its own guard only
+        // checks that `phase` is still `.skippingDownload` — which it still
+        // was, because this method used to leave `phase` untouched. Without
+        // this, dismissing onboarding during the 650ms beat did not stop
+        // the pending task: it fired `enterStarting()` and `server.start`
+        // 650ms later against a model the user had already walked away
+        // from, and left the production shell's Start CTA gated by
+        // `ModelPickerBar.isQuickstartInFlight` for the rest of the
+        // session. Flipping the phase away from `.skippingDownload` here
+        // makes that guard do what it was always meant to.
+        if case .skippingDownload = phase {
+            phase = .dismissed
+        }
     }
 
     /// External clearer for the awaiting-seed provenance flag. Called
@@ -1061,6 +1091,56 @@ Open the picker any time to switch models.
     /// hand off to ``ServerManager.start``).
     func enterStarting() {
         phase = .starting
+    }
+
+    /// A cached model was chosen: acknowledge there is nothing to download
+    /// (#2033 finding 1). ``startCachedModel(_:)`` holds here for a fixed
+    /// short beat and then calls ``enterStarting()`` itself — this method
+    /// only records the acknowledgement, the same division of labour
+    /// ``enterDownloading()``/``enterStarting()`` already have with their
+    /// view-side callers.
+    func enterSkippingDownload() {
+        phase = .skippingDownload
+    }
+
+    /// True iff a cached-model start begun during ``Phase/skippingDownload``
+    /// is still authorized to hand off to ``enterStarting()``.
+    private var isSkippingDownloadStillPending: Bool {
+        if case .skippingDownload = phase { return true }
+        return false
+    }
+
+    /// Waits out the ``Phase/skippingDownload`` beat, then hands off to
+    /// ``enterStarting()`` and runs `onAuthorized` — UNLESS the phase moved
+    /// on in the meantime (dismissal, a different pick), in which case this
+    /// is a no-op.
+    ///
+    /// `startCachedModel(_:)` calls this instead of inlining the
+    /// sleep-then-guard itself specifically so the guard is something a
+    /// test can drive directly. pr_validate codex_review (#2033 follow-up)
+    /// on the original fix: a test that only re-derives "phase left
+    /// .skippingDownload" as a SEPARATE check from the production code's
+    /// own guard proves nothing about that guard — remove the guard entirely
+    /// and such a test keeps passing. Calling this exact method (with
+    /// `duration: .zero` to skip the real wait) is what closes that: the
+    /// test and production run the identical guarded path, not two copies
+    /// of the same condition that can silently drift apart.
+    func afterSkippingDownloadBeat(
+        duration: Duration,
+        onAuthorized: () async -> Void
+    ) async {
+        // Unstructured by construction at the call site (`Task { @MainActor
+        // in ... }` in `startCachedModel(_:)`) — NOT cancelled by the view
+        // disappearing, and `try?` here deliberately does not observe
+        // cancellation either (there is no cooperative cancellation point to
+        // race against). The `isSkippingDownloadStillPending` check below is
+        // the ONLY thing that stops this from starting a model the user has
+        // already walked away from; `skipForNow()` is what makes dismissal
+        // flip it to false.
+        try? await Task.sleep(for: duration)
+        guard isSkippingDownloadStillPending else { return }
+        enterStarting()
+        await onAuthorized()
     }
 
     /// Record a terminal failure. Does NOT flip ``done`` so the next
@@ -1528,7 +1608,12 @@ struct QuickstartView: View {
                 selectionAlias: coordinator.selection.alias
             ) == nil else { return nil }
             return "STARTING"
-        case .idle, .lowDiskWarning, .ready, .dismissed, .failed:
+        case .idle, .lowDiskWarning, .skippingDownload, .ready, .dismissed, .failed:
+            // ``skippingDownload`` deliberately takes the D1 (setup rail)
+            // path, not D2: there is no job, no fraction and no bytes to
+            // show a lifecycle band for — the D1 rail's ordinary step
+            // marker already says "3" on its own, honestly, from
+            // ``coordinator.step``.
             return nil
         }
     }
@@ -1598,6 +1683,8 @@ struct QuickstartView: View {
             }
         case .downloading:
             OnboardingCenteredCanvas(trailing: 72) { downloadingCard }
+        case .skippingDownload:
+            OnboardingCenteredCanvas { skippingDownloadCard }
         case .ready:
             // Onboarding V3: readiness is a destination, not a hand-off.
             // The surface stays here until the user confirms.
@@ -3362,6 +3449,30 @@ struct QuickstartView: View {
         return selectionAlias
     }
 
+    /// Step 3's canvas for a cached pick (#2033 finding 1). Honest, not
+    /// fabricated: there is no job, no bytes and no progress bar, because
+    /// there is genuinely nothing to transfer — only a fixed short beat
+    /// (``startCachedModel(_:)``) so a human watching the rail sees the
+    /// step marker land on 3 before it moves to 4, instead of the counter
+    /// silently skipping over it. No actions: the user has nothing to
+    /// decide here, the same reasoning ``readyCard`` uses for withholding
+    /// a spinner it cannot honestly justify.
+    @ViewBuilder
+    private var skippingDownloadCard: some View {
+        OnboardingOutcomeBlock(
+            glyph: "checkmark",
+            tone: .ready,
+            kicker: "STEP \(QuickstartCoordinator.Step.download.displayNumber) "
+                + "OF \(QuickstartCoordinator.Step.total) · NOTHING TO DOWNLOAD",
+            title: "\(coordinator.selection.displayName) is already on this Mac.",
+            message: "No download needed — moving straight to starting it."
+        ) {
+            EmptyView()
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Quickstart.SkippingDownload")
+    }
+
     /// Step 4's canvas while the serve comes up (Paper 05.1 state 15).
     ///
     /// The rail carries STARTING, the identity and the indeterminate track, so
@@ -3933,15 +4044,30 @@ struct QuickstartView: View {
     /// `ServerManager.start` still owns cache validation, memory guarding and
     /// the normal ready/failure transitions, so this is a shorter route into
     /// the same serving lifecycle rather than a second implementation.
+    ///
+    /// #2033 finding 1: this used to call ``QuickstartCoordinator/enterStarting()``
+    /// directly, so the visible step counter jumped 2 → 4 with nothing shown
+    /// for 3. It now holds on ``QuickstartCoordinator/Phase/skippingDownload``
+    /// for ``Self.skippingDownloadBeat`` first — long enough to read, short
+    /// enough not to manufacture a wait — so the counter passes through every
+    /// integer a human watching it can actually see change.
     private func startCachedModel(_ cached: ModelEntry) {
-        coordinator.enterStarting()
+        coordinator.enterSkippingDownload()
         Task { @MainActor in
-            await server.start(
-                alias: cached.alias,
-                hfPath: cached.hfRepo
-            )
+            await coordinator.afterSkippingDownloadBeat(duration: Self.skippingDownloadBeat) {
+                await server.start(
+                    alias: cached.alias,
+                    hfPath: cached.hfRepo
+                )
+            }
         }
     }
+
+    /// How long ``Phase/skippingDownload`` stays on screen before
+    /// ``startCachedModel(_:)`` auto-advances to Step 4. Pinned as a named
+    /// constant (rather than an inline literal) so the test suite can assert
+    /// on it directly instead of re-deriving "long enough to read".
+    static let skippingDownloadBeat: Duration = .milliseconds(650)
 
     /// Pure adapter mapping a ``DiskSpaceProbe.Decision`` onto the
     /// Quickstart coordinator + kickoff closure. Lifted out of

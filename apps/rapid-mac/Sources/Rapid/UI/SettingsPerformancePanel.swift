@@ -265,7 +265,9 @@ struct SettingsPerformancePanel: View {
                 tradeOffLine(
                     preset == nil
                         ? "This alias does not declare a verified speculative-decoding preset."
-                        : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
+                        : preset?.method == .mtp
+                            ? "Experimental and off by default. It may improve generation speed, but can be slower on some Macs. Enabling downloads an additional draft model and requires a restart; accepted output remains token-exact."
+                            : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
                     warns: false
                 )
             }

@@ -60,7 +60,7 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 | Extra | Install | Adds |
 |---|---|---|
 | `vision` | `pip install 'rapid-mlx[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
-| `dflash` | `pip install 'rapid-mlx[dflash]'` | mlx-vlm for DFlash speculative decoding on supported 8-bit aliases |
+| `dflash` | `pip install 'rapid-mlx[dflash]'` | mlx-vlm for DFlash speculative decoding; verified aliases get curated defaults, while explicit compatible target/drafter pairs may run experimentally |
 | `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
 | `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |

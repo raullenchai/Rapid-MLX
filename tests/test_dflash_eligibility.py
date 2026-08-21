@@ -44,6 +44,9 @@ def _good_profile() -> AliasProfile:
         ("nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx", True),
         ("RedHatAI/Qwen3.6-35B-A3B-NVFP4", True),
         ("mlx-community/Qwen3.6-35B-A3B-4bit-DWQ", True),
+        ("user/Qwen3.5-9B-4-bit", True),
+        ("user/Qwen3.5-9B_4bit", True),
+        ("user/model-4bit-instruct", True),
         # 8-bit + higher should NOT match
         ("mlx-community/Qwen3.5-27B-8bit", False),
         ("mlx-community/Qwen3.6-35B-A3B-8bit", False),
@@ -93,16 +96,22 @@ def test_check_rejects_moe_alias() -> None:
         check(p, alias="qwen3.6-35b-8bit")
 
 
-def test_check_rejects_4bit_main_model() -> None:
-    """4-bit main model → reject. Note: aliases marked
-    ``supports_dflash=True`` can't be 4-bit (alias-contract guard),
-    so this gate primarily defends against test-only profiles."""
+def test_explicit_4bit_main_model_is_experimental() -> None:
     p = AliasProfile(
         hf_path="mlx-community/Qwen3.5-27B-4bit",  # 4-bit!
         supports_dflash=True,
         dflash_draft_model="z-lab/Qwen3.5-27B-DFlash",
     )
-    with pytest.raises(DFlashUnavailable, match="4-bit"):
+    r = report(
+        p,
+        alias="qwen3.5-27b-4bit",
+        explicit=True,
+        drafter_model=p.dflash_draft_model,
+    )
+    assert r.reasons == ()
+    assert r.recommendation == "experimental"
+    assert "4-bit" in " ".join(r.warnings)
+    with pytest.raises(DFlashUnavailable, match="explicit experimental opt-in"):
         check(p, alias="qwen3.5-27b-4bit")
 
 
@@ -131,14 +140,15 @@ def test_report_collects_all_failures() -> None:
     bad = AliasProfile(
         hf_path="mlx-community/Qwen3.6-35B-A3B-4bit",  # 4-bit AND MoE
         is_moe=True,
-        # supports_dflash=False (default) → 3 reasons total
+        # supports_dflash=False (default)
     )
     r = report(bad, alias="qwen3.6-35b-4bit")
-    assert len(r.reasons) == 3, f"expected 3 reasons, got: {r.reasons}"
     joined = " ".join(r.reasons)
     assert "MoE" in joined
-    assert "4-bit" in joined
+    assert "4-bit" in " ".join(r.warnings)
+    assert "explicit experimental opt-in" in joined
     assert "not DFlash-enabled" in joined
+    assert "drafter" in joined
 
 
 def test_report_no_alias_name_renders_cleanly() -> None:
@@ -183,6 +193,41 @@ def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:
     with pytest.raises(DFlashUnavailable) as excinfo:
         check(profile, alias="qwen3.5-27b-4bit")
     msg = str(excinfo.value)
-    assert "4-bit" in msg, (
-        f"4-bit hint missing from DFlashUnavailable message; got:\n{msg}"
+    assert "not DFlash-enabled" in msg
+
+
+def test_unknown_4bit_path_explicit_opt_in_is_allowed() -> None:
+    profile = AliasProfile(hf_path="user/Qwen3.5-9B-abliterated-4bit")
+    result = report(
+        profile,
+        alias=None,
+        explicit=True,
+        drafter_model="user/Qwen3.5-9B-abliterated-DFlash",
     )
+    assert result.recommendation == "experimental"
+    assert result.reasons == ()
+    assert "performance-validated" in " ".join(result.warnings)
+
+
+def test_check_preserves_none_success_contract() -> None:
+    assert check(_good_profile(), alias="qwen3.5-27b-8bit") is None
+
+
+def test_unverified_explicit_check_does_not_inherit_residual_drafter() -> None:
+    profile = AliasProfile(
+        hf_path="user/unverified",
+        supports_dflash=False,
+        dflash_draft_model="registry/residual",
+    )
+    with pytest.raises(DFlashUnavailable, match="explicit drafter"):
+        check(profile, explicit=True, drafter_model=None)
+
+
+def test_verified_target_with_overridden_drafter_is_experimental() -> None:
+    result = report(
+        _good_profile(),
+        explicit=True,
+        drafter_model="user/different-drafter",
+    )
+    assert result.recommendation == "experimental"
+    assert "performance-validated" in " ".join(result.warnings)

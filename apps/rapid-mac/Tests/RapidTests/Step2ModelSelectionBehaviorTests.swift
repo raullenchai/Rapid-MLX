@@ -751,15 +751,25 @@ struct Step2ModelSelectionBehaviorTests {
 
     // MARK: - 7. Cached vs uncached routing
 
-    @Test("A cached selection reaches Step 4 without a download or a fake Step 3")
+    @Test("A cached selection reaches Step 4 through an honest Step 3, never a fake download")
     func cachedSelectionSkipsDownload() {
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
-        // startCachedModel's transition — no DownloadManager job is created.
+        #expect(coord.step.displayNumber == 2)
+
+        // startCachedModel's first transition (#2033 finding 1) — no
+        // DownloadManager job is created, but the counter still lands on 3
+        // before it lands on 4: see ``OnboardingCompletionBehaviorTests
+        // .skippingDownloadPassesThroughStepThree`` for the beat-by-beat pin.
+        coord.enterSkippingDownload()
+        #expect(coord.step == .download, "the acknowledgement is still macro Step 3")
+        #expect(coord.step.displayNumber == 3)
+        #expect(coord.phase != .downloading, "no fake download stage for a cached model")
+
+        // startCachedModel's second transition, once the beat elapses.
         coord.enterStarting()
         #expect(coord.step == .start, "a cached start is Step 4")
         #expect(coord.step.displayNumber == 4)
-        #expect(coord.phase != .downloading, "no fake download stage for a cached model")
 
         coord.enterReady()
         #expect(coord.phase == .ready)
@@ -787,8 +797,16 @@ struct Step2ModelSelectionBehaviorTests {
         let body = Self.stripped(try Self.quickstartSource)
         #expect(body.contains("case.startExisting,.downloadAndStart:startQuickstart()"),
                 "the cached and uncached commits must share startQuickstart()")
-        #expect(body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterStarting()"),
-                "the cached route must still hand straight to ServerManager.start")
+        #expect(
+            body.contains("privatefuncstartCachedModel(_cached:ModelEntry){coordinator.enterSkippingDownload()"),
+            "the cached route must lead to ServerManager.start via the #2033 finding-1 beat, not a second implementation"
+        )
+        #expect(
+            body.contains("awaitcoordinator.afterSkippingDownloadBeat(duration:Self.skippingDownloadBeat){awaitserver.start("),
+            "the beat must hand off to ServerManager.start through the same guarded coordinator method a test can drive directly (#2033 codex follow-up)"
+        )
+        #expect(body.contains("guardisSkippingDownloadStillPendingelse{return}enterStarting()awaitonAuthorized()"),
+                "afterSkippingDownloadBeat itself must still call enterStarting() before authorizing the caller's action")
     }
 
     // MARK: - 8. Escape and Back priority

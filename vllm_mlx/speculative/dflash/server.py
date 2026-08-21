@@ -2074,6 +2074,7 @@ def run_dflash_server(
     cors_policy: Any | None = None,
     tool_call_parser: str | None = "hermes",
     reasoning_parser_name: str | None = "qwen3",
+    experimental_opt_in: bool = False,
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -2103,20 +2104,18 @@ def run_dflash_server(
             "for optional extras."
         )
 
-    # Belt-and-suspenders eligibility re-check for programmatic callers
-    # (the CLI's serve_command already gates on the alias upstream, but
-    # we don't want to depend on it being the only entrypoint).
-    from .eligibility import (
-        DFlashUnavailable,
-        _looks_like_4bit,  # noqa: PLC2701 — internal helper
-    )
+    from .eligibility import DFlashUnavailable, _looks_like_4bit
 
     if _looks_like_4bit(main_model_repo):
-        raise DFlashUnavailable(
-            f"DFlash cannot run on a 4-bit quantized model "
-            f"(main_model_repo={main_model_repo!r}); upstream PoC measured "
-            "regression to 0.63-0.96× on Qwen3.5-4B-MLX-4bit. Use the "
-            "8-bit variant."
+        if not experimental_opt_in:
+            raise DFlashUnavailable(
+                "4-bit DFlash is unverified. Programmatic callers must pass "
+                "experimental_opt_in=True after accepting that it may provide "
+                "no speedup or may be slower than autoregressive decoding."
+            )
+        logger.warning(
+            "Experimental DFlash: this 4-bit target/drafter pair has not "
+            "been performance-validated by Rapid-MLX and may be slower"
         )
     if not drafter_repo:
         raise DFlashUnavailable(
