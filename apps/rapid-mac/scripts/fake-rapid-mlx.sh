@@ -784,6 +784,9 @@ class Handler(BaseHTTPRequestHandler):
             if length:
                 self.rfile.read(length)
             _event("audio_transcription")
+            delay_ms = int(_setting("FAKE_AUDIO_TRANSCRIPTION_DELAY_MS", "0") or "0")
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
             self._json(200, {
                 "text": "Golden transcription result.",
                 "language": "en",
@@ -1007,6 +1010,8 @@ def _emit_catalog(subcommand, alias):
             # requires a resumptive `pull fake-qwen3-tts`.
             print("(incomplete)           fake/qwen3-tts        633 MB")
         if "fake-whisper-small" in pulled_audio:
+            print("fake-whisper-small     fake/whisper-small    461 MiB")
+        elif _setting("FAKE_CACHED_DICTATION") == "1":
             print("fake-whisper-small     fake/whisper-small    461 MiB")
         return True
     if subcommand == "info":

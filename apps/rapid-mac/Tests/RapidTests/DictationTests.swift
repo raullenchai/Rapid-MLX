@@ -391,6 +391,83 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("failed model warmup leaves dictation visibly unarmed")
+    func failedWarmupDoesNotArmHotkey() async {
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            prewarm: { false },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        await controller.enable()
+
+        #expect(controller.phase == .off)
+        #expect(hotkeyStartCount == 0)
+        #expect(controller.lastError?.contains("couldn't load") == true)
+    }
+
+    @MainActor
+    @Test("disabling during model warmup cannot register a stale hotkey")
+    func disableDuringWarmupDoesNotArmHotkey() async {
+        var continuation: CheckedContinuation<Bool, Never>?
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            prewarm: {
+                await withCheckedContinuation { continuation = $0 }
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        let enabling = Task { await controller.enable() }
+        while continuation == nil { await Task.yield() }
+        controller.isEnabled = false
+        continuation?.resume(returning: true)
+        await enabling.value
+
+        #expect(controller.phase == .off)
+        #expect(hotkeyStartCount == 0)
+    }
+
+    @MainActor
+    private func readinessController(
+        prewarm: @escaping @MainActor () async -> Bool,
+        hotkeyStart: @escaping @MainActor () -> Bool
+    ) -> DictationController {
+        let entry = ModelEntry(
+            alias: "whisper-small",
+            hfRepo: "mlx-community/whisper-small",
+            sizeOnDisk: "461 MiB",
+            cached: true,
+            kind: .audio,
+            audioCapability: .transcription,
+            audioFamily: "whisper"
+        )
+        return DictationController(
+            server: ServerManager(
+                testingState: .ready(alias: "whisper-small"),
+                binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(
+                microphone: true,
+                accessibility: true,
+                modelSelected: true,
+                modelOnDisk: true
+            ),
+            testingPrewarm: prewarm,
+            testingHotkeyStart: hotkeyStart,
+            audioCatalogLoader: { _ in [entry] }
+        )
+    }
+
+    @MainActor
     @Test("a failed catalog probe preserves the last successful cache snapshot")
     func failedCatalogProbePreservesCacheSnapshot() async {
         let state = CatalogState()

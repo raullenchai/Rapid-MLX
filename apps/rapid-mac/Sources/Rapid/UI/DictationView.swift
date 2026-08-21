@@ -102,6 +102,7 @@ struct DictationView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(statusHeadline)
                     .font(.subheadline.weight(.medium))
+                    .accessibilityIdentifier("Dictation.Status")
                 Text(statusDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
