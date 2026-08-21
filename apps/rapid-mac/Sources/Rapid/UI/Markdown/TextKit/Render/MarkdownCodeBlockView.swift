@@ -25,6 +25,15 @@ final class MarkdownCodeBlockView: NSView {
     /// which is what half a streamed document looks like.
     private var previewImage: NSImage?
     private var previewSource: String?
+
+    /// Whether this block's text is settled. A diagram is only worth drawing
+    /// once it has stopped being rewritten — see the call site in
+    /// ``MarkdownBlockStack``.
+    private var isFinal = true
+
+    /// Set the moment the reader presses the button. Auto-reveal is a default,
+    /// not an override.
+    private var hasToggledPreview = false
     private var isShowingPreview = false
 
     public override var isFlipped: Bool { true }
@@ -97,7 +106,13 @@ final class MarkdownCodeBlockView: NSView {
         ])
     }
 
-    public func configure(code: String, language: String?, options: MarkdownOptions) {
+    public func configure(
+        code: String,
+        language: String?,
+        options: MarkdownOptions,
+        isFinal: Bool = true
+    ) {
+        self.isFinal = isFinal
         self.code = code
         self.language = language
         self.options = options
@@ -260,22 +275,71 @@ final class MarkdownCodeBlockView: NSView {
     /// cheap `looksLikeSVG` check short-circuits before the parse, so a plain
     /// Swift block costs one substring search per flush and nothing else.
     private func updatePreviewAvailability() {
-        guard SVGPreview.looksLikeSVG(code: code, language: language) else {
+        let isSVG = SVGPreview.looksLikeSVG(code: code, language: language)
+        let isMermaid = !isSVG
+            && MermaidSource.looksLikeMermaid(code: code, language: language)
+        guard isSVG || isMermaid else {
             setPreviewHidden(true)
             previewImage = nil
             previewSource = nil
             isShowingPreview = false
             return
         }
+
+        // The two sources differ in when their picture exists. An SVG document
+        // parses synchronously, so its button appears in the same turn. A
+        // diagram has to be drawn by another process, so its button appears
+        // when the drawing lands.
         if previewSource != code {
             previewSource = code
-            previewImage = SVGPreview.image(from: code)
+            if isSVG {
+                previewImage = SVGPreview.image(from: code)
+            } else {
+                let theme = MermaidRenderer.Theme(effectiveAppearance)
+                previewImage = MermaidRenderer.shared.cachedImage(source: code, theme: theme)
+                if previewImage == nil, isFinal {
+                    requestMermaidRender(source: code, theme: theme)
+                }
+            }
         }
+
+        // A picture the reader asked for by writing a diagram is shown without
+        // being asked for twice. The button then reads "Code", because what it
+        // offers is the source.
+        if previewImage != nil, !hasToggledPreview {
+            isShowingPreview = true
+        }
+
         // A document that does not parse yet — the usual case mid-stream —
         // offers no button. It appears when the last tag closes.
         setPreviewHidden(previewImage == nil)
         if previewImage == nil { isShowingPreview = false }
         previewButton.title = isShowingPreview ? "Code" : "Preview"
+    }
+
+    /// Draw a diagram, then show it.
+    ///
+    /// Bounded by the finality gate: a block is only drawn once its text has
+    /// stopped changing, so this happens at most once per diagram and never
+    /// mid-stream — which is what keeps the growth away from
+    /// ``TranscriptScrollPositionProbe``, whose release valve is gated on
+    /// `isStreaming` and is already inert by the time a settled block could
+    /// grow.
+    private func requestMermaidRender(source: String, theme: MermaidRenderer.Theme) {
+        guard !MermaidRenderer.shared.isKnownBad(source: source, theme: theme) else { return }
+        Task { @MainActor [weak self] in
+            let image = await MermaidRenderer.shared.image(source: source, theme: theme)
+            guard let self, let image else { return }
+            // The block may have been reconfigured while the render was out.
+            guard self.code == source,
+                  MermaidRenderer.Theme(self.effectiveAppearance) == theme else { return }
+            self.previewImage = image
+            if !self.hasToggledPreview { self.isShowingPreview = true }
+            self.setPreviewHidden(false)
+            self.previewButton.title = self.isShowingPreview ? "Code" : "Preview"
+            self.needsDisplay = true
+            self.invalidateLayoutChain()
+        }
     }
 
     private func setPreviewHidden(_ hidden: Bool) {
@@ -285,6 +349,9 @@ final class MarkdownCodeBlockView: NSView {
     }
 
     @objc private func togglePreview() {
+        // Once the reader has chosen, their choice sticks for this block — a
+        // later re-configure must not silently reopen what they closed.
+        hasToggledPreview = true
         isShowingPreview.toggle()
         previewButton.title = isShowingPreview ? "Code" : "Preview"
         needsDisplay = true
