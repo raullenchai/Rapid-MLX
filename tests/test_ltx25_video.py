@@ -111,10 +111,11 @@ def test_ltx25_missing_runtime_prints_setup_walkthrough(
 
     error = capsys.readouterr().err
     assert "docs/guides/video-generation.md" in error
-    # Conditional clone + unconditional fetch: the same block repairs an
+    # Conditional clone (gated on a real Git checkout, not a bare
+    # directory) + unconditional fetch: the same block repairs an
     # existing checkout pinned to a stale revision (plain clone would fail).
     assert (
-        f"[ -d ltx-2-mlx ] || git clone --branch ltx25 "
+        f"[ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
         f"{ltx25.LTX25_RUNTIME_REPOSITORY}" in error
     )
     assert "git -C ltx-2-mlx fetch --quiet origin" in error
