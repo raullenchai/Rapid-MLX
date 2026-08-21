@@ -169,6 +169,9 @@ _CREDENTIAL_PARAM_RE = re.compile(
     r"\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^&\s\"']+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")
+# Any ``Authorization:``-style header value regardless of scheme (Basic,
+# Digest, custom) — the scheme word is kept, the credential is redacted.
+_AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization\s*[=:]\s*[a-z0-9_-]+\s+)[^\s\"']+")
 
 
 def _sanitize_diagnostic(text: str) -> str:
@@ -176,6 +179,7 @@ def _sanitize_diagnostic(text: str) -> str:
     escape injection), no embedded index credentials (URL userinfo,
     token-bearing query params, bearer headers)."""
     text = _CREDENTIAL_URL_RE.sub(r"\1***@", text)
+    text = _AUTH_HEADER_RE.sub(r"\1***", text)
     text = _CREDENTIAL_PARAM_RE.sub(r"\1***", text)
     text = _BEARER_RE.sub(r"\1***", text)
     return "".join(ch if ch.isprintable() or ch in " \t\n" else " " for ch in text)

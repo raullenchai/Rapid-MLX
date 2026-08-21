@@ -129,7 +129,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             # interpolated into a copy-pastable shell command.
             setup_hint = (
                 "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
-                f"    [ -d ltx-2-mlx ] || git clone --branch ltx25 "
+                f"    [ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
                 f"{LTX25_RUNTIME_REPOSITORY}\n"
                 "    git -C ltx-2-mlx fetch --quiet origin\n"
                 f"    git -C ltx-2-mlx checkout {LTX25_RUNTIME_COMMIT}\n"

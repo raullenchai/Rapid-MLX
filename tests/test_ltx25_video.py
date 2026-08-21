@@ -262,6 +262,18 @@ def test_ltx25_sanitize_redacts_prefixed_credential_names() -> None:
     assert "client_secret=***" in out
 
 
+def test_ltx25_sanitize_redacts_basic_auth_header() -> None:
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "request failed; Authorization: Basic dXNlcjpwYXNz and "
+        "authorization: Digest response-s3cret"
+    )
+    assert "dXNlcjpwYXNz" not in out
+    assert "response-s3cret" not in out
+    assert "Authorization: Basic ***" in out
+
+
 def test_ltx25_oserror_detail_is_sanitized_and_bounded() -> None:
     from vllm_mlx.video.ltx25 import _provisioning_failure_detail
 
