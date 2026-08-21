@@ -558,6 +558,23 @@ class TestTextParserReasoningCap:
         assert events[0].reasoning == "abcd"
         assert events[0].content == f"ef{tool_call}ghijklANSWER"
 
+    def test_cap_preserves_source_order_across_multiple_think_blocks(self):
+        """Multi-block routing passes ordered segments through promotion."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        text = "<think>abcdef</think>ANSWER1<think>ghijkl</think>ANSWER2"
+        events = pp.process_chunk(_make_output(text, finished=True))
+
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].reasoning == "abcd"
+        assert events[0].content == "efANSWER1ghijklANSWER2"
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the

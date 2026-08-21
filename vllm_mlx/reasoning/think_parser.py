@@ -1113,6 +1113,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # appropriate phase, stripping the tag bytes themselves.
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
+        source_segments: list[tuple[str, str]] = []
         cursor = prev_len
         # Codex r1 BLOCKING fix: backtrack the scan window by the
         # ``_held_tag_suffix_len`` so a tag that STRADDLES the SSE
@@ -1162,8 +1163,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 segment = current_text[cursor:tag_start]
                 if phase == "reasoning":
                     reasoning_parts.append(segment)
+                    source_segments.append(("reasoning", segment))
                 else:
                     content_parts.append(segment)
+                    source_segments.append(("content", segment))
             # Drop the tag bytes (structural) and flip phase.
             cursor = tag_start + tag_len
             phase = "reasoning" if tag_kind == "open" else "content"
@@ -1177,8 +1180,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
             segment = current_text[cursor:safe_end]
             if phase == "reasoning":
                 reasoning_parts.append(segment)
+                source_segments.append(("reasoning", segment))
             else:
                 content_parts.append(segment)
+                source_segments.append(("content", segment))
         # Phase invariant: after walking all tags in the delta,
         # ``phase`` reflects the end-of-delta structural state
         # (modulo the held partial-tag suffix). Persist it so the
@@ -1189,7 +1194,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
         content = "".join(content_parts) or None
         if reasoning is None and content is None:
             return None
-        return DeltaMessage(reasoning=reasoning, content=content)
+        return DeltaMessage(
+            reasoning=reasoning,
+            content=content,
+            source_segments=tuple(source_segments) or None,
+        )
 
     def _handle_implicit_think(
         self,
@@ -1366,28 +1375,36 @@ class BaseThinkingReasoningParser(ReasoningParser):
         if msg is None:
             return None
 
-        r_in = msg.reasoning
-        c_in = msg.content
-
         # Walk the per-channel state machine for both chunked and whole-output
         # deltas so source ordering is retained uniformly.
         out_reasoning_parts: list[str] = []
         out_content_parts: list[str] = []
         source_segments: list[tuple[str, str]] = []
-
-        if r_in:
-            self._absorb_reasoning_chunk(
-                r_in, out_reasoning_parts, out_content_parts, source_segments
+        input_segments = getattr(msg, "source_segments", None)
+        if not input_segments:
+            input_segments = tuple(
+                (channel, segment)
+                for channel, segment in (
+                    ("reasoning", msg.reasoning),
+                    ("content", msg.content),
+                )
+                if segment is not None
             )
 
-        # Content channel: if we were buffering when content arrived,
-        # the think block ended mid-tool-call. Flush the buffered head
-        # as content first, then append the inner's content.
-        if c_in is not None:
-            # The carry held a partial ``<tool_call>`` opener that
-            # straddled across deltas. Now that the think block is
-            # ending, the carry is unresolved — flush it back as
-            # reasoning so no bytes are silently dropped.
+        for channel, segment in input_segments:
+            if channel == "reasoning":
+                if segment:
+                    self._absorb_reasoning_chunk(
+                        segment,
+                        out_reasoning_parts,
+                        out_content_parts,
+                        source_segments,
+                    )
+                continue
+
+            # Content channel: if we were buffering when content arrived,
+            # the think block ended mid-tool-call. Flush the buffered head
+            # as content first, then append the inner's content.
             if self._reasoning_carry:
                 out_reasoning_parts.append(self._reasoning_carry)
                 source_segments.append(("reasoning", self._reasoning_carry))
@@ -1402,9 +1419,9 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 )
                 out_content_parts.append(flushed)
                 source_segments.append(("content", flushed))
-            out_content_parts.append(c_in)
-            if c_in:
-                source_segments.append(("content", c_in))
+            if segment:
+                out_content_parts.append(segment)
+                source_segments.append(("content", segment))
 
         new_r = "".join(out_reasoning_parts) or None
         new_c = "".join(out_content_parts) or None
