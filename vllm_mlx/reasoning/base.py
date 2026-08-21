@@ -23,16 +23,16 @@ class DeltaMessage:
     Note: reasoning and content should typically not both be non-None
     except during the transition chunk.
 
-    ``content_precedes_reasoning`` records the exceptional streaming shape
-    where content was promoted from an earlier position inside the reasoning
-    lane (for example, a buffered ``<tool_call>`` followed by more thought).
-    Consumers that merge the two lanes can then retain source order.
+    ``reasoning_content_insert_index`` records where content reclassified
+    from the reasoning lane belongs inside ``content``.  It preserves the
+    exceptional streaming shape ``promoted tool call -> reasoning -> answer``
+    without flattening that three-part order into a lossy before/after flag.
     """
 
     role: str | None = None
     content: str | None = None
     reasoning: str | None = None
-    content_precedes_reasoning: bool = False
+    reasoning_content_insert_index: int | None = None
 
     @property
     def reasoning_content(self) -> str | None:

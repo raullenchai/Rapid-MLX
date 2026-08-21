@@ -3127,12 +3127,12 @@ class StreamingPostProcessor:
                 promoted_content = ""
                 # Usually parser content follows reasoning in the source
                 # delta (``thought-tail</think>answer``), but the shared
-                # think parser can also promote an earlier, possibly
-                # cross-chunk ``<tool_call>`` out of reasoning.  Its explicit
-                # ordering bit survives that buffering; inspecting only the
-                # current model delta cannot recover a prior-chunk prefix.
-                content_precedes_overflow = (
-                    getattr(delta_msg, "content_precedes_reasoning", False) is True
+                # think parser can also produce the three-part source order
+                # ``promoted tool call -> reasoning -> answer``.  Its explicit
+                # insertion boundary survives cross-chunk buffering; a boolean
+                # before/after flag cannot represent all three segments.
+                insertion_index = getattr(
+                    delta_msg, "reasoning_content_insert_index", None
                 )
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
@@ -3189,8 +3189,13 @@ class StreamingPostProcessor:
                 if flip_succeeded:
                     promoted_content += overflow_content
                 if promoted_content:
-                    if content_precedes_overflow:
-                        content = (content or "") + promoted_content
+                    if isinstance(insertion_index, int) and content:
+                        bounded_index = min(max(insertion_index, 0), len(content))
+                        content = (
+                            content[:bounded_index]
+                            + promoted_content
+                            + content[bounded_index:]
+                        )
                     else:
                         content = promoted_content + (content or "")
             # ``full_reasoning`` only needed within this block; release
