@@ -1411,7 +1411,9 @@
     "is_moe": true
   },
   "nemotron-labs-diffusion-3b-4bit": {
-    "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit"
+    "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+    "supports_spec_decode": true,
+    "is_hybrid": false
   },
   "bonsai-1.7b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",

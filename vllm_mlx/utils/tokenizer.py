@@ -831,9 +831,7 @@ def _register_vendored_archs() -> None:
             try:
                 from ..models import nemotron_labs_diffusion as _nld
 
-                sys.modules.setdefault(
-                    "mlx_lm.models.nemotron_labs_diffusion", _nld
-                )
+                sys.modules.setdefault("mlx_lm.models.nemotron_labs_diffusion", _nld)
             except Exception as e:
                 logger.warning(
                     "nemotron_labs_diffusion vendored module failed to register — "
