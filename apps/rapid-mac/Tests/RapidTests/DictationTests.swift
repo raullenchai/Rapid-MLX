@@ -320,7 +320,7 @@ struct DictationTests {
         var continuation: CheckedContinuation<[ModelEntry]?, Never>?
         let controller = DictationController(
             server: ServerManager(
-                testingState: .idle,
+                testingState: .ready(alias: "whisper-small"),
                 binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
             testingEnabled: true,
@@ -338,6 +338,56 @@ struct DictationTests {
         await Task.yield()
 
         #expect(controller.phase == .idle)
+    }
+
+    @MainActor
+    @Test("the hotkey is registered only after model warmup finishes")
+    func hotkeyWaitsForModelWarmup() async {
+        var warmupContinuation: CheckedContinuation<Bool, Never>?
+        var hotkeyStartCount = 0
+        let entry = ModelEntry(
+            alias: "whisper-small",
+            hfRepo: "mlx-community/whisper-small",
+            sizeOnDisk: "461 MiB",
+            cached: true,
+            kind: .audio,
+            audioCapability: .transcription,
+            audioFamily: "whisper"
+        )
+        let controller = DictationController(
+            server: ServerManager(
+                testingState: .ready(alias: "whisper-small"),
+                binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(
+                microphone: true,
+                accessibility: true,
+                modelSelected: true,
+                modelOnDisk: true
+            ),
+            testingPrewarm: {
+                await withCheckedContinuation { warmupContinuation = $0 }
+            },
+            testingHotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            },
+            audioCatalogLoader: { _ in [entry] }
+        )
+
+        let enabling = Task { await controller.enable() }
+        while warmupContinuation == nil { await Task.yield() }
+
+        #expect(controller.phase == .preparingModel)
+        #expect(hotkeyStartCount == 0)
+
+        warmupContinuation?.resume(returning: true)
+        await enabling.value
+
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
     }
 
     @MainActor
@@ -366,24 +416,6 @@ struct DictationTests {
         #expect(await controller.modelIsOnDiskAfterRefresh("whisper-small"))
     }
 
-    @Test("recording waits for an active prewarm or a displaced audio sidecar")
-    func recordingPreparationBoundary() {
-        #expect(DictationController.shouldPrepareModelForRecording(
-            prewarmInFlight: true,
-            servingAlias: "qwen3-asr",
-            requestedAlias: "qwen3-asr"
-        ))
-        #expect(DictationController.shouldPrepareModelForRecording(
-            prewarmInFlight: false,
-            servingAlias: "qwen3-4b",
-            requestedAlias: "qwen3-asr"
-        ))
-        #expect(!DictationController.shouldPrepareModelForRecording(
-            prewarmInFlight: false,
-            servingAlias: "qwen3-asr",
-            requestedAlias: "qwen3-asr"
-        ))
-    }
 
     /// Only right-hand modifiers are offered. Left ⌘ rides along with ⌘C/⌘V/
     /// ⌘Tab dozens of times an hour, so "tapped on its own" cannot be detected

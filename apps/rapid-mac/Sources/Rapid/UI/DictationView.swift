@@ -49,9 +49,6 @@ struct DictationView: View {
             if controller.vocabulary.suggestions.isEmpty {
                 await controller.vocabulary.scanForSuggestions()
             }
-            // Swap the model in while the user is still reading this page,
-            // rather than on the first hotkey press when they are mid-sentence.
-            await controller.prewarmModel()
         }
         // Runs when the selected alias's pull changes state; on completion,
         // re-read the catalog so the row flips to "Ready on disk" and the
@@ -130,13 +127,13 @@ struct DictationView: View {
 
     private var statusColor: Color {
         guard controller.isEnabled else { return .secondary }
-        if controller.isPreparingModel { return .orange }
+        if controller.phase == .preparingModel { return .orange }
         return controller.phase == .off ? .orange : RapidTheme.green
     }
 
     private var statusHeadline: String {
         guard controller.isEnabled else { return "Dictation is off" }
-        if controller.isPreparingModel {
+        if controller.phase == .preparingModel {
             return "Loading \(controller.modelAlias) into memory…"
         }
         return controller.phase == .off
@@ -150,7 +147,7 @@ struct DictationView: View {
                 ? "Turn it on to dictate into any app."
                 : blockingReason
         }
-        if controller.isPreparingModel {
+        if controller.phase == .preparingModel {
             return "The local model is warming up. Recording starts when it’s ready."
         }
         var parts = [controller.modelAlias]

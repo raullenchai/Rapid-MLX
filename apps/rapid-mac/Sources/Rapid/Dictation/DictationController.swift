@@ -12,6 +12,7 @@ import Observation
 final class DictationController {
     enum Phase: Equatable {
         case off
+        case preparingModel
         case idle
         case starting
         case recording
@@ -47,9 +48,6 @@ final class DictationController {
     /// one slow" without a log dive.
     private(set) var lastLatencyDetail: String?
     private(set) var elapsed: TimeInterval = 0
-    /// The model is installed but not yet hot. This is user-visible readiness:
-    /// “on disk” alone is not enough to promise an immediate first dictation.
-    private(set) var isPreparingModel = false
     /// Set when the TCC row says Accessibility is granted but this process
     /// still cannot install an event tap — i.e. the grant landed after launch.
     private(set) var accessibilityNeedsRelaunch = false
@@ -82,12 +80,15 @@ final class DictationController {
             // renders from has to move with it — otherwise picking a model
             // leaves the Enable switch stuck until something else refreshes.
             refreshReadiness()
-            // Replacing, not joining: a prewarm still in flight here is
-            // warming the PREVIOUS model, and joining it would return with
-            // the new selection never warmed.
+            if isEnabled {
+                hotkey.stop()
+                phase = .preparingModel
+            }
             Task {
                 await refreshModelCacheState()
-                await prewarmModel(replacingCurrent: true)
+                if isEnabled {
+                    await enable(replacingCurrentPrewarm: true)
+                }
             }
         }
     }
@@ -115,6 +116,9 @@ final class DictationController {
     /// Keeping those states distinct prevents a transient CLI failure from
     /// masquerading as the user deleting every cached audio model.
     private let audioCatalogLoader: @MainActor (URL) async -> [ModelEntry]?
+    private let testingReadiness: Readiness?
+    private let testingPrewarm: (@MainActor () async -> Bool)?
+    private let testingHotkeyStart: (@MainActor () -> Bool)?
 
     private var tickTimer: Timer?
     private var recordingStart: Date?
@@ -129,7 +133,11 @@ final class DictationController {
     /// The in-flight prewarm, retained so ``disable()`` and a hotkey press
     /// can cancel it and so concurrent triggers join it (single-flight)
     /// instead of stacking probes in the engine's serial STT lane.
-    private var prewarmTask: Task<Void, Never>?
+    private var prewarmTask: Task<Bool, Never>?
+    private var prewarmRequestID: UUID?
+    /// Invalidates stale `enable()` continuations when the model changes, the
+    /// feature is disabled, or another enable attempt supersedes them.
+    private var enableRequestID: UUID?
     /// alias → catalog facts. ``ensureServing`` needs the repo; readiness
     /// needs ``cached``. One `audioEntries` fetch fills both. The repo is
     /// only ever passed to the server for models already on disk — passing
@@ -150,6 +158,9 @@ final class DictationController {
         testingEnabled: Bool? = nil,
         testingModelAlias: String? = nil,
         testingPhase: Phase? = nil,
+        testingReadiness: Readiness? = nil,
+        testingPrewarm: (@MainActor () async -> Bool)? = nil,
+        testingHotkeyStart: (@MainActor () -> Bool)? = nil,
         audioCatalogLoader: @escaping @MainActor (URL) async -> [ModelEntry]? = {
             await ModelCatalog.audioEntriesIfAvailable(binary: $0)
         }
@@ -159,6 +170,9 @@ final class DictationController {
         self.vocabulary = vocabulary ?? DictationVocabulary()
         self.history = history ?? DictationHistory()
         self.audioCatalogLoader = audioCatalogLoader
+        self.testingReadiness = testingReadiness
+        self.testingPrewarm = testingPrewarm
+        self.testingHotkeyStart = testingHotkeyStart
 
         let defaults = UserDefaults.standard
         self.isEnabled = testingEnabled ?? defaults.bool(forKey: Keys.enabled)
@@ -186,7 +200,8 @@ final class DictationController {
     // MARK: - Readiness
 
     var readiness: Readiness {
-        Readiness(
+        if let testingReadiness { return testingReadiness }
+        return Readiness(
             microphone: DictationRecorder.microphoneAuthorization == .authorized,
             accessibility: DictationHotkey.hasAccessibilityPermission,
             modelSelected: !modelAlias.isEmpty,
@@ -233,8 +248,10 @@ final class DictationController {
         await enable()
     }
 
-    func enable() async {
+    func enable(replacingCurrentPrewarm: Bool = false) async {
         guard isEnabled else { return }
+        let requestID = UUID()
+        enableRequestID = requestID
         // The on-disk bit comes from a catalog subprocess; fetch it before
         // judging readiness so a fresh launch doesn't refuse to arm a model
         // that is sitting right there in the cache.
@@ -242,7 +259,7 @@ final class DictationController {
         // The user can turn the switch off while the catalog subprocess is
         // running. Never let that stale enable continuation install a hotkey
         // after ``disable()`` has already torn the session down.
-        guard isEnabled else { return }
+        guard isEnabled, enableRequestID == requestID else { return }
         refreshReadiness()
         guard readinessSnapshot.microphone else {
             lastError = "Dictation needs Microphone access before it can be enabled."
@@ -273,7 +290,23 @@ final class DictationController {
             phase = .off
             return
         }
-        guard hotkey.start() else {
+        hotkey.stop()
+        phase = .preparingModel
+        let preparingAlias = modelAlias
+        guard await prewarmModel(replacingCurrent: replacingCurrentPrewarm),
+              isEnabled,
+              enableRequestID == requestID,
+              modelAlias == preparingAlias,
+              phase == .preparingModel,
+              server.servingAlias == preparingAlias
+        else {
+            if isEnabled, enableRequestID == requestID, modelAlias == preparingAlias {
+                lastError = "\(preparingAlias) couldn't load. There may not be enough memory to start dictation."
+                phase = .off
+            }
+            return
+        }
+        guard testingHotkeyStart?() ?? hotkey.start() else {
             // macOS does not apply an Accessibility grant to an already-running
             // process, so this is the common shape right after the user flips
             // the switch in System Settings: the TCC row says yes, this process
@@ -288,10 +321,7 @@ final class DictationController {
         accessibilityNeedsRelaunch = false
         lastError = nil
         phase = .idle
-        // Warm the whole lane now — catalog cache, sidecar, STT weights — so
-        // the first hotkey press of the session starts from a hot path. Fire
-        // and forget: enabling must not block on a model coming up.
-        Task { [weak self] in await self?.prewarmModel() }
+        enableRequestID = nil
     }
 
     func disable() {
@@ -308,7 +338,8 @@ final class DictationController {
         beginRecordingRequestID = nil
         prewarmTask?.cancel()
         prewarmTask = nil
-        isPreparingModel = false
+        prewarmRequestID = nil
+        enableRequestID = nil
         stopTicking()
         recorder.shutdown()
         hud.hide()
@@ -343,6 +374,9 @@ final class DictationController {
             Task { await enable() }
             return
         }
+        // A foreground activation must never sneak the event tap back in
+        // while `enable()` is still loading the model.
+        guard phase != .preparingModel else { return }
         hotkey.reEnableIfDisabled()
     }
 
@@ -413,7 +447,8 @@ final class DictationController {
     ///   superseded, not joined. The default joins it: for a same-model
     ///   trigger (enable + tab appear firing close together) the running
     ///   flight already covers this call.
-    func prewarmModel(replacingCurrent: Bool = false) async {
+    @discardableResult
+    private func prewarmModel(replacingCurrent: Bool = false) async -> Bool {
         if replacingCurrent {
             prewarmTask?.cancel()
             prewarmTask = nil
@@ -423,46 +458,47 @@ final class DictationController {
         // past: the second joins the task the first created instead of
         // racing it through the engine's serial STT lane.
         if let running = prewarmTask {
-            await running.value
-            return
+            return await running.value
         }
-        var created: Task<Void, Never>!
-        isPreparingModel = true
-        created = Task { [weak self] in
-            await self?.performPrewarm()
+        let requestID = UUID()
+        prewarmRequestID = requestID
+        let created = Task { [weak self] in
+            let succeeded = await self?.performPrewarm() ?? false
             // Only the flight that still OWNS the slot may clear it. A
             // cancelled predecessor finishing late must not null out the
             // task a later enable started, or single-flight breaks.
-            if let self, self.prewarmTask == created {
+            if let self, self.prewarmRequestID == requestID {
                 self.prewarmTask = nil
-                self.isPreparingModel = false
+                self.prewarmRequestID = nil
             }
+            return succeeded
         }
         prewarmTask = created
-        await created.value
+        return await created.value
     }
 
-    private func performPrewarm() async {
-        guard isEnabled, !modelAlias.isEmpty else { return }
+    private func performPrewarm() async -> Bool {
+        guard isEnabled, !modelAlias.isEmpty else { return false }
+        if let testingPrewarm { return await testingPrewarm() }
         let alias = modelAlias
         _ = await catalogFacts(for: alias)
         // Actor reentrancy: every await above and below is a window for
         // disable() or a model change to land. Re-check before each step
         // that mutates the sidecar or touches the wire.
-        guard !Task.isCancelled, isEnabled, modelAlias == alias else { return }
+        guard !Task.isCancelled, isEnabled, modelAlias == alias else { return false }
         if server.servingAlias != alias {
-            guard await ensureModelServing() else { return }
-            guard !Task.isCancelled, isEnabled, modelAlias == alias else { return }
+            guard await ensureModelServing() else { return false }
+            guard !Task.isCancelled, isEnabled, modelAlias == alias else { return false }
         }
-        await warmUpEngine()
+        return await warmUpEngine()
     }
 
     /// Forces the sidecar to load the STT weights by transcribing a beat of
     /// silence. Skipped whenever a real dictation is underway — the engine
     /// serialises transcriptions, so a probe would queue in front of it.
-    private func warmUpEngine() async {
-        guard phase == .idle else { return }
-        guard server.servingAlias == modelAlias else { return }
+    private func warmUpEngine() async -> Bool {
+        guard phase == .idle || phase == .preparingModel else { return false }
+        guard server.servingAlias == modelAlias else { return false }
         do {
             _ = try await client.transcribe(
                 audioData: Self.silentProbeWAV,
@@ -471,13 +507,16 @@ final class DictationController {
                 port: server.activePort,
                 bearer: server.activeBearer
             )
+            return true
         } catch is CancellationError {
             // Expected: a hotkey press or disable() superseded the probe.
+            return false
         } catch {
             // Not user-facing — the cost of a failed probe is only that the
             // first real dictation pays the weight load again — but leave a
             // trace so a recurring failure is diagnosable.
             NSLog("Dictation prewarm probe failed for %@: %@", modelAlias, String(describing: error))
+            return false
         }
     }
 
@@ -513,9 +552,9 @@ final class DictationController {
     /// Called by the view when the pull reaches `.completed`.
     func modelDownloadDidFinish() async {
         await refreshModelCacheState()
-        // The flight that matters is the one seeded with post-download
-        // catalog state; a stale no-op flight must not absorb this call.
-        await prewarmModel(replacingCurrent: true)
+        if isEnabled {
+            await enable(replacingCurrentPrewarm: true)
+        }
     }
 
     // MARK: - Hotkey
@@ -539,7 +578,7 @@ final class DictationController {
                 self.beginRecordingRequestID = nil
             }
         case .starting, .recording: finishRecording()
-        case .transcribing, .off: break
+        case .preparingModel, .transcribing, .off: break
         }
     }
 
@@ -552,36 +591,13 @@ final class DictationController {
             return
         }
         let requestedAlias = modelAlias
-        // If enable-time prewarm is still running, or an LLM/VLM displaced the
-        // audio sidecar since then, pay that cold load before opening the mic.
-        // Cancelling a probe after it reached the sidecar cannot remove it from
-        // the engine's serial STT lane; the real transcription would simply
-        // queue behind it while the HUD misleadingly said “Transcribing…”.
-        if Self.shouldPrepareModelForRecording(
-            prewarmInFlight: prewarmTask != nil,
-            servingAlias: server.servingAlias,
-            requestedAlias: requestedAlias
-        ) {
-            hud.show(.loadingModel)
-            await prewarmModel()
-            guard !Task.isCancelled,
-                  beginRecordingRequestID == requestID,
-                  isEnabled,
-                  phase == .idle,
-                  modelAlias == requestedAlias
-            else {
-                hud.hide()
-                return
-            }
-            guard server.servingAlias == requestedAlias else {
-                lastError = "\(requestedAlias) couldn't start. There may not be enough memory to load it."
-                hud.update(.failed(message: "Couldn't start the model"))
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_600_000_000)
-                    if phase == .idle { hud.hide() }
-                }
-                return
-            }
+        guard server.servingAlias == requestedAlias else {
+            hotkey.stop()
+            phase = .preparingModel
+            beginRecordingTask = nil
+            beginRecordingRequestID = nil
+            Task { await enable(replacingCurrentPrewarm: true) }
+            return
         }
         // Model Management changes the cache out of process from this
         // controller. Re-read disk facts on every hotkey press; trusting the
@@ -618,17 +634,6 @@ final class DictationController {
         phase = .starting
         hud.show(.starting)
         startTicking()
-    }
-
-    /// A same-alias sidecar plus a completed enable-time probe is the only hot
-    /// path. Any in-flight probe or process swap must finish before capture so
-    /// its latency cannot be attributed to transcription after the user talks.
-    nonisolated static func shouldPrepareModelForRecording(
-        prewarmInFlight: Bool,
-        servingAlias: String?,
-        requestedAlias: String
-    ) -> Bool {
-        prewarmInFlight || servingAlias != requestedAlias
     }
 
     /// Fresh cache truth used at the recording boundary. Internal so the

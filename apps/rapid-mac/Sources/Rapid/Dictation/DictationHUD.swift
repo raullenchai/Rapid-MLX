@@ -6,9 +6,6 @@ import SwiftUI
 @MainActor
 final class DictationHUD {
     enum Phase: Equatable {
-        /// The model is installed, but its sidecar and lazy weights are still
-        /// coming into memory. No user audio has been submitted in this phase.
-        case loadingModel
         /// Only seen on a cold microphone. With the recorder kept warm between
         /// dictations this phase is usually skipped entirely.
         case starting
@@ -113,10 +110,6 @@ private struct DictationHUDView: View {
     @ViewBuilder
     private var content: some View {
         switch model.phase {
-        case .loadingModel:
-            Text("Loading model…")
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.9))
         case .starting:
             Text("Starting…")
                 .font(.system(size: 13, design: .monospaced))
@@ -143,7 +136,7 @@ private struct DictationHUDView: View {
 
     private var dotColor: Color {
         switch model.phase {
-        case .loadingModel, .starting: return Color(red: 0.88, green: 0.64, blue: 0.24)
+        case .starting: return Color(red: 0.88, green: 0.64, blue: 0.24)
         case .recording: return Color(red: 0.95, green: 0.25, blue: 0.29)
         case .transcribing: return Color(red: 0.35, green: 0.62, blue: 0.86)
         case .failed: return Color(red: 0.86, green: 0.34, blue: 0.30)
