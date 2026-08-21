@@ -239,6 +239,29 @@ def test_ltx25_sanitize_redacts_query_tokens_and_bearer() -> None:
     assert "https://index.example/simple?token=***" in out
 
 
+def test_ltx25_sanitize_redacts_signed_url_params() -> None:
+    """Signed-URL auth params don't end in the classic credential
+    suffixes (codex on #2166): AWS presigned ``X-Amz-Signature``, Azure
+    SAS ``sig``/``sas``, generic ``auth``/``jwt`` must all redact, since
+    uv stderr can echo the full index URL query string."""
+    from vllm_mlx.video.ltx25 import _sanitize_diagnostic
+
+    out = _sanitize_diagnostic(
+        "GET https://bucket.s3.example/wheel.whl"
+        "?X-Amz-Credential=AKIA%2F20260820&X-Amz-Signature=deadbeefcafe"
+        "&X-Amz-Expires=300 and https://acct.blob.example/pkg?sv=2024"
+        "&sig=Zm9vYmFy%3D and auth=topsecret9 jwt=eyJ0eXAi.abc"
+    )
+    assert "deadbeefcafe" not in out
+    assert "Zm9vYmFy" not in out
+    assert "topsecret9" not in out
+    assert "eyJ0eXAi" not in out
+    assert "X-Amz-Signature=***" in out
+    assert "sig=***" in out
+    # Non-credential params survive so the diagnostic stays useful.
+    assert "X-Amz-Expires=300" in out
+
+
 def test_ltx25_sanitize_redacts_quoted_credential_values() -> None:
     from vllm_mlx.video.ltx25 import _sanitize_diagnostic
 

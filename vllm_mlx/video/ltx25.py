@@ -165,7 +165,12 @@ _CREDENTIAL_URL_RE = re.compile(r"(\w[\w+.-]*://)[^/@\s]+@")
 # client_secret, api-key, HF_TOKEN, AWS_SECRET_ACCESS_KEY, … without
 # enumerating prefixes. Values may be bare or quoted.
 _CREDENTIAL_PARAM_RE = re.compile(
-    r"(?i)((?<![\w-])[\w-]*(?:token|secret|password|passwd|key|credential)s?"
+    # Suffix set includes signed-URL auth params (codex on #2166):
+    # ``X-Amz-Signature=``, ``sig=`` (Azure SAS), ``sas=``, ``auth=``,
+    # ``jwt=`` — none of which end in the classic credential suffixes,
+    # and uv stderr can echo a full index URL query string verbatim.
+    r"(?i)((?<![\w-])[\w-]*"
+    r"(?:token|secret|password|passwd|key|credential|signature|sig|auth|sas|jwt)s?"
     r"\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^&\s\"']+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[a-z0-9._~+/=-]+")
