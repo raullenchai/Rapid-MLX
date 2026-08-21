@@ -5,6 +5,12 @@ AXApplication title="Rapid-MLX"
       AXTextField id="ConversationSearch.Field" value=text enabled=true
       AXButton id="ConversationSearch.Clear" desc="Clear search" help="Clear search" enabled=true
       AXButton id="ConversationSearch.Close" desc="Close" help="Close — Esc" enabled=true
+      AXUnknown id="ConversationSearch.Panel" enabled=true
+      AXScrollArea
+        AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
+          AXButton id="ConversationSearch.NewChat" desc="New chat" enabled=true
+          AXHeading desc="<relative-day>" enabled=true
+          AXButton id="ConversationSearch.Result.<uuid>" desc="golden restore marker" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
@@ -34,12 +40,6 @@ AXApplication title="Rapid-MLX"
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
-      AXUnknown id="ConversationSearch.Panel" enabled=true
-      AXScrollArea
-        AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
-          AXButton id="ConversationSearch.NewChat" desc="New chat" enabled=true
-          AXHeading desc="<relative-day>" enabled=true
-          AXButton id="ConversationSearch.Result.<uuid>" desc="golden restore marker" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

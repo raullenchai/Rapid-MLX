@@ -68,9 +68,6 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.app" desc="App" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
-              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Custom Instructions, Set preferences for how the assistant responds in every conversation." enabled=true
