@@ -811,6 +811,44 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("gpt_oss_puzzle")
 
+    if "mlx_lm.models.nemotron_labs_diffusion" not in sys.modules:
+        # NVIDIA Nemotron-Labs-Diffusion (3B/8B/14B) — AR (autoregressive)
+        # mode = a Ministral3-style decoder + untied diffusion_head. Vendored
+        # because mlx-lm (0.31.3, 2026-08-21) ships no support for the arch.
+        # Same native-probe + defer-to-upstream policy as ``hy_v3`` above:
+        # if mlx-lm ever lands native support we use theirs, not ours.
+        import importlib.util as _importlib_util
+
+        _nld_native_spec = None
+        try:
+            _nld_native_spec = _importlib_util.find_spec(
+                "mlx_lm.models.nemotron_labs_diffusion"
+            )
+        except (ImportError, ValueError):
+            _nld_native_spec = None
+
+        if _nld_native_spec is None:
+            try:
+                from ..models import nemotron_labs_diffusion as _nld
+
+                sys.modules.setdefault(
+                    "mlx_lm.models.nemotron_labs_diffusion", _nld
+                )
+            except Exception as e:
+                logger.warning(
+                    "nemotron_labs_diffusion vendored module failed to register — "
+                    "Nemotron-Labs-Diffusion checkpoints will not load until "
+                    "resolved: %s",
+                    e,
+                )
+            else:
+                # Promote to the vendored set only on success so the
+                # tokenizer fallback path routes the arch through the vendor
+                # shim instead of auto-config heuristics.
+                _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
+        else:
+            _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
