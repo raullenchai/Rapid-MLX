@@ -272,13 +272,15 @@ jobs:
       # at scripts/fake-rapid-mlx.sh, so there is no model download, no GPU
       # work and no network in the run at all.
       #
-      # Debug rather than release for the same reason — the accessibility tree
-      # is identical and the compile is much cheaper. This gate is about
-      # structure, not optimised codegen.
+      # Exercise the same compile-time surface users receive. Debug builds add
+      # Settings → Developer, so comparing a Debug app against release golden
+      # baselines makes every Settings journey fail even when the product is
+      # unchanged. Optimisation does not matter here; matching the shipped UI
+      # contract does.
       - name: Build Rapid-MLX Desktop.app
         env:
           SKIP_SIDECAR: "1"
-          RAPID_BUILD_CONFIG: debug
+          RAPID_BUILD_CONFIG: release
         run: ./scripts/build.sh
 
       # #1719 — the first native XCUITest journey complements (and does not
