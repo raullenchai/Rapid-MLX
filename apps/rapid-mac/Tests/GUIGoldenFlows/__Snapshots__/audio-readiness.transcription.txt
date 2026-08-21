@@ -32,8 +32,6 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download" enabled=true
-            AXGroup enabled=true
-              AXStaticText value=text enabled=true
             AXButton id="Audio.Transcription.Run" desc="Transcribe" enabled=false
       AXImage id="checkmark.circle.fill" desc="Selected" enabled=true
       AXStaticText value=text enabled=true

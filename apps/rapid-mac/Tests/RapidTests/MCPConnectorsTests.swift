@@ -231,10 +231,12 @@ final class MCPConnectorsTests {
         #expect(corsIdx < idx)
     }
 
-    @Test("serveArguments is unchanged when no MCP config path is supplied")
+    @Test("serveArguments omits --mcp-config when no path is supplied")
     func serveArgumentsOmitsMCPConfigByDefault() {
-        // A user who never turns connectors on must get the exact pre-#1716
-        // argv — no new flag, no behaviour change.
+        // A user who never turns connectors on must NOT get --mcp-config in
+        // argv — no connector behaviour change. (The voice co-loading flag
+        // ``--enable-audio`` is unrelated and intentionally present always.
+        // ``--cors-origins`` still terminates the flag list.)
         let argv = ServerManager.serveArguments(
             alias: "qwen3.5-4b-4bit",
             host: "127.0.0.1",
@@ -246,6 +248,7 @@ final class MCPConnectorsTests {
             "qwen3.5-4b-4bit",
             "--host", "127.0.0.1",
             "--port", "8000",
+            "--enable-audio",
             "--cors-origins", "http://127.0.0.1", "http://localhost",
         ])
     }

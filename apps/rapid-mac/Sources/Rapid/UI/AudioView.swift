@@ -5,9 +5,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Audio workflows backed by the local OpenAI-compatible routes. The page
-/// deliberately starts no model on appearance: with today's single-model
-/// runtime, a model is swapped only when the user transcribes, loads voices,
-/// or synthesizes speech.
+/// deliberately starts no model on appearance. A voice engine loads only when
+/// the user transcribes, loads voices, or synthesizes speech; when an existing
+/// server exposes the shared audio lane, that engine co-loads in its process.
 struct AudioView: View {
     @Bindable var viewModel: AudioViewModel
     @Bindable var server: ServerManager
@@ -41,6 +41,19 @@ struct AudioView: View {
     /// Audio uses the same lifecycle SSOT and CTA semantics as Chat and
     /// Images: choose → Download & start / Start → ready.
     private var readiness: ModelReadiness {
+        // Voice co-loading: once the app is serving ANY model on the primary
+        // server, speech is available in the same process — the chosen STT/TTS
+        // engine lazy-loads on the mounted ``/v1/audio/*`` lane whenever an
+        // audio request arrives (the desktop passes ``--enable-audio`` on every
+        // spawn). So with a primary model up AND the voice weights on disk,
+        // the selected audio model is effectively ready without ever replacing
+        // the chat LLM/VLM. When the voice weights aren't cached yet, fall
+        // through so the download/start CTA still appears.
+        if server.voiceCoLoadsOnPrimary,
+           viewModel.audioModels.first(where: { $0.alias == selectedAlias })?.cached == true,
+           !selectedAlias.isEmpty {
+            return .ready(alias: selectedAlias)
+        }
         // Audio-only `serve` processes intentionally report healthy before
         // loading their lazy STT/TTS engine. For an uncached model that
         // process-level signal is not readiness: the first audio request would
@@ -228,7 +241,6 @@ struct AudioView: View {
                     identifier: "Audio.Transcription.ModelPicker"
                 )
                 ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
-                swapNotice(alias: viewModel.selectedTranscriptionAlias)
                 operationNotice
                 HStack(spacing: RapidTheme.Space.md) {
                     if viewModel.isTranscribing {
@@ -396,7 +408,6 @@ struct AudioView: View {
 
                 speechControls
                 ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
-                swapNotice(alias: viewModel.selectedSpeechAlias)
                 operationNotice
 
                 HStack(spacing: RapidTheme.Space.md) {
@@ -753,26 +764,16 @@ struct AudioView: View {
         // model. Keep the completed cache, but do not start the stale choice.
         guard selectedAlias == alias else { return }
         let entry = viewModel.audioModels.first { $0.alias == alias }
-        _ = await server.ensureServing(
+        // Voice co-loading: when the app is already serving a chat LLM/VLM,
+        // reuse that process (the engine lazy-loads on the /v1/audio/* lane)
+        // instead of tearing it down to run the voice model alone. Only when
+        // nothing is running does this spin the voice model up as its own
+        // server — see AudioViewModel.ensureVoiceLane for the branch.
+        _ = await viewModel.ensureVoiceLane(
             alias: alias,
-            hfPath: entry?.hfRepo,
-            estimatedMemoryGB: ModelSizing.residentEstimateGB(
-                alias: alias,
-                sizeText: entry?.sizeOnDisk
-            ),
-            residencyEligible: false
+            hfPath: entry?.hfRepo
         )
         await viewModel.refreshCatalog()
-    }
-
-    @ViewBuilder
-    private func swapNotice(alias: String) -> some View {
-        if let running = viewModel.wouldReplaceServingModel(alias: alias) {
-            InlineNotice(
-                message: "Starting \(alias) will stop \(running). This version runs one model at a time.",
-                tone: .info
-            )
-        }
     }
 
     @ViewBuilder

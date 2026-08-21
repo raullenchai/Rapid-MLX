@@ -1018,8 +1018,12 @@ class TestSttLaneMutualExclusion:
 
         src = inspect.getsource(audio_route._run_stt_request)
         lock_at = src.index("async with _get_stt_lane_lock()")
-        load_at = src.index(".load()")
-        transcribe_at = src.index(".transcribe(")
+        # Load and inference are dispatched onto the primary engine's MLX
+        # worker thread as method references handed to ``_run_audio_mlx``
+        # (load carries no call parens of its own), so anchor on the method
+        # names rather than ``.load()`` / ``.transcribe(`` call shapes.
+        load_at = src.index("stt_engine.load")
+        transcribe_at = src.index("_stt_engine.transcribe")
         assert lock_at < load_at < transcribe_at, (
             "the lock must be acquired before the weight load"
         )

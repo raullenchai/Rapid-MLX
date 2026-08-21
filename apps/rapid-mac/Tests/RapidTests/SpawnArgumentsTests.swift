@@ -41,7 +41,7 @@ struct SpawnArgumentsTests {
 
     // MARK: - argv shape
 
-    @Test("serve argv has exactly serve + alias + --host + --port + --cors-origins loopback allowlist")
+    @Test("serve argv has exactly serve + alias + --host + --port + --enable-audio + --cors-origins loopback allowlist")
     func argvIsExactlyExpectedShape() {
         let argv = ServerManager.serveArguments(
             alias: "qwen3.5-4b-4bit",
@@ -53,13 +53,36 @@ struct SpawnArgumentsTests {
         // further argv element that could be misparsed as an
         // additional origin. Keeping ``--cors-origins`` last in the
         // builder satisfies that constraint without a brittle escape.
+        // ``--enable-audio`` precedes it (still before ``--cors-origins``
+        // so the CORS values stay the tail of the flag's ``nargs="+"``).
         #expect(argv == [
             "serve",
             "qwen3.5-4b-4bit",
             "--host", "127.0.0.1",
             "--port", "8000",
+            "--enable-audio",
             "--cors-origins", "http://127.0.0.1", "http://localhost",
         ])
+    }
+
+    @Test("serve argv mounts the voice lane via --enable-audio")
+    func argvMountsVoiceLane() {
+        // Voice co-loading relies on EVERY spawned server mounting
+        // ``/v1/audio/*``. Pin that the flag is present AND sits before
+        // ``--cors-origins`` so it never gets absorbed into that flag's
+        // greedy ``nargs="+"`` collection.
+        let argv = ServerManager.serveArguments(
+            alias: "qwen3.5-4b-4bit",
+            host: "127.0.0.1",
+            port: 8000
+        )
+        #expect(argv.contains("--enable-audio"))
+        if let audioIndex = argv.firstIndex(of: "--enable-audio"),
+           let corsIndex = argv.firstIndex(of: "--cors-origins") {
+            #expect(audioIndex < corsIndex, "--enable-audio must precede --cors-origins")
+        } else {
+            Issue.record("serve argv must carry both --enable-audio and --cors-origins")
+        }
     }
 
     @Test("serve argv NEVER carries --api-key (bearer must travel via env)")

@@ -190,6 +190,44 @@ final class ServerManager {
         return nil
     }
 
+    /// True when the app is already serving a model (a chat LLM/VLM) on the
+    /// current server. When true, speech (STT/TTS) requests should target that
+    /// same server's ``/v1/audio/*`` lane so the chosen voice engine lazy-loads
+    /// alongside the chat model — voice and text/vision run in the SAME
+    /// process (see ``serveArguments``'s unconditional ``--enable-audio``).
+    ///
+    /// Auth is required to target the lane (the bearer secret is minted per
+    /// spawn), so both the ready state AND a live bearer are demanded here;
+    /// this keeps ``AudioViewModel`` from needlessly tearing down the chat
+    /// model just to run a transcription.
+    var voiceCoLoadsOnPrimary: Bool {
+        servingAlias != nil && activeBearer != nil
+    }
+
+    /// Bring up a server for a voice (STT/TTS) request, reusing the primary
+    /// chat LLM/VLM process when one is already up so voice and text/vision
+    /// run side-by-side instead of voice replacing the chat model.
+    ///
+    /// Every spawn carries ``--enable-audio`` (see ``serveArguments``), so the
+    /// current server always has a mountable ``/v1/audio/*`` lane and the
+    /// chosen STT/TTS engine is lazy — it only loads on the first request. That
+    /// means when ``voiceCoLoadsOnPrimary`` is true we can just point audio
+    /// traffic at ``activePort`` and never tear the chat model down. Otherwise
+    /// we fall back to serving the requested voice model as its own process
+    /// (the pre-existing audio-sidecar behaviour), which a caller exercises
+    /// when no primary model is running at all.
+    @discardableResult
+    func ensureVoiceLane(alias: String, hfPath: String?) async -> Bool {
+        if voiceCoLoadsOnPrimary {
+            return true
+        }
+        return await ensureServing(
+            alias: alias,
+            hfPath: hfPath,
+            residencyEligible: false
+        )
+    }
+
     func isModelResident(_ alias: String) -> Bool {
         guard case .ready = state else { return false }
         return residency.contains(alias) || servingAlias == alias
@@ -704,9 +742,11 @@ final class ServerManager {
     internal init(
         testingState: ServerState,
         binaryPath: URL? = nil,
-        residency: ModelResidencySnapshot = .empty
+        residency: ModelResidencySnapshot = .empty,
+        activeBearer: String? = nil
     ) {
         self.state = testingState
+        self.activeBearer = activeBearer
         self.binaryPath = binaryPath
         self.residency = residency
         self.binaryResolution = binaryPath.map {
@@ -2910,6 +2950,16 @@ final class ServerManager {
             alias,
             "--host", host,
             "--port", String(port),
+            // Voice co-loading: mount the ``/v1/audio/*`` lane on EVERY spawned
+            // server so speech (STT/TTS) can run side-by-side with the primary
+            // LLM/VLM in the same process. ``--enable-audio`` tells a text-mode
+            // boot to attach the audio router; the STT/TTS engines stay lazy —
+            // they only load on the first ``/v1/audio/*`` request, so a pure
+            // LLM/VLM user pays no memory for a voice engine they never use. It
+            // is unconditional (not a user opt-in) because the mount is
+            // near-free and the engine is on-demand; ``voiceCoLoadsOnPrimary``
+            // drives the client side of reusing this same server for voice.
+            "--enable-audio",
             // Issue #306: pin an explicit loopback-only CORS allowlist
             // so a future rapid-mlx bundle bump that wires the CORS
             // middleware can't silently re-enable wildcard

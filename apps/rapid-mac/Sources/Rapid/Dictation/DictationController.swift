@@ -287,19 +287,17 @@ final class DictationController {
 
     /// Brings the transcription model up.
     ///
-    /// Audio models must pass `residencyEligible: false`: the residency path
-    /// loads in-process, which the audio sidecar does not support, so the
-    /// server has to swap the whole process instead. Getting this wrong fails
-    /// at request time with nothing to distinguish it from a missing model.
+    /// Voice co-loading: when the app is already serving a chat LLM/VLM, the
+    /// voice lane mounts in that same process (``--enable-audio``), so dictation
+    /// reuses the primary server instead of swapping it away — LLM/VLM + speech
+    /// run side by side. Only when no primary model is up do we serve the
+    /// transcription model as its own audio process. See
+    /// ``ServerManager.ensureVoiceLane``.
     @discardableResult
     private func ensureModelServing() async -> Bool {
         guard !modelAlias.isEmpty else { return false }
         let repo = await resolveRepo(for: modelAlias)
-        return await server.ensureServing(
-            alias: modelAlias,
-            hfPath: repo,
-            residencyEligible: false
-        )
+        return await server.ensureVoiceLane(alias: modelAlias, hfPath: repo)
     }
 
     private func resolveRepo(for alias: String) async -> String? {
@@ -311,20 +309,22 @@ final class DictationController {
     }
 
     /// Loads the model ahead of the first hotkey press. Without this the first
-    /// dictation of a session pays for a process swap *and* a possible download
-    /// while the user is already talking.
+    /// dictation of a session pays for loading the STT engine *and* a possible
+    /// weight download while the user is already talking.
     ///
-    /// Three costs move off the hotkey path here, in order:
+    /// The costs move off the hotkey path here, in order:
     /// 1. The alias→repo catalog lookup. On a cache miss ``resolveRepo``
     ///    spawns `rapid-mlx` CLI subprocesses — one to three SECONDS of cold
     ///    interpreter — and the old early-return below skipped it exactly when
     ///    the sidecar was already serving this model, so the most common warm
     ///    session still paid it inside the first transcription.
-    /// 2. The process swap, when another model is being served.
+    /// 2. The STT engine co-load: when a primary chat model is up, dictation
+    ///    reuses its server (voice co-loading) and the engine lazy-loads on the
+    ///    first request; when nothing is up, a fresh audio server must start.
     /// 3. The STT weights: the engine loads them lazily on the first
     ///    transcription of each process lifetime (measured ~1.2 s for
     ///    parakeet), so ``warmUpEngine()`` sends a beat of silence to make
-    ///    the sidecar pay that now instead of inside the user's first real
+    ///    the server pay that now instead of inside the user's first real
     ///    dictation.
     /// - Parameter replacingCurrent: pass `true` when the model CHANGED —
     ///   an in-flight prewarm is then warming the wrong model and must be
@@ -378,7 +378,11 @@ final class DictationController {
     /// serialises transcriptions, so a probe would queue in front of it.
     private func warmUpEngine() async {
         guard phase == .idle else { return }
-        guard server.servingAlias == modelAlias else { return }
+        // Voice co-loading: with a primary model already up, the dictation STT
+        // engine lazy-loads onto that same server's lane (--enable-audio), so
+        // the probe warms it there. Otherwise we only warm when the sidecar is
+        // itself serving this exact model.
+        guard server.servingAlias == modelAlias || server.voiceCoLoadsOnPrimary else { return }
         do {
             _ = try await client.transcribe(
                 audioData: Self.silentProbeWAV,
@@ -502,13 +506,14 @@ final class DictationController {
 
         let started = Date()
         // Phase timing: "how long was that" is unanswerable from one opaque
-        // number when the cost can hide in catalog resolution, a model swap,
-        // or inference. The split is surfaced in the Dictation tab.
+        // number when the cost can hide in catalog resolution, a cold
+        // co-load of the STT engine, or inference. The split is surfaced in
+        // the Dictation tab.
         let ensureStarted = Date()
         guard await ensureModelServing() else {
             lastError = repoByAlias[modelAlias] == nil
                 ? "\(modelAlias) isn't in the audio model catalog. Pick another model."
-                : "\(modelAlias) couldn't start. It may still be downloading, or there may not be enough memory to swap models."
+                : "\(modelAlias) couldn't start. It may still be downloading, or there may not be enough memory to load it."
             return
         }
         guard !Task.isCancelled else { return }

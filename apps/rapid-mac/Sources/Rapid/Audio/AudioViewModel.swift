@@ -117,10 +117,9 @@ final class AudioViewModel {
         errorMessage = nil
         transcription = nil
         defer { isTranscribing = false }
-        guard await server.ensureServing(
+        guard await ensureVoiceLane(
             alias: entry.alias,
-            hfPath: entry.hfRepo,
-            residencyEligible: false
+            hfPath: entry.hfRepo
         ) else {
             errorMessage = "The audio model couldn't start. Audio support may be unavailable in this app build."
             return
@@ -145,10 +144,9 @@ final class AudioViewModel {
         isLoadingVoices = true
         errorMessage = nil
         defer { isLoadingVoices = false }
-        guard await server.ensureServing(
+        guard await ensureVoiceLane(
             alias: entry.alias,
-            hfPath: entry.hfRepo,
-            residencyEligible: false
+            hfPath: entry.hfRepo
         ) else {
             errorMessage = "The speech model couldn't start. Audio support may be unavailable in this app build."
             return false
@@ -187,10 +185,9 @@ final class AudioViewModel {
         errorMessage = nil
         synthesizedAudio = nil
         defer { isSynthesizing = false }
-        guard await server.ensureServing(
+        guard await ensureVoiceLane(
             alias: entry.alias,
-            hfPath: entry.hfRepo,
-            residencyEligible: false
+            hfPath: entry.hfRepo
         ) else {
             errorMessage = "The speech model is no longer running. Load its voices and try again."
             return
@@ -219,10 +216,9 @@ final class AudioViewModel {
         errorMessage = nil
         defer { previewingVoice = nil }
 
-        guard await server.ensureServing(
+        guard await ensureVoiceLane(
                   alias: entry.alias,
-                  hfPath: entry.hfRepo,
-                  residencyEligible: false
+                  hfPath: entry.hfRepo
               ),
               !Task.isCancelled else {
             if !Task.isCancelled {
@@ -274,9 +270,16 @@ final class AudioViewModel {
         }
     }
 
-    func wouldReplaceServingModel(alias: String) -> String? {
-        guard let serving = server.servingAlias, serving != alias else { return nil }
-        return serving
+    /// Ensure a server is reachable for a voice (STT/TTS) request, reusing the
+    /// app's primary LLM/VLM process so speech co-loads alongside the chat
+    /// model instead of replacing it.
+    ///
+    /// See ``ServerManager.ensureVoiceLane`` for the co-load-or-fallback
+    /// contract. Returns false only when no server can be brought up at all
+    /// (e.g. the voice model's weights couldn't start), mirroring the old swap
+    /// contract so call sites can keep their error messaging.
+    func ensureVoiceLane(alias: String, hfPath: String?) async -> Bool {
+        await server.ensureVoiceLane(alias: alias, hfPath: hfPath)
     }
 
     private func resolveSelections() {

@@ -4406,36 +4406,9 @@ flow_audio_readiness() {
     wait_fake_event \
         '.event == "command" and .subcommand == "pull" and .alias == "fake-whisper-small"' \
         "Transcription Download did not invoke pull"
-    local transcription_start_ready=0
-    for ((i=0; i<120; i++)); do
-        see_main "$OUT/transcription-downloaded.json"
-        if jq -e '.data.ui_elements[]?
-                  | select(.identifier == "Readiness.Action"
-                           and (.description // .value // .label // "") == "Start")' \
-                 "$OUT/transcription-downloaded.json" >/dev/null; then
-            transcription_start_ready=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$transcription_start_ready" == 1 ]] \
-        || die "Transcription did not become Start-ready after download"
-    if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-whisper-small")' \
-        "$OUT/fake-events.jsonl" >/dev/null; then
-        die "Transcription loaded automatically after Download"
-    fi
-    press "$OUT/transcription-downloaded.json" Readiness.Action \
-        "$OUT/transcription-start.json" \
-        || die "Transcription Start is not pressable"
-    wait_fake_event \
-        '.event == "server_started" and .alias == "fake-whisper-small"' \
-        "Transcription did not start explicitly"
-
-    # The fake emits server_started as soon as the process accepts the alias,
-    # but the app deliberately keeps sending disabled until its health poll
-    # observes that alias as ready. On a hosted runner, pressing Choose File
-    # in that interval selects the fixture correctly while Transcribe remains
-    # disabled, making the later assertion blame the picker for a readiness
-    # race. Wait on the user-visible readiness SSOT before exercising it.
+    # The TTS model is already serving above. Every spawned server now mounts
+    # the lazy audio lane, so the downloaded STT engine co-loads there instead
+    # of exposing the old Start CTA and replacing the process.
     local transcription_serving_ready=0
     for ((i=0; i<120; i++)); do
         see_main "$OUT/transcription-serving.json"
@@ -4449,7 +4422,11 @@ flow_audio_readiness() {
         sleep 0.25
     done
     [[ "$transcription_serving_ready" == 1 ]] \
-        || die "Transcription server started but never became UI-ready"
+        || die "Transcription did not become ready on the existing voice lane after download"
+    if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-whisper-small")' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "Transcription replaced the existing voice server instead of co-loading"
+    fi
 
     local file_selected=0
     for ((i=0; i<20; i++)); do
@@ -4485,7 +4462,7 @@ flow_audio_readiness() {
         || die "Save transcription did not write the visible result"
 
     jq -n '{success: true,
-            assertion: "Dictation is privacy-safe and inert on open; Speech and file Transcription remain functional with explicit Download and Start"}' \
+            assertion: "Dictation is privacy-safe and inert on open; Speech and file Transcription remain functional with explicit downloads and shared-server voice co-loading"}' \
         > "$OUT/audio-readiness-actions.json"
     log "  audio-readiness OK"
     cleanup_persona

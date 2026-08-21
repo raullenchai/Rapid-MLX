@@ -157,6 +157,95 @@ _stt_engine = None
 _tts_engine = None
 _music_engine = None
 
+
+# ---------------------------------------------------------------------------
+# Single-owner MLX worker execution for the audio lanes.
+#
+# MLX GPU streams are thread-local, and ``mlx_lm.generate.generation_stream``
+# is a module-global that the TEXT engine re-binds to its own worker thread's
+# stream at startup (``engine_core._init_mlx_step_thread``). When an audio lane
+# (STT/TTS) runs inline on the asyncio loop thread of a TEXT server, its
+# ``mlx.eval`` touches arrays tagged with that worker-owned stream and fails
+# with ``RuntimeError: There is no Stream(gpu, N) in current thread`` — the
+# exact #170/#452-class pitfall. The audio engines must therefore run their
+# MLX work (both weight load AND inference, so load-time array streams and
+# infer-time evals stay on one thread) on the SAME worker thread the primary
+# engine owns. When there is no primary engine (audio-only server), the loop
+# thread itself owns ``generation_stream`` and inline execution is correct and
+# unchanged.
+#
+# This deliberately reuses the engine's single MLX worker (one owner for the
+# module-global ``generation_stream``) instead of spawning a second audio
+# worker — two workers would fight over the shared global.
+# ---------------------------------------------------------------------------
+def _resolve_mlx_worker_core():
+    """Return the engine-core object that owns the primary MLX worker thread.
+
+    The top-level engine the server holds (``server._engine``) is a
+    ``BatchedEngine`` wrapper; the single MLX worker executor lives on an
+    inner ``engine_core`` object reached through nesting (``.engine``).
+    ``BatchedEngine`` already walks this path for its own worker-bound
+    operations (see ``batched.py``'s ``engine_core = self._engine.engine``).
+    Walk the same chain so the audio lanes find the executor whatever concrete
+    wrapper is in play.
+
+    Returns ``None`` when there is no live worker (audio-only server, no
+    engine, or engine not started), in which case callers fall back to inline
+    execution — correct there because the loop thread owns
+    ``generation_stream``.
+    """
+    try:
+        from .. import server as _server
+    except Exception:  # pragma: no cover - import cycle only in odd embeds
+        return None
+    obj = getattr(_server, "_engine", None)
+    while obj is not None:
+        if getattr(obj, "_mlx_executor", None) is not None:
+            return obj
+        # Nest one level: ``BatchedEngine._engine`` is an ``AsyncEngineCore``
+        # whose ``.engine`` is the worker-owning ``engine_core``. Try ``.engine``
+        # first (async-engine-core), then ``._engine`` to descend out of the
+        # top-level wrapper. ``or`` avoids shadowing when both spellings exist.
+        obj = getattr(obj, "engine", None) or getattr(obj, "_engine", None)
+    return None
+
+
+async def _run_audio_mlx(func, *args, **kwargs):
+    """Run an audio MLX callable on the primary engine's MLX worker thread.
+
+    Returns ``func(*args, **kwargs)``. When the server's engine owns a live
+    single MLX worker thread, the callable is submitted there via
+    ``run_in_executor`` (awaited, so the event loop is not blocked); otherwise
+    it runs inline on the current thread (audio-only or engine-not-started
+    paths, where inline was always correct and avoids a cross-thread
+    ``Stream(gpu, N)`` crash).
+    """
+    core = _resolve_mlx_worker_core()
+    if core is None:
+        return func(*args, **kwargs)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(core._mlx_executor, lambda: func(*args, **kwargs))
+
+
+def _run_audio_mlx_sync(func, *args, **kwargs):
+    """Synchronous counterpart of :func:`_run_audio_mlx`.
+
+    Used by the block-in-executor lanes (TTS synthesis, music, alignment) which
+    already run off the event loop on a generic executor thread — on a TEXT
+    server that thread also has no valid MLX stream, so their engine calls must
+    be marshalled onto the primary engine's MLX worker thread the same way.
+    Reuses the worker's ``_run_on_step_thread`` (blocking) rather than
+    ``run_in_executor`` because these callers are already off-loop.
+    """
+    core = _resolve_mlx_worker_core()
+    if core is None:
+        return func(*args, **kwargs)
+    runner = getattr(core, "_run_on_step_thread", None)
+    if runner is None:
+        return func(*args, **kwargs)
+    return runner(func, *args, **kwargs)
+
+
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
 # the route can validate the model BEFORE streaming the upload (F-165):
 # unknown names previously rode the body through the upload cap, then
@@ -1316,7 +1405,10 @@ async def _run_stt_request(
                 _evict_other_lane("asr")
                 _stt_engine = None
                 stt_engine = STTEngine(model_name)
-                stt_engine.load()
+                # Load the weights on the primary engine's MLX worker thread
+                # (when one exists) so the model's arrays are tagged with the
+                # same stream inference evals against — see ``_run_audio_mlx``.
+                await _run_audio_mlx(stt_engine.load)
                 _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
@@ -1330,7 +1422,9 @@ async def _run_stt_request(
             # with STTEngine-shaped stubs and third-party engines.
             if context and context.strip():
                 transcribe_kwargs["context"] = context.strip()
-            result = _stt_engine.transcribe(tmp_path, **transcribe_kwargs)
+            result = await _run_audio_mlx(
+                _stt_engine.transcribe, tmp_path, **transcribe_kwargs
+            )
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1639,9 +1733,9 @@ def _align_blocking(
         # is a different hierarchy entirely, so the name would trip that
         # gate with a false positive.
         aligner = STTEngine(model_name)
-        aligner.load()
+        _run_audio_mlx_sync(aligner.load)
         _aligner_engine = aligner
-    return _aligner_engine.align(audio_path, text, **align_kwargs)
+    return _run_audio_mlx_sync(_aligner_engine.align, audio_path, text, **align_kwargs)
 
 
 async def _run_alignment_request(
@@ -2516,7 +2610,9 @@ def _generate_speech_blocking(
 
     if _tts_engine is None or _tts_engine.model_name != model_name:
         tts_candidate = TTSEngine(model_name)
-        tts_candidate.load()
+        # Load + infer on the primary MLX worker thread when a text server is
+        # up (see ``_run_audio_mlx_sync``); audio-only falls back inline.
+        _run_audio_mlx_sync(tts_candidate.load)
         _tts_engine = tts_candidate
 
     kwargs = dict(gen_kwargs)
@@ -2529,9 +2625,9 @@ def _generate_speech_blocking(
             kwargs["ref_audio"] = ref_path.path
             if ref_text is not None:
                 kwargs["ref_text"] = ref_text
-            audio = _tts_engine.generate(input_text, **kwargs)
+            audio = _run_audio_mlx_sync(_tts_engine.generate, input_text, **kwargs)
     else:
-        audio = _tts_engine.generate(input_text, **kwargs)
+        audio = _run_audio_mlx_sync(_tts_engine.generate, input_text, **kwargs)
     from ..audio.output_format import convert_audio_output
 
     converted, output_rate, output_channels = convert_audio_output(
@@ -3060,7 +3156,8 @@ def _generate_music_blocking(
     ):
         _music_engine = MusicEngine(dit=dit, decoder=decoder)
 
-    _music_engine.generate(
+    _run_audio_mlx_sync(
+        _music_engine.generate,
         request.input,
         out_path,
         seconds=request.seconds,
