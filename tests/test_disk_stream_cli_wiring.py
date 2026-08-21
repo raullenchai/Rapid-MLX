@@ -40,7 +40,7 @@ Four things are pinned here, none of which need a model download:
    fixup the non-lazy path always runs — most importantly
    ``augment_eos_token_ids_from_generation_config``, whose own docstring
    names Qwen3/Qwen2.5 as the exact scenario it exists to fix, and
-   ``qwen2_moe`` is one of the two registered ``--disk-stream``
+   ``qwen2_moe`` is one of the registered ``--disk-stream``
    architectures. A fast, in-process test monkeypatches all five fixups
    to record whether/how they fire and asserts they do, without a
    checkpoint download.

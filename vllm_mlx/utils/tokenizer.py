@@ -1172,7 +1172,7 @@ def load_model_with_fallback(
         # cut (see review-notes.md's blocking finding). Concretely:
         # `augment_eos_token_ids_from_generation_config`'s own docstring
         # names Qwen3/Qwen2.5 (151645/151643) as the exact scenario it
-        # exists to fix, and `qwen2_moe` is one of the two registered
+        # exists to fix, and `qwen2_moe` is one of the registered
         # --disk-stream architectures (vllm_mlx/registry.py) — without
         # this call a qwen2_moe checkpoint loaded with --disk-stream
         # would silently fail to stop at its chat-template terminator
@@ -1198,8 +1198,8 @@ def load_model_with_fallback(
         # chosen loader materializes weights eagerly or lazily. They are
         # also unreachable in practice for a --disk-stream load: neither
         # Gemma 4, nor any vendored architecture, nor Nemotron is a
-        # registered --disk-stream architecture (only `lfm2_moe` and
-        # `qwen2_moe` are, per vllm_mlx/registry.py), so none of these
+        # registered --disk-stream architecture (`lfm2_moe`, `qwen2_moe`,
+        # and `qwen3_next` are, per vllm_mlx/registry.py), so none of these
         # branches would ever fire for a checkpoint this code path is
         # actually used for.
         _post_load_ubc_evict(model_name)
