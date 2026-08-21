@@ -26,6 +26,7 @@ _STALE_SIGNATURES = (
     "namespace(prev_message_type=None)",
 )
 _FULL_GENERATION_CUE = "if not enable_thinking | default(false)"
+_GEMMA4_NAME_MARKERS = ("gemma-4", "gemma_4", "gemma4")
 
 
 @lru_cache(maxsize=2)
@@ -54,14 +55,26 @@ def upgrade_stale_gemma4_chat_template(applicator, model_name: str = "") -> bool
     """Install the matching canonical template when ``applicator`` is stale.
 
     E2B/E4B use Google's compact canonical variant; 12B/26B/31B use the full
-    variant.  The old templates retain the same distinction in their final
-    generation-cue block, which lets renamed local checkpoints be classified
-    without trusting the path.  The model name is a fallback for compact
-    checkpoints whose publisher made superficial edits to that block.
+    variant.  Gemma identity must be present in the served name or tokenizer
+    metadata before template signatures are considered.  The old templates
+    retain the compact/full distinction in their final generation-cue block;
+    the model name also protects compact checkpoints whose publisher made
+    superficial edits to that block.
     """
 
     owner = _template_owner(applicator)
     if owner is None:
+        return False
+    identity = " ".join(
+        str(value).lower()
+        for value in (
+            model_name,
+            getattr(owner, "name_or_path", ""),
+            (getattr(owner, "init_kwargs", None) or {}).get("name_or_path", ""),
+        )
+        if value
+    )
+    if not any(marker in identity for marker in _GEMMA4_NAME_MARKERS):
         return False
     current = owner.chat_template
     if _CANONICAL_MARKER in current:

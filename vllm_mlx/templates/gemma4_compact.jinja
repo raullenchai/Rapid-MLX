@@ -85,7 +85,15 @@
                 {%- endif -%}
             {%- endif -%}
             {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
-            type:<|"|>{{ value['type'] | upper }}<|"|>}
+            {%- if value['type'] is string -%}
+                type:<|"|>{{ value['type'] | upper }}<|"|>}
+            {%- else -%}
+                type:[
+                {%- for item in value['type'] -%}
+                    <|"|>{{ item | upper }}<|"|>{% if not loop.last %},{% endif -%}
+                {%- endfor -%}
+                ]}
+            {%- endif -%}
         {%- endif -%}
     {%- endfor -%}
 {%- endmacro -%}

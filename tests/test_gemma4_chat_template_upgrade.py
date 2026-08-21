@@ -68,12 +68,12 @@ def test_compact_and_full_stale_templates_select_matching_canonical_variant() ->
 
 def test_current_canonical_and_unknown_custom_templates_are_preserved() -> None:
     canonical = _tokenizer(_canonical_template("compact"))
-    custom = _tokenizer("custom {{ messages }}")
+    custom = _tokenizer(_STALE_COMPACT + "\ncustom {{ messages }}")
     canonical_before = canonical.chat_template
     custom_before = custom.chat_template
 
     assert not upgrade_stale_gemma4_chat_template(canonical, "gemma-4-e2b")
-    assert not upgrade_stale_gemma4_chat_template(custom, "gemma-4-e2b")
+    assert not upgrade_stale_gemma4_chat_template(custom, "qwen-custom")
     assert canonical.chat_template == canonical_before
     assert custom.chat_template == custom_before
 
@@ -110,6 +110,7 @@ def test_official_template_renders_null_and_normalized_openai_arguments() -> Non
 
     assert 'command:<|"|>ls /tmp<|"|>' in rendered
     assert "limit:null" in rendered
+    assert 'type:[<|"|>INTEGER<|"|>,<|"|>NULL<|"|>]' in rendered
     assert "limit:None" not in rendered
     assert '{{"command"' not in rendered
 
