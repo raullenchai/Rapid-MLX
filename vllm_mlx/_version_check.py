@@ -38,6 +38,7 @@ Behaviour matrix:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -219,7 +220,17 @@ def _fetch_latest() -> str | None:
             if len(releases) < 100:
                 return ".".join(map(str, max(versions))) if versions else None
             page += 1
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        # http.client.HTTPException covers mid-body transport failures such
+        # as IncompleteRead (truncated chunked responses), which are NOT
+        # OSError subclasses — without it a flaky connection crashes the CLI
+        # instead of failing open (seen live: rapid-mlx upgrade --dry-run).
+        http.client.HTTPException,
+    ):
         return None
 
 

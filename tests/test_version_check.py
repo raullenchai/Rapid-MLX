@@ -166,6 +166,31 @@ def test_fetch_latest_fail_open_on_urlerror(monkeypatch):
     assert vc._fetch_latest() is None
 
 
+def test_fetch_latest_fail_open_on_incomplete_read(monkeypatch):
+    """Truncated chunked response (http.client.IncompleteRead, an
+    HTTPException — not an OSError) → None, never a crash. Regression:
+    ``rapid-mlx upgrade`` crashed with a raw traceback on a flaky
+    connection instead of failing open."""
+    import http.client
+
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+
+    class _TruncatedResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda req, timeout=None: _TruncatedResp()
+    )
+    assert vc._fetch_latest() is None
+
+
 def test_fetch_latest_fail_open_on_bad_json(monkeypatch):
     """Malformed worker response → None, no exception."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
