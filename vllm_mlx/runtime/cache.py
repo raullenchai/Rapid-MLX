@@ -356,16 +356,44 @@ def get_cache_dir() -> str:
 
 def _cached_model_revision(model_name: str) -> str:
     """Return a stable, network-free identity for the selected weights."""
-    candidate = Path(model_name).expanduser()
+    source = _resolved_model_source(model_name)
+    candidate = Path(source).expanduser()
     if candidate.exists():
         try:
-            return str(candidate.resolve())
+            resolved = candidate.resolve()
         except OSError:
-            return str(candidate)
+            resolved = candidate
+        if resolved.is_dir():
+            digest = hashlib.sha256(str(resolved).encode("utf-8"))
+            tracked = [
+                resolved / "config.json",
+                resolved / "model.safetensors.index.json",
+            ]
+            tracked.extend(sorted(resolved.glob("*.safetensors")))
+            for path in tracked:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                digest.update(path.name.encode("utf-8"))
+                digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+                # Config/index files are small and encode architecture/shard
+                # identity. Hash their bytes; large weight files use metadata.
+                if path.suffix == ".json":
+                    try:
+                        digest.update(path.read_bytes())
+                    except OSError:
+                        pass
+            return f"local-{digest.hexdigest()[:16]}"
+        try:
+            stat = resolved.stat()
+            return f"local-file-{stat.st_size}-{stat.st_mtime_ns}"
+        except OSError:
+            return str(resolved)
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        cached = try_to_load_from_cache(model_name, "config.json")
+        cached = try_to_load_from_cache(source, "config.json")
         if isinstance(cached, str):
             path = Path(cached)
             if path.parent.parent.name == "snapshots":
@@ -374,4 +402,14 @@ def _cached_model_revision(model_name: str) -> str:
         # Prefix persistence is best-effort and must not make startup depend on
         # optional Hugging Face cache metadata.
         pass
-    return model_name
+    return source
+
+
+def _resolved_model_source(model_name: str) -> str:
+    """Resolve a built-in/user alias to the checkpoint source it names."""
+    try:
+        from ..model_aliases import resolve_model
+
+        return resolve_model(model_name) or model_name
+    except Exception:
+        return model_name

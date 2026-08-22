@@ -14,7 +14,11 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vllm_mlx.runtime.cache import get_cache_dir
+from vllm_mlx.runtime.cache import (
+    _cached_model_revision,
+    _resolved_model_source,
+    get_cache_dir,
+)
 
 
 def _patched_cfg(name: str, kv_cache_dtype: str = "bf16"):
@@ -91,6 +95,24 @@ def test_distinct_model_revisions_get_distinct_cache_dirs():
             "vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-b"
         ):
             second = get_cache_dir()
+    assert first != second
+
+
+def test_builtin_alias_resolves_to_underlying_hf_repo():
+    assert (
+        _resolved_model_source("deepseek-r1-32b-4bit")
+        == "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit"
+    )
+
+
+def test_local_checkpoint_fingerprint_changes_when_weights_change(tmp_path):
+    (tmp_path / "config.json").write_text('{"model_type":"test"}')
+    weights = tmp_path / "model.safetensors"
+    weights.write_bytes(b"first")
+    first = _cached_model_revision(str(tmp_path))
+
+    weights.write_bytes(b"replacement-weights")
+    second = _cached_model_revision(str(tmp_path))
     assert first != second
 
 
