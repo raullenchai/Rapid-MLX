@@ -70,6 +70,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "default_max_tokens",
+        "recommended_prefill_step_size",
         "suffix_decoding_tier",
         "suffix_bench_speedup",
         "supports_dflash",
