@@ -462,28 +462,37 @@ if [[ "$DMG_BYTES" -gt "$MAX_BYTES" ]]; then
 fi
 
 # Verify codesign on the .app inside the produced DMG by mounting it
-# read-only at a temp mountpoint and running codesign -v --deep. This
+# read-only at its normal /Volumes path and running codesign -v --deep. This
 # catches any mid-flight corruption between the scratch sign step and
-# the hdiutil pack. Mirrors scripts/validate-dmg.sh's mount/cleanup
-# pattern (always detach on exit, even on failure).
+# the hdiutil pack. A random mountpoint makes Finder cache that directory name
+# as the volume identity and can poison the immediate final presentation check.
+# Mirrors scripts/validate-dmg.sh's device-based cleanup pattern.
 echo "==> mounting $DMG for codesign verification"
-MOUNT="$(mktemp -d -t rapid-bootstrap-dmg-XXXXXX)"
+MOUNT=""
+VERIFY_DEVICE=""
 ATTACHED=0
 verify_cleanup() {
     if [[ "$ATTACHED" -eq 1 ]]; then
-        hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet || true
+        local detach_target="${VERIFY_DEVICE:-$MOUNT}"
+        if [[ -n "$detach_target" ]]; then
+            hdiutil detach "$detach_target" -quiet \
+                || hdiutil detach "$detach_target" -force -quiet \
+                || true
+        fi
     fi
-    rm -rf "$MOUNT"
     # also run the original cleanup
     rm -rf "$SCRATCH" "$STAGING"
 }
 trap verify_cleanup EXIT
-hdiutil attach "$DMG" \
-    -mountpoint "$MOUNT" \
-    -nobrowse \
-    -readonly \
-    -quiet
+VERIFY_ATTACH_OUTPUT="$(hdiutil attach "$DMG" -nobrowse -readonly)"
 ATTACHED=1
+VERIFY_DEVICE="$(printf '%s\n' "$VERIFY_ATTACH_OUTPUT" | awk '$1 ~ /^\/dev\// { print $1; exit }')"
+MOUNT="$(printf '%s\n' "$VERIFY_ATTACH_OUTPUT" | awk -F '\t' 'NF >= 3 && $3 != "" { print $3 }' | tail -1)"
+if [[ -z "$MOUNT" || ! -d "$MOUNT" ]]; then
+    echo "$VERIFY_ATTACH_OUTPUT" >&2
+    echo "==> ERR: could not determine mounted bootstrapper DMG path" >&2
+    exit 1
+fi
 
 MOUNTED_APP="$MOUNT/Rapid-MLX Desktop.app"
 if [[ ! -d "$MOUNTED_APP" ]]; then

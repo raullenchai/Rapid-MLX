@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MOUNT="${1:-}"
-BACKGROUND_SOURCE="$ROOT/Resources/dmg-background.svg"
+BACKGROUND_SOURCE="$ROOT/Resources/dmg-background.png"
 BACKGROUND_DIR="$MOUNT/.background"
 BACKGROUND="$BACKGROUND_DIR/background.png"
 
@@ -33,10 +33,9 @@ fi
 
 mkdir -p "$BACKGROUND_DIR"
 rm -f "$MOUNT/.DS_Store"
-# sips ships with macOS and can rasterise SVG through ImageIO. PNG is used in
-# the volume because Finder's background-picture support is reliable for PNG
-# across every macOS version the app supports.
-sips -s format png "$BACKGROUND_SOURCE" --out "$BACKGROUND" >/dev/null
+# Ship the pre-rendered PNG instead of relying on ImageIO's SVG support on the
+# release runner. The adjacent SVG remains the editable design source.
+cp "$BACKGROUND_SOURCE" "$BACKGROUND"
 
 WIDTH="$(sips -g pixelWidth "$BACKGROUND" | awk '/pixelWidth:/ {print $2}')"
 HEIGHT="$(sips -g pixelHeight "$BACKGROUND" | awk '/pixelHeight:/ {print $2}')"
