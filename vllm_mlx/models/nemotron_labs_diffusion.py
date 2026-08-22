@@ -303,6 +303,11 @@ class Model(nn.Module):
                 continue
             if k.startswith("base_model.") or k.startswith("encoder."):
                 k = k.split(".", 1)[-1]
+                # The Swift reference names the backbone ``encoder`` while
+                # this mlx-lm module names it ``model``.  Some repacks retain
+                # an intermediate ``model.`` component and some do not.
+                if not k.startswith(("model.", "diffusion_head.")):
+                    k = f"model.{k}"
             new_weights[k] = v
         return new_weights
 

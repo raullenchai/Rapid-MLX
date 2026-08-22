@@ -175,6 +175,9 @@ def test_sanitize_strips_language_model_prefix_and_drops_shims():
             # remapped, never left as stray keys that break weight matching.
             "language_model.model.embed_tokens.rotary_emb.inv_freq": mx.array([2.0]),
             "encoder.model.norm.weight": mx.array([3.0]),
+            "language_model.encoder.layers.0.input_layernorm.weight": mx.array(
+                [4.0]
+            ),
         }
     )
 
@@ -188,6 +191,8 @@ def test_sanitize_strips_language_model_prefix_and_drops_shims():
     assert "embed_tokens.rotary_emb.inv_freq" not in sanitized
     assert "model.norm.weight" in sanitized
     assert "encoder.model.norm.weight" not in sanitized
+    assert "model.layers.0.input_layernorm.weight" in sanitized
+    assert "encoder.layers.0.input_layernorm.weight" not in sanitized
     # Values survive intact.
     assert mx.array_equal(sanitized["model.embed_tokens.weight"], kept)
     assert mx.array_equal(sanitized["diffusion_head.weight"], kept)
