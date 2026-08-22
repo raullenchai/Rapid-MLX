@@ -206,9 +206,9 @@ final class ImageGenViewModel {
 
     /// Load the image-gen alias catalog (safe to call repeatedly).
     func refreshCatalog() async {
-        guard let binary = server.binaryPath else { return }
         catalogRefreshGeneration &+= 1
         let refreshGeneration = catalogRefreshGeneration
+        guard let binary = server.binaryPath else { return }
         let loaded = await catalogLoader(binary)
         guard !Task.isCancelled,
               refreshGeneration == catalogRefreshGeneration else { return }

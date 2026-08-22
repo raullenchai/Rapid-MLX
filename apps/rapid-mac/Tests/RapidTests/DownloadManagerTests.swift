@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -436,19 +437,26 @@ struct DownloadManagerTests {
 struct DownloadStripCaptionTests {
 
     @Test("A completed resident job is removed while its row is hidden")
-    func completedResidentCleanupDoesNotResurface() {
+    func completedResidentCleanupDoesNotResurface() async throws {
         let downloads = DownloadManager()
         _ = downloads._testingSeedJob(alias: "image-model")
         downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
         #expect(downloads.job(for: "image-model")?.status == .completed)
 
-        let resident = DownloadStrip.completedResidentAliases(
-            jobs: downloads.jobs,
-            isResident: { $0 == "image-model" }
+        // Mount the real view so its `.task(id:)` lifecycle performs the
+        // hidden-resident cleanup; do not duplicate that task in the test.
+        let host = NSHostingView(
+            rootView: DownloadStrip(
+                downloads: downloads,
+                isResident: { $0 == "image-model" }
+            )
         )
-        #expect(resident == ["image-model"])
-        resident.forEach { downloads.dismissJob(alias: $0) }
+        host.layoutSubtreeIfNeeded()
+        for _ in 0..<20 where downloads.job(for: "image-model") != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(downloads.job(for: "image-model") == nil)
+        _ = host
     }
 
     @Test("A delayed cleanup cannot dismiss a newer job reusing the alias")
