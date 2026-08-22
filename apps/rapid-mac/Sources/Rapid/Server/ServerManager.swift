@@ -1892,9 +1892,6 @@ final class ServerManager {
         self.child = process
         self.launchedPerformanceAlias = trimmedAlias
         self.launchedPerformanceFlags = performanceFlags
-        self.launchedImageInputLane = performanceFlags.contains("--mllm")
-            && !performanceFlags.contains("--no-mllm")
-            && !performanceFlags.contains("--text-only")
         // Codex r1 P3 (#17): only publish the bearer after the spawn
         // has succeeded — see comment at the bearer guard above.
         self.activeBearer = bearer
@@ -1987,6 +1984,9 @@ final class ServerManager {
                     return
                 }
                 startedAt = nil
+                launchedImageInputLane = performanceFlags.contains("--mllm")
+                    && !performanceFlags.contains("--no-mllm")
+                    && !performanceFlags.contains("--text-only")
                 state = .ready(alias: trimmedAlias)
                 // Issue #270: mark the spawn cycle as "demonstrably
                 // healthy" so a subsequent ``handleChildExit`` knows
