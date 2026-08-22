@@ -55,6 +55,12 @@ struct AttachmentDedupTests {
             ChatView no longer filters incoming URLs through             withoutAlreadyAttached before splitting them into images and             documents. Every add gesture funnels through addAttachmentURLs,             so removing it there re-opens duplicate attachment on all of them.
             """
         )
+        #expect(stripped.contains(".dropDestination(for:URL.self){urls,_inaddAttachmentURLs(urls)"),
+                "Drag-and-drop must enter the shared attachment importer.")
+        #expect(stripped.components(separatedBy: "addAttachmentURLs(panel.urls)").count - 1 == 2,
+                "Both Upload file and Upload photo must enter the shared attachment importer.")
+        #expect(stripped.contains("if!urls.isEmpty{_=addAttachmentURLs(urls)"),
+                "Pasted file URLs must enter the shared attachment importer.")
     }
 
     @Test("A file already attached is rejected, and counted")

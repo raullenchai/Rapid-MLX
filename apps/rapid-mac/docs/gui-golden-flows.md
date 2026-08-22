@@ -61,15 +61,18 @@ covered, and each one names the defect it would have caught:
     lets the user iterate by re-prompting (see **Image generation** below). The
     instruction-edit path is available as a cancellable action and the same
     journey continues through generated-result editing and iterative editing.
-12. `chat-document-attachment` — a vision-language model accepts a PNG through
-    the Chat composer, renders it in the user turn, and sends typed
-    `text` + `image_url` content; the same composer keeps its attachment
-    control visible but disabled for a text-only alias and rejects paste/drop.
-13. `window-close-prompt` — the first native main-window close reaches the
+12. `chat-document-attachment` — a text-only model exposes the two-action
+    attachment menu, keeps files enabled and photos visibly disabled, then
+    pastes, de-duplicates, sends, and restores a locally parsed document.
+13. `chat-multimodal-attachments` — a fake vision model receives two different
+    images on consecutive turns and proves the second request contains only the
+    current image. A following document request must contain extracted text and
+    zero historical image URLs.
+14. `window-close-prompt` — the first native main-window close reaches the
     Dock-visibility prompt, exposes both decisions plus “Don't ask again”, and
     choosing No completes a normal close. This pins the SwiftUI-to-NSWindow
     installation seam that #1590 found entirely disconnected.
-14. `chat-restore` also exercises the formerly unmounted #1588 recovery and
+15. `chat-restore` also exercises the formerly unmounted #1588 recovery and
     utility surface: the status-footer log toggle opens and closes the real
     drawer, and a restored assistant message opens the cross-paragraph
     “Select text” sheet.
@@ -257,9 +260,10 @@ low-memory category remains visible.
 
 ### Chat attachments
 
-`chat-document-attachment` covers image input inside the normal Chat tab. This is
-separate from `image-generation`: the former asks a VLM to understand an image;
-the latter asks a diffusion model to create one.
+`chat-document-attachment` covers the text-only/file lane and
+`chat-multimodal-attachments` covers image input inside the normal Chat tab.
+Both are separate from `image-generation`: chat attachments ask a model to
+understand input; image generation asks a diffusion model to create output.
 
 The deterministic lane should use a fake VLM alias and a small fixture PNG, and
 walk both halves of the capability boundary:
