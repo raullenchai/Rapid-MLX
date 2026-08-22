@@ -790,6 +790,17 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
+# Implicit-think marker pairs recognised by ``_should_start_in_thinking``.
+# Each entry is (opener, closer) as they appear in chat template source.
+# ``<think>`` covers the Qwen/DeepSeek/GLM think-tag families;
+# ``<|START_THINKING|>`` covers Cohere North (North-Mini-Code), whose
+# template ends the generation prompt inside the thinking channel.
+_IMPLICIT_THINK_MARKER_PAIRS = (
+    ("<think>", "</think>"),
+    ("<|START_THINKING|>", "<|END_THINKING|>"),
+)
+
+
 def _should_start_in_thinking(
     chat_template,
     enable_thinking: bool | None,
@@ -839,7 +850,14 @@ def _should_start_in_thinking(
     if enable_thinking is False and not unconditional:
         return False
     if unconditional:
-        if "<think>" not in chat_template:
+        # Consider EVERY marker family present in the template source —
+        # a conditional template can contain both ``<think>`` and North
+        # markers, and inspecting only the first-present pair could pick
+        # the wrong family after rendering (codex on #2171).
+        present_pairs = [
+            pair for pair in _IMPLICIT_THINK_MARKER_PAIRS if pair[0] in chat_template
+        ]
+        if not present_pairs:
             return False
         # Use the same sandboxed Jinja compiler as Hugging Face tokenizers.
         # Rendering, unlike source scanning, honors assignments, macros,
@@ -880,10 +898,14 @@ def _should_start_in_thinking(
             return False
         # Priming means the rendered prompt ends *inside* a think block, not
         # merely that it contains a historical closed block.
-        if rendered.rfind("<think>") <= rendered.rfind("</think>"):
-            return False
-        return True
-    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+        return any(
+            rendered.rfind(opener) > rendered.rfind(closer)
+            for opener, closer in present_pairs
+        )
+    return (
+        any(opener in chat_template for opener, _ in _IMPLICIT_THINK_MARKER_PAIRS)
+        and "add_generation_prompt" in chat_template
+    )
 
 
 def _rescue_silent_drop_from_reasoning(

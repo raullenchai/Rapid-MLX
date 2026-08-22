@@ -16,7 +16,6 @@ struct AudioView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(DictationController.self) private var dictation
 
-    @State private var copied = false
     @State private var playback = AudioPlaybackController()
     @State private var showVoicePicker = false
     @State private var playingPreviewVoice: String?
@@ -25,13 +24,17 @@ struct AudioView: View {
     @State private var modelLoadsInFlight: Set<String> = []
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
-    private let controlLabelWidth: CGFloat = 80
-    private let controlFieldWidth: CGFloat = 320
+    /// One control width across the Audio tabs — same as the Dictation
+    /// setup rows, so the trailing line holds from tab to tab.
+    private let controlFieldWidth: CGFloat = 260
+    /// The voice popover keeps its own, wider measure: its rows carry a
+    /// name, a detail line, and a preview button.
+    private let voicePopoverWidth: CGFloat = 320
 
+    /// The Text to Speech tab's model. Speech to Text owns its own
+    /// selection and readiness inside ``DictationView``.
     private var selectedAlias: String {
-        viewModel.mode == .speech
-            ? viewModel.selectedSpeechAlias
-            : viewModel.selectedTranscriptionAlias
+        viewModel.selectedSpeechAlias
     }
 
     private var selectedEntry: ModelEntry? {
@@ -180,12 +183,6 @@ struct AudioView: View {
                         server: server
                     )
                 }
-            case .transcription:
-                if viewModel.transcriptionModels.isEmpty {
-                    unavailableState(operation: "transcription")
-                } else {
-                    transcriptionSurface
-                }
             case .speech:
                 if viewModel.speechModels.isEmpty {
                     unavailableState(operation: "speech")
@@ -213,165 +210,11 @@ struct AudioView: View {
         .accessibilityIdentifier("Audio.EmptyState")
     }
 
-    private var transcriptionSurface: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
-                SectionHeader(
-                    "Transcription",
-                    subtitle: "Turn a local recording into text without uploading it."
-                )
-                filePicker
-                modelPicker(
-                    title: "Model",
-                    selection: $viewModel.selectedTranscriptionAlias,
-                    entries: viewModel.transcriptionModels,
-                    identifier: "Audio.Transcription.ModelPicker"
-                )
-                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
-                swapNotice(alias: viewModel.selectedTranscriptionAlias)
-                operationNotice
-                HStack(spacing: RapidTheme.Space.md) {
-                    if viewModel.isTranscribing {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Loading model and transcribing...")
-                            .font(RapidFont.secondary)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: RapidTheme.Space.md)
-                    Button("Transcribe", systemImage: "text.badge.checkmark") {
-                        playback.stop()
-                        Task { await viewModel.transcribe() }
-                    }
-                    .buttonStyle(.rapidPrimary)
-                    .disabled(
-                        viewModel.selectedFileURL == nil
-                            || viewModel.selectedTranscriptionAlias.isEmpty
-                            || !readiness.sendAllowed
-                            || viewModel.isBusy
-                    )
-                    .accessibilityIdentifier("Audio.Transcription.Run")
-                }
-
-                if let result = viewModel.transcription {
-                    transcriptionResult(result)
-                }
-            }
-            .frame(maxWidth: contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .padding(RapidTheme.Space.xl)
-        }
-    }
-
-    private var filePicker: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            HStack(spacing: RapidTheme.Space.md) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                    .frame(width: 34)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
-                    Text(viewModel.selectedFileURL?.lastPathComponent ?? "Audio file")
-                        .font(RapidFont.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(fileCaption)
-                        .font(RapidFont.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: RapidTheme.Space.md)
-                Button("Choose File", systemImage: "folder") { chooseAudioFile() }
-                    .buttonStyle(.rapidSecondaryCompactUtility)
-                    .accessibilityIdentifier("Audio.Transcription.FilePicker")
-            }
-            .padding(RapidTheme.Space.lg)
-            .frame(maxWidth: .infinity, minHeight: 84)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .fill(RapidTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .strokeBorder(RapidTheme.hairlineStrong, style: StrokeStyle(lineWidth: 1, dash: [5]))
-            )
-            .contentShape(Rectangle())
-            .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first(where: isAudioFile) else { return false }
-                viewModel.selectFile(url)
-                return true
-            }
-        }
-    }
-
-    private var fileCaption: String {
-        guard let url = viewModel.selectedFileURL else {
-            return "WAV, MP3, M4A, AAC, FLAC, MP4, AIFF, or CAF - up to 25 MB"
-        }
-        if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-            return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-        }
-        return url.pathExtension.uppercased()
-    }
-
-    private func transcriptionResult(_ result: AudioTranscriptionResult) -> some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Result") {
-                HStack(spacing: RapidTheme.Space.xs) {
-                    QuietIconButton(
-                        symbol: copied ? "checkmark" : "doc.on.doc",
-                        label: copied ? "Copied" : "Copy transcription",
-                        tint: copied ? RapidTheme.statusReady : nil
-                    ) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(result.text, forType: .string)
-                        copied = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            copied = false
-                        }
-                    }
-                    .accessibilityIdentifier("Audio.Transcription.Copy")
-                    QuietIconButton(
-                        symbol: "square.and.arrow.down",
-                        label: "Save transcription"
-                    ) { saveTranscription(result.text) }
-                    .accessibilityIdentifier("Audio.Transcription.Save")
-                }
-            }
-
-            ScrollView {
-                Text(result.text)
-                    .font(RapidFont.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(RapidTheme.Space.lg)
-            }
-            .frame(minHeight: 130, maxHeight: 300)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .fill(RapidTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .strokeBorder(RapidTheme.hairline, lineWidth: 1)
-            )
-            .accessibilityIdentifier("Audio.Transcription.Result")
-
-            if result.language != nil || result.duration != nil {
-                Text(resultMetadata(result))
-                    .font(RapidFont.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
     private var speechSurface: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 SectionHeader(
-                    "Speech",
+                    "Text to Speech",
                     subtitle: "Create spoken audio with a model and one of its built-in voices."
                 )
 
@@ -394,8 +237,7 @@ struct AudioView: View {
                         .accessibilityIdentifier("Audio.Speech.Text")
                 }
 
-                speechControls
-                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
+                speechSetupCard
                 swapNotice(alias: viewModel.selectedSpeechAlias)
                 operationNotice
 
@@ -429,6 +271,13 @@ struct AudioView: View {
             .frame(maxWidth: .infinity)
             .padding(RapidTheme.Space.xl)
         }
+        // Voices need the model process, so fetch them the moment it turns
+        // ready: picking a voice is the user's job, loading the list is ours.
+        // The row's refresh button stays for re-fetching after a hiccup.
+        .task(id: "\(selectedAlias)#\(readiness.sendAllowed)") {
+            guard readiness.sendAllowed, viewModel.voices.isEmpty, !viewModel.isBusy else { return }
+            _ = await viewModel.loadVoices()
+        }
     }
 
     private var speechModelSelection: Binding<String> {
@@ -438,43 +287,68 @@ struct AudioView: View {
         )
     }
 
-    private var speechControls: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
-            HStack(spacing: RapidTheme.Space.md) {
-                controlLabel("Model")
+    /// The same setup-card grammar as Speech to Text: label and caption on
+    /// the left, the control on the shared trailing line, the readiness
+    /// banner inset directly under the Model row it describes. One design
+    /// language across the Audio tabs — nothing on this page invents its own
+    /// alignment.
+    private var speechSetupCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            speechRow(
+                label: "Model",
+                caption: "Voices and generated audio come from this model."
+            ) {
                 modelPickerControl(
                     title: "Model",
                     selection: speechModelSelection,
                     entries: viewModel.speechModels,
                     identifier: "Audio.Speech.ModelPicker"
                 )
-                Spacer(minLength: RapidTheme.Space.md)
+            }
+            // Hidden once the model is ready: in steady state the card is
+            // settings, not status.
+            if !readiness.sendAllowed {
+                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
+                    // xs outside + the banner's own md inside = lg: text on
+                    // the rows' content line, action on their trailing line.
+                    .padding(.horizontal, RapidTheme.Space.xs)
+                    .padding(.bottom, RapidTheme.Space.lg)
             }
 
-            HStack(spacing: RapidTheme.Space.md) {
-                controlLabel("Voice")
-                voicePickerControl
+            Divider().overlay(RapidTheme.hairline)
+
+            speechRow(
+                label: "Voice",
+                caption: "Each model ships its own set — preview before choosing."
+            ) {
                 HStack(spacing: RapidTheme.Space.sm) {
-                    Button("Load Voices", systemImage: "arrow.clockwise") {
+                    if viewModel.isLoadingVoices {
+                        ProgressView().controlSize(.small)
+                    }
+                    QuietIconButton(
+                        symbol: "arrow.clockwise",
+                        label: "Load voices",
+                        help: "Reload the voice list from the running model."
+                    ) {
                         playback.stop()
                         Task { _ = await viewModel.loadVoices() }
                     }
-                    .buttonStyle(.rapidSecondaryCompactUtility)
                     .disabled(
                         viewModel.selectedSpeechAlias.isEmpty
                             || !readiness.sendAllowed
                             || viewModel.isBusy
                     )
                     .accessibilityIdentifier("Audio.Speech.LoadVoices")
-                    if viewModel.isLoadingVoices {
-                        ProgressView().controlSize(.small)
-                    }
+                    voicePickerControl
                 }
-                Spacer(minLength: RapidTheme.Space.md)
             }
 
-            HStack(spacing: RapidTheme.Space.md) {
-                controlLabel("Speed")
+            Divider().overlay(RapidTheme.hairline)
+
+            speechRow(
+                label: "Speed",
+                caption: "Applied when the audio is generated."
+            ) {
                 HStack(spacing: RapidTheme.Space.md) {
                     Slider(value: $viewModel.speed, in: 0.5...2, step: 0.05)
                         .accessibilityIdentifier("Audio.Speech.Speed")
@@ -485,10 +359,35 @@ struct AudioView: View {
                 }
                 .frame(width: controlFieldWidth)
                 .accessibilityElement(children: .contain)
-                Spacer(minLength: RapidTheme.Space.md)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RapidTheme.card, in: RoundedRectangle(cornerRadius: RapidTheme.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: RapidTheme.cardRadius)
+                .strokeBorder(RapidTheme.hairline)
+        )
+    }
+
+    /// ``DictationView/setupRow`` minus the readiness circle: these are
+    /// settings, not checklist steps, but the typography and metrics match
+    /// so the two tabs read as one surface.
+    private func speechRow<Control: View>(
+        label: String,
+        caption: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(alignment: .top, spacing: RapidTheme.Space.md) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                Text(label).font(.subheadline.weight(.medium))
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: RapidTheme.Space.md)
+            control()
+        }
+        .padding(RapidTheme.Space.lg)
     }
 
     private func speechResult(_ audio: SynthesizedAudio) -> some View {
@@ -531,24 +430,6 @@ struct AudioView: View {
             RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
                 .strokeBorder(RapidTheme.hairline, lineWidth: 1)
         )
-    }
-
-    private func modelPicker(
-        title: String,
-        selection: Binding<String>,
-        entries: [ModelEntry],
-        identifier: String
-    ) -> some View {
-        HStack(spacing: RapidTheme.Space.md) {
-            controlLabel(title)
-            modelPickerControl(
-                title: title,
-                selection: selection,
-                entries: entries,
-                identifier: identifier
-            )
-            Spacer(minLength: 0)
-        }
     }
 
     private func modelPickerControl(
@@ -595,7 +476,7 @@ struct AudioView: View {
             showVoicePicker.toggle()
         } label: {
             popupControlLabel(
-                viewModel.selectedVoice.isEmpty ? "No voices loaded" : viewModel.selectedVoice
+                viewModel.selectedVoice.isEmpty ? voicePlaceholder : viewModel.selectedVoice
             )
         }
         .buttonStyle(.plain)
@@ -628,8 +509,16 @@ struct AudioView: View {
                 }
                 .padding(RapidTheme.Space.xs)
             }
-            .frame(width: controlFieldWidth, height: voicePopoverHeight)
+            .frame(width: voicePopoverWidth, height: voicePopoverHeight)
         }
+    }
+
+    /// State description for an empty voice popup — what the control is
+    /// waiting on, not internal mechanics.
+    private var voicePlaceholder: String {
+        if viewModel.isLoadingVoices { return "Loading voices…" }
+        guard readiness.sendAllowed else { return "Start the model to list voices" }
+        return "Choose a voice"
     }
 
     private var voicePopoverHeight: CGFloat {
@@ -637,34 +526,7 @@ struct AudioView: View {
     }
 
     private func popupControlLabel(_ value: String) -> some View {
-        HStack(spacing: RapidTheme.Space.sm) {
-            Text(value)
-                .font(RapidFont.body)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: RapidTheme.Space.sm)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, RapidTheme.Space.md)
-        .frame(width: controlFieldWidth, height: RapidTheme.ControlHeight.small)
-        .background(
-            RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
-                .fill(RapidTheme.surfaceCode)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
-                .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous))
-    }
-
-    private func controlLabel(_ title: String) -> some View {
-        Text(title)
-            .font(RapidFont.secondary)
-            .frame(width: controlLabelWidth, alignment: .leading)
+        PopupControlChrome(title: value, width: controlFieldWidth)
     }
 
     private func handleReadinessAction(_ action: ModelReadiness.Action) {
@@ -782,50 +644,6 @@ struct AudioView: View {
         }
     }
 
-    private func chooseAudioFile() {
-        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
-           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_AUDIO_PATH"],
-           !simulated.isEmpty
-        {
-            viewModel.selectFile(URL(fileURLWithPath: simulated))
-            return
-        }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        viewModel.selectFile(url)
-    }
-
-    private func isAudioFile(_ url: URL) -> Bool {
-        UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
-    }
-
-    private func saveTranscription(_ text: String) {
-        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
-           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH"],
-           !simulated.isEmpty
-        {
-            do {
-                try text.write(to: URL(fileURLWithPath: simulated), atomically: true, encoding: .utf8)
-            } catch {
-                viewModel.errorMessage = "Couldn't save the transcription: \(error.localizedDescription)"
-            }
-            return
-        }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "transcription.txt"
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            viewModel.errorMessage = "Couldn't save the transcription: \(error.localizedDescription)"
-        }
-    }
-
     private func saveSpeech(_ audio: SynthesizedAudio) {
         if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
            let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_SPEECH_SAVE_PATH"],
@@ -850,17 +668,6 @@ struct AudioView: View {
         } catch {
             viewModel.errorMessage = "Couldn't save the audio: \(error.localizedDescription)"
         }
-    }
-
-    private func resultMetadata(_ result: AudioTranscriptionResult) -> String {
-        var parts: [String] = []
-        if let language = result.language, !language.isEmpty {
-            parts.append("Language: \(language)")
-        }
-        if let duration = result.duration {
-            parts.append("Duration: \(duration.formatted(.number.precision(.fractionLength(1)))) s")
-        }
-        return parts.joined(separator: "  |  ")
     }
 
     private func openModelManagement() {

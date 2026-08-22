@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        fresh-install|cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
+        fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
         slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -1161,10 +1161,23 @@ flow_fresh_install() {
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
-    role_subtree_only "$OUT/consent-visible.json" AXSheet "$OUT/consent-sheet.json"
-    baseline fresh-install.consent "$OUT/consent-sheet.json"
+    # Consent owns the window as a full-window gate. It deliberately must not
+    # be an AppKit sheet: sheets prevent a fresh-install user from quitting
+    # normally before making a telemetry choice.
+    if jq -e '.data.ui_elements[]? | select(.role == "AXSheet")' \
+        "$OUT/consent-visible.json" >/dev/null; then
+        die "fresh-install consent regressed to a quit-blocking AXSheet"
+    fi
+    for hidden in Sidebar.NewChat Sidebar.Launch rapid.chat.compose; do
+        if jq -e --arg id "$hidden" '.data.ui_elements[]? | select(.identifier == $id)' \
+            "$OUT/consent-visible.json" >/dev/null; then
+            die "telemetry consent mounted production control $hidden behind the gate"
+        fi
+    done
+    role_subtree_only "$OUT/consent-visible.json" AXGroup "$OUT/consent-gate.json"
+    baseline fresh-install.consent "$OUT/consent-gate.json"
     # #1560: merely launching a fresh install must not inspect model caches
-    # behind the consent sheet. Give both SwiftUI catalog tasks time to run;
+    # behind the consent gate. Give both SwiftUI catalog tasks time to run;
     # the fake sidecar records every non-serve command before it exits.
     sleep 0.75
     if [[ -s "$OUT/fake-events.jsonl" ]] && jq -e \
@@ -1396,6 +1409,31 @@ flow_cached_curated_tradeup() {
     # this exact card becomes selected. Footer wording is presentation copy and
     # is not required for the cached trade-up behavior under test.
     wait_selected Quickstart.Choice.qwen3.5-4b-4bit "$OUT/selected.json"
+    cleanup_persona
+}
+
+flow_cached_variant_collapse() {
+    log "first-run chooser collapses cached quant siblings (#2033 finding 3)"
+    start_persona cached-variant-collapse FAKE_CACHED_VARIANTS=1
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.CachedModel.qwen3-0.6b-4bit "$OUT/chooser.json"
+    wait_identifier Quickstart.CachedModel.qwen3-4b-4bit "$OUT/distinct-size.json"
+    wait_identifier Quickstart.CachedVariants.Toggle "$OUT/collapsed.json"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Quickstart.CachedVariant.qwen3-0.6b-8bit")' \
+        "$OUT/collapsed.json" >/dev/null; then
+        die "cached sibling variant is visible before disclosure"
+    fi
+
+    press "$OUT/collapsed.json" Quickstart.CachedVariants.Toggle "$OUT/expand.json"
+    wait_identifier Quickstart.CachedVariant.qwen3-0.6b-8bit "$OUT/expanded.json"
     cleanup_persona
 }
 
@@ -3554,15 +3592,15 @@ flow_image_generation() {
     # And the rest of the payload. Without this the picker can show and load
     # the image alias while the request names something else entirely — the
     # tab would look right and render with the wrong model.
-    # `1024x1024` is what the default (square) aspect maps to. A shape-only
+    # `512x512` is what the default (square) aspect maps to. A shape-only
     # check like `^[0-9]+x[0-9]+$` passes `768x1024` — the PORTRAIT size — so
     # an aspect control wired to the wrong case would render the wrong shape
     # and the flow would call it correct.
     jq -s -e --arg alias "$FAKE_IMAGE_ALIAS" \
         'all(.[] | select(.event == "image_request");
-             .model == $alias and .n == 1 and .size == "1024x1024")' \
+             .model == $alias and .n == 1 and .size == "512x512")' \
         "$OUT/fake-events.jsonl" >/dev/null \
-        || die "an image request named the wrong model, asked for n != 1, or did not carry the square size 1024x1024: $(jq -s -c '[.[] | select(.event == "image_request") | {model, size, n}]' "$OUT/fake-events.jsonl")"
+        || die "an image request named the wrong model, asked for n != 1, or did not carry the square size 512x512: $(jq -s -c '[.[] | select(.event == "image_request") | {model, size, n}]' "$OUT/fake-events.jsonl")"
     # ...and the UI agreed that square was selected, so the two cannot drift
     # into agreeing on a wrong value together.
     # On `selected`, not on existence. All three ratio buttons carry the
@@ -4038,8 +4076,7 @@ flow_audio_readiness() {
         FAKE_AUDIO_PULL_STATE="$OUT_ROOT/audio-readiness/pulled-audio.txt" \
         RAPID_GUI_GOLDEN_MODE=1 \
         RAPID_SIMULATED_AUDIO_PATH="$ROOT/../../examples/assistant_bank_en.wav" \
-        RAPID_SIMULATED_SPEECH_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-speech.wav" \
-        RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-transcription.txt"
+        RAPID_SIMULATED_SPEECH_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-speech.wav"
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation.json" \
@@ -4324,13 +4361,12 @@ flow_audio_readiness() {
     wait_identifier Audio.Mode.Dictation "$OUT/audio-after-launch.json" \
         || die "Audio did not settle after returning from Launch"
 
-    # Back to the default mode. Speech to Text deliberately owns no readiness
-    # banner: dictation loads its model as part of the act of dictating, which
-    # is exactly the on-demand path #2053 asks for, so there is no Download /
-    # Start step for it to expose. What must hold is that the pane is fully
-    # addressable after a round trip through another mode and another tab —
-    # model, hotkey and the enable switch all present — and that merely opening
-    # it never loads anything.
+    # Back to the default mode. Dictation's model lifecycle now speaks the
+    # same language as every other surface: an uncached selection exposes the
+    # shared Download readiness banner (no silent server-side fetch — #2053's
+    # on-demand contract applies to LOADING, not downloading), the pull runs
+    # through the app-wide download manager, and finishing it must not start
+    # the model while dictation is off.
     press "$OUT/audio-after-launch.json" Audio.Mode.Dictation "$OUT/dictation-return-press.json" \
         || die "Audio Dictation segment is not pressable"
     local dictation_controls=0
@@ -4348,10 +4384,19 @@ flow_audio_readiness() {
     done
     [[ "$dictation_controls" == 1 ]] \
         || die "Dictation did not expose its model, hotkey and enable controls"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
-            "$OUT/dictation-return.json" >/dev/null; then
-        die "Dictation exposed a Download/Start banner it does not own"
-    fi
+    local dictation_download_ready=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/dictation-return.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Readiness.Action"
+                           and (.description // .value // .label // "") == "Download")' \
+                 "$OUT/dictation-return.json" >/dev/null; then
+            dictation_download_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$dictation_download_ready" == 1 ]] \
+        || die "Dictation did not expose download-only readiness for its uncached model"
     # No structural baseline for this pane: the Microphone and Accessibility
     # rows render a grant button only while the permission is missing, so its
     # tree legitimately differs between a fresh runner and a developer machine.
@@ -4361,118 +4406,30 @@ flow_audio_readiness() {
         die "Opening Dictation loaded its model before the user dictated"
     fi
 
-    # Dictation is additive: the existing file-transcription workbench must
-    # remain reachable and preserve the same explicit Download → Start lifecycle.
-    press "$OUT/dictation-return.json" Audio.Mode.Transcription "$OUT/transcription.json" \
-        || die "Audio Transcription segment is not pressable"
-    local transcription_ready=0
-    for ((i=0; i<80; i++)); do
-        see_main "$OUT/transcription.json"
-        if jq -e '.data.ui_elements[]?
-                  | select(.identifier == "Audio.Transcription.ModelPicker")' \
-                 "$OUT/transcription.json" >/dev/null \
-           && jq -e '.data.ui_elements[]?
-                     | select(.identifier == "Readiness.Action"
-                              and (.description // .value // .label // "") == "Download")' \
-                    "$OUT/transcription.json" >/dev/null; then
-            transcription_ready=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$transcription_ready" == 1 ]] \
-        || die "Transcription did not expose download-only readiness"
-    jq -e '.data.ui_elements[]?
-           | select(.role == "AXStaticText"
-                    and ((.value // "") | contains("AIFF")))' \
-        "$OUT/transcription.json" >/dev/null \
-        || die "Transcription picker copy does not advertise its supported AIFF input"
-    baseline audio-readiness.transcription "$OUT/transcription.json"
-
-    press "$OUT/transcription.json" Readiness.Action "$OUT/transcription-download.json" \
-        || die "Transcription Download is not pressable"
+    press "$OUT/dictation-return.json" Readiness.Action "$OUT/dictation-download.json" \
+        || die "Dictation Download is not pressable"
     wait_fake_event \
         '.event == "command" and .subcommand == "pull" and .alias == "fake-whisper-small"' \
-        "Transcription Download did not invoke pull"
-    local transcription_start_ready=0
+        "Dictation Download did not invoke pull"
+    local dictation_downloaded=0
     for ((i=0; i<120; i++)); do
-        see_main "$OUT/transcription-downloaded.json"
-        if jq -e '.data.ui_elements[]?
-                  | select(.identifier == "Readiness.Action"
-                           and (.description // .value // .label // "") == "Start")' \
-                 "$OUT/transcription-downloaded.json" >/dev/null; then
-            transcription_start_ready=1; break
+        see_main "$OUT/dictation-downloaded.json"
+        if ! jq -e '.data.ui_elements[]?
+                    | select(.identifier == "Readiness.Action")' \
+                  "$OUT/dictation-downloaded.json" >/dev/null; then
+            dictation_downloaded=1; break
         fi
         sleep 0.25
     done
-    [[ "$transcription_start_ready" == 1 ]] \
-        || die "Transcription did not become Start-ready after download"
+    [[ "$dictation_downloaded" == 1 ]] \
+        || die "Dictation banner did not clear after the download landed"
     if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-whisper-small")' \
         "$OUT/fake-events.jsonl" >/dev/null; then
-        die "Transcription loaded automatically after Download"
+        die "Dictation loaded the model after Download while dictation was off"
     fi
-    press "$OUT/transcription-downloaded.json" Readiness.Action \
-        "$OUT/transcription-start.json" \
-        || die "Transcription Start is not pressable"
-    wait_fake_event \
-        '.event == "server_started" and .alias == "fake-whisper-small"' \
-        "Transcription did not start explicitly"
-
-    # The fake emits server_started as soon as the process accepts the alias,
-    # but the app deliberately keeps sending disabled until its health poll
-    # observes that alias as ready. On a hosted runner, pressing Choose File
-    # in that interval selects the fixture correctly while Transcribe remains
-    # disabled, making the later assertion blame the picker for a readiness
-    # race. Wait on the user-visible readiness SSOT before exercising it.
-    local transcription_serving_ready=0
-    for ((i=0; i<120; i++)); do
-        see_main "$OUT/transcription-serving.json"
-        if jq -e '.data.ui_elements[]?
-                  | select(.role == "AXGroup"
-                           and ((.description // "")
-                                == "Ready — fake-whisper-small"))' \
-                 "$OUT/transcription-serving.json" >/dev/null; then
-            transcription_serving_ready=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$transcription_serving_ready" == 1 ]] \
-        || die "Transcription server started but never became UI-ready"
-
-    local file_selected=0
-    for ((i=0; i<20; i++)); do
-        see_main "$OUT/transcription-controls.json"
-        "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
-            > "$OUT/transcription-file-press.json" 2>/dev/null || true
-        sleep 0.25
-        see_main "$OUT/transcription-file-selected.json"
-        if jq -e 'any(.data.ui_elements[]?;
-                      .identifier == "Audio.Transcription.Run" and .enabled == true)' \
-                "$OUT/transcription-file-selected.json" >/dev/null; then
-            file_selected=1; break
-        fi
-    done
-    [[ "$file_selected" == 1 ]] \
-        || die "Choose File never enabled Transcribe"
-    press "$OUT/transcription-file-selected.json" Audio.Transcription.Run \
-        "$OUT/transcription-run.json" \
-        || die "Transcribe is not pressable after selecting a file"
-    wait_fake_event '.event == "audio_transcription"' \
-        "Transcribe did not send the selected audio file"
-    wait_identifier Audio.Transcription.Result "$OUT/transcription-result.json"
-    assert_tree_text "$OUT/transcription-result.json" "Golden transcription result."
-    press "$OUT/transcription-result.json" Audio.Transcription.Copy \
-        "$OUT/transcription-copy.json" \
-        || die "Copy transcription is not pressable"
-    [[ "$(pbpaste)" == "Golden transcription result." ]] \
-        || die "Copy transcription did not update the pasteboard"
-    press "$OUT/transcription-result.json" Audio.Transcription.Save \
-        "$OUT/transcription-save.json" \
-        || die "Save transcription is not pressable"
-    [[ "$(cat "$OUT/saved-transcription.txt")" == "Golden transcription result." ]] \
-        || die "Save transcription did not write the visible result"
 
     jq -n '{success: true,
-            assertion: "Dictation is privacy-safe and inert on open; Speech and file Transcription remain functional with explicit Download and Start"}' \
+            assertion: "Dictation is privacy-safe and inert on open, exposes the shared explicit Download lifecycle for an uncached model, and Speech keeps its explicit Download and Start"}' \
         > "$OUT/audio-readiness-actions.json"
     log "  audio-readiness OK"
     cleanup_persona
@@ -4481,14 +4438,20 @@ flow_audio_readiness() {
 # Dictation is its own product journey, not merely the landing state of Audio.
 # Keep this separate from audio-readiness so a regression in its controls is
 # named directly in CI. Microphone and Accessibility grants are intentionally
-# not faked: their TCC state belongs to the host. The stable contract is that
-# every setup control is reachable, raw recordings remain opt-in, local
-# vocabulary edits work, mode round-trips preserve the pane, and opening it
-# alone never downloads or starts a model.
+# not globally faked: their TCC state belongs to the host. This journey opts
+# into a two-key, process-local readiness fixture only around the OS permission
+# and event-tap boundaries, allowing the real server/warmup state machine to be
+# exercised deterministically. The stable contract is that every setup control
+# is reachable, raw recordings remain opt-in, local vocabulary edits work,
+# mode round-trips preserve the pane, opening it alone never starts a model,
+# and enabling visibly transitions from Loading to Ready.
 flow_dictation() {
     log "flow: dictation"
     start_persona dictation \
-        RAPID_GUI_GOLDEN_MODE=1
+        RAPID_GUI_GOLDEN_MODE=1 \
+        RAPID_GUI_DICTATION_READINESS_FIXTURE=1 \
+        FAKE_CACHED_DICTATION=1 \
+        FAKE_AUDIO_TRANSCRIPTION_DELAY_MS=1800
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation-open.json" \
@@ -4559,7 +4522,47 @@ flow_dictation() {
         die "Opening and configuring Dictation started a model before dictation"
     fi
 
-    log "  setup controls, privacy toggle, vocabulary, and mode round-trip produced effects"
+    # Enabling is a readiness operation, not merely a preference flip. Hold
+    # the fake STT probe open long enough to observe the contract in AX: the
+    # pane says Loading while the model's lazy weights are cold, and only
+    # changes to Ready after the probe returns and the hotkey can be armed.
+    press "$OUT/dictation-restored.json" Dictation.Enable "$OUT/dictation-enable.json" \
+        || die "Dictation Enable is not pressable with complete readiness"
+    local loading_seen=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/dictation-loading.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | contains("Loading fake-whisper-small into memory")))' \
+                 "$OUT/dictation-loading.json" >/dev/null; then
+            loading_seen=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$loading_seen" == 1 ]] \
+        || die "Dictation never exposed model loading before readiness"
+    [[ "$(element_field "$OUT/dictation-loading.json" Dictation.Enable value)" == "1" ]] \
+        || die "Dictation lost the user's Enabled intent while loading"
+
+    wait_fake_event '.event == "audio_transcription"' \
+        "Dictation never sent the lazy-weight warmup probe"
+    local ready_seen=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/dictation-ready.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Ready — press")))' \
+                 "$OUT/dictation-ready.json" >/dev/null; then
+            ready_seen=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$ready_seen" == 1 ]] \
+        || die "Dictation did not become Ready after model warmup"
+
+    log "  setup controls, privacy toggle, vocabulary, mode round-trip, and Loading -> Ready produced effects"
     log "  dictation OK"
     cleanup_persona
 }
@@ -4575,6 +4578,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     cached-quickstart) flow_cached_quickstart ;;
     cached-curated-tradeup) flow_cached_curated_tradeup ;;
+    cached-variant-collapse) flow_cached_variant_collapse ;;
     download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
     settings-mtp) flow_settings_mtp ;;
@@ -4604,6 +4608,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_cached_quickstart
         flow_cached_curated_tradeup
+        flow_cached_variant_collapse
         flow_download_progress
         flow_settings_persistence
         flow_settings_mtp

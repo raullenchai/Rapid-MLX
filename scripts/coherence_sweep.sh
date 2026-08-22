@@ -120,7 +120,11 @@ for MODEL in $MODELS; do
       exit 2
     fi
   fi
-  SERVE_ARGS=(--port "$PORT")
+  # A dependency-coherence gate must evaluate the model under test, not KV
+  # tensors persisted by an earlier runtime.  Disk prefix caches are keyed by
+  # model/config, not by MLX build, so loading one can both hide a regression
+  # and create a false failure after a toolchain move.
+  SERVE_ARGS=(--port "$PORT" --disable-prefix-cache)
   if "$PY" scripts/release_fleet.py forces-text-lane "$MODEL"; then
     # Gemma 4's checkpoint also carries a vision tower, but this gate scores
     # its text path. Auto-routing would require the optional mlx-vlm extra and

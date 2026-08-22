@@ -86,12 +86,6 @@ AXApplication title="Rapid-MLX"
             AXButton id="Launch.Integration.Copy.smolagents" desc="Copy smolagents command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXScrollBar value=number enabled=true
-              AXValueIndicator value=number
-              AXButton subrole=AXIncrementArrow
-              AXButton subrole=AXDecrementArrow
-              AXButton subrole=AXIncrementPage
-              AXButton subrole=AXDecrementPage
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

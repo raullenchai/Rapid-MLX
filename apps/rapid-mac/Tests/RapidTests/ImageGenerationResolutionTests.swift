@@ -46,11 +46,11 @@ struct ImageGenerationResolutionTests {
         }
     }
 
-    @Test("A fresh view model still defaults to the pre-existing 1024x1024")
+    @Test("A fresh view model defaults to the lowest resolution preset")
     @MainActor
     func defaultOutputSize() {
         let viewModel = ImageGenViewModel(server: ServerManager())
-        #expect(viewModel.outputSize == "1024x1024")
+        #expect(viewModel.outputSize == "512x512")
     }
 
     @Test("Generated dimensions satisfy the image API contract")

@@ -186,6 +186,94 @@ def test_app_authored_toolbar_order_remains_regression_sensitive(ax_baseline):
     assert ax_baseline.render(window_a, ()) != ax_baseline.render(window_b, ())
 
 
+def test_conversation_search_overlay_order_is_session_independent(ax_baseline):
+    panel = ax_baseline.Node(
+        {"role": "AXUnknown", "identifier": "ConversationSearch.Panel"}
+    )
+    split = ax_baseline.Node({"role": "AXSplitGroup", "identifier": "main"})
+    window_a = ax_baseline.Node({"role": "AXWindow"})
+    window_a.children = [panel, split]
+    window_b = ax_baseline.Node({"role": "AXWindow"})
+    window_b.children = [split, panel]
+
+    assert ax_baseline.render(window_a, ()) == ax_baseline.render(window_b, ())
+
+
+def test_conversation_search_overlay_order_inside_host_is_session_independent(
+    ax_baseline,
+):
+    panel = ax_baseline.Node(
+        {"role": "AXUnknown", "identifier": "ConversationSearch.Panel"}
+    )
+    panel_list = ax_baseline.Node({"role": "AXScrollArea"})
+    panel_list.children.append(
+        ax_baseline.Node(
+            {"role": "AXButton", "identifier": "ConversationSearch.NewChat"}
+        )
+    )
+    split = ax_baseline.Node({"role": "AXSplitGroup", "identifier": "main"})
+    host_a = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_a.children = [panel, panel_list, split]
+    host_b = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_b.children = [split, panel, panel_list]
+    window_a = ax_baseline.Node({"role": "AXWindow"})
+    window_a.children = [host_a]
+    window_b = ax_baseline.Node({"role": "AXWindow"})
+    window_b.children = [host_b]
+
+    assert ax_baseline.render(window_a, ()) == ax_baseline.render(window_b, ())
+
+
+def test_unrelated_anonymous_scroll_area_after_search_panel_keeps_order_sensitive(
+    ax_baseline,
+):
+    panel = ax_baseline.Node(
+        {"role": "AXUnknown", "identifier": "ConversationSearch.Panel"}
+    )
+    unrelated = ax_baseline.Node({"role": "AXScrollArea"})
+    unrelated.children.append(
+        ax_baseline.Node({"role": "AXButton", "identifier": "Sidebar.Unrelated"})
+    )
+    split = ax_baseline.Node({"role": "AXSplitGroup", "identifier": "main"})
+    host_a = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_a.children = [panel, unrelated, split]
+    host_b = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_b.children = [split, panel, unrelated]
+    window_a = ax_baseline.Node({"role": "AXWindow"})
+    window_a.children = [host_a]
+    window_b = ax_baseline.Node({"role": "AXWindow"})
+    window_b.children = [host_b]
+
+    assert ax_baseline.render(window_a, ()) != ax_baseline.render(window_b, ())
+
+
+def test_scrollbar_subtree_is_ignored_but_scroll_area_remains(ax_baseline):
+    area = ax_baseline.Node({"role": "AXScrollArea", "identifier": "Results"})
+    bar = ax_baseline.Node({"role": "AXScrollBar", "value": 0.5})
+    bar.children.append(ax_baseline.Node({"role": "AXValueIndicator", "value": 0.5}))
+    area.children.append(bar)
+
+    assert ax_baseline.render(area, ()) == ['AXScrollArea id="Results"']
+
+
+def test_environment_gated_developer_row_is_ignored(ax_baseline):
+    row = ax_baseline.Node({"role": "AXRow", "subrole": "AXOutlineRow"})
+    cell = ax_baseline.Node({"role": "AXCell", "enabled": True})
+    cell.children.append(
+        ax_baseline.Node(
+            {
+                "role": "AXButton",
+                "identifier": "Settings.Category.developer",
+                "description": "Developer",
+                "enabled": True,
+            }
+        )
+    )
+    row.children.append(cell)
+
+    assert ax_baseline.render(row, ()) == []
+
+
 def test_nested_button_with_its_own_identity_is_preserved(ax_baseline):
     """The collapse is narrow even inside a toolbar: a child button that is a
     DIFFERENT control keeps its line, so a real reparented button still shows up

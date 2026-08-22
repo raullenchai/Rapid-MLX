@@ -14,11 +14,12 @@ disk instead of holding them resident:
    where one routed expert's 9-tensor bundle (gate/up/down projections x
    weight/scales/biases) lives in that architecture's safetensors layout.
 
-LFM2.5 (``lfm2_moe``, ``"stacked"`` layout) and qwen2_moe
-(``qwen2_moe``, ``"direct"`` layout, shared+routed) are registered.
-Both ``model_type`` strings are confirmed against their respective
+LFM2.5 (``lfm2_moe``, ``"stacked"`` layout), qwen2_moe
+(``qwen2_moe``, ``"direct"`` layout, shared+routed), and Qwen3-Next
+(``qwen3_next``, ``"stacked"`` layout, shared+routed) are registered.
+All three ``model_type`` strings are confirmed against their respective
 downloaded checkpoints' ``config.json`` and against ``mlx_lm/models/``.
-Adding a third architecture is one more call to ``_register`` (plus,
+Adding another architecture is one more call to ``_register`` (plus,
 if its streaming math differs, one small new module for its
 streaming-forward function — see ``vllm_mlx/qwen2_moe_forward.py`` for
 the pattern) — no change to :func:`get_adapter` or its callers.
@@ -188,6 +189,29 @@ _register(
         moe_block_attr="feed_forward",
         streaming_forward_module="vllm_mlx.disk_stream_patch",
         streaming_forward_fn_name="_streaming_moe_forward",
+    )
+)
+
+# qwen3_next (e.g. mlx-community/Qwen3-Coder-Next-4bit) — shared+routed
+# MoE with 512 experts. The published MLX checkpoint stores the routed
+# experts as axis-0-stacked switch_mlp tensors (rather than the direct
+# per-expert names accepted by Model.sanitize()), so offset_reader can slice
+# one expert without materializing the 512-expert arrays. Its routing differs
+# subtly from qwen2_moe (negative-k argpartition plus optional top-k
+# renormalization), hence the architecture-specific forward module.
+_register(
+    StreamingAdapter(
+        model_type="qwen3_next",
+        moe_block_module="mlx_lm.models.qwen3_next",
+        moe_block_class_name="Qwen3NextSparseMoeBlock",
+        tensor_template=ExpertTensorTemplate(
+            layout="stacked",
+            name_template="model.layers.{layer}.mlp.switch_mlp.{proj}.{component}",
+        ),
+        num_experts=512,
+        moe_block_attr="mlp",
+        streaming_forward_module="vllm_mlx.qwen3_next_forward",
+        streaming_forward_fn_name="qwen3_next_streaming_forward",
     )
 )
 

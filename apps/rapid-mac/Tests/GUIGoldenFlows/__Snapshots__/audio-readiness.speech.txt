@@ -11,36 +11,31 @@ AXApplication title="Rapid-MLX"
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXGroup id="Audio.Mode" desc="Audio mode" enabled=true
-            AXButton id="Audio.Mode.Dictation" desc="Dictation" enabled=true
-            AXButton id="Audio.Mode.Speech" desc="Speech" enabled=true
-            AXButton id="Audio.Mode.Transcription" desc="Transcription" enabled=true
+            AXButton id="Audio.Mode.Dictation" desc="Speech to Text" enabled=true
+            AXButton id="Audio.Mode.Speech" desc="Text to Speech" enabled=true
           AXScrollArea
-            AXHeading desc="Speech, Create spoken audio with a model and one of its built-in voices." enabled=true
+            AXHeading desc="Text to Speech, Create spoken audio with a model and one of its built-in voices." enabled=true
             AXHeading desc="Text" enabled=true
             AXScrollArea
               AXTextArea id="Audio.Speech.Text" desc="Text to speak" value=empty
-              AXScrollBar value=number enabled=false
+            AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXPopUpButton id="Audio.Speech.ModelPicker" desc="Model" value=text enabled=true
+            AXGroup desc="fake-qwen3-tts isn't downloaded yet, It downloads once (<size>), then starts in seconds." enabled=true
+              AXStaticText value=text enabled=true
+              AXStaticText value=text enabled=true
+              AXButton id="Readiness.Action" desc="Download" enabled=true
             AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Audio.Speech.LoadVoices" desc="Load voices" help="Reload the voice list from the running model." enabled=false
             AXButton id="Audio.Speech.VoicePicker" desc="Voice" value=empty enabled=false
-            AXButton id="Audio.Speech.LoadVoices" desc="Load Voices" enabled=false
             AXStaticText value=text enabled=true
             AXGroup enabled=true
               AXSlider id="Audio.Speech.Speed" value=number enabled=true
                 AXValueIndicator value=number
               AXStaticText value=text enabled=true
-            AXGroup desc="fake-qwen3-tts isn't downloaded yet, It downloads once (<size>), then starts in seconds." enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="Readiness.Action" desc="Download" enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Audio.Speech.Generate" desc="Generate Speech" enabled=false
-            AXScrollBar value=number enabled=true
-              AXValueIndicator value=number
-              AXButton subrole=AXIncrementArrow
-              AXButton subrole=AXDecrementArrow
-              AXButton subrole=AXIncrementPage
-              AXButton subrole=AXDecrementPage
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

@@ -311,6 +311,44 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
+    # Ornith-1.5 (NVIDIA-adjacent open LLM family, MIT) — Qwen3.5 hybrid
+    # arch (model_type=qwen3_5 / qwen3_5_moe). The MLX checkpoints are
+    # unquantized bf16; the family splits on MoE marker the same way the
+    # qwen3.5 family does. 35B-A3B is sparse expert + GatedDeltaNet hybrid
+    # (needs the hybrid scheduler); 9B is the dense GatedDeltaNet sibling
+    # that wedges on metal::malloc under the hybrid path, so it is pinned
+    # non-hybrid via ``is_hybrid_explicit``. Both ship the Qwen3 XML
+    # tool/thinking contract (Qwen2Tokenizer with ``<|im_end|>``), so they
+    # use hermes tool + qwen3 reasoning parsers. ``supports_spec_decode``
+    # is False family-wide (GatedDeltaNet rules out self-spec).
+    (
+        re.compile(
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*"
+            r"[-_.](35b|a3b|moe)(?=[-_.]|$)[^/\\]*$",
+            re.IGNORECASE,
+        ),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+            is_hybrid=True,
+            is_moe=True,
+            supports_spec_decode=False,
+        ),
+    ),
+    (
+        re.compile(
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*"
+            r"[-_.](9b|dense)(?=[-_.]|$)[^/\\]*$",
+            re.IGNORECASE,
+        ),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+            is_hybrid=False,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    ),
     # Qwen3-Coder (older, pure-attention) — not Coder-Next
     (
         re.compile(r"qwen3[-_]?coder", re.IGNORECASE),
@@ -355,6 +393,17 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="glm47",
             reasoning_parser=None,
+        ),
+    ),
+    # Cohere North family (North-Mini-Code) — <|START_THINKING|> /
+    # <|END_THINKING|> reasoning markers with <|START_TEXT|> content
+    # wrappers. No tool parser yet: North's <|START_ACTION|> tool format
+    # has no parser in the registry.
+    (
+        re.compile(r"north[-_]?mini", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser="north",
         ),
     ),
     # MiniMax M2.5
@@ -2145,7 +2194,8 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
 def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     """Truth-in-labeling for the MTP spec-decode path of a model.
 
-    Returns one of ``native`` / ``sidecar`` / ``disabled``:
+    Returns one of ``native`` / ``sidecar`` /
+    ``sidecar (opt-in: --speculative-config)`` / ``disabled``:
 
     * ``native``   — the family ships a native MTP head in the checkpoint
       (Qwen3.5 / Qwen3.6 / HY3) AND the resolved profile enables spec
@@ -2154,6 +2204,8 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     * ``sidecar``  — Gemma 4: MTP is provided by an assistant drafter
       loaded alongside the base weights (no head baked in), and the
       profile enables spec decode.
+    * ``sidecar (opt-in: --speculative-config)`` — the alias declares an MTP
+      sidecar, but Rapid leaves it disabled until the user explicitly opts in.
     * ``disabled`` — spec decode is off for this profile
       (``supports_spec_decode=False`` — hybrid arch, or no MTP head /
       drafter registered for this alias), the family has no MTP mechanism

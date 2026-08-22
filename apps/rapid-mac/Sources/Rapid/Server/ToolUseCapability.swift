@@ -113,6 +113,13 @@ enum ToolUseConfidence: Sendable, Equatable {
 /// ``gemma-4-12b-qat`` / ``qwen3-coder-next-80b-a3b`` shapes.
 enum ToolUseCapability {
 
+    /// Individually dogfooded aliases whose evidence must not be widened to
+    /// arbitrary size siblings by a family rule.
+    static let exactKnownAliases: Set<String> = [
+        "ornith-1.5-9b-bf16",
+        "ornith-1.5-35b-a3b-bf16",
+    ]
+
     /// One family-level rule: "aliases whose name starts with
     /// ``prefix`` (case-insensitive) AND parse to a size
     /// >= ``minSizeBillions`` are ``.known``." The ``note`` field is
@@ -382,7 +389,6 @@ enum ToolUseCapability {
         // works (continuous batching scales) and parser/family contour
         // matches verified 30B aliases (qwen3-coder-30b).
         KnownFamily(prefix: "nemotron", minSizeBillions: 3.0, note: "cycle-7 headline: engine + parser path verified at 30B scale"),
-
         // MARK: Gemma 4 e-series (efficient variants)
 
         // gemma-4-e4b — efficient 4B variant of gemma-4 family; same
@@ -487,6 +493,13 @@ enum ToolUseCapability {
         // family root but multimodal tool-call surface is unverified.
         for override in unverifiedPrefixOverrides where needle.hasPrefix(override) {
             return .unknown
+        }
+
+        // Exact evidence takes precedence over family inference. Ornith 1.5
+        // currently has two verified official checkpoints; similarly named
+        // custom/future sizes remain unverified until they are dogfooded.
+        if exactKnownAliases.contains(needle) {
+            return .known
         }
 
         // Step 3: family + size guard. An alias is .known when its

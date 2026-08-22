@@ -11,6 +11,7 @@ struct DictationView: View {
     @Bindable var controller: DictationController
     @Bindable var viewModel: AudioViewModel
     @Bindable var server: ServerManager
+    @Environment(DownloadManager.self) private var downloads
 
     @State private var newTerm = ""
     @State private var fixTarget: DictationHistory.Entry?
@@ -39,13 +40,23 @@ struct DictationView: View {
             controller.revalidate()
             if controller.modelAlias.isEmpty {
                 controller.modelAlias = viewModel.selectedTranscriptionAlias
+            } else {
+                // The alias setter refreshes cache state itself; when it was
+                // already set, fetch here so the on-disk checkmark and the
+                // Download button reflect reality the moment the pane opens.
+                await controller.refreshModelCacheState()
             }
             if controller.vocabulary.suggestions.isEmpty {
                 await controller.vocabulary.scanForSuggestions()
             }
-            // Swap the model in while the user is still reading this page,
-            // rather than on the first hotkey press when they are mid-sentence.
-            await controller.prewarmModel()
+        }
+        // Runs when the selected alias's pull changes state; on completion,
+        // re-read the catalog so the row flips to "Ready on disk" and the
+        // model warms without another visit to the pane.
+        .task(id: modelDownloadStatusKey) {
+            guard case .completed = downloads.job(for: controller.modelAlias)?.status else { return }
+            await controller.modelDownloadDidFinish()
+            await viewModel.refreshCatalog()
         }
         // TCC grants happen outside the app and emit no notification, so the
         // only reliable moment to re-check is when the window comes back.
@@ -91,6 +102,7 @@ struct DictationView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(statusHeadline)
                     .font(.subheadline.weight(.medium))
+                    .accessibilityIdentifier("Dictation.Status")
                 Text(statusDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -116,11 +128,15 @@ struct DictationView: View {
 
     private var statusColor: Color {
         guard controller.isEnabled else { return .secondary }
+        if controller.phase == .preparingModel { return .orange }
         return controller.phase == .off ? .orange : RapidTheme.green
     }
 
     private var statusHeadline: String {
         guard controller.isEnabled else { return "Dictation is off" }
+        if controller.phase == .preparingModel {
+            return "Loading \(controller.modelAlias) into memory…"
+        }
         return controller.phase == .off
             ? "Not listening — the hotkey isn't armed"
             : "Ready — press \(controller.trigger.label) in any app"
@@ -132,6 +148,9 @@ struct DictationView: View {
                 ? "Turn it on to dictate into any app."
                 : blockingReason
         }
+        if controller.phase == .preparingModel {
+            return "The local model is warming up. Recording starts when it’s ready."
+        }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
             parts.append(String(format: "%.2f s last", latency))
@@ -140,6 +159,9 @@ struct DictationView: View {
         // noticeable time, so the common warm line stays short.
         if let detail = controller.lastLatencyDetail {
             parts.append(detail)
+        }
+        if let warning = controller.lastWarmupWarning {
+            parts.append(warning)
         }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
@@ -151,18 +173,54 @@ struct DictationView: View {
             setupRow(
                 label: "Model",
                 done: controller.readinessSnapshot.modelSelected
+                    && controller.readinessSnapshot.modelOnDisk
             ) {
-                Picker("", selection: $controller.modelAlias) {
-                    Text("Choose…").tag("")
-                    ForEach(viewModel.transcriptionModels, id: \.alias) { entry in
-                        Text(entry.alias).tag(entry.alias)
+                Menu {
+                    Picker("", selection: $controller.modelAlias) {
+                        Text("Choose…").tag("")
+                        ForEach(viewModel.transcriptionModels, id: \.alias) { entry in
+                            // Same menu grammar as the Audio tabs' pickers:
+                            // the cache glyph says up front which choices are
+                            // a download and which are ready now.
+                            Label(
+                                entry.alias,
+                                systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
+                            )
+                            .tag(entry.alias)
+                        }
                     }
+                    .accessibilityIdentifier("Dictation.Model.Options")
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } label: {
+                    PopupControlChrome(
+                        title: controller.modelAlias.isEmpty ? "Choose…" : controller.modelAlias,
+                        width: 260
+                    )
                 }
-                .labelsHidden()
-                .frame(width: 260)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .disabled(controller.phase != .off && controller.phase != .idle)
+                .accessibilityLabel("Model")
+                .accessibilityValue(controller.modelAlias)
                 .accessibilityIdentifier("Dictation.Model")
             } detail: {
                 Text(modelDetail)
+            }
+
+            // The one rendering of download state, shared with Chat, Images
+            // and the sibling Audio tabs: headline + bytes/speed/ETA detail,
+            // a determinate bar, and the single next action. Nothing here is
+            // hand-rolled, so it cannot drift out of alignment with the rest
+            // of the app's model management.
+            if let readiness = modelReadiness {
+                ReadinessBanner(readiness: readiness, onAction: handleModelReadinessAction)
+                    // xs outside + the banner's own md inside = lg: the
+                    // banner's text sits on the rows' content line and its
+                    // action button on the rows' trailing control line.
+                    .padding(.horizontal, RapidTheme.Space.xs)
+                    .padding(.bottom, RapidTheme.Space.lg)
             }
 
             Divider().overlay(RapidTheme.hairline)
@@ -204,13 +262,23 @@ struct DictationView: View {
             Divider().overlay(RapidTheme.hairline)
 
             setupRow(label: "Hotkey", done: true) {
-                Picker("", selection: $controller.trigger) {
-                    ForEach(DictationHotkey.Trigger.allCases) { trigger in
-                        Text(trigger.label).tag(trigger)
+                Menu {
+                    Picker("", selection: $controller.trigger) {
+                        ForEach(DictationHotkey.Trigger.allCases) { trigger in
+                            Text(trigger.label).tag(trigger)
+                        }
                     }
+                    .accessibilityIdentifier("Dictation.Hotkey.Options")
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } label: {
+                    PopupControlChrome(title: controller.trigger.label, width: 140)
                 }
-                .labelsHidden()
-                .frame(width: 140)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .accessibilityLabel("Hotkey")
+                .accessibilityValue(controller.trigger.label)
                 .accessibilityIdentifier("Dictation.Hotkey")
             } detail: {
                 // Left ⌘ is absent by design: it rides along with ⌘C, ⌘V and
@@ -232,9 +300,75 @@ struct DictationView: View {
     private var blockingReason: String {
         let missing = controller.readinessSnapshot
         if missing.modelSelected == false { return "Choose a model first." }
+        if missing.modelOnDisk == false {
+            if case .running = downloads.job(for: controller.modelAlias)?.status {
+                return "Downloading the model — dictation can turn on when it finishes."
+            }
+            return "Download the model first."
+        }
         if missing.microphone == false { return "Microphone access is still needed." }
         if missing.accessibility == false { return "Accessibility access is still needed." }
         return ""
+    }
+
+    private var selectedModelEntry: ModelEntry? {
+        viewModel.transcriptionModels.first { $0.alias == controller.modelAlias }
+    }
+
+    /// Alias + job status folded into one value so `.task(id:)` re-fires on
+    /// any transition (same pattern as Quickstart's download watcher).
+    private var modelDownloadStatusKey: String {
+        let status: String
+        switch downloads.job(for: controller.modelAlias)?.status {
+        case .running: status = "running"
+        case .completed: status = "completed"
+        case .failed: status = "failed"
+        case .cancelled: status = "cancelled"
+        case nil: status = "none"
+        }
+        return "\(controller.modelAlias)#\(status)"
+    }
+
+    /// Download state for the selected model, resolved through the same
+    /// truth table the sibling Audio tabs use. `nil` (chosen and on disk, or
+    /// nothing chosen) renders no banner at all.
+    private var modelReadiness: ModelReadiness? {
+        let alias = controller.modelAlias
+        guard !alias.isEmpty, let entry = selectedModelEntry, !entry.cached else { return nil }
+        let job = downloads.job(for: alias)
+        if case .completed = job?.status {
+            // The catalog refresh that flips `entry.cached` is in flight;
+            // don't flash the Download action back in the meantime.
+            return .starting(alias: alias, detail: "Finishing the download…")
+        }
+        return AudioView.audioDownloadReadiness(
+            alias: alias,
+            cached: entry.cached,
+            sizeText: entry.sizeOnDisk,
+            job: job,
+            activationInFlight: false
+        )
+    }
+
+    /// Dictation never loads-on-start: both Download and Retry only fetch
+    /// weights, and prewarm picks the model up from the catalog watcher once
+    /// the pull lands.
+    private func handleModelReadinessAction(_ action: ModelReadiness.Action) {
+        switch action {
+        case .download(let alias), .retry(let alias):
+            guard let entry = viewModel.transcriptionModels.first(where: { $0.alias == alias }),
+                  !downloads.isDownloading(alias) else { return }
+            if case .failed = downloads.job(for: alias)?.status {
+                downloads.dismissJob(alias: alias)
+            }
+            _ = downloads.startDownload(
+                alias: alias,
+                hfPath: entry.hfRepo,
+                totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+            )
+        case .chooseModel, .start, .restart, .openModelManagement:
+            break
+        }
     }
 
     private var modelDetail: String {
@@ -244,11 +378,20 @@ struct DictationView: View {
             // else here would point at a picker entry that does not exist.
             return "whisper-large-v3-turbo is the usual pick — near large-v3 accuracy at a fraction of the latency."
         }
-        let entry = viewModel.transcriptionModels.first { $0.alias == controller.modelAlias }
-        if let entry, !entry.cached {
-            return "Not downloaded yet — the first dictation will fetch \(entry.sizeOnDisk ?? "the weights")."
+        if let entry = selectedModelEntry, !entry.cached {
+            if case .running = downloads.job(for: controller.modelAlias)?.status {
+                return "Downloading — dictation can turn on when it finishes."
+            }
+            return "Not downloaded yet — dictation can turn on once it's on disk."
         }
-        return "Ready on disk."
+        var detail = "Ready on disk."
+        if let serving = server.servingAlias, !serving.isEmpty, serving != controller.modelAlias {
+            // Same honesty as the readiness banners elsewhere: one model at a
+            // time, and the swap has a real cost the user should hear about
+            // before the hotkey, not during it.
+            detail += " First dictation briefly switches the running model."
+        }
+        return detail
     }
 
     private func setupRow<Control: View, Detail: View>(

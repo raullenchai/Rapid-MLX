@@ -811,6 +811,42 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("gpt_oss_puzzle")
 
+    if "mlx_lm.models.nemotron_labs_diffusion" not in sys.modules:
+        # NVIDIA Nemotron-Labs-Diffusion (3B/8B/14B) — AR (autoregressive)
+        # mode = a Ministral3-style decoder + untied diffusion_head. Vendored
+        # because mlx-lm (0.31.3, 2026-08-21) ships no support for the arch.
+        # Same native-probe + defer-to-upstream policy as ``hy_v3`` above:
+        # if mlx-lm ever lands native support we use theirs, not ours.
+        import importlib.util as _importlib_util
+
+        _nld_native_spec = None
+        try:
+            _nld_native_spec = _importlib_util.find_spec(
+                "mlx_lm.models.nemotron_labs_diffusion"
+            )
+        except (ImportError, ValueError):
+            _nld_native_spec = None
+
+        if _nld_native_spec is None:
+            try:
+                from ..models import nemotron_labs_diffusion as _nld
+
+                sys.modules.setdefault("mlx_lm.models.nemotron_labs_diffusion", _nld)
+            except Exception as e:
+                logger.warning(
+                    "nemotron_labs_diffusion vendored module failed to register — "
+                    "Nemotron-Labs-Diffusion checkpoints will not load until "
+                    "resolved: %s",
+                    e,
+                )
+            else:
+                # Promote to the vendored set only on success so the
+                # tokenizer fallback path routes the arch through the vendor
+                # shim instead of auto-config heuristics.
+                _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
+        else:
+            _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
@@ -1057,6 +1093,7 @@ def load_model_with_fallback(
     enable_dspark: bool = False,
     lazy: bool = False,
     return_config: bool = False,
+    return_source: bool = False,
 ):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -1086,10 +1123,15 @@ def load_model_with_fallback(
             (needed to read ``model_type`` for
             ``disk_stream_patch.install``) — passed straight through to
             ``mlx_lm.load(..., return_config=True)``.
+        return_source: Append the concrete checkpoint source selected for this
+            load. Engine startup uses this to pin persisted-cache identity
+            without requiring the returned model object to accept attributes.
 
     Returns:
-        Tuple of (model, tokenizer), or (model, tokenizer, config) when
-        ``return_config=True``.
+        ``(model, tokenizer)`` by default; ``(model, tokenizer, config)``
+        with ``return_config=True``; ``(model, tokenizer, source)`` with
+        ``return_source=True``; or ``(model, tokenizer, config, source)``
+        when both flags are true.
     """
     # Publishers who ship one repo per model with a folder per quant
     # (``LiquidAI/LFM2.5-2.6B-MLX`` → ``4bit/``, ``8bit/``, ``bf16/`` …)
@@ -1106,6 +1148,14 @@ def load_model_with_fallback(
     # round-trip that hangs a start on a poisoned-DNS network. No-op for a cold
     # cache or an already-local path (see the helper).
     model_name = _local_snapshot_if_cached(model_name)
+
+    # Pin remote repositories to the concrete snapshot that THIS load will
+    # consume. Persisted KV identity must never be derived later from mutable
+    # refs/main state, which can advance while the server is running.
+    if not Path(model_name).is_dir():
+        resolved_snapshot = _resolve_model_path(model_name)
+        if resolved_snapshot is not None:
+            model_name = str(resolved_snapshot)
 
     # ``mlx_lm.load`` may import config.json::model_file.  Validate that
     # caller-supplied local path once at this shared boundary before any native
@@ -1172,7 +1222,7 @@ def load_model_with_fallback(
         # cut (see review-notes.md's blocking finding). Concretely:
         # `augment_eos_token_ids_from_generation_config`'s own docstring
         # names Qwen3/Qwen2.5 (151645/151643) as the exact scenario it
-        # exists to fix, and `qwen2_moe` is one of the two registered
+        # exists to fix, and `qwen2_moe` is one of the registered
         # --disk-stream architectures (vllm_mlx/registry.py) — without
         # this call a qwen2_moe checkpoint loaded with --disk-stream
         # would silently fail to stop at its chat-template terminator
@@ -1198,12 +1248,12 @@ def load_model_with_fallback(
         # chosen loader materializes weights eagerly or lazily. They are
         # also unreachable in practice for a --disk-stream load: neither
         # Gemma 4, nor any vendored architecture, nor Nemotron is a
-        # registered --disk-stream architecture (only `lfm2_moe` and
-        # `qwen2_moe` are, per vllm_mlx/registry.py), so none of these
+        # registered --disk-stream architecture (`lfm2_moe`, `qwen2_moe`,
+        # and `qwen3_next` are, per vllm_mlx/registry.py), so none of these
         # branches would ever fire for a checkpoint this code path is
         # actually used for.
         _post_load_ubc_evict(model_name)
-        return result
+        return (*result, str(model_name)) if return_source else result
     if enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
@@ -1222,7 +1272,7 @@ def load_model_with_fallback(
     # mirror worth evicting after the inner loader succeeded.
     # No-op on non-Darwin.
     _post_load_ubc_evict(model_name)
-    return result
+    return (*result, str(model_name)) if return_source else result
 
 
 # mlx-lm's tokenizer loader (``mlx_lm.tokenizer_utils.load``) imports a

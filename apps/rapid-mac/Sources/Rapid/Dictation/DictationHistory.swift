@@ -121,6 +121,11 @@ final class DictationHistory {
     }
 
     func audioData(for entry: Entry) -> Data? {
+        // Removal is a synchronous UI contract even though disk cleanup is
+        // serialized behind any in-flight archive write.  Never let that
+        // short queueing window resurrect audio for an entry the user has
+        // already removed or cleared.
+        guard entries.contains(where: { $0.id == entry.id }) else { return nil }
         if let pending = pendingAudio[entry.id] { return pending }
         guard let url = audioURL(for: entry) else { return nil }
         return try? Data(contentsOf: url)

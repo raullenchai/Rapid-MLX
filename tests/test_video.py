@@ -186,75 +186,56 @@ class TestTranslateMessages:
         result = model._translate_messages_for_native_video(messages, 2.0, 128)
         assert result[0]["content"] == "Hello"
 
-    def test_video_url_translated(self):
-        import os
-        import tempfile
+    def test_video_url_translated(self, tmp_path, monkeypatch):
+        video_path = tmp_path / "input.mp4"
+        video_path.write_bytes(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 88)
+        monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
+        model = self._make_model()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": str(video_path)},
+                    {"type": "text", "text": "Describe"},
+                ],
+            }
+        ]
+        result = model._translate_messages_for_native_video(messages, 2.0, 128)
+        content = result[0]["content"]
 
-        # Create a temp file to act as a "video"
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            f.write(b"\x00" * 100)
-            video_path = f.name
+        types = [item["type"] for item in content]
+        assert "video" in types
+        assert "text" in types
+        video_item = next(i for i in content if i["type"] == "video")
+        assert video_item["fps"] == 2.0
+        assert video_item["max_frames"] == 128
 
-        try:
-            model = self._make_model()
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "video", "video": video_path},
-                        {"type": "text", "text": "Describe"},
-                    ],
-                }
-            ]
-            result = model._translate_messages_for_native_video(messages, 2.0, 128)
-            content = result[0]["content"]
+    def test_video_url_type_translated(self, tmp_path, monkeypatch):
+        video_path = tmp_path / "input.mp4"
+        video_path.write_bytes(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 88)
+        monkeypatch.setenv("RAPID_MLX_MEDIA_ROOT", str(tmp_path))
+        model = self._make_model()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": str(video_path)},
+                    },
+                    {"type": "text", "text": "Describe"},
+                ],
+            }
+        ]
+        result = model._translate_messages_for_native_video(messages, 1.0, 64)
+        content = result[0]["content"]
 
-            # Should have video and text items
-            types = [item["type"] for item in content]
-            assert "video" in types
-            assert "text" in types
-
-            # Video item should have fps and max_frames
-            video_item = next(i for i in content if i["type"] == "video")
-            assert video_item["fps"] == 2.0
-            assert video_item["max_frames"] == 128
-        finally:
-            os.unlink(video_path)
-
-    def test_video_url_type_translated(self):
-        import os
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            f.write(b"\x00" * 100)
-            video_path = f.name
-
-        try:
-            model = self._make_model()
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "video_url",
-                            "video_url": {"url": video_path},
-                        },
-                        {"type": "text", "text": "Describe"},
-                    ],
-                }
-            ]
-            result = model._translate_messages_for_native_video(messages, 1.0, 64)
-            content = result[0]["content"]
-
-            types = [item["type"] for item in content]
-            assert "video" in types
-            assert "text" in types
-
-            video_item = next(i for i in content if i["type"] == "video")
-            assert video_item["fps"] == 1.0
-            assert video_item["max_frames"] == 64
-        finally:
-            os.unlink(video_path)
+        types = [item["type"] for item in content]
+        assert "video" in types
+        assert "text" in types
+        video_item = next(i for i in content if i["type"] == "video")
+        assert video_item["fps"] == 1.0
+        assert video_item["max_frames"] == 64
 
 
 class TestCollectVideoInputsPydantic:

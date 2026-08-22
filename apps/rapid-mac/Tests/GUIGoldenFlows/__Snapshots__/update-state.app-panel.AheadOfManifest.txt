@@ -68,9 +68,6 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.app" desc="App" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
-              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Rapid-MLX, Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes." enabled=true
@@ -85,12 +82,6 @@ AXApplication title="Rapid-MLX"
         AXHeading desc="Window, Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible." enabled=true
         AXCheckBox subrole=AXToggle id="Settings.App.HideDockOnCloseToggle" desc="Hide Dock icon when closing window" help="Rapid-MLX remains available from the menu bar." value=bool:false enabled=true
         AXButton id="Settings.App.ResetDockOnboardingCTA" desc="Reset onboarding alerts" enabled=true
-        AXScrollBar value=number enabled=true
-          AXValueIndicator value=number
-          AXButton subrole=AXIncrementArrow
-          AXButton subrole=AXDecrementArrow
-          AXButton subrole=AXIncrementPage
-          AXButton subrole=AXDecrementPage
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

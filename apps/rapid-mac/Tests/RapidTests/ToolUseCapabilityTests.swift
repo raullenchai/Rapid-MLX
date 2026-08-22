@@ -96,6 +96,18 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "qwen3.6-35b-a3b-4bit") == .known)
     }
 
+    @Test("Ornith-1.5 official sizes are .known after Studio tool-call dogfood")
+    func ornithOfficialSizesAreKnown() {
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-9b-bf16") == .known)
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-35b-a3b-bf16") == .known)
+    }
+
+    @Test("Unverified Ornith-1.5 size shapes remain .unknown")
+    func ornithUnverifiedSizesAreUnknown() {
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-19b") == .unknown)
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-135b") == .unknown)
+    }
+
     @Test("llama3-3b-4bit is .known — smallest empirically-good llama")
     func llama3_3bIsKnown() {
         #expect(ToolUseCapability.confidence(for: "llama3-3b-4bit") == .known)

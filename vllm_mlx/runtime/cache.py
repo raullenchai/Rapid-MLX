@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import time
+from pathlib import Path
 
 from ..config import get_config
 
@@ -35,6 +36,12 @@ _DEFAULT_SHUTDOWN_BUDGET_SEC = 3.5
 # entry-count fixtures + leaves ~600 ms of slack under a 5 s SIGTERM
 # grace for ``engine.stop()`` and uvicorn teardown.
 _COMMIT_HEADROOM_SEC = 0.4
+
+# Bump whenever persisted KV semantics change in a way the safetensors schema
+# alone cannot detect. Version 2 closes a release-blocking corruption found by
+# the v0.12.19 dogfood: a cache written for an older checkpoint / KV dtype was
+# structurally loadable but produced token-id-0-style garbage after restart.
+_PREFIX_CACHE_NAMESPACE_VERSION = 2
 
 
 def _shutdown_budget_sec() -> float:
@@ -325,9 +332,13 @@ def get_cache_dir() -> str:
     safe_name = (
         raw.replace("/", "--").replace("\\", "--").replace("..", "--").lstrip(".")
     ) or "default"
-    # 8 hex chars of SHA-256 — 32 bits, collision-resistant for the
-    # tens-of-models-per-user scale we'd ever see in practice.
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    # 16 hex chars of SHA-256 (64 bits) make accidental semantic namespace
+    # collisions negligible even across large fleets and long-lived caches.
+    # Persisted KV tensors are reusable only for the exact model revision and
+    # effective KV dtype that produced them. Tensor shape/type validation cannot
+    # prove that semantic identity, so keep those axes in the directory key.
+    identity = _semantic_cache_identity(cfg, raw)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     leaf = f"{safe_name}--{digest}"
     # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
     # best-effort and silently rebuilds, so the moved location just costs a
@@ -336,3 +347,126 @@ def get_cache_dir() -> str:
     return os.path.join(
         os.path.expanduser("~"), ".cache", "rapid-mlx", "prefix_cache", leaf
     )
+
+
+def _cached_model_revision(model_name: str) -> str:
+    """Return a stable, network-free identity for the selected weights."""
+    source = _resolved_model_source(model_name)
+    candidate = Path(source).expanduser()
+    if candidate.exists():
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved.is_dir():
+            digest = hashlib.sha256(str(resolved).encode("utf-8"))
+            # Custom model code can read arbitrary checkpoint-local assets, so
+            # an extension allowlist cannot define semantic identity safely.
+            # Build a complete regular-file manifest in one traversal. Every
+            # file gets replacement-sensitive metadata; reasonably small files
+            # also get a byte hash without forcing startup to stream huge
+            # weight shards from disk.
+            tracked = [path for path in resolved.rglob("*") if path.is_file()]
+            for path in sorted(tracked):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                try:
+                    relative = path.relative_to(resolved)
+                except ValueError:
+                    continue
+                digest.update(str(relative).encode("utf-8"))
+                digest.update(_file_identity(stat).encode("ascii"))
+                if stat.st_size <= 8 * 1024 * 1024:
+                    try:
+                        digest.update(path.read_bytes())
+                    except OSError:
+                        pass
+            return f"local-{digest.hexdigest()[:16]}"
+        try:
+            stat = resolved.stat()
+            return f"local-file-{_file_identity(stat)}"
+        except OSError:
+            return str(resolved)
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        cached = try_to_load_from_cache(source, "config.json")
+        if isinstance(cached, str):
+            path = Path(cached)
+            if path.parent.parent.name == "snapshots":
+                return path.parent.name
+    except Exception:
+        # Prefix persistence is best-effort and must not make startup depend on
+        # optional Hugging Face cache metadata.
+        pass
+    return source
+
+
+def _semantic_cache_identity(cfg, raw_model_name: str) -> str:
+    """Capture immutable cache identity for one loaded engine lifetime."""
+    engine = getattr(cfg, "engine", None)
+    attr = "_rapid_mlx_prefix_cache_identity"
+    if engine is not None:
+        captured = getattr(engine, attr, None)
+        if isinstance(captured, str) and captured:
+            return captured
+
+    kv_dtype = _effective_kv_cache_dtype(cfg)
+    revision = _cached_model_revision(raw_model_name)
+    identity = (
+        f"{raw_model_name}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
+        f"\0kv={kv_dtype}\0revision={revision}"
+    )
+    if engine is not None:
+        try:
+            setattr(engine, attr, identity)
+        except (AttributeError, TypeError):
+            # Foreign immutable engine wrappers still get a safe identity for
+            # this call; production BatchedEngine supports the lifetime pin.
+            pass
+    return identity
+
+
+def pin_prefix_cache_identity(
+    engine, *, raw_model_name: str, checkpoint_source: str, kv_dtype: str
+) -> str:
+    """Pin cache identity before a loaded engine becomes concurrently visible."""
+    revision = _cached_model_revision(checkpoint_source)
+    identity = (
+        f"{raw_model_name}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
+        f"\0kv={kv_dtype}\0revision={revision}"
+    )
+    engine._rapid_mlx_prefix_cache_identity = identity
+    return identity
+
+
+def _file_identity(stat: os.stat_result) -> str:
+    """Metadata identity that changes on content replacement.
+
+    ``ctime_ns`` cannot be restored with ``utime`` after an in-place write, and
+    ``st_ino`` changes for atomic replace deployments. Together they cover the
+    same-size/preserved-mtime case without reading tens of GB of weights during
+    every server boot.
+    """
+    return f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_ino}"
+
+
+def _effective_kv_cache_dtype(cfg) -> str:
+    """Read the canonical live scheduler dtype, falling back pre-load."""
+    engine = getattr(cfg, "engine", None)
+    scheduler = _resolve_scheduler(engine) if engine is not None else None
+    scheduler_cfg = getattr(scheduler, "config", None)
+    live = getattr(scheduler_cfg, "kv_cache_dtype", None)
+    return str(live or getattr(cfg, "kv_cache_dtype", None) or "bf16")
+
+
+def _resolved_model_source(model_name: str) -> str:
+    """Resolve a built-in/user alias to the checkpoint source it names."""
+    try:
+        from ..model_aliases import resolve_model
+
+        return resolve_model(model_name) or model_name
+    except Exception:
+        return model_name

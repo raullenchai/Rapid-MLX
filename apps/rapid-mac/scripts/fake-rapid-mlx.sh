@@ -784,6 +784,9 @@ class Handler(BaseHTTPRequestHandler):
             if length:
                 self.rfile.read(length)
             _event("audio_transcription")
+            delay_ms = int(_setting("FAKE_AUDIO_TRANSCRIPTION_DELAY_MS", "0") or "0")
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
             self._json(200, {
                 "text": "Golden transcription result.",
                 "language": "en",
@@ -947,6 +950,10 @@ def _emit_catalog(subcommand, alias):
             for index in range(6):
                 print(f"a-cached-{index}             hermes           none")
             print("qwen3.5-4b-4bit       hermes           qwen3")
+        if _setting("FAKE_CACHED_VARIANTS") == "1":
+            print("qwen3-0.6b-8bit       hermes           qwen3")
+            print("qwen3-0.6b-4bit       hermes           qwen3")
+            print("qwen3-4b-4bit         hermes           qwen3")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         if _setting("FAKE_SETTINGS_MTP") == "1":
@@ -992,6 +999,10 @@ def _emit_catalog(subcommand, alias):
             for index in range(6):
                 print(f"a-cached-{index}             fake-org/a-cached-{index}        100 MB")
             print("qwen3.5-4b-4bit       mlx-community/Qwen3.5-4B-MLX-4bit  2.9 GB")
+        if _setting("FAKE_CACHED_VARIANTS") == "1":
+            print("qwen3-0.6b-8bit       mlx-community/Qwen3-0.6B-MLX-8bit  720 MB")
+            print("qwen3-0.6b-4bit       mlx-community/Qwen3-0.6B-MLX-4bit  370 MB")
+            print("qwen3-4b-4bit         mlx-community/Qwen3-4B-MLX-4bit    2.4 GB")
         if _setting("FAKE_SETTINGS_MTP") == "1":
             print("qwen3.8-27b-4bit       rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX  15.2 GB")
         # Cached, so the Images tab resolves to it without a download path —
@@ -1007,6 +1018,8 @@ def _emit_catalog(subcommand, alias):
             # requires a resumptive `pull fake-qwen3-tts`.
             print("(incomplete)           fake/qwen3-tts        633 MB")
         if "fake-whisper-small" in pulled_audio:
+            print("fake-whisper-small     fake/whisper-small    461 MiB")
+        elif _setting("FAKE_CACHED_DICTATION") == "1":
             print("fake-whisper-small     fake/whisper-small    461 MiB")
         return True
     if subcommand == "info":

@@ -54,6 +54,7 @@ struct BrandIcon: View {
         case .glm:      return [hex(0x8E5BF0), hex(0x6D3DD6)] // violet
         case .smollm:   return [hex(0x1AA6B7), hex(0x14808C)] // teal
         case .hermes:   return [hex(0x9B59D0), hex(0x7B3FB0)] // purple
+        case .ornith:   return [hex(0x2F9E73), hex(0x237A59)] // forest green
         case .other:    return [hex(0x8A8A93), hex(0x6E6E77)] // graphite
         }
     }

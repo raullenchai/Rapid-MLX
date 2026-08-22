@@ -35,6 +35,54 @@ struct QuickstartCachedModelTests {
         ))
     }
 
+    @Test("first-run cached list collapses quant siblings but not model sizes")
+    func collapsesOnlyTrueVariantSiblings() {
+        let rows = [
+            entry("qwen3-0.6b-8bit"),
+            entry("qwen3-0.6b-4bit"),
+            entry("qwen3-4b-4bit"),
+            entry("llama3-3b-8bit"),
+        ]
+
+        let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 6)
+
+        #expect(presentation.primary.map(\.alias) == [
+            "qwen3-0.6b-4bit", "qwen3-4b-4bit", "llama3-3b-8bit",
+        ])
+        #expect(presentation.alternates.map(\.alias) == ["qwen3-0.6b-8bit"])
+    }
+
+    @Test("unknown cached families remain independently visible")
+    func unknownFamiliesDoNotCollapse() {
+        let rows = [entry("custom-7b-4bit"), entry("custom-7b-8bit")]
+        let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 6)
+        #expect(presentation.primary.map(\.alias) == rows.map(\.alias))
+        #expect(presentation.alternates.isEmpty)
+    }
+
+    @Test("same-family same-size semantic variants remain separate decisions")
+    func semanticVariantsDoNotCollapse() {
+        let rows = [
+            entry("qwen3-4b-instruct-2507-4bit"),
+            entry("qwen3-4b-thinking-2507-8bit"),
+        ]
+        let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 6)
+        #expect(presentation.primary.map(\.alias) == rows.map(\.alias))
+        #expect(presentation.alternates.isEmpty)
+    }
+
+    @Test("presentation cap counts decisions, not hidden quant siblings")
+    func capCountsDistinctModelDecisions() {
+        let rows = [
+            entry("qwen3-0.6b-8bit"),
+            entry("qwen3-0.6b-4bit"),
+            entry("qwen3-4b-4bit"),
+        ]
+        let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 2)
+        #expect(presentation.primary.map(\.alias) == ["qwen3-0.6b-4bit", "qwen3-4b-4bit"])
+        #expect(presentation.alternates.map(\.alias) == ["qwen3-0.6b-8bit"])
+    }
+
     @Test("a selected cached alias takes the start-only path")
     func cachedAliasNeedsNoDownload() {
         let cached = entry("qwen3.5-4b-4bit")

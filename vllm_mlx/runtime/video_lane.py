@@ -104,9 +104,11 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         raise SystemExit(2)
 
     missing = []
+    setup_hint = None
     if _is_ltx25_name(model_name):
         from ..video.ltx25 import (
             LTX25_RUNTIME_COMMIT,
+            LTX25_RUNTIME_REPOSITORY,
             LTX25BackendError,
             prepare_ltx25_runtime,
             resolve_ltx25_runtime,
@@ -118,13 +120,35 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
                 "the pinned LTX-2.5 runtime "
                 f"(commit {LTX25_RUNTIME_COMMIT}; see the video generation guide)"
             )
+            # The checkout is absent or at the wrong revision: the full
+            # walkthrough is the actionable next step. The clone is
+            # conditional and the fetch unconditional so the same block also
+            # repairs an existing checkout pinned to a stale revision. The
+            # serve line uses the canonical alias — never the raw
+            # ``model_name``, which is user input and must not be
+            # interpolated into a copy-pastable shell command.
+            setup_hint = (
+                "  Set up the pinned runtime (docs/guides/video-generation.md):\n"
+                f"    [ -d ltx-2-mlx/.git ] || git clone --branch ltx25 "
+                f"{LTX25_RUNTIME_REPOSITORY}\n"
+                "    git -C ltx-2-mlx fetch --quiet origin\n"
+                f"    git -C ltx-2-mlx checkout {LTX25_RUNTIME_COMMIT}\n"
+                "    uv sync --project ltx-2-mlx\n"
+                '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
+                "rapid-mlx serve ltx-2.5-mlx-q8\n"
+            )
         if shutil.which("uv") is None:
             missing.append("uv (`brew install uv`)")
         elif runtime is not None:
             try:
                 prepare_ltx25_runtime(runtime)
-            except LTX25BackendError:
-                missing.append("a provisioned pinned LTX-2.5 runtime")
+            except LTX25BackendError as exc:
+                # The checkout already resolved — re-cloning is not the fix.
+                # Surface the underlying provisioning failure instead.
+                missing.append(
+                    f"a provisioned pinned LTX-2.5 runtime ({exc}; "
+                    "see docs/guides/video-generation.md)"
+                )
     elif _is_cogvideox_name(model_name):
         cogvideox_modules = {
             "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
@@ -154,6 +178,8 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             "\n  Error: video generation requires " + " and ".join(missing) + ".\n",
             file=sys.stderr,
         )
+        if setup_hint is not None:
+            print(setup_hint, file=sys.stderr)
         raise SystemExit(2)
 
 

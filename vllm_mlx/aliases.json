@@ -1,12 +1,14 @@
 {
   "north-mini-code-4bit": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
+    "reasoning_parser": "north",
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false
   },
   "north-mini-code-bf16": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
+    "reasoning_parser": "north",
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false
@@ -1408,6 +1410,11 @@
     "supports_spec_decode": false,
     "is_moe": true
   },
+  "nemotron-labs-diffusion-3b-4bit": {
+    "hf_path": "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+    "supports_spec_decode": true,
+    "is_hybrid": false
+  },
   "bonsai-1.7b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
     "tool_call_parser": "hermes",
@@ -1981,6 +1988,23 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "ornith-1.5-9b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-9B-MLX",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "ornith-1.5-35b-a3b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
     "supports_spec_decode": false
   }
 }

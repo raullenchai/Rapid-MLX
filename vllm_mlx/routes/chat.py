@@ -6726,6 +6726,7 @@ async def stream_chat_completion(
         # doesn't see a truncated reply (codex round-4 CRITICAL).
         fallback_tool_calls: list = []
         finalize_content_parts: list[str] = []
+        finalize_reasoning_parts: list[str] = []
         for event in processor.finalize():
             if event.type == "tool_call":
                 # r7-A R7-H1: normalize before append so terminal-merge
@@ -6736,7 +6737,23 @@ async def stream_chat_completion(
                 )
             elif event.type == "content" and event.content:
                 finalize_content_parts.append(event.content)
+            elif event.type == "reasoning" and event.reasoning:
+                # A stream_eof_flush parser (north) that ends while still
+                # in the thinking phase releases its withheld marker tail
+                # as a ``reasoning`` event. Content events get merged into
+                # the terminal chunk below, but nothing there carries a
+                # reasoning channel — so without this branch the tail is
+                # silently dropped from ``reasoning_content``, violating
+                # the same never-drop contract this finalize pass exists
+                # to uphold for content.
+                finalize_reasoning_parts.append(event.reasoning)
         finalize_content = "".join(finalize_content_parts)
+        if finalize_reasoning_parts:
+            if first_token_ts is None:
+                first_token_ts = time.perf_counter()
+            yield _fast_sse_chunk(
+                "".join(finalize_reasoning_parts), "reasoning_content"
+            )
 
         # #447 streaming-parity synthesis (2026-06-26). The non-stream
         # chat path at chat.py:~3147 / ~3215 falls back to

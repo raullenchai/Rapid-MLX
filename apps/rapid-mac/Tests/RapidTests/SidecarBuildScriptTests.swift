@@ -72,7 +72,7 @@ struct SidecarBuildScriptTests {
     func imageStackIsPinnedAndProvenTorchFree() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
 
-        #expect(script.contains("'mflux==0.18.1'"),
+        #expect(script.contains("'mflux==0.19.0'"),
                 "The no-deps sidecar install must never float within a range.")
         // The Images tab is only shippable because mflux's module-level
         // `import torch` is deferred into the three torch-only loading modes —

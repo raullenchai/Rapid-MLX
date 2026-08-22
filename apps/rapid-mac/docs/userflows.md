@@ -383,18 +383,19 @@ image alias reloads the sidecar.
 
 ---
 
-## Flow 17 — Audio tab (speech & transcription)
+## Flow 17 — Audio tab (Speech to Text & Text to Speech)
 
 **Trigger.** Sidebar → Audio (`Sidebar.Audio`).
 
-**Expected.** `AudioView` with a mode switch (`Audio.Mode`) and an empty state
-that can jump to Model Management (`Audio.EmptyState`,
-`Audio.EmptyState.OpenModelManagement`). **Speech (TTS)**: text
-(`Audio.Speech.Text`), voice picker + preview (`Audio.Speech.VoicePicker`,
-`Audio.Speech.PreviewVoice.<voice>`), speed (`Audio.Speech.Speed`), generate /
-play / save (`Audio.Speech.{Generate,Play,Save,LoadVoices}`).
-**Transcription (STT)**: file picker, run, result, copy, save
-(`Audio.Transcription.{FilePicker,Run,Result,Copy,Save}`).
+**Expected.** `AudioView` with a two-mode switch (`Audio.Mode`:
+`Audio.Mode.Dictation` "Speech to Text", `Audio.Mode.Speech` "Text to
+Speech") and an empty state that can jump to Model Management
+(`Audio.EmptyState`, `Audio.EmptyState.OpenModelManagement`).
+**Speech to Text** is the dictation surface (Flow 18). **Text to Speech**:
+text (`Audio.Speech.Text`), voice picker + preview
+(`Audio.Speech.VoicePicker`, `Audio.Speech.PreviewVoice.<voice>`), speed
+(`Audio.Speech.Speed`), generate / play / save
+(`Audio.Speech.{Generate,Play,Save,LoadVoices}`).
 
 **Touches.** `UI/AudioView.swift`, `Audio/AudioViewModel.swift`,
 `Audio/AudioClient.swift`.
@@ -686,8 +687,7 @@ Starter.<index>,Result.Save,Result.Edit,Edit.Import,Edit.Source,Edit.Exit}`.
 **Audio — `UI/AudioView.swift`:**
 `Audio.{Mode,EmptyState,EmptyState.OpenModelManagement,
 Speech.{Text,VoicePicker,VoiceOption.<voice>,PreviewVoice.<voice>,Speed,
-Generate,Play,Save,LoadVoices},
-Transcription.{FilePicker,Run,Result,Copy,Save}}`.
+Generate,Play,Save,LoadVoices}}`.
 
 **Dictation — `UI/DictationView.swift`:**
 `Dictation.{Enable,Arm,Hotkey,Model,NewTerm,AddTerm,RemoveTerm.<term>,

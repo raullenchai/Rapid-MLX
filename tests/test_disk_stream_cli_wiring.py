@@ -40,7 +40,7 @@ Four things are pinned here, none of which need a model download:
    fixup the non-lazy path always runs — most importantly
    ``augment_eos_token_ids_from_generation_config``, whose own docstring
    names Qwen3/Qwen2.5 as the exact scenario it exists to fix, and
-   ``qwen2_moe`` is one of the two registered ``--disk-stream``
+   ``qwen2_moe`` is one of the registered ``--disk-stream``
    architectures. A fast, in-process test monkeypatches all five fixups
    to record whether/how they fire and asserts they do, without a
    checkpoint download.
@@ -669,12 +669,14 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     from vllm_mlx.utils import tokenizer as tok
 
     order: list[str] = []
-    fake_model = object()
+    fake_model = SimpleNamespace()
     fake_tokenizer = SimpleNamespace(chat_template=None)
     model_name = "mlx-community/fake-qwen2-moe-checkpoint-4bit"
+    resolved_name = "/fake/disk-stream-checkpoint"
 
     def _fake_mlx_lm_load(path_or_hf_repo, tokenizer_config=None, **kwargs):
         order.append("mlx_lm.load")
+        assert path_or_hf_repo == resolved_name
         assert kwargs.get("lazy") is True
         assert tokenizer_config == {"neutralized": True}, (
             "mlx_lm.load must see the tokenizer_config AFTER "
@@ -687,13 +689,13 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
 
     def _fake_neutralize(name, tokenizer_config):
         order.append("_neutralize_unbundled_template_types")
-        assert name == model_name
+        assert name == resolved_name
         return {"neutralized": True}
 
     def _fake_inject_mtp(model, name):
         order.append("_try_inject_mtp_post_load")
         assert model is fake_model
-        assert name == model_name
+        assert name == resolved_name
 
     def _fake_sidecar(model_path, tokenizer):
         order.append("_apply_chat_template_sidecar")
@@ -702,7 +704,7 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     def _fake_augment_eos(tokenizer, name):
         order.append("augment_eos_token_ids_from_generation_config")
         assert tokenizer is fake_tokenizer
-        assert name == model_name
+        assert name == resolved_name
 
     def _fake_repair_decoder(tokenizer):
         order.append("repair_byte_level_decoder")
@@ -712,22 +714,21 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     monkeypatch.setattr(tok, "_neutralize_unbundled_template_types", _fake_neutralize)
     monkeypatch.setattr(tok, "_try_inject_mtp_post_load", _fake_inject_mtp)
     monkeypatch.setattr(tok, "_apply_chat_template_sidecar", _fake_sidecar)
-    monkeypatch.setattr(
-        tok, "_resolve_model_path", lambda name: "/fake/disk-stream-checkpoint"
-    )
+    monkeypatch.setattr(tok, "_resolve_model_path", lambda name: resolved_name)
     monkeypatch.setattr(
         tok, "augment_eos_token_ids_from_generation_config", _fake_augment_eos
     )
     monkeypatch.setattr(tok, "repair_byte_level_decoder", _fake_repair_decoder)
     monkeypatch.setattr(tok, "_post_load_ubc_evict", lambda name: None)
 
-    model, tokenizer, config = tok.load_model_with_fallback(
-        model_name, lazy=True, return_config=True
+    model, tokenizer, config, checkpoint_source = tok.load_model_with_fallback(
+        model_name, lazy=True, return_config=True, return_source=True
     )
 
     assert model is fake_model
     assert tokenizer is fake_tokenizer
     assert config == {"model_type": "qwen2_moe"}
+    assert checkpoint_source == resolved_name
     assert order == [
         "_neutralize_unbundled_template_types",
         "mlx_lm.load",

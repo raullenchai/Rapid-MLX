@@ -280,6 +280,25 @@ struct RapidApp: App {
             fixtureState: updateBusyFixture ? .busy : nil
         )
         let downloadsInstance = DownloadManager(binaryPath: manager.binaryPath)
+        // TCC cannot be granted hermetically on an unattended runner. This
+        // two-key fixture exercises the real model/server warmup lifecycle
+        // while replacing only the OS permission and event-tap boundaries.
+        let dictationReadinessFixture = ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1"
+            && ProcessInfo.processInfo.environment["RAPID_GUI_DICTATION_READINESS_FIXTURE"] == "1"
+        let fixtureReadiness: DictationController.Readiness? = dictationReadinessFixture
+            ? .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: true)
+            : nil
+        let fixtureHotkeyStart: (@MainActor () -> Bool)?
+        if dictationReadinessFixture {
+            fixtureHotkeyStart = { @MainActor in true }
+        } else {
+            fixtureHotkeyStart = nil
+        }
+        let dictationController = DictationController(
+            server: manager,
+            testingReadiness: fixtureReadiness,
+            testingHotkeyStart: fixtureHotkeyStart
+        )
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
         // background pull for the same alias before spawning serve.
         manager.attachDownloads(downloadsInstance)
@@ -293,7 +312,7 @@ struct RapidApp: App {
         _chatViewModel = State(initialValue: chat)
         _imageGen = State(initialValue: ImageGenViewModel(server: manager))
         _audio = State(initialValue: AudioViewModel(server: manager))
-        _dictation = State(initialValue: DictationController(server: manager))
+        _dictation = State(initialValue: dictationController)
         _updater = State(initialValue: updateChecker)
         _sparkleUpdater = State(initialValue: sparkleUpdateController)
         _sampling = State(initialValue: samplingConfig)
@@ -308,6 +327,7 @@ struct RapidApp: App {
         AppDelegate.shared.updater = updateChecker
         AppDelegate.shared.sparkleUpdater = sparkleUpdateController
         AppDelegate.shared.chat = chat
+        AppDelegate.shared.dictation = dictationController
         AppDelegate.shared.appearance = appearanceConfig
     }
 
@@ -514,10 +534,10 @@ struct RapidApp: App {
     }
 }
 
-/// AppKit delegate whose only job is to tear down the embedded child
-/// before the process exits. SwiftUI's pure `App` lifecycle has no
-/// equivalent synchronous hook — `onDisappear` and scene phase changes
-/// fire on app activation transitions, not on terminate.
+/// AppKit delegate that tears down process-wide services and the embedded
+/// child before the process exits. SwiftUI's pure `App` lifecycle has no
+/// equivalent synchronous hook — `onDisappear` and scene phase changes fire
+/// on app activation transitions, not on terminate.
 ///
 /// ``@MainActor`` is required by Swift 6 strict concurrency — AppKit
 /// delegate callbacks all land on the main thread anyway, and the
@@ -537,6 +557,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// cancel the in-flight chat stream task before shutting the child
     /// down, and the menu-bar tray's "New Chat" can reach it.
     weak var chat: ChatViewModel?
+    /// Process-wide dictation owns a global CGEvent tap, microphone capture,
+    /// and asynchronous transcription work. It must be disarmed before the
+    /// server begins its synchronous quit grace, while keeping the persisted
+    /// Enabled preference intact for the next launch.
+    var dictation: DictationController?
     /// Persisted theme override. Re-applied from
     /// ``applicationDidFinishLaunching`` so the user's "Light" choice
     /// takes effect on the first window even when the host system is
@@ -918,7 +943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// AppKit). Production code threads the live AppDelegate slots
     /// through; tests pass spy closures that record call order.
     ///
-    /// Codex r1 NIT: prior version had the 5 calls inlined in
+    /// Codex r1 NIT: prior version had the teardown calls inlined in
     /// `applicationWillTerminate`, with no test pinning the
     /// stop-first invariant against a future reorder.
     ///
@@ -943,15 +968,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// no grace period was shortened — the server's 5 s window is
     /// load-bearing for rapid-mlx's prefix-cache flush.
     static func runTerminationSequence(
+        stopDictation: () -> Void,
         stopStream: () -> Void,
         signalServer: () -> Void,
         signalDownloads: () -> Void,
         reapServer: () -> Void,
-        reapDownloads: () -> Void
+        reapDownloads: () -> Void,
+        flushConversations: () -> Void,
+        flushFolders: () -> Void
     ) {
-        // ORDER MATTERS — the audit P1 invariant is: stopStream BEFORE
-        // any teardown so the inflight URLSessionDataTask FIN reaches
-        // rapid-mlx before the child is SIGTERM'd.
+        // ORDER MATTERS — stop accepting process-global input before any
+        // dependency teardown. Otherwise the dictation hotkey remains live
+        // while the server is already leaving and presents a dead action.
+        stopDictation()
+        // The audit P1 invariant is: stopStream BEFORE any child teardown so
+        // the inflight URLSessionDataTask FIN reaches rapid-mlx before the
+        // child is SIGTERM'd.
         stopStream()
         // Signal phase — non-blocking. Both subsystems get their
         // SIGTERM before anyone waits, so the graces overlap.
@@ -968,8 +1000,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // written in the same user actions (deleting a folder unfiles the
         // conversations in it), so flushing only one can leave the pair
         // disagreeing about where a row lives.
-        ConversationStore.flush()
-        ConversationFolderStore.flush()
+        flushConversations()
+        flushFolders()
     }
 
     /// The single clean-shutdown wiring, shared by ``applicationWillTerminate``
@@ -981,11 +1013,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func runStandardTermination() {
         runTerminationSequence(
+            stopDictation: {
+                // Strong app-lifetime ownership makes this teardown
+                // independent of SwiftUI's scene/@State destruction order.
+                // Drop that ownership only after the event tap, recorder and
+                // in-flight work have all been stopped.
+                AppDelegate.shared.dictation?.shutdownForTermination()
+                AppDelegate.shared.dictation = nil
+            },
             stopStream: { AppDelegate.shared.chat?.stopAndPersist() },
             signalServer: { AppDelegate.shared.server?.beginShutdown() },
             signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
             reapServer: { AppDelegate.shared.server?.shutdownSync() },
-            reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() }
+            reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
+            flushConversations: { ConversationStore.flush() },
+            flushFolders: { ConversationFolderStore.flush() }
         )
     }
 }

@@ -68,9 +68,6 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.app" desc="App" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
-              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Model Management, Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space." enabled=true
@@ -128,12 +125,6 @@ AXApplication title="Rapid-MLX"
           AXUnknown desc="Speed: untested" enabled=true
           AXStaticText help="Measured size on disk. Downloaded by another app — Rapid can't delete it." value=text enabled=true
         AXStaticText id="Settings.ModelManagement.Footer" value=text enabled=true
-        AXScrollBar value=number enabled=true
-          AXValueIndicator value=number
-          AXButton subrole=AXIncrementArrow
-          AXButton subrole=AXDecrementArrow
-          AXButton subrole=AXIncrementPage
-          AXButton subrole=AXDecrementPage
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

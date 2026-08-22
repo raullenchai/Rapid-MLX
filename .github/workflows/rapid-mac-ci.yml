@@ -272,13 +272,15 @@ jobs:
       # at scripts/fake-rapid-mlx.sh, so there is no model download, no GPU
       # work and no network in the run at all.
       #
-      # Debug rather than release for the same reason — the accessibility tree
-      # is identical and the compile is much cheaper. This gate is about
-      # structure, not optimised codegen.
+      # Exercise the same compile-time surface users receive. Debug builds add
+      # Settings → Developer, so comparing a Debug app against release golden
+      # baselines makes every Settings journey fail even when the product is
+      # unchanged. Optimisation does not matter here; matching the shipped UI
+      # contract does.
       - name: Build Rapid-MLX Desktop.app
         env:
           SKIP_SIDECAR: "1"
-          RAPID_BUILD_CONFIG: debug
+          RAPID_BUILD_CONFIG: release
         run: ./scripts/build.sh
 
       # #1719 — the first native XCUITest journey complements (and does not
@@ -336,6 +338,12 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow cached-curated-tradeup
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-curated-tradeup
+
+      - name: 'Golden flow: cached-variant-collapse'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow cached-variant-collapse
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-variant-collapse
 
       - name: 'Golden flow: download-progress'
         continue-on-error: true
@@ -495,7 +503,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GOLDEN_ROOT"])
-          expected = 27
+          expected = 28
           results = sorted(root.glob("*/result.json"))
           failures = []
           for path in results:

@@ -7,14 +7,12 @@ final class AudioViewModel {
     enum Mode: String, CaseIterable, Identifiable {
         case dictation
         case speech
-        case transcription
 
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .dictation: return "Dictation"
-            case .transcription: return "Transcription"
-            case .speech: return "Speech"
+            case .dictation: return "Speech to Text"
+            case .speech: return "Text to Speech"
             }
         }
 
@@ -26,7 +24,6 @@ final class AudioViewModel {
             switch self {
             case .dictation: return "Dictation"
             case .speech: return "Speech"
-            case .transcription: return "Transcription"
             }
         }
     }
@@ -37,15 +34,12 @@ final class AudioViewModel {
     var selectedTranscriptionAlias = ""
     var selectedSpeechAlias = ""
 
-    var selectedFileURL: URL?
-    var transcription: AudioTranscriptionResult?
     var speechText = ""
     var voices: [String] = []
     var selectedVoice = ""
     var speed = 1.0
     var synthesizedAudio: SynthesizedAudio?
 
-    var isTranscribing = false
     var isLoadingVoices = false
     var isSynthesizing = false
     var previewingVoice: String?
@@ -78,7 +72,7 @@ final class AudioViewModel {
     }
 
     var isBusy: Bool {
-        isTranscribing || isLoadingVoices || isSynthesizing || previewingVoice != nil
+        isLoadingVoices || isSynthesizing || previewingVoice != nil
     }
 
     func refreshCatalog() async {
@@ -92,12 +86,6 @@ final class AudioViewModel {
         resolveSelections()
     }
 
-    func selectFile(_ url: URL) {
-        selectedFileURL = url
-        transcription = nil
-        errorMessage = nil
-    }
-
     func selectSpeechModel(_ alias: String) {
         guard alias != selectedSpeechAlias else { return }
         selectedSpeechAlias = alias
@@ -105,36 +93,6 @@ final class AudioViewModel {
         selectedVoice = ""
         synthesizedAudio = nil
         errorMessage = nil
-    }
-
-    func transcribe() async {
-        guard !isBusy,
-              let fileURL = selectedFileURL,
-              let entry = transcriptionModels.first(where: {
-                  $0.alias == selectedTranscriptionAlias
-              }) else { return }
-        isTranscribing = true
-        errorMessage = nil
-        transcription = nil
-        defer { isTranscribing = false }
-        guard await server.ensureServing(
-            alias: entry.alias,
-            hfPath: entry.hfRepo,
-            residencyEligible: false
-        ) else {
-            errorMessage = "The audio model couldn't start. Audio support may be unavailable in this app build."
-            return
-        }
-        do {
-            transcription = try await client.transcribe(
-                fileURL: fileURL,
-                model: entry.alias,
-                port: server.activePort,
-                bearer: server.activeBearer
-            )
-        } catch {
-            errorMessage = Self.message(for: error)
-        }
     }
 
     func loadVoices() async -> Bool {

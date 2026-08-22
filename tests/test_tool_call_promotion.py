@@ -328,6 +328,24 @@ class TestStreamingPromotion:
         assert content is not None
         assert "<tool_call>" in content
 
+    def test_stream_unclosed_tool_keeps_trailing_prose_in_reasoning(self, parser):
+        """An unclosed tool body must not absorb later reasoning prose."""
+        text = (
+            "<think>Need to call.\n"
+            '<tool_call>{"name":"add","arguments":1}</function>\n'
+            "Done thinking.</think>ANSWER"
+        )
+
+        reasoning, content = _stream(parser, text, chunk_size=len(text))
+
+        assert reasoning is not None
+        assert "Need to call." in reasoning
+        assert "Done thinking." in reasoning
+        assert content is not None
+        assert "<tool_call>" in content
+        assert "Done thinking." not in content
+        assert content.endswith("ANSWER")
+
     def test_stream_finalize_with_buffered_tool_call(self, parser):
         """Stream ends mid-tool-call — flushed by finalize as content,
         NOT duplicated. Codex round-3 BLOCKING regression: the

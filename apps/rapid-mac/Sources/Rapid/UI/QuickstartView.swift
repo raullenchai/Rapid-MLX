@@ -1434,6 +1434,12 @@ struct QuickstartView: View {
     /// the transfer is the job's own status.
     @State private var cancelRequestedAlias: String?
 
+    /// First-run setup should present a decision, not mirror every cached
+    /// quantization of that decision.  Sibling variants stay reachable behind
+    /// one explicit disclosure; Settings → Models and Browse all remain the
+    /// complete inventory surfaces.
+    @State private var showsOtherCachedVariants = false
+
     /// Callback the parent supplies for "Skip for now". The parent
     /// dismisses the Quickstart surface for the current session (without
     /// flipping the persisted flag) so the existing picker becomes visible.
@@ -2231,6 +2237,44 @@ struct QuickstartView: View {
                             ) { coordinator.select(choice) }
                             .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
                         }
+                        if !list.cachedAlternates.isEmpty {
+                            Button {
+                                showsOtherCachedVariants.toggle()
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: showsOtherCachedVariants
+                                        ? "minus" : "plus")
+                                        .font(.system(size: 10, weight: .semibold))
+                                    Text("Other variants (\(list.cachedAlternates.count))")
+                                        .scaledSystemFont(12, weight: .medium)
+                                }
+                                .foregroundStyle(RapidTheme.textSecondary)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("Quickstart.CachedVariants.Toggle")
+                            .accessibilityLabel(
+                                showsOtherCachedVariants
+                                    ? "Hide other downloaded model variants"
+                                    : "Show \(list.cachedAlternates.count) other downloaded model variants"
+                            )
+
+                            if showsOtherCachedVariants {
+                                ForEach(list.cachedAlternates) { entry in
+                                    let choice = Self.choice(forCachedModel: entry)
+                                    QuickstartCompactCard(
+                                        choice: choice,
+                                        selected: coordinator.selection.alias == entry.alias,
+                                        sizeText: entry.sizeOnDisk ?? "",
+                                        isCached: true,
+                                        onActivate: { activatePrimary(in: .shortlist) }
+                                    ) { coordinator.select(choice) }
+                                    .accessibilityIdentifier(
+                                        "Quickstart.CachedVariant.\(entry.alias)"
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     ForEach(list.starters) { choice in
@@ -2278,7 +2322,9 @@ struct QuickstartView: View {
                     // user rather than vanishing — otherwise Back lands them on
                     // a list that visibly disagrees with the footer, which
                     // reads as "my choice was ignored".
-                    if let pick = list.yourPick {
+                    if let pick = list.yourPick,
+                       !(showsOtherCachedVariants
+                         && list.cachedAlternates.contains(where: { $0.alias == pick.alias })) {
                         OnboardingGroupLabel(text: "YOUR PICK")
                             .padding(.top, 14)
                         let choice = Self.choice(forCatalogEntry: pick)
@@ -3014,6 +3060,7 @@ struct QuickstartView: View {
     /// The recommended shortlist exactly as it renders, in render order.
     struct Shortlist: Equatable {
         var cached: [ModelEntry] = []
+        var cachedAlternates: [ModelEntry] = []
         var starters: [QuickstartModelChoice] = []
         var lowMemory: [QuickstartModelChoice] = []
         var tradeUps: [QuickstartModelChoice] = []
@@ -3022,12 +3069,22 @@ struct QuickstartView: View {
 
         /// Every alias the user can currently see and click, in render order.
         /// This is the "visible" half of `selection ∩ visible rows`.
-        var visibleAliases: [String] {
-            cached.map(\.alias)
+        func visibleAliases(includeCachedAlternates: Bool) -> [String] {
+            let aliases = cached.map(\.alias)
+                + (includeCachedAlternates ? cachedAlternates.map(\.alias) : [])
                 + starters.map(\.alias)
                 + lowMemory.map(\.alias)
                 + tradeUps.map(\.alias)
                 + (yourPick.map { [$0.alias] } ?? [])
+            return aliases.reduce(into: []) { result, alias in
+                guard !result.contains(alias) else { return }
+                result.append(alias)
+            }
+        }
+
+        /// Collapsed-by-default render used by pure callers and tests.
+        var visibleAliases: [String] {
+            visibleAliases(includeCachedAlternates: false)
         }
     }
 
@@ -3035,12 +3092,14 @@ struct QuickstartView: View {
     /// visible-alias set can be pinned without a SwiftUI host.
     static func shortlist(catalog: [ModelEntry], selection: String) -> Shortlist {
         let choices = QuickstartCoordinator.onboardingChoices
-        let existing = Array(quickstartCachedModels(catalog).prefix(6))
+        let cachedPresentation = quickstartCachedPresentation(catalog, limit: 6)
+        let existing = cachedPresentation.primary
         let existingAliases = Set(existing.map(\.alias))
         var native = existingAliases
         native.formUnion(choices.map(\.alias))
         return Shortlist(
             cached: existing,
+            cachedAlternates: cachedPresentation.alternates,
             starters: choices.filter { $0.isStarter && !existingAliases.contains($0.alias) },
             lowMemory: choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) },
             tradeUps: choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) },
@@ -3109,7 +3168,9 @@ struct QuickstartView: View {
         switch context {
         case .shortlist:
             let cachedAliases = Set(Self.quickstartCachedModels(cachedModels).map(\.alias))
-            return shortlist.visibleAliases.map { alias in
+            return shortlist.visibleAliases(
+                includeCachedAlternates: showsOtherCachedVariants
+            ).map { alias in
                 OnboardingModelSelection.Row(
                     alias: alias,
                     isCached: cachedAliases.contains(alias),
@@ -3201,6 +3262,70 @@ struct QuickstartView: View {
     /// correctness must not depend on the UI's six-row presentation bound.
     static func quickstartCachedModels(_ entries: [ModelEntry]) -> [ModelEntry] {
         entries.filter { $0.cached && $0.kind == .chat }
+    }
+
+    /// The quieter cached slice used only by the first-run shortlist.
+    ///
+    /// Models are siblings only when their alias lineage matches after removing
+    /// a terminal quantization suffix. The known family and parameter count are
+    /// additional guards. This collapses `qwen3-0.6b-{4bit,8bit}` without
+    /// merging same-sized Instruct and Thinking models. Unknown families or
+    /// sizes deliberately stand alone: hiding an unrelated model is worse than
+    /// leaving one extra row visible.
+    struct CachedPresentation: Equatable {
+        var primary: [ModelEntry]
+        var alternates: [ModelEntry]
+    }
+
+    static func quickstartCachedPresentation(
+        _ entries: [ModelEntry],
+        limit: Int
+    ) -> CachedPresentation {
+        let cached = quickstartCachedModels(entries)
+        var orderedKeys: [String] = []
+        var groups: [String: [ModelEntry]] = [:]
+
+        for entry in cached {
+            let key = cachedVariantGroupKey(for: entry)
+            if groups[key] == nil { orderedKeys.append(key) }
+            groups[key, default: []].append(entry)
+        }
+
+        var primary: [ModelEntry] = []
+        var alternates: [ModelEntry] = []
+        for key in orderedKeys.prefix(max(0, limit)) {
+            let siblings = (groups[key] ?? []).sorted(by: cachedVariantPreferred)
+            if let first = siblings.first { primary.append(first) }
+            alternates.append(contentsOf: siblings.dropFirst())
+        }
+        return CachedPresentation(primary: primary, alternates: alternates)
+    }
+
+    private static func cachedVariantGroupKey(for entry: ModelEntry) -> String {
+        let family = ModelInfoCatalog.familyAndContext(for: entry.alias).family
+        guard family != "Unknown",
+              let params = ModelSizing.estimate(alias: entry.alias).paramsBillions
+        else { return "alias:\(entry.alias.lowercased())" }
+        let lineage = entry.alias.lowercased().replacingOccurrences(
+            of: #"[-_](?:2|3|4|5|6|8)bit$"#,
+            with: "",
+            options: .regularExpression
+        )
+        return "family:\(family.lowercased())|params:\(params)|lineage:\(lineage)"
+    }
+
+    private static func cachedVariantPreferred(_ lhs: ModelEntry, _ rhs: ModelEntry) -> Bool {
+        let lhsBits = ModelSizing.parseBitsPerWeight(lhs.alias)
+        let rhsBits = ModelSizing.parseBitsPerWeight(rhs.alias)
+        let lhsFourBit = lhsBits == 4
+        let rhsFourBit = rhsBits == 4
+        if lhsFourBit != rhsFourBit { return lhsFourBit }
+        if lhs.isExternal != rhs.isExternal { return !lhs.isExternal }
+
+        let lhsGB = ModelSizing.estimate(alias: lhs.alias).weightsGB
+        let rhsGB = ModelSizing.estimate(alias: rhs.alias).weightsGB
+        if lhsGB != rhsGB { return lhsGB < rhsGB }
+        return lhs.alias.localizedStandardCompare(rhs.alias) == .orderedAscending
     }
 
     static func choice(forCachedModel entry: ModelEntry) -> QuickstartModelChoice {

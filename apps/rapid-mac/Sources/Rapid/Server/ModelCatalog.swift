@@ -596,6 +596,51 @@ enum ModelCatalog {
         }
     }
 
+    /// Audio catalog with probe success preserved. The ordinary catalog API
+    /// intentionally degrades subprocess failures to an empty list for picker
+    /// callers. Readiness decisions cannot do that: a failed `ls` must not be
+    /// interpreted as an authoritative “nothing is cached” snapshot.
+    static func audioEntriesIfAvailable(
+        binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+    ) async -> [ModelEntry]? {
+        async let modelsTask = runRapidMlxResult(binary: binary, args: ["models"])
+        async let cachedTask = runRapidMlxResult(
+            binary: binary,
+            args: ["ls"],
+            hubCacheOverride: hubCacheOverride
+        )
+        let models = await modelsTask
+        let cached = await cachedTask
+        guard models.succeeded, cached.succeeded else { return nil }
+
+        let rows = parseAudioRows(models.stdout).filter {
+            isDesktopAudioAliasVisible($0.alias)
+        }
+        let cachedByRepo = Dictionary(
+            parseCached(cached.stdout).compactMap { _, repo, size -> (String, String?)? in
+                guard let repo else { return nil }
+                return (repo, size)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return rows.map { row in
+            ModelEntry(
+                alias: row.alias,
+                hfRepo: row.hfRepo,
+                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? row.size,
+                cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                kind: .audio,
+                audioCapability: audioCapability(
+                    alias: row.alias,
+                    subtype: row.subtype,
+                    family: row.family
+                ),
+                audioFamily: row.family
+            )
+        }
+    }
+
     static func isDesktopAudioAliasVisible(_ alias: String) -> Bool {
         !hiddenDesktopAudioAliases.contains(alias)
     }
@@ -1003,14 +1048,19 @@ enum ModelCatalog {
     /// the next write and never exit — the catalog task would hang
     /// the picker indefinitely. Drain stdout AND stderr concurrently
     /// via separate background reader tasks while the child runs.
-    private static func runRapidMlx(
+    private struct RapidMlxResult {
+        let stdout: String
+        let succeeded: Bool
+    }
+
+    private static func runRapidMlxResult(
         binary: URL,
         args: [String],
         hubCacheOverride: URL? = nil
-    ) async -> String {
+    ) async -> RapidMlxResult {
         let processBox = CatalogProcessBox()
         return await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+            await withCheckedContinuation { (continuation: CheckedContinuation<RapidMlxResult, Never>) in
             let task = Process()
             task.executableURL = binary
             task.arguments = args
@@ -1068,7 +1118,10 @@ enum ModelCatalog {
                 processBox.clear(task)
                 if resumedBox.tryConsume() {
                     let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: text)
+                    continuation.resume(returning: RapidMlxResult(
+                        stdout: text,
+                        succeeded: task.terminationStatus == 0
+                    ))
                 }
             }
 
@@ -1094,7 +1147,7 @@ enum ModelCatalog {
                 drainGroup.wait()
                 processBox.clear(task)
                 if resumedBox.tryConsume() {
-                    continuation.resume(returning: "")
+                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
                 }
                 return
             }
@@ -1102,6 +1155,18 @@ enum ModelCatalog {
         } onCancel: {
             processBox.cancel()
         }
+    }
+
+    private static func runRapidMlx(
+        binary: URL,
+        args: [String],
+        hubCacheOverride: URL? = nil
+    ) async -> String {
+        await runRapidMlxResult(
+            binary: binary,
+            args: args,
+            hubCacheOverride: hubCacheOverride
+        ).stdout
     }
 
     private static func readPipeData(_ handle: FileHandle, maxBytes: Int) -> Data {

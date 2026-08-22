@@ -446,6 +446,154 @@ class TestTextParserReasoningCap:
         pp.process_chunk(_make_output("more"))
         assert not parser.calls[2]["delta"].startswith("</think>")
 
+    def test_final_chunk_preserves_cap_spill_before_answer(self):
+        """#2182: parser content on the cap-hit final chunk is retained.
+
+        The Qwen parser withholds the last ambiguous byte from the first
+        chunk.  Once the cap is hit, that byte and the remaining thought
+        suffix spill to content before the real post-closer answer.  A final
+        engine chunk must keep all three pieces in source order.
+        """
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<think>delib"))
+        final = pp.process_chunk(_make_output("erate</think>4", finished=True))
+
+        assert [event.reasoning for event in first if event.type == "reasoning"] == [
+            "deli"
+        ]
+        assert [event.content for event in first if event.type == "content"] == ["b"]
+        finish = [event for event in final if event.type == "finish"]
+        assert len(finish) == 1
+        assert finish[0].content == "erate4"
+        assert finish[0].finish_reason == "stop"
+
+    def test_cap_spill_stays_after_earlier_promoted_tool_call(self):
+        """A tool call promoted from reasoning retains its source position.
+
+        The parser's promotion filter returns the earlier tool block as
+        content and the trailing prose as reasoning.  When that prose crosses
+        the cap, its overflow must stay after the tool block rather than being
+        unconditionally prepended to all parser content.
+        """
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        events = pp.process_chunk(_make_output(f"<think>{tool_call}abcdefgh"))
+
+        assert [event.reasoning for event in events if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert [event.content for event in events if event.type == "content"] == [
+            f"{tool_call}efgh"
+        ]
+
+    def test_cap_spill_stays_after_cross_chunk_promoted_tool_call(self):
+        """Promotion provenance survives a tool call buffered across SSE chunks."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = '<think><tool_call>{"name":"x",'
+        second = '"arguments":{}}</tool_call>abcdefgh'
+        assert pp.process_chunk(_make_output(first)) == []
+        events = pp.process_chunk(_make_output(second))
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        assert [event.reasoning for event in events if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert [event.content for event in events if event.type == "content"] == [
+            f"{tool_call}efgh"
+        ]
+
+    def test_single_delta_inserts_cap_spill_between_tool_call_and_answer(self):
+        """Whole-output deltas retain tool -> spill -> answer source order."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(f"<think>{tool_call}abcdefgh</think>ANSWER", finished=True)
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].reasoning == "abcd"
+        assert events[0].content == f"{tool_call}efghANSWER"
+
+    def test_cap_crossing_before_tool_call_preserves_all_interleaved_segments(self):
+        """A cap split before a promoted tool does not move overflow after it."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        tool_call = '<tool_call>{"name":"x","arguments":{}}</tool_call>'
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        events = pp.process_chunk(
+            _make_output(f"<think>abcdef{tool_call}ghijkl</think>ANSWER", finished=True)
+        )
+
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].reasoning == "abcd"
+        assert events[0].content == f"ef{tool_call}ghijklANSWER"
+
+    def test_cap_preserves_source_order_across_multiple_think_blocks(self):
+        """Multi-block routing passes ordered segments through promotion."""
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        parser = Qwen3ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        text = "<think>abcdef</think>ANSWER1<think>ghijkl</think>ANSWER2"
+        events = pp.process_chunk(_make_output(text, finished=True))
+
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].reasoning == "abcd"
+        assert events[0].content == "efANSWER1ghijklANSWER2"
+
+    def test_cap_preserves_content_first_delta_without_source_segments(self):
+        """Parsers without provenance retain content before later overflow."""
+        from vllm_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
+
+        parser = DeepSeekV4ReasoningParser(None)
+        cfg = _make_cfg(reasoning_parser=parser, reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, enable_thinking=True, reasoning_max_tokens=1)
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<think>abcd"))
+        final = pp.process_chunk(_make_output("VISIBLE<think>overflow", finished=True))
+
+        assert [event.reasoning for event in first if event.type == "reasoning"] == [
+            "abcd"
+        ]
+        assert len(final) == 1
+        assert final[0].type == "finish"
+        assert final[0].content == "VISIBLEoverflow"
+
     def test_finalize_injects_close_marker_after_terminal_cap_hit(self):
         """Codex round-3 BLOCKING #1: if the reasoning cap latches on
         the LAST chunk of the stream (model stops immediately at the

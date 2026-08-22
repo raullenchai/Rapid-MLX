@@ -46,6 +46,7 @@ JSON_BENCH_SCRIPTS = frozenset(
         "bench_dflash.py",
         "bench_diffusion_gemma.py",
         "bench_engine_solo.py",
+        "bench_service_prefill.py",
         "bench_readme_refresh.py",
         "bench_suffix_decoding.py",
         "bench_suffix_decoding_integrated.py",

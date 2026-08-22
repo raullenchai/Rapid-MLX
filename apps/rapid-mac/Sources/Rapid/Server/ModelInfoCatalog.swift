@@ -76,6 +76,7 @@ struct ModelInfo: Equatable, Sendable {
 /// - Phi-3 / 4: 4k / 16k
 /// - Mistral 3: 32k
 /// - Hermes 3: 128k
+/// - Ornith 1.5: 256k
 /// - SmolLM3: 8k
 enum ModelInfoCatalog {
     /// Resolve an alias to a `ModelInfo`. `hfRepo` is optional and just
@@ -186,6 +187,10 @@ enum ModelInfoCatalog {
         // Hermes
         if a.contains("hermes-3") || a.contains("hermes3") { return ("Hermes 3", 131_072) }
         if a.contains("hermes") { return ("Hermes", 32_768) }
+        // Ornith-1.5 official MLX checkpoints advertise 262144 through
+        // ``text_config.max_position_embeddings`` in both the 9B dense and
+        // 35B-A3B MoE configs. The live server value still wins when present.
+        if a.hasPrefix("ornith-1.5-") { return ("Ornith 1.5", 262_144) }
         // Bonsai (small / experimental)
         if a.contains("bonsai") { return ("Bonsai", 4_096) }
         return ("Unknown", nil)

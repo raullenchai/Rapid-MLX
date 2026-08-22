@@ -308,6 +308,12 @@ def test_coherence_sweep_pins_text_only_lane():
     assert "SERVE_ARGS+=(--no-mllm)" in script
 
 
+def test_coherence_sweep_disables_cross_runtime_prefix_cache():
+    """A toolchain gate must never reuse KV tensors from an earlier runtime."""
+    script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
+    assert 'SERVE_ARGS=(--port "$PORT" --disable-prefix-cache)' in script
+
+
 def test_coherence_sweep_boot_wait_is_progress_aware_and_hard_bounded():
     script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
     assert 'BOOT_STALL_S="${COHERENCE_BOOT_STALL_S:-180}"' in script

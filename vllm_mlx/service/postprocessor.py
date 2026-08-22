@@ -365,6 +365,12 @@ class StreamingPostProcessor:
                             tools_requested=self.tools_requested,
                         )
                     )
+                if "json_mode" in configure_parameters:
+                    # Explicit response_format signal for parsers whose
+                    # template contracts change under JSON mode (North
+                    # emits bare JSON with no channel markers — codex
+                    # final-round #1 on #2171).
+                    configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
             if callable(_set):
@@ -1746,10 +1752,25 @@ class StreamingPostProcessor:
         if self.reasoning_parser is None:
             # Standard / channel-routed path doesn't need the injection.
             return delta_text
-        # Prepend the marker so the parser sees ``</think>`` BEFORE the
-        # next body bytes. The caller flips ``_reasoning_close_injected``
-        # only after the parser call succeeds.
-        return "</think>" + delta_text
+        # Prepend the marker so the parser sees its close token BEFORE
+        # the next body bytes. The caller flips
+        # ``_reasoning_close_injected`` only after the parser call
+        # succeeds. Ask the parser for ITS closer (codex round-2 MAJOR
+        # on #2171): north transitions on ``<|END_THINKING|>``, not
+        # ``</think>`` — a hard-coded ``</think>`` is swallowed as
+        # reasoning bytes and the cap latch then reroutes the rest of
+        # the thought trace to visible content.
+        return self._reasoning_close_marker() + delta_text
+
+    def _reasoning_close_marker(self) -> str:
+        """The configured parser's thinking-close token, for cap-hit
+        forced-close injection. Falls back to ``</think>`` for parsers
+        that don't expose ``end_token`` (the think-tag family default).
+        """
+        marker = getattr(self.reasoning_parser, "end_token", None)
+        if isinstance(marker, str) and marker:
+            return marker
+        return "</think>"
 
     def _forced_tool_choice_name(self) -> str | None:
         """Return the forced ``tool_choice`` function name, if any.
@@ -2477,6 +2498,12 @@ class StreamingPostProcessor:
                             tools_requested=self.tools_requested,
                         )
                     )
+                if "json_mode" in configure_parameters:
+                    # Explicit response_format signal for parsers whose
+                    # template contracts change under JSON mode (North
+                    # emits bare JSON with no channel markers — codex
+                    # final-round #1 on #2171).
+                    configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             else:
                 self.reasoning_parser.reset_state()
@@ -3090,6 +3117,21 @@ class StreamingPostProcessor:
             kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
             reasoning = kept_reasoning or None
             if overflow_content:
+                # The parser's reasoning bytes precede its content bytes in
+                # the source delta (``thought-tail</think>answer``).  Collect
+                # everything promoted at the cap boundary separately so it
+                # can be prepended to parser content below.  Appending the
+                # overflow produced ``answerthought-tail`` on a terminal
+                # chunk and the route then buffered that malformed ordering
+                # as the single finish event (#2182).
+                promoted_content = ""
+                # Usually parser content follows reasoning in the source
+                # delta (``thought-tail</think>answer``), but the shared
+                # think parser can also interleave promoted tool calls with
+                # multiple reasoning spans.  Preserve its ordered source
+                # segments so a cap crossing in any span can reclassify the
+                # exact suffix without moving it across tool markup or answer.
+                source_segments = getattr(delta_msg, "source_segments", None)
                 flip_succeeded = self._reasoning_close_injected
                 if not self._reasoning_close_injected:
                     # Codex round-10 BLOCKING #1: only mark the close-
@@ -3113,7 +3155,10 @@ class StreamingPostProcessor:
                     # this represents the model output "up to the cap
                     # firing point" from the parser's POV.
                     flip_previous = previous_text + kept_reasoning
-                    flip_delta = "</think>"
+                    # Parser-owned closer, same as the other two
+                    # injection sites (codex round-3 on #2171): north
+                    # flips on <|END_THINKING|>, not </think>.
+                    flip_delta = self._reasoning_close_marker()
                     flip_current = flip_previous + flip_delta
                     try:
                         flip_msg = self.reasoning_parser.extract_reasoning_streaming(
@@ -3138,9 +3183,41 @@ class StreamingPostProcessor:
                         else None
                     )
                     if isinstance(flip_content, str) and flip_content:
-                        content = (content or "") + flip_content
-                if flip_succeeded:
-                    content = (content or "") + overflow_content
+                        promoted_content += flip_content
+                if flip_succeeded and source_segments:
+                    # ``kept_reasoning`` is the prefix retained across all
+                    # reasoning segments.  Walk those segments in source order,
+                    # skip that prefix, and join every remaining reasoning byte
+                    # with the existing content segments.  Insert any parser
+                    # bytes released by the synthetic close exactly where the
+                    # first overflow byte begins.
+                    kept_chars = len(kept_reasoning)
+                    rebuilt_content: list[str] = []
+                    flip_inserted = False
+                    for channel, segment in source_segments:
+                        if channel == "content":
+                            rebuilt_content.append(segment)
+                            continue
+                        if kept_chars >= len(segment):
+                            kept_chars -= len(segment)
+                            continue
+                        if promoted_content and not flip_inserted:
+                            rebuilt_content.append(promoted_content)
+                            flip_inserted = True
+                        rebuilt_content.append(segment[kept_chars:])
+                        kept_chars = 0
+                    if promoted_content and not flip_inserted:
+                        rebuilt_content.insert(0, promoted_content)
+                    content = "".join(rebuilt_content) or content
+                elif flip_succeeded:
+                    promoted_content += overflow_content
+                    # Parsers without ordered provenance can emit mixed
+                    # content/reasoning deltas in content-first order (for
+                    # example DeepSeek V4 re-entering ``<think>`` after visible
+                    # prose). Preserve their historical content-first fallback;
+                    # think-tag parsers that need finer ordering provide
+                    # ``source_segments`` and take the exact rebuild above.
+                    content = (content or "") + promoted_content
             # ``full_reasoning`` only needed within this block; release
             # the reference to drop the temporary view.
             del full_reasoning
@@ -3598,7 +3675,9 @@ class StreamingPostProcessor:
         ):
             self._reasoning_close_injected = True
             previous_text = self.accumulated_text
-            injected_delta = "</think>"
+            # Same parser-owned closer as the mid-stream site (codex
+            # round-2 MAJOR on #2171) — north needs <|END_THINKING|>.
+            injected_delta = self._reasoning_close_marker()
             # Codex round-5 BLOCKING #1: build the parser's view of
             # ``current`` LOCALLY rather than mutating
             # ``self.accumulated_text``. Downstream (routes/chat.py
@@ -3829,15 +3908,31 @@ class StreamingPostProcessor:
         # mid-token, or the model genuinely produced bare
         # ``"Thought"`` text), those bytes are otherwise silently
         # dropped at EOF. Mirror the ``tool_parser.flush_held_content``
-        # pattern below but scope it to the UI-TARS reasoning
-        # parser specifically — other reasoning parsers
-        # (``qwen3`` / ``deepseek_r1`` / ``gemma4``) have their own
+        # pattern below but scope it via the ``stream_eof_flush``
+        # opt-in attribute (UI-TARS by name for back-compat; the North
+        # parser opts in — its marker-withhold machinery has the same
+        # end-of-stream shape). Other reasoning parsers (``qwen3`` /
+        # ``deepseek_r1`` / ``gemma4``) have their own
         # ``finalize_streaming`` semantics tied to specific call
-        # sites that this generic hook would clash with.
+        # sites that this generic hook would clash with, and do NOT
+        # set the attribute.
         if (
             self.reasoning_parser is not None
             and self.accumulated_text
-            and type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+            and (
+                type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+                # Strict ``is True``: the opt-in must be the literal class
+                # attribute (north sets ``stream_eof_flush = True``). A
+                # truthiness check fires for ANY object whose attribute
+                # lookup fabricates values (MagicMock doubles in tests,
+                # __getattr__-based proxies) and then calls
+                # ``finalize_streaming`` on parsers with re-parse
+                # semantics — re-releasing bytes the forced-close
+                # extraction already emitted (the exact duplicate-flush
+                # hazard test_finalize_does_not_emit_close_marker_
+                # through_parser_twice pins).
+                or getattr(self.reasoning_parser, "stream_eof_flush", False) is True
+            )
         ):
             try:
                 final_msg = self.reasoning_parser.finalize_streaming(

@@ -1113,6 +1113,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # appropriate phase, stripping the tag bytes themselves.
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
+        source_segments: list[tuple[str, str]] = []
         cursor = prev_len
         # Codex r1 BLOCKING fix: backtrack the scan window by the
         # ``_held_tag_suffix_len`` so a tag that STRADDLES the SSE
@@ -1162,8 +1163,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 segment = current_text[cursor:tag_start]
                 if phase == "reasoning":
                     reasoning_parts.append(segment)
+                    source_segments.append(("reasoning", segment))
                 else:
                     content_parts.append(segment)
+                    source_segments.append(("content", segment))
             # Drop the tag bytes (structural) and flip phase.
             cursor = tag_start + tag_len
             phase = "reasoning" if tag_kind == "open" else "content"
@@ -1177,8 +1180,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
             segment = current_text[cursor:safe_end]
             if phase == "reasoning":
                 reasoning_parts.append(segment)
+                source_segments.append(("reasoning", segment))
             else:
                 content_parts.append(segment)
+                source_segments.append(("content", segment))
         # Phase invariant: after walking all tags in the delta,
         # ``phase`` reflects the end-of-delta structural state
         # (modulo the held partial-tag suffix). Persist it so the
@@ -1189,7 +1194,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
         content = "".join(content_parts) or None
         if reasoning is None and content is None:
             return None
-        return DeltaMessage(reasoning=reasoning, content=content)
+        return DeltaMessage(
+            reasoning=reasoning,
+            content=content,
+            source_segments=tuple(source_segments) or None,
+        )
 
     def _handle_implicit_think(
         self,
@@ -1358,89 +1367,85 @@ class BaseThinkingReasoningParser(ReasoningParser):
         6. Always carry through ``msg.content`` unchanged when not
            buffering — the content channel is not subject to promotion.
 
-        Streaming/non-streaming parity invariant: when the entire
-        output lands in a SINGLE delta (e.g. tests that feed the
-        whole text at once), the inner state machine returns one
-        ``DeltaMessage(reasoning=R, content=C)`` and the filter
-        delegates to ``_promote_tool_calls(R, C)`` — guaranteeing
-        the same wire shape as the non-streaming path.
+        The per-channel walk also handles whole-output single deltas.  Keeping
+        that path here (instead of flattening through the non-streaming helper)
+        retains the exact insertion boundary when promoted content occurs
+        before reasoning but ordinary answer content follows it.
         """
         if msg is None:
             return None
 
-        r_in = msg.reasoning
-        c_in = msg.content
-
-        # Single-delta catch-all: the inner ran the WHOLE state machine
-        # in this delta (the SSE-boundary tests feed
-        # chunk_size=len(text)) and emitted reasoning + content
-        # together. Delegate to the non-streaming promoter so the
-        # streaming wire shape matches the non-streaming wire shape
-        # exactly. This is upstream's ``_transition_to_content``
-        # catch-all in spirit, recast in our wrapper.
-        #
-        # The shortcut is ONLY safe when no prior chunk left a partial
-        # ``<tool_call>`` opener carry — otherwise delegating to the
-        # non-streaming promoter would see only ``r_in`` and silently
-        # drop ``self._reasoning_carry``. When a carry exists, fall
-        # through to the per-channel state machine so
-        # ``_absorb_reasoning_chunk`` re-prepends the carry first.
-        if (
-            not self._in_tool_call
-            and not self._reasoning_carry
-            and r_in
-            and c_in is not None
-            and _TOOL_CALL_START in r_in
-        ):
-            new_r, new_c = self._promote_tool_calls(r_in, c_in)
-            if new_r is None and new_c is None:
-                return None
-            return DeltaMessage(
-                role=msg.role,
-                reasoning=new_r,
-                content=new_c,
-            )
-
-        # Otherwise walk the per-channel state machine.
+        # Walk the per-channel state machine for both chunked and whole-output
+        # deltas so source ordering is retained uniformly.
         out_reasoning_parts: list[str] = []
         out_content_parts: list[str] = []
+        source_segments: list[tuple[str, str]] = []
+        input_segments = getattr(msg, "source_segments", None)
+        if not input_segments:
+            input_segments = tuple(
+                (channel, segment)
+                for channel, segment in (
+                    ("reasoning", msg.reasoning),
+                    ("content", msg.content),
+                )
+                if segment is not None
+            )
 
-        if r_in:
-            self._absorb_reasoning_chunk(r_in, out_reasoning_parts, out_content_parts)
+        for channel, segment in input_segments:
+            if channel == "reasoning":
+                if segment:
+                    self._absorb_reasoning_chunk(
+                        segment,
+                        out_reasoning_parts,
+                        out_content_parts,
+                        source_segments,
+                    )
+                continue
 
-        # Content channel: if we were buffering when content arrived,
-        # the think block ended mid-tool-call. Flush the buffered head
-        # as content first, then append the inner's content.
-        if c_in is not None:
-            # The carry held a partial ``<tool_call>`` opener that
-            # straddled across deltas. Now that the think block is
-            # ending, the carry is unresolved — flush it back as
-            # reasoning so no bytes are silently dropped.
+            # Content channel: if we were buffering when content arrived,
+            # the think block ended mid-tool-call. Flush the buffered head
+            # as content first, then append the inner's content.
             if self._reasoning_carry:
                 out_reasoning_parts.append(self._reasoning_carry)
+                source_segments.append(("reasoning", self._reasoning_carry))
                 self._reasoning_carry = ""
             if self._in_tool_call and self._tool_call_buffer:
-                flushed = self._tool_call_buffer
+                flushed, trailing_reasoning = _split_unclosed_at_prose_boundary(
+                    self._tool_call_buffer
+                )
                 self._tool_call_buffer = ""
                 self._in_tool_call = False
                 logger.warning(
                     "Promoted unclosed streaming tool_call "
                     "(think ended before tool_call closed)"
                 )
-                out_content_parts.append(flushed)
-            out_content_parts.append(c_in)
+                if flushed:
+                    out_content_parts.append(flushed)
+                    source_segments.append(("content", flushed))
+                if trailing_reasoning:
+                    out_reasoning_parts.append(trailing_reasoning)
+                    source_segments.append(("reasoning", trailing_reasoning))
+            if segment:
+                out_content_parts.append(segment)
+                source_segments.append(("content", segment))
 
         new_r = "".join(out_reasoning_parts) or None
         new_c = "".join(out_content_parts) or None
         if new_r is None and new_c is None:
             return None
-        return DeltaMessage(role=msg.role, reasoning=new_r, content=new_c)
+        return DeltaMessage(
+            role=msg.role,
+            reasoning=new_r,
+            content=new_c,
+            source_segments=tuple(source_segments) or None,
+        )
 
     def _absorb_reasoning_chunk(
         self,
         text: str,
         out_reasoning: list[str],
         out_content: list[str],
+        source_segments: list[tuple[str, str]],
     ) -> None:
         """Walk one reasoning-channel chunk through the tool-call buffer.
 
@@ -1478,6 +1483,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 promoted = self._tool_call_buffer[: end_idx + len(_TOOL_CALL_END)]
                 tail = self._tool_call_buffer[end_idx + len(_TOOL_CALL_END) :]
                 out_content.append(promoted)
+                source_segments.append(("content", promoted))
                 self._tool_call_buffer = ""
                 self._in_tool_call = False
                 logger.warning("Promoted streaming tool_call block from reasoning")
@@ -1496,8 +1502,10 @@ class BaseThinkingReasoningParser(ReasoningParser):
                     self._reasoning_carry = remaining[-carry_len:]
                     if safe:
                         out_reasoning.append(safe)
+                        source_segments.append(("reasoning", safe))
                 else:
                     out_reasoning.append(remaining)
+                    source_segments.append(("reasoning", remaining))
                 return
             # Structural guard — parity with non-streaming
             # ``_TOOL_CALL_UNCLOSED_RE`` (``<tool_call>\s*[\{<]``).
@@ -1520,20 +1528,26 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 # whitespace so the next chunk reveals whether this
                 # is a real tool_call or a prose mention.
                 if start_idx > 0:
-                    out_reasoning.append(remaining[:start_idx])
+                    prefix = remaining[:start_idx]
+                    out_reasoning.append(prefix)
+                    source_segments.append(("reasoning", prefix))
                 self._reasoning_carry = remaining[start_idx:]
                 return
             if probe[j] not in ("{", "<"):
                 # Prose mention — emit up to AND INCLUDING the bare
                 # ``<tool_call>`` tag as reasoning and keep scanning
                 # ``remaining`` past the opener for another candidate.
-                out_reasoning.append(remaining[:after_start])
+                prose = remaining[:after_start]
+                out_reasoning.append(prose)
+                source_segments.append(("reasoning", prose))
                 remaining = remaining[after_start:]
                 continue
             # Real tool_call: emit prefix as reasoning, start buffering
             # from the opener.
             if start_idx > 0:
-                out_reasoning.append(remaining[:start_idx])
+                prefix = remaining[:start_idx]
+                out_reasoning.append(prefix)
+                source_segments.append(("reasoning", prefix))
             self._in_tool_call = True
             self._tool_call_buffer = ""
             remaining = remaining[start_idx:]

@@ -218,14 +218,13 @@ struct LaunchOnboardingOrderingTests {
         #expect(decision == .skip(reason: .retiredStarter))
     }
 
-    // MARK: - Consent sheet
+    // MARK: - Consent gate
 
-    /// Nothing loads behind the modal first-run consent sheet. The sheet
-    /// is `interactiveDismissDisabled` and swallows external dismisses, so
-    /// the user cannot reach anything a warm model would serve — while an
-    /// 8.4 GB serve was being committed before they had answered the first
-    /// question the app asks.
-    @Test("Nothing auto-starts while the first-run consent sheet is still unanswered")
+    /// Nothing loads behind the full-window first-run consent gate. The
+    /// overlay owns hit testing, so the user cannot reach anything a warm
+    /// model would serve. Previously an 8.4 GB serve could be committed
+    /// before they had answered the first question the app asks.
+    @Test("Nothing auto-starts while the first-run consent gate is still unanswered")
     func consentPendingBlocksAutoStart() {
         let decision = launchDecision(
             lastServedAlias: "qwen3.5-4b-4bit",
@@ -234,6 +233,31 @@ struct LaunchOnboardingOrderingTests {
             consentPending: true
         )
         #expect(decision == .skip(reason: .firstRunDecisionPending))
+    }
+
+    @Test("Consent blocks the workspace without an AppKit modal sheet")
+    func consentUsesNonModalOverlay() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Rapid/UI/ContentView.swift")
+        let rawSource = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = rawSource.filter { !$0.isWhitespace }
+        let presenterStart = try #require(
+            rawSource.range(of: "private var firstRunConsentGate"))
+        let presenterEnd = try #require(
+            rawSource.range(of: "private func decideTelemetry", range: presenterStart.upperBound..<rawSource.endIndex))
+        let presenter = rawSource[presenterStart.lowerBound..<presenterEnd.lowerBound]
+        let bodyStart = try #require(rawSource.range(of: "var body: some View"))
+        let bodyEnd = try #require(
+            rawSource.range(of: "/// First-run setup", range: bodyStart.upperBound..<rawSource.endIndex))
+        let body = rawSource[bodyStart.lowerBound..<bodyEnd.lowerBound]
+
+        #expect(source.contains("iftelemetryConsentPending{firstRunConsentGate}"))
+        #expect(!body.contains(".sheet"))
+        #expect(!presenter.contains(".sheet"))
+        #expect(!presenter.contains("interactiveDismissDisabled"))
     }
 
     /// Once answered, the same user's model comes up — the deferral is a

@@ -46,7 +46,6 @@ AXApplication title="Rapid-MLX"
                 AXStaticText value=text enabled=true
                 AXScrollArea
                   AXTextArea id="ChatView.ConversationInstructions.Editor" value=text
-                  AXScrollBar value=number enabled=false
                 AXStaticText id="ChatView.ConversationInstructions.Editor.Count" value=text enabled=true
                 AXButton id="ChatView.ConversationInstructions.Clear" desc="Clear instructions" help="Clear instructions" enabled=true
                 AXButton id="ChatView.ConversationInstructions.Cancel" desc="Cancel" enabled=true

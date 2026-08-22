@@ -27,7 +27,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Images.Aspect.square" desc="1:1" enabled=true
           AXButton id="Images.Aspect.portrait" desc="3:4" enabled=true
           AXButton id="Images.Aspect.landscape" desc="4:3" enabled=true
-          AXPopUpButton id="Images.Resolution" desc="Output resolution" help="Output resolution: 1024 × 1024" value=text enabled=true
+          AXPopUpButton id="Images.Resolution" desc="Output resolution" help="Output resolution: 512 × 512" value=text enabled=true
           AXButton id="Images.Edit.Import" desc="Import image to edit" help="Import image to edit" enabled=false
           AXPopUpButton id="Images.ModelPicker" desc="<model>" help="Model: <model>" enabled=false
           AXButton id="Images.Generate" desc="Stop" help="Cancel" enabled=true

@@ -87,3 +87,14 @@ def test_all_named_flows_run_before_one_blocking_verdict():
     verdict = verdicts[0]
     assert verdict.get("if") == "always()"
     assert f"expected = {len(workflow_flows())}" in str(verdict.get("run", ""))
+
+
+def test_golden_job_builds_the_release_ui_surface():
+    """Release baselines cannot be compared against Debug-only controls."""
+    build_steps = [
+        step
+        for step in workflow_steps()
+        if step.get("name") == "Build Rapid-MLX Desktop.app"
+    ]
+    assert len(build_steps) == 1
+    assert build_steps[0].get("env", {}).get("RAPID_BUILD_CONFIG") == "release"

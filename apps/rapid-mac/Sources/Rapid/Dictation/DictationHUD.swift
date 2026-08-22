@@ -11,6 +11,11 @@ final class DictationHUD {
         case starting
         case recording(seconds: TimeInterval, level: Float)
         case transcribing
+        /// Shown briefly when a session cannot deliver (model missing, model
+        /// failed to start). The HUD is the only interface visible mid-flow,
+        /// so failures must be named here — a capsule that says
+        /// "Transcribing…" and then vanishes reads as a hang.
+        case failed(message: String)
     }
 
     private var panel: NSPanel?
@@ -121,6 +126,11 @@ private struct DictationHUDView: View {
             Text("Transcribing…")
                 .font(.system(size: 13, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.9))
+        case .failed(let message):
+            Text(message)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(Color.white.opacity(0.9))
+                .lineLimit(1)
         }
     }
 
@@ -129,6 +139,7 @@ private struct DictationHUDView: View {
         case .starting: return Color(red: 0.88, green: 0.64, blue: 0.24)
         case .recording: return Color(red: 0.95, green: 0.25, blue: 0.29)
         case .transcribing: return Color(red: 0.35, green: 0.62, blue: 0.86)
+        case .failed: return Color(red: 0.86, green: 0.34, blue: 0.30)
         }
     }
 

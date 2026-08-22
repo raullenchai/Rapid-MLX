@@ -84,7 +84,9 @@ struct ContentView: View {
         // model comes up on first send (implicit lifecycle). Search belongs
         // to the sidebar column beside macOS's native collapse control.
         Group {
-            if quickstartVisible {
+            if telemetryConsentPending {
+                firstRunConsentGate
+            } else if quickstartVisible {
                 // Setup owns the window (Paper 05.1.A). See ``onboardingShell``.
                 onboardingShell
             } else {
@@ -212,9 +214,6 @@ struct ContentView: View {
         } message: { warning in
             Text(warning.message)
         }
-        .sheet(isPresented: firstRunSheetPresented) {
-            firstRunSheet
-        }
         .onChange(of: settingsRouter.quickstartReturnGeneration) { _, _ in
             quickstartDismissedThisSession = false
         }
@@ -227,7 +226,7 @@ struct ContentView: View {
         // so "may the model run this" is a decision that belongs on screen.
         .modifier(MCPToolApprovalDialog(store: mcpApproval))
         // #1589: keyed on the consent decision rather than fire-once, so
-        // the launch auto-start that stood down for the modal sheet gets
+        // the launch auto-start that stood down for the consent gate gets
         // its turn the moment the user answers it. The value only ever
         // moves true → false (once per install), so this is a single
         // re-run, and the first pass returns at the gate without an
@@ -894,22 +893,14 @@ struct ContentView: View {
 
     // MARK: - First-run telemetry consent
 
-    private var firstRunSheetPresented: Binding<Bool> {
-        Binding(
-            get: { telemetryConsentPending },
-            set: { presented in
-                // Swallow external dismiss attempts while undecided.
-                _ = presented
-            }
-        )
-    }
-
     @ViewBuilder
-    private var firstRunSheet: some View {
-        if telemetryConsentPending {
-            TelemetryConsentView(onDecision: decideTelemetry)
-                .interactiveDismissDisabled()
-        }
+    private var firstRunConsentGate: some View {
+        TelemetryConsentView(onDecision: decideTelemetry)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .shadow(color: .black.opacity(0.16), radius: 24, y: 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(RapidTheme.surfaceCanvas)
+        .accessibilityAddTraits(.isModal)
     }
 
     private func decideTelemetry(_ enabled: Bool) {

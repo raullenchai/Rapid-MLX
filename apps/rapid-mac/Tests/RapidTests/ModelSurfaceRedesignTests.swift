@@ -28,6 +28,7 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.brand(forAlias: "glm-4.6-9b-4bit") == .glm)
         #expect(ModelBrandStyle.brand(forAlias: "smollm-1.7b") == .smollm)
         #expect(ModelBrandStyle.brand(forAlias: "hermes-3-8b") == .hermes)
+        #expect(ModelBrandStyle.brand(forAlias: "ornith-1.5-9b-bf16") == .ornith)
     }
 
     @Test("brand: the whole Mistral house resolves to .mistral")
@@ -47,6 +48,7 @@ struct ModelSurfaceRedesignTests {
     func brandOther() {
         #expect(ModelBrandStyle.brand(forAlias: "bonsai-2b-4bit") == .other)
         #expect(ModelBrandStyle.brand(forAlias: "some-unknown-model") == .other)
+        #expect(ModelBrandStyle.brand(forAlias: "ornithology-9b") == .other)
     }
 
     // MARK: - ModelBrandStyle.monogram
@@ -56,6 +58,7 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.monogram(forAlias: "qwen3.6-35b-4bit") == "Qw")
         #expect(ModelBrandStyle.monogram(forAlias: "gpt-oss-20b-4bit") == "GO")
         #expect(ModelBrandStyle.monogram(forAlias: "deepseek-v3-4bit") == "DS")
+        #expect(ModelBrandStyle.monogram(forAlias: "ornith-1.5-35b-a3b-bf16") == "Or")
     }
 
     @Test("monogram: .other derives the first two letters, upper-cased")
@@ -79,6 +82,8 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gpt-oss-20b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "ornith-1.5-9b-bf16") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "ornith-1.5-35b-a3b-bf16") == .chat)
     }
 
     // MARK: - ModelBrandStyle.displayFamily
@@ -89,6 +94,7 @@ struct ModelSurfaceRedesignTests {
         // ModelInfoCatalog returns "Unknown" — the brand layer fixes both.
         #expect(ModelBrandStyle.displayFamily(forAlias: "gpt-oss-20b-4bit") == "GPT-OSS")
         #expect(ModelBrandStyle.displayFamily(forAlias: "devstral-24b-4bit") == "Devstral")
+        #expect(ModelBrandStyle.displayFamily(forAlias: "ornith-1.5-9b-bf16") == "Ornith 1.5")
     }
 
     @Test("displayFamily: an entirely unknown alias reads 'Model', never 'Unknown'")

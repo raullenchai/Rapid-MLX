@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import plistlib
 from pathlib import Path
 from unittest import mock
 
@@ -263,6 +264,301 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
 
     broken = next(c for c in section.checks if "f5-tts-mlx" in c.label)
     assert broken.status is eh.CheckStatus.WARN
+
+
+def _stage_sidecar_bundle(tmp_path: Path, *, slot: str = "embedded") -> Path:
+    """Build the on-disk shape ``build-sidecar.sh`` produces and return the
+    interpreter.
+
+    ``slot`` picks which managed location it sits in — ``embedded`` mirrors
+    ``Rapid-MLX Desktop.app/Contents/Resources/rapid-mlx/`` and
+    ``runtime-override`` mirrors ``~/Library/Application Support/Rapid/
+    runtime-override/rapid-mlx/``. Both share the identical bundle layout.
+    """
+    if slot == "runtime-override":
+        parent = (
+            tmp_path / "Library" / "Application Support" / "Rapid" / "runtime-override"
+        )
+    else:
+        parent = tmp_path / "Rapid-MLX Desktop.app" / "Contents" / "Resources"
+        parent.parent.mkdir(parents=True)
+        with (parent.parent / "Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": "com.rapidmlx.rapid"}, handle)
+    root = parent / "rapid-mlx"
+    (root / "site-packages").mkdir(parents=True)
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "rapid-mlx").write_text("#!/bin/sh\n")
+    exe = root / "python" / "bin" / "python3.12"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    return exe
+
+
+def test_bundled_sidecar_detected_from_layout(tmp_path: Path):
+    """The bundle is fingerprinted off ``sys.executable``'s directory shape."""
+    exe = _stage_sidecar_bundle(tmp_path)
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        assert eh._bundled_sidecar_root() == exe.parents[2].resolve()
+
+
+def test_ordinary_install_is_not_treated_as_bundled_sidecar(tmp_path: Path):
+    """A venv interpreter has no ``python/bin`` + ``site-packages`` sibling
+    shape, so CLI installs keep the full-extra contract."""
+    exe = tmp_path / "venv" / "bin" / "python3.12"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        assert eh._bundled_sidecar_root() is None
+
+
+def test_custom_install_with_sidecar_shape_is_not_treated_as_desktop(
+    tmp_path: Path,
+):
+    """The three internal bundle paths are user-creatable and therefore do
+    not prove that Desktop owns the environment without a managed location."""
+    root = tmp_path / "custom-python" / "rapid-mlx"
+    (root / "site-packages").mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "rapid-mlx").write_text("#!/bin/sh\n")
+    exe = root / "python" / "bin" / "python3.12"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        assert eh._bundled_sidecar_root() is None
+
+
+def test_unrelated_app_with_sidecar_shape_is_not_treated_as_desktop(
+    tmp_path: Path,
+):
+    """A generic app-bundle suffix is not Rapid-MLX provenance."""
+    exe = _stage_sidecar_bundle(tmp_path)
+    info = exe.parents[4] / "Info.plist"
+    with info.open("wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": "com.example.other-app"}, handle)
+
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        assert eh._bundled_sidecar_root() is None
+
+
+def test_non_mapping_info_plist_is_not_treated_as_desktop(tmp_path: Path):
+    """A valid plist may have a non-dictionary root and must not crash doctor."""
+    exe = _stage_sidecar_bundle(tmp_path)
+    info = exe.parents[4] / "Info.plist"
+    with info.open("wb") as handle:
+        plistlib.dump(["not", "a", "bundle", "dictionary"], handle)
+
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        assert eh._bundled_sidecar_root() is None
+
+
+def test_runtime_override_must_belong_to_active_home(tmp_path: Path):
+    """A matching suffix under another home is not Desktop provenance."""
+    foreign_home = tmp_path / "foreign-home"
+    exe = _stage_sidecar_bundle(foreign_home, slot="runtime-override")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.dict(eh.os.environ, {"HOME": str(tmp_path / "active-home")}),
+    ):
+        assert eh._bundled_sidecar_root() is None
+
+
+def test_bundled_sidecar_grades_audio_against_desktop_extra(tmp_path: Path):
+    """RC 0.12.18: the signed bundle installs ``[audio-desktop]`` (mlx-audio +
+    soundfile only). Grading it against the full ``[audio]`` closure reported a
+    healthy build as incomplete."""
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    # Everything outside the audio-desktop extra is absent, exactly like the
+    # real bundle.
+    desktop_modules = {module for _, module in eh._AUDIO_DESKTOP_IMPORTS}
+    exe = _stage_sidecar_bundle(tmp_path)
+
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(
+            eh, "_module_available", side_effect=lambda m: m in desktop_modules
+        ),
+    ):
+        section = eh.section_optional_packages()
+
+    audio_row = next(c for c in section.checks if c.label.startswith("mlx-audio"))
+    assert audio_row.status is eh.CheckStatus.OK
+    assert "incomplete" not in audio_row.label
+
+
+def test_bundled_sidecar_never_recommends_pip_install(tmp_path: Path):
+    """Mutating a managed sidecar's Python environment is never the right
+    advice, so no row may hand the user a ``pip install`` line."""
+    exe = _stage_sidecar_bundle(tmp_path)
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.object(eh, "_safe_version", return_value=None),
+    ):
+        section = eh.section_optional_packages()
+
+    offenders = [
+        (c.label, c.detail)
+        for c in section.checks
+        if "pip install 'rapid-mlx[" in c.label + c.detail
+    ]
+    assert not offenders, offenders
+
+
+def test_bundle_does_not_ask_user_to_reinstall_for_an_extra_it_never_ships(
+    tmp_path: Path,
+):
+    """mlx-embeddings is outside the desktop product surface — ``build-
+    sidecar.sh`` never installs it. Flagging it ⚠ with a "reinstall" hint
+    reported a healthy bundle as broken and the warning would survive every
+    reinstall."""
+    exe = _stage_sidecar_bundle(tmp_path)
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.object(eh, "_safe_version", return_value=None),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(c for c in section.checks if c.label.startswith("mlx-embeddings"))
+    assert row.status is eh.CheckStatus.OK
+    assert "not bundled" in row.label
+    assert "reinstall" not in row.label.lower()
+
+
+def test_cli_install_still_warns_about_missing_embeddings(tmp_path: Path):
+    """The exclusion is bundle-only: an ordinary pip install that lacks
+    mlx-embeddings must still get the ⚠ + install hint."""
+    exe = tmp_path / "venv" / "bin" / "python3.12"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.object(eh, "_safe_version", return_value=None),
+    ):
+        section = eh.section_optional_packages()
+
+    row = next(c for c in section.checks if c.label.startswith("mlx-embeddings"))
+    assert row.status is eh.CheckStatus.WARN
+    assert "pip install 'rapid-mlx[embeddings]'" in row.label
+
+
+def test_embedded_bundle_hint_names_the_shipping_app(tmp_path: Path):
+    """``Rapid.app`` is a legacy name that release verification rejects; the
+    shipping product is ``Rapid-MLX Desktop.app``."""
+    exe = _stage_sidecar_bundle(tmp_path, slot="embedded")
+    with mock.patch.object(eh.sys, "executable", str(exe)):
+        hint = eh._sidecar_repair_hint(eh._bundled_sidecar_root())
+
+    assert "Rapid-MLX Desktop.app" in hint
+
+
+def test_runtime_override_is_not_told_to_reinstall_the_app(tmp_path: Path):
+    """The runtime override lives outside the app bundle, survives desktop
+    upgrades, and the bootstrapper skips its download while the cache exists —
+    so "reinstall the .app" alone repairs nothing."""
+    exe = _stage_sidecar_bundle(tmp_path, slot="runtime-override")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.dict(eh.os.environ, {"HOME": str(tmp_path)}),
+    ):
+        root = eh._bundled_sidecar_root()
+        hint = eh._sidecar_repair_hint(root)
+
+    assert "outside the app bundle" in hint
+    # The step has to be actionable, so it names the exact directory to remove.
+    assert str(root) in hint
+
+
+def test_runtime_override_hint_avoids_the_nonexistent_update_entry_point(
+    tmp_path: Path,
+):
+    """Settings → check for updates hands off to Sparkle, which updates the app
+    bundle; ``UpdateChecker`` explicitly does not act on the manifest's
+    ``sidecar_*`` fields. Pointing users there for a broken runtime override is
+    a dead-end recovery flow."""
+    exe = _stage_sidecar_bundle(tmp_path, slot="runtime-override")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.dict(eh.os.environ, {"HOME": str(tmp_path)}),
+    ):
+        hint = eh._sidecar_repair_hint(eh._bundled_sidecar_root())
+
+    assert "check for updates" not in hint.lower()
+
+
+def test_runtime_override_hint_does_not_promise_an_automatic_reinstall(
+    tmp_path: Path,
+):
+    """Nothing re-downloads a sidecar today: the bootstrapper module is not in
+    the source tree and the release workflow builds only the full DMG. A slim
+    install that merely deletes the override lands on the missing-runtime
+    overlay, whose only actions are Recheck and an *app* update download. So
+    the hint must order "install the app that ships a sidecar" BEFORE the
+    removal, and must not claim relaunching reinstalls the runtime."""
+    exe = _stage_sidecar_bundle(tmp_path, slot="runtime-override")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.dict(eh.os.environ, {"HOME": str(tmp_path)}),
+    ):
+        root = eh._bundled_sidecar_root()
+        hint = eh._sidecar_repair_hint(root)
+
+    # No promise of self-repair.
+    assert "reinstalls it" not in hint
+    assert "then reinstalls" not in hint
+    # Install-first ordering: the app install must precede the removal step,
+    # otherwise a slim user is stranded with no sidecar at all.
+    assert hint.index("Rapid-MLX Desktop.app") < hint.index(f"remove {root}")
+
+
+def test_runtime_override_broken_audio_row_uses_the_runtime_hint(tmp_path: Path):
+    """End-to-end: a genuinely broken override bundle is still ⚠, and the
+    remediation the user reads is the runtime one, not the app one."""
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    exe = _stage_sidecar_bundle(tmp_path, slot="runtime-override")
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.dict(eh.os.environ, {"HOME": str(tmp_path)}),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(
+            eh, "_module_available", side_effect=lambda m: m != "soundfile"
+        ),
+    ):
+        section = eh.section_optional_packages()
+
+    broken = next(c for c in section.checks if "soundfile" in c.label)
+    assert broken.status is eh.CheckStatus.WARN
+    assert "outside the app bundle" in broken.label
+
+
+def test_bundled_sidecar_still_flags_a_genuinely_broken_audio_install(
+    tmp_path: Path,
+):
+    """Narrowing the contract must not make the bundle unfalsifiable — a
+    missing soundfile is still inside the audio-desktop contract."""
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    exe = _stage_sidecar_bundle(tmp_path)
+    with (
+        mock.patch.object(eh.sys, "executable", str(exe)),
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(
+            eh, "_module_available", side_effect=lambda m: m != "soundfile"
+        ),
+    ):
+        section = eh.section_optional_packages()
+
+    broken = next(c for c in section.checks if "soundfile" in c.label)
+    assert broken.status is eh.CheckStatus.WARN
+    assert "reinstall Rapid-MLX Desktop.app" in broken.label
 
 
 # ---------------------------------------------------------------------------

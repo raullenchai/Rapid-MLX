@@ -17,12 +17,6 @@ AXApplication title="Rapid-MLX"
         AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Better everyday quality. Still light on disk.. download <size>" enabled=true
         AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare.. download <size>" enabled=true
         AXButton id="Quickstart.BrowseAll" desc="Browse all models" enabled=true
-        AXScrollBar value=number enabled=true
-          AXValueIndicator value=number
-          AXButton subrole=AXIncrementArrow
-          AXButton subrole=AXDecrementArrow
-          AXButton subrole=AXIncrementPage
-          AXButton subrole=AXDecrementPage
       AXButton id="Quickstart.Footer.Back" desc="Back" enabled=true
       AXButton id="Quickstart.Footer.Primary" desc="Review download" enabled=true
     AXButton subrole=AXCloseButton enabled=true

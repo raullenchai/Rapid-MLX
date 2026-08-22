@@ -68,9 +68,6 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.app" desc="App" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
-              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
         AXScrollArea id="Settings.Performance.Panel"
@@ -105,12 +102,6 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXButton id="Settings.Performance.Reset" desc="Reset to engine defaults" enabled=true
           AXStaticText id="Settings.Performance.AppliesNextLoad" value=text enabled=true
-        AXScrollBar value=number enabled=true
-          AXValueIndicator value=number
-          AXButton subrole=AXIncrementArrow
-          AXButton subrole=AXDecrementArrow
-          AXButton subrole=AXIncrementPage
-          AXButton subrole=AXDecrementPage
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

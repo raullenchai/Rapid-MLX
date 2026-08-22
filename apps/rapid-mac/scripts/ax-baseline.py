@@ -225,6 +225,87 @@ def normalize_toolbar_children(children: list[Node]) -> list[Node]:
     return [*sidebar, *authored]
 
 
+def normalize_transient_overlay_children(children: list[Node]) -> list[Node]:
+    """Place the search overlay immediately before the split view it covers.
+
+    SwiftUI exposes an overlay either before or after the view it covers based
+    on focus/z-order timing.  The conversation-search panel is the measured
+    case: consecutive hosted-runner dumps of the same UI reversed it and the
+    split view.  Depending on the OS, those siblings can sit directly below the
+    window or below an anonymous hosting container, so apply this narrowly
+    identified rule at every parent.  Authored sibling order everywhere else
+    remains regression-sensitive.
+    """
+    panel_index = next(
+        (
+            index
+            for index, child in enumerate(children)
+            if child.record.get("identifier") == "ConversationSearch.Panel"
+        ),
+        None,
+    )
+    split_index = next(
+        (
+            index
+            for index, child in enumerate(children)
+            if child.record.get("role") == "AXSplitGroup"
+        ),
+        None,
+    )
+    if panel_index is None or split_index is None or panel_index < split_index:
+        return children
+
+    # Some OS builds flatten the panel's list into an anonymous AXScrollArea
+    # sibling immediately after the identified panel. Move that measured
+    # companion with the panel so normalization does not tear the overlay in
+    # half.
+    overlay_end = panel_index + 1
+    panel_list = children[overlay_end] if overlay_end < len(children) else None
+    if (
+        panel_list is not None
+        and panel_list.record.get("role") == "AXScrollArea"
+        and not panel_list.record.get("identifier")
+        and _subtree_has_identifier(panel_list, "ConversationSearch.NewChat")
+    ):
+        overlay_end += 1
+    overlay = children[panel_index:overlay_end]
+    remaining = children[:panel_index] + children[overlay_end:]
+    split_index = next(
+        index
+        for index, child in enumerate(remaining)
+        if child.record.get("role") == "AXSplitGroup"
+    )
+    return remaining[:split_index] + overlay + remaining[split_index:]
+
+
+def _subtree_has_identifier(node: Node, identifier: str) -> bool:
+    return node.record.get("identifier") == identifier or any(
+        _subtree_has_identifier(child, identifier) for child in node.children
+    )
+
+
+def is_optional_system_subtree(node: Node) -> bool:
+    """True for AX nodes whose presence is controlled outside the product.
+
+    Scroll bars are emitted or omitted according to the user's macOS scroll
+    bar preference and whether the viewport happened to settle before the AX
+    dump.  The surrounding AXScrollArea remains fingerprinted, so scrollable
+    product structure is still covered.
+
+    The Developer settings row is intentionally environment-gated.  Its panel
+    has direct tests; pinning the conditional navigation row made a release
+    runner alternate between two otherwise-identical trees.
+    """
+    record = node.record
+    if record.get("role") == "AXScrollBar":
+        return True
+    if record.get("identifier") == "Settings.Category.developer":
+        return True
+    if record.get("role") in {"AXRow", "AXCell"} and len(node.children) == 1:
+        return is_optional_system_subtree(node.children[0])
+    return False
+
+
 # The footer's GPU gauge has no stable cross-machine shape. Apple Silicon
 # publishes a live utilisation reading (``AXUnknown desc="GPU 47 percent"``);
 # Intel Macs and sandboxed apps can't probe AGXAccelerator at all and instead
@@ -497,6 +578,8 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
     def walk(
         node: Node, depth: int, sort_children: bool, parent_is_toolbar: bool
     ) -> None:
+        if is_optional_system_subtree(node):
+            return
         lines.append("  " * depth + render_node(node, extra_tokens))
         if is_window_control(node.record) or (
             parent_is_toolbar and is_lazy_button_wrapper(node)
@@ -536,6 +619,7 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
         node_is_toolbar = node.record.get("role") == "AXToolbar"
         if node_is_toolbar:
             children = normalize_toolbar_children(children)
+        children = normalize_transient_overlay_children(children)
         for child in children:
             walk(
                 child, depth + 1, sort_children=False, parent_is_toolbar=node_is_toolbar

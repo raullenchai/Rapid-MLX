@@ -94,6 +94,7 @@ def test_peekaboo_requirement_is_default_deny():
         "message-actions",
         "cached-quickstart",
         "cached-curated-tradeup",
+        "cached-variant-collapse",
         "download-progress",
         "settings-persistence",
         "settings-mtp",

@@ -17,6 +17,61 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.18] — 2026-08-20
+
+Regenerating an answer no longer throws the old one away, dictation starts
+hot instead of stalling at the start of a session, and the model catalog adds
+LTX-2.5 video, Qwen Image, and new compact text checkpoints.
+
+### Added
+
+- **Every answer you regenerate is kept.** Regenerate, Retry, or edit a
+  prompt, and the previous version stays one click away — a `‹ 2/3 ›`
+  switcher under the bubble steps between the alternatives, and each fork
+  remembers where you left off. Deleting a message now says exactly how
+  many turns it takes with it, including ones on branches you can't
+  currently see. Old conversations are untouched. Contributed by @osdodo.
+- **SVG blocks can show themselves.** When a model answers with an SVG code
+  block, a Preview toggle renders it right in the chat — offscreen, and
+  nothing ever touches the network.
+- **Model campaigns.** When a model worth trying is spotlighted, a banner
+  in chat points you at it — dismiss it once and it stays gone.
+- **More local generation choices.** LTX-2.5 video, Qwen Image through mflux,
+  Ternary Bonsai 8B, GPT-OSS Puzzle, and North-Mini-Code checkpoints are now
+  available through the catalog and CLI.
+- **A GitHub star prompt after onboarding.** The prompt appears only after
+  setup is complete, stays out of the first-run path, and can be dismissed.
+
+### Changed
+
+- **Dictation starts hot.** The first dictation of a session used to pay a
+  hidden one-to-three-second setup after you stopped speaking. That setup
+  now runs when dictation is enabled or a model is picked, so your words
+  land in well under half a second — and when a run is slow, the Dictation
+  tab shows where the time went ("model 1.2 s · asr 0.3 s").
+- **Mixture-of-experts models answer faster.** Two expert projections now
+  run as one GPU launch, and long prompts start streaming sooner thanks to
+  a new prefill kernel for hybrid models.
+- **Experimental MTP is opt-in and explicit.** Tested presets are available
+  in the desktop, while advanced users can supply other structurally
+  compatible target/drafter pairs. Rapid keeps capability separate from its
+  recommendation, so these paths remain off unless the user chooses them.
+
+### Fixed
+
+- Background update progress is visible again while a new version
+  downloads.
+- A model that won't fit in memory opens a read-only Review instead of a
+  dead row, so you can see what it needs before freeing space.
+- A fresh install can quit normally before the telemetry choice; the consent
+  gate no longer uses an AppKit sheet that blocks application termination.
+- Multimodal media inputs reject SSRF destinations and arbitrary local-file
+  reads before loading, and stale Gemma 4 chat templates are upgraded to the
+  shipped compatible template.
+- A flaky network response during the CLI version check no longer crashes the
+  upgrade command; update discovery now fails open and leaves the command
+  usable.
+
 ## [0.12.17] — 2026-08-19
 
 Dictation actually works now — 0.12.16's release build shipped without the

@@ -24,6 +24,7 @@ import importlib.metadata as _im
 import importlib.util as _iu
 import os
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -139,6 +140,73 @@ _AUDIO_IMPORTS: tuple[tuple[str, str], ...] = (
     ("cn2an", "cn2an"),
 )
 
+# The macOS desktop sidecar deliberately installs ``rapid-mlx[audio-desktop]``
+# (``apps/rapid-mac/scripts/build-sidecar.sh``), a bounded extra that is just
+# ``mlx-audio`` + ``soundfile`` — the general-purpose TTS stack (f5-tts-mlx,
+# spaCy, misaki, numba, …) is excluded to stay under the bundle size gate.
+# Grading that bundle against ``_AUDIO_IMPORTS`` reported a perfectly healthy
+# signed 0.12.18 build as "incomplete — missing: f5-tts-mlx, numba, tiktoken,
+# …", i.e. the exact set difference between the two extras. Keep this aligned
+# with the ``audio-desktop`` extra in pyproject.toml (locked by
+# ``tests/test_audio_desktop_extra.py``).
+_AUDIO_DESKTOP_IMPORTS: tuple[tuple[str, str], ...] = (
+    ("mlx-audio", "mlx_audio"),
+    ("soundfile", "soundfile"),
+)
+
+# Distributions the desktop sidecar deliberately does NOT ship. The bundle is
+# built to a hard size cap (``.github/workflows/rapid-mac-release.yml`` gates on
+# BUNDLE_SIZE_CAP_MB), so ``build-sidecar.sh`` installs the bounded
+# ``[audio-desktop]`` extra plus ``mlx-vlm --no-deps`` + Pillow, and nothing
+# else. ``mlx-embeddings`` is simply not part of the desktop product surface.
+# Reporting it as "not installed — reinstall the app" was doubly wrong: the
+# install is healthy, and reinstalling reproduces the identical warning
+# forever. These rows are informational, never ⚠.
+_DESKTOP_EXCLUDED_DISTS: frozenset[str] = frozenset({"mlx-embeddings"})
+
+# Where a bundled sidecar came from decides what "repair" even means, so the
+# two sources must not share one hint.
+#
+# * ``embedded`` — ``Rapid-MLX Desktop.app/Contents/Resources/rapid-mlx/``.
+#   Inside the code-signed, notarized app; pip-installing into it breaks the
+#   signature seal and Gatekeeper then rejects the app ("a sealed resource is
+#   missing or invalid"). Reinstalling the app genuinely replaces it.
+# * ``runtime-override`` — ``~/Library/Application Support/Rapid/
+#   runtime-override/rapid-mlx/``, written by the bootstrapper on first launch
+#   of the slim DMG. It lives OUTSIDE the app bundle and deliberately "survives
+#   desktop upgrades" (``ServerLocator.swift``), and the bootstrapper
+#   short-circuits its download while the cache is present
+#   (``build-bootstrapper-dmg.sh``). So "reinstall the .app" is actively wrong
+#   here — it typically changes nothing.
+#
+#   There is no in-app "repair the runtime" action to point at, and no
+#   automatic re-download either. Settings → check for updates hands off to
+#   Sparkle, which updates the *app* bundle, and ``UpdateChecker`` explicitly
+#   does not act on the manifest's ``sidecar_*`` fields. The bootstrapper that
+#   originally populated this slot is not part of the source tree any more, and
+#   the release workflow builds only the full DMG. So "remove it and relaunch"
+#   is NOT self-repairing on its own: with no bundled sidecar the desktop just
+#   lands on the missing-runtime overlay, whose only actions are Recheck and an
+#   app-update download.
+#
+#   What does work today, in this order: install the current
+#   Rapid-MLX Desktop.app — its DMG ships a sidecar at
+#   ``Contents/Resources/rapid-mlx/`` (``build.sh``) — and only then remove the
+#   override, so ``ServerLocator.find()`` resolves the bundled slot. Doing it
+#   the other way round leaves a slim install stranded. Note that reinstalling
+#   alone is not enough when the override's VERSION is equal or newer: it keeps
+#   winning over the bundled copy (``shouldPreferBundled``), which is exactly
+#   why the removal step is required.
+_EMBEDDED_REPAIR_HINT = (
+    "reinstall Rapid-MLX Desktop.app — the bundled sidecar's Python "
+    "environment is code-signed and must not be pip-installed into"
+)
+_RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
+    "this runtime at {root} lives outside the app bundle and no app update "
+    "replaces it — install the current Rapid-MLX Desktop.app (its DMG ships a "
+    "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
+)
+
 
 def _module_available(module: str) -> bool:
     """Return whether *module* is discoverable, without importing it."""
@@ -146,6 +214,104 @@ def _module_available(module: str) -> bool:
         return _iu.find_spec(module) is not None
     except (ImportError, AttributeError, ValueError):
         return False
+
+
+def _bundled_sidecar_root() -> Path | None:
+    """Return the sidecar bundle root when doctor is running from a managed
+    sidecar's embedded interpreter, else ``None``.
+
+    The bundle layout produced by ``build-sidecar.sh`` is fixed, and both
+    managed slots share it (``ServerLocator.swift`` resolves each through the
+    same ``rapid-mlx/bin/rapid-mlx`` suffix)::
+
+        <root>/bin/rapid-mlx        # shell shim (sidecar-shim.sh)
+        <root>/python/bin/python3.12
+        <root>/site-packages/
+
+    We fingerprint that shape off ``sys.executable`` rather than trusting an
+    env var: the desktop is not the only thing that spawns the sidecar (the
+    user can run the shim by hand), so any env-var marker would be absent in
+    exactly the cases that matter.  The shape alone is not provenance,
+    though: a custom Python installation can reproduce it.  Require one of
+    the two locations ``ServerLocator`` owns before changing doctor contracts.
+    """
+    try:
+        exe = Path(sys.executable).resolve()
+    except OSError:
+        return None
+    if len(exe.parents) < 3:
+        return None
+    if exe.parent.name != "bin" or exe.parents[1].name != "python":
+        return None
+    root = exe.parents[2]
+    if not (root / "site-packages").is_dir():
+        return None
+    if not (root / "bin" / "rapid-mlx").exists():
+        return None
+
+    # Full DMG: <any app name>.app/Contents/Resources/rapid-mlx.  Users may
+    # rename the app after installation, so the stable macOS bundle suffix is
+    # the provenance signal rather than the display name.
+    embedded_shape = (
+        root.parent.name == "Resources"
+        and root.parents[1].name == "Contents"
+        and root.parents[2].suffix == ".app"
+    )
+    embedded = False
+    if embedded_shape:
+        try:
+            with (root.parents[1] / "Info.plist").open("rb") as handle:
+                plist = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError, TypeError):
+            plist = None
+        bundle_id = plist.get("CFBundleIdentifier") if isinstance(plist, dict) else None
+        # Production is exact; dogfood isolation appends a suffix so multiple
+        # personas can coexist without sharing preferences.
+        embedded = isinstance(bundle_id, str) and (
+            bundle_id == "com.rapidmlx.rapid"
+            or bundle_id.startswith("com.rapidmlx.rapid.dogfood-")
+        )
+
+    # Runtime override: ApplicationSupportLocator may root this under a
+    # dogfood HOME, but the suffix below is invariant.  Match the complete
+    # product-owned suffix so an arbitrary ``runtime-override/rapid-mlx``
+    # directory is not enough to suppress ordinary CLI diagnostics.
+    runtime_override = False
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        try:
+            expected_override = (
+                Path(home).expanduser().resolve()
+                / "Library"
+                / "Application Support"
+                / "Rapid"
+                / "runtime-override"
+                / "rapid-mlx"
+            ).resolve()
+        except OSError:
+            expected_override = None
+        runtime_override = root == expected_override
+    return root if embedded or runtime_override else None
+
+
+def _sidecar_repair_hint(root: Path) -> str:
+    """Pick the repair hint matching which managed slot *root* sits in.
+
+    ``runtime-override`` is detected by its parent directory name rather than
+    by a full absolute-path match against ``~/Library/Application Support`` —
+    the desktop resolves Application Support through ``ApplicationSupportLocator``
+    which honours an overridden ``$HOME`` (dogfood / test launches), so a
+    hardcoded home-relative path would misclassify exactly those runs. Anything
+    that is not the override slot is the in-bundle copy.
+
+    The override hint embeds the resolved path because doctor already knows it
+    exactly and the recovery is a manual removal — a generic "remove the cached
+    runtime" would leave the user guessing at a location that moves with
+    ``$HOME``.
+    """
+    if root.parent.name == "runtime-override":
+        return _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE.format(root=root)
+    return _EMBEDDED_REPAIR_HINT
 
 
 # ---------------------------------------------------------------------------
@@ -609,8 +775,30 @@ def section_updates(
 
 def section_optional_packages() -> Section:
     s = Section("Optional Packages")
-    for dist, label, hint in OPTIONAL_PACKAGES:
+    # RC 0.12.18: the signed desktop bundle installs the bounded
+    # ``[audio-desktop]`` extra, but doctor graded it against the full
+    # ``[audio]`` contract and reported a healthy build as "incomplete", then
+    # told the user to pip-install into a code-signed app. Detect the managed
+    # sidecar once and swap the contract, the remediation hint, and the
+    # treatment of extras the bundle intentionally omits.
+    sidecar_root = _bundled_sidecar_root()
+    bundled = sidecar_root is not None
+    audio_contract = _AUDIO_DESKTOP_IMPORTS if bundled else _AUDIO_IMPORTS
+    repair_hint = _sidecar_repair_hint(sidecar_root) if sidecar_root else None
+    for dist, label, install_hint in OPTIONAL_PACKAGES:
+        hint = repair_hint if repair_hint else install_hint
         ver = _safe_version(dist)
+        if bundled and not ver and dist in _DESKTOP_EXCLUDED_DISTS:
+            # Not a defect: this extra is outside the desktop product surface,
+            # so there is nothing for the user to repair. ⚠ + "reinstall" here
+            # would survive any reinstall and train users to ignore the
+            # section.
+            s.add(
+                f"{label} not bundled with Rapid-MLX Desktop (not required)",
+                CheckStatus.OK,
+                detail=f"distribution={dist} bundled=false reason=excluded-from-desktop",
+            )
+            continue
         if ver:
             # #1255: mlx-vlm can install mlx-audio transitively without
             # respecting Rapid-MLX's supported audio range. Presence alone
@@ -632,7 +820,7 @@ def section_optional_packages() -> Section:
             if dist == "mlx-audio":
                 missing = [
                     distribution
-                    for distribution, module in _AUDIO_IMPORTS
+                    for distribution, module in audio_contract
                     if not _module_available(module)
                 ]
                 if missing:
@@ -643,7 +831,8 @@ def section_optional_packages() -> Section:
                         CheckStatus.WARN,
                         detail=(
                             f"distribution={dist} version={ver} "
-                            f"missing={missing_text} hint={hint}"
+                            f"missing={missing_text} hint={hint} "
+                            f"contract={'audio-desktop' if bundled else 'audio'}"
                         ),
                     )
                     continue
@@ -681,7 +870,14 @@ def section_optional_packages() -> Section:
     # it cannot say "you have mlx-vlm but it's too old for [dflash]". This
     # extra row makes the gate explicit so a fresh-install user knows whether
     # `pip install 'rapid-mlx[dflash]'` will actually work.
+    #
+    # The desktop bundle DOES ship mlx-vlm (pinned 0.6.3, ``--no-deps`` + Pillow
+    # — the gemma-4 family needs it even in text-only mode), so unlike
+    # mlx-embeddings this row is a real contract on a bundled sidecar and stays
+    # gradeable; only the remediation wording changes.
     dflash_min = (0, 5, 0)
+    dflash_hint = repair_hint or "pip install 'rapid-mlx[dflash]'"
+    vision_hint = repair_hint or "pip install 'rapid-mlx[vision]'"
     vlm_ver = _safe_version("mlx-vlm")
     if vlm_ver and _version_at_least(vlm_ver, dflash_min):
         # #1126: same PIL honesty as the vision row — a version-adequate
@@ -694,7 +890,7 @@ def section_optional_packages() -> Section:
                 CheckStatus.WARN,
                 detail=(
                     f"distribution=mlx-vlm version={vlm_ver} "
-                    "pil=missing-or-broken hint=pip install 'rapid-mlx[vision]'"
+                    f"pil=missing-or-broken hint={vision_hint}"
                 ),
             )
         else:
@@ -709,7 +905,7 @@ def section_optional_packages() -> Section:
             f"mlx-vlm 0.5.0+ (dflash extras) not installed or too old "
             f"(current: {current}, need: 0.5.0+)",
             CheckStatus.WARN,
-            detail="pip install 'rapid-mlx[dflash]'",
+            detail=dflash_hint,
         )
 
     return s

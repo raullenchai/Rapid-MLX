@@ -72,7 +72,10 @@ final class ImageGenViewModel {
     // MARK: - Composed input
     var prompt: String = ""
     var aspect: Aspect = .square
-    var resolution: Resolution = .detailed
+    /// Defaults to the smallest preset: on-device diffusion cost scales with
+    /// pixel count, so 512² is the fastest first render and the least likely
+    /// to swap on a small-memory Mac. Users who want detail step up explicitly.
+    var resolution: Resolution = .compact
 
     var outputSize: String {
         aspect.size(for: resolution)

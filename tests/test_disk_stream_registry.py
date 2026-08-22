@@ -90,6 +90,31 @@ def test_qwen2_moe_streaming_forward_resolves_and_lfm2_moe_unaffected():
     assert lfm2_adapter.streaming_forward is _streaming_moe_forward
 
 
+def test_get_adapter_returns_qwen3_next_adapter():
+    """Qwen3-Coder-Next's published MLX checkpoint uses stacked tensors."""
+    adapter = get_adapter("qwen3_next")
+    assert adapter is not None
+    assert adapter.model_type == "qwen3_next"
+    assert adapter.num_experts == 512
+    assert adapter.tensor_template.layout == "stacked"
+    assert adapter.moe_block_attr == "mlp"
+
+    from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
+
+    from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
+
+    assert adapter.moe_block_cls is Qwen3NextSparseMoeBlock
+    assert adapter.streaming_forward is qwen3_next_streaming_forward
+
+
+def test_qwen3_next_tensor_template_matches_published_mlx_checkpoint():
+    adapter = get_adapter("qwen3_next")
+    name = adapter.tensor_template.tensor_name(
+        layer_idx=2, proj="gate_proj", component="weight", expert_id=5
+    )
+    assert name == "model.layers.2.mlp.switch_mlp.gate_proj.weight"
+
+
 def test_direct_layout_tensor_name_requires_expert_id():
     """A ``"direct"``-layout template (qwen2_moe) must raise ``ValueError``
     when ``expert_id`` is omitted, rather than silently formatting

@@ -22,10 +22,10 @@ struct AudioCatalogTests {
       flux2-klein-4b               4.3 GiB    [image:gen] Runpod/FLUX.2-klein-4B-mflux-4bit
     """
 
-    @Test("audio adds Dictation without removing either existing workbench")
+    @Test("audio offers exactly the two speech lanes, landing on Speech to Text")
     @MainActor
     func modeOrder() {
-        #expect(AudioViewModel.Mode.allCases == [.dictation, .speech, .transcription])
+        #expect(AudioViewModel.Mode.allCases == [.dictation, .speech])
         let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
         #expect(viewModel.mode == .dictation)
     }
@@ -114,9 +114,6 @@ struct AudioCatalogTests {
         #expect(source.contains("@Environment(DownloadManager.self) private var downloads"))
         #expect(source.contains(".task(id: downloads.cacheGeneration)"),
                 "The Audio view may stay mounted while Settings downloads a model.")
-        #expect(source.contains("WAV, MP3, M4A, AAC, FLAC, MP4, AIFF, or CAF - up to 25 MB"))
-        #expect(!source.contains("OGG, Opus, WebM"),
-                "The desktop sidecar does not bundle ffmpeg for these formats.")
     }
 
     @Test("audio model rows use the shared cache icons instead of status suffixes")

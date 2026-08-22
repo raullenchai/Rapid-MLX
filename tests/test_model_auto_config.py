@@ -1043,13 +1043,14 @@ class TestVisibility:
         assert "MTP path         : native" in table
         assert "KV-share         : no" in table
 
-    def test_qwen35_spec_off_mtp_disabled(self):
-        # Native-MTP family (Qwen3.5), but this alias has spec decode off
-        # (no MTP head registered) → the honest MTP path is ``disabled``.
+    def test_qwen35_declared_sidecar_is_visible_but_opt_in(self):
+        # This Qwen3.5 alias declares a compatible sidecar while keeping
+        # automatic speculation off. The info surface must expose that
+        # capability without suggesting it is enabled by default.
         cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
         assert cfg is not None and cfg.supports_spec_decode is False
         table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
-        assert "MTP path         : disabled" in table
+        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
         assert "KV-share         : no" in table
 
     def test_non_mtp_spec_on_family_mtp_disabled(self):
@@ -1081,11 +1082,17 @@ class TestVisibility:
         # parses ``format_profile_table`` output (the real public surface),
         # NOT ``_mtp_path_label`` in isolation — so the ``cfg is None``
         # branch's ``unknown`` value is covered too. Contract vocabulary:
-        # a MATCHED profile → native | sidecar | disabled; the UNMATCHED
+        # a MATCHED profile → native | sidecar | sidecar (opt-in...) |
+        # disabled; the UNMATCHED
         # (``cfg is None``) branch → "unknown (unmatched profile)".
         import re
 
-        matched_allowed = {"native", "sidecar", "disabled"}
+        matched_allowed = {
+            "native",
+            "sidecar",
+            "sidecar (opt-in: --speculative-config)",
+            "disabled",
+        }
         probes = [
             "mlx-community/gemma-4-12B-it-4bit",
             "mlx-community/Hy3-preview-4bit",
