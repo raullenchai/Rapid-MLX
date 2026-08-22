@@ -175,7 +175,9 @@ struct DMGPresentationScriptTests {
     private static func makeFinderAlias(
         posixPath: String = "/.background/background.png"
     ) -> Data {
-        var alias = Data(repeating: 0, count: 152)
+        // Alias Manager v2 fixed header is 150 bytes. Extension records below
+        // are independently serialized as tag/length/value tuples.
+        var alias = Data(repeating: 0, count: 150)
         alias[6] = 0
         alias[7] = 2  // Alias Manager record version.
         alias[8] = 0
@@ -183,9 +185,7 @@ struct DMGPresentationScriptTests {
         Self.writePascal("Rapid-MLX Desktop", to: &alias, at: 10, capacity: 28)
         Self.writePascal("background.png", to: &alias, at: 50, capacity: 64)
 
-        Self.appendUInt16(11, to: &alias)
-        alias.append(contentsOf: Data(".background".utf8))
-        alias.append(0)  // Even-byte padding.
+        Self.appendAliasTag(0x0000, Data(".background".utf8), to: &alias)
         Self.appendAliasTag(
             0x0002,
             Data("Rapid-MLX Desktop:.background:\u{0}background.png".utf8),

@@ -13,7 +13,7 @@ EXPECTED_ALIAS_PARTS = (
     b"Rapid-MLX Desktop:.background:\x00background.png",
     b"/.background/background.png",
 )
-ALIAS_FIXED_HEADER_SIZE = 152
+ALIAS_FIXED_HEADER_SIZE = 150
 
 
 def read_icvp_records(data: bytes) -> list[dict[str, object]]:
@@ -51,7 +51,7 @@ def _pascal_string(data: bytes, offset: int, capacity: int, field: str) -> bytes
 
 def parse_alias_target(alias: bytes) -> tuple[bytes, bytes]:
     """Decode the v2 Alias Manager record and return its HFS/POSIX paths."""
-    if len(alias) < ALIAS_FIXED_HEADER_SIZE + 2:
+    if len(alias) < ALIAS_FIXED_HEADER_SIZE + 4:
         raise ValueError("backgroundImageAlias is truncated")
     record_size = struct.unpack(">H", alias[4:6])[0]
     if record_size != len(alias):
@@ -69,15 +69,6 @@ def parse_alias_target(alias: bytes) -> tuple[bytes, bytes]:
         raise ValueError("backgroundImageAlias header targets the wrong volume or file")
 
     cursor = ALIAS_FIXED_HEADER_SIZE
-    parent_length = struct.unpack(">H", alias[cursor : cursor + 2])[0]
-    cursor += 2
-    parent_end = cursor + parent_length
-    if parent_end > len(alias):
-        raise ValueError("backgroundImageAlias parent directory is truncated")
-    if alias[cursor:parent_end] != b".background":
-        raise ValueError("backgroundImageAlias targets the wrong parent directory")
-    cursor = parent_end + (parent_length % 2)
-
     tags: dict[int, bytes] = {}
     terminated = False
     while cursor + 4 <= len(alias):
@@ -99,11 +90,16 @@ def parse_alias_target(alias: bytes) -> tuple[bytes, bytes]:
     if not terminated:
         raise ValueError("backgroundImageAlias has no terminator")
     try:
-        return tags[0x0002], tags[0x0012]
+        parent = tags[0x0000]
+        hfs_path = tags[0x0002]
+        posix_path = tags[0x0012]
     except KeyError as exc:
         raise ValueError(
             f"backgroundImageAlias is missing path tag 0x{exc.args[0]:04x}"
         ) from None
+    if parent != b".background":
+        raise ValueError("backgroundImageAlias targets the wrong parent directory")
+    return hfs_path, posix_path
 
 
 def verify(path: Path) -> None:
