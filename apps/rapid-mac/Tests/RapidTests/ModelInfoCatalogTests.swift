@@ -45,6 +45,17 @@ struct ModelInfoCatalogTests {
         #expect(g3.contextWindow == 8_192)
     }
 
+    @Test("Ornith 1.5 reports the 256k window from both official model configs")
+    func ornithContext() {
+        for alias in ["ornith-1.5-9b-bf16", "ornith-1.5-35b-a3b-bf16"] {
+            let info = ModelInfoCatalog.info(for: alias, hfRepo: nil)
+            #expect(info.family == "Ornith 1.5")
+            #expect(info.contextWindow == 262_144)
+            #expect(info.contextLabel == "256k")
+        }
+        #expect(ModelInfoCatalog.info(for: "ornithology-9b", hfRepo: nil).family == "Unknown")
+    }
+
     @Test("Unknown alias families return nil context — meter shows '—', not a guess")
     func unknownFamily() {
         let mystery = ModelInfoCatalog.info(for: "totally-made-up-7b", hfRepo: nil)

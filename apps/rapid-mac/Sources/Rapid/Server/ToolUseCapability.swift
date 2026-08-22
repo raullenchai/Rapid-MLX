@@ -382,6 +382,10 @@ enum ToolUseCapability {
         // works (continuous batching scales) and parser/family contour
         // matches verified 30B aliases (qwen3-coder-30b).
         KnownFamily(prefix: "nemotron", minSizeBillions: 3.0, note: "cycle-7 headline: engine + parser path verified at 30B scale"),
+        // ornith-1.5 — Qwen3.5-derived text family using the hermes parser.
+        // Studio dogfood on both official MLX checkpoints confirmed parsed
+        // tool calls: dense 9B and hybrid MoE 35B-A3B.
+        KnownFamily(prefix: "ornith-1.5-", minSizeBillions: 9.0, note: "Studio dogfood verified tool calls on official 9B dense and 35B-A3B MoE checkpoints; hermes parser"),
 
         // MARK: Gemma 4 e-series (efficient variants)
 

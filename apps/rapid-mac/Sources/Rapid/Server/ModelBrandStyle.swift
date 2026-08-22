@@ -35,6 +35,7 @@ enum ModelBrand: String, CaseIterable, Equatable, Sendable {
     case glm
     case smollm
     case hermes
+    case ornith
     case other
 
     /// The 2-character tile monogram for the recognised brands. `other`
@@ -52,6 +53,7 @@ enum ModelBrand: String, CaseIterable, Equatable, Sendable {
         case .glm:      return "GL"
         case .smollm:   return "Sm"
         case .hermes:   return "He"
+        case .ornith:   return "Or"
         case .other:    return "?"
         }
     }
@@ -77,6 +79,7 @@ enum ModelBrandStyle {
         if a.contains("glm") { return .glm }
         if a.contains("smollm") { return .smollm }
         if a.contains("hermes") { return .hermes }
+        if a.hasPrefix("ornith-1.5-") { return .ornith }
         return .other
     }
 
