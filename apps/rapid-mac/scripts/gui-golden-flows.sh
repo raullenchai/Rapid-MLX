@@ -3862,8 +3862,7 @@ flow_image_generation() {
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
-    start_persona resident-load-rejected FAKE_REJECT_IMAGE_LOAD=1 \
-        FAKE_RESIDENT_LOAD_DELAY_MS=1500
+    start_persona resident-load-rejected
 
     dismiss_first_run
 
@@ -3923,52 +3922,19 @@ flow_resident_load_rejected() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect.square")' "$OUT/rlr-ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing - the picker did not finish resolving"
 
-    # 3. The readiness action routes through ensureServing and hits the
-    #    in-process /v1/models/load endpoint, not a process restart.
+    # 3. Image models are deliberately not residency-eligible. Starting one
+    #    must replace the chat sidecar instead of sending the incompatible
+    #    image architecture through the chat server's /v1/models/load path.
     wait_identifier Readiness.Action "$OUT/rlr-ig-readiness.json" \
         || die "Images readiness has no action to load its model"
     press "$OUT/rlr-ig-readiness.json" Readiness.Action "$OUT/rlr-ig-start.json" \
         || die "Images Readiness.Action is not pressable - the load button is dead"
 
-    # 4. The wire must show the load was ATTEMPTED in-process and REJECTED.
-    wait_fake_event '.event == "model_load"' \
-        "the Images action never issued an in-process /v1/models/load"
-
-    # The request is deliberately held open: the tap must immediately replace
-    # the CTA with a working state. Before this regression fix HF was already
-    # writing the checkpoint while the UI still said "isn't downloaded yet"
-    # and kept showing a pressable Download & start button.
-    see_main "$OUT/rlr-in-flight.json"
-    jq -e '[.data.ui_elements[]? | .value? | strings] | any(contains("Downloading or loading the image model"))' \
-        "$OUT/rlr-in-flight.json" >/dev/null \
-        || die "resident image download started without visible working feedback"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
-        "$OUT/rlr-in-flight.json" >/dev/null; then
-        die "Download & start remained pressable while its resident load was in flight"
+    wait_fake_event ".event == \"server_started\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
+        "the Images action never started its dedicated image sidecar"
+    if jq -e 'select(.event == "model_load")' "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
+        die "Images incorrectly issued an in-process /v1/models/load"
     fi
-    wait_fake_event '.event == "model_load_rejected"' \
-        "the fake did not reject the in-process image load (FAKE_REJECT_IMAGE_LOAD not applied)"
-
-    # 5. The rejection's actionable reason must be VISIBLE on the Images
-    #    surface (the readiness banner), not only in the log drawer.
-    local i shown=0
-    for ((i=0; i<80; i++)); do
-        see_main "$OUT/rlr-shown.json"
-        if jq -e '[.data.ui_elements[]?]
-                  | map(((.title // "") | tostring) + " " + ((.value // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
-                  | join(" ") | test("rapid-mlx\\[image\\]")' \
-               "$OUT/rlr-shown.json" >/dev/null 2>&1; then
-            shown=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$shown" == 1 ]] \
-        || die "the engine's rejection reason never appeared on the Images surface - it was swallowed into the log (#1838)"
-
-    # 6. The surface offers a recovery action, not a dead button.
-    jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
-        "$OUT/rlr-shown.json" >/dev/null \
-        || die "the Images readiness banner did not offer a recovery action after the rejection"
 
     log "  resident-load-rejected OK"
 }
@@ -4319,24 +4285,22 @@ flow_audio_readiness() {
     # nor remain copyable while their selected chat model is not serving.
     press "$OUT/speech-resident.json" Sidebar.Launch "$OUT/launch-from-audio.json" \
         || die "Sidebar.Launch is not pressable from an Audio residency"
-    local launch_copy_count=0
+    local launch_copy_count=0 launch_ready=0
     for ((i=0; i<40; i++)); do
         see_main "$OUT/launch-from-audio.json"
         launch_copy_count="$(jq '[.data.ui_elements[]?
                                   | (.identifier // "")
                                   | select(startswith("Launch.Integration.Copy."))]
                                  | unique | length' "$OUT/launch-from-audio.json")"
-        [[ "$launch_copy_count" == 14 ]] && break
+        if [[ "$launch_copy_count" == 0 ]] &&
+           jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+              "$OUT/launch-from-audio.json" >/dev/null; then
+            launch_ready=1; break
+        fi
         sleep 0.25
     done
-    [[ "$launch_copy_count" == 14 ]] \
-        || die "Launch did not finish loading integrations from Audio"
-    if jq -e '[.data.ui_elements[]?
-               | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
-                        and .enabled == true)] | length > 0' \
-            "$OUT/launch-from-audio.json" >/dev/null; then
-        die "Launch enabled agent commands while an Audio model was serving"
-    fi
+    [[ "$launch_ready" == 1 ]] \
+        || die "Launch exposed dead commands or no chat-model start action from Audio"
     if jq -e '[.data.ui_elements[]? | .value? | strings]
               | any(contains("fake-qwen3-tts")
                     and (contains("--model")
