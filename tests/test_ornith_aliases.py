@@ -95,16 +95,15 @@ def test_detect_ornith_alias_routes_35b_hybrid():
     assert cfg.supports_spec_decode is False
 
 
-def test_detect_ornith_raw_hf_path_falls_back_to_regex():
-    """A user serving the bare HF path (no alias) must still get the right
-    family routing from the ``_MODEL_PATTERNS`` regex — dense 9B non-hybrid,
-    MoE 35B hybrid, matching the alias profiles."""
-    cfg9 = detect_model_config(ORNITH_9B_HF)
+def test_detect_ornith_unregistered_repack_falls_back_to_regex():
+    """Unregistered repacks must route through ``_MODEL_PATTERNS`` rather
+    than resolving one of the official HF paths through the alias registry."""
+    cfg9 = detect_model_config("community/Ornith-1.5-9B-MLX-repack")
     assert cfg9 is not None
     assert cfg9.is_hybrid is False
     assert cfg9.supports_spec_decode is False
 
-    cfg35 = detect_model_config(ORNITH_35B_HF)
+    cfg35 = detect_model_config("community/Ornith-1.5-35B-A3B-MLX-repack")
     assert cfg35 is not None
     assert cfg35.is_hybrid is True
     assert cfg35.is_moe is True
@@ -112,13 +111,20 @@ def test_detect_ornith_raw_hf_path_falls_back_to_regex():
 
 
 def test_detect_ornith_local_snapshot_dir():
-    """A local checkout dir whose name contains the ornith family with an
-    MoE / dense marker still routes via the regex (regex uses ``search`` on
-    the path, per the module contract)."""
+    """The final local-directory segment can identify an Ornith repack."""
     cfg = detect_model_config("/tmp/ornith-1.5-35b-a3b-checkout")
     assert cfg is not None
     assert cfg.is_hybrid is True
     assert cfg.is_moe is True
+
+
+def test_ornith_parent_directory_does_not_hijack_unrelated_checkpoint():
+    """An Ornith-named parent must not stamp its routing onto a child model."""
+    cfg = detect_model_config("/models/ornith-1.5-35b-a3b/Qwen3-4B")
+    assert cfg is not None
+    assert cfg.is_hybrid is False
+    assert cfg.is_moe is False
+    assert cfg.supports_spec_decode is True
 
 
 # ---- cross-check: hf_path markers match the JSON flags -----------------
