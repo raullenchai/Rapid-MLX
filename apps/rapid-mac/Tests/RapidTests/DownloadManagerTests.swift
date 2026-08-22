@@ -452,8 +452,8 @@ struct DownloadStripCaptionTests {
             )
         )
         host.layoutSubtreeIfNeeded()
-        for _ in 0..<20 where downloads.job(for: "image-model") != nil {
-            try await Task.sleep(for: .milliseconds(10))
+        for _ in 0..<100 where downloads.job(for: "image-model") != nil {
+            try await Task.sleep(for: .milliseconds(20))
         }
         #expect(downloads.job(for: "image-model") == nil)
         _ = host

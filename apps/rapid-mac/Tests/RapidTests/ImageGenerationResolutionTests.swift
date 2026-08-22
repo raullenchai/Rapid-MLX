@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -42,7 +43,7 @@ struct ImageGenerationResolutionTests {
 
     @Test("A completed image pull changes the catalog key and view-model readiness to Start")
     @MainActor
-    func completedPullInvalidatesCatalogReadiness() async {
+    func completedPullInvalidatesCatalogReadiness() async throws {
         let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")
         let server = ServerManager(testingState: .idle, binaryPath: binary)
         let downloads = DownloadManager()
@@ -54,9 +55,18 @@ struct ImageGenerationResolutionTests {
             )
         }
         let viewModel = ImageGenViewModel(server: server) { _ in [entry(cached)] }
+        let host = NSHostingView(
+            rootView: ImagesView(viewModel: viewModel, server: server)
+                .environment(SettingsRouter())
+                .environment(downloads)
+        )
+        host.layoutSubtreeIfNeeded()
 
         let beforeKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
-        await viewModel.refreshCatalog()
+        for _ in 0..<100 where viewModel.imageModels.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(viewModel.imageModels.count == 1)
         let before = ModelReadiness.resolve(
             serverState: .idle,
             alias: "image-model",
@@ -71,7 +81,11 @@ struct ImageGenerationResolutionTests {
         let afterKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
         #expect(afterKey != beforeKey, "A successful pull must restart the view's keyed task.")
 
-        await viewModel.refreshCatalog()
+        // The mounted ImagesView must observe cacheGeneration and refresh its
+        // catalog without a test-side call to refreshCatalog().
+        for _ in 0..<100 where viewModel.imageModels.first?.cached != true {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         let after = ModelReadiness.resolve(
             serverState: .idle,
             alias: "image-model",
@@ -79,6 +93,7 @@ struct ImageGenerationResolutionTests {
             sizeText: "1 GiB"
         )
         #expect(after.action == .start(alias: "image-model"))
+        _ = host
     }
 
     @Test("A cancelled older catalog refresh cannot overwrite the newest result")
