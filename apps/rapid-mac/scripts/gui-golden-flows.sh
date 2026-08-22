@@ -40,7 +40,7 @@ Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, image-generation, dictation, audio-readiness, all
+       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -100,7 +100,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -1038,7 +1038,13 @@ wait_settings_stable() {
 }
 
 start_model() {
-    wait_identifier Readiness.Action "$OUT/readiness-start.json"
+    # The readiness band is mounted before its action becomes interactive
+    # while the catalog finishes resolving the selected model.  Pressing the
+    # merely-present button is accepted by AX but dropped by SwiftUI, which
+    # made slower hosted runners wait a full minute for a sidecar that was
+    # never asked to start.  Gate the interaction on the same enabled state a
+    # user needs before clicking it.
+    wait_identifier_enabled Readiness.Action "$OUT/readiness-start.json"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
     # ``server_started`` says the fake bound its port; it does NOT say the app
     # has finished wiring up to it. The old gate also tested
@@ -1046,7 +1052,10 @@ start_model() {
     # whole startup — including while its hint still reads "<alias> is still
     # starting." So this returned early, ``send_prompt`` pressed into a closed
     # readiness gate, and the press was silently dropped (observed: 1 run in 2).
-    for _ in {1..120}; do
+    # Hosted macOS runners can spend more than 30 seconds cold-starting the
+    # bundled fake sidecar after a full release build. Keep the event-based
+    # readiness proof, but allow 60 seconds before declaring startup broken.
+    for _ in {1..240}; do
         grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
         sleep 0.25
     done
@@ -3235,6 +3244,36 @@ flow_chat_document_attachment() {
 
     local fixture="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
     see_main "$OUT/document-compose.json"
+
+    # The composer's single plus affordance expands to exactly the two product
+    # actions: documents remain available for every chat model, while photos
+    # stay visible-but-disabled for this text-only fixture alias. Keeping the
+    # disabled row visible teaches the capability boundary without pretending
+    # Rapid itself lacks image input.
+    press "$OUT/document-compose.json" ChatView.AddAttachments \
+        "$OUT/attachment-menu-open.json"
+    local attachment_menu_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/attachment-menu.json"
+        if jq -e '[.data.ui_elements[]?
+                   | select(.identifier == "ChatView.Attachments.UploadFile"
+                            or .identifier == "ChatView.Attachments.UploadPhoto")]
+                  | length == 2' "$OUT/attachment-menu.json" >/dev/null; then
+            attachment_menu_ready=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$attachment_menu_ready" == 1 ]] \
+        || die "the attachment plus menu did not expose Upload file and Upload photo"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadFile" and .enabled == true)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload file was not enabled for a text-only chat model"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadPhoto" and .enabled == false)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload photo did not expose the text-only model capability boundary"
+
     "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
         > "$OUT/document-paste.json"
 
@@ -3312,6 +3351,75 @@ flow_chat_document_attachment() {
         "$OUT/document-restored.json" >/dev/null; then
         die "extracted document contents leaked into the visible transcript"
     fi
+    cleanup_persona
+}
+
+flow_chat_multimodal_attachments() {
+    start_persona chat-multimodal-attachments FAKE_VISION_CHAT=1
+    dismiss_first_run
+    start_model
+
+    local first="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-28.png"
+    local second="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
+    local document="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
+
+    see_main "$OUT/mm-compose.json"
+    press "$OUT/mm-compose.json" ChatView.AddAttachments "$OUT/mm-menu-open.json"
+    wait_identifier ChatView.Attachments.UploadPhoto "$OUT/mm-menu.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadPhoto" and .enabled == true)' \
+        "$OUT/mm-menu.json" >/dev/null \
+        || die "Upload photo was not enabled for a vision chat model"
+    # Dismiss the popover by pressing its anchor again before exercising the
+    # native paste ingress. The two picker actions are source-wired to the same
+    # importer and pinned by AttachmentDedupTests; this flow proves the mounted
+    # menu exposes the correct enabled action.
+    press "$OUT/mm-menu.json" ChatView.AddAttachments "$OUT/mm-menu-close.json"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$first" > "$OUT/mm-first-paste.json"
+    wait_identifier ChatView.Attachment.Remove.cheetah-logo-28.png "$OUT/mm-first-attached.json"
+    send_prompt "Describe current image one" mm-first
+    wait_send_idle "$OUT/mm-first-complete.json"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$second" > "$OUT/mm-second-paste.json"
+    wait_identifier ChatView.Attachment.Remove.cheetah-logo-96.png "$OUT/mm-second-attached.json"
+    send_prompt "Describe current image two" mm-second
+    wait_send_idle "$OUT/mm-second-complete.json"
+
+    local first_hash second_hash
+    first_hash="$(python3 - "$first" <<'PY'
+import base64, hashlib, pathlib, sys
+url = "data:image/png;base64," + base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode()
+print(hashlib.sha256(url.encode()).hexdigest())
+PY
+)"
+    second_hash="$(python3 - "$second" <<'PY'
+import base64, hashlib, pathlib, sys
+url = "data:image/png;base64," + base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode()
+print(hashlib.sha256(url.encode()).hexdigest())
+PY
+)"
+    jq -e -s --arg first "$first_hash" --arg second "$second_hash" '
+        [ .[] | select(.event == "chat_request") ][1]
+        | .user_payloads[-1].image_url_sha256 == [$second]
+          and ([.user_payloads[]?.image_url_sha256[]?] | index($first) | not)
+    ' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the second image request resent the first image or omitted the second"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$document" > "$OUT/mm-document-paste.json"
+    wait_identifier ChatView.Attachment.Remove.chat-document.txt "$OUT/mm-document-attached.json"
+    send_prompt "Review current document" mm-document
+    wait_send_idle "$OUT/mm-document-complete.json"
+    jq -e -s '
+        [ .[] | select(.event == "chat_request") ][2]
+        | ([.user_payloads[]?.image_url_sha256[]?] | length) == 0
+          and (.user_payloads[-1].text
+               | contains("BEGIN RAPID ATTACHMENT")
+                 and contains("Revenue: 42")
+                 and contains("Region: APAC"))
+    ' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the document request retained historical images or omitted extracted text"
+
     cleanup_persona
 }
 
@@ -4572,6 +4680,7 @@ case "$FLOW" in
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
     chat-document-attachment) flow_chat_document_attachment ;;
+    chat-multimodal-attachments) flow_chat_multimodal_attachments ;;
     image-generation) flow_image_generation ;;
     dictation) flow_dictation ;;
     audio-readiness) flow_audio_readiness ;;
@@ -4602,6 +4711,7 @@ case "$FLOW" in
         flow_catalog_integrity
         flow_browse_all_destination
         flow_chat_document_attachment
+        flow_chat_multimodal_attachments
         flow_image_generation
         flow_dictation
         flow_audio_readiness

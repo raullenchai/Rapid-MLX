@@ -146,8 +146,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install GUI contract test dependencies
+        run: pip install pytest PyYAML
 
       # Separate steps so a red names which contract broke.
       - name: Baselines are OS-independent
@@ -155,6 +155,9 @@ jobs:
 
       - name: GUI preflight contract
         run: pytest tests/test_gui_preflight_contract.py -q
+
+      - name: GUI golden-flow coverage contract
+        run: pytest tests/test_gui_golden_ci_coverage.py -q
 
       - name: Fake sidecar catalog contract
         run: pytest tests/test_fake_sidecar_image_catalog.py -q
@@ -363,6 +366,15 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
 
+      # Exercise the vision sidecar before the long sequence of isolated app
+      # launches below can create artificial cold-start pressure on the hosted
+      # Mac. Payload correctness is still asserted by the flow itself.
+      - name: 'Golden flow: chat-multimodal-attachments'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow chat-multimodal-attachments
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
+
       - name: 'Golden flow: message-actions'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow message-actions
@@ -503,7 +515,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GOLDEN_ROOT"])
-          expected = 28
+          expected = 29
           results = sorted(root.glob("*/result.json"))
           failures = []
           for path in results:

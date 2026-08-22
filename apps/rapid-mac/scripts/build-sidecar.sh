@@ -256,6 +256,41 @@ fi
     "${RAPID_MLX_SOURCE}[audio-desktop]" \
     'transformers>=5.5.0,<5.13'
 
+# pip normally selects wheels for the BUILD host. A sidecar assembled on
+# macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
+# the Desktop app's deployment target is macOS 14. Moving that otherwise
+# valid app to a macOS 14/15 Mac then fails at the first Metal operation with
+# "metallib language version 4.0 is not supported on this OS". Reinstall the
+# exact versions selected above from their macOS 14 wheels: those wheels run
+# on newer systems too, making the packaged runtime match the app contract.
+MLX_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx"))')"
+MLX_METAL_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx-metal"))')"
+echo "==> pinning MLX wheels to Desktop's macOS 14 deployment target"
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --platform macosx_14_0_arm64 \
+    --only-binary=:all: \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    --upgrade \
+    --force-reinstall \
+    "mlx==${MLX_VERSION}" \
+    "mlx-metal==${MLX_METAL_VERSION}"
+
+for wheel in \
+    "$STAGE/site-packages/mlx-${MLX_VERSION}.dist-info/WHEEL" \
+    "$STAGE/site-packages/mlx_metal-${MLX_METAL_VERSION}.dist-info/WHEEL"; do
+    grep -q '^Tag: .*macosx_14_0_arm64$' "$wheel" || {
+        echo "ERR: Desktop sidecar resolved a non-macOS-14 MLX wheel: $wheel" >&2
+        exit 1
+    }
+done
+
 # ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
 #
 # Even though we skip the [vision] extras to stay under rapid-desktop's
@@ -850,8 +885,17 @@ else
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import mlx_vlm; print("mlx_vlm", mlx_vlm.__version__); from mlx_vlm.models import gemma4_unified' 2>&1)" || {
-        echo "ERR: bundled mlx_vlm import failed — gemma-4 aliases would crash at runtime:" >&2
+        'import importlib.util
+import mlx_vlm
+from mlx_vlm.models import (
+    diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
+    qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
+)
+assert importlib.util.find_spec("cv2") is None
+assert importlib.util.find_spec("torch") is None
+assert importlib.util.find_spec("torchvision") is None
+print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>&1)" || {
+        echo "ERR: bundled mlx_vlm desktop architecture smoke failed:" >&2
         echo "$VLM_OUT" >&2
         echo "ERR: usually means a new mlx-vlm release added an eager top-level import" >&2
         echo "     not currently in the --no-deps bundle. Inspect the traceback for the" >&2

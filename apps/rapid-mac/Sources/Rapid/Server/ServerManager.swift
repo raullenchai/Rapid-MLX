@@ -393,6 +393,9 @@ final class ServerManager {
     /// whether a speculative-decoding change needs a real restart.
     private(set) var launchedPerformanceAlias: String?
     private(set) var launchedPerformanceFlags: [String] = []
+    /// Process-wide lane captured at spawn. Nil means there is no live child;
+    /// UI capability must observe this value rather than the process handle.
+    private(set) var launchedImageInputLane: Bool?
 
     func hasAppliedSpeculativeDecoding(forAlias alias: String) -> Bool {
         guard child != nil,
@@ -728,6 +731,7 @@ final class ServerManager {
     /// process death.
     internal func _testClearChild() {
         self.child = nil
+        self.launchedImageInputLane = nil
     }
 
     /// codex r1 BLOCKING #3 test seam — drive the ``state`` field
@@ -912,6 +916,30 @@ final class ServerManager {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let requestedPerformanceFlags = perfLaunchFlagsProvider?(trimmed) ?? []
+        var requestedCatalogSupportsImageInput = false
+        // Cold start delegates to `start`, which resolves the same metadata
+        // authoritatively. This probe is needed only to decide whether an
+        // already-running text-lane sidecar can accept a resident load.
+        if child != nil, let binary = binaryPath {
+            let entry = await ModelCatalogCache.shared.entries(
+                binary: binary,
+                generation: downloads?.cacheGeneration ?? 0
+            ).first {
+                $0.alias.caseInsensitiveCompare(trimmed) == .orderedSame
+            }
+            if Task.isCancelled || didSignalShutdown { return false }
+            requestedCatalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+                forAlias: trimmed,
+                isBuiltinProfile: entry?.isBuiltinProfile,
+                isTextOnly: entry?.isTextOnly
+            )
+        }
+        let requiresImageLaneRestart = Self.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: requestedCatalogSupportsImageInput,
+            userOverrides: requestedPerformanceFlags,
+            processLaunchFlags: launchedPerformanceFlags,
+            hasChild: child != nil
+        )
         let speculativeRequested = requestedPerformanceFlags.contains("--speculative-config")
         let speculativeApplied = hasAppliedSpeculativeDecoding(forAlias: trimmed)
         let speculativeSettingChanged = speculativeRequested != speculativeApplied
@@ -920,10 +948,12 @@ final class ServerManager {
         // residency endpoint to replace it is redundant and breaks legacy
         // sidecars: their 404 fallback stops and restarts the model on every
         // chat send before the request can leave the app.
-        if case .ready(let current) = state, current == trimmed, !speculativeSettingChanged {
+        if case .ready(let current) = state, current == trimmed,
+           !speculativeSettingChanged, !requiresImageLaneRestart {
             return true
         }
-        if replacementGroup == nil, isModelResident(trimmed), !speculativeSettingChanged {
+        if replacementGroup == nil, isModelResident(trimmed),
+           !speculativeSettingChanged, !requiresImageLaneRestart {
             return true
         }
 
@@ -953,7 +983,8 @@ final class ServerManager {
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
         if Self.residencyLoadApplies(
-            residencyEligible: residencyEligible && !speculativeRequested && !speculativeSettingChanged,
+            residencyEligible: residencyEligible && !speculativeRequested
+                && !speculativeSettingChanged && !requiresImageLaneRestart,
             readyWithChild: readyWithChild
         ) {
             // Publish before crossing the network await so SwiftUI replaces
@@ -1361,6 +1392,10 @@ final class ServerManager {
         }
         guard !isOperating else { return }
         guard child == nil else { return }
+        // App termination is irreversible. `beginShutdown()` latches this
+        // even when no child exists yet, so a start suspended in any probe
+        // cannot resume on the far side of application shutdown.
+        guard !didSignalShutdown else { return }
         guard let binary = binaryPath else {
             state = .missing
             return
@@ -1487,6 +1522,7 @@ final class ServerManager {
             // just clicked Stop on. Bail before doing any further
             // work — every later check is gated on the same Task.
             if Task.isCancelled { return }
+            if didSignalShutdown { return }
             // codex r1 BLOCKING: the await above is a MainActor
             // suspension point and ``start(alias:)`` is reentrant. A
             // second ``start()`` call landing on the actor while we're
@@ -1506,6 +1542,26 @@ final class ServerManager {
             guard child == nil else { return }
         }
 
+        // Resolve authoritative capability before entering the spawn critical
+        // section. Quickstart and Settings can call start directly on a cold
+        // cache, so relying on the synchronous mirror here would silently
+        // launch a visual checkpoint in its text lane. Keeping this await
+        // before `isOperating = true` preserves the cancellable startup
+        // contract; re-check every entry guard after actor reentrancy.
+        let catalogEntry = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads?.cacheGeneration ?? 0
+        ).first {
+            $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame
+        }
+        if Task.isCancelled || didSignalShutdown { return }
+        guard !isOperating, child == nil else { return }
+        let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+            forAlias: trimmedAlias,
+            isBuiltinProfile: catalogEntry?.isBuiltinProfile,
+            isTextOnly: catalogEntry?.isTextOnly
+        )
+
         // Codex round 1-4 finding (all 4 rounds): the previous shape
         // held ``isOperating = true`` for the entire health/download
         // window (up to 30 minutes for a first-time large model
@@ -1521,7 +1577,6 @@ final class ServerManager {
         //     is false here; ``stop()`` can preempt by terminating
         //     ``child`` and the polling loop notices ``child == nil``
         //     and returns.
-        didSignalShutdown = false
         isOperating = true
 
         // Clear the log tail from any previous run so the user only
@@ -1655,12 +1710,28 @@ final class ServerManager {
         // HERE, alongside the recommendation, for the same reason it is
         // computed here — every start path reaches `start(alias:)` and none of
         // them thread flags.
-        let performanceFlags = Self.mergedPerformanceFlags(
-            recommended: RAMBucketedDefault.launchFlags(
+        // Desktop is a single-user product: a multimodal checkpoint should be
+        // ready for a pasted screenshot without a model restart or a hidden
+        // first-use load. The server/CLI keeps its throughput-first auto
+        // routing; only the process spawned by the GUI opts into the complete
+        // MLLM lane. Text-only aliases retain their existing launch shape.
+        let desktopDefaults = Self.desktopCapabilityFlags(
+            forAlias: trimmedAlias,
+            supportsImageInput: catalogSupportsImageInput,
+            existing: RAMBucketedDefault.launchFlags(
                 forAlias: trimmedAlias,
                 physicalRAMGB: hardware.physicalRAMGB
-            ),
+            )
+        )
+        // Capability is a Desktop default, not a mandate. Merge explicit
+        // per-model choices last so a user can still trade vision for memory.
+        let safeUserOverrides = Self.imageSafePerformanceOverrides(
+            catalogSupportsImageInput: catalogSupportsImageInput,
             userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
+        )
+        let performanceFlags = Self.mergedPerformanceFlags(
+            recommended: desktopDefaults,
+            userOverrides: safeUserOverrides
         )
         var extraFlags = performanceFlags
         extraFlags.append(contentsOf: [
@@ -1913,6 +1984,9 @@ final class ServerManager {
                     return
                 }
                 startedAt = nil
+                launchedImageInputLane = performanceFlags.contains("--mllm")
+                    && !performanceFlags.contains("--no-mllm")
+                    && !performanceFlags.contains("--text-only")
                 state = .ready(alias: trimmedAlias)
                 // Issue #270: mark the spawn cycle as "demonstrably
                 // healthy" so a subsequent ``handleChildExit`` knows
@@ -2040,9 +2114,13 @@ final class ServerManager {
         // to protect, leaving the partial ``prefix_cache/<rev>.new/``
         // this teardown is specifically written to avoid.
         guard !didSignalShutdown else { return }
+        // Latch the intent before inspecting `child`: start() has suspension
+        // points before process.run(), and `child == nil` during all of them.
+        // Returning without setting the latch lets that start resume after
+        // AppKit shutdown and orphan a newly spawned sidecar.
+        didSignalShutdown = true
         guard let process = child else { return }
         guard process.isRunning || process.isProcessGroupAlive else { return }
-        didSignalShutdown = true
         expectedStop = true
         process.signalProcessGroup(SIGTERM)
     }
@@ -2078,6 +2156,7 @@ final class ServerManager {
         }
         teardownPipes()
         child = nil
+        launchedImageInputLane = nil
         // #17: clear the bearer the moment the child is gone so a
         // post-stop chat request can't slip through with a stale
         // secret targeting whatever happens to bind the port next.
@@ -2166,6 +2245,7 @@ final class ServerManager {
         if !process.isProcessGroupAlive {
             teardownPipes()
             child = nil
+            launchedImageInputLane = nil
             // #17: see shutdownSync — bearer is dead the moment the
             // child is.
             activeBearer = nil
@@ -2236,6 +2316,7 @@ final class ServerManager {
         expectedStop = false
         preservingLastServedAliasDuringStop = false
         child = nil
+        launchedImageInputLane = nil
         // #17: the child owns the secret; the secret is meaningless
         // (and a leak vector) once the child is gone.
         activeBearer = nil
@@ -2791,6 +2872,7 @@ final class ServerManager {
     nonisolated private static let perfFlagGroups: [Set<String>] = [
         ["--kv-cache-dtype", "--kv-cache-turboquant"],
         ["--enable-prefix-cache", "--disable-prefix-cache"],
+        ["--mllm", "--no-mllm", "--text-only"],
         ["--cache-memory-mb"],
         ["--speculative-config"],
     ]
@@ -2841,6 +2923,109 @@ final class ServerManager {
             }
         }
         return kept + userOverrides
+    }
+
+    /// Add Desktop's capability policy to an otherwise complete flag list.
+    /// Kept pure so cold start, crash recovery, and alias-switch behavior can
+    /// be regression-tested without spawning the bundled runtime.
+    nonisolated internal static func desktopCapabilityFlags(
+        forAlias alias: String,
+        supportsImageInput: Bool = false,
+        existing: [String]
+    ) -> [String] {
+        guard supportsImageInput else {
+            return existing
+        }
+
+        // A RAM recommendation authored before vision-by-default may still
+        // contain the old escape-hatch spelling. Remove either spelling from
+        // the defaults before adding --mllm; explicit user overrides are
+        // merged afterward and therefore retain final precedence.
+        var flags = existing.filter { $0 != "--no-mllm" && $0 != "--text-only" }
+        if !flags.contains("--mllm") { flags.append("--mllm") }
+        return flags
+    }
+
+    /// Resolve the capability users actually launched, not merely what the
+    /// checkpoint could support. Explicit text-only overrides must disable
+    /// photo affordances and image payloads in the composer as well as MLLM
+    /// at spawn time.
+    nonisolated internal static func effectiveImageInputCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String]
+    ) -> Bool {
+        guard catalogSupportsImageInput else { return false }
+        if userOverrides.contains("--no-mllm") || userOverrides.contains("--text-only") {
+            return false
+        }
+        return true
+    }
+
+    /// Catalog text-only pins are engine compatibility constraints, not a
+    /// preference. Never forward a manual `--mllm` that contradicts them.
+    nonisolated internal static func imageSafePerformanceOverrides(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String]
+    ) -> [String] {
+        guard !catalogSupportsImageInput else { return userOverrides }
+        return userOverrides.filter { $0 != "--mllm" }
+    }
+
+    /// Combine the selected resident's own capability with the process-wide
+    /// MLLM lane chosen when the sidecar was spawned. Resident replacement can
+    /// change `state` without changing those process flags, so neither input
+    /// alone describes what the active alias can actually accept.
+    nonisolated internal static func effectiveRunningImageCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String],
+        processLaunchFlags: [String]?
+    ) -> Bool {
+        guard effectiveImageInputCapability(
+            catalogSupportsImageInput: catalogSupportsImageInput,
+            userOverrides: userOverrides
+        ) else { return false }
+        guard let processLaunchFlags else { return true }
+        return processLaunchFlags.contains("--mllm")
+            && !processLaunchFlags.contains("--no-mllm")
+            && !processLaunchFlags.contains("--text-only")
+    }
+
+    /// A resident load cannot add or remove the process-wide vision tower
+    /// after spawn. Any requested lane change therefore requires the existing
+    /// fallback process restart, both to make images work and to honor a
+    /// user's explicit text-only memory choice.
+    nonisolated internal static func requiresProcessRestartForImageCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String],
+        processLaunchFlags: [String],
+        hasChild: Bool
+    ) -> Bool {
+        guard hasChild else { return false }
+        let requested = effectiveImageInputCapability(
+            catalogSupportsImageInput: catalogSupportsImageInput,
+            userOverrides: userOverrides
+        )
+        let processHasMLLM = processLaunchFlags.contains("--mllm")
+            && !processLaunchFlags.contains("--no-mllm")
+            && !processLaunchFlags.contains("--text-only")
+        return requested != processHasMLLM
+    }
+
+    internal func supportsImageInput(
+        forAlias alias: String,
+        catalogSupportsImageInput: Bool? = nil
+    ) -> Bool {
+        let catalogCapability = catalogSupportsImageInput
+            ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: binaryPath)
+        let safeOverrides = Self.imageSafePerformanceOverrides(
+            catalogSupportsImageInput: catalogCapability,
+            userOverrides: perfLaunchFlagsProvider?(alias) ?? []
+        )
+        return Self.effectiveRunningImageCapability(
+            catalogSupportsImageInput: catalogCapability,
+            userOverrides: safeOverrides,
+            processLaunchFlags: launchedImageInputLane.map { $0 ? ["--mllm"] : [] }
+        )
     }
 
     // MARK: - Unified spawn shape (issue #271)

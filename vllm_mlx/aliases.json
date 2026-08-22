@@ -397,6 +397,7 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
+    "is_text_only": true,
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,

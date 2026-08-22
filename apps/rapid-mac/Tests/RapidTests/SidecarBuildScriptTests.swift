@@ -66,6 +66,30 @@ struct SidecarBuildScriptTests {
         #expect(script.contains("from packaging.requirements import Requirement"))
         #expect(script.contains("actual not in req.specifier"),
                 "Post-install validation must reject incompatible installed dependency versions.")
+        for architecture in [
+            "diffusion_gemma", "gemma3", "gemma3n", "gemma4", "gemma4_unified",
+            "qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe",
+        ] {
+            #expect(script.contains(architecture),
+                    "Every Desktop-advertised vision architecture needs a bundled import smoke.")
+        }
+        #expect(script.contains(#"find_spec("cv2") is None"#))
+        #expect(script.contains(#"find_spec("torch") is None"#))
+        #expect(script.contains(#"find_spec("torchvision") is None"#),
+                "The reduced vision bundle must prove its advertised paths stay torch/cv2-free.")
+    }
+
+    @Test("Desktop MLX wheels target the app's minimum macOS")
+    func mlxWheelsMatchDeploymentTarget() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+
+        #expect(script.contains("--platform macosx_14_0_arm64"),
+                "A newer build host must not make the sidecar require that host's macOS.")
+        #expect(script.contains("^Tag: .*macosx_14_0_arm64$"),
+                "The build must fail closed if pip does not install the requested compatible wheels.")
+        #expect(script.contains(#""mlx==${MLX_VERSION}""#))
+        #expect(script.contains(#""mlx-metal==${MLX_METAL_VERSION}""#),
+                "Core and metallib wheels must be replaced as one matched pair.")
     }
 
     @Test("Desktop image stack is pinned and its torch-free proof fails closed")

@@ -79,11 +79,70 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "gemma-4-26b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-9b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-8bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-122b-mxfp4") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)
-        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-4bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-27b-mtp-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-mtp-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.8-27b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "gpt-oss-20b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "ornith-1.5-9b-bf16") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "ornith-1.5-35b-a3b-bf16") == .chat)
+    }
+
+    @Test("behavioral vision capability requires authoritative built-in metadata")
+    func authoritativeVisionCapability() {
+        #expect(ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit", isBuiltinProfile: true, isTextOnly: false
+        ))
+        #expect(!ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-company-tuned", isBuiltinProfile: false, isTextOnly: false
+        ))
+        #expect(!ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-4b-4bit", isBuiltinProfile: true, isTextOnly: true
+        ))
+    }
+
+    @Test("composer actions and restored retries share catalog capability")
+    func imageCapabilityWiringIsEndToEnd() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/UI/ChatView.swift"
+        ))
+        let model = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Chat/ChatViewModel.swift"
+        ))
+        let server = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Server/ServerManager.swift"
+        ))
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Server/ModelCatalogCache.swift"
+        ))
+        #expect(view.components(separatedBy: "supportsImageInput: supportsImageInput").count >= 4)
+        #expect(model.contains("func regenerateLast(alias: String, supportsImageInput: Bool? = nil)"))
+        #expect(model.contains("func retryAssistantMessage(\n        id: UUID,\n        alias: String,\n        supportsImageInput: Bool? = nil"))
+        #expect(!model.contains("imageCapabilityByAlias"),
+                "restored conversations must not depend on transient per-send state")
+        #expect(server.contains("let catalogEntry = await ModelCatalogCache.shared.entries"))
+        let catalogProbe = try #require(server.range(
+            of: "let catalogEntry = await ModelCatalogCache.shared.entries"
+        ))
+        let criticalSection = try #require(server.range(
+            of: "        isOperating = true\n\n        // Clear the log tail"
+        ))
+        #expect(catalogProbe.lowerBound < criticalSection.lowerBound,
+                "catalog capability must resolve before the spawn critical section")
+        #expect(cache.contains("let entry = startLoad("))
+        #expect(cache.contains("await finish(entry)"),
+                "a completed load must publish only its captured in-flight identity")
+        #expect(cache.components(
+            separatedBy: "if let inFlight,\n           inFlight.matches("
+        ).count == 2, "only the join path may match loads by inputs")
     }
 
     // MARK: - ModelBrandStyle.displayFamily

@@ -100,6 +100,22 @@ actor ModelCatalogCache {
         return snap.entries
     }
 
+    /// Synchronous behavioral capability for render and spawn paths that
+    /// cannot introduce another catalog-probe suspension. The binary match
+    /// prevents metadata from a dev/runtime sidecar leaking across a switch;
+    /// missing or stale provenance fails closed.
+    nonisolated static func supportsImageInput(forAlias alias: String, binary: URL?) -> Bool {
+        guard let binary, let snap = readMirror(), snap.binaryPath == binary.path,
+              let entry = snap.entries.first(where: {
+                  $0.alias.caseInsensitiveCompare(alias) == .orderedSame
+              }) else { return false }
+        return ModelBrandStyle.supportsImageInput(
+            forAlias: alias,
+            isBuiltinProfile: entry.isBuiltinProfile,
+            isTextOnly: entry.isTextOnly
+        )
+    }
+
     /// An in-flight load together with the inputs it was started for, and a
     /// monotonic id (``Task`` is not `Equatable`, so identity is tracked
     /// explicitly). N simultaneous views join ONE set of subprocesses — but
@@ -173,13 +189,19 @@ actor ModelCatalogCache {
                binaryPath: binaryPath, generation: generation,
                overridePath: overridePath
            ) {
-            return await inFlight.task.value
+            let loaded = await inFlight.task.value
+            // Publish the synchronous mirror before returning to callers that
+            // immediately start a model from this catalog result.
+            await finish(inFlight)
+            return loaded
         }
-        let task = startLoad(
+        let entry = startLoad(
             binary: binary, override: override, binaryPath: binaryPath,
             generation: generation, overridePath: overridePath
         )
-        return await task.value
+        let loaded = await entry.task.value
+        await finish(entry)
+        return loaded
     }
 
     /// Start (and register) a load, replacing any in-flight one with different
@@ -189,7 +211,7 @@ actor ModelCatalogCache {
     private func startLoad(
         binary: URL, override: URL?, binaryPath: String,
         generation: UInt, overridePath: String?
-    ) -> Task<[ModelEntry], Never> {
+    ) -> InFlight {
         let task = Task<[ModelEntry], Never> {
             await ModelCatalog.load(binary: binary, hubCacheOverride: override)
         }
@@ -200,7 +222,7 @@ actor ModelCatalogCache {
         )
         inFlight = entry
         Task { await self.finish(entry) }
-        return task
+        return entry
     }
 
     /// Await a registered load and stamp its result — unless a newer load has

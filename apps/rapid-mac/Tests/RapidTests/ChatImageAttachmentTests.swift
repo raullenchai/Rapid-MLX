@@ -51,6 +51,120 @@ struct ChatImageAttachmentTests {
         #expect(String(data: encoded, encoding: .utf8)?.contains("data:image/") == false)
     }
 
+    @Test("authoritative false capability strips images even from a vision-looking alias")
+    func customVisionLookingAliasOmitsImages() throws {
+        let attachment = try ChatImageAttachment(
+            filename: "photo.png", mimeType: "image/png", data: Data("image".utf8)
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-company-tuned",
+            messages: [ChatMessage(role: .user, content: "Explain", imageAttachments: [attachment])],
+            supportsImageInput: false
+        )
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains("data:image/"))
+    }
+
+    @Test("a new image replaces older image payloads on the wire")
+    func newImageBecomesAttachmentFocus() throws {
+        let first = try ChatImageAttachment(
+            filename: "race.png", mimeType: "image/png", data: Data("race".utf8)
+        )
+        let second = try ChatImageAttachment(
+            filename: "cheetah.png", mimeType: "image/png", data: Data("cheetah".utf8)
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-9b-4bit",
+            messages: [
+                ChatMessage(role: .user, content: "What is this?", imageAttachments: [first]),
+                ChatMessage(role: .assistant, content: "A race."),
+                ChatMessage(role: .user, content: "What is this?", imageAttachments: [second]),
+            ]
+        )
+
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains(first.data.base64EncodedString()))
+        #expect(wire.contains(second.data.base64EncodedString()))
+    }
+
+    @Test("a new document does not resend an older image")
+    func documentClearsHistoricalImageFocus() throws {
+        let image = try ChatImageAttachment(
+            filename: "race.png", mimeType: "image/png", data: Data("race".utf8)
+        )
+        let document = try ChatFileAttachment(
+            filename: "statement.pdf",
+            kind: .pdf,
+            extractedText: "Current statement content",
+            sourceByteCount: 25,
+            pageCount: 1
+        )
+        let request = ChatStreamClient.Request(
+            alias: "gemma-4-e2b-4bit",
+            messages: [
+                ChatMessage(role: .user, content: "What is this?", imageAttachments: [image]),
+                ChatMessage(role: .assistant, content: "A race."),
+                ChatMessage(role: .user, content: "Review this", fileAttachments: [document]),
+            ]
+        )
+
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains("data:image/"))
+        #expect(wire.contains("Current statement content"))
+    }
+
+    @Test("plain-text follow-up keeps only the most recent image")
+    func followUpKeepsLatestImageFocus() throws {
+        let first = try ChatImageAttachment(
+            filename: "race.png", mimeType: "image/png", data: Data("race".utf8)
+        )
+        let second = try ChatImageAttachment(
+            filename: "cheetah.png", mimeType: "image/png", data: Data("cheetah".utf8)
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-9b-4bit",
+            messages: [
+                ChatMessage(role: .user, content: "First", imageAttachments: [first]),
+                ChatMessage(role: .assistant, content: "A race."),
+                ChatMessage(role: .user, content: "Second", imageAttachments: [second]),
+                ChatMessage(role: .assistant, content: "A cheetah."),
+                ChatMessage(role: .user, content: "What color is it?"),
+            ]
+        )
+
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains(first.data.base64EncodedString()))
+        #expect(wire.contains(second.data.base64EncodedString()))
+    }
+
+    @Test("plain-text follow-up after a document does not resurrect an older image")
+    func documentFollowUpKeepsDocumentFocus() throws {
+        let image = try ChatImageAttachment(
+            filename: "race.png", mimeType: "image/png", data: Data("race".utf8)
+        )
+        let document = try ChatFileAttachment(
+            filename: "statement.pdf",
+            kind: .pdf,
+            extractedText: "Total: 42",
+            sourceByteCount: 9,
+            pageCount: 1
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-9b-4bit",
+            messages: [
+                ChatMessage(role: .user, content: "First", imageAttachments: [image]),
+                ChatMessage(role: .assistant, content: "A race."),
+                ChatMessage(role: .user, content: "Review", fileAttachments: [document]),
+                ChatMessage(role: .assistant, content: "The total is 42."),
+                ChatMessage(role: .user, content: "What is the total?"),
+            ]
+        )
+
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains("data:image/"))
+        #expect(wire.contains("Total: 42"))
+    }
+
     @Test("attachments survive conversation persistence and old messages default empty")
     func codableCompatibility() throws {
         let attachment = try ChatImageAttachment(

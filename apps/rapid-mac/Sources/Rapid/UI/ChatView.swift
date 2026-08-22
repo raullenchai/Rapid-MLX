@@ -192,6 +192,8 @@ struct ChatView: View {
     /// hero and the composer read their copy off this, so they cannot
     /// describe the same lifecycle differently.
     var readiness: ModelReadiness
+    /// Catalog-backed capability shared with launch and request encoding.
+    var supportsImageInput: Bool = false
     /// First launch must not inspect model caches behind the consent sheet.
     /// The parent flips this after the user makes that one-time decision.
     var catalogRefreshEnabled: Bool = true
@@ -235,6 +237,7 @@ struct ChatView: View {
     /// Incremented every time the user tries to send while gated. Drives
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
+    @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
     /// Refreshed from the active conversation every time the popover opens.
     /// SwiftUI may otherwise reuse the popover's old local `@State` when the
@@ -426,14 +429,16 @@ struct ChatView: View {
                             return viewModel.editUserMessage(
                                 id: message.id,
                                 newContent: newContent,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         onRetry: {
                             guard acknowledgeIfNotReady() else { return false }
                             return viewModel.retryAssistantMessage(
                                 id: message.id,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         // Retry re-enters ``send``, so it answers to the same
@@ -670,7 +675,9 @@ struct ChatView: View {
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Button(action: chooseAttachments) {
+            Button {
+                showsAttachmentMenu.toggle()
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primary)
@@ -679,9 +686,54 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isStreaming || isImportingFiles)
-            .help(supportsImageInput ? "Add files or photos" : "Add PDF, CSV, or TXT files")
+            .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
+            .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                    Button {
+                        showsAttachmentMenu = false
+                        chooseFiles()
+                    } label: {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "doc")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload file")
+                        }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("ChatView.Attachments.UploadFile")
+
+                    Button {
+                        showsAttachmentMenu = false
+                        choosePhotos()
+                    } label: {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "photo")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload photo")
+                        }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .disabled(!supportsImageInput)
+                    .help(
+                        supportsImageInput
+                            ? "Upload photo"
+                            : "Current model doesn't support photos"
+                    )
+                    .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
+                }
+                .padding(RapidTheme.Space.sm)
+                .frame(width: 190)
+            }
             Button {
                 conversationInstructionsDraft = viewModel.conversationInstructions
                 showsConversationInstructions = true
@@ -829,13 +881,10 @@ struct ChatView: View {
         viewModel.send(
             text,
             alias: alias,
+            supportsImageInput: supportsImageInput,
             imageAttachments: images,
             fileAttachments: files
         )
-    }
-
-    private var supportsImageInput: Bool {
-        ModelBrandStyle.supportsImageInput(forAlias: alias)
     }
 
     private var attachmentStrip: some View {
@@ -907,11 +956,19 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func chooseAttachments() {
+    private func choosePhotos() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = supportsImageInput
-            ? [.pdf, .commaSeparatedText, .plainText, .png, .jpeg, .gif]
-            : [.pdf, .commaSeparatedText, .plainText]
+        panel.allowedContentTypes = [.png, .jpeg, .gif]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        _ = addAttachmentURLs(panel.urls)
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true

@@ -39,6 +39,143 @@ import Testing
 @Suite("ServerManager spawn-argument shape (issue #271)")
 struct SpawnArgumentsTests {
 
+    @Test("Shutdown is latched before a child exists")
+    @MainActor
+    func shutdownBeforeSpawnBlocksLaterStart() async {
+        let manager = ServerManager(
+            testingState: .idle,
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        manager.beginShutdown()
+        await manager.start(alias: "qwen3.5-9b-4bit")
+        #expect(manager.state == .idle)
+        #expect(manager.launchedChildAlias == nil)
+    }
+
+    @Test("Desktop opts vision aliases into MLLM without changing text aliases")
+    func desktopVisionCapabilityFlags() {
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-9b-4bit", supportsImageInput: true, existing: []
+        ) == ["--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3-vl-4b-4bit", supportsImageInput: true,
+            existing: ["--cache-memory-mb", "512"]
+        ) == ["--cache-memory-mb", "512", "--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "llama3-3b-4bit", existing: ["--enable-prefix-cache"]
+        ) == ["--enable-prefix-cache"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-4b-4bit", supportsImageInput: false, existing: []
+        ).isEmpty)
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-company-tuned", supportsImageInput: false, existing: []
+        ).isEmpty)
+    }
+
+    @Test("Desktop vision policy removes text-only escape hatches and is idempotent")
+    func desktopVisionCapabilityFlagsResolveConflicts() {
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit",
+            supportsImageInput: true,
+            existing: ["--no-mllm", "--cache-memory-mb", "512", "--text-only"]
+        ) == ["--cache-memory-mb", "512", "--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit", supportsImageInput: true, existing: ["--mllm"]
+        ) == ["--mllm"])
+
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit", supportsImageInput: true,
+            existing: ["--cache-memory-mb", "512"]
+        )
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults, userOverrides: ["--no-mllm"]
+        ) == ["--cache-memory-mb", "512", "--no-mllm"])
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults, userOverrides: ["--text-only"]
+        ) == ["--cache-memory-mb", "512", "--text-only"])
+
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: ["--no-mllm"]
+        ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: ["--text-only"]
+        ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: []
+        ) == true)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: false, userOverrides: []
+        ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: false, userOverrides: ["--mllm"]
+        ) == false)
+        #expect(ServerManager.imageSafePerformanceOverrides(
+            catalogSupportsImageInput: false,
+            userOverrides: ["--cache-memory-mb", "512", "--mllm"]
+        ) == ["--cache-memory-mb", "512"])
+    }
+
+    @Test("Composer capability follows the effective text-only launch override")
+    @MainActor
+    func composerCapabilityHonorsTextOnlyOverride() {
+        let manager = ServerManager(
+            testingState: .idle,
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        manager.perfLaunchFlagsProvider = { _ in ["--no-mllm"] }
+        #expect(manager.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit",
+            catalogSupportsImageInput: true
+        ) == false)
+
+        manager.perfLaunchFlagsProvider = { _ in [] }
+        #expect(manager.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit",
+            catalogSupportsImageInput: true
+        ) == true)
+    }
+
+    @Test("Resident alias switches combine per-model capability with process MLLM lane")
+    func residentSwitchCapability() {
+        // A visual resident cannot acquire a vision tower from a process that
+        // was originally spawned in the text-only lane.
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: [],
+            processLaunchFlags: ["--no-mllm"]
+        ) == false)
+        // A text-only resident does not become visual merely because the
+        // process-owning model launched the shared sidecar with MLLM enabled.
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: false,
+            userOverrides: [],
+            processLaunchFlags: ["--mllm"]
+        ) == false)
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: [],
+            processLaunchFlags: ["--mllm"]
+        ) == true)
+        #expect(ServerManager.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: [],
+            processLaunchFlags: ["--no-mllm"],
+            hasChild: true
+        ) == true)
+        #expect(ServerManager.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: false,
+            userOverrides: [],
+            processLaunchFlags: ["--mllm"],
+            hasChild: true
+        ) == true)
+        #expect(ServerManager.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: ["--no-mllm"],
+            processLaunchFlags: ["--mllm"],
+            hasChild: true
+        ) == true)
+    }
+
     // MARK: - argv shape
 
     @Test("serve argv has exactly serve + alias + --host + --port + --cors-origins loopback allowlist")

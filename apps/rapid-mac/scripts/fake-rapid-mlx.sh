@@ -806,6 +806,27 @@ class Handler(BaseHTTPRequestHandler):
                 body = {}
         messages = body.get("messages") if isinstance(body.get("messages"), list) else []
         definitions = body.get("tools") if isinstance(body.get("tools"), list) else []
+        user_payloads = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            texts = []
+            image_hashes = []
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if isinstance(part.get("text"), str):
+                        texts.append(part["text"])
+                    image_url = part.get("image_url")
+                    if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                        image_hashes.append(
+                            hashlib.sha256(image_url["url"].encode()).hexdigest()
+                        )
+            user_payloads.append({"text": "\n".join(texts), "image_url_sha256": image_hashes})
         _event(
             "chat_request",
             roles=[m.get("role") for m in messages if isinstance(m, dict)],
@@ -818,6 +839,7 @@ class Handler(BaseHTTPRequestHandler):
                 m.get("content") for m in messages
                 if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
             ],
+            user_payloads=user_payloads,
         )
 
 
@@ -937,6 +959,41 @@ def _emit_catalog(subcommand, alias):
     to fall through to the server.
     """
     if subcommand == "models":
+        if "--json" in sys.argv:
+            aliases = []
+            if _setting("FAKE_INCLUDE_STARTER") == "1":
+                aliases.append("lfm2.5-1b-4bit")
+            if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+                aliases.extend([f"a-cached-{index}" for index in range(6)])
+                aliases.append("qwen3.5-4b-4bit")
+            if _setting("FAKE_CACHED_VARIANTS") == "1":
+                aliases.extend(["qwen3-0.6b-8bit", "qwen3-0.6b-4bit", "qwen3-4b-4bit"])
+            aliases.append("qwen3-vl-2b-4bit" if _setting("FAKE_VISION_CHAT") == "1" else "fake-alias")
+            aliases.append("fake-external-alias")
+            if _setting("FAKE_SETTINGS_MTP") == "1":
+                aliases.append("qwen3.8-27b-4bit")
+            text = []
+            for item in aliases:
+                is_builtin = item != "fake-external-alias"
+                text.append({
+                    "alias": item,
+                    "hf_path": FAKE_REPO,
+                    "supports_spec_decode": False,
+                    "mtp_draft_model": (
+                        "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"
+                        if item == "qwen3.8-27b-4bit" else None
+                    ),
+                    "mtp_speculative_tokens": 3 if item == "qwen3.8-27b-4bit" else None,
+                    "is_builtin": is_builtin,
+                    "is_text_only": item == "qwen3.5-4b-4bit",
+                })
+            print(json.dumps({
+                "text": text,
+                "video": [{"alias": "fake-video-alias"}],
+                "image": [{"alias": FAKE_IMAGE_ALIAS}],
+                "audio": [{"alias": "fake-qwen3-tts"}, {"alias": "fake-whisper-small"}],
+            }))
+            return True
         print("Available models")
         print("Alias                  Parser           Reasoning        Preset")
         print("---------------------  ---------------  ---------------  --------")
@@ -954,7 +1011,10 @@ def _emit_catalog(subcommand, alias):
             print("qwen3-0.6b-8bit       hermes           qwen3")
             print("qwen3-0.6b-4bit       hermes           qwen3")
             print("qwen3-4b-4bit         hermes           qwen3")
-        print("fake-alias             hermes           qwen3")
+        if _setting("FAKE_VISION_CHAT") == "1":
+            print("qwen3-vl-2b-4bit      hermes           qwen3")
+        else:
+            print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         if _setting("FAKE_SETTINGS_MTP") == "1":
             print("qwen3.8-27b-4bit       hermes           qwen3           MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3")
@@ -993,7 +1053,10 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
         if _setting("FAKE_SETTINGS_MTP") != "1":
-            print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+            if _setting("FAKE_VISION_CHAT") == "1":
+                print("qwen3-vl-2b-4bit      mlx-community/Qwen3-VL-2B-Instruct-4bit  1.8 GB")
+            else:
+                print(f"fake-alias             {FAKE_REPO}        1.2 GB")
             print("(external)             fake-external-alias     2.4 GB")
         if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
             for index in range(6):

@@ -751,6 +751,7 @@ final class ChatViewModel {
     func send(
         _ text: String,
         alias: String,
+        supportsImageInput: Bool? = nil,
         imageAttachments: [ChatImageAttachment] = [],
         fileAttachments: [ChatFileAttachment] = []
     ) {
@@ -786,7 +787,13 @@ final class ChatViewModel {
         // send the instant it happens, not only once the reply lands.
         persistActive()
 
-        beginAssistantTurn(alias: alias, forcedWebSearchQuery: forcedWebSearchQuery)
+        let resolvedImageCapability = supportsImageInput
+            ?? ModelBrandStyle.supportsImageInput(forAlias: alias)
+        beginAssistantTurn(
+            alias: alias,
+            supportsImageInput: resolvedImageCapability,
+            forcedWebSearchQuery: forcedWebSearchQuery
+        )
     }
 
     /// Open a streaming assistant turn under whatever currently ends the
@@ -798,7 +805,11 @@ final class ChatViewModel {
     /// duplicate prompt, making it a sibling of the original *question* rather
     /// than of the original *answer*, and the `‹ n/m ›` control would never
     /// see the two answers as alternatives at all.
-    private func beginAssistantTurn(alias: String, forcedWebSearchQuery: String?) {
+    private func beginAssistantTurn(
+        alias: String,
+        supportsImageInput: Bool,
+        forcedWebSearchQuery: String?
+    ) {
         let placeholder = ChatMessage(role: .assistant, status: .streaming)
         let placeholderIndex = appendMessage(placeholder)
 
@@ -867,6 +878,7 @@ final class ChatViewModel {
                 alias: alias,
                 initialPlaceholder: placeholderIndex,
                 epoch: epoch,
+                supportsImageInput: supportsImageInput,
                 forcedWebSearchQuery: forcedWebSearchQuery,
                 globalInstruction: globalInstruction,
                 conversationInstruction: chatInstruction
@@ -1521,7 +1533,8 @@ final class ChatViewModel {
     func editUserMessage(
         id: UUID,
         newContent: String,
-        alias: String
+        alias: String,
+        supportsImageInput: Bool? = nil
     ) -> Bool {
         guard !isStreaming else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
@@ -1535,6 +1548,7 @@ final class ChatViewModel {
         send(
             trimmed,
             alias: alias,
+            supportsImageInput: supportsImageInput,
             imageAttachments: imageAttachments,
             fileAttachments: fileAttachments
         )
@@ -1549,7 +1563,11 @@ final class ChatViewModel {
     /// a true sibling of the one being replaced. Rewinding past the prompt and
     /// re-sending its text instead would append a duplicate prompt, and the
     /// two answers would end up in different branches entirely.
-    private func regenerateAnswer(afterUserAt userIndex: Int, alias: String) {
+    private func regenerateAnswer(
+        afterUserAt userIndex: Int,
+        alias: String,
+        supportsImageInput: Bool? = nil
+    ) {
         guard !isStreaming, messages.indices.contains(userIndex) else { return }
         let userMessage = messages[userIndex]
         guard !userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1566,6 +1584,8 @@ final class ChatViewModel {
         )
         beginAssistantTurn(
             alias: alias,
+            supportsImageInput: supportsImageInput
+                ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: server?.binaryPath),
             forcedWebSearchQuery: forcedTool == "web_search"
                 ? Self.webSearchQuery(for: userMessage.content, priorMessages: messages)
                 : nil
@@ -1578,10 +1598,14 @@ final class ChatViewModel {
     ///
     /// The replaced answer is kept as a sibling, not discarded — see
     /// ``rewindPath(to:)``.
-    func regenerateLast(alias: String) {
+    func regenerateLast(alias: String, supportsImageInput: Bool? = nil) {
         guard !isStreaming else { return }
         guard let lastUserIndex = messages.lastIndex(where: { $0.role == .user }) else { return }
-        regenerateAnswer(afterUserAt: lastUserIndex, alias: alias)
+        regenerateAnswer(
+            afterUserAt: lastUserIndex,
+            alias: alias,
+            supportsImageInput: supportsImageInput
+        )
     }
 
     /// Retry the turn that produced a specific assistant message. This is
@@ -1589,7 +1613,11 @@ final class ChatViewModel {
     /// to the user prompt immediately before it instead of regenerating the
     /// latest turn by accident.
     @discardableResult
-    func retryAssistantMessage(id: UUID, alias: String) -> Bool {
+    func retryAssistantMessage(
+        id: UUID,
+        alias: String,
+        supportsImageInput: Bool? = nil
+    ) -> Bool {
         guard !isStreaming else { return false }
         guard let assistantIndex = messages.firstIndex(where: {
             $0.id == id && $0.role == .assistant
@@ -1607,7 +1635,11 @@ final class ChatViewModel {
         // In place, on the SAME conversation id — see ``editUserMessage``
         // for why the old fork-into-a-separate-chat behaviour was removed.
         // The retried answer and its replacement become siblings.
-        regenerateAnswer(afterUserAt: userIndex, alias: alias)
+        regenerateAnswer(
+            afterUserAt: userIndex,
+            alias: alias,
+            supportsImageInput: supportsImageInput
+        )
         return true
     }
 
@@ -1828,7 +1860,10 @@ final class ChatViewModel {
                 return
             }
         }
-        regenerateLast(alias: trimmed)
+        regenerateLast(
+            alias: trimmed,
+            supportsImageInput: server?.supportsImageInput(forAlias: trimmed) ?? false
+        )
     }
 
     // MARK: - Tool round-trip loop
@@ -1851,6 +1886,7 @@ final class ChatViewModel {
         alias: String,
         initialPlaceholder: Int,
         epoch: Int,
+        supportsImageInput: Bool,
         forcedWebSearchQuery: String? = nil,
         globalInstruction: String = "",
         conversationInstruction: String = ""
@@ -2018,14 +2054,16 @@ final class ChatViewModel {
                     maxTokens: resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
                     tools: definitions.isEmpty ? nil : definitions,
-                    enableThinking: resolved.enableThinking
+                    enableThinking: resolved.enableThinking,
+                    supportsImageInput: supportsImageInput
                 )
             } else {
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
                     tools: definitions.isEmpty ? nil : definitions,
-                    enableThinking: false
+                    enableThinking: false,
+                    supportsImageInput: supportsImageInput
                 )
             }
             let outcome = await runOneStream(

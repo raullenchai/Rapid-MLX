@@ -17,7 +17,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXStaticText value=text enabled=true
+          AXBusyIndicator value=number enabled=true
           AXStaticText value=text enabled=true
           AXButton id="Images.Cancel" desc="Close" help="Cancel" enabled=true
           AXStaticText value=text enabled=true

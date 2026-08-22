@@ -686,6 +686,7 @@ struct ContentView: View {
                 server: server,
                 alias: $alias,
                 readiness: readiness,
+                supportsImageInput: supportsImageInput(for: alias),
                 catalogRefreshEnabled: !telemetryConsentPending,
                 onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction,
@@ -694,6 +695,21 @@ struct ContentView: View {
         case .missing:
             missingOverlay
         }
+    }
+
+    private func supportsImageInput(for alias: String) -> Bool {
+        let entry = catalogEntries.first {
+            $0.alias.caseInsensitiveCompare(alias) == .orderedSame
+        }
+        let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+            forAlias: alias,
+            isBuiltinProfile: entry?.isBuiltinProfile,
+            isTextOnly: entry?.isTextOnly
+        )
+        return server.supportsImageInput(
+            forAlias: alias,
+            catalogSupportsImageInput: catalogSupportsImageInput
+        )
     }
 
     // MARK: - Quickstart presentation

@@ -108,6 +108,13 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
 
+    /// Alias-profile provenance from `rapid-mlx models --json`. `nil` means
+    /// an older sidecar or an uncatalogued/external alias, so Desktop must not
+    /// force eager MLLM loading from the alias spelling alone.
+    var isBuiltinProfile: Bool? = nil
+    /// Authoritative alias pin. An explicit `true` always keeps the text lane.
+    var isTextOnly: Bool? = nil
+
     var id: String { alias }
 }
 
@@ -196,7 +203,8 @@ enum ModelCatalog {
         async let availableTask: (
             entries: [(String, String?)],
             excluded: Set<String>,
-            speculative: [String: SpeculativeDecodingPreset]
+            speculative: [String: SpeculativeDecodingPreset],
+            profiles: [String: CatalogProfileCapability]
         ) =
             listAvailableWithExclusions(binary: binary)
         async let cachedTask: [(String, String?, String?)] = listCached(
@@ -204,7 +212,10 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
 
-        let (available, excludedAliases, speculativeCapabilities) = await availableTask
+        let availableResult = await availableTask
+        let available = availableResult.entries
+        let excludedAliases = availableResult.excluded
+        let speculativeCapabilities = availableResult.speculative
         let cached = await cachedTask
 
         var entries = mergeAvailableAndCached(
@@ -233,6 +244,8 @@ enum ModelCatalog {
         entries = entries.map { entry in
             var enriched = entry
             enriched.speculativeDecodingPreset = speculativeCapabilities[entry.alias]
+            enriched.isBuiltinProfile = availableResult.profiles[entry.alias]?.isBuiltin
+            enriched.isTextOnly = availableResult.profiles[entry.alias]?.isTextOnly
             return enriched
         }
 
@@ -501,14 +514,71 @@ enum ModelCatalog {
     ) async -> (
         entries: [(String, String?)],
         excluded: Set<String>,
-        speculative: [String: SpeculativeDecodingPreset]
+        speculative: [String: SpeculativeDecodingPreset],
+        profiles: [String: CatalogProfileCapability]
     ) {
+        let jsonResult = await runRapidMlxResult(binary: binary, args: ["models", "--json"])
+        if jsonResult.succeeded, let parsed = parseAvailableJSON(jsonResult.stdout) {
+            return parsed
+        }
+        // Compatibility with older external sidecars: keep their catalog but
+        // leave provenance unknown, which deliberately disables eager MLLM.
         let output = await runRapidMlx(binary: binary, args: ["models"])
         return (
             parseAvailable(output),
             parseExcludedAliases(output),
-            parseSpeculativeCapabilities(output)
+            parseSpeculativeCapabilities(output),
+            [:]
         )
+    }
+
+    struct CatalogProfileCapability: Equatable, Sendable {
+        let isBuiltin: Bool
+        let isTextOnly: Bool
+    }
+
+    /// Parse the machine-readable alias SSOT used for Desktop launch policy.
+    static func parseAvailableJSON(_ output: String) -> (
+        entries: [(String, String?)],
+        excluded: Set<String>,
+        speculative: [String: SpeculativeDecodingPreset],
+        profiles: [String: CatalogProfileCapability]
+    )? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let textRows = root["text"] as? [[String: Any]] else { return nil }
+        var entries: [(String, String?)] = []
+        var profiles: [String: CatalogProfileCapability] = [:]
+        var speculative: [String: SpeculativeDecodingPreset] = [:]
+        for row in textRows {
+            guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
+            entries.append((alias, sanitizedHuggingFaceRepo(row["hf_path"] as? String)))
+            if let isBuiltin = row["is_builtin"] as? Bool,
+               let isTextOnly = row["is_text_only"] as? Bool {
+                profiles[alias] = CatalogProfileCapability(
+                    isBuiltin: isBuiltin, isTextOnly: isTextOnly
+                )
+            }
+            if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
+               let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .mtp, model: model, tokens: tokens
+                )
+            } else if row["supports_spec_decode"] as? Bool == true {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .suffix, model: nil, tokens: nil
+                )
+            }
+        }
+        var excluded: Set<String> = []
+        for key in ["audio", "video", "image"] {
+            for row in root[key] as? [[String: Any]] ?? [] {
+                if let alias = row["alias"] as? String, isSafeAlias(alias) {
+                    excluded.insert(alias)
+                }
+            }
+        }
+        return (entries, excluded, speculative, profiles)
     }
 
     /// Image aliases with explicit generation/edit capabilities for the Images tab's

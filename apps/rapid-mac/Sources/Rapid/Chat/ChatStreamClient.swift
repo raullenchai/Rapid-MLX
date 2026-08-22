@@ -175,12 +175,40 @@ struct ChatStreamClient {
             presencePenalty: Double = 0.0,
             tools: [ToolDefinition]? = nil,
             enableThinking: Bool = false,
-            forcedTool: String? = nil
+            forcedTool: String? = nil,
+            supportsImageInput: Bool? = nil
         ) {
             self.alias = alias
-            let includeImages = ModelBrandStyle.supportsImageInput(forAlias: alias)
-            self.messages = messages.map {
-                Wire.Message(from: $0, includeImages: includeImages)
+            var imageMessageIndex: Int?
+            if supportsImageInput ?? ModelBrandStyle.supportsImageInput(forAlias: alias),
+                let latestUser = messages.lastIndex(where: { $0.role == .user }) {
+                if !messages[latestUser].imageAttachments.isEmpty {
+                    imageMessageIndex = latestUser
+                } else if !messages[latestUser].fileAttachments.isEmpty {
+                    // A new document starts a new attachment focus. Re-sending
+                    // an older image here can make a model answer the image
+                    // instead of the document, or reject a file-only turn
+                    // after a model switch.
+                    imageMessageIndex = nil
+                } else {
+                    // A plain-text follow-up inherits the most recent
+                    // attachment focus. Do not search past an intervening
+                    // document and resurrect an older image.
+                    let attachmentTurn = messages[..<latestUser].lastIndex(where: {
+                        $0.role == .user
+                            && (!$0.imageAttachments.isEmpty || !$0.fileAttachments.isEmpty)
+                    })
+                    if let attachmentTurn,
+                        !messages[attachmentTurn].imageAttachments.isEmpty
+                    {
+                        imageMessageIndex = attachmentTurn
+                    } else {
+                        imageMessageIndex = nil
+                    }
+                }
+            }
+            self.messages = messages.enumerated().map { index, message in
+                Wire.Message(from: message, includeImages: index == imageMessageIndex)
             }
             self.temperature = temperature
             self.topP = topP
