@@ -82,6 +82,17 @@ struct SpawnArgumentsTests {
         #expect(ServerManager.desktopCapabilityFlags(
             forAlias: "gemma3-12b-4bit", supportsImageInput: true, existing: ["--mllm"]
         ) == ["--mllm"])
+
+        let defaults = ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit", supportsImageInput: true,
+            existing: ["--cache-memory-mb", "512"]
+        )
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults, userOverrides: ["--no-mllm"]
+        ) == ["--cache-memory-mb", "512", "--no-mllm"])
+        #expect(ServerManager.mergedPerformanceFlags(
+            recommended: defaults, userOverrides: ["--text-only"]
+        ) == ["--cache-memory-mb", "512", "--text-only"])
     }
 
     // MARK: - argv shape

@@ -1659,25 +1659,28 @@ final class ServerManager {
         // HERE, alongside the recommendation, for the same reason it is
         // computed here — every start path reaches `start(alias:)` and none of
         // them thread flags.
-        let performanceFlags = Self.mergedPerformanceFlags(
-            recommended: RAMBucketedDefault.launchFlags(
-                forAlias: trimmedAlias,
-                physicalRAMGB: hardware.physicalRAMGB
-            ),
-            userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
-        )
         // Desktop is a single-user product: a multimodal checkpoint should be
         // ready for a pasted screenshot without a model restart or a hidden
         // first-use load. The server/CLI keeps its throughput-first auto
         // routing; only the process spawned by the GUI opts into the complete
         // MLLM lane. Text-only aliases retain their existing launch shape.
-        var extraFlags = Self.desktopCapabilityFlags(
+        let desktopDefaults = Self.desktopCapabilityFlags(
             forAlias: trimmedAlias,
             supportsImageInput: ModelCatalogCache.supportsImageInput(
                 forAlias: trimmedAlias, binary: binary
             ),
-            existing: performanceFlags
+            existing: RAMBucketedDefault.launchFlags(
+                forAlias: trimmedAlias,
+                physicalRAMGB: hardware.physicalRAMGB
+            )
         )
+        // Capability is a Desktop default, not a mandate. Merge explicit
+        // per-model choices last so a user can still trade vision for memory.
+        let performanceFlags = Self.mergedPerformanceFlags(
+            recommended: desktopDefaults,
+            userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
+        )
+        var extraFlags = performanceFlags
         extraFlags.append(contentsOf: [
             "--resident-memory-limit-gb",
             String(format: "%.0f", ModelSizing.residentMemoryCeilingGB(on: hardware)),
@@ -2810,6 +2813,7 @@ final class ServerManager {
     nonisolated private static let perfFlagGroups: [Set<String>] = [
         ["--kv-cache-dtype", "--kv-cache-turboquant"],
         ["--enable-prefix-cache", "--disable-prefix-cache"],
+        ["--mllm", "--no-mllm", "--text-only"],
         ["--cache-memory-mb"],
         ["--speculative-config"],
     ]
@@ -2875,9 +2879,9 @@ final class ServerManager {
         }
 
         // A RAM recommendation authored before vision-by-default may still
-        // contain the old escape-hatch spelling. Desktop capability is the
-        // final policy layer, so remove either spelling before adding --mllm;
-        // sending both is a server startup error.
+        // contain the old escape-hatch spelling. Remove either spelling from
+        // the defaults before adding --mllm; explicit user overrides are
+        // merged afterward and therefore retain final precedence.
         var flags = existing.filter { $0 != "--no-mllm" && $0 != "--text-only" }
         if !flags.contains("--mllm") { flags.append("--mllm") }
         return flags
