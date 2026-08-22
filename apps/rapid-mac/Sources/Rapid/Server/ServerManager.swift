@@ -2934,24 +2934,39 @@ final class ServerManager {
         return userOverrides.filter { $0 != "--mllm" }
     }
 
+    /// Combine the selected resident's own capability with the process-wide
+    /// MLLM lane chosen when the sidecar was spawned. Resident replacement can
+    /// change `state` without changing those process flags, so neither input
+    /// alone describes what the active alias can actually accept.
+    nonisolated internal static func effectiveRunningImageCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String],
+        processLaunchFlags: [String]?
+    ) -> Bool {
+        guard effectiveImageInputCapability(
+            catalogSupportsImageInput: catalogSupportsImageInput,
+            userOverrides: userOverrides
+        ) else { return false }
+        guard let processLaunchFlags else { return true }
+        return processLaunchFlags.contains("--mllm")
+            && !processLaunchFlags.contains("--no-mllm")
+            && !processLaunchFlags.contains("--text-only")
+    }
+
     internal func supportsImageInput(
         forAlias alias: String,
         catalogSupportsImageInput: Bool? = nil
     ) -> Bool {
-        if let launchedAlias = launchedChildAlias,
-           launchedAlias.caseInsensitiveCompare(alias) == .orderedSame {
-            return launchedPerformanceFlags.contains("--mllm")
-                && !launchedPerformanceFlags.contains("--no-mllm")
-                && !launchedPerformanceFlags.contains("--text-only")
-        }
         let catalogCapability = catalogSupportsImageInput
             ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: binaryPath)
-        return Self.effectiveImageInputCapability(
+        let safeOverrides = Self.imageSafePerformanceOverrides(
             catalogSupportsImageInput: catalogCapability,
-            userOverrides: Self.imageSafePerformanceOverrides(
-                catalogSupportsImageInput: catalogCapability,
-                userOverrides: perfLaunchFlagsProvider?(alias) ?? []
-            )
+            userOverrides: perfLaunchFlagsProvider?(alias) ?? []
+        )
+        return Self.effectiveRunningImageCapability(
+            catalogSupportsImageInput: catalogCapability,
+            userOverrides: safeOverrides,
+            processLaunchFlags: child == nil ? nil : launchedPerformanceFlags
         )
     }
 

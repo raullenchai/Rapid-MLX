@@ -135,6 +135,29 @@ struct SpawnArgumentsTests {
         ) == true)
     }
 
+    @Test("Resident alias switches combine per-model capability with process MLLM lane")
+    func residentSwitchCapability() {
+        // A visual resident cannot acquire a vision tower from a process that
+        // was originally spawned in the text-only lane.
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: [],
+            processLaunchFlags: ["--no-mllm"]
+        ) == false)
+        // A text-only resident does not become visual merely because the
+        // process-owning model launched the shared sidecar with MLLM enabled.
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: false,
+            userOverrides: [],
+            processLaunchFlags: ["--mllm"]
+        ) == false)
+        #expect(ServerManager.effectiveRunningImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: [],
+            processLaunchFlags: ["--mllm"]
+        ) == true)
+    }
+
     // MARK: - argv shape
 
     @Test("serve argv has exactly serve + alias + --host + --port + --cors-origins loopback allowlist")
