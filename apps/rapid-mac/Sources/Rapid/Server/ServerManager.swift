@@ -913,7 +913,10 @@ final class ServerManager {
         guard !trimmed.isEmpty else { return false }
         let requestedPerformanceFlags = perfLaunchFlagsProvider?(trimmed) ?? []
         var requestedCatalogSupportsImageInput = false
-        if let binary = binaryPath {
+        // Cold start delegates to `start`, which resolves the same metadata
+        // authoritatively. This probe is needed only to decide whether an
+        // already-running text-lane sidecar can accept a resident load.
+        if child != nil, let binary = binaryPath {
             let entry = await ModelCatalogCache.shared.entries(
                 binary: binary,
                 generation: downloads?.cacheGeneration ?? 0
