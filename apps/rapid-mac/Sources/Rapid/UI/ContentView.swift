@@ -701,10 +701,14 @@ struct ContentView: View {
         let entry = catalogEntries.first {
             $0.alias.caseInsensitiveCompare(alias) == .orderedSame
         }
-        return ModelBrandStyle.supportsImageInput(
+        let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
             forAlias: alias,
             isBuiltinProfile: entry?.isBuiltinProfile,
             isTextOnly: entry?.isTextOnly
+        )
+        return server.supportsImageInput(
+            forAlias: alias,
+            catalogSupportsImageInput: catalogSupportsImageInput
         )
     }
 

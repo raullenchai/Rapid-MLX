@@ -1862,9 +1862,7 @@ final class ChatViewModel {
         }
         regenerateLast(
             alias: trimmed,
-            supportsImageInput: ModelCatalogCache.supportsImageInput(
-                forAlias: trimmed, binary: server?.binaryPath
-            )
+            supportsImageInput: server?.supportsImageInput(forAlias: trimmed) ?? false
         )
     }
 

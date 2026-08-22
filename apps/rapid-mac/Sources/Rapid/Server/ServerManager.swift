@@ -2887,6 +2887,33 @@ final class ServerManager {
         return flags
     }
 
+    /// Resolve the capability users actually launched, not merely what the
+    /// checkpoint could support. Explicit text-only overrides must disable
+    /// photo affordances and image payloads in the composer as well as MLLM
+    /// at spawn time.
+    nonisolated internal static func effectiveImageInputCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String]
+    ) -> Bool {
+        if userOverrides.contains("--no-mllm") || userOverrides.contains("--text-only") {
+            return false
+        }
+        if userOverrides.contains("--mllm") { return true }
+        return catalogSupportsImageInput
+    }
+
+    internal func supportsImageInput(
+        forAlias alias: String,
+        catalogSupportsImageInput: Bool? = nil
+    ) -> Bool {
+        let catalogCapability = catalogSupportsImageInput
+            ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: binaryPath)
+        return Self.effectiveImageInputCapability(
+            catalogSupportsImageInput: catalogCapability,
+            userOverrides: perfLaunchFlagsProvider?(alias) ?? []
+        )
+    }
+
     // MARK: - Unified spawn shape (issue #271)
 
     /// Pure builder for the ``rapid-mlx serve`` argv. Issue #271 pins

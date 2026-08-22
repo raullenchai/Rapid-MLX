@@ -93,6 +93,39 @@ struct SpawnArgumentsTests {
         #expect(ServerManager.mergedPerformanceFlags(
             recommended: defaults, userOverrides: ["--text-only"]
         ) == ["--cache-memory-mb", "512", "--text-only"])
+
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: ["--no-mllm"]
+        ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: ["--text-only"]
+        ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: true, userOverrides: []
+        ) == true)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: false, userOverrides: []
+        ) == false)
+    }
+
+    @Test("Composer capability follows the effective text-only launch override")
+    @MainActor
+    func composerCapabilityHonorsTextOnlyOverride() {
+        let manager = ServerManager(
+            testingState: .idle,
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        manager.perfLaunchFlagsProvider = { _ in ["--no-mllm"] }
+        #expect(manager.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit",
+            catalogSupportsImageInput: true
+        ) == false)
+
+        manager.perfLaunchFlagsProvider = { _ in [] }
+        #expect(manager.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit",
+            catalogSupportsImageInput: true
+        ) == true)
     }
 
     // MARK: - argv shape
