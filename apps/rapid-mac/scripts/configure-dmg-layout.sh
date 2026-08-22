@@ -136,5 +136,21 @@ if [[ "$PERSISTED_LAYOUT" != "$EXPECTED_LAYOUT" ]]; then
     exit 1
 fi
 
+# Finder scripting cannot resolve a dot-prefixed background file back to a
+# Finder item, so validate the persisted icvp backgroundImageAlias payload in
+# .DS_Store directly. The key plus both HFS- and POSIX-style relative paths
+# distinguish the real alias from an unrelated filename elsewhere in the file.
+DS_STORE_STRINGS="$(strings -a "$MOUNT/.DS_Store")"
+for expected_background_token in \
+    "backgroundImageAlias" \
+    "Rapid-MLX Desktop:.background:" \
+    "/.background/background.png"
+do
+    if [[ "$DS_STORE_STRINGS" != *"$expected_background_token"* ]]; then
+        echo "configure-dmg-layout: Finder did not persist background alias token '$expected_background_token'" >&2
+        exit 1
+    fi
+done
+
 sync
 echo "==> Finder layout: 720x460, app (180,228) -> Applications (540,228)"

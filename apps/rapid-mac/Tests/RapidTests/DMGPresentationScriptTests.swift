@@ -26,6 +26,19 @@ struct DMGPresentationScriptTests {
         #expect(script.contains("PERSISTED_LAYOUT=\"$(osascript"))
         #expect(script.contains("EXPECTED_LAYOUT=\"180,228|540,228|96|180,120,900,580\""))
         #expect(script.contains("if [[ \"$PERSISTED_LAYOUT\" != \"$EXPECTED_LAYOUT\" ]]"))
+        Self.expectBackgroundAliasContract(in: script)
+    }
+
+    @Test("Final validator requires the persisted Finder background alias")
+    func finalBackgroundAliasGuard() throws {
+        Self.expectBackgroundAliasContract(in: try Self.loadScript("validate-dmg.sh"))
+    }
+
+    private static func expectBackgroundAliasContract(in script: String) {
+        #expect(script.contains("strings -a \"$MOUNT/.DS_Store\""))
+        #expect(script.contains("backgroundImageAlias"))
+        #expect(script.contains("Rapid-MLX Desktop:.background:"))
+        #expect(script.contains("/.background/background.png"))
     }
 
     private static func loadScript(_ name: String) throws -> String {
