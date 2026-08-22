@@ -52,12 +52,14 @@ def _load_lazy_and_install_disk_stream(
     from .. import disk_stream_patch
     from ..utils.tokenizer import _resolve_model_path, load_model_with_fallback
 
-    model, tokenizer, config = load_model_with_fallback(
-        model_name, tokenizer_config, lazy=True, return_config=True
+    model, tokenizer, config, checkpoint_source = load_model_with_fallback(
+        model_name,
+        tokenizer_config,
+        lazy=True,
+        return_config=True,
+        return_source=True,
     )
-    checkpoint_path = _resolve_model_path(
-        getattr(model, "_rapid_mlx_loaded_checkpoint_source", model_name)
-    )
+    checkpoint_path = _resolve_model_path(checkpoint_source)
     if checkpoint_path is None:
         raise ValueError(
             f"--disk-stream: could not resolve a local checkpoint path for "
@@ -69,7 +71,7 @@ def _load_lazy_and_install_disk_stream(
         checkpoint_path,
         cache_budget_gb=cache_budget_gb,
     )
-    return model, tokenizer
+    return model, tokenizer, checkpoint_source
 
 
 # Harmony's chat template ends its generation prompt immediately after
@@ -1294,23 +1296,28 @@ class BatchedEngine(BaseEngine):
             # combination and lazy loading bypasses
             # load_model_with_fallback's fallback branches entirely (see
             # its docstring).
-            self._model, self._tokenizer = self._model_load_executor.submit(
-                _load_lazy_and_install_disk_stream,
-                self._model_name,
-                tokenizer_config,
-                getattr(self, "_disk_stream_cache_gb", 1.0),
-            ).result()
+            self._model, self._tokenizer, checkpoint_source = (
+                self._model_load_executor.submit(
+                    _load_lazy_and_install_disk_stream,
+                    self._model_name,
+                    tokenizer_config,
+                    getattr(self, "_disk_stream_cache_gb", 1.0),
+                ).result()
+            )
         else:
             load_kwargs = {"tokenizer_config": tokenizer_config}
             if self._scheduler_config is not None and (
                 getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
             ):
                 load_kwargs["enable_dspark"] = True
-            self._model, self._tokenizer = self._model_load_executor.submit(
-                load_model_with_fallback,
-                self._model_name,
-                **load_kwargs,
-            ).result()
+            self._model, self._tokenizer, checkpoint_source = (
+                self._model_load_executor.submit(
+                    load_model_with_fallback,
+                    self._model_name,
+                    return_source=True,
+                    **load_kwargs,
+                ).result()
+            )
 
             # Fuse MoE gate+up expert projections: one gather_qmm launch
             # instead of two per MoE layer per token, bit-exact (see
@@ -1347,9 +1354,6 @@ class BatchedEngine(BaseEngine):
         # receive the same single, immutable namespace.
         from ..runtime.cache import pin_prefix_cache_identity
 
-        checkpoint_source = getattr(
-            self._model, "_rapid_mlx_loaded_checkpoint_source", self._model_name
-        )
         kv_dtype = str(
             getattr(self._scheduler_config, "kv_cache_dtype", None) or "bf16"
         )

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -132,7 +131,11 @@ def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
 
     snapshot = tmp_path / "snapshots" / "immutable-revision"
     snapshot.mkdir(parents=True)
-    model = SimpleNamespace()
+
+    class ImmutableModel:
+        __slots__ = ()
+
+    model = ImmutableModel()
     expected = (model, object())
     loaded = []
 
@@ -147,6 +150,7 @@ def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
     )
     monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda name: None)
 
-    assert tokenizer.load_model_with_fallback("org/model") is expected
+    result = tokenizer.load_model_with_fallback("org/model", return_source=True)
+    assert result[:2] == expected
+    assert result[2] == str(snapshot)
     assert loaded == [str(snapshot)]
-    assert model._rapid_mlx_loaded_checkpoint_source == str(snapshot)

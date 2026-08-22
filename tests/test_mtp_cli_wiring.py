@@ -1179,13 +1179,14 @@ def test_start_llm_calls_apply_mtp_dispatch():
     engine._engine_started = False
 
     # 2. Stub the model loader so we don't touch HF / MLX weights.
-    def _fake_load(model_name, tokenizer_config=None):
+    def _fake_load(model_name, tokenizer_config=None, *, return_source=False):
         # Return a duck-typed model + tokenizer; the real code just
         # stashes them on ``self`` and hands the model to the
         # dispatch helper.
         fake_model = object()
         fake_tokenizer = SimpleNamespace(eos_token_id=0)
-        return fake_model, fake_tokenizer
+        result = (fake_model, fake_tokenizer)
+        return (*result, "/fake/immutable-snapshot") if return_source else result
 
     monkeypatch = _MonkeypatchScope()
     try:

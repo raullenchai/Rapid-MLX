@@ -721,14 +721,14 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     monkeypatch.setattr(tok, "repair_byte_level_decoder", _fake_repair_decoder)
     monkeypatch.setattr(tok, "_post_load_ubc_evict", lambda name: None)
 
-    model, tokenizer, config = tok.load_model_with_fallback(
-        model_name, lazy=True, return_config=True
+    model, tokenizer, config, checkpoint_source = tok.load_model_with_fallback(
+        model_name, lazy=True, return_config=True, return_source=True
     )
 
     assert model is fake_model
     assert tokenizer is fake_tokenizer
     assert config == {"model_type": "qwen2_moe"}
-    assert fake_model._rapid_mlx_loaded_checkpoint_source == resolved_name
+    assert checkpoint_source == resolved_name
     assert order == [
         "_neutralize_unbundled_template_types",
         "mlx_lm.load",

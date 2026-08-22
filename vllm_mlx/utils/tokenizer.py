@@ -1093,6 +1093,7 @@ def load_model_with_fallback(
     enable_dspark: bool = False,
     lazy: bool = False,
     return_config: bool = False,
+    return_source: bool = False,
 ):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -1122,6 +1123,9 @@ def load_model_with_fallback(
             (needed to read ``model_type`` for
             ``disk_stream_patch.install``) — passed straight through to
             ``mlx_lm.load(..., return_config=True)``.
+        return_source: Append the concrete checkpoint source selected for this
+            load. Engine startup uses this to pin persisted-cache identity
+            without requiring the returned model object to accept attributes.
 
     Returns:
         Tuple of (model, tokenizer), or (model, tokenizer, config) when
@@ -1247,7 +1251,7 @@ def load_model_with_fallback(
         # branches would ever fire for a checkpoint this code path is
         # actually used for.
         _post_load_ubc_evict(model_name)
-        return _annotate_loaded_checkpoint_source(result, model_name)
+        return (*result, str(model_name)) if return_source else result
     if enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
@@ -1266,17 +1270,7 @@ def load_model_with_fallback(
     # mirror worth evicting after the inner loader succeeded.
     # No-op on non-Darwin.
     _post_load_ubc_evict(model_name)
-    return _annotate_loaded_checkpoint_source(result, model_name)
-
-
-def _annotate_loaded_checkpoint_source(result, source: str):
-    """Attach the immutable source selected by the shared loader."""
-    model = result[0]
-    try:
-        model._rapid_mlx_loaded_checkpoint_source = str(source)
-    except (AttributeError, TypeError):
-        pass
-    return result
+    return (*result, str(model_name)) if return_source else result
 
 
 # mlx-lm's tokenizer loader (``mlx_lm.tokenizer_utils.load``) imports a
