@@ -451,6 +451,24 @@ struct DownloadStripCaptionTests {
         #expect(downloads.job(for: "image-model") == nil)
     }
 
+    @Test("A delayed cleanup cannot dismiss a newer job reusing the alias")
+    func delayedCleanupIsScopedToJobIdentity() {
+        let downloads = DownloadManager()
+        let original = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let originalID = ObjectIdentifier(original)
+        downloads.dismissJob(alias: "image-model")
+
+        let replacement = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        #expect(ObjectIdentifier(replacement) != originalID)
+        #expect(!DownloadStrip.isSameCompletedJob(
+            downloads.job(for: "image-model"),
+            as: originalID
+        ))
+        #expect(downloads.job(for: "image-model") === replacement)
+    }
+
     @Test("Idle phase reads as 'Starting…' — the strip never shows raw enum names")
     func idleReadsAsStarting() {
         #expect(DownloadStrip.detail(phase: .idle) == "Starting…")

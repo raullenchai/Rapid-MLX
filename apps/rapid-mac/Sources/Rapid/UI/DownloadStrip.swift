@@ -77,6 +77,15 @@ struct DownloadStrip: View {
         }.sorted()
     }
 
+    static func isSameCompletedJob(
+        _ job: DownloadManager.Job?,
+        as expectedID: ObjectIdentifier
+    ) -> Bool {
+        guard let job, ObjectIdentifier(job) == expectedID else { return false }
+        if case .completed = job.status { return true }
+        return false
+    }
+
     var body: some View {
         Group {
             if !orderedJobs.isEmpty {
@@ -100,12 +109,15 @@ struct DownloadStrip: View {
             ) {
                 downloads.dismissJob(alias: alias)
             }
-            let delayed = completed.filter { !isResident($0) }
+            let delayed = completed.compactMap { alias -> (String, ObjectIdentifier)? in
+                guard !isResident(alias), let job = downloads.job(for: alias) else { return nil }
+                return (alias, ObjectIdentifier(job))
+            }
             guard !delayed.isEmpty else { return }
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
-            for alias in delayed {
-                if case .completed = downloads.job(for: alias)?.status {
+            for (alias, originalID) in delayed {
+                if Self.isSameCompletedJob(downloads.job(for: alias), as: originalID) {
                     downloads.dismissJob(alias: alias)
                 }
             }

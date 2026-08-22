@@ -40,7 +40,7 @@ struct ImageGenerationResolutionTests {
                 "Both generation and editing must use the modal process-swap path.")
     }
 
-    @Test("A completed image pull invalidates the mounted catalog and changes Download to Start")
+    @Test("A completed image pull changes the catalog key and view-model readiness to Start")
     @MainActor
     func completedPullInvalidatesCatalogReadiness() async {
         let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")

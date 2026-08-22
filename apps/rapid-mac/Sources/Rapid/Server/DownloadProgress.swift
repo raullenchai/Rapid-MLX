@@ -211,8 +211,11 @@ final class DownloadProgress {
     /// (for example 1 minute, then 12 minutes). Speed remains visible during
     /// this settling period; only the predictive copy is withheld.
     private var etaEstimateIsStable: Bool {
-        guard let first = rateSamplingStartedAt, let newest = rateSamples.last else { return false }
+        guard let first = rateSamplingStartedAt,
+              let baseline = rateSamplingBaselineBytes,
+              let newest = rateSamples.last else { return false }
         return newest.at.timeIntervalSince(first) >= Self.minimumETASampleSpan
+            && newest.bytes - baseline >= Self.minimumETAGrowthBytes
     }
 
     /// Recent ``(timestamp, bytes)`` samples accumulated from
@@ -224,8 +227,10 @@ final class DownloadProgress {
     /// reason about than recursive EMA and easier to test.
     private var rateSamples: [(at: Date, bytes: Int64)] = []
     private var rateSamplingStartedAt: Date?
+    private var rateSamplingBaselineBytes: Int64?
     private var lastGrowingSample: (at: Date, bytes: Int64)?
     private nonisolated static let minimumETASampleSpan: TimeInterval = 8
+    private nonisolated static let minimumETAGrowthBytes: Int64 = 16 * 1024 * 1024
 
     /// Most recent rate estimate in bytes/second, or ``nil`` if we
     /// don't have a fresh enough window to derive one. Recomputed on
@@ -278,6 +283,7 @@ final class DownloadProgress {
         hasObservedGrowth = false
         rateSamples.removeAll(keepingCapacity: true)
         rateSamplingStartedAt = nil
+        rateSamplingBaselineBytes = nil
         lastGrowingSample = nil
         bytesPerSecond = nil
     }
@@ -354,8 +360,12 @@ final class DownloadProgress {
             // actually MOVED, not the latest heartbeat, so those liveness
             // ticks cannot preserve a stale stability epoch.
             rateSamplingStartedAt = now
+            rateSamplingBaselineBytes = bytes
         }
-        if rateSamplingStartedAt == nil { rateSamplingStartedAt = now }
+        if rateSamplingStartedAt == nil {
+            rateSamplingStartedAt = now
+            rateSamplingBaselineBytes = bytes
+        }
         if grew { lastGrowingSample = (now, bytes) }
         rateSamples.append((at: now, bytes: bytes))
         let cutoff = now.addingTimeInterval(-Self.rateWindowSeconds)
