@@ -178,26 +178,33 @@ struct ChatStreamClient {
             forcedTool: String? = nil
         ) {
             self.alias = alias
-            let imageMessageIndex: Int? = if ModelBrandStyle.supportsImageInput(forAlias: alias),
-                let latestUser = messages.lastIndex(where: { $0.role == .user })
-            {
+            var imageMessageIndex: Int?
+            if ModelBrandStyle.supportsImageInput(forAlias: alias),
+                let latestUser = messages.lastIndex(where: { $0.role == .user }) {
                 if !messages[latestUser].imageAttachments.isEmpty {
-                    latestUser
+                    imageMessageIndex = latestUser
                 } else if !messages[latestUser].fileAttachments.isEmpty {
                     // A new document starts a new attachment focus. Re-sending
                     // an older image here can make a model answer the image
                     // instead of the document, or reject a file-only turn
                     // after a model switch.
-                    nil
+                    imageMessageIndex = nil
                 } else {
-                    // A plain-text follow-up may still refer to the most recent
-                    // image, but never needs every image from the transcript.
-                    messages[..<latestUser].lastIndex(where: {
-                        $0.role == .user && !$0.imageAttachments.isEmpty
+                    // A plain-text follow-up inherits the most recent
+                    // attachment focus. Do not search past an intervening
+                    // document and resurrect an older image.
+                    let attachmentTurn = messages[..<latestUser].lastIndex(where: {
+                        $0.role == .user
+                            && (!$0.imageAttachments.isEmpty || !$0.fileAttachments.isEmpty)
                     })
+                    if let attachmentTurn,
+                        !messages[attachmentTurn].imageAttachments.isEmpty
+                    {
+                        imageMessageIndex = attachmentTurn
+                    } else {
+                        imageMessageIndex = nil
+                    }
                 }
-            } else {
-                nil
             }
             self.messages = messages.enumerated().map { index, message in
                 Wire.Message(from: message, includeImages: index == imageMessageIndex)

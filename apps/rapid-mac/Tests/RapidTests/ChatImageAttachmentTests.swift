@@ -123,6 +123,34 @@ struct ChatImageAttachmentTests {
         #expect(wire.contains(second.data.base64EncodedString()))
     }
 
+    @Test("plain-text follow-up after a document does not resurrect an older image")
+    func documentFollowUpKeepsDocumentFocus() throws {
+        let image = try ChatImageAttachment(
+            filename: "race.png", mimeType: "image/png", data: Data("race".utf8)
+        )
+        let document = try ChatFileAttachment(
+            filename: "statement.pdf",
+            kind: .pdf,
+            extractedText: "Total: 42",
+            sourceByteCount: 9,
+            pageCount: 1
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-9b-4bit",
+            messages: [
+                ChatMessage(role: .user, content: "First", imageAttachments: [image]),
+                ChatMessage(role: .assistant, content: "A race."),
+                ChatMessage(role: .user, content: "Review", fileAttachments: [document]),
+                ChatMessage(role: .assistant, content: "The total is 42."),
+                ChatMessage(role: .user, content: "What is the total?"),
+            ]
+        )
+
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains("data:image/"))
+        #expect(wire.contains("Total: 42"))
+    }
+
     @Test("attachments survive conversation persistence and old messages default empty")
     func codableCompatibility() throws {
         let attachment = try ChatImageAttachment(
