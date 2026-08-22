@@ -1694,9 +1694,13 @@ final class ServerManager {
         )
         // Capability is a Desktop default, not a mandate. Merge explicit
         // per-model choices last so a user can still trade vision for memory.
+        let safeUserOverrides = Self.imageSafePerformanceOverrides(
+            catalogSupportsImageInput: catalogSupportsImageInput,
+            userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
+        )
         let performanceFlags = Self.mergedPerformanceFlags(
             recommended: desktopDefaults,
-            userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
+            userOverrides: safeUserOverrides
         )
         var extraFlags = performanceFlags
         extraFlags.append(contentsOf: [
@@ -2913,11 +2917,21 @@ final class ServerManager {
         catalogSupportsImageInput: Bool,
         userOverrides: [String]
     ) -> Bool {
+        guard catalogSupportsImageInput else { return false }
         if userOverrides.contains("--no-mllm") || userOverrides.contains("--text-only") {
             return false
         }
-        if userOverrides.contains("--mllm") { return true }
-        return catalogSupportsImageInput
+        return true
+    }
+
+    /// Catalog text-only pins are engine compatibility constraints, not a
+    /// preference. Never forward a manual `--mllm` that contradicts them.
+    nonisolated internal static func imageSafePerformanceOverrides(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String]
+    ) -> [String] {
+        guard !catalogSupportsImageInput else { return userOverrides }
+        return userOverrides.filter { $0 != "--mllm" }
     }
 
     internal func supportsImageInput(
@@ -2934,7 +2948,10 @@ final class ServerManager {
             ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: binaryPath)
         return Self.effectiveImageInputCapability(
             catalogSupportsImageInput: catalogCapability,
-            userOverrides: perfLaunchFlagsProvider?(alias) ?? []
+            userOverrides: Self.imageSafePerformanceOverrides(
+                catalogSupportsImageInput: catalogCapability,
+                userOverrides: perfLaunchFlagsProvider?(alias) ?? []
+            )
         )
     }
 

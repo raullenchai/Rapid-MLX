@@ -106,6 +106,13 @@ struct SpawnArgumentsTests {
         #expect(ServerManager.effectiveImageInputCapability(
             catalogSupportsImageInput: false, userOverrides: []
         ) == false)
+        #expect(ServerManager.effectiveImageInputCapability(
+            catalogSupportsImageInput: false, userOverrides: ["--mllm"]
+        ) == false)
+        #expect(ServerManager.imageSafePerformanceOverrides(
+            catalogSupportsImageInput: false,
+            userOverrides: ["--cache-memory-mb", "512", "--mllm"]
+        ) == ["--cache-memory-mb", "512"])
     }
 
     @Test("Composer capability follows the effective text-only launch override")
