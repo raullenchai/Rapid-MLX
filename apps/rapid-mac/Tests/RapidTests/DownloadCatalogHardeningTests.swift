@@ -4,6 +4,28 @@ import Testing
 
 @Suite("Download/catalog hardening")
 struct DownloadCatalogHardeningTests {
+    @Test("Structured catalog carries authoritative Desktop launch metadata")
+    func structuredCatalogCapabilityParsing() throws {
+        let output = """
+        {
+          "text": [
+            {"alias":"qwen3.5-9b-4bit","hf_path":"mlx-community/Qwen3.5-9B-4bit","is_builtin":true,"is_text_only":false,"supports_spec_decode":false},
+            {"alias":"qwen3.5-company-tuned","hf_path":"company/TextCheckpoint","is_builtin":false,"is_text_only":false,"supports_spec_decode":false},
+            {"alias":"qwen3.5-4b-4bit","hf_path":"mlx-community/Qwen3.5-4B-MLX-4bit","is_builtin":true,"is_text_only":true,"supports_spec_decode":false}
+          ],
+          "audio": [{"alias":"whisper"}], "video": [], "image": [{"alias":"flux-dev"}]
+        }
+        """
+        let parsed = try #require(ModelCatalog.parseAvailableJSON(output))
+        #expect(parsed.entries.map(\.0) == [
+            "qwen3.5-9b-4bit", "qwen3.5-company-tuned", "qwen3.5-4b-4bit",
+        ])
+        #expect(parsed.profiles["qwen3.5-9b-4bit"]?.isBuiltin == true)
+        #expect(parsed.profiles["qwen3.5-4b-4bit"]?.isTextOnly == true)
+        #expect(parsed.profiles["qwen3.5-company-tuned"]?.isBuiltin == false)
+        #expect(parsed.excluded == ["whisper", "flux-dev"])
+    }
+
     @Test("Speculative presets are parsed from the alias profile table")
     func speculativePresetParsing() {
         let output = """

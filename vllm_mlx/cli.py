@@ -5941,10 +5941,11 @@ def _available_models_json_payload() -> dict:
     image) exactly as the text sections are. Sizes are download bytes from the
     checked-in manifest (``None`` when unknown); no per-invocation HF I/O.
     """
-    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_aliases import list_builtin_aliases, list_profiles
     from vllm_mlx.model_sizes import size_bytes
 
     all_profiles = list_profiles()
+    builtin_aliases = set(list_builtin_aliases())
 
     def _modality(p) -> str:
         return getattr(p, "modality", "text") or "text"
@@ -5964,7 +5965,14 @@ def _available_models_json_payload() -> dict:
             "is_hybrid": bool(getattr(p, "is_hybrid", False)),
             "is_moe": bool(getattr(p, "is_moe", False)),
             "supports_spec_decode": bool(getattr(p, "supports_spec_decode", False)),
+            "mtp_draft_model": getattr(p, "mtp_draft_model", None),
+            "mtp_speculative_tokens": getattr(p, "mtp_speculative_tokens", None),
             "modality": _modality(p),
+            # Desktop consumes these as a launch-safety contract. Only
+            # curated aliases may opt into eager MLLM loading, and an
+            # explicit text-only pin always wins over name inference.
+            "is_builtin": alias in builtin_aliases,
+            "is_text_only": bool(getattr(p, "is_text_only", False)),
         }
 
     text, video, image = {}, {}, {}

@@ -1667,8 +1667,14 @@ final class ServerManager {
         // first-use load. The server/CLI keeps its throughput-first auto
         // routing; only the process spawned by the GUI opts into the complete
         // MLLM lane. Text-only aliases retain their existing launch shape.
+        let catalogEntry = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads?.cacheGeneration ?? 0
+        ).first { $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame }
         var extraFlags = Self.desktopCapabilityFlags(
             forAlias: trimmedAlias,
+            isBuiltinProfile: catalogEntry?.isBuiltinProfile,
+            isTextOnly: catalogEntry?.isTextOnly,
             existing: performanceFlags
         )
         extraFlags.append(contentsOf: [
@@ -2856,9 +2862,12 @@ final class ServerManager {
     /// be regression-tested without spawning the bundled runtime.
     nonisolated internal static func desktopCapabilityFlags(
         forAlias alias: String,
+        isBuiltinProfile: Bool? = nil,
+        isTextOnly: Bool? = nil,
         existing: [String]
     ) -> [String] {
-        guard ModelBrandStyle.supportsImageInput(forAlias: alias) else {
+        guard isBuiltinProfile == true, isTextOnly == false,
+              ModelBrandStyle.supportsImageInput(forAlias: alias) else {
             return existing
         }
 

@@ -42,16 +42,23 @@ struct SpawnArgumentsTests {
     @Test("Desktop opts vision aliases into MLLM without changing text aliases")
     func desktopVisionCapabilityFlags() {
         #expect(ServerManager.desktopCapabilityFlags(
-            forAlias: "qwen3.5-9b-4bit", existing: []
+            forAlias: "qwen3.5-9b-4bit", isBuiltinProfile: true,
+            isTextOnly: false, existing: []
         ) == ["--mllm"])
         #expect(ServerManager.desktopCapabilityFlags(
-            forAlias: "qwen3-vl-4b-4bit", existing: ["--cache-memory-mb", "512"]
+            forAlias: "qwen3-vl-4b-4bit", isBuiltinProfile: true,
+            isTextOnly: false, existing: ["--cache-memory-mb", "512"]
         ) == ["--cache-memory-mb", "512", "--mllm"])
         #expect(ServerManager.desktopCapabilityFlags(
             forAlias: "llama3-3b-4bit", existing: ["--enable-prefix-cache"]
         ) == ["--enable-prefix-cache"])
         #expect(ServerManager.desktopCapabilityFlags(
-            forAlias: "qwen3.5-4b-4bit", existing: []
+            forAlias: "qwen3.5-4b-4bit", isBuiltinProfile: true,
+            isTextOnly: true, existing: []
+        ).isEmpty)
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-company-tuned", isBuiltinProfile: false,
+            isTextOnly: false, existing: []
         ).isEmpty)
     }
 
@@ -59,10 +66,12 @@ struct SpawnArgumentsTests {
     func desktopVisionCapabilityFlagsResolveConflicts() {
         #expect(ServerManager.desktopCapabilityFlags(
             forAlias: "gemma3-12b-4bit",
+            isBuiltinProfile: true, isTextOnly: false,
             existing: ["--no-mllm", "--cache-memory-mb", "512", "--text-only"]
         ) == ["--cache-memory-mb", "512", "--mllm"])
         #expect(ServerManager.desktopCapabilityFlags(
-            forAlias: "gemma3-12b-4bit", existing: ["--mllm"]
+            forAlias: "gemma3-12b-4bit", isBuiltinProfile: true,
+            isTextOnly: false, existing: ["--mllm"]
         ) == ["--mllm"])
     }
 
