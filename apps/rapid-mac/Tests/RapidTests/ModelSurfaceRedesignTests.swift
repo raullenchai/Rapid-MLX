@@ -122,9 +122,15 @@ struct ModelSurfaceRedesignTests {
         #expect(model.contains("func retryAssistantMessage(\n        id: UUID,\n        alias: String,\n        supportsImageInput: Bool? = nil"))
         #expect(!model.contains("imageCapabilityByAlias"),
                 "restored conversations must not depend on transient per-send state")
-        #expect(server.contains("ModelCatalogCache.supportsImageInput("))
-        #expect(!server.contains("let catalogEntry = await ModelCatalogCache.shared.entries"),
-                "spawn policy must not add an uncancellable catalog probe")
+        #expect(server.contains("let catalogEntry = await ModelCatalogCache.shared.entries"))
+        let catalogProbe = try #require(server.range(
+            of: "let catalogEntry = await ModelCatalogCache.shared.entries"
+        ))
+        let criticalSection = try #require(server.range(
+            of: "        isOperating = true\n\n        // Clear the log tail"
+        ))
+        #expect(catalogProbe.lowerBound < criticalSection.lowerBound,
+                "catalog capability must resolve before the spawn critical section")
     }
 
     // MARK: - ModelBrandStyle.displayFamily

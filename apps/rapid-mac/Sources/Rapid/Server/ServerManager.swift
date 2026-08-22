@@ -1511,6 +1511,26 @@ final class ServerManager {
             guard child == nil else { return }
         }
 
+        // Resolve authoritative capability before entering the spawn critical
+        // section. Quickstart and Settings can call start directly on a cold
+        // cache, so relying on the synchronous mirror here would silently
+        // launch a visual checkpoint in its text lane. Keeping this await
+        // before `isOperating = true` preserves the cancellable startup
+        // contract; re-check every entry guard after actor reentrancy.
+        let catalogEntry = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads?.cacheGeneration ?? 0
+        ).first {
+            $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame
+        }
+        if Task.isCancelled || didSignalShutdown { return }
+        guard !isOperating, child == nil else { return }
+        let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+            forAlias: trimmedAlias,
+            isBuiltinProfile: catalogEntry?.isBuiltinProfile,
+            isTextOnly: catalogEntry?.isTextOnly
+        )
+
         // Codex round 1-4 finding (all 4 rounds): the previous shape
         // held ``isOperating = true`` for the entire health/download
         // window (up to 30 minutes for a first-time large model
@@ -1666,9 +1686,7 @@ final class ServerManager {
         // MLLM lane. Text-only aliases retain their existing launch shape.
         let desktopDefaults = Self.desktopCapabilityFlags(
             forAlias: trimmedAlias,
-            supportsImageInput: ModelCatalogCache.supportsImageInput(
-                forAlias: trimmedAlias, binary: binary
-            ),
+            supportsImageInput: catalogSupportsImageInput,
             existing: RAMBucketedDefault.launchFlags(
                 forAlias: trimmedAlias,
                 physicalRAMGB: hardware.physicalRAMGB
@@ -2906,6 +2924,12 @@ final class ServerManager {
         forAlias alias: String,
         catalogSupportsImageInput: Bool? = nil
     ) -> Bool {
+        if let launchedAlias = launchedChildAlias,
+           launchedAlias.caseInsensitiveCompare(alias) == .orderedSame {
+            return launchedPerformanceFlags.contains("--mllm")
+                && !launchedPerformanceFlags.contains("--no-mllm")
+                && !launchedPerformanceFlags.contains("--text-only")
+        }
         let catalogCapability = catalogSupportsImageInput
             ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: binaryPath)
         return Self.effectiveImageInputCapability(
