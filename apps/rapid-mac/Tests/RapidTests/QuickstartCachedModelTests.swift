@@ -54,7 +54,7 @@ struct QuickstartCachedModelTests {
 
     @Test("unknown cached families remain independently visible")
     func unknownFamiliesDoNotCollapse() {
-        let rows = [entry("custom-a-7b-4bit"), entry("custom-b-7b-8bit")]
+        let rows = [entry("custom-7b-4bit"), entry("custom-7b-8bit")]
         let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 6)
         #expect(presentation.primary.map(\.alias) == rows.map(\.alias))
         #expect(presentation.alternates.isEmpty)
