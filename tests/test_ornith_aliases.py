@@ -133,6 +133,13 @@ def test_ornith_prefix_collision_does_not_match_family_fallback():
     assert detect_model_config("community/ornithopter-35b-a3b") is None
 
 
+def test_ornith_size_marker_substrings_do_not_match_family_fallback():
+    """Size and architecture markers must be complete name tokens."""
+    assert detect_model_config("community/Ornith-1.5-135B") is None
+    assert detect_model_config("community/Ornith-1.5-19B") is None
+    assert detect_model_config("community/Ornith-1.5-condensed") is None
+
+
 # ---- cross-check: hf_path markers match the JSON flags -----------------
 
 

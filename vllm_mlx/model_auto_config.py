@@ -323,7 +323,8 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # is False family-wide (GatedDeltaNet rules out self-spec).
     (
         re.compile(
-            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*(35b|a3b|moe)[^/\\]*$",
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*"
+            r"[-_.](35b|a3b|moe)(?=[-_.]|$)[^/\\]*$",
             re.IGNORECASE,
         ),
         ModelConfig(
@@ -336,7 +337,8 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     ),
     (
         re.compile(
-            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*(9b|dense)[^/\\]*$",
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*"
+            r"[-_.](9b|dense)(?=[-_.]|$)[^/\\]*$",
             re.IGNORECASE,
         ),
         ModelConfig(
