@@ -146,8 +146,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install GUI contract test dependencies
+        run: pip install pytest PyYAML
 
       # Separate steps so a red names which contract broke.
       - name: Baselines are OS-independent
