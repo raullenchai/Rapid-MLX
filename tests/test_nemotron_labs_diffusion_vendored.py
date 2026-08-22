@@ -175,9 +175,7 @@ def test_sanitize_strips_language_model_prefix_and_drops_shims():
             # remapped, never left as stray keys that break weight matching.
             "language_model.model.embed_tokens.rotary_emb.inv_freq": mx.array([2.0]),
             "encoder.model.norm.weight": mx.array([3.0]),
-            "language_model.encoder.layers.0.input_layernorm.weight": mx.array(
-                [4.0]
-            ),
+            "language_model.encoder.layers.0.input_layernorm.weight": mx.array([4.0]),
         }
     )
 
