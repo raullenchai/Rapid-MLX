@@ -1662,7 +1662,15 @@ final class ServerManager {
             ),
             userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
         )
-        var extraFlags = performanceFlags
+        // Desktop is a single-user product: a multimodal checkpoint should be
+        // ready for a pasted screenshot without a model restart or a hidden
+        // first-use load. The server/CLI keeps its throughput-first auto
+        // routing; only the process spawned by the GUI opts into the complete
+        // MLLM lane. Text-only aliases retain their existing launch shape.
+        var extraFlags = Self.desktopCapabilityFlags(
+            forAlias: trimmedAlias,
+            existing: performanceFlags
+        )
         extraFlags.append(contentsOf: [
             "--resident-memory-limit-gb",
             String(format: "%.0f", ModelSizing.residentMemoryCeilingGB(on: hardware)),
@@ -2841,6 +2849,26 @@ final class ServerManager {
             }
         }
         return kept + userOverrides
+    }
+
+    /// Add Desktop's capability policy to an otherwise complete flag list.
+    /// Kept pure so cold start, crash recovery, and alias-switch behavior can
+    /// be regression-tested without spawning the bundled runtime.
+    nonisolated internal static func desktopCapabilityFlags(
+        forAlias alias: String,
+        existing: [String]
+    ) -> [String] {
+        guard ModelBrandStyle.supportsImageInput(forAlias: alias) else {
+            return existing
+        }
+
+        // A RAM recommendation authored before vision-by-default may still
+        // contain the old escape-hatch spelling. Desktop capability is the
+        // final policy layer, so remove either spelling before adding --mllm;
+        // sending both is a server startup error.
+        var flags = existing.filter { $0 != "--no-mllm" && $0 != "--text-only" }
+        if !flags.contains("--mllm") { flags.append("--mllm") }
+        return flags
     }
 
     // MARK: - Unified spawn shape (issue #271)

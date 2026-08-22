@@ -39,6 +39,33 @@ import Testing
 @Suite("ServerManager spawn-argument shape (issue #271)")
 struct SpawnArgumentsTests {
 
+    @Test("Desktop opts vision aliases into MLLM without changing text aliases")
+    func desktopVisionCapabilityFlags() {
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-9b-4bit", existing: []
+        ) == ["--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3-vl-4b-4bit", existing: ["--cache-memory-mb", "512"]
+        ) == ["--cache-memory-mb", "512", "--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "llama3-3b-4bit", existing: ["--enable-prefix-cache"]
+        ) == ["--enable-prefix-cache"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.5-4b-4bit", existing: []
+        ).isEmpty)
+    }
+
+    @Test("Desktop vision policy removes text-only escape hatches and is idempotent")
+    func desktopVisionCapabilityFlagsResolveConflicts() {
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit",
+            existing: ["--no-mllm", "--cache-memory-mb", "512", "--text-only"]
+        ) == ["--cache-memory-mb", "512", "--mllm"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "gemma3-12b-4bit", existing: ["--mllm"]
+        ) == ["--mllm"])
+    }
+
     // MARK: - argv shape
 
     @Test("serve argv has exactly serve + alias + --host + --port + --cors-origins loopback allowlist")

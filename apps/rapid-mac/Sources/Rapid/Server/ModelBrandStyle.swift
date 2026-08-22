@@ -99,15 +99,24 @@ enum ModelBrandStyle {
         return String(first).uppercased()
     }
 
-    /// Chat vs vision, from the alias name. A `-vl` / `vl-` token (or a
-    /// bare `-vl-` segment) marks a vision-language model; everything
-    /// else is chat. rapid-mlx's vision aliases all carry `vl` in the
-    /// name (`qwen3-vl-*`), so this is a reliable name-only signal.
+    /// Chat vs vision, from the curated alias family. Desktop launches every
+    /// alias classified as vision with ``--mllm`` so image input is ready when
+    /// the composer appears; this classification is therefore a launch
+    /// contract, not merely a decorative glyph.
+    ///
+    /// Keep the explicit text-only exceptions aligned with server alias pins.
+    /// In particular, the 4-bit Qwen3.5 4B alias currently carries
+    /// ``is_text_only: true`` in ``aliases.json`` and the server intentionally
+    /// rejects ``--mllm`` for it. Its 6/8-bit siblings are not pinned and keep
+    /// their checkpoint's vision tower.
     static func modelType(forAlias alias: String) -> ModelType {
         let a = alias.lowercased()
-        if a == "qwen3.5-4b-4bit" || a.contains("gemma3-1b") { return .chat }
+        if a == "qwen3.5-4b-4bit"
+            || a == "qwen3.5-122b-mxfp4"
+            || a.contains("gemma3-1b") { return .chat }
         if a.contains("-vl-") || a.hasSuffix("-vl") || a.contains("vl-")
             || a.contains("-vision") || a.contains("qwen3.5-")
+            || a.contains("qwen3.6-") || a.contains("qwen3.8-")
             || a.contains("gemma3-") || a.contains("gemma-3n-")
             || a.contains("gemma-4-") { return .vision }
         return .chat

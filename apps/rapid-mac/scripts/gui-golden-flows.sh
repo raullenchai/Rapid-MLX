@@ -3235,6 +3235,36 @@ flow_chat_document_attachment() {
 
     local fixture="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
     see_main "$OUT/document-compose.json"
+
+    # The composer's single plus affordance expands to exactly the two product
+    # actions: documents remain available for every chat model, while photos
+    # stay visible-but-disabled for this text-only fixture alias. Keeping the
+    # disabled row visible teaches the capability boundary without pretending
+    # Rapid itself lacks image input.
+    press "$OUT/document-compose.json" ChatView.AddAttachments \
+        "$OUT/attachment-menu-open.json"
+    local attachment_menu_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/attachment-menu.json"
+        if jq -e '[.data.ui_elements[]?
+                   | select(.identifier == "ChatView.Attachments.UploadFile"
+                            or .identifier == "ChatView.Attachments.UploadPhoto")]
+                  | length == 2' "$OUT/attachment-menu.json" >/dev/null; then
+            attachment_menu_ready=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$attachment_menu_ready" == 1 ]] \
+        || die "the attachment plus menu did not expose Upload file and Upload photo"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadFile" and .enabled == true)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload file was not enabled for a text-only chat model"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadPhoto" and .enabled == false)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload photo did not expose the text-only model capability boundary"
+
     "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
         > "$OUT/document-paste.json"
 

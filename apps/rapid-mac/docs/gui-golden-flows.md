@@ -264,9 +264,10 @@ the latter asks a diffusion model to create one.
 The deterministic lane should use a fake VLM alias and a small fixture PNG, and
 walk both halves of the capability boundary:
 
-1. select the fake VLM alias and assert `ChatView.AddAttachments` is present and
-   enabled;
-2. add the fixture through the standard open panel, then assert the thumbnail's
+1. open `ChatView.AddAttachments` and assert the menu contains exactly
+   `Upload file` and `Upload photo`; the file action remains enabled for every
+   model, while the photo action follows the selected model's vision capability;
+2. select the fake VLM alias, add the fixture through `Upload photo`, then assert the thumbnail's
    `ChatView.Attachment.Remove.<filename>` control is present;
 3. enter a caption question, send, and assert the user bubble contains the
    attachment while the fake sidecar records an `image_url` data URI alongside

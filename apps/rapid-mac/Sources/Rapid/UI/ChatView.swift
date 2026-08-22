@@ -670,16 +670,30 @@ struct ChatView: View {
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Button(action: chooseAttachments) {
+            Menu {
+                Button(action: chooseFiles) {
+                    Label("Upload file", systemImage: "doc")
+                }
+                .accessibilityIdentifier("ChatView.Attachments.UploadFile")
+
+                Button(action: choosePhotos) {
+                    Label("Upload photo", systemImage: "photo")
+                }
+                .disabled(!supportsImageInput)
+                .help("Current model doesn't support photos")
+                .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primary)
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
+            .menuStyle(.button)
             .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .disabled(viewModel.isStreaming || isImportingFiles)
-            .help(supportsImageInput ? "Add files or photos" : "Add PDF, CSV, or TXT files")
+            .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
             Button {
@@ -907,11 +921,19 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func chooseAttachments() {
+    private func choosePhotos() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = supportsImageInput
-            ? [.pdf, .commaSeparatedText, .plainText, .png, .jpeg, .gif]
-            : [.pdf, .commaSeparatedText, .plainText]
+        panel.allowedContentTypes = [.png, .jpeg, .gif]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        _ = addAttachmentURLs(panel.urls)
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
