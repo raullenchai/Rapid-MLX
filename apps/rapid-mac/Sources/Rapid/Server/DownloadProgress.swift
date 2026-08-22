@@ -201,9 +201,13 @@ final class DownloadProgress {
     /// total, bytes and rate are all known.
     var etaText: String? {
         guard let total = totalBytes, let bytes = bytesDownloaded,
-              let speed = bytesPerSecond, speed > 0, total > bytes,
+              let etaSeconds, etaSeconds > 0, total > bytes,
               etaEstimateIsStable else { return nil }
-        return Self.formatETA(bytesRemaining: total - bytes, bytesPerSecond: speed)
+        let remaining = total - bytes
+        return Self.formatETA(
+            bytesRemaining: remaining,
+            bytesPerSecond: Double(remaining) / etaSeconds
+        )
     }
 
     /// ETA is intentionally delayed while the connection ramps up. Two early
@@ -229,6 +233,11 @@ final class DownloadProgress {
     private var rateSamplingStartedAt: Date?
     private var rateSamplingBaselineBytes: Int64?
     private var lastGrowingSample: (at: Date, bytes: Int64)?
+    /// Smoothed prediction used for user-facing copy. A brief rate dip may
+    /// raise the estimate by at most 25% per observation, preventing a
+    /// settled ETA from jumping several-fold in one frame while still
+    /// converging when a slowdown persists.
+    private(set) var etaSeconds: Double?
     private nonisolated static let minimumETASampleSpan: TimeInterval = 8
     private nonisolated static let minimumETAGrowthBytes: Int64 = 16 * 1024 * 1024
 
@@ -286,6 +295,7 @@ final class DownloadProgress {
         rateSamplingBaselineBytes = nil
         lastGrowingSample = nil
         bytesPerSecond = nil
+        etaSeconds = nil
     }
 
     /// Set the catalog-known total weight size. Called once when a job
@@ -345,6 +355,7 @@ final class DownloadProgress {
         lastTickAt = now
         recordRateSample(at: now, bytes: bytes)
         bytesPerSecond = computeRate(now: now)
+        updateETAEstimate()
     }
 
     /// Append a sample, drop anything older than ``rateWindowSeconds``
@@ -361,6 +372,7 @@ final class DownloadProgress {
             // ticks cannot preserve a stale stability epoch.
             rateSamplingStartedAt = now
             rateSamplingBaselineBytes = bytes
+            etaSeconds = nil
         }
         if rateSamplingStartedAt == nil {
             rateSamplingStartedAt = now
@@ -393,6 +405,23 @@ final class DownloadProgress {
         let delta = newest.bytes - oldest.bytes
         guard delta > 0 else { return nil }
         return Double(delta) / span
+    }
+
+    private func updateETAEstimate() {
+        guard etaEstimateIsStable,
+              let total = totalBytes,
+              let bytes = bytesDownloaded,
+              let speed = bytesPerSecond,
+              speed > 0, total > bytes else {
+            etaSeconds = nil
+            return
+        }
+        let raw = Double(total - bytes) / speed
+        if let previous = etaSeconds, raw > previous {
+            etaSeconds = min(raw, previous * 1.25)
+        } else {
+            etaSeconds = raw
+        }
     }
 
     /// Ingest one stdout/stderr line from the child. Returns ``true`` if

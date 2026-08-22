@@ -857,6 +857,25 @@ struct DownloadProgressTests {
         #expect(progress.etaText != nil)
     }
 
+    @Test("A brief slowdown cannot make a settled ETA jump several-fold")
+    func settledETASmoothsTransientSlowdown() {
+        let progress = DownloadProgress()
+        let mb: Int64 = 1024 * 1024
+        let t0 = Date(timeIntervalSince1970: 6_050_000)
+        progress.setTotalBytes(1_000 * mb)
+        progress.applyDiskObservation(bytes: 10 * mb, at: t0)
+        progress.applyDiskObservation(bytes: 20 * mb, at: t0.addingTimeInterval(4))
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(8))
+        let settled = try! #require(progress.etaSeconds)
+
+        // The rolling four-second rate now sees only 1 MiB/s instead of
+        // 2.5 MiB/s. Raw ETA would jump by more than 2x in one heartbeat.
+        progress.applyDiskObservation(bytes: 31 * mb, at: t0.addingTimeInterval(9))
+        let slowed = try! #require(progress.etaSeconds)
+        #expect(slowed <= settled * 1.25)
+        #expect(slowed > settled)
+    }
+
     @Test("ETA settles again after a stalled download resumes")
     func resumedDownloadRestartsETAStabilityEpoch() {
         let progress = DownloadProgress()
