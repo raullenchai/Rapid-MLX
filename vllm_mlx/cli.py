@@ -8986,6 +8986,13 @@ def upgrade_command(args):
         # as shell separators. install.sh's pipe is wrapped as ``bash -c``
         # in upgrade_argv, so we still get the pipe semantics it needs.
         result = subprocess.run(info.upgrade_argv, check=False)
+    except FileNotFoundError as exc:
+        missing = exc.filename or info.upgrade_argv[0]
+        print(
+            f"\n  Upgrade command not found: {missing}\n"
+            f"  Reinstall {info.method} or run the command above manually.\n"
+        )
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\n  Interrupted.\n")
         sys.exit(130)
