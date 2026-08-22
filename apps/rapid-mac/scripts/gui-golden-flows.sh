@@ -1048,8 +1048,8 @@ start_model() {
     # readiness gate, and the press was silently dropped (observed: 1 run in 2).
     # Hosted macOS runners can spend more than 30 seconds cold-starting the
     # bundled fake sidecar after a full release build. Keep the event-based
-    # readiness proof, but allow 120 seconds before declaring startup broken.
-    for _ in {1..480}; do
+    # readiness proof, but allow 60 seconds before declaring startup broken.
+    for _ in {1..240}; do
         grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
         sleep 0.25
     done
