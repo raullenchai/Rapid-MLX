@@ -3266,11 +3266,12 @@ struct QuickstartView: View {
 
     /// The quieter cached slice used only by the first-run shortlist.
     ///
-    /// Models are siblings only when both their known family and parameter
-    /// count match.  That collapses `qwen3-0.6b-{4bit,8bit}` without ever
-    /// collapsing Qwen 3 0.6B and Qwen 3 4B into one decision. Unknown
-    /// families or sizes deliberately stand alone: hiding an unrelated model
-    /// is worse than leaving one extra row visible.
+    /// Models are siblings only when their alias lineage matches after removing
+    /// a terminal quantization suffix. The known family and parameter count are
+    /// additional guards. This collapses `qwen3-0.6b-{4bit,8bit}` without
+    /// merging same-sized Instruct and Thinking models. Unknown families or
+    /// sizes deliberately stand alone: hiding an unrelated model is worse than
+    /// leaving one extra row visible.
     struct CachedPresentation: Equatable {
         var primary: [ModelEntry]
         var alternates: [ModelEntry]
@@ -3305,7 +3306,12 @@ struct QuickstartView: View {
         guard family != "Unknown",
               let params = ModelSizing.estimate(alias: entry.alias).paramsBillions
         else { return "alias:\(entry.alias.lowercased())" }
-        return "family:\(family.lowercased())|params:\(params)"
+        let lineage = entry.alias.lowercased().replacingOccurrences(
+            of: #"[-_](?:2|3|4|5|6|8)bit$"#,
+            with: "",
+            options: .regularExpression
+        )
+        return "family:\(family.lowercased())|params:\(params)|lineage:\(lineage)"
     }
 
     private static func cachedVariantPreferred(_ lhs: ModelEntry, _ rhs: ModelEntry) -> Bool {

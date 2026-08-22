@@ -60,6 +60,17 @@ struct QuickstartCachedModelTests {
         #expect(presentation.alternates.isEmpty)
     }
 
+    @Test("same-family same-size semantic variants remain separate decisions")
+    func semanticVariantsDoNotCollapse() {
+        let rows = [
+            entry("qwen3-4b-instruct-2507-4bit"),
+            entry("qwen3-4b-thinking-2507-8bit"),
+        ]
+        let presentation = QuickstartView.quickstartCachedPresentation(rows, limit: 6)
+        #expect(presentation.primary.map(\.alias) == rows.map(\.alias))
+        #expect(presentation.alternates.isEmpty)
+    }
+
     @Test("presentation cap counts decisions, not hidden quant siblings")
     func capCountsDistinctModelDecisions() {
         let rows = [
