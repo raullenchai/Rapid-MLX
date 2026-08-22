@@ -3943,14 +3943,14 @@ flow_resident_load_rejected() {
         see_main "$OUT/rlr-shown.json"
         if jq -e '[.data.ui_elements[]?]
                   | map(((.title // "") | tostring) + " " + ((.value // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
-                  | join(" ") | test("rapid-mlx\\[image\\]")' \
+                  | join(" ") | test("couldn.t load|Check the model files|choose another model"; "i")' \
                "$OUT/rlr-shown.json" >/dev/null 2>&1; then
             shown=1; break
         fi
         sleep 0.25
     done
     [[ "$shown" == 1 ]] \
-        || die "the image-sidecar failure never appeared on the Images surface"
+        || die "the actionable image-sidecar diagnosis never appeared on the Images surface"
     jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
         "$OUT/rlr-shown.json" >/dev/null \
         || die "the Images failure offered no recovery action"
