@@ -343,7 +343,14 @@ final class DownloadProgress {
     /// behind the newest one, and enforce ``maxRateSamples``. Called
     /// only from ``applyDiskObservation(bytes:at:)``.
     private func recordRateSample(at now: Date, bytes: Int64) {
-        if rateSamplingStartedAt == nil { rateSamplingStartedAt = now }
+        // A resumed transfer needs a fresh settling period. Otherwise the
+        // epoch from before a long stall survives after every old rate sample
+        // has been evicted, and two new chunks can immediately publish the
+        // same volatile ETA we intentionally suppress on first start.
+        if rateSamplingStartedAt == nil
+            || rateSamples.last.map({ now.timeIntervalSince($0.at) > Self.rateStaleSeconds }) == true {
+            rateSamplingStartedAt = now
+        }
         rateSamples.append((at: now, bytes: bytes))
         let cutoff = now.addingTimeInterval(-Self.rateWindowSeconds)
         while let first = rateSamples.first, first.at < cutoff {

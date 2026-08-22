@@ -857,6 +857,28 @@ struct DownloadProgressTests {
         #expect(progress.etaText != nil)
     }
 
+    @Test("ETA settles again after a stalled download resumes")
+    func resumedDownloadRestartsETAStabilityEpoch() {
+        let progress = DownloadProgress()
+        let mb: Int64 = 1024 * 1024
+        let t0 = Date(timeIntervalSince1970: 6_100_000)
+        progress.setTotalBytes(20 * mb)
+        progress.applyDiskObservation(bytes: 1 * mb, at: t0)
+        progress.applyDiskObservation(bytes: 2 * mb, at: t0.addingTimeInterval(4))
+        progress.applyDiskObservation(bytes: 3 * mb, at: t0.addingTimeInterval(8))
+        #expect(progress.etaText != nil)
+
+        // More than the freshness window passes with no observations. The
+        // first two chunks after recovery can show speed, but must not inherit
+        // the old epoch and immediately claim a stable ETA.
+        progress.applyDiskObservation(bytes: 4 * mb, at: t0.addingTimeInterval(20))
+        progress.applyDiskObservation(bytes: 5 * mb, at: t0.addingTimeInterval(21))
+        let resumed = progress.progressSubtitle ?? ""
+        #expect(resumed.contains("MB/s") || resumed.contains("KB/s"))
+        #expect(!resumed.contains("left"))
+        #expect(progress.etaText == nil)
+    }
+
     /// When the total is unknown (HF didn't expose sizes), the subtitle
     /// falls through to "X downloaded" — but the speed readout still
     /// helps the user feel things are alive, so we append it even
