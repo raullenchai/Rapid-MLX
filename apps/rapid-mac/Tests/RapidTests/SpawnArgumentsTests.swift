@@ -167,7 +167,13 @@ struct SpawnArgumentsTests {
             userOverrides: [],
             processLaunchFlags: ["--mllm"],
             hasChild: true
-        ) == false)
+        ) == true)
+        #expect(ServerManager.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: true,
+            userOverrides: ["--no-mllm"],
+            processLaunchFlags: ["--mllm"],
+            hasChild: true
+        ) == true)
     }
 
     // MARK: - argv shape

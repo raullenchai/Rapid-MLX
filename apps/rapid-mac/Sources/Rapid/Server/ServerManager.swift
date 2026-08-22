@@ -2990,10 +2990,10 @@ final class ServerManager {
             && !processLaunchFlags.contains("--text-only")
     }
 
-    /// A resident load cannot add the process-wide vision tower after spawn.
-    /// Selecting a visual alias from a text-lane process therefore requires
-    /// the existing fallback process restart, not an in-process load that
-    /// would report ready while remaining unable to accept images.
+    /// A resident load cannot add or remove the process-wide vision tower
+    /// after spawn. Any requested lane change therefore requires the existing
+    /// fallback process restart, both to make images work and to honor a
+    /// user's explicit text-only memory choice.
     nonisolated internal static func requiresProcessRestartForImageCapability(
         catalogSupportsImageInput: Bool,
         userOverrides: [String],
@@ -3008,7 +3008,7 @@ final class ServerManager {
         let processHasMLLM = processLaunchFlags.contains("--mllm")
             && !processLaunchFlags.contains("--no-mllm")
             && !processLaunchFlags.contains("--text-only")
-        return requested && !processHasMLLM
+        return requested != processHasMLLM
     }
 
     internal func supportsImageInput(
