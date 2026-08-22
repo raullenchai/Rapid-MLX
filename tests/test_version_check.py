@@ -760,6 +760,31 @@ def test_manager_like_path_outside_known_root_falls_back_to_pip(tmp_path, monkey
     assert info.upgrade_argv[:3] == [vc.sys.executable, "-m", "pip"]
 
 
+def test_manager_root_symlink_is_normalized_before_comparison(tmp_path, monkeypatch):
+    """Normalize both sides when a manager root itself is reached via symlink."""
+    home = tmp_path / "home"
+    binary = tmp_path / "uv-bin" / "rapid-mlx"
+    configured_root = tmp_path / "uv-tools"
+    venv = configured_root / "rapid-mlx"
+    expected = venv / "bin" / "rapid-mlx"
+    canonical = Path("/private") / expected.relative_to("/")
+    venv.mkdir(parents=True)
+    (venv / "uv-receipt.toml").write_text("managed")
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
+
+    def fake_realpath(path):
+        return str(canonical) if Path(path) in {binary, expected} else str(path)
+
+    monkeypatch.setattr("os.path.realpath", fake_realpath)
+    monkeypatch.setenv("UV_TOOL_DIR", str(configured_root))
+
+    info = vc.detect_install_method()
+
+    assert info.method == "uv"
+    assert info.upgrade_argv == ["uv", "tool", "upgrade", "rapid-mlx"]
+
+
 def _run_install_sh_upgrade(
     tmp_path, monkeypatch, *, primary_ok, mirror_ok, primary_stall=False
 ):

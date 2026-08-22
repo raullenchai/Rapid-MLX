@@ -542,7 +542,7 @@ def detect_install_method() -> InstallInfo:
             expected = venv / "bin" / "rapid-mlx"
             return (
                 os.path.normcase(normalized)
-                == os.path.normcase(os.path.normpath(str(expected)))
+                == os.path.normcase(os.path.realpath(expected))
                 and (venv / receipt).is_file()
             )
 
