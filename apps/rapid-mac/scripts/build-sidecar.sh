@@ -885,8 +885,17 @@ else
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import mlx_vlm; print("mlx_vlm", mlx_vlm.__version__); from mlx_vlm.models import gemma4_unified' 2>&1)" || {
-        echo "ERR: bundled mlx_vlm import failed — gemma-4 aliases would crash at runtime:" >&2
+        'import importlib.util
+import mlx_vlm
+from mlx_vlm.models import (
+    diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
+    qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
+)
+assert importlib.util.find_spec("cv2") is None
+assert importlib.util.find_spec("torch") is None
+assert importlib.util.find_spec("torchvision") is None
+print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>&1)" || {
+        echo "ERR: bundled mlx_vlm desktop architecture smoke failed:" >&2
         echo "$VLM_OUT" >&2
         echo "ERR: usually means a new mlx-vlm release added an eager top-level import" >&2
         echo "     not currently in the --no-deps bundle. Inspect the traceback for the" >&2
