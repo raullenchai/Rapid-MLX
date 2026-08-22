@@ -1128,8 +1128,10 @@ def load_model_with_fallback(
             without requiring the returned model object to accept attributes.
 
     Returns:
-        Tuple of (model, tokenizer), or (model, tokenizer, config) when
-        ``return_config=True``.
+        ``(model, tokenizer)`` by default; ``(model, tokenizer, config)``
+        with ``return_config=True``; ``(model, tokenizer, source)`` with
+        ``return_source=True``; or ``(model, tokenizer, config, source)``
+        when both flags are true.
     """
     # Publishers who ship one repo per model with a folder per quant
     # (``LiquidAI/LFM2.5-2.6B-MLX`` → ``4bit/``, ``8bit/``, ``bf16/`` …)

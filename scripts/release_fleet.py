@@ -32,8 +32,9 @@ from typing import Any
 # the checkout root on sys.path. The documented release command must work from
 # a bare checkout without requiring an editable install or manual PYTHONPATH.
 _CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
-if str(_CHECKOUT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CHECKOUT_ROOT))
+_checkout_root_str = str(_CHECKOUT_ROOT)
+sys.path[:] = [entry for entry in sys.path if entry != _checkout_root_str]
+sys.path.insert(0, _checkout_root_str)
 
 try:
     import tomllib

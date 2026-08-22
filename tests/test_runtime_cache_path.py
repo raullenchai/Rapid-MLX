@@ -61,7 +61,7 @@ def test_normal_hf_name_resolves_under_prefix_cache_root():
     stable hash suffix for collision protection."""
     p = _resolve("mlx-community/Qwen3-0.6B-8bit")
     leaf = os.path.basename(p)
-    # ``mlx-community--Qwen3-0.6B-8bit--<8 hex>``
+    # ``mlx-community--Qwen3-0.6B-8bit--<16 hex>``
     assert leaf.startswith("mlx-community--Qwen3-0.6B-8bit--")
     assert p.startswith(_root() + os.sep)
     # Same input → same output (deterministic hash).

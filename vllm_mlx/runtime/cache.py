@@ -332,13 +332,13 @@ def get_cache_dir() -> str:
     safe_name = (
         raw.replace("/", "--").replace("\\", "--").replace("..", "--").lstrip(".")
     ) or "default"
-    # 8 hex chars of SHA-256 — 32 bits, collision-resistant for the
-    # tens-of-models-per-user scale we'd ever see in practice.
+    # 16 hex chars of SHA-256 (64 bits) make accidental semantic namespace
+    # collisions negligible even across large fleets and long-lived caches.
     # Persisted KV tensors are reusable only for the exact model revision and
     # effective KV dtype that produced them. Tensor shape/type validation cannot
     # prove that semantic identity, so keep those axes in the directory key.
     identity = _semantic_cache_identity(cfg, raw)
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     leaf = f"{safe_name}--{digest}"
     # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
     # best-effort and silently rebuilds, so the moved location just costs a
@@ -366,17 +366,17 @@ def _cached_model_revision(model_name: str) -> str:
             # index manifest. The manifest bytes also capture its weight_map.
             weight_suffixes = {".safetensors", ".npz", ".bin", ".pt", ".pth"}
             tracked = {resolved / "config.json"}
-            tracked.update(resolved.rglob("*.index.json"))
-            # A config.json::model_file can change model semantics with
-            # identical tensors, and may import sibling modules. Hash all
-            # checkpoint-local Python sources so that custom architectures
-            # cannot inherit a KV namespace across code revisions.
-            tracked.update(resolved.rglob("*.py"))
-            tracked.update(
-                path
-                for path in resolved.rglob("*")
-                if path.is_file() and path.suffix.lower() in weight_suffixes
-            )
+            # One traversal covers manifests, custom model code (including
+            # sibling imports), and supported weight containers.
+            for path in resolved.rglob("*"):
+                if not path.is_file():
+                    continue
+                if (
+                    path.name.endswith(".index.json")
+                    or path.suffix == ".py"
+                    or path.suffix.lower() in weight_suffixes
+                ):
+                    tracked.add(path)
             for path in sorted(tracked):
                 try:
                     stat = path.stat()
