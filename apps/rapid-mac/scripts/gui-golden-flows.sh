@@ -1046,7 +1046,10 @@ start_model() {
     # whole startup — including while its hint still reads "<alias> is still
     # starting." So this returned early, ``send_prompt`` pressed into a closed
     # readiness gate, and the press was silently dropped (observed: 1 run in 2).
-    for _ in {1..120}; do
+    # Hosted macOS runners can spend more than 30 seconds cold-starting the
+    # bundled fake sidecar after a full release build. Keep the event-based
+    # readiness proof, but allow 60 seconds before declaring startup broken.
+    for _ in {1..240}; do
         grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
         sleep 0.25
     done
