@@ -61,6 +61,23 @@ struct DMGPresentationScriptTests {
         #expect(script.contains("VERIFY_DEVICE=\"$(printf"))
         #expect(script.contains("detach_target=\"${VERIFY_DEVICE:-$MOUNT}\""))
         #expect(!script.contains("mktemp -d -t rapid-bootstrap-dmg-XXXXXX"))
+        #expect(script.contains("validate final bootstrapper DMG presentation"))
+        #expect(script.contains("bash \"$ROOT/scripts/validate-dmg.sh\" \"$DMG\""))
+    }
+
+    @Test("Release validates the canonical DMG after stapling and before upload")
+    func releasePostStapleValidationOrder() throws {
+        let workflow = try String(
+            contentsOf: Self.monorepoRoot
+                .appendingPathComponent(".github/workflows/rapid-mac-release.yml"),
+            encoding: .utf8
+        )
+        let notarize = try #require(workflow.firstRange(of: "- name: Notarise + staple rapid-mlx-desktop.dmg"))
+        let finalValidation = try #require(workflow.firstRange(of: "- name: Validate final stapled DMG presentation"))
+        let upload = try #require(workflow.firstRange(of: "- name: Upload workflow artifact"))
+
+        #expect(notarize.lowerBound < finalValidation.lowerBound)
+        #expect(finalValidation.lowerBound < upload.lowerBound)
     }
 
     @Test("Structural parser accepts the active icvp background alias")
@@ -151,6 +168,10 @@ struct DMGPresentationScriptTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+    }
+
+    private static var monorepoRoot: URL {
+        sourceRoot.deletingLastPathComponent().deletingLastPathComponent()
     }
 
     private static func loadScript(_ name: String) throws -> String {

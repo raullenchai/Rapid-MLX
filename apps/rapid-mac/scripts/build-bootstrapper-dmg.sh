@@ -512,6 +512,19 @@ if [[ -e "$MOUNTED_APP/Contents/Resources/rapid-mlx" ]]; then
     exit 1
 fi
 
+# Detach the codesign inspection mount, then validate the final compressed DMG
+# through the same cold-mount Finder path used by the canonical artifact. This
+# catches presentation metadata lost during UDRW -> UDZO conversion.
+echo "==> detach codesign verification mount"
+hdiutil detach "${VERIFY_DEVICE:-$MOUNT}" -quiet \
+    || hdiutil detach "${VERIFY_DEVICE:-$MOUNT}" -force -quiet
+ATTACHED=0
+VERIFY_DEVICE=""
+MOUNT=""
+
+echo "==> validate final bootstrapper DMG presentation"
+bash "$ROOT/scripts/validate-dmg.sh" "$DMG"
+
 echo
 echo "bootstrapper DMG ready at: $DMG"
 echo "  size:        ${DMG_MB} MB (${DMG_BYTES} bytes)"
