@@ -50,7 +50,7 @@ jobs:
       version: ${{ steps.detect.outputs.version }}
       force: ${{ steps.detect.outputs.force }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Detect version bump (or forced release)
         id: detect
@@ -197,7 +197,7 @@ jobs:
       group: tier1-agent-gate
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Re-verify Tier-1 agents against the release source
         env:
@@ -245,7 +245,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Release notes and contributor recognition need the full range from
           # the previous tag, not only the version-bump commit.

@@ -50,7 +50,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Tag pushes check out the tag by default; a manual dispatch is
           # pinned into the tag namespace explicitly (refs/tags/<input>), so
