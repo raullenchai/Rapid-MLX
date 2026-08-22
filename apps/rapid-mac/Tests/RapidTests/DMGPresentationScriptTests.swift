@@ -83,7 +83,7 @@ struct DMGPresentationScriptTests {
     @Test("Structural parser accepts the active icvp background alias")
     func structuralBackgroundAliasPasses() throws {
         let result = try Self.runBackgroundVerifier(
-            alias: Data("Rapid-MLX Desktop:.background:\u{0}/.background/background.png".utf8)
+            alias: Self.makeFinderAlias()
         )
 
         #expect(result.status == 0)
@@ -93,23 +93,32 @@ struct DMGPresentationScriptTests {
     @Test("Structural parser rejects unrelated matching strings")
     func unrelatedBackgroundStringsFail() throws {
         let result = try Self.runBackgroundVerifier(
-            alias: Data("wrong-background.png".utf8),
+            alias: Self.makeFinderAlias(posixPath: "/wrong/background.png"),
             trailingData: Data("Rapid-MLX Desktop:.background:/backgroundImageAlias/.background/background.png".utf8)
         )
 
         #expect(result.status == 1)
-        #expect(result.output.contains("backgroundImageAlias missing"))
+        #expect(result.output.contains("path tags target the wrong file"))
     }
 
     @Test("Structural parser rejects non-image icvp records")
     func nonImageBackgroundTypeFails() throws {
         let result = try Self.runBackgroundVerifier(
-            alias: Data("Rapid-MLX Desktop:.background:\u{0}/.background/background.png".utf8),
+            alias: Self.makeFinderAlias(),
             backgroundType: 0
         )
 
         #expect(result.status == 1)
         #expect(result.output.contains("backgroundType is not image mode"))
+    }
+
+    @Test("Structural parser reports a truncated icvp length without traceback")
+    func truncatedICVPLengthFailsCleanly() throws {
+        let result = try Self.runVerifier(fixture: Data("prefix-icvpblob\u{0}".utf8))
+
+        #expect(result.status == 1)
+        #expect(result.output.contains("expected exactly one structural icvp record"))
+        #expect(!result.output.contains("Traceback"))
     }
 
     private static func expectBackgroundAliasContract(in script: String) {
@@ -136,6 +145,10 @@ struct DMGPresentationScriptTests {
         fixture.append(plist)
         fixture.append(trailingData)
 
+        return try runVerifier(fixture: fixture)
+    }
+
+    private static func runVerifier(fixture: Data) throws -> (status: Int32, output: String) {
         let fixtureDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-dmg-ds-store-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
@@ -157,6 +170,61 @@ struct DMGPresentationScriptTests {
         process.waitUntilExit()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    private static func makeFinderAlias(
+        posixPath: String = "/.background/background.png"
+    ) -> Data {
+        var alias = Data(repeating: 0, count: 152)
+        alias[6] = 0
+        alias[7] = 2  // Alias Manager record version.
+        alias[8] = 0
+        alias[9] = 0  // File target.
+        Self.writePascal("Rapid-MLX Desktop", to: &alias, at: 10, capacity: 28)
+        Self.writePascal("background.png", to: &alias, at: 50, capacity: 64)
+
+        Self.appendUInt16(11, to: &alias)
+        alias.append(contentsOf: Data(".background".utf8))
+        alias.append(0)  // Even-byte padding.
+        Self.appendAliasTag(
+            0x0002,
+            Data("Rapid-MLX Desktop:.background:\u{0}background.png".utf8),
+            to: &alias
+        )
+        Self.appendAliasTag(0x0012, Data(posixPath.utf8), to: &alias)
+        Self.appendUInt16(0xFFFF, to: &alias)
+        Self.appendUInt16(0, to: &alias)
+
+        let size = UInt16(alias.count)
+        alias[4] = UInt8(size >> 8)
+        alias[5] = UInt8(size & 0xFF)
+        return alias
+    }
+
+    private static func writePascal(
+        _ value: String,
+        to data: inout Data,
+        at offset: Int,
+        capacity: Int
+    ) {
+        let bytes = Array(value.utf8)
+        precondition(bytes.count < capacity)
+        data[offset] = UInt8(bytes.count)
+        data.replaceSubrange((offset + 1)..<(offset + 1 + bytes.count), with: bytes)
+    }
+
+    private static func appendAliasTag(_ tag: UInt16, _ value: Data, to data: inout Data) {
+        Self.appendUInt16(tag, to: &data)
+        Self.appendUInt16(UInt16(value.count), to: &data)
+        data.append(value)
+        if value.count.isMultiple(of: 2) == false {
+            data.append(0)
+        }
+    }
+
+    private static func appendUInt16(_ value: UInt16, to data: inout Data) {
+        data.append(UInt8(value >> 8))
+        data.append(UInt8(value & 0xFF))
     }
 
     private static func uint32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
