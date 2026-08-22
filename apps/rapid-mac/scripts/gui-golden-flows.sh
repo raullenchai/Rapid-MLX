@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        fresh-install|cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
+        fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
         slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -1409,6 +1409,31 @@ flow_cached_curated_tradeup() {
     # this exact card becomes selected. Footer wording is presentation copy and
     # is not required for the cached trade-up behavior under test.
     wait_selected Quickstart.Choice.qwen3.5-4b-4bit "$OUT/selected.json"
+    cleanup_persona
+}
+
+flow_cached_variant_collapse() {
+    log "first-run chooser collapses cached quant siblings (#2033 finding 3)"
+    start_persona cached-variant-collapse FAKE_CACHED_VARIANTS=1
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.CachedModel.qwen3-0.6b-4bit "$OUT/chooser.json"
+    wait_identifier Quickstart.CachedModel.qwen3-4b-4bit "$OUT/distinct-size.json"
+    wait_identifier Quickstart.CachedVariants.Toggle "$OUT/collapsed.json"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Quickstart.CachedVariant.qwen3-0.6b-8bit")' \
+        "$OUT/collapsed.json" >/dev/null; then
+        die "cached sibling variant is visible before disclosure"
+    fi
+
+    press "$OUT/collapsed.json" Quickstart.CachedVariants.Toggle "$OUT/expand.json"
+    wait_identifier Quickstart.CachedVariant.qwen3-0.6b-8bit "$OUT/expanded.json"
     cleanup_persona
 }
 
@@ -4553,6 +4578,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     cached-quickstart) flow_cached_quickstart ;;
     cached-curated-tradeup) flow_cached_curated_tradeup ;;
+    cached-variant-collapse) flow_cached_variant_collapse ;;
     download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
     settings-mtp) flow_settings_mtp ;;
@@ -4582,6 +4608,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_cached_quickstart
         flow_cached_curated_tradeup
+        flow_cached_variant_collapse
         flow_download_progress
         flow_settings_persistence
         flow_settings_mtp

@@ -950,6 +950,10 @@ def _emit_catalog(subcommand, alias):
             for index in range(6):
                 print(f"a-cached-{index}             hermes           none")
             print("qwen3.5-4b-4bit       hermes           qwen3")
+        if _setting("FAKE_CACHED_VARIANTS") == "1":
+            print("qwen3-0.6b-8bit       hermes           qwen3")
+            print("qwen3-0.6b-4bit       hermes           qwen3")
+            print("qwen3-4b-4bit         hermes           qwen3")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         if _setting("FAKE_SETTINGS_MTP") == "1":
@@ -995,6 +999,10 @@ def _emit_catalog(subcommand, alias):
             for index in range(6):
                 print(f"a-cached-{index}             fake-org/a-cached-{index}        100 MB")
             print("qwen3.5-4b-4bit       mlx-community/Qwen3.5-4B-MLX-4bit  2.9 GB")
+        if _setting("FAKE_CACHED_VARIANTS") == "1":
+            print("qwen3-0.6b-8bit       mlx-community/Qwen3-0.6B-MLX-8bit  720 MB")
+            print("qwen3-0.6b-4bit       mlx-community/Qwen3-0.6B-MLX-4bit  370 MB")
+            print("qwen3-4b-4bit         mlx-community/Qwen3-4B-MLX-4bit    2.4 GB")
         if _setting("FAKE_SETTINGS_MTP") == "1":
             print("qwen3.8-27b-4bit       rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX  15.2 GB")
         # Cached, so the Images tab resolves to it without a download path —
