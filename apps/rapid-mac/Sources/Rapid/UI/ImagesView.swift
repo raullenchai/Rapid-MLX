@@ -3,6 +3,10 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ImageCatalogRefreshKey: Hashable {
+    let cacheGeneration: UInt
+}
+
 /// The Images tab. Deliberately mirrors ``ChatView``: a scrollable results
 /// area on top and, at the bottom, the *same* compose box — a `surfaceRaised`
 /// rounded field with the model picker + submit button clustered at its
@@ -33,7 +37,9 @@ struct ImagesView: View {
         // A download can finish while this tab remains mounted. Re-read the
         // catalog on DownloadManager's authoritative cache generation so the
         // Download button becomes Start without requiring an app restart.
-        .task(id: downloads.cacheGeneration) { await viewModel.refreshCatalog() }
+        .task(id: ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)) {
+            await viewModel.refreshCatalog()
+        }
     }
 
     // MARK: - Stage + history

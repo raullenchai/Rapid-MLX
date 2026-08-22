@@ -224,6 +224,7 @@ final class DownloadProgress {
     /// reason about than recursive EMA and easier to test.
     private var rateSamples: [(at: Date, bytes: Int64)] = []
     private var rateSamplingStartedAt: Date?
+    private var lastGrowingSample: (at: Date, bytes: Int64)?
     private nonisolated static let minimumETASampleSpan: TimeInterval = 8
 
     /// Most recent rate estimate in bytes/second, or ``nil`` if we
@@ -277,6 +278,7 @@ final class DownloadProgress {
         hasObservedGrowth = false
         rateSamples.removeAll(keepingCapacity: true)
         rateSamplingStartedAt = nil
+        lastGrowingSample = nil
         bytesPerSecond = nil
     }
 
@@ -343,14 +345,18 @@ final class DownloadProgress {
     /// behind the newest one, and enforce ``maxRateSamples``. Called
     /// only from ``applyDiskObservation(bytes:at:)``.
     private func recordRateSample(at now: Date, bytes: Int64) {
-        // A resumed transfer needs a fresh settling period. Otherwise the
-        // epoch from before a long stall survives after every old rate sample
-        // has been evicted, and two new chunks can immediately publish the
-        // same volatile ETA we intentionally suppress on first start.
-        if rateSamplingStartedAt == nil
-            || rateSamples.last.map({ now.timeIntervalSince($0.at) > Self.rateStaleSeconds }) == true {
+        let grew = lastGrowingSample.map { bytes > $0.bytes } ?? true
+        if grew,
+           let lastGrowth = lastGrowingSample,
+           now.timeIntervalSince(lastGrowth.at) > Self.rateStaleSeconds {
+            // Cache monitors keep reporting unchanged byte counts during a
+            // network stall. Measure recovery from the last sample that
+            // actually MOVED, not the latest heartbeat, so those liveness
+            // ticks cannot preserve a stale stability epoch.
             rateSamplingStartedAt = now
         }
+        if rateSamplingStartedAt == nil { rateSamplingStartedAt = now }
+        if grew { lastGrowingSample = (now, bytes) }
         rateSamples.append((at: now, bytes: bytes))
         let cutoff = now.addingTimeInterval(-Self.rateWindowSeconds)
         while let first = rateSamples.first, first.at < cutoff {

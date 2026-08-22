@@ -868,9 +868,12 @@ struct DownloadProgressTests {
         progress.applyDiskObservation(bytes: 3 * mb, at: t0.addingTimeInterval(8))
         #expect(progress.etaText != nil)
 
-        // More than the freshness window passes with no observations. The
-        // first two chunks after recovery can show speed, but must not inherit
-        // the old epoch and immediately claim a stable ETA.
+        // The production cache monitor keeps publishing unchanged totals every
+        // few seconds during a network stall. Those liveness observations must
+        // not preserve the old stability epoch.
+        progress.applyDiskObservation(bytes: 3 * mb, at: t0.addingTimeInterval(11))
+        progress.applyDiskObservation(bytes: 3 * mb, at: t0.addingTimeInterval(14))
+        progress.applyDiskObservation(bytes: 3 * mb, at: t0.addingTimeInterval(17))
         progress.applyDiskObservation(bytes: 4 * mb, at: t0.addingTimeInterval(20))
         progress.applyDiskObservation(bytes: 5 * mb, at: t0.addingTimeInterval(21))
         let resumed = progress.progressSubtitle ?? ""

@@ -34,10 +34,51 @@ struct ImageGenerationResolutionTests {
         let view = try Self.source("Sources/Rapid/UI/ImagesView.swift")
         let model = try Self.source("Sources/Rapid/Images/ImageGenViewModel.swift")
 
-        #expect(view.contains(".task(id: downloads.cacheGeneration)"))
+        #expect(view.contains("ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)"))
         #expect(view.contains("residencyEligible: false"))
         #expect(model.components(separatedBy: "residencyEligible: false").count - 1 == 2,
                 "Both generation and editing must use the modal process-swap path.")
+    }
+
+    @Test("A completed image pull invalidates the mounted catalog and changes Download to Start")
+    @MainActor
+    func completedPullInvalidatesCatalogReadiness() async {
+        let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")
+        let server = ServerManager(testingState: .idle, binaryPath: binary)
+        let downloads = DownloadManager()
+        var cached = false
+        let entry: (Bool) -> ModelEntry = { isCached in
+            ModelEntry(
+                alias: "image-model", hfRepo: "example/image", sizeOnDisk: "1 GiB",
+                cached: isCached, kind: .image, imageCapability: .generation
+            )
+        }
+        let viewModel = ImageGenViewModel(server: server) { _ in [entry(cached)] }
+
+        let beforeKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
+        await viewModel.refreshCatalog()
+        let before = ModelReadiness.resolve(
+            serverState: .idle,
+            alias: "image-model",
+            cacheState: viewModel.imageModels[0].cached ? .onDisk : .notOnDisk,
+            sizeText: "1 GiB"
+        )
+        #expect(before.action == .download(alias: "image-model"))
+
+        _ = downloads._testingSeedJob(alias: "image-model")
+        cached = true
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let afterKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
+        #expect(afterKey != beforeKey, "A successful pull must restart the view's keyed task.")
+
+        await viewModel.refreshCatalog()
+        let after = ModelReadiness.resolve(
+            serverState: .idle,
+            alias: "image-model",
+            cacheState: viewModel.imageModels[0].cached ? .onDisk : .notOnDisk,
+            sizeText: "1 GiB"
+        )
+        #expect(after.action == .start(alias: "image-model"))
     }
 
     @Test("A cancelled older catalog refresh cannot overwrite the newest result")
