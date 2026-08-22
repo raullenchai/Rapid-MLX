@@ -912,6 +912,27 @@ final class ServerManager {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let requestedPerformanceFlags = perfLaunchFlagsProvider?(trimmed) ?? []
+        var requestedCatalogSupportsImageInput = false
+        if let binary = binaryPath {
+            let entry = await ModelCatalogCache.shared.entries(
+                binary: binary,
+                generation: downloads?.cacheGeneration ?? 0
+            ).first {
+                $0.alias.caseInsensitiveCompare(trimmed) == .orderedSame
+            }
+            if Task.isCancelled || didSignalShutdown { return false }
+            requestedCatalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
+                forAlias: trimmed,
+                isBuiltinProfile: entry?.isBuiltinProfile,
+                isTextOnly: entry?.isTextOnly
+            )
+        }
+        let requiresImageLaneRestart = Self.requiresProcessRestartForImageCapability(
+            catalogSupportsImageInput: requestedCatalogSupportsImageInput,
+            userOverrides: requestedPerformanceFlags,
+            processLaunchFlags: launchedPerformanceFlags,
+            hasChild: child != nil
+        )
         let speculativeRequested = requestedPerformanceFlags.contains("--speculative-config")
         let speculativeApplied = hasAppliedSpeculativeDecoding(forAlias: trimmed)
         let speculativeSettingChanged = speculativeRequested != speculativeApplied
@@ -920,10 +941,12 @@ final class ServerManager {
         // residency endpoint to replace it is redundant and breaks legacy
         // sidecars: their 404 fallback stops and restarts the model on every
         // chat send before the request can leave the app.
-        if case .ready(let current) = state, current == trimmed, !speculativeSettingChanged {
+        if case .ready(let current) = state, current == trimmed,
+           !speculativeSettingChanged, !requiresImageLaneRestart {
             return true
         }
-        if replacementGroup == nil, isModelResident(trimmed), !speculativeSettingChanged {
+        if replacementGroup == nil, isModelResident(trimmed),
+           !speculativeSettingChanged, !requiresImageLaneRestart {
             return true
         }
 
@@ -953,7 +976,8 @@ final class ServerManager {
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
         if Self.residencyLoadApplies(
-            residencyEligible: residencyEligible && !speculativeRequested && !speculativeSettingChanged,
+            residencyEligible: residencyEligible && !speculativeRequested
+                && !speculativeSettingChanged && !requiresImageLaneRestart,
             readyWithChild: readyWithChild
         ) {
             // Publish before crossing the network await so SwiftUI replaces
@@ -2951,6 +2975,27 @@ final class ServerManager {
         return processLaunchFlags.contains("--mllm")
             && !processLaunchFlags.contains("--no-mllm")
             && !processLaunchFlags.contains("--text-only")
+    }
+
+    /// A resident load cannot add the process-wide vision tower after spawn.
+    /// Selecting a visual alias from a text-lane process therefore requires
+    /// the existing fallback process restart, not an in-process load that
+    /// would report ready while remaining unable to accept images.
+    nonisolated internal static func requiresProcessRestartForImageCapability(
+        catalogSupportsImageInput: Bool,
+        userOverrides: [String],
+        processLaunchFlags: [String],
+        hasChild: Bool
+    ) -> Bool {
+        guard hasChild else { return false }
+        let requested = effectiveImageInputCapability(
+            catalogSupportsImageInput: catalogSupportsImageInput,
+            userOverrides: userOverrides
+        )
+        let processHasMLLM = processLaunchFlags.contains("--mllm")
+            && !processLaunchFlags.contains("--no-mllm")
+            && !processLaunchFlags.contains("--text-only")
+        return requested && !processHasMLLM
     }
 
     internal func supportsImageInput(
