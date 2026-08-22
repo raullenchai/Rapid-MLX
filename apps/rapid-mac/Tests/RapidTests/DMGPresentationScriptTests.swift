@@ -114,10 +114,13 @@ struct DMGPresentationScriptTests {
 
     @Test("Structural parser reports a truncated icvp length without traceback")
     func truncatedICVPLengthFailsCleanly() throws {
-        let result = try Self.runVerifier(fixture: Data("prefix-icvpblob\u{0}".utf8))
+        var fixture = Data("prefix-icvpblob".utf8)
+        fixture.append(contentsOf: [0, 0, 0, 32])
+        fixture.append(contentsOf: Data("short".utf8))
+        let result = try Self.runVerifier(fixture: fixture)
 
         #expect(result.status == 1)
-        #expect(result.output.contains("expected exactly one structural icvp record"))
+        #expect(result.output.contains("icvp blob payload is truncated"))
         #expect(!result.output.contains("Traceback"))
     }
 

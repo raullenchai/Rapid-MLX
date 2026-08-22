@@ -26,17 +26,20 @@ def read_icvp_records(data: bytes) -> list[dict[str, object]]:
             return records
         length_offset = marker + len(ICVP_BLOB_MARKER)
         payload_offset = length_offset + 4
-        if length_offset + 4 <= len(data):
-            payload_length = struct.unpack(">I", data[length_offset:payload_offset])[0]
-            payload = data[payload_offset : payload_offset + payload_length]
-            if len(payload) == payload_length and payload.startswith(b"bplist00"):
-                try:
-                    value = plistlib.loads(payload)
-                except plistlib.InvalidFileException:
-                    pass
-                else:
-                    if isinstance(value, dict):
-                        records.append(value)
+        if payload_offset > len(data):
+            raise ValueError("icvp blob length field is truncated")
+        payload_length = struct.unpack(">I", data[length_offset:payload_offset])[0]
+        payload = data[payload_offset : payload_offset + payload_length]
+        if len(payload) != payload_length:
+            raise ValueError("icvp blob payload is truncated")
+        if payload.startswith(b"bplist00"):
+            try:
+                value = plistlib.loads(payload)
+            except plistlib.InvalidFileException:
+                pass
+            else:
+                if isinstance(value, dict):
+                    records.append(value)
         cursor = marker + 1
 
 
