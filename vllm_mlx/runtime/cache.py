@@ -425,6 +425,19 @@ def _semantic_cache_identity(cfg, raw_model_name: str) -> str:
     return identity
 
 
+def pin_prefix_cache_identity(
+    engine, *, raw_model_name: str, checkpoint_source: str, kv_dtype: str
+) -> str:
+    """Pin cache identity before a loaded engine becomes concurrently visible."""
+    revision = _cached_model_revision(checkpoint_source)
+    identity = (
+        f"{raw_model_name}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
+        f"\0kv={kv_dtype}\0revision={revision}"
+    )
+    engine._rapid_mlx_prefix_cache_identity = identity
+    return identity
+
+
 def _file_identity(stat: os.stat_result) -> str:
     """Metadata identity that changes on content replacement.
 

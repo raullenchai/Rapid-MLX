@@ -55,7 +55,9 @@ def _load_lazy_and_install_disk_stream(
     model, tokenizer, config = load_model_with_fallback(
         model_name, tokenizer_config, lazy=True, return_config=True
     )
-    checkpoint_path = _resolve_model_path(model_name)
+    checkpoint_path = _resolve_model_path(
+        getattr(model, "_rapid_mlx_loaded_checkpoint_source", model_name)
+    )
     if checkpoint_path is None:
         raise ValueError(
             f"--disk-stream: could not resolve a local checkpoint path for "
@@ -1337,6 +1339,26 @@ class BatchedEngine(BaseEngine):
                 from ..gdn_in_proj_fusion import fuse_gdn_in_proj
 
                 self._model_load_executor.submit(fuse_gdn_in_proj, self._model).result()
+
+        # Capture persistence identity from the exact immutable snapshot
+        # selected by the loader before this engine is published through
+        # ServerConfig and concurrent cache load/save tasks can observe it.
+        # This is deliberately outside the eager branch so disk-stream engines
+        # receive the same single, immutable namespace.
+        from ..runtime.cache import pin_prefix_cache_identity
+
+        checkpoint_source = getattr(
+            self._model, "_rapid_mlx_loaded_checkpoint_source", self._model_name
+        )
+        kv_dtype = str(
+            getattr(self._scheduler_config, "kv_cache_dtype", None) or "bf16"
+        )
+        pin_prefix_cache_identity(
+            self,
+            raw_model_name=self._model_name,
+            checkpoint_source=checkpoint_source,
+            kv_dtype=kv_dtype,
+        )
 
         # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
         # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is

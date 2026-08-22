@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,7 +118,35 @@ def test_shared_loader_validates_before_dispatch(
             expected,
         )[1],
     )
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda model_name: None)
     monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda model_name: None)
 
     assert tokenizer.load_model_with_fallback("local-model") is expected
     assert events == [("validate", "local-model"), ("load", "local-model")]
+
+
+def test_shared_loader_pins_concrete_snapshot_on_loaded_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vllm_mlx.utils import tokenizer
+
+    snapshot = tmp_path / "snapshots" / "immutable-revision"
+    snapshot.mkdir(parents=True)
+    model = SimpleNamespace()
+    expected = (model, object())
+    loaded = []
+
+    monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+    monkeypatch.setattr(tokenizer, "_resolve_model_path", lambda name: snapshot)
+    monkeypatch.setattr(tokenizer, "validate_local_model_file", lambda name: None)
+    monkeypatch.setattr(tokenizer, "_model_requires_remote_code", lambda name: False)
+    monkeypatch.setattr(
+        tokenizer,
+        "_load_model_with_fallback_impl",
+        lambda name, tokenizer_config=None: (loaded.append(name), expected)[1],
+    )
+    monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda name: None)
+
+    assert tokenizer.load_model_with_fallback("org/model") is expected
+    assert loaded == [str(snapshot)]
+    assert model._rapid_mlx_loaded_checkpoint_source == str(snapshot)

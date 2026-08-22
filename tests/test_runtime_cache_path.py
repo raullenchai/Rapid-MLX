@@ -18,6 +18,7 @@ from vllm_mlx.runtime.cache import (
     _cached_model_revision,
     _resolved_model_source,
     get_cache_dir,
+    pin_prefix_cache_identity,
 )
 
 
@@ -132,6 +133,26 @@ def test_loaded_engine_pins_revision_identity_for_load_and_save():
         save_path = get_cache_dir()
     assert load_path == save_path
     revision.assert_called_once_with("org/model")
+
+
+def test_explicit_engine_pin_never_rereads_mutable_remote_ref():
+    engine = SimpleNamespace()
+    pin_prefix_cache_identity(
+        engine,
+        raw_model_name="org/model",
+        checkpoint_source="/cache/snapshots/immutable-revision",
+        kv_dtype="int8",
+    )
+    cfg = _patched_cfg("org/model", "int8")
+    cfg.engine = engine
+    with (
+        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch(
+            "vllm_mlx.runtime.cache._cached_model_revision",
+            side_effect=AssertionError("must use the pre-pinned identity"),
+        ),
+    ):
+        assert get_cache_dir() == get_cache_dir()
 
 
 def test_new_engine_recaptures_updated_revision_identity():

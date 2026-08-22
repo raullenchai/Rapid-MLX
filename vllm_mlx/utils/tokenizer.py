@@ -1143,6 +1143,14 @@ def load_model_with_fallback(
     # cache or an already-local path (see the helper).
     model_name = _local_snapshot_if_cached(model_name)
 
+    # Pin remote repositories to the concrete snapshot that THIS load will
+    # consume. Persisted KV identity must never be derived later from mutable
+    # refs/main state, which can advance while the server is running.
+    if not Path(model_name).is_dir():
+        resolved_snapshot = _resolve_model_path(model_name)
+        if resolved_snapshot is not None:
+            model_name = str(resolved_snapshot)
+
     # ``mlx_lm.load`` may import config.json::model_file.  Validate that
     # caller-supplied local path once at this shared boundary before any native
     # or fallback loader runs.  Remote repository ids are intentionally a no-op
@@ -1239,7 +1247,7 @@ def load_model_with_fallback(
         # branches would ever fire for a checkpoint this code path is
         # actually used for.
         _post_load_ubc_evict(model_name)
-        return result
+        return _annotate_loaded_checkpoint_source(result, model_name)
     if enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
@@ -1258,6 +1266,16 @@ def load_model_with_fallback(
     # mirror worth evicting after the inner loader succeeded.
     # No-op on non-Darwin.
     _post_load_ubc_evict(model_name)
+    return _annotate_loaded_checkpoint_source(result, model_name)
+
+
+def _annotate_loaded_checkpoint_source(result, source: str):
+    """Attach the immutable source selected by the shared loader."""
+    model = result[0]
+    try:
+        model._rapid_mlx_loaded_checkpoint_source = str(source)
+    except (AttributeError, TypeError):
+        pass
     return result
 
 
