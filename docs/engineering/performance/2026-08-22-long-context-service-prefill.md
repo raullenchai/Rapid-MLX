@@ -2,8 +2,10 @@
 
 ## Outcome
 
-Bench-verified Qwen3.5 4B and 9B profiles should use a 512-token prefill chunk
-by default in `rapid-mlx serve`. Against the previous 2,048-token default, this:
+Bench-verified text-model profiles should select their own prefill chunk in
+`rapid-mlx serve`: Qwen3.5 4B/9B 4-bit use 512; Qwen3.5 4B/9B 6/8-bit and
+27B 4-bit use 1,024. Against the previous universal
+2,048-token default, the original Qwen3.5 4B 4-bit result:
 
 - reduced a short request's TTFT under a concurrent long prefill by 51.1%;
 - reduced that short request's end-to-end latency by 64.4%;
@@ -142,18 +144,20 @@ agentic multi-prefix workloads rather than increasing the entry count blindly.
 ## Dense/sliding spot check
 
 Gemma 4 12B (`mlx-community/gemma-4-12B-it-4bit`) must use the mlx-vlm/Gemma
-loader; mlx-lm 0.31.3 rejects its `gemma4_unified` model type. A single-repeat
-scout through mlx-vlm 0.6.15 found that 512 was promising but not yet sufficient
-evidence for a global default:
+loader; mlx-lm 0.31.3 rejects its `gemma4_unified` model type. An initial
+single-repeat scout through mlx-vlm 0.6.15 found that 512 was promising:
 
 | Prompt | 2,048 tok/s | 512 tok/s | Delta | Peak-memory delta |
 | ---: | ---: | ---: | ---: | ---: |
 | 4K | 131.79 | 136.48 | +3.6% | -7.8% |
 | 16K | 125.38 | 130.12 | +3.8% | -13.3% |
 
-Follow up with repeated Rapid service concurrency runs before changing the
-dense/sliding default. The current implementation deliberately does not use the
-broader "needs bounded prefix reuse" classifier, so Gemma is unaffected.
+The later repeat-three direct-prefill matrix reproduced this result. It still
+does not justify a service default: on the multimodal path, the same setting is
+also the per-image admission budget. A 512 value can reject a token-dense image
+before generation. Gemma therefore remains at the MLLM default until the text
+chunk and image admission budget are separated, or repeated image-service tests
+prove a safe policy.
 
 ## Recurrent cross-model regression matrix
 
@@ -180,9 +184,55 @@ with meaningfully lower peak memory. The other architectures save varying
 amounts of memory but exceed the predeclared 3% throughput-regression limit.
 Therefore recurrent config detection is not a safe default selector. The
 runtime uses an explicit `recommended_prefill_step_size` profile field only on
-the measured Qwen3.5 4B/9B 4-bit aliases; other quantizations, Bonsai, LFM,
-MoE/hybrid, bare local paths, and future aliases keep the general 2,048 default
-until measured.
+the measured aliases only. Bonsai, LFM, MoE/hybrid, bare local paths, and future
+aliases keep the general 2,048 default until measured.
+
+## 512 / 1,024 / 2,048 profile expansion
+
+The follow-up added 1,024 as a candidate and repeated every cell three times.
+Qwen rows ran on the M3 Ultra 256 GB Studio with MLX 0.32.1 and mlx-lm 0.31.3;
+Gemma ran on the M2 Pro 32 GB mini with MLX 0.32.1 and mlx-vlm 0.6.15. The
+decision rule remained: reject any candidate with a median throughput regression
+greater than 3% at either 4K or 16K, then prefer the smallest remaining chunk.
+
+| Model | Direct winner | Deployed default | 4K throughput vs 2,048 | 16K throughput vs 2,048 | 4K memory | 16K memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.5 4B 6-bit | 1,024 | 1,024 | -1.2% | -2.3% | -10.7% | -7.8% |
+| Qwen3.5 4B 8-bit | 1,024 | 1,024 | -1.9% | -2.5% | -9.0% | -6.7% |
+| Qwen3.5 9B 6-bit | 1,024 | 1,024 | -0.8% | -1.2% | -7.0% | -10.1% |
+| Qwen3.5 9B 8-bit | 1,024 | 1,024 | -1.2% | -1.6% | -5.1% | -7.8% |
+| Qwen3.5 27B 4-bit | 1,024 | 1,024 | -0.6% | -0.5% | -6.6% | -8.9% |
+| Gemma 4 12B 4-bit | 512 | MLLM default | +3.3% | +3.8% | -7.8% | -13.3% |
+
+For the four 6/8-bit Qwen aliases, 512 regressed throughput by 3.9--7.5%, so
+1,024 is not merely a midpoint: it is the smallest candidate that stays within
+the regression budget. Qwen3.5 27B at 512 was acceptable at 4K (-2.5%) but
+missed at 16K (-3.3%), so it also uses 1,024. Gemma's repeat-three result
+confirmed the earlier scout, but is not deployed because the MLLM admission
+budget currently shares this setting.
+
+### Desktop/GUI consumption audit
+
+Rapid Desktop starts the bundled sidecar as `rapid-mlx serve <alias>` and does
+not pass `--prefill-step-size` by default. Therefore the CLI resolves these
+profile recommendations for GUI launches automatically. `ModelPerfConfig` is
+sparse: an untouched GUI passes no performance override, while a future or
+explicit user flag remains higher priority than the profile recommendation.
+
+The broader per-model profiling work is only partially visible in the GUI:
+
+- backend profile decisions such as prefill, PFlash/TurboQuant tiers, parsers,
+  and hybrid/MoE safety gates apply automatically to GUI-started servers;
+- the GUI directly consumes recommended sampling, parser/context metadata,
+  speculative presets, and the shared RAM-tier recommendation catalog; but
+- benchmark evidence and `recommended_prefill_step_size` are not currently in
+  the desktop's `ServerModelProfile` DTO, so the optimization runs but the UI
+  cannot yet explain the selected chunk or its evidence.
+
+This is a visibility/SSOT presentation gap, not a runtime-application gap. A
+future desktop change should surface the server's effective prefill value and
+source (`user`, `profile`, or global default) instead of copying the resolver
+or hard-coding alias values in Swift.
 
 ## Artifacts
 
@@ -213,6 +263,25 @@ SHA-256 checksums:
 - Qwen3.5 35B-A3B 2,048 / 512 repeat-three:
   `d6b2459883bf0ce3a1a52d2cf8624f23315b7c9be5c47218286ba6977a4293a2`,
   `35846b1024bc3ab2c5488c50ed96638b33a32c409fe252f1f44bebc0682a5ce0`
+- Profile-expansion artifacts (each list is 2,048 / 1,024 / 512):
+  - Qwen3.5 4B 6-bit: `ea6d2144f0bd72e600230427536d4cea231ef84eca10d60fc005d357c9e8bf5d`,
+    `9b187251b720569b9f4baa26eb8121082b0cfca3f4465e9635a1eaa1ee5e0323`,
+    `aa257c27c642f659171ce30f17355ea1fe66c553b9bcbda1424c5333d83c03ca`
+  - Qwen3.5 4B 8-bit: `a1252c300b7c0eef027215263ef4a4175c9237e30f87235a0896f2dc93184714`,
+    `a7e8e713e12d655599b4a069389518c87d875dbd6df51db67795fd13852bce55`,
+    `ce913140ac990420a1a9aa0bca3de4bd642ae50d9b9df3a92dc4069139a23d5e`
+  - Qwen3.5 9B 6-bit: `fbd88aacd479979dada08181caeccb56ec4aa6e449b1d4d53b427b905db49b39`,
+    `47f50a708c3dcdd2397e94f3042d9e350705d18754aed102e4fd41b872206090`,
+    `b2883c95a149436af905177baae346e35fef0ac262c3ff4e320c9093ad24c231`
+  - Qwen3.5 9B 8-bit: `6e139d97b6330143cb2d33f67f51c7b7f93a76b099476359a53dd897531d799a`,
+    `25f32641ee0f934b70dd56ba1813aebc67b87a194ca15ef99eb8a3e5c706d494`,
+    `88d510221f03163ad02c449668d1cc00179e6d8fd635e8eb247fc8a2b8ed90f9`
+  - Qwen3.5 27B 4-bit: `9c8b934669dd96651eeb2b0af3f9a0190b3bc56c811d47c90c91565162f3fd5d`,
+    `6cb4a8f248c686ac368941de1b09277d164af6a7df6ba55dce0cd15f8f208ea3`,
+    `7bcdc194432e32262a39e9920eb81592d0967d3eab3a3ae39e043918efbd1c37`
+  - Gemma 4 12B 4-bit: `0746e72887f8c98ed31aa9ae2ae67cfd1ab9426f9765f39fcd9d5566f4c42c4b`,
+    `d785ba5338924836125db5524f4619cd8fc3cd96b187864989d64b3c59694e29`,
+    `a587b3b7833f5cc7c6f2ba82e16952f8543c665354c84872f61f7aa84dfa7128`
 
 ## Recommendation and next work
 

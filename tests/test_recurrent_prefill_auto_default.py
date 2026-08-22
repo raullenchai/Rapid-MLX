@@ -111,7 +111,7 @@ def test_bare_linear_attention_checkpoint_keeps_general_default(monkeypatch):
     )
 
 
-def test_only_bench_verified_qwen_profiles_opt_in():
+def test_only_bench_verified_profiles_opt_in():
     for alias in (
         "qwen3.5-4b-4bit",
         "qwen3.5-9b-4bit",
@@ -119,14 +119,27 @@ def test_only_bench_verified_qwen_profiles_opt_in():
         assert resolve_profile(alias).recommended_prefill_step_size == 512
 
     for alias in (
-        "qwen3.5-27b-4bit",
-        "qwen3.5-35b-4bit",
         "qwen3.5-4b-6bit",
         "qwen3.5-4b-8bit",
         "qwen3.5-9b-6bit",
         "qwen3.5-9b-8bit",
+        "qwen3.5-27b-4bit",
     ):
+        assert resolve_profile(alias).recommended_prefill_step_size == 1024
+
+    for alias in ("qwen3.5-35b-4bit", "gemma-4-12b-4bit"):
         assert resolve_profile(alias).recommended_prefill_step_size is None
+
+
+def test_real_profile_recommendations_reach_runtime_resolver():
+    assert (
+        cli._resolve_prefill_step_size(
+            model_name="qwen3.5-4b-6bit",
+            configured=2048,
+            user_set_explicit=False,
+        )
+        == 1024
+    )
 
 
 def test_prefill_help_describes_profile_scoped_recommendation():
