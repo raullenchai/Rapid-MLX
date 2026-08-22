@@ -156,6 +156,9 @@ jobs:
       - name: GUI preflight contract
         run: pytest tests/test_gui_preflight_contract.py -q
 
+      - name: GUI golden-flow coverage contract
+        run: pytest tests/test_gui_golden_ci_coverage.py -q
+
       - name: Fake sidecar catalog contract
         run: pytest tests/test_fake_sidecar_image_catalog.py -q
 
@@ -465,6 +468,12 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-document-attachment
 
+      - name: 'Golden flow: chat-multimodal-attachments'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow chat-multimodal-attachments
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
+
       - name: 'Golden flow: update-state'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow update-state
@@ -503,7 +512,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GOLDEN_ROOT"])
-          expected = 28
+          expected = 29
           results = sorted(root.glob("*/result.json"))
           failures = []
           for path in results:
