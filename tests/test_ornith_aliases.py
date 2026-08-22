@@ -127,6 +127,12 @@ def test_ornith_parent_directory_does_not_hijack_unrelated_checkpoint():
     assert cfg.supports_spec_decode is True
 
 
+def test_ornith_prefix_collision_does_not_match_family_fallback():
+    """Words beginning with ``ornith`` are not Ornith-1.5 checkpoints."""
+    assert detect_model_config("community/ornithology-9b") is None
+    assert detect_model_config("community/ornithopter-35b-a3b") is None
+
+
 # ---- cross-check: hf_path markers match the JSON flags -----------------
 
 

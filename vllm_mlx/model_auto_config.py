@@ -322,7 +322,10 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # use hermes tool + qwen3 reasoning parsers. ``supports_spec_decode``
     # is False family-wide (GatedDeltaNet rules out self-spec).
     (
-        re.compile(r"(?:^|[/\\])ornith[^/\\]*(35b|a3b|moe)[^/\\]*$", re.IGNORECASE),
+        re.compile(
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*(35b|a3b|moe)[^/\\]*$",
+            re.IGNORECASE,
+        ),
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="qwen3",
@@ -332,7 +335,10 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ),
     ),
     (
-        re.compile(r"(?:^|[/\\])ornith[^/\\]*(9b|dense)[^/\\]*$", re.IGNORECASE),
+        re.compile(
+            r"(?:^|[/\\])ornith[-_.]1[-_.]5[^/\\]*(9b|dense)[^/\\]*$",
+            re.IGNORECASE,
+        ),
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="qwen3",
