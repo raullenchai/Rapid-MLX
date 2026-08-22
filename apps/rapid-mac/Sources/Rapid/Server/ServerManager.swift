@@ -1671,20 +1671,11 @@ final class ServerManager {
         // first-use load. The server/CLI keeps its throughput-first auto
         // routing; only the process spawned by the GUI opts into the complete
         // MLLM lane. Text-only aliases retain their existing launch shape.
-        let catalogEntry = await ModelCatalogCache.shared.entries(
-            binary: binary,
-            generation: downloads?.cacheGeneration ?? 0
-        ).first { $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame }
-        // `entries` may fork `models`/`ls` and suspend. A quit during those
-        // probes must not resume into `process.run()` after AppKit teardown.
-        if didSignalShutdown || Task.isCancelled {
-            isOperating = false
-            return
-        }
         var extraFlags = Self.desktopCapabilityFlags(
             forAlias: trimmedAlias,
-            isBuiltinProfile: catalogEntry?.isBuiltinProfile,
-            isTextOnly: catalogEntry?.isTextOnly,
+            supportsImageInput: ModelCatalogCache.supportsImageInput(
+                forAlias: trimmedAlias, binary: binary
+            ),
             existing: performanceFlags
         )
         extraFlags.append(contentsOf: [
@@ -2876,15 +2867,10 @@ final class ServerManager {
     /// be regression-tested without spawning the bundled runtime.
     nonisolated internal static func desktopCapabilityFlags(
         forAlias alias: String,
-        isBuiltinProfile: Bool? = nil,
-        isTextOnly: Bool? = nil,
+        supportsImageInput: Bool = false,
         existing: [String]
     ) -> [String] {
-        guard ModelBrandStyle.supportsImageInput(
-            forAlias: alias,
-            isBuiltinProfile: isBuiltinProfile,
-            isTextOnly: isTextOnly
-        ) else {
+        guard supportsImageInput else {
             return existing
         }
 

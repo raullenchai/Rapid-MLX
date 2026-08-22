@@ -698,7 +698,9 @@ struct ContentView: View {
     }
 
     private func supportsImageInput(for alias: String) -> Bool {
-        let entry = catalogEntries.first { $0.alias == alias }
+        let entry = catalogEntries.first {
+            $0.alias.caseInsensitiveCompare(alias) == .orderedSame
+        }
         return ModelBrandStyle.supportsImageInput(
             forAlias: alias,
             isBuiltinProfile: entry?.isBuiltinProfile,

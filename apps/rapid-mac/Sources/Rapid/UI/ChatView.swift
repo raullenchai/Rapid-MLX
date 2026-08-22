@@ -429,14 +429,16 @@ struct ChatView: View {
                             return viewModel.editUserMessage(
                                 id: message.id,
                                 newContent: newContent,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         onRetry: {
                             guard acknowledgeIfNotReady() else { return false }
                             return viewModel.retryAssistantMessage(
                                 id: message.id,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         // Retry re-enters ``send``, so it answers to the same

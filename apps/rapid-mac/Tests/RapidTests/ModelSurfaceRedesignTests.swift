@@ -102,6 +102,31 @@ struct ModelSurfaceRedesignTests {
         ))
     }
 
+    @Test("composer actions and restored retries share catalog capability")
+    func imageCapabilityWiringIsEndToEnd() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/UI/ChatView.swift"
+        ))
+        let model = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Chat/ChatViewModel.swift"
+        ))
+        let server = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Server/ServerManager.swift"
+        ))
+        #expect(view.components(separatedBy: "supportsImageInput: supportsImageInput").count >= 4)
+        #expect(model.contains("func regenerateLast(alias: String, supportsImageInput: Bool? = nil)"))
+        #expect(model.contains("func retryAssistantMessage(\n        id: UUID,\n        alias: String,\n        supportsImageInput: Bool? = nil"))
+        #expect(!model.contains("imageCapabilityByAlias"),
+                "restored conversations must not depend on transient per-send state")
+        #expect(server.contains("ModelCatalogCache.supportsImageInput("))
+        #expect(!server.contains("let catalogEntry = await ModelCatalogCache.shared.entries"),
+                "spawn policy must not add an uncancellable catalog probe")
+    }
+
     // MARK: - ModelBrandStyle.displayFamily
 
     @Test("displayFamily: overrides the two aliases ModelInfoCatalog calls Unknown")

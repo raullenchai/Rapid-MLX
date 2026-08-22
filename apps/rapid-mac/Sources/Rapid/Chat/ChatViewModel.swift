@@ -789,7 +789,6 @@ final class ChatViewModel {
 
         let resolvedImageCapability = supportsImageInput
             ?? ModelBrandStyle.supportsImageInput(forAlias: alias)
-        imageCapabilityByAlias[alias] = resolvedImageCapability
         beginAssistantTurn(
             alias: alias,
             supportsImageInput: resolvedImageCapability,
@@ -806,8 +805,6 @@ final class ChatViewModel {
     /// duplicate prompt, making it a sibling of the original *question* rather
     /// than of the original *answer*, and the `‹ n/m ›` control would never
     /// see the two answers as alternatives at all.
-    private var imageCapabilityByAlias: [String: Bool] = [:]
-
     private func beginAssistantTurn(
         alias: String,
         supportsImageInput: Bool,
@@ -1536,7 +1533,8 @@ final class ChatViewModel {
     func editUserMessage(
         id: UUID,
         newContent: String,
-        alias: String
+        alias: String,
+        supportsImageInput: Bool? = nil
     ) -> Bool {
         guard !isStreaming else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
@@ -1550,7 +1548,7 @@ final class ChatViewModel {
         send(
             trimmed,
             alias: alias,
-            supportsImageInput: imageCapabilityByAlias[alias],
+            supportsImageInput: supportsImageInput,
             imageAttachments: imageAttachments,
             fileAttachments: fileAttachments
         )
@@ -1565,7 +1563,11 @@ final class ChatViewModel {
     /// a true sibling of the one being replaced. Rewinding past the prompt and
     /// re-sending its text instead would append a duplicate prompt, and the
     /// two answers would end up in different branches entirely.
-    private func regenerateAnswer(afterUserAt userIndex: Int, alias: String) {
+    private func regenerateAnswer(
+        afterUserAt userIndex: Int,
+        alias: String,
+        supportsImageInput: Bool? = nil
+    ) {
         guard !isStreaming, messages.indices.contains(userIndex) else { return }
         let userMessage = messages[userIndex]
         guard !userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1582,7 +1584,8 @@ final class ChatViewModel {
         )
         beginAssistantTurn(
             alias: alias,
-            supportsImageInput: imageCapabilityByAlias[alias] ?? false,
+            supportsImageInput: supportsImageInput
+                ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: server?.binaryPath),
             forcedWebSearchQuery: forcedTool == "web_search"
                 ? Self.webSearchQuery(for: userMessage.content, priorMessages: messages)
                 : nil
@@ -1595,10 +1598,14 @@ final class ChatViewModel {
     ///
     /// The replaced answer is kept as a sibling, not discarded — see
     /// ``rewindPath(to:)``.
-    func regenerateLast(alias: String) {
+    func regenerateLast(alias: String, supportsImageInput: Bool? = nil) {
         guard !isStreaming else { return }
         guard let lastUserIndex = messages.lastIndex(where: { $0.role == .user }) else { return }
-        regenerateAnswer(afterUserAt: lastUserIndex, alias: alias)
+        regenerateAnswer(
+            afterUserAt: lastUserIndex,
+            alias: alias,
+            supportsImageInput: supportsImageInput
+        )
     }
 
     /// Retry the turn that produced a specific assistant message. This is
@@ -1606,7 +1613,11 @@ final class ChatViewModel {
     /// to the user prompt immediately before it instead of regenerating the
     /// latest turn by accident.
     @discardableResult
-    func retryAssistantMessage(id: UUID, alias: String) -> Bool {
+    func retryAssistantMessage(
+        id: UUID,
+        alias: String,
+        supportsImageInput: Bool? = nil
+    ) -> Bool {
         guard !isStreaming else { return false }
         guard let assistantIndex = messages.firstIndex(where: {
             $0.id == id && $0.role == .assistant
@@ -1624,7 +1635,11 @@ final class ChatViewModel {
         // In place, on the SAME conversation id — see ``editUserMessage``
         // for why the old fork-into-a-separate-chat behaviour was removed.
         // The retried answer and its replacement become siblings.
-        regenerateAnswer(afterUserAt: userIndex, alias: alias)
+        regenerateAnswer(
+            afterUserAt: userIndex,
+            alias: alias,
+            supportsImageInput: supportsImageInput
+        )
         return true
     }
 
@@ -1845,7 +1860,12 @@ final class ChatViewModel {
                 return
             }
         }
-        regenerateLast(alias: trimmed)
+        regenerateLast(
+            alias: trimmed,
+            supportsImageInput: ModelCatalogCache.supportsImageInput(
+                forAlias: trimmed, binary: server?.binaryPath
+            )
+        )
     }
 
     // MARK: - Tool round-trip loop
