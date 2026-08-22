@@ -83,6 +83,7 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-122b-mxfp4") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-4bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-27b-mtp-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-mtp-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.8-27b-4bit") == .vision)

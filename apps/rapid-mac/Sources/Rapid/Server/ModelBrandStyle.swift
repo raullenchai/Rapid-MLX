@@ -113,6 +113,7 @@ enum ModelBrandStyle {
         let a = alias.lowercased()
         if a == "qwen3.5-4b-4bit"
             || a == "qwen3.5-122b-mxfp4"
+            || a == "qwen3.6-35b"
             || a == "qwen3.6-27b-mtp-4bit"
             || a == "qwen3.6-35b-mtp-4bit"
             || a.contains("gemma3-1b") { return .chat }
