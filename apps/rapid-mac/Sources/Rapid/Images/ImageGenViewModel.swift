@@ -168,9 +168,19 @@ final class ImageGenViewModel {
 
     private let client = ImageClient()
     private let server: ServerManager
+    @ObservationIgnored
+    private let catalogLoader: (URL) async -> [ModelEntry]
+    @ObservationIgnored
+    private var catalogRefreshGeneration: UInt = 0
 
-    init(server: ServerManager) {
+    init(
+        server: ServerManager,
+        catalogLoader: @escaping (URL) async -> [ModelEntry] = {
+            await ModelCatalog.imageEntries(binary: $0)
+        }
+    ) {
         self.server = server
+        self.catalogLoader = catalogLoader
     }
 
     var canSubmit: Bool {
@@ -197,7 +207,12 @@ final class ImageGenViewModel {
     /// Load the image-gen alias catalog (safe to call repeatedly).
     func refreshCatalog() async {
         guard let binary = server.binaryPath else { return }
-        imageModels = await ModelCatalog.imageEntries(binary: binary)
+        catalogRefreshGeneration &+= 1
+        let refreshGeneration = catalogRefreshGeneration
+        let loaded = await catalogLoader(binary)
+        guard !Task.isCancelled,
+              refreshGeneration == catalogRefreshGeneration else { return }
+        imageModels = loaded
         catalogLoaded = true
         resolveAlias()
     }

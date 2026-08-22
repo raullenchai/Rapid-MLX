@@ -4,6 +4,20 @@ import Testing
 
 @Suite("Image generation resolution")
 struct ImageGenerationResolutionTests {
+    @MainActor
+    private final class ControlledCatalogLoader {
+        private var continuations: [CheckedContinuation<[ModelEntry], Never>] = []
+        var requestCount: Int { continuations.count }
+
+        func load(_: URL) async -> [ModelEntry] {
+            await withCheckedContinuation { continuations.append($0) }
+        }
+
+        func finish(_ index: Int, with entries: [ModelEntry]) {
+            continuations[index].resume(returning: entries)
+        }
+    }
+
     private static var packageRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -24,6 +38,36 @@ struct ImageGenerationResolutionTests {
         #expect(view.contains("residencyEligible: false"))
         #expect(model.components(separatedBy: "residencyEligible: false").count - 1 == 2,
                 "Both generation and editing must use the modal process-swap path.")
+    }
+
+    @Test("A cancelled older catalog refresh cannot overwrite the newest result")
+    @MainActor
+    func overlappingCatalogRefreshesKeepNewestResult() async {
+        let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")
+        let server = ServerManager(testingState: .idle, binaryPath: binary)
+        let loader = ControlledCatalogLoader()
+        let viewModel = ImageGenViewModel(server: server, catalogLoader: loader.load)
+        let fresh = ModelEntry(
+            alias: "fresh-image", hfRepo: "example/fresh", sizeOnDisk: "1 GiB",
+            cached: true, kind: .image, imageCapability: .generation
+        )
+
+        let older = Task { await viewModel.refreshCatalog() }
+        while loader.requestCount < 1 { await Task.yield() }
+        older.cancel()
+        let newer = Task { await viewModel.refreshCatalog() }
+        while loader.requestCount < 2 { await Task.yield() }
+
+        loader.finish(1, with: [fresh])
+        await newer.value
+        #expect(viewModel.imageModels.map(\.alias) == ["fresh-image"])
+
+        // The cancelled subprocess may still unwind later with an empty or
+        // partial result. It must not commit after the newer generation.
+        loader.finish(0, with: [])
+        await older.value
+        #expect(viewModel.imageModels.map(\.alias) == ["fresh-image"])
+        #expect(viewModel.catalogLoaded)
     }
 
     @Test("Image starters wrap instead of clipping in a horizontal rail")
