@@ -435,6 +435,22 @@ struct DownloadManagerTests {
 @Suite("DownloadStrip — phase caption formatting")
 struct DownloadStripCaptionTests {
 
+    @Test("A completed resident job is removed while its row is hidden")
+    func completedResidentCleanupDoesNotResurface() {
+        let downloads = DownloadManager()
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        #expect(downloads.job(for: "image-model")?.status == .completed)
+
+        let resident = DownloadStrip.completedResidentAliases(
+            jobs: downloads.jobs,
+            isResident: { $0 == "image-model" }
+        )
+        #expect(resident == ["image-model"])
+        resident.forEach { downloads.dismissJob(alias: $0) }
+        #expect(downloads.job(for: "image-model") == nil)
+    }
+
     @Test("Idle phase reads as 'Starting…' — the strip never shows raw enum names")
     func idleReadsAsStarting() {
         #expect(DownloadStrip.detail(phase: .idle) == "Starting…")

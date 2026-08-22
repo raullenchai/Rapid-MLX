@@ -60,23 +60,55 @@ struct DownloadStrip: View {
             .map { $0.0 }
     }
 
+    private var completedCleanupKey: String {
+        downloads.jobs.values.compactMap { job -> String? in
+            guard case .completed = job.status else { return nil }
+            return "\(job.alias):\(isResident(job.alias) ? "resident" : "cached")"
+        }.sorted().joined(separator: "|")
+    }
+
+    static func completedResidentAliases(
+        jobs: [String: DownloadManager.Job],
+        isResident: (String) -> Bool
+    ) -> [String] {
+        jobs.values.compactMap { job in
+            guard case .completed = job.status, isResident(job.alias) else { return nil }
+            return job.alias
+        }.sorted()
+    }
+
     var body: some View {
-        if !orderedJobs.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(orderedJobs) { job in
-                    jobRow(job)
-                        .task(id: terminalDismissKey(for: job)) {
-                            guard case .completed = job.status else { return }
-                            try? await Task.sleep(for: .seconds(8))
-                            guard !Task.isCancelled else { return }
-                            downloads.dismissJob(alias: job.alias)
-                        }
+        Group {
+            if !orderedJobs.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(orderedJobs) { job in jobRow(job) }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 6)
+                .background(.bar)
+                .overlay(Divider(), alignment: .bottom)
+            }
+        }
+        .task(id: completedCleanupKey) {
+            let completed = downloads.jobs.values.compactMap { job -> String? in
+                guard case .completed = job.status else { return nil }
+                return job.alias
+            }
+            for alias in Self.completedResidentAliases(
+                jobs: downloads.jobs,
+                isResident: isResident
+            ) {
+                downloads.dismissJob(alias: alias)
+            }
+            let delayed = completed.filter { !isResident($0) }
+            guard !delayed.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            for alias in delayed {
+                if case .completed = downloads.job(for: alias)?.status {
+                    downloads.dismissJob(alias: alias)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 6)
-            .background(.bar)
-            .overlay(Divider(), alignment: .bottom)
         }
     }
 
@@ -262,12 +294,4 @@ struct DownloadStrip: View {
         }
     }
 
-    private func terminalDismissKey(for job: DownloadManager.Job) -> String {
-        switch job.status {
-        case .completed: return "\(job.alias):completed"
-        case .cancelled: return "\(job.alias):cancelled"
-        case .failed: return "\(job.alias):failed"
-        case .running: return "\(job.alias):running"
-        }
-    }
 }
