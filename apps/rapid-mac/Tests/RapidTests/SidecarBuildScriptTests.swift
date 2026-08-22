@@ -68,6 +68,19 @@ struct SidecarBuildScriptTests {
                 "Post-install validation must reject incompatible installed dependency versions.")
     }
 
+    @Test("Desktop MLX wheels target the app's minimum macOS")
+    func mlxWheelsMatchDeploymentTarget() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+
+        #expect(script.contains("--platform macosx_14_0_arm64"),
+                "A newer build host must not make the sidecar require that host's macOS.")
+        #expect(script.contains("^Tag: .*macosx_14_0_arm64$"),
+                "The build must fail closed if pip does not install the requested compatible wheels.")
+        #expect(script.contains(#""mlx==${MLX_VERSION}""#))
+        #expect(script.contains(#""mlx-metal==${MLX_METAL_VERSION}""#),
+                "Core and metallib wheels must be replaced as one matched pair.")
+    }
+
     @Test("Desktop image stack is pinned and its torch-free proof fails closed")
     func imageStackIsPinnedAndProvenTorchFree() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)

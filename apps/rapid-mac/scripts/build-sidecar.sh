@@ -256,6 +256,41 @@ fi
     "${RAPID_MLX_SOURCE}[audio-desktop]" \
     'transformers>=5.5.0,<5.13'
 
+# pip normally selects wheels for the BUILD host. A sidecar assembled on
+# macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
+# the Desktop app's deployment target is macOS 14. Moving that otherwise
+# valid app to a macOS 14/15 Mac then fails at the first Metal operation with
+# "metallib language version 4.0 is not supported on this OS". Reinstall the
+# exact versions selected above from their macOS 14 wheels: those wheels run
+# on newer systems too, making the packaged runtime match the app contract.
+MLX_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx"))')"
+MLX_METAL_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx-metal"))')"
+echo "==> pinning MLX wheels to Desktop's macOS 14 deployment target"
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --platform macosx_14_0_arm64 \
+    --only-binary=:all: \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    --upgrade \
+    --force-reinstall \
+    "mlx==${MLX_VERSION}" \
+    "mlx-metal==${MLX_METAL_VERSION}"
+
+for wheel in \
+    "$STAGE/site-packages/mlx-${MLX_VERSION}.dist-info/WHEEL" \
+    "$STAGE/site-packages/mlx_metal-${MLX_METAL_VERSION}.dist-info/WHEEL"; do
+    grep -q '^Tag: .*macosx_14_0_arm64$' "$wheel" || {
+        echo "ERR: Desktop sidecar resolved a non-macOS-14 MLX wheel: $wheel" >&2
+        exit 1
+    }
+done
+
 # ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
 #
 # Even though we skip the [vision] extras to stay under rapid-desktop's
