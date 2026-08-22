@@ -449,6 +449,14 @@ final class ChatViewModel {
         inflight = nil
         backgroundAssist?.cancel()
         backgroundAssist = nil
+        // The rail belongs to the assist, so it is torn down with it. Keeping
+        // this here rather than at the call sites is the same argument the
+        // helper was created for, and the same bug: of the six sites, three
+        // remembered to put the rail away and three did not. A cancelled
+        // assist exits without publishing, so nothing downstream clears the
+        // anchor — and `ChatView` mounts the rail on the anchor alone, at a
+        // fixed height whatever it shows.
+        clearFollowUps()
     }
 
     /// A settled assistant answer worth building on.
@@ -826,7 +834,6 @@ final class ChatViewModel {
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
         cancelInflightWork()
-        clearFollowUps()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
         // is what gets persisted and a mid-stream switch doesn't leave the
@@ -854,7 +861,6 @@ final class ChatViewModel {
         // still active, re-inserting the conversation we just removed.
         if id == activeConversationID {
             cancelInflightWork()
-            clearFollowUps()
             conversationEpoch &+= 1
             messages.removeAll()
             branchedAway.removeAll()
@@ -1011,7 +1017,6 @@ final class ChatViewModel {
     /// error banner. The in-flight stream (if any) is cancelled first.
     func newConversation() {
         cancelInflightWork()
-        clearFollowUps()
         conversationEpoch &+= 1
         // Fix: without this a New Chat during a stream leaves the empty
         // chat stuck showing Stop (isStreaming never reset). Setting it
@@ -1091,7 +1096,6 @@ final class ChatViewModel {
         // has moved on, and on the serialised vision lane it would be sitting
         // in front of the turn they just asked for.
         cancelInflightWork()
-        followUp = .idle
 
         let user = ChatMessage(
             role: .user,

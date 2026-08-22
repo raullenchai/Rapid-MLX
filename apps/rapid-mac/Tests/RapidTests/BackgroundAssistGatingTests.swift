@@ -351,6 +351,43 @@ struct BackgroundAssistGatingTests {
         #expect(model.followUp == .idle)
         #expect(model.followUpAnchorID == nil)
     }
+
+    // MARK: - Cancellation
+
+    /// Cancelling the assist has to put the rail away *synchronously*.
+    ///
+    /// A cancelled assist exits without publishing, so nothing downstream
+    /// clears the anchor — and ``ChatView`` mounts the rail on the anchor
+    /// alone, at a fixed height whatever it shows. The task's own
+    /// continuation does clear it, but only once it gets to run, and
+    /// ``stop()`` never cleared it at all.
+    ///
+    /// The routes are listed rather than folded into one case because the
+    /// defect was that three of the six cancellation sites remembered to put
+    /// the rail away and three did not — which a single-route test cannot
+    /// see.
+    @Test("Cancelling puts the rail away", arguments: [
+        "stop", "stopAndPersist", "newConversation",
+    ])
+    func cancellingClearsTheRail(_ route: String) {
+        let model = ChatViewModel()
+        let last = answer()
+        model.devSeedMessages([ask, last])
+        model.publishFollowUps("A one?\nB two?\nC three?", anchoredTo: last.id, excluding: "")
+        // The premise: there is a rail to strand. Without it the assertions
+        // below would hold on a model that never had one.
+        #expect(model.followUp == .ready(["A one?", "B two?", "C three?"]))
+        #expect(model.followUpAnchorID == last.id)
+
+        switch route {
+        case "stop": model.stop()
+        case "stopAndPersist": model.stopAndPersist()
+        default: model.newConversation()
+        }
+
+        #expect(model.followUp == .idle, "\(route) left the rail showing")
+        #expect(model.followUpAnchorID == nil, "\(route) left the anchor set")
+    }
 }
 
 /// Shape rules a SwiftUI body cannot be asked about from this target
