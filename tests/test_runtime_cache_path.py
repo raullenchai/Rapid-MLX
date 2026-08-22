@@ -11,24 +11,36 @@ don't permit ``..``.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vllm_mlx.runtime.cache import get_cache_dir
 
 
-def _patched_cfg(name: str):
+def _patched_cfg(name: str, kv_cache_dtype: str = "bf16"):
     """Stub config object with model_path/model_name set for the test."""
 
-    class _Cfg:
-        model_path = None
-        model_name = name
-        engine = None
-
-    return _Cfg()
+    return SimpleNamespace(
+        model_path=None,
+        model_name=name,
+        engine=None,
+        kv_cache_dtype=kv_cache_dtype,
+    )
 
 
 def _resolve(name: str) -> str:
     with patch("vllm_mlx.runtime.cache.get_config", return_value=_patched_cfg(name)):
+        return os.path.realpath(get_cache_dir())
+
+
+def _resolve_with_dtype(name: str, dtype: str) -> str:
+    with (
+        patch(
+            "vllm_mlx.runtime.cache.get_config",
+            return_value=_patched_cfg(name, dtype),
+        ),
+        patch("vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
+    ):
         return os.path.realpath(get_cache_dir())
 
 
@@ -60,6 +72,26 @@ def test_distinct_models_get_distinct_dirs_even_when_sanitized_clash():
     # Both leaves should still START with the same sanitized prefix.
     assert os.path.basename(p_slash).startswith("a--b--")
     assert os.path.basename(p_dash).startswith("a--b--")
+
+
+def test_distinct_kv_dtypes_get_distinct_cache_dirs():
+    assert _resolve_with_dtype("org/model", "bf16") != _resolve_with_dtype(
+        "org/model", "int8"
+    )
+
+
+def test_distinct_model_revisions_get_distinct_cache_dirs():
+    cfg = _patched_cfg("org/model", "int8")
+    with patch("vllm_mlx.runtime.cache.get_config", return_value=cfg):
+        with patch(
+            "vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"
+        ):
+            first = get_cache_dir()
+        with patch(
+            "vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-b"
+        ):
+            second = get_cache_dir()
+    assert first != second
 
 
 def test_traversal_double_dot_does_not_escape_root():

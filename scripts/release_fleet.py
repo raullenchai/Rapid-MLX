@@ -28,6 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# A direct ``python scripts/release_fleet.py`` puts ``scripts/`` rather than
+# the checkout root on sys.path. The documented release command must work from
+# a bare checkout without requiring an editable install or manual PYTHONPATH.
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
+if str(_CHECKOUT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_CHECKOUT_ROOT))
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility

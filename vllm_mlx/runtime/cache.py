@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import time
+from pathlib import Path
 
 from ..config import get_config
 
@@ -35,6 +36,12 @@ _DEFAULT_SHUTDOWN_BUDGET_SEC = 3.5
 # entry-count fixtures + leaves ~600 ms of slack under a 5 s SIGTERM
 # grace for ``engine.stop()`` and uvicorn teardown.
 _COMMIT_HEADROOM_SEC = 0.4
+
+# Bump whenever persisted KV semantics change in a way the safetensors schema
+# alone cannot detect. Version 2 closes a release-blocking corruption found by
+# the v0.12.19 dogfood: a cache written for an older checkpoint / KV dtype was
+# structurally loadable but produced token-id-0-style garbage after restart.
+_PREFIX_CACHE_NAMESPACE_VERSION = 2
 
 
 def _shutdown_budget_sec() -> float:
@@ -327,7 +334,16 @@ def get_cache_dir() -> str:
     ) or "default"
     # 8 hex chars of SHA-256 — 32 bits, collision-resistant for the
     # tens-of-models-per-user scale we'd ever see in practice.
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    # Persisted KV tensors are reusable only for the exact model revision and
+    # effective KV dtype that produced them. Tensor shape/type validation cannot
+    # prove that semantic identity, so keep those axes in the directory key.
+    kv_dtype = str(getattr(cfg, "kv_cache_dtype", None) or "bf16")
+    revision = _cached_model_revision(raw)
+    identity = (
+        f"{raw}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
+        f"\0kv={kv_dtype}\0revision={revision}"
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
     leaf = f"{safe_name}--{digest}"
     # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
     # best-effort and silently rebuilds, so the moved location just costs a
@@ -336,3 +352,26 @@ def get_cache_dir() -> str:
     return os.path.join(
         os.path.expanduser("~"), ".cache", "rapid-mlx", "prefix_cache", leaf
     )
+
+
+def _cached_model_revision(model_name: str) -> str:
+    """Return a stable, network-free identity for the selected weights."""
+    candidate = Path(model_name).expanduser()
+    if candidate.exists():
+        try:
+            return str(candidate.resolve())
+        except OSError:
+            return str(candidate)
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        cached = try_to_load_from_cache(model_name, "config.json")
+        if isinstance(cached, str):
+            path = Path(cached)
+            if path.parent.parent.name == "snapshots":
+                return path.parent.name
+    except Exception:
+        # Prefix persistence is best-effort and must not make startup depend on
+        # optional Hugging Face cache metadata.
+        pass
+    return model_name
