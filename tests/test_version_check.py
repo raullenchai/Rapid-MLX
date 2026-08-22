@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the staleness-warning helper.
 
-The helper is opt-in (TTY+no-CI), cache-aware, and fail-silent on
-network errors. Tests pin those guarantees so a future "let's add a
-real call" change can't accidentally break the CLI on an offline
-laptop.
+The helper is TTY-gated for normal commands, while ``serve`` may emit a
+passive notice to non-TTY startup logs. Both paths are cache-aware,
+explicitly opt-out, and fail-silent on network errors. Tests pin those
+guarantees so a future "let's add a real call" change can't accidentally
+break the CLI on an offline laptop.
 """
 
 from __future__ import annotations
@@ -452,11 +453,70 @@ def test_disabled_in_ci(monkeypatch):
     assert vc._disabled() is True
 
 
+def test_non_tty_serve_warning_bypasses_only_tty_gate(monkeypatch):
+    """Daemon startup may check freshness, but explicit opt-outs still win."""
+    monkeypatch.setattr(vc, "_disabled", lambda: True)
+    monkeypatch.setattr(vc, "_explicitly_disabled", lambda: False)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.14")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.16")
+
+    msg = vc.staleness_warning(allow_non_tty=True)
+
+    assert msg is not None
+    assert "0.6.14" in msg
+    assert "0.6.16" in msg
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["CI", "RAPID_MLX_DISABLE_VERSION_CHECK"],
+)
+def test_non_tty_serve_warning_respects_explicit_opt_out(monkeypatch, env_name):
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("RAPID_MLX_DISABLE_VERSION_CHECK", raising=False)
+    monkeypatch.setenv(env_name, "1")
+    monkeypatch.setattr(
+        vc,
+        "get_latest_version",
+        lambda force_refresh=False: pytest.fail("network leaked despite opt-out"),
+    )
+
+    assert vc.staleness_warning(allow_non_tty=True) is None
+
+
+def test_non_tty_serve_warning_prints_only_to_stderr(monkeypatch, capsys):
+    monkeypatch.setattr(
+        vc,
+        "staleness_warning",
+        lambda *, allow_non_tty=False: (
+            "daemon update notice" if allow_non_tty else None
+        ),
+    )
+
+    vc.print_staleness_warning_if_any(allow_non_tty=True)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "daemon update notice"
+
+
+def test_only_audio_and_text_serve_opt_into_non_tty_warning():
+    """Keep daemon logging scoped to both serve lanes, not every CLI command."""
+    cli_source = Path(vc.__file__).with_name("cli.py").read_text()
+    call = "print_staleness_warning_if_any(allow_non_tty=True)"
+
+    assert cli_source.count(call) == 2
+    audio_source = cli_source.split("def _serve_audio_mode", 1)[1].split("\ndef ", 1)[0]
+    text_source = cli_source.split("def serve_command", 1)[1].split("\ndef ", 1)[0]
+    assert call in audio_source
+    assert call in text_source
+
+
 # --- print_staleness_warning_if_any never raises ---------------------
 
 
 def test_print_helper_swallows_all_exceptions(monkeypatch, capsys):
-    def boom():
+    def boom(**_kwargs):
         raise RuntimeError("simulated GitHub outage")
 
     monkeypatch.setattr(vc, "staleness_warning", boom)
@@ -524,9 +584,12 @@ def test_detect_install_method_brew_linux(monkeypatch):
     assert info.method == "brew"
 
 
-def test_detect_install_method_install_sh(tmp_path, monkeypatch):
-    """install.sh drops the binary in ``~/.local/bin`` — re-running the
-    script is the only sane upgrade path for this install class.
+def test_local_bin_launcher_alone_does_not_imply_install_sh(tmp_path, monkeypatch):
+    """uv, pipx, and user-site pip all share ``~/.local/bin``.
+
+    A launcher located there but not resolving into a known managed venv must
+    conservatively use the running interpreter instead of letting install.sh
+    replace an unrelated tool manager's entry point.
     """
     home = tmp_path / "home"
     local_bin = home / ".local" / "bin"
@@ -537,25 +600,8 @@ def test_detect_install_method_install_sh(tmp_path, monkeypatch):
     monkeypatch.setattr("os.path.realpath", lambda p: p)
 
     info = vc.detect_install_method()
-    assert info.method == "install_sh"
-    assert "install.sh" in info.upgrade_command
-    # Upgrade prefers the canonical rapidmlx.com host and falls back to the
-    # raullenchai.github.io Pages mirror — both present, primary first, wired
-    # with ``||`` so the mirror is only reached if rapidmlx.com fails.
-    cmd = info.upgrade_command
-    assert "https://rapidmlx.com/install.sh" in cmd
-    assert "https://raullenchai.github.io/Rapid-MLX/install.sh" in cmd
-    assert cmd.index("rapidmlx.com") < cmd.index("github.io")
-    assert "||" in cmd
-    # Fetch to a temp file and run only a complete download (never ``| bash``):
-    # guards against a false-success on total outage and a partial/hybrid script.
-    assert "mktemp" in cmd
-    assert "set -e" in cmd
-    assert "| bash" not in cmd
-    # Bounded timeouts so a blackholed primary fails fast into the fallback
-    # instead of hanging forever.
-    assert "--connect-timeout" in cmd
-    assert "--max-time" in cmd
+    assert info.method == "pip"
+    assert info.upgrade_argv[:3] == [vc.sys.executable, "-m", "pip"]
 
 
 def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
@@ -595,6 +641,93 @@ def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
     assert argv_cmd.index("rapidmlx.com") < argv_cmd.index("github.io")
 
 
+@pytest.mark.parametrize(
+    "manager,resolved_parts,expected_argv",
+    [
+        (
+            "uv",
+            (".local", "share", "uv", "tools", "rapid-mlx", "bin", "rapid-mlx"),
+            ["uv", "tool", "upgrade", "rapid-mlx"],
+        ),
+        (
+            "pipx",
+            (".local", "share", "pipx", "venvs", "rapid-mlx", "bin", "rapid-mlx"),
+            ["pipx", "upgrade", "rapid-mlx"],
+        ),
+    ],
+)
+def test_detects_tool_manager_from_resolved_launcher(
+    tmp_path, monkeypatch, manager, resolved_parts, expected_argv
+):
+    home = tmp_path / "home"
+    binary = home / ".local" / "bin" / "rapid-mlx"
+    resolved = home.joinpath(*resolved_parts)
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
+    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.delenv("PIPX_HOME", raising=False)
+
+    info = vc.detect_install_method()
+
+    assert info.method == manager
+    assert info.upgrade_argv == expected_argv
+    assert "install.sh" not in info.upgrade_command
+
+
+@pytest.mark.parametrize(
+    "manager,env_name,relative_parts,expected_argv",
+    [
+        (
+            "uv",
+            "UV_TOOL_DIR",
+            ("rapid-mlx",),
+            ["uv", "tool", "upgrade", "rapid-mlx"],
+        ),
+        (
+            "pipx",
+            "PIPX_HOME",
+            ("venvs", "rapid-mlx"),
+            ["pipx", "upgrade", "rapid-mlx"],
+        ),
+    ],
+)
+def test_detects_configured_tool_manager_root(
+    tmp_path, monkeypatch, manager, env_name, relative_parts, expected_argv
+):
+    home = tmp_path / "home"
+    binary = home / ".local" / "bin" / "rapid-mlx"
+    manager_root = tmp_path / "custom-tools"
+    resolved = manager_root.joinpath(*relative_parts, "bin", "rapid-mlx")
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
+    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.delenv("PIPX_HOME", raising=False)
+    monkeypatch.setenv(env_name, str(manager_root))
+
+    info = vc.detect_install_method()
+
+    assert info.method == manager
+    assert info.upgrade_argv == expected_argv
+
+
+def test_detects_global_pipx_with_global_upgrade_flag(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    binary = "/usr/local/bin/rapid-mlx"
+    pipx_home = tmp_path / "global-pipx"
+    resolved = pipx_home / "venvs" / "rapid-mlx" / "bin" / "rapid-mlx"
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: binary)
+    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.setenv("PIPX_GLOBAL_HOME", str(pipx_home))
+
+    info = vc.detect_install_method()
+
+    assert info.method == "pipx"
+    assert info.upgrade_argv == ["pipx", "upgrade", "--global", "rapid-mlx"]
+
+
 def _run_install_sh_upgrade(
     tmp_path, monkeypatch, *, primary_ok, mirror_ok, primary_stall=False
 ):
@@ -613,9 +746,12 @@ def _run_install_sh_upgrade(
     home = tmp_path / "home"
     (home / ".local" / "bin").mkdir(parents=True)
     fake_binary = str(home / ".local" / "bin" / "rapid-mlx")
+    fake_realpath = str(home / ".rapid-mlx" / "bin" / "rapid-mlx")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: fake_binary)
-    monkeypatch.setattr("os.path.realpath", lambda p: p)
+    monkeypatch.setattr(
+        "os.path.realpath", lambda p: fake_realpath if p == fake_binary else p
+    )
     argv = vc.detect_install_method().upgrade_argv
 
     sentinel = tmp_path / "ran.txt"

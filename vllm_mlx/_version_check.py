@@ -12,8 +12,10 @@ the same minor. Designed to fail completely silently on network / parse
 / sandbox errors — staleness warnings should never break the CLI.
 
 Cache: ``~/.cache/rapid-mlx/version_check.json`` with 24h TTL. Network
-fetch is opt-out via ``RAPID_MLX_DISABLE_VERSION_CHECK=1`` or any
-non-interactive context (``CI=1``, missing TTY).
+fetch is opt-out via ``RAPID_MLX_DISABLE_VERSION_CHECK=1`` or ``CI=1``.
+Interactive commands require a TTY; ``serve`` also writes the passive
+notice to non-interactive startup logs so launchd/daemon operators are
+not left on an old release with no signal.
 
 Behaviour matrix:
 
@@ -84,16 +86,21 @@ def _cache_path() -> Path:
     return Path(base) / "rapid-mlx" / "version_check.json"
 
 
-def _disabled() -> bool:
-    """Skip the check in non-interactive contexts.
+def _explicitly_disabled() -> bool:
+    """Return whether every version check is explicitly disabled.
 
-    Devs running tests, CI, scripts piped to other tools — none of them
-    benefit from a version warning. Only show when stderr is a TTY and
-    the user hasn't explicitly opted out.
+    These opt-outs also apply to the non-interactive ``serve`` log notice.
     """
     if os.environ.get("RAPID_MLX_DISABLE_VERSION_CHECK"):
         return True
     if os.environ.get("CI"):
+        return True
+    return False
+
+
+def _disabled() -> bool:
+    """Return whether the normal interactive warning should be skipped."""
+    if _explicitly_disabled():
         return True
     try:
         # ``stderr.isatty()`` matches where we'd print the warning.
@@ -259,12 +266,13 @@ def get_latest_version(force_refresh: bool = False) -> str | None:
     return latest
 
 
-def staleness_warning() -> str | None:
+def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
     """Return a one-line warning string if the installed version is behind
     the latest release by ANY amount (patch, minor, or major). Returns
     None when no warning is warranted (current/ahead, or check disabled).
     """
-    if _disabled():
+    disabled = _explicitly_disabled() if allow_non_tty else _disabled()
+    if disabled:
         return None
     installed_str = _installed_version()
     if not installed_str:
@@ -299,10 +307,14 @@ def staleness_warning() -> str | None:
     )
 
 
-def print_staleness_warning_if_any() -> None:
-    """Best-effort: fetches + prints to stderr. Always silent on errors."""
+def print_staleness_warning_if_any(*, allow_non_tty: bool = False) -> None:
+    """Best-effort: fetches + prints to stderr. Always silent on errors.
+
+    ``allow_non_tty`` is reserved for ``serve`` startup logs. It keeps the
+    explicit environment/CI opt-outs but does not require stderr to be a TTY.
+    """
     try:
-        msg = staleness_warning()
+        msg = staleness_warning(allow_non_tty=allow_non_tty)
         if msg:
             print(msg, file=sys.stderr)
     except Exception:  # noqa: BLE001 — never break the CLI
@@ -428,7 +440,7 @@ class InstallInfo:
         upgrade_argv: list[str],
         binary_path: str | None = None,
     ) -> None:
-        self.method = method  # one of: brew, pip, install_sh
+        self.method = method  # one of: brew, uv, pipx, pip, install_sh
         self.upgrade_command = upgrade_command
         self.upgrade_argv = upgrade_argv
         self.binary_path = binary_path
@@ -441,10 +453,11 @@ def detect_install_method() -> InstallInfo:
       1. brew — ``rapid-mlx`` realpath under ``/Cellar/rapid-mlx``,
          ``/opt/homebrew/`` (macOS) or ``/home/linuxbrew/`` (Linux brew)
          triggers ``brew upgrade rapid-mlx`` (now in homebrew/core).
-      2. install.sh — binary under ``~/.local/bin`` (or realpath under
-         the install.sh venv at ``~/.rapid-mlx/``) triggers a re-run of
-         the install.sh script.
-      3. pip (default) — uses ``sys.executable -m pip install --upgrade``
+      2. install.sh — realpath under the install.sh venv at
+         ``~/.rapid-mlx/`` triggers a re-run of the install.sh script.
+      3. uv / pipx — realpath in that tool manager's isolated environment
+         triggers its native upgrade command.
+      4. pip (default) — uses ``sys.executable -m pip install --upgrade``
          so the upgrade lands in the same env that's currently running
          the CLI.
     """
@@ -461,13 +474,18 @@ def detect_install_method() -> InstallInfo:
                 upgrade_argv=["brew", "upgrade", "rapid-mlx"],
                 binary_path=binary,
             )
-        # install.sh creates ``~/.rapid-mlx`` (venv) and symlinks the
-        # entry point into ``~/.local/bin``. Match either side: the
-        # symlink path (binary) for fresh installs, the venv root
-        # (normalized) for installs where ``~/.local/bin`` was overridden.
-        local_bin = str(Path.home() / ".local" / "bin")
+        # install.sh creates ``~/.rapid-mlx`` (venv) and symlinks its entry
+        # point into ``~/.local/bin``. uv, pipx, and ``pip install --user``
+        # use that SAME bin directory, so the launcher path is not evidence of
+        # ownership. Only the resolved target identifies an install.sh venv.
         rapid_mlx_dir = str(Path.home() / ".rapid-mlx")
-        if binary.startswith(local_bin) or normalized.startswith(rapid_mlx_dir):
+        try:
+            is_install_sh = os.path.commonpath(
+                [normalized, rapid_mlx_dir]
+            ) == os.path.normpath(rapid_mlx_dir)
+        except ValueError:
+            is_install_sh = False
+        if is_install_sh:
             # Prefer the canonical rapidmlx.com host (the same domain the
             # website, docs, and the update poll ``CLI_UPDATE_ENDPOINT`` use),
             # falling back to the raullenchai.github.io Pages mirror when it
@@ -509,6 +527,71 @@ def detect_install_method() -> InstallInfo:
                 # ``shell=True`` (no ambient $SHELL coupling, no PATH-based
                 # shell-injection surface beyond the literal string we control).
                 upgrade_argv=["bash", "-c", install_sh_pipe],
+                binary_path=binary,
+            )
+
+        # uv and pipx both install console entry points into a shared user bin
+        # directory, but resolve those symlinks into manager-owned venvs. Use
+        # the target, including configured tool roots, so ``rapid-mlx upgrade``
+        # updates the environment that is actually running instead of replacing
+        # its launcher with an unrelated install.sh symlink.
+        normalized_path = Path(normalized)
+        normalized_parts = normalized_path.parts
+
+        def _has_sequence(parts: tuple[str, ...]) -> bool:
+            width = len(parts)
+            return any(
+                normalized_parts[i : i + width] == parts
+                for i in range(len(normalized_parts) - width + 1)
+            )
+
+        def _under_configured_root(env_name: str, *relative: str) -> bool:
+            root = os.environ.get(env_name)
+            if not root:
+                return False
+            managed = Path(root).expanduser().joinpath(*relative)
+            try:
+                return os.path.commonpath(
+                    [normalized, str(managed)]
+                ) == os.path.normpath(str(managed))
+            except ValueError:
+                return False
+
+        if _under_configured_root("UV_TOOL_DIR", "rapid-mlx") or _has_sequence(
+            ("uv", "tools", "rapid-mlx")
+        ):
+            return InstallInfo(
+                method="uv",
+                upgrade_command="uv tool upgrade rapid-mlx",
+                upgrade_argv=["uv", "tool", "upgrade", "rapid-mlx"],
+                binary_path=binary,
+            )
+
+        is_global_pipx = _under_configured_root(
+            "PIPX_GLOBAL_HOME", "venvs", "rapid-mlx"
+        )
+        if not os.environ.get("PIPX_GLOBAL_HOME"):
+            try:
+                is_global_pipx = is_global_pipx or os.path.commonpath(
+                    [normalized, "/opt/pipx/venvs/rapid-mlx"]
+                ) == os.path.normpath("/opt/pipx/venvs/rapid-mlx")
+            except ValueError:
+                pass
+        if is_global_pipx:
+            return InstallInfo(
+                method="pipx",
+                upgrade_command="pipx upgrade --global rapid-mlx",
+                upgrade_argv=["pipx", "upgrade", "--global", "rapid-mlx"],
+                binary_path=binary,
+            )
+
+        if _under_configured_root("PIPX_HOME", "venvs", "rapid-mlx") or _has_sequence(
+            ("pipx", "venvs", "rapid-mlx")
+        ):
+            return InstallInfo(
+                method="pipx",
+                upgrade_command="pipx upgrade rapid-mlx",
+                upgrade_argv=["pipx", "upgrade", "rapid-mlx"],
                 binary_path=binary,
             )
 

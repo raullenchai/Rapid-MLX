@@ -400,7 +400,7 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_MODEL_MIRROR` | `https://models.rapidmlx.com` | Model download mirror base URL; set to an empty string to force downloads from Hugging Face |
 | `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
-| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip the interactive new-version check |
+| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip new-version checks, including the passive `serve` startup-log notice |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
 | `VLLM_MLX_TEST_MODEL` | unset | Default model for tests |
 | `HF_TOKEN` | unset | HuggingFace authentication token |

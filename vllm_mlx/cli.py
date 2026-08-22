@@ -851,7 +851,9 @@ def _serve_audio_mode(args, entry) -> None:
     from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.config import get_config
 
-    print_staleness_warning_if_any()
+    # Audio servers are often launched by launchd or another supervisor. Keep
+    # the passive update notice in stderr startup logs even without a TTY.
+    print_staleness_warning_if_any(allow_non_tty=True)
     print()
 
     _cfg = get_config()
@@ -4363,7 +4365,9 @@ def serve_command(args):
         )
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
-    print_staleness_warning_if_any()
+    # Long-lived launchd/daemon servers have no interactive prompt. Preserve
+    # the explicit opt-outs, but leave the passive notice in startup logs.
+    print_staleness_warning_if_any(allow_non_tty=True)
     print()
 
     # Stash the source of truth for the lifespan "Ready:" banner —

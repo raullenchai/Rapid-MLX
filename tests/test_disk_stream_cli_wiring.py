@@ -95,7 +95,8 @@ def _drive_serve_capturing_load_model_kwargs(argv_extra, monkeypatch):
         "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         sys,
@@ -473,7 +474,8 @@ with (
         "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
     ),
     mock.patch(
-        "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        lambda **_kwargs: None,
     ),
     mock.patch(
         "vllm_mlx.utils.tokenizer._resolve_model_path",
