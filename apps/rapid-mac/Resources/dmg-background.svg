@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="460" viewBox="0 0 720 460">
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FAF8F3"/>
+      <stop offset="1" stop-color="#F2EEE5"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="9" flood-color="#282724" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect width="720" height="460" fill="url(#canvas)"/>
+
+  <!-- Quiet leopard-spot texture: enough brand character without competing
+       with the two Finder icons that own the installation action. -->
+  <g fill="#D8D1C3" opacity="0.22">
+    <ellipse cx="44" cy="46" rx="18" ry="9" transform="rotate(-24 44 46)"/>
+    <ellipse cx="685" cy="77" rx="21" ry="10" transform="rotate(31 685 77)"/>
+    <ellipse cx="55" cy="405" rx="25" ry="11" transform="rotate(18 55 405)"/>
+    <ellipse cx="665" cy="402" rx="17" ry="8" transform="rotate(-34 665 402)"/>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, Helvetica, Arial, sans-serif"
+     text-anchor="middle">
+    <text x="360" y="55" fill="#282724" font-size="24" font-weight="650">
+      Install Rapid-MLX Desktop
+    </text>
+    <text x="360" y="83" fill="#6F6A61" font-size="14" font-weight="400">
+      Drag the app into Applications
+    </text>
+  </g>
+
+  <!-- Soft landing zones make the two objects feel intentionally placed while
+       leaving their native Finder icons and labels completely unobstructed. -->
+  <g filter="url(#shadow)">
+    <rect x="103" y="142" width="154" height="174" rx="24"
+          fill="#FFFFFF" fill-opacity="0.72" stroke="#E1DBCF"/>
+    <rect x="463" y="142" width="154" height="174" rx="24"
+          fill="#FFFFFF" fill-opacity="0.72" stroke="#E1DBCF"/>
+  </g>
+
+  <!-- Canonical left-to-right install direction. Finder places the app and
+       Applications icons at x=180 and x=540, aligned with this arrow. -->
+  <g fill="none" stroke="#E89A33" stroke-width="4" stroke-linecap="round"
+     stroke-linejoin="round">
+    <path d="M 294 228 H 420"/>
+    <path d="M 404 212 L 420 228 L 404 244"/>
+  </g>
+  <text x="357" y="208" fill="#9A641E" font-size="10" font-weight="700"
+        font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, Helvetica, Arial, sans-serif"
+        text-anchor="middle" letter-spacing="1.6">DRAG TO INSTALL</text>
+
+  <!-- Finder's title bar is included in the saved 460pt window bounds, so the
+       visible background ends around y=428. Keep the footer comfortably above
+       that crop line rather than relying on the last few pixels. -->
+  <line x1="80" y1="350" x2="640" y2="350" stroke="#DDD6C9"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Helvetica Neue, Helvetica, Arial, sans-serif"
+     text-anchor="middle">
+    <text x="360" y="379" fill="#47443F" font-size="12" font-weight="600">
+      Local AI for Apple silicon
+    </text>
+    <text x="360" y="401" fill="#817B71" font-size="11">
+      No account · No subscription · Your prompts stay on this Mac
+    </text>
+  </g>
+</svg>

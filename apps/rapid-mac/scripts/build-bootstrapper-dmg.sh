@@ -22,7 +22,8 @@
 #      hashes were sealed in.
 #   4. Wraps the stripped .app in a DMG using the same layout as
 #      scripts/dmg.sh: HFS+, UDZO compression, "Rapid-MLX Desktop"
-#      volume name, Applications drop-target symlink.
+#      volume name, Applications drop-target symlink, custom install
+#      background and left-to-right icon positions.
 #   5. Gates the output size (≥ 1 MB so an empty .app fails; ≤ 50 MB
 #      so a regression that re-bundles a heavy dep fails — target
 #      shape is 5-8 MB).
@@ -403,6 +404,7 @@ trap trap_cleanup_mount EXIT
 # scripts/dmg.sh's drop-target convention.
 cp -R "$STAGING/Rapid-MLX Desktop.app" "$SCRATCH_MOUNT/Rapid-MLX Desktop.app"
 ln -s /Applications "$SCRATCH_MOUNT/Applications"
+bash "$ROOT/scripts/configure-dmg-layout.sh" "$SCRATCH_MOUNT"
 
 echo "==> detach UDRW scratch"
 hdiutil detach "$SCRATCH_MOUNT" -quiet \

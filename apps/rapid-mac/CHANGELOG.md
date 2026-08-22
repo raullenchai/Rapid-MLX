@@ -17,6 +17,15 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- **The Mac installer now looks and behaves like a finished install page.**
+  Opening the DMG presents Rapid-MLX on the left, Applications on the right,
+  a clear drag-to-install arrow, concise instructions, and a branded local-AI
+  background instead of Finder's blank auto-arranged window. Both the full and
+  slim installers share the layout, and release validation now opens the final
+  read-only image to verify the saved icon positions and window geometry.
+
 ## [0.12.18] — 2026-08-20
 
 Regenerating an answer no longer throws the old one away, dictation starts
