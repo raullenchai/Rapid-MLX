@@ -691,7 +691,11 @@ struct ChatView: View {
                         showsAttachmentMenu = false
                         chooseFiles()
                     } label: {
-                        Label("Upload file", systemImage: "doc")
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "doc")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload file")
+                        }
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
@@ -704,7 +708,11 @@ struct ChatView: View {
                         showsAttachmentMenu = false
                         choosePhotos()
                     } label: {
-                        Label("Upload photo", systemImage: "photo")
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "photo")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload photo")
+                        }
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
