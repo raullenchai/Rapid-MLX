@@ -63,11 +63,83 @@ struct DMGPresentationScriptTests {
         #expect(!script.contains("mktemp -d -t rapid-bootstrap-dmg-XXXXXX"))
     }
 
+    @Test("Structural parser accepts the active icvp background alias")
+    func structuralBackgroundAliasPasses() throws {
+        let result = try Self.runBackgroundVerifier(
+            alias: Data("Rapid-MLX Desktop:.background:\u{0}/.background/background.png".utf8)
+        )
+
+        #expect(result.status == 0)
+        #expect(result.output.contains("verify-dmg-background: OK"))
+    }
+
+    @Test("Structural parser rejects unrelated matching strings")
+    func unrelatedBackgroundStringsFail() throws {
+        let result = try Self.runBackgroundVerifier(
+            alias: Data("wrong-background.png".utf8),
+            trailingData: Data("Rapid-MLX Desktop:.background:/backgroundImageAlias/.background/background.png".utf8)
+        )
+
+        #expect(result.status == 1)
+        #expect(result.output.contains("backgroundImageAlias missing"))
+    }
+
+    @Test("Structural parser rejects non-image icvp records")
+    func nonImageBackgroundTypeFails() throws {
+        let result = try Self.runBackgroundVerifier(
+            alias: Data("Rapid-MLX Desktop:.background:\u{0}/.background/background.png".utf8),
+            backgroundType: 0
+        )
+
+        #expect(result.status == 1)
+        #expect(result.output.contains("backgroundType is not image mode"))
+    }
+
     private static func expectBackgroundAliasContract(in script: String) {
-        #expect(script.contains("strings -a \"$MOUNT/.DS_Store\""))
-        #expect(script.contains("backgroundImageAlias"))
-        #expect(script.contains("Rapid-MLX Desktop:.background:"))
-        #expect(script.contains("/.background/background.png"))
+        #expect(script.contains("python3 \"$ROOT/scripts/verify-dmg-background.py\" \"$MOUNT/.DS_Store\""))
+        #expect(!script.contains("strings -a \"$MOUNT/.DS_Store\""))
+    }
+
+    private static func runBackgroundVerifier(
+        alias: Data,
+        backgroundType: Int = 2,
+        trailingData: Data = Data()
+    ) throws -> (status: Int32, output: String) {
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "backgroundImageAlias": alias,
+                "backgroundType": backgroundType,
+            ],
+            format: .binary,
+            options: 0
+        )
+        var fixture = Data("DSStore fixture icvpblob".utf8)
+        var length = UInt32(plist.count).bigEndian
+        withUnsafeBytes(of: &length) { fixture.append(contentsOf: $0) }
+        fixture.append(plist)
+        fixture.append(trailingData)
+
+        let fixtureDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-dmg-ds-store-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureDirectory) }
+        let fixtureURL = fixtureDirectory.appendingPathComponent(".DS_Store")
+        try fixture.write(to: fixtureURL)
+
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "python3",
+            sourceRoot.appendingPathComponent("scripts/verify-dmg-background.py").path,
+            fixtureURL.path,
+        ]
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
     private static func uint32(_ bytes: [UInt8], at offset: Int) -> UInt32 {

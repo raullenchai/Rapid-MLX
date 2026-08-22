@@ -163,18 +163,10 @@ BG_HEIGHT="$(sips -g pixelHeight "$BACKGROUND" | awk '/pixelHeight:/ {print $2}'
     || fail "Finder background is ${BG_WIDTH}x${BG_HEIGHT}, expected 720x460"
 [[ -s "$MOUNT/.DS_Store" ]] || fail "Finder layout .DS_Store missing or empty"
 
-# A present PNG is not enough: the icvp record must contain a background alias
-# pointing to that file. Finder scripting cannot resolve dot-prefixed files as
-# items, so inspect the persisted alias payload directly.
-DS_STORE_STRINGS="$(strings -a "$MOUNT/.DS_Store")"
-for expected_background_token in \
-    "backgroundImageAlias" \
-    "Rapid-MLX Desktop:.background:" \
-    "/.background/background.png"
-do
-    [[ "$DS_STORE_STRINGS" == *"$expected_background_token"* ]] \
-        || fail "Finder background alias missing token '$expected_background_token'"
-done
+# A present PNG is not enough: structurally parse the active icvp blob and
+# verify its backgroundImageAlias points to the volume-relative image.
+python3 "$ROOT/scripts/verify-dmg-background.py" "$MOUNT/.DS_Store" \
+    || fail "Finder background alias is missing or invalid"
 
 # Do not stop at file presence: a .DS_Store can carry an absolute alias to the
 # build-time mount and look complete on disk while Finder silently falls back
