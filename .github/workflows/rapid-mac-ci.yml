@@ -366,6 +366,15 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
 
+      # Exercise the vision sidecar before the long sequence of isolated app
+      # launches below can create artificial cold-start pressure on the hosted
+      # Mac. Payload correctness is still asserted by the flow itself.
+      - name: 'Golden flow: chat-multimodal-attachments'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow chat-multimodal-attachments
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
+
       - name: 'Golden flow: message-actions'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow message-actions
@@ -467,12 +476,6 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow chat-document-attachment
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-document-attachment
-
-      - name: 'Golden flow: chat-multimodal-attachments'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow chat-multimodal-attachments
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
 
       - name: 'Golden flow: update-state'
         continue-on-error: true
