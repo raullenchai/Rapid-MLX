@@ -39,6 +39,19 @@ import Testing
 @Suite("ServerManager spawn-argument shape (issue #271)")
 struct SpawnArgumentsTests {
 
+    @Test("Shutdown is latched before a child exists")
+    @MainActor
+    func shutdownBeforeSpawnBlocksLaterStart() async {
+        let manager = ServerManager(
+            testingState: .idle,
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        manager.beginShutdown()
+        await manager.start(alias: "qwen3.5-9b-4bit")
+        #expect(manager.state == .idle)
+        #expect(manager.launchedChildAlias == nil)
+    }
+
     @Test("Desktop opts vision aliases into MLLM without changing text aliases")
     func desktopVisionCapabilityFlags() {
         #expect(ServerManager.desktopCapabilityFlags(

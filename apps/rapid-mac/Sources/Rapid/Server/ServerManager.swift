@@ -1361,6 +1361,10 @@ final class ServerManager {
         }
         guard !isOperating else { return }
         guard child == nil else { return }
+        // App termination is irreversible. `beginShutdown()` latches this
+        // even when no child exists yet, so a start suspended in any probe
+        // cannot resume on the far side of application shutdown.
+        guard !didSignalShutdown else { return }
         guard let binary = binaryPath else {
             state = .missing
             return
@@ -1487,6 +1491,7 @@ final class ServerManager {
             // just clicked Stop on. Bail before doing any further
             // work — every later check is gated on the same Task.
             if Task.isCancelled { return }
+            if didSignalShutdown { return }
             // codex r1 BLOCKING: the await above is a MainActor
             // suspension point and ``start(alias:)`` is reentrant. A
             // second ``start()`` call landing on the actor while we're
@@ -1521,7 +1526,6 @@ final class ServerManager {
         //     is false here; ``stop()`` can preempt by terminating
         //     ``child`` and the polling loop notices ``child == nil``
         //     and returns.
-        didSignalShutdown = false
         isOperating = true
 
         // Clear the log tail from any previous run so the user only
@@ -1671,6 +1675,12 @@ final class ServerManager {
             binary: binary,
             generation: downloads?.cacheGeneration ?? 0
         ).first { $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame }
+        // `entries` may fork `models`/`ls` and suspend. A quit during those
+        // probes must not resume into `process.run()` after AppKit teardown.
+        if didSignalShutdown || Task.isCancelled {
+            isOperating = false
+            return
+        }
         var extraFlags = Self.desktopCapabilityFlags(
             forAlias: trimmedAlias,
             isBuiltinProfile: catalogEntry?.isBuiltinProfile,
@@ -2054,9 +2064,13 @@ final class ServerManager {
         // to protect, leaving the partial ``prefix_cache/<rev>.new/``
         // this teardown is specifically written to avoid.
         guard !didSignalShutdown else { return }
+        // Latch the intent before inspecting `child`: start() has suspension
+        // points before process.run(), and `child == nil` during all of them.
+        // Returning without setting the latch lets that start resume after
+        // AppKit shutdown and orphan a newly spawned sidecar.
+        didSignalShutdown = true
         guard let process = child else { return }
         guard process.isRunning || process.isProcessGroupAlive else { return }
-        didSignalShutdown = true
         expectedStop = true
         process.signalProcessGroup(SIGTERM)
     }
