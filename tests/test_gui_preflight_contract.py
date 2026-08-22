@@ -171,6 +171,16 @@ def test_fresh_install_fixture_contains_the_real_starter():
     assert 'print("lfm2.5-1b-4bit' in fake
 
 
+def test_start_model_waits_for_an_interactive_readiness_action():
+    """A mounted SwiftUI button can still reject an AX press while disabled."""
+    source = HARNESS.read_text()
+    helper = source.split("start_model() {", 1)[1].split("\n}", 1)[0]
+    assert "wait_identifier_enabled Readiness.Action" in helper
+    assert helper.index("wait_identifier_enabled Readiness.Action") < helper.index(
+        'press "$OUT/readiness-start.json" Readiness.Action'
+    )
+
+
 def test_audio_baseline_waits_for_residency_poll_to_settle():
     flow = (
         HARNESS.read_text().split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]

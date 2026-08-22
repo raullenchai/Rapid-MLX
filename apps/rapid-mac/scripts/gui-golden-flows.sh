@@ -1038,7 +1038,13 @@ wait_settings_stable() {
 }
 
 start_model() {
-    wait_identifier Readiness.Action "$OUT/readiness-start.json"
+    # The readiness band is mounted before its action becomes interactive
+    # while the catalog finishes resolving the selected model.  Pressing the
+    # merely-present button is accepted by AX but dropped by SwiftUI, which
+    # made slower hosted runners wait a full minute for a sidecar that was
+    # never asked to start.  Gate the interaction on the same enabled state a
+    # user needs before clicking it.
+    wait_identifier_enabled Readiness.Action "$OUT/readiness-start.json"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
     # ``server_started`` says the fake bound its port; it does NOT say the app
     # has finished wiring up to it. The old gate also tested
