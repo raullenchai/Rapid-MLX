@@ -1989,5 +1989,22 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false
+  },
+  "ornith-1.5-9b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-9B-MLX",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "ornith-1.5-35b-a3b-bf16": {
+    "hf_path": "ornith-ai/Ornith-1.5-35B-A3B-MLX",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false
   }
 }

@@ -311,6 +311,36 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
+    # Ornith-1.5 (NVIDIA-adjacent open LLM family, MIT) — Qwen3.5 hybrid
+    # arch (model_type=qwen3_5 / qwen3_5_moe). The MLX checkpoints are
+    # unquantized bf16; the family splits on MoE marker the same way the
+    # qwen3.5 family does. 35B-A3B is sparse expert + GatedDeltaNet hybrid
+    # (needs the hybrid scheduler); 9B is the dense GatedDeltaNet sibling
+    # that wedges on metal::malloc under the hybrid path, so it is pinned
+    # non-hybrid via ``is_hybrid_explicit``. Both ship the Qwen3 XML
+    # tool/thinking contract (Qwen2Tokenizer with ``<|im_end|>``), so they
+    # use hermes tool + qwen3 reasoning parsers. ``supports_spec_decode``
+    # is False family-wide (GatedDeltaNet rules out self-spec).
+    (
+        re.compile(r"ornith.*(35b|a3b|moe)", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+            is_hybrid=True,
+            is_moe=True,
+            supports_spec_decode=False,
+        ),
+    ),
+    (
+        re.compile(r"ornith.*(9b|dense)", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+            is_hybrid=False,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    ),
     # Qwen3-Coder (older, pure-attention) — not Coder-Next
     (
         re.compile(r"qwen3[-_]?coder", re.IGNORECASE),
