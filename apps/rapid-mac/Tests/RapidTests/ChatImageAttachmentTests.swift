@@ -51,6 +51,20 @@ struct ChatImageAttachmentTests {
         #expect(String(data: encoded, encoding: .utf8)?.contains("data:image/") == false)
     }
 
+    @Test("authoritative false capability strips images even from a vision-looking alias")
+    func customVisionLookingAliasOmitsImages() throws {
+        let attachment = try ChatImageAttachment(
+            filename: "photo.png", mimeType: "image/png", data: Data("image".utf8)
+        )
+        let request = ChatStreamClient.Request(
+            alias: "qwen3.5-company-tuned",
+            messages: [ChatMessage(role: .user, content: "Explain", imageAttachments: [attachment])],
+            supportsImageInput: false
+        )
+        let wire = String(decoding: try JSONEncoder().encode(request.messages), as: UTF8.self)
+        #expect(!wire.contains("data:image/"))
+    }
+
     @Test("a new image replaces older image payloads on the wire")
     func newImageBecomesAttachmentFocus() throws {
         let first = try ChatImageAttachment(

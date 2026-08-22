@@ -959,6 +959,41 @@ def _emit_catalog(subcommand, alias):
     to fall through to the server.
     """
     if subcommand == "models":
+        if "--json" in sys.argv:
+            aliases = []
+            if _setting("FAKE_INCLUDE_STARTER") == "1":
+                aliases.append("lfm2.5-1b-4bit")
+            if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+                aliases.extend([f"a-cached-{index}" for index in range(6)])
+                aliases.append("qwen3.5-4b-4bit")
+            if _setting("FAKE_CACHED_VARIANTS") == "1":
+                aliases.extend(["qwen3-0.6b-8bit", "qwen3-0.6b-4bit", "qwen3-4b-4bit"])
+            aliases.append("qwen3.5-9b-4bit" if _setting("FAKE_VISION_CHAT") == "1" else "fake-alias")
+            aliases.append("fake-external-alias")
+            if _setting("FAKE_SETTINGS_MTP") == "1":
+                aliases.append("qwen3.8-27b-4bit")
+            text = []
+            for item in aliases:
+                is_builtin = item != "fake-external-alias"
+                text.append({
+                    "alias": item,
+                    "hf_path": FAKE_REPO,
+                    "supports_spec_decode": False,
+                    "mtp_draft_model": (
+                        "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"
+                        if item == "qwen3.8-27b-4bit" else None
+                    ),
+                    "mtp_speculative_tokens": 3 if item == "qwen3.8-27b-4bit" else None,
+                    "is_builtin": is_builtin,
+                    "is_text_only": item == "qwen3.5-4b-4bit",
+                })
+            print(json.dumps({
+                "text": text,
+                "video": [{"alias": "fake-video-alias"}],
+                "image": [{"alias": FAKE_IMAGE_ALIAS}],
+                "audio": [{"alias": "fake-qwen3-tts"}, {"alias": "fake-whisper-small"}],
+            }))
+            return True
         print("Available models")
         print("Alias                  Parser           Reasoning        Preset")
         print("---------------------  ---------------  ---------------  --------")

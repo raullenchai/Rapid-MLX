@@ -192,6 +192,8 @@ struct ChatView: View {
     /// hero and the composer read their copy off this, so they cannot
     /// describe the same lifecycle differently.
     var readiness: ModelReadiness
+    /// Catalog-backed capability shared with launch and request encoding.
+    var supportsImageInput: Bool = false
     /// First launch must not inspect model caches behind the consent sheet.
     /// The parent flips this after the user makes that one-time decision.
     var catalogRefreshEnabled: Bool = true
@@ -877,13 +879,10 @@ struct ChatView: View {
         viewModel.send(
             text,
             alias: alias,
+            supportsImageInput: supportsImageInput,
             imageAttachments: images,
             fileAttachments: files
         )
-    }
-
-    private var supportsImageInput: Bool {
-        ModelBrandStyle.supportsImageInput(forAlias: alias)
     }
 
     private var attachmentStrip: some View {

@@ -175,11 +175,12 @@ struct ChatStreamClient {
             presencePenalty: Double = 0.0,
             tools: [ToolDefinition]? = nil,
             enableThinking: Bool = false,
-            forcedTool: String? = nil
+            forcedTool: String? = nil,
+            supportsImageInput: Bool? = nil
         ) {
             self.alias = alias
             var imageMessageIndex: Int?
-            if ModelBrandStyle.supportsImageInput(forAlias: alias),
+            if supportsImageInput ?? ModelBrandStyle.supportsImageInput(forAlias: alias),
                 let latestUser = messages.lastIndex(where: { $0.role == .user }) {
                 if !messages[latestUser].imageAttachments.isEmpty {
                     imageMessageIndex = latestUser

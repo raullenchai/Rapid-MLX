@@ -2880,8 +2880,11 @@ final class ServerManager {
         isTextOnly: Bool? = nil,
         existing: [String]
     ) -> [String] {
-        guard isBuiltinProfile == true, isTextOnly == false,
-              ModelBrandStyle.supportsImageInput(forAlias: alias) else {
+        guard ModelBrandStyle.supportsImageInput(
+            forAlias: alias,
+            isBuiltinProfile: isBuiltinProfile,
+            isTextOnly: isTextOnly
+        ) else {
             return existing
         }
 

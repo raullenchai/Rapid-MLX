@@ -113,6 +113,7 @@ def test_peekaboo_requirement_is_default_deny():
         "model-crash-recovery",
         "low-memory-choice",
         "chat-document-attachment",
+        "chat-multimodal-attachments",
         "image-generation",
         "dictation",
         "audio-readiness",

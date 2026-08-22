@@ -751,6 +751,7 @@ final class ChatViewModel {
     func send(
         _ text: String,
         alias: String,
+        supportsImageInput: Bool? = nil,
         imageAttachments: [ChatImageAttachment] = [],
         fileAttachments: [ChatFileAttachment] = []
     ) {
@@ -786,7 +787,14 @@ final class ChatViewModel {
         // send the instant it happens, not only once the reply lands.
         persistActive()
 
-        beginAssistantTurn(alias: alias, forcedWebSearchQuery: forcedWebSearchQuery)
+        let resolvedImageCapability = supportsImageInput
+            ?? ModelBrandStyle.supportsImageInput(forAlias: alias)
+        imageCapabilityByAlias[alias] = resolvedImageCapability
+        beginAssistantTurn(
+            alias: alias,
+            supportsImageInput: resolvedImageCapability,
+            forcedWebSearchQuery: forcedWebSearchQuery
+        )
     }
 
     /// Open a streaming assistant turn under whatever currently ends the
@@ -798,7 +806,13 @@ final class ChatViewModel {
     /// duplicate prompt, making it a sibling of the original *question* rather
     /// than of the original *answer*, and the `‹ n/m ›` control would never
     /// see the two answers as alternatives at all.
-    private func beginAssistantTurn(alias: String, forcedWebSearchQuery: String?) {
+    private var imageCapabilityByAlias: [String: Bool] = [:]
+
+    private func beginAssistantTurn(
+        alias: String,
+        supportsImageInput: Bool,
+        forcedWebSearchQuery: String?
+    ) {
         let placeholder = ChatMessage(role: .assistant, status: .streaming)
         let placeholderIndex = appendMessage(placeholder)
 
@@ -867,6 +881,7 @@ final class ChatViewModel {
                 alias: alias,
                 initialPlaceholder: placeholderIndex,
                 epoch: epoch,
+                supportsImageInput: supportsImageInput,
                 forcedWebSearchQuery: forcedWebSearchQuery,
                 globalInstruction: globalInstruction,
                 conversationInstruction: chatInstruction
@@ -1535,6 +1550,7 @@ final class ChatViewModel {
         send(
             trimmed,
             alias: alias,
+            supportsImageInput: imageCapabilityByAlias[alias],
             imageAttachments: imageAttachments,
             fileAttachments: fileAttachments
         )
@@ -1566,6 +1582,7 @@ final class ChatViewModel {
         )
         beginAssistantTurn(
             alias: alias,
+            supportsImageInput: imageCapabilityByAlias[alias] ?? false,
             forcedWebSearchQuery: forcedTool == "web_search"
                 ? Self.webSearchQuery(for: userMessage.content, priorMessages: messages)
                 : nil
@@ -1851,6 +1868,7 @@ final class ChatViewModel {
         alias: String,
         initialPlaceholder: Int,
         epoch: Int,
+        supportsImageInput: Bool,
         forcedWebSearchQuery: String? = nil,
         globalInstruction: String = "",
         conversationInstruction: String = ""
@@ -2018,14 +2036,16 @@ final class ChatViewModel {
                     maxTokens: resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
                     tools: definitions.isEmpty ? nil : definitions,
-                    enableThinking: resolved.enableThinking
+                    enableThinking: resolved.enableThinking,
+                    supportsImageInput: supportsImageInput
                 )
             } else {
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
                     tools: definitions.isEmpty ? nil : definitions,
-                    enableThinking: false
+                    enableThinking: false,
+                    supportsImageInput: supportsImageInput
                 )
             }
             let outcome = await runOneStream(

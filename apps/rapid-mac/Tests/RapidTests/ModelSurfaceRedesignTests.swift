@@ -89,6 +89,19 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "ornith-1.5-35b-a3b-bf16") == .chat)
     }
 
+    @Test("behavioral vision capability requires authoritative built-in metadata")
+    func authoritativeVisionCapability() {
+        #expect(ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-9b-4bit", isBuiltinProfile: true, isTextOnly: false
+        ))
+        #expect(!ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-company-tuned", isBuiltinProfile: false, isTextOnly: false
+        ))
+        #expect(!ModelBrandStyle.supportsImageInput(
+            forAlias: "qwen3.5-4b-4bit", isBuiltinProfile: true, isTextOnly: true
+        ))
+    }
+
     // MARK: - ModelBrandStyle.displayFamily
 
     @Test("displayFamily: overrides the two aliases ModelInfoCatalog calls Unknown")

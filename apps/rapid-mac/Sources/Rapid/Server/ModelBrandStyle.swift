@@ -126,6 +126,18 @@ enum ModelBrandStyle {
         modelType(forAlias: alias) == .vision
     }
 
+    /// Behavioral capability shared by Desktop launch, composer, and wire
+    /// policy. Alias-name inference is trusted only for curated profiles.
+    static func supportsImageInput(
+        forAlias alias: String,
+        isBuiltinProfile: Bool?,
+        isTextOnly: Bool?
+    ) -> Bool {
+        isBuiltinProfile == true
+            && isTextOnly == false
+            && modelType(forAlias: alias) == .vision
+    }
+
     /// A human-readable family name for the row's meta line. Prefers
     /// ``ModelInfoCatalog.familyAndContext`` (rich version-aware names
     /// like "Qwen 3.6") but overrides the two aliases it labels
