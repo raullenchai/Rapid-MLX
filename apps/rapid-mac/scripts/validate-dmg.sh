@@ -58,11 +58,17 @@ if [[ ! -f "$DMG" ]]; then
 fi
 
 MOUNT=""
+DEVICE=""
 ATTACHED=0
 
 cleanup() {
     if [[ "$ATTACHED" -eq 1 ]]; then
-        hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet || true
+        local detach_target="${DEVICE:-$MOUNT}"
+        if [[ -n "$detach_target" ]]; then
+            hdiutil detach "$detach_target" -quiet \
+                || hdiutil detach "$detach_target" -force -quiet \
+                || true
+        fi
     fi
 }
 trap cleanup EXIT
@@ -72,13 +78,14 @@ echo "==> attaching $DMG as a user-mounted volume"
 # An arbitrary mktemp mount point makes Finder identify the disk by the random
 # directory name and can resolve .DS_Store aliases against a stale prior mount.
 ATTACH_OUTPUT="$(hdiutil attach "$DMG" -nobrowse -readonly)"
+ATTACHED=1
+DEVICE="$(printf '%s\n' "$ATTACH_OUTPUT" | awk '$1 ~ /^\/dev\// { print $1; exit }')"
 MOUNT="$(printf '%s\n' "$ATTACH_OUTPUT" | awk -F '\t' 'NF >= 3 && $3 != "" { print $3 }' | tail -1)"
 [[ -n "$MOUNT" && -d "$MOUNT" ]] || {
     echo "$ATTACH_OUTPUT" >&2
     echo "validate-dmg: FAIL — could not determine mounted volume path" >&2
     exit 1
 }
-ATTACHED=1
 echo "==> mounted at $MOUNT"
 
 fail() {
@@ -96,6 +103,7 @@ fail() {
 # above) re-admits the legacy name for local re-validation of
 # older artifacts.
 APPS=()
+LEGACY_ARTIFACT=0
 while IFS= read -r entry; do
     [[ -n "$entry" ]] && APPS+=("$entry")
 done < <(find "$MOUNT" -maxdepth 1 -type d -name "*.app" -not -name ".*" -print)
@@ -110,6 +118,7 @@ case "$APP_NAME" in
         ;;
     "Rapid.app")
         if [[ "$ALLOW_LEGACY" == "1" ]]; then
+            LEGACY_ARTIFACT=1
             echo "==> bundle: $APP_NAME (legacy name accepted via RAPID_VALIDATE_DMG_ALLOW_LEGACY=1)"
         else
             fail "legacy bundle name 'Rapid.app' found (expected 'Rapid-MLX Desktop.app'). Re-run with RAPID_VALIDATE_DMG_ALLOW_LEGACY=1 to accept legacy artifacts."
@@ -135,7 +144,15 @@ TARGET="$(readlink "$APPS_LINK")"
 [[ "$TARGET" == "/Applications" ]] || fail "Applications symlink points at '$TARGET', expected '/Applications'"
 echo "==> Applications -> $TARGET"
 
-# 4. Branded Finder presentation. Dot-prefixed support files remain hidden
+# 4. Branded Finder presentation. Legacy mode exists specifically to inspect
+# pre-v0.5.22 artifacts, which predate this presentation contract.
+if [[ "$LEGACY_ARTIFACT" == "1" ]]; then
+    echo "==> Finder presentation: skipped for pre-v0.5.22 legacy artifact"
+    echo "==> validate-dmg: OK"
+    exit 0
+fi
+
+# Dot-prefixed support files remain hidden
 # from the user's icon view but must survive both UDRW -> UDZO conversion and
 # release notarisation.
 BACKGROUND="$MOUNT/.background/background.png"

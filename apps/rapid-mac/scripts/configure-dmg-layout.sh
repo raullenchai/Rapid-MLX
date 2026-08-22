@@ -32,6 +32,7 @@ if [[ ! -f "$BACKGROUND_SOURCE" ]]; then
 fi
 
 mkdir -p "$BACKGROUND_DIR"
+rm -f "$MOUNT/.DS_Store"
 # sips ships with macOS and can rasterise SVG through ImageIO. PNG is used in
 # the volume because Finder's background-picture support is reliable for PNG
 # across every macOS version the app supports.
@@ -95,6 +96,43 @@ for _ in 1 2 3 4 5; do
 done
 if [[ ! -s "$MOUNT/.DS_Store" ]]; then
     echo "configure-dmg-layout: Finder did not persist .DS_Store" >&2
+    exit 1
+fi
+
+sync
+
+# Reopen the volume and read the values back through Finder before detaching.
+# File existence alone is insufficient: Finder can create .DS_Store before the
+# final positions and window options have been flushed.
+PERSISTED_LAYOUT="$(osascript - "$MOUNT" <<'APPLESCRIPT'
+on pointText(p)
+    return (item 1 of p as text) & "," & (item 2 of p as text)
+end pointText
+
+on rectText(r)
+    return (item 1 of r as text) & "," & (item 2 of r as text) & "," & (item 3 of r as text) & "," & (item 4 of r as text)
+end rectText
+
+on run argv
+    set volumeFolder to POSIX file (item 1 of argv) as alias
+    tell application "Finder"
+        open volumeFolder
+        delay 0.4
+        set dmgWindow to container window of volumeFolder
+        set appPosition to position of item "Rapid-MLX Desktop.app" of volumeFolder
+        set applicationsPosition to position of item "Applications" of volumeFolder
+        set iconSizeValue to icon size of icon view options of dmgWindow
+        set windowBounds to bounds of dmgWindow
+        close dmgWindow
+        return my pointText(appPosition) & "|" & my pointText(applicationsPosition) & "|" & (iconSizeValue as text) & "|" & my rectText(windowBounds)
+    end tell
+end run
+APPLESCRIPT
+)"
+
+EXPECTED_LAYOUT="180,228|540,228|96|180,120,900,580"
+if [[ "$PERSISTED_LAYOUT" != "$EXPECTED_LAYOUT" ]]; then
+    echo "configure-dmg-layout: Finder persisted unexpected layout '$PERSISTED_LAYOUT' (expected '$EXPECTED_LAYOUT')" >&2
     exit 1
 fi
 
