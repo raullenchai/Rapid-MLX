@@ -116,6 +116,44 @@ def test_distinct_model_revisions_get_distinct_cache_dirs():
     assert first != second
 
 
+def test_loaded_engine_pins_revision_identity_for_load_and_save():
+    cfg = _patched_cfg("org/model", "int8")
+    cfg.engine = SimpleNamespace(
+        scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
+    )
+    with (
+        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch(
+            "vllm_mlx.runtime.cache._cached_model_revision",
+            side_effect=["revision-at-load", "revision-after-external-update"],
+        ) as revision,
+    ):
+        load_path = get_cache_dir()
+        save_path = get_cache_dir()
+    assert load_path == save_path
+    revision.assert_called_once_with("org/model")
+
+
+def test_new_engine_recaptures_updated_revision_identity():
+    cfg = _patched_cfg("org/model", "int8")
+    cfg.engine = SimpleNamespace(
+        scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
+    )
+    with (
+        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch(
+            "vllm_mlx.runtime.cache._cached_model_revision",
+            side_effect=["revision-a", "revision-b"],
+        ),
+    ):
+        first = get_cache_dir()
+        cfg.engine = SimpleNamespace(
+            scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
+        )
+        second = get_cache_dir()
+    assert first != second
+
+
 def test_builtin_alias_resolves_to_underlying_hf_repo():
     assert (
         _resolved_model_source("deepseek-r1-32b-4bit")

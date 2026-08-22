@@ -337,12 +337,7 @@ def get_cache_dir() -> str:
     # Persisted KV tensors are reusable only for the exact model revision and
     # effective KV dtype that produced them. Tensor shape/type validation cannot
     # prove that semantic identity, so keep those axes in the directory key.
-    kv_dtype = _effective_kv_cache_dtype(cfg)
-    revision = _cached_model_revision(raw)
-    identity = (
-        f"{raw}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
-        f"\0kv={kv_dtype}\0revision={revision}"
-    )
+    identity = _semantic_cache_identity(cfg, raw)
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
     leaf = f"{safe_name}--{digest}"
     # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
@@ -403,6 +398,31 @@ def _cached_model_revision(model_name: str) -> str:
         # optional Hugging Face cache metadata.
         pass
     return source
+
+
+def _semantic_cache_identity(cfg, raw_model_name: str) -> str:
+    """Capture immutable cache identity for one loaded engine lifetime."""
+    engine = getattr(cfg, "engine", None)
+    attr = "_rapid_mlx_prefix_cache_identity"
+    if engine is not None:
+        captured = getattr(engine, attr, None)
+        if isinstance(captured, str) and captured:
+            return captured
+
+    kv_dtype = _effective_kv_cache_dtype(cfg)
+    revision = _cached_model_revision(raw_model_name)
+    identity = (
+        f"{raw_model_name}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
+        f"\0kv={kv_dtype}\0revision={revision}"
+    )
+    if engine is not None:
+        try:
+            setattr(engine, attr, identity)
+        except (AttributeError, TypeError):
+            # Foreign immutable engine wrappers still get a safe identity for
+            # this call; production BatchedEngine supports the lifetime pin.
+            pass
+    return identity
 
 
 def _file_identity(stat: os.stat_result) -> str:
