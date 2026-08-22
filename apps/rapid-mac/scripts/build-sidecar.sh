@@ -332,7 +332,7 @@ echo "==> bundling mflux --no-deps + platformdirs/piexif/toml (Images tab image-
     --no-warn-script-location \
     --no-compile \
     --no-deps \
-    'mflux==0.18.1' \
+    'mflux==0.19.0' \
     'platformdirs>=4.0,<5.0' \
     'piexif>=1.1.3,<2.0' \
     'toml>=0.10.2,<1.0'
