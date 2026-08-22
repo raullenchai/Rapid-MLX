@@ -662,11 +662,16 @@ def test_detects_tool_manager_from_resolved_launcher(
     home = tmp_path / "home"
     binary = home / ".local" / "bin" / "rapid-mlx"
     resolved = home.joinpath(*resolved_parts)
+    venv = resolved.parent.parent
+    venv.mkdir(parents=True)
+    receipt = "uv-receipt.toml" if manager == "uv" else "pipx_metadata.json"
+    (venv / receipt).write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: str(binary))
     monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("PIPX_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
     info = vc.detect_install_method()
 
@@ -699,6 +704,10 @@ def test_detects_configured_tool_manager_root(
     binary = home / ".local" / "bin" / "rapid-mlx"
     manager_root = tmp_path / "custom-tools"
     resolved = manager_root.joinpath(*relative_parts, "bin", "rapid-mlx")
+    venv = resolved.parent.parent
+    venv.mkdir(parents=True)
+    receipt = "uv-receipt.toml" if manager == "uv" else "pipx_metadata.json"
+    (venv / receipt).write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: str(binary))
     monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
@@ -712,11 +721,13 @@ def test_detects_configured_tool_manager_root(
     assert info.upgrade_argv == expected_argv
 
 
-def test_detects_global_pipx_with_global_upgrade_flag(tmp_path, monkeypatch):
+def test_global_pipx_requires_manual_privileged_upgrade(tmp_path, monkeypatch):
     home = tmp_path / "home"
     binary = "/usr/local/bin/rapid-mlx"
     pipx_home = tmp_path / "global-pipx"
     resolved = pipx_home / "venvs" / "rapid-mlx" / "bin" / "rapid-mlx"
+    resolved.parent.parent.mkdir(parents=True)
+    (resolved.parent.parent / "pipx_metadata.json").write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: binary)
     monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
@@ -724,8 +735,29 @@ def test_detects_global_pipx_with_global_upgrade_flag(tmp_path, monkeypatch):
 
     info = vc.detect_install_method()
 
-    assert info.method == "pipx"
-    assert info.upgrade_argv == ["pipx", "upgrade", "--global", "rapid-mlx"]
+    assert info.method == "unknown"
+    assert info.upgrade_argv == []
+    assert info.upgrade_command == "sudo pipx upgrade --global rapid-mlx"
+
+
+def test_manager_like_path_outside_known_root_falls_back_to_pip(tmp_path, monkeypatch):
+    """Directory names and even a receipt are insufficient outside manager roots."""
+    home = tmp_path / "home"
+    binary = home / ".local" / "bin" / "rapid-mlx"
+    venv = tmp_path / "ordinary" / "uv" / "tools" / "rapid-mlx"
+    resolved = venv / "bin" / "rapid-mlx"
+    venv.mkdir(parents=True)
+    (venv / "uv-receipt.toml").write_text("coincidental")
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
+    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    info = vc.detect_install_method()
+
+    assert info.method == "pip"
+    assert info.upgrade_argv[:3] == [vc.sys.executable, "-m", "pip"]
 
 
 def _run_install_sh_upgrade(
@@ -986,6 +1018,27 @@ def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interac
         # current installed version. The user sees the exit code and can
         # retry manually.
         assert vc.prompt_upgrade_if_available() is False
+
+
+def test_prompt_does_not_auto_run_privileged_global_pipx(monkeypatch, interactive):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="unknown",
+            upgrade_command="sudo pipx upgrade --global rapid-mlx",
+            upgrade_argv=[],
+        ),
+    )
+    with (
+        patch("builtins.input") as inp,
+        patch("subprocess.run") as run,
+    ):
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+        run.assert_not_called()
 
 
 def test_prompt_returns_false_when_offline(monkeypatch, interactive):

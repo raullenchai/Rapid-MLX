@@ -379,6 +379,9 @@ def prompt_upgrade_if_available() -> bool:
             f"(current: {installed_str})."
         )
         print(f"  Upgrade command: {info.upgrade_command}")
+        if info.method == "unknown":
+            print("  Automatic upgrade unavailable; run that command manually.\n")
+            return False
         try:
             answer = input("  Run it now? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -440,7 +443,7 @@ class InstallInfo:
         upgrade_argv: list[str],
         binary_path: str | None = None,
     ) -> None:
-        self.method = method  # one of: brew, uv, pipx, pip, install_sh
+        self.method = method  # brew, uv, pipx, pip, install_sh, or unknown
         self.upgrade_command = upgrade_command
         self.upgrade_argv = upgrade_argv
         self.binary_path = binary_path
@@ -530,35 +533,33 @@ def detect_install_method() -> InstallInfo:
                 binary_path=binary,
             )
 
-        # uv and pipx both install console entry points into a shared user bin
-        # directory, but resolve those symlinks into manager-owned venvs. Use
-        # the target, including configured tool roots, so ``rapid-mlx upgrade``
-        # updates the environment that is actually running instead of replacing
-        # its launcher with an unrelated install.sh symlink.
-        normalized_path = Path(normalized)
-        normalized_parts = normalized_path.parts
-
-        def _has_sequence(parts: tuple[str, ...]) -> bool:
-            width = len(parts)
-            return any(
-                normalized_parts[i : i + width] == parts
-                for i in range(len(normalized_parts) - width + 1)
+        # uv and pipx both resolve their shared-bin launcher into a manager-owned
+        # venv. Require three signals before dispatching a manager command:
+        # known/configured root, exact ``rapid-mlx/bin/rapid-mlx`` target, and
+        # that manager's metadata receipt. A coincidentally named ordinary venv
+        # must fall back to the running interpreter instead.
+        def _is_managed_entry(venv: Path, receipt: str) -> bool:
+            expected = venv / "bin" / "rapid-mlx"
+            return (
+                os.path.normcase(normalized)
+                == os.path.normcase(os.path.normpath(str(expected)))
+                and (venv / receipt).is_file()
             )
 
-        def _under_configured_root(env_name: str, *relative: str) -> bool:
-            root = os.environ.get(env_name)
-            if not root:
-                return False
-            managed = Path(root).expanduser().joinpath(*relative)
-            try:
-                return os.path.commonpath(
-                    [normalized, str(managed)]
-                ) == os.path.normpath(str(managed))
-            except ValueError:
-                return False
-
-        if _under_configured_root("UV_TOOL_DIR", "rapid-mlx") or _has_sequence(
-            ("uv", "tools", "rapid-mlx")
+        uv_tool_dir = os.environ.get("UV_TOOL_DIR")
+        if uv_tool_dir:
+            uv_roots = [Path(uv_tool_dir).expanduser()]
+        else:
+            data_home = os.environ.get("XDG_DATA_HOME")
+            uv_data = (
+                Path(data_home).expanduser()
+                if data_home
+                else Path.home() / ".local/share"
+            )
+            uv_roots = [uv_data / "uv" / "tools"]
+        if any(
+            _is_managed_entry(root / "rapid-mlx", "uv-receipt.toml")
+            for root in uv_roots
         ):
             return InstallInfo(
                 method="uv",
@@ -567,26 +568,35 @@ def detect_install_method() -> InstallInfo:
                 binary_path=binary,
             )
 
-        is_global_pipx = _under_configured_root(
-            "PIPX_GLOBAL_HOME", "venvs", "rapid-mlx"
-        )
-        if not os.environ.get("PIPX_GLOBAL_HOME"):
-            try:
-                is_global_pipx = is_global_pipx or os.path.commonpath(
-                    [normalized, "/opt/pipx/venvs/rapid-mlx"]
-                ) == os.path.normpath("/opt/pipx/venvs/rapid-mlx")
-            except ValueError:
-                pass
-        if is_global_pipx:
+        global_pipx_home = Path(
+            os.environ.get("PIPX_GLOBAL_HOME", "/opt/pipx")
+        ).expanduser()
+        if _is_managed_entry(
+            global_pipx_home / "venvs" / "rapid-mlx", "pipx_metadata.json"
+        ):
             return InstallInfo(
-                method="pipx",
-                upgrade_command="pipx upgrade --global rapid-mlx",
-                upgrade_argv=["pipx", "upgrade", "--global", "rapid-mlx"],
+                method="unknown",
+                upgrade_command="sudo pipx upgrade --global rapid-mlx",
+                upgrade_argv=[],
                 binary_path=binary,
             )
 
-        if _under_configured_root("PIPX_HOME", "venvs", "rapid-mlx") or _has_sequence(
-            ("pipx", "venvs", "rapid-mlx")
+        pipx_home = os.environ.get("PIPX_HOME")
+        if pipx_home:
+            pipx_homes = [Path(pipx_home).expanduser()]
+        else:
+            data_home = os.environ.get("XDG_DATA_HOME")
+            pipx_homes = [
+                Path.home() / ".local/pipx",
+                Path.home() / ".local/share/pipx",
+            ]
+            if data_home:
+                pipx_homes.insert(0, Path(data_home).expanduser() / "pipx")
+            if sys.platform == "darwin":
+                pipx_homes.insert(0, Path.home() / "Library/Application Support/pipx")
+        if any(
+            _is_managed_entry(home / "venvs" / "rapid-mlx", "pipx_metadata.json")
+            for home in pipx_homes
         ):
             return InstallInfo(
                 method="pipx",
