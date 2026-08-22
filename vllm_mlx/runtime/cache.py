@@ -360,23 +360,13 @@ def _cached_model_revision(model_name: str) -> str:
             resolved = candidate
         if resolved.is_dir():
             digest = hashlib.sha256(str(resolved).encode("utf-8"))
-            # Model implementations in the shared/vendored loaders may use
-            # indexed shards, nested files, or MLX/torch weight containers.
-            # Track all supported weight suffixes recursively, plus every
-            # index manifest. The manifest bytes also capture its weight_map.
-            weight_suffixes = {".safetensors", ".npz", ".bin", ".pt", ".pth"}
-            tracked = {resolved / "config.json"}
-            # One traversal covers manifests, custom model code (including
-            # sibling imports), and supported weight containers.
-            for path in resolved.rglob("*"):
-                if not path.is_file():
-                    continue
-                if (
-                    path.name.endswith(".index.json")
-                    or path.suffix == ".py"
-                    or path.suffix.lower() in weight_suffixes
-                ):
-                    tracked.add(path)
+            # Custom model code can read arbitrary checkpoint-local assets, so
+            # an extension allowlist cannot define semantic identity safely.
+            # Build a complete regular-file manifest in one traversal. Every
+            # file gets replacement-sensitive metadata; reasonably small files
+            # also get a byte hash without forcing startup to stream huge
+            # weight shards from disk.
+            tracked = [path for path in resolved.rglob("*") if path.is_file()]
             for path in sorted(tracked):
                 try:
                     stat = path.stat()
@@ -388,9 +378,7 @@ def _cached_model_revision(model_name: str) -> str:
                     continue
                 digest.update(str(relative).encode("utf-8"))
                 digest.update(_file_identity(stat).encode("ascii"))
-                # Config/index/code files are small and encode architecture /
-                # shard identity. Hash their bytes; large weights use metadata.
-                if path.suffix in {".json", ".py"}:
+                if stat.st_size <= 8 * 1024 * 1024:
                     try:
                         digest.update(path.read_bytes())
                     except OSError:

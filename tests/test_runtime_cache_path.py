@@ -239,6 +239,20 @@ def test_local_custom_model_code_change_invalidates(tmp_path):
     assert first != second
 
 
+def test_local_custom_model_arbitrary_asset_change_invalidates(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "custom", "model_file": "model.py"})
+    )
+    (tmp_path / "model.py").write_text("# reads params.table\n")
+    asset = tmp_path / "params.table"
+    asset.write_bytes(b"semantic-version-one")
+    first = _cached_model_revision(str(tmp_path))
+
+    asset.write_bytes(b"semantic-version-two")
+    second = _cached_model_revision(str(tmp_path))
+    assert first != second
+
+
 def test_traversal_double_dot_does_not_escape_root():
     """A name with ``..`` must NOT escape the prefix-cache root."""
     p = _resolve("../evil")
