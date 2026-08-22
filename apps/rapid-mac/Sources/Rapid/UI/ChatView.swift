@@ -691,7 +691,7 @@ struct ChatView: View {
                         showsAttachmentMenu = false
                         chooseFiles()
                     } label: {
-                    Label("Upload file", systemImage: "doc")
+                        Label("Upload file", systemImage: "doc")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
@@ -712,7 +712,11 @@ struct ChatView: View {
                     .padding(.vertical, RapidTheme.Space.xs)
                     .contentShape(Rectangle())
                     .disabled(!supportsImageInput)
-                    .help("Current model doesn't support photos")
+                    .help(
+                        supportsImageInput
+                            ? "Upload photo"
+                            : "Current model doesn't support photos"
+                    )
                     .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
                 }
                 .padding(RapidTheme.Space.sm)
