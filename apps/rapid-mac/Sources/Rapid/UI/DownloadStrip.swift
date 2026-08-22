@@ -61,9 +61,16 @@ struct DownloadStrip: View {
     }
 
     private var completedCleanupKey: String {
-        downloads.jobs.values.compactMap { job -> String? in
+        Self.completedCleanupKey(jobs: downloads.jobs, isResident: isResident)
+    }
+
+    static func completedCleanupKey(
+        jobs: [String: DownloadManager.Job],
+        isResident: (String) -> Bool
+    ) -> String {
+        jobs.values.compactMap { job -> String? in
             guard case .completed = job.status else { return nil }
-            return "\(job.alias):\(isResident(job.alias) ? "resident" : "cached")"
+            return "\(job.alias):\(job.instanceID):\(isResident(job.alias) ? "resident" : "cached")"
         }.sorted().joined(separator: "|")
     }
 
@@ -79,9 +86,9 @@ struct DownloadStrip: View {
 
     static func isSameCompletedJob(
         _ job: DownloadManager.Job?,
-        as expectedID: ObjectIdentifier
+        as expectedID: UUID
     ) -> Bool {
-        guard let job, ObjectIdentifier(job) == expectedID else { return false }
+        guard let job, job.instanceID == expectedID else { return false }
         if case .completed = job.status { return true }
         return false
     }
@@ -109,9 +116,9 @@ struct DownloadStrip: View {
             ) {
                 downloads.dismissJob(alias: alias)
             }
-            let delayed = completed.compactMap { alias -> (String, ObjectIdentifier)? in
+            let delayed = completed.compactMap { alias -> (String, UUID)? in
                 guard !isResident(alias), let job = downloads.job(for: alias) else { return nil }
-                return (alias, ObjectIdentifier(job))
+                return (alias, job.instanceID)
             }
             guard !delayed.isEmpty else { return }
             try? await Task.sleep(for: .seconds(8))

@@ -456,17 +456,38 @@ struct DownloadStripCaptionTests {
         let downloads = DownloadManager()
         let original = downloads._testingSeedJob(alias: "image-model")
         downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
-        let originalID = ObjectIdentifier(original)
+        let originalID = original.instanceID
         downloads.dismissJob(alias: "image-model")
 
         let replacement = downloads._testingSeedJob(alias: "image-model")
         downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
-        #expect(ObjectIdentifier(replacement) != originalID)
+        #expect(replacement.instanceID != originalID)
         #expect(!DownloadStrip.isSameCompletedJob(
             downloads.job(for: "image-model"),
             as: originalID
         ))
         #expect(downloads.job(for: "image-model") === replacement)
+    }
+
+    @Test("A completed replacement under the same alias reschedules cleanup")
+    func completedReplacementChangesCleanupKey() {
+        let downloads = DownloadManager()
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let originalKey = DownloadStrip.completedCleanupKey(
+            jobs: downloads.jobs,
+            isResident: { _ in false }
+        )
+        downloads.dismissJob(alias: "image-model")
+
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let replacementKey = DownloadStrip.completedCleanupKey(
+            jobs: downloads.jobs,
+            isResident: { _ in false }
+        )
+
+        #expect(originalKey != replacementKey)
     }
 
     @Test("Idle phase reads as 'Starting…' — the strip never shows raw enum names")
