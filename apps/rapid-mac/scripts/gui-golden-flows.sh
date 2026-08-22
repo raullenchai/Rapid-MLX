@@ -3862,7 +3862,7 @@ flow_image_generation() {
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
-    start_persona resident-load-rejected
+    start_persona resident-load-rejected FAKE_REJECT_IMAGE_SIDECAR=1
 
     dismiss_first_run
 
@@ -3930,11 +3930,30 @@ flow_resident_load_rejected() {
     press "$OUT/rlr-ig-readiness.json" Readiness.Action "$OUT/rlr-ig-start.json" \
         || die "Images Readiness.Action is not pressable - the load button is dead"
 
-    wait_fake_event ".event == \"server_started\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
-        "the Images action never started its dedicated image sidecar"
+    wait_fake_event ".event == \"server_start_rejected\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
+        "the fake never rejected the dedicated image sidecar"
     if jq -e 'select(.event == "model_load")' "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
         die "Images incorrectly issued an in-process /v1/models/load"
     fi
+
+    # The dedicated process failure must remain actionable on the Images
+    # surface, not disappear into logs after avoiding the resident 500.
+    local i shown=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/rlr-shown.json"
+        if jq -e '[.data.ui_elements[]?]
+                  | map(((.title // "") | tostring) + " " + ((.value // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
+                  | join(" ") | test("rapid-mlx\\[image\\]")' \
+               "$OUT/rlr-shown.json" >/dev/null 2>&1; then
+            shown=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$shown" == 1 ]] \
+        || die "the image-sidecar failure never appeared on the Images surface"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+        "$OUT/rlr-shown.json" >/dev/null \
+        || die "the Images failure offered no recovery action"
 
     log "  resident-load-rejected OK"
 }
