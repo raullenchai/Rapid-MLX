@@ -165,6 +165,11 @@ class ModelProfile:
     mtp_draft_model: str | None = None
     mtp_speculative_tokens: int = 3
     default_max_tokens: int | None = None  # Per-model default when user omits
+    # Bench-verified service prefill chunk.  This is deliberately an explicit
+    # per-profile recommendation rather than an architecture inference:
+    # recurrent families have materially different chunk-overhead curves.
+    # ``None`` retains SchedulerConfig's general default.
+    recommended_prefill_step_size: int | None = None
 
     # SuffixDecoding eligibility — populated from cross-model bench (issue #269).
     # ``None`` for ``suffix_bench_speedup`` means "not benched yet"; the tier

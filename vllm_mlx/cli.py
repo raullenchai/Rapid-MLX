@@ -2638,23 +2638,19 @@ def _config_declares_linear_attention(config: dict | None) -> bool:
 
 
 def _prefers_recurrent_prefill_chunks(model_name: str) -> bool:
-    """Whether smaller prefill chunks improve this recurrent architecture.
+    """Whether this model profile has a bench-verified smaller chunk.
 
-    Recurrent state has a much lower per-chunk memory floor than dense KV but
-    long chunks still monopolize the continuous-batching scheduler. Keep this
-    separate from ``_needs_bounded_trim_free_reuse``: sliding-window Gemma and
-    DeepSeek cache variants need bounded prefix snapshots, but are not evidence
-    for changing the prefill chunk size.
+    Do not infer this from recurrent/hybrid architecture.  Qwen3.5 4B/9B keeps
+    throughput while reducing memory at 512, but repeated measurements found
+    6--16% regressions on Bonsai, LFM2.5, and Qwen3.5 MoE.  Keep this explicit
+    and separate from ``_needs_bounded_trim_free_reuse``.
     """
     from .model_aliases import resolve_profile as _resolve_alias
 
     profile = _resolve_alias(model_name)
-    if profile is not None and (
-        profile.is_hybrid or (profile.is_hybrid_explicit and not profile.is_hybrid)
-    ):
-        return True
-    return _config_declares_linear_attention(
-        _resolve_checkpoint_config(model_name, profile)
+    return bool(
+        profile is not None
+        and getattr(profile, "recommended_prefill_step_size", None) is not None
     )
 
 
@@ -2666,10 +2662,14 @@ def _resolve_prefill_step_size(
 
     if user_set_explicit or not _prefers_recurrent_prefill_chunks(model_name):
         return configured
-    resolved = min(configured, _DEFAULT_RECURRENT_PREFILL_STEP_SIZE)
+    from .model_aliases import resolve_profile as _resolve_alias
+
+    profile = _resolve_alias(model_name)
+    recommendation = getattr(profile, "recommended_prefill_step_size", None)
+    resolved = min(configured, recommendation or _DEFAULT_RECURRENT_PREFILL_STEP_SIZE)
     if resolved != configured:
         _logging.getLogger(__name__).info(
-            "Recurrent/linear-attention model detected: auto-setting "
+            "Bench-verified model profile: auto-setting "
             "--prefill-step-size=%d (pass --prefill-step-size explicitly to override)",
             resolved,
         )
@@ -9893,8 +9893,8 @@ Examples:
         type=int,
         default=2048,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 2048; recurrent/linear-attention "
-        "models auto-tune to 512 unless explicitly set)",
+        "but can improve prefill throughput. (default: 2048; bench-verified model "
+        "profiles may recommend a smaller value unless explicitly set)",
     )
     serve_parser.add_argument(
         "--vision-min-pixels",

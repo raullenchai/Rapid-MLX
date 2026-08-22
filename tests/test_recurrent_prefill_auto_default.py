@@ -5,13 +5,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import vllm_mlx.cli as cli
+from vllm_mlx.model_aliases import resolve_profile
 
 
-def _profile(*, hybrid: bool, explicit: bool = False):
+def _profile(
+    *, hybrid: bool, explicit: bool = False, recommended_prefill_step_size=None
+):
     return SimpleNamespace(
         is_hybrid=hybrid,
         is_hybrid_explicit=explicit,
         hf_path="unused",
+        recommended_prefill_step_size=recommended_prefill_step_size,
     )
 
 
@@ -41,10 +45,12 @@ def test_mamba_and_recurrent_checkpoint_markers_are_detected():
     assert cli._config_declares_linear_attention({"model_type": "qwen3_next"})
 
 
-def test_recurrent_alias_auto_defaults_to_512(monkeypatch):
+def test_bench_verified_alias_auto_defaults_to_512(monkeypatch):
     monkeypatch.setattr(
         "vllm_mlx.model_aliases.resolve_profile",
-        lambda _name: _profile(hybrid=False, explicit=True),
+        lambda _name: _profile(
+            hybrid=False, explicit=True, recommended_prefill_step_size=512
+        ),
     )
     assert (
         cli._resolve_prefill_step_size(
@@ -57,7 +63,7 @@ def test_recurrent_alias_auto_defaults_to_512(monkeypatch):
 def test_explicit_prefill_step_size_always_wins(monkeypatch):
     monkeypatch.setattr(
         "vllm_mlx.model_aliases.resolve_profile",
-        lambda _name: _profile(hybrid=True),
+        lambda _name: _profile(hybrid=True, recommended_prefill_step_size=512),
     )
     assert (
         cli._resolve_prefill_step_size(
@@ -87,11 +93,52 @@ def test_gemma_sliding_window_keeps_dense_default(monkeypatch):
     )
 
 
-def test_bare_linear_attention_checkpoint_is_detected(monkeypatch):
+def test_bare_linear_attention_checkpoint_keeps_general_default(monkeypatch):
     monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
         cli,
         "_resolve_checkpoint_config",
         lambda _name, _profile: {"layer_types": ["linear_attention"]},
     )
-    assert cli._prefers_recurrent_prefill_chunks("/models/recurrent")
+    assert not cli._prefers_recurrent_prefill_chunks("/models/recurrent")
+    assert (
+        cli._resolve_prefill_step_size(
+            model_name="/models/recurrent",
+            configured=2048,
+            user_set_explicit=False,
+        )
+        == 2048
+    )
+
+
+def test_only_bench_verified_qwen_profiles_opt_in():
+    for alias in (
+        "qwen3.5-4b-4bit",
+        "qwen3.5-9b-4bit",
+    ):
+        assert resolve_profile(alias).recommended_prefill_step_size == 512
+
+    for alias in (
+        "qwen3.5-27b-4bit",
+        "qwen3.5-35b-4bit",
+        "qwen3.5-4b-6bit",
+        "qwen3.5-4b-8bit",
+        "qwen3.5-9b-6bit",
+        "qwen3.5-9b-8bit",
+    ):
+        assert resolve_profile(alias).recommended_prefill_step_size is None
+
+
+def test_prefill_help_describes_profile_scoped_recommendation():
+    serve_parser = next(
+        action.choices["serve"]
+        for action in cli.build_parser()._actions
+        if getattr(action, "choices", None) and "serve" in action.choices
+    )
+    action = next(
+        action
+        for action in serve_parser._actions
+        if "--prefill-step-size" in action.option_strings
+    )
+    assert "bench-verified model profiles" in action.help
+    assert "recurrent/linear-attention models auto-tune" not in action.help

@@ -23,6 +23,7 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-4B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "recommended_prefill_step_size": 512,
     "pflash_tier": "verified"
   },
   "qwen3.5-4b-8bit": {
@@ -57,6 +58,7 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-9B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "recommended_prefill_step_size": 512,
     "pflash_tier": "verified",
     "turboquant_tier": "k8v4_verified"
   },
