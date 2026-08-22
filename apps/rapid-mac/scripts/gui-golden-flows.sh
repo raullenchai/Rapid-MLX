@@ -3862,8 +3862,7 @@ flow_image_generation() {
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
-    start_persona resident-load-rejected FAKE_REJECT_IMAGE_LOAD=1 \
-        FAKE_RESIDENT_LOAD_DELAY_MS=1500
+    start_persona resident-load-rejected FAKE_REJECT_IMAGE_SIDECAR=1
 
     dismiss_first_run
 
@@ -3923,52 +3922,38 @@ flow_resident_load_rejected() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect.square")' "$OUT/rlr-ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing - the picker did not finish resolving"
 
-    # 3. The readiness action routes through ensureServing and hits the
-    #    in-process /v1/models/load endpoint, not a process restart.
+    # 3. Image models are deliberately not residency-eligible. Starting one
+    #    must replace the chat sidecar instead of sending the incompatible
+    #    image architecture through the chat server's /v1/models/load path.
     wait_identifier Readiness.Action "$OUT/rlr-ig-readiness.json" \
         || die "Images readiness has no action to load its model"
     press "$OUT/rlr-ig-readiness.json" Readiness.Action "$OUT/rlr-ig-start.json" \
         || die "Images Readiness.Action is not pressable - the load button is dead"
 
-    # 4. The wire must show the load was ATTEMPTED in-process and REJECTED.
-    wait_fake_event '.event == "model_load"' \
-        "the Images action never issued an in-process /v1/models/load"
-
-    # The request is deliberately held open: the tap must immediately replace
-    # the CTA with a working state. Before this regression fix HF was already
-    # writing the checkpoint while the UI still said "isn't downloaded yet"
-    # and kept showing a pressable Download & start button.
-    see_main "$OUT/rlr-in-flight.json"
-    jq -e '[.data.ui_elements[]? | .value? | strings] | any(contains("Downloading or loading the image model"))' \
-        "$OUT/rlr-in-flight.json" >/dev/null \
-        || die "resident image download started without visible working feedback"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
-        "$OUT/rlr-in-flight.json" >/dev/null; then
-        die "Download & start remained pressable while its resident load was in flight"
+    wait_fake_event ".event == \"server_start_rejected\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
+        "the fake never rejected the dedicated image sidecar"
+    if jq -e 'select(.event == "model_load")' "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
+        die "Images incorrectly issued an in-process /v1/models/load"
     fi
-    wait_fake_event '.event == "model_load_rejected"' \
-        "the fake did not reject the in-process image load (FAKE_REJECT_IMAGE_LOAD not applied)"
 
-    # 5. The rejection's actionable reason must be VISIBLE on the Images
-    #    surface (the readiness banner), not only in the log drawer.
+    # The dedicated process failure must remain actionable on the Images
+    # surface, not disappear into logs after avoiding the resident 500.
     local i shown=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/rlr-shown.json"
         if jq -e '[.data.ui_elements[]?]
                   | map(((.title // "") | tostring) + " " + ((.value // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
-                  | join(" ") | test("rapid-mlx\\[image\\]")' \
+                  | join(" ") | test("couldn.t load|Check the model files|choose another model"; "i")' \
                "$OUT/rlr-shown.json" >/dev/null 2>&1; then
             shown=1; break
         fi
         sleep 0.25
     done
     [[ "$shown" == 1 ]] \
-        || die "the engine's rejection reason never appeared on the Images surface - it was swallowed into the log (#1838)"
-
-    # 6. The surface offers a recovery action, not a dead button.
+        || die "the actionable image-sidecar diagnosis never appeared on the Images surface"
     jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
         "$OUT/rlr-shown.json" >/dev/null \
-        || die "the Images readiness banner did not offer a recovery action after the rejection"
+        || die "the Images failure offered no recovery action"
 
     log "  resident-load-rejected OK"
 }
@@ -3979,52 +3964,15 @@ flow_launch_integrations() {
     dismiss_first_run
     see_main "$OUT/main.json"
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
+    wait_tree_text "Connect your agents" "$OUT/launch.json" 40
 
-    # The engine-owned registry currently resolves to fourteen distinct
-    # products after the overlapping Claude Code and Continue entries are
-    # merged. Count the actual per-row action, not a container: putting the id
-    # on the row propagates it to the Copy button in SwiftUI and makes the
-    # button look addressable while preventing it from having its own stable
-    # identity.
-    for _ in {1..40}; do
-        see_main "$OUT/launch.json"
-        count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 14 ]] && break
-        sleep 0.25
-    done
-    [[ "$count" == 14 ]] || die "Launch rendered $count integrations; engine registry exposes 14 (#1715)"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch.json" >/dev/null \
-        || die "Launch omitted config-writing target Cline"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch.json" >/dev/null \
-        || die "Launch omitted adapter profile smolagents"
-    # The two one-session launch commands are the useful fast path, not an
-    # implementation-detail registry order. Keep them first and in the product
-    # order promised by the Launch page.
-    local first_two
-    first_two="$(jq -r '[.data.ui_elements[]?
-                         | select((.identifier // "")
-                                  | startswith("Launch.Integration.Copy."))
-                         | .identifier]
-                        | .[0:2]
-                        | join(",")' "$OUT/launch.json")"
-    [[ "$first_two" == "Launch.Integration.Copy.claude-code,Launch.Integration.Copy.codex" ]] \
-        || die "Launch did not lead with Claude Code then Codex (got: $first_two)"
-    # The card itself is not the action. Every visible row must publish a
-    # distinct Copy button so AX/keyboard users can invoke the same command a
-    # pointer user can, and every one is disabled honestly until a live model
-    # has minted a usable endpoint/key.
-    local copy_count enabled_copy_count
-    copy_count="$(jq '[.data.ui_elements[]?
-                       | (.identifier // "")
-                       | select(startswith("Launch.Integration.Copy."))]
-                      | unique | length' "$OUT/launch.json")"
-    [[ "$copy_count" == 14 ]] \
-        || die "Launch rendered $copy_count addressable Copy buttons for 14 integrations"
-    enabled_copy_count="$(jq '[.data.ui_elements[]?
-                               | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
-                                        and .enabled == true)] | length' "$OUT/launch.json")"
-    [[ "$enabled_copy_count" == 0 ]] \
-        || die "Launch enabled $enabled_copy_count copy commands before a model was ready"
+    # Cold Launch is a beginner path, not a wall of dead commands. It should
+    # offer the same actionable readiness banner as Chat and reveal no setup
+    # snippets until the endpoint/key actually exist.
+    count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
+    [[ "$count" == 0 ]] || die "Cold Launch rendered $count dead integration commands"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' "$OUT/launch.json" >/dev/null \
+        || die "Cold Launch offered no primary model-start action"
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -4032,7 +3980,21 @@ flow_launch_integrations() {
     start_model
     see_main "$OUT/launch-model-ready.json"
     press "$OUT/launch-model-ready.json" Sidebar.Launch "$OUT/launch-ready-open.json"
-    local i ready_copies=0
+    # Ready Launch leads with three common choices. The registry remains fully
+    # reachable behind one explicit disclosure instead of occupying the page by
+    # default.
+    wait_identifier ConnectTools.MoreIntegrations "$OUT/launch-ready.json"
+    local ready_copies
+    ready_copies="$(jq '[.data.ui_elements[]?
+                         | select(((.identifier // "")
+                                   | startswith("Launch.Integration.Copy."))
+                                  and .enabled == true)] | length' "$OUT/launch-ready.json")"
+    [[ "$ready_copies" == 3 ]] \
+        || die "Ready Launch should lead with 3 common integrations, got $ready_copies"
+    press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
+        "$OUT/launch-more-press.json" \
+        || die "More integrations disclosure is not pressable"
+    local i
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch-ready.json"
         ready_copies="$(jq '[.data.ui_elements[]?
@@ -4045,6 +4007,19 @@ flow_launch_integrations() {
     done
     [[ "$ready_copies" == 14 ]] \
         || die "Launch enabled $ready_copies of 14 copy commands after the chat model was ready"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch-ready.json" >/dev/null \
+        || die "Expanded Launch omitted config-writing target Cline"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch-ready.json" >/dev/null \
+        || die "Expanded Launch omitted adapter profile smolagents"
+    local first_two
+    first_two="$(jq -r '[.data.ui_elements[]?
+                         | select((.identifier // "")
+                                  | startswith("Launch.Integration.Copy."))
+                         | .identifier]
+                        | .[0:2]
+                        | join(",")' "$OUT/launch-ready.json")"
+    [[ "$first_two" == "Launch.Integration.Copy.claude-code,Launch.Integration.Copy.codex" ]] \
+        || die "Launch did not lead with Claude Code then Codex (got: $first_two)"
     local integration_id copied_command
     while IFS= read -r integration_id; do
         pbcopy < /dev/null
@@ -4329,24 +4304,22 @@ flow_audio_readiness() {
     # nor remain copyable while their selected chat model is not serving.
     press "$OUT/speech-resident.json" Sidebar.Launch "$OUT/launch-from-audio.json" \
         || die "Sidebar.Launch is not pressable from an Audio residency"
-    local launch_copy_count=0
+    local launch_copy_count=0 launch_ready=0
     for ((i=0; i<40; i++)); do
         see_main "$OUT/launch-from-audio.json"
         launch_copy_count="$(jq '[.data.ui_elements[]?
                                   | (.identifier // "")
                                   | select(startswith("Launch.Integration.Copy."))]
                                  | unique | length' "$OUT/launch-from-audio.json")"
-        [[ "$launch_copy_count" == 14 ]] && break
+        if [[ "$launch_copy_count" == 0 ]] &&
+           jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+              "$OUT/launch-from-audio.json" >/dev/null; then
+            launch_ready=1; break
+        fi
         sleep 0.25
     done
-    [[ "$launch_copy_count" == 14 ]] \
-        || die "Launch did not finish loading integrations from Audio"
-    if jq -e '[.data.ui_elements[]?
-               | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
-                        and .enabled == true)] | length > 0' \
-            "$OUT/launch-from-audio.json" >/dev/null; then
-        die "Launch enabled agent commands while an Audio model was serving"
-    fi
+    [[ "$launch_ready" == 1 ]] \
+        || die "Launch exposed dead commands or no chat-model start action from Audio"
     if jq -e '[.data.ui_elements[]? | .value? | strings]
               | any(contains("fake-qwen3-tts")
                     and (contains("--model")

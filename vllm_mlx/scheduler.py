@@ -514,7 +514,18 @@ class SchedulerConfig:
     # RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS; 0 explicitly disables it.
     idle_cache_clear_seconds: float | None = None
 
+    # Independent MLLM vision admission budget. ``None`` preserves legacy
+    # programmatic behavior by letting BatchedEngine use prefill_step_size.
+    # CLI frontends always resolve this explicitly so profile-selected chunks
+    # can retain the safe MLLM default without taking control from operators.
+    vision_prefill_token_budget: int | None = None
+
     def __post_init__(self) -> None:
+        if (
+            self.vision_prefill_token_budget is not None
+            and self.vision_prefill_token_budget <= 0
+        ):
+            raise ValueError("vision_prefill_token_budget must be positive")
         if self.vision_min_pixels < 0 or self.vision_max_pixels < 0:
             raise ValueError("vision pixel bounds must be non-negative")
         if (

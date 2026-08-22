@@ -265,7 +265,7 @@ def _prefill_cap_violation(requests, prefill_step_size: int):
     if vision_tokens > max_batch_tokens:
         return (
             f"Vision-request prompt tokens ({vision_tokens}) exceeds the "
-            f"per-batch cap ({max_batch_tokens} = prefill_step_size "
+            f"per-batch cap ({max_batch_tokens} = vision token budget "
             f"{prefill_step_size} × {num_vision} vision request(s)). "
             f"For image inputs, downscale the image; for text inputs, "
             f"shorten the prompt or restart the server with "
@@ -583,6 +583,7 @@ class MLLMBatchGenerator:
         vision_cache_size: int = 100,
         vision_min_pixels: int = 0,
         vision_max_pixels: int = 0,
+        vision_prefill_token_budget: int = 8192,
     ):
         """
         Initialize MLLM batch generator.
@@ -602,10 +603,14 @@ class MLLMBatchGenerator:
             vision_cache_size: Max entries in vision cache
             vision_min_pixels: Optional processor-side minimum image pixels
             vision_max_pixels: Optional processor-side maximum image pixels
+            vision_prefill_token_budget: Per-image-request admission budget;
+                independent from the language-model prefill chunk. Appended to
+                preserve positional compatibility with existing callers.
         """
         self.model = model
         self.processor = processor
         self.mm_processor = mm_processor
+        self.vision_prefill_token_budget = vision_prefill_token_budget
 
         # Get language model for text generation
         self.language_model = getattr(model, "language_model", model)
@@ -1355,7 +1360,7 @@ class MLLMBatchGenerator:
         # vision-encoding path and do not contribute vision tokens, so they
         # are exempt from the cap (#1848) — a >8k text-only prompt must not
         # be rejected just because ``prefill_step_size`` defaults to 8192.
-        _cap_help = _prefill_cap_violation(requests, self.prefill_step_size)
+        _cap_help = _prefill_cap_violation(requests, self.vision_prefill_token_budget)
         if _cap_help is not None:
             raise ClientRequestError(_cap_help)
 

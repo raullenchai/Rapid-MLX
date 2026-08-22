@@ -168,9 +168,19 @@ final class ImageGenViewModel {
 
     private let client = ImageClient()
     private let server: ServerManager
+    @ObservationIgnored
+    private let catalogLoader: (URL) async -> [ModelEntry]
+    @ObservationIgnored
+    private var catalogRefreshGeneration: UInt = 0
 
-    init(server: ServerManager) {
+    init(
+        server: ServerManager,
+        catalogLoader: @escaping (URL) async -> [ModelEntry] = {
+            await ModelCatalog.imageEntries(binary: $0)
+        }
+    ) {
         self.server = server
+        self.catalogLoader = catalogLoader
     }
 
     var canSubmit: Bool {
@@ -196,8 +206,13 @@ final class ImageGenViewModel {
 
     /// Load the image-gen alias catalog (safe to call repeatedly).
     func refreshCatalog() async {
+        catalogRefreshGeneration &+= 1
+        let refreshGeneration = catalogRefreshGeneration
         guard let binary = server.binaryPath else { return }
-        imageModels = await ModelCatalog.imageEntries(binary: binary)
+        let loaded = await catalogLoader(binary)
+        guard !Task.isCancelled,
+              refreshGeneration == catalogRefreshGeneration else { return }
+        imageModels = loaded
         catalogLoaded = true
         resolveAlias()
     }
@@ -255,7 +270,8 @@ final class ImageGenViewModel {
                 alias: target.alias,
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
-                imageMode: .generation
+                imageMode: .generation,
+                residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
             }
@@ -288,7 +304,8 @@ final class ImageGenViewModel {
                 alias: target.alias,
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
-                imageMode: .editing
+                imageMode: .editing,
+                residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
             }

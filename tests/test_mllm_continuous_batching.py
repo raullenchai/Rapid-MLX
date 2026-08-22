@@ -257,8 +257,28 @@ class TestMLLMSchedulerConfig:
         # prefill_batch_size set equal to max_num_seqs to avoid batch extend issues
         assert config.prefill_batch_size == 16
         assert config.completion_batch_size == 16
+        assert config.vision_prefill_token_budget == 8192
         assert config.enable_vision_cache is True
         assert config.vision_cache_size == 100
+
+    def test_vision_budget_preserves_direct_large_prefill_compatibility(self):
+        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+
+        assert (
+            MLLMSchedulerConfig(prefill_step_size=16_384).vision_prefill_token_budget
+            == 16_384
+        )
+        assert (
+            MLLMSchedulerConfig(prefill_step_size=512).vision_prefill_token_budget
+            == 512
+        )
+        assert (
+            MLLMSchedulerConfig(
+                prefill_step_size=512,
+                vision_prefill_token_budget=12_000,
+            ).vision_prefill_token_budget
+            == 12_000
+        )
 
     def test_custom_config(self):
         """Test custom configuration."""

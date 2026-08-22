@@ -139,6 +139,7 @@ harness/scorecard/scorecard-*.md
 
 # Local agent tracker — never commit
 TODO.md
+.agents/
 .wrangler/
 
 # CC operating charter — local-only per raullen 2026-07-05/06

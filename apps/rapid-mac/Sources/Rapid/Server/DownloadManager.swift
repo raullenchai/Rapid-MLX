@@ -83,6 +83,10 @@ final class DownloadManager {
     @Observable
     final class Job: Identifiable, Equatable {
         let id: String  // == alias
+        /// Stable identity for this particular attempt. Unlike
+        /// ``ObjectIdentifier``, this cannot be reused after ARC releases an
+        /// earlier job with the same alias.
+        let instanceID = UUID()
         let alias: String
         let progress: DownloadProgress
         fileprivate(set) var status: Status

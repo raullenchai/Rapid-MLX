@@ -176,6 +176,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "mtp_draft_model",
             "mtp_speculative_tokens",
             "default_max_tokens",
+            "recommended_prefill_step_size",
             "suffix_decoding_tier",
             "suffix_bench_speedup",
             "supports_dflash",
@@ -381,6 +382,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
 
     ddtree_speculative_tokens = _optional_positive_int("ddtree_speculative_tokens")
     ddtree_tree_budget = _optional_positive_int("ddtree_tree_budget")
+    recommended_prefill_step_size = _optional_positive_int(
+        "recommended_prefill_step_size"
+    )
 
     # ``min_memory_gb`` (codex #1069 round 3 [NIT #3]) — accepted as a
     # positive number (int or float). ``None`` = no hardware gate;
@@ -542,6 +546,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         mtp_draft_model=mtp_draft_model,
         mtp_speculative_tokens=mtp_speculative_tokens,
         default_max_tokens=value.get("default_max_tokens"),
+        recommended_prefill_step_size=recommended_prefill_step_size,
         suffix_decoding_tier=tier,
         suffix_bench_speedup=speedup,
         supports_dflash=supports_dflash,

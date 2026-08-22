@@ -2878,6 +2878,15 @@ Examples:
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
     )
     parser.add_argument(
+        "--vision-prefill-token-budget",
+        type=int,
+        default=None,
+        help=(
+            "Advanced per-vision-request admission budget. Defaults to 8192; "
+            "explicit --prefill-step-size keeps the legacy shared limit."
+        ),
+    )
+    parser.add_argument(
         "--vision-min-pixels",
         type=int,
         default=0,
@@ -3157,8 +3166,22 @@ Examples:
     ):
         parser.error("--vision-min-pixels must not exceed --vision-max-pixels")
 
+    import sys
+
+    prefill_user_set_explicit = "--prefill-step-size" in sys.argv or any(
+        value.startswith("--prefill-step-size=") for value in sys.argv
+    )
+    vision_prefill_token_budget = args.vision_prefill_token_budget
+    if vision_prefill_token_budget is None:
+        vision_prefill_token_budget = (
+            args.prefill_step_size if prefill_user_set_explicit else 8192
+        )
+    if vision_prefill_token_budget <= 0:
+        parser.error("--vision-prefill-token-budget must be positive")
+
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
+        vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,
         pflash_config=server_pflash_config,

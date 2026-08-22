@@ -3481,11 +3481,15 @@ struct QuickstartView: View {
                 selectionAlias: coordinator.selection.alias,
                 alreadyRequested: cancelRequestedAlias == coordinator.selection.alias
             ) {
-                Button("Cancel download") {
+                Button {
                     cancelRequestedAlias = cancelAlias
                     downloads.cancelDownload(alias: cancelAlias)
+                } label: {
+                    Label("Cancel download", systemImage: "xmark.circle")
                 }
-                .buttonStyle(.onboardingQuiet)
+                .buttonStyle(.bordered)
+                .tint(RapidTheme.textSecondary)
+                .controlSize(.regular)
                 .padding(.top, 26)
             // Deliberately NO keyboard shortcut.
             //

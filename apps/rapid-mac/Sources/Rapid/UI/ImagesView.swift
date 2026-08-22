@@ -3,6 +3,10 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ImageCatalogRefreshKey: Hashable {
+    let cacheGeneration: UInt
+}
+
 /// The Images tab. Deliberately mirrors ``ChatView``: a scrollable results
 /// area on top and, at the bottom, the *same* compose box — a `surfaceRaised`
 /// rounded field with the model picker + submit button clustered at its
@@ -30,7 +34,12 @@ struct ImagesView: View {
             composer
         }
         .background(RapidTheme.surfaceCanvas)
-        .task { await viewModel.refreshCatalog() }
+        // A download can finish while this tab remains mounted. Re-read the
+        // catalog on DownloadManager's authoritative cache generation so the
+        // Download button becomes Start without requiring an app restart.
+        .task(id: ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)) {
+            await viewModel.refreshCatalog()
+        }
     }
 
     // MARK: - Stage + history
@@ -135,8 +144,10 @@ struct ImagesView: View {
             title: "Draw anything",
             message: readiness.isReady
                 ? "Describe what you want to see, then press Generate."
-                : readiness.emptyStateSubtitle,
-            hint: readiness.isReady ? nil : readiness.emptyStateHint,
+                : "Create images locally, then keep generating offline.",
+            hint: readiness.isReady
+                ? nil
+                : "Pick a starter below while Rapid gets the model ready.",
             markDiameter: aspectPreviewSize.height,
             marksOnBackplate: false,
             mark: { aspectPreview },
@@ -249,7 +260,7 @@ struct ImagesView: View {
     }
 
     /// The banner's next-step action: start the sidecar or load the selected
-    /// image engine into the already-running process.
+    /// image engine in the modal sidecar process.
     private func handleReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .chooseModel:
@@ -266,10 +277,6 @@ struct ImagesView: View {
             )
         case .start(let target), .retry(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
-            // Same shared helper as Chat: ``ensureServing`` (not ``start``),
-            // because the user is almost always switching FROM a running chat
-            // model TO the image model, and cold-start ``start`` would no-op
-            // while that model is resident. See ``ReadinessModelStart``.
             Task { await loadImageModel(target, hfPath: hf) }
         case .restart(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
@@ -293,7 +300,10 @@ struct ImagesView: View {
                 alias: alias,
                 sizeText: entry?.sizeOnDisk
             ),
-            imageMode: viewModel.isEditing ? .editing : .generation
+            imageMode: viewModel.isEditing ? .editing : .generation,
+            // mflux is a modal engine, like TTS: it cannot be admitted through
+            // the chat sidecar's resident /v1/models/load endpoint.
+            residencyEligible: false
         )
         // A cold resident load can change the cache while the sidecar stays
         // globally ready. Refresh this surface so its cached/downloaded copy
@@ -685,24 +695,31 @@ struct ImagesView: View {
     }
 
     private var starters: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                ForEach(Array(ImageGenViewModel.starters.enumerated()), id: \.offset) { index, starter in
-                    Button {
-                        viewModel.use(starter: starter)
-                    } label: {
-                        Text(starter)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(RapidTheme.card)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(RapidTheme.hairline, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("Images.Starter.\(index)")
+        LazyVGrid(
+            columns: [GridItem(.flexible()), GridItem(.flexible())],
+            alignment: .leading,
+            spacing: 7
+        ) {
+            ForEach(Array(ImageGenViewModel.starters.enumerated()), id: \.offset) { index, starter in
+                Button {
+                    viewModel.use(starter: starter)
+                } label: {
+                    Text(starter)
+                        .font(.caption)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(RapidTheme.card)
+                        .clipShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.button))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: RapidTheme.Radius.button)
+                                .stroke(RapidTheme.hairline, lineWidth: 1)
+                        )
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("Images.Starter.\(index)")
             }
         }
     }

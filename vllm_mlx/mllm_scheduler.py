@@ -68,15 +68,15 @@ class MLLMSchedulerConfig:
     prefill_batch_size: int = 16
     # Completion batch size
     completion_batch_size: int = 16
-    # Prefill step size — per-request prompt-token budget. Vision tokens
-    # balloon the prompt size on VLMs (a 1920×1080 screenshot alone is
-    # ~2200 tokens on Qwen3-VL), so the MLLM-side default is 8192 to
-    # cover typical desktop screenshots and small multi-image messages
-    # out-of-the-box. ``BatchedEngine._start_mllm`` applies a bump-policy
-    # (see ``_resolve_mllm_prefill_step_size``) so a SchedulerConfig
-    # carrying the text-LLM default (2048) gets bumped to 8192, while
-    # any explicit operator-set value is honored as-is (#682, codex r2).
+    # Language-model prefill chunk. ``BatchedEngine._start_mllm`` applies a
+    # compatibility bump to the direct MLLM default, while measured model
+    # profiles may select a smaller value.
     prefill_step_size: int = 8192
+    # Vision-bearing prompts cannot always be chunked because image features
+    # must remain aligned with their placeholder tokens. Keep their admission
+    # budget independent from the language-model prefill chunk so a measured
+    # small chunk (for example Gemma 4 at 512) does not reject normal images.
+    vision_prefill_token_budget: int | None = None
     # Optional image-resolution bounds forwarded to dynamic-resolution
     # processors (Qwen2.5/3-VL). Zero leaves model defaults unchanged.
     vision_min_pixels: int = 0
@@ -100,6 +100,10 @@ class MLLMSchedulerConfig:
     allow_arrays_cache: bool = False
 
     def __post_init__(self) -> None:
+        if self.vision_prefill_token_budget is None:
+            self.vision_prefill_token_budget = self.prefill_step_size
+        elif self.vision_prefill_token_budget <= 0:
+            raise ValueError("vision_prefill_token_budget must be positive")
         if self.vision_min_pixels < 0 or self.vision_max_pixels < 0:
             raise ValueError("vision pixel bounds must be non-negative")
         if (
@@ -465,6 +469,8 @@ class MLLMScheduler:
 
             # Default sampler (can be overridden per-request in future)
             sampler = make_sampler(temp=0.7, top_p=0.9)
+            vision_prefill_token_budget = self.config.vision_prefill_token_budget
+            assert vision_prefill_token_budget is not None
 
             self.batch_generator = MLLMBatchGenerator(
                 model=self.model,
@@ -477,6 +483,7 @@ class MLLMScheduler:
                 completion_batch_size=self.config.completion_batch_size,
                 allow_arrays_cache=self.config.allow_arrays_cache,
                 prefill_step_size=self.config.prefill_step_size,
+                vision_prefill_token_budget=vision_prefill_token_budget,
                 vision_min_pixels=self.config.vision_min_pixels,
                 vision_max_pixels=self.config.vision_max_pixels,
             )

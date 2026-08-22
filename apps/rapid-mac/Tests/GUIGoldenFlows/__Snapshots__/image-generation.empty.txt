@@ -12,11 +12,12 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXStaticText id="Images.EmptyState" value=text enabled=true
           AXStaticText id="Images.EmptyState" value=text enabled=true
+          AXStaticText id="Images.EmptyState" value=text enabled=true
           AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Readiness.Action" desc="Start" enabled=true
-          AXScrollArea
+          AXOpaqueProviderGroup subrole=AXOpaqueProviderGrid enabled=true
             AXButton id="Images.Starter.0" desc="A cozy ramen shop at night in the rain, neon, steam, 35mm" enabled=true
             AXButton id="Images.Starter.1" desc="Studio portrait of an elderly fisherman, dramatic side light" enabled=true
             AXButton id="Images.Starter.2" desc="A minimalist product shot of a ceramic mug on linen" enabled=true

@@ -983,7 +983,9 @@ def _make_cap_request(uid: int, token_count: int) -> MLLMBatchRequest:
     )
 
 
-def _gen_with_prefill_cap(prefill_step_size: int) -> MLLMBatchGenerator:
+def _gen_with_prefill_cap(
+    prefill_step_size: int, *, vision_prefill_token_budget: int | None = None
+) -> MLLMBatchGenerator:
     """Generator with a tunable cap, no real model/processor needed.
 
     ``_process_prompts`` only reads ``self.prefill_step_size`` /
@@ -992,6 +994,11 @@ def _gen_with_prefill_cap(prefill_step_size: int) -> MLLMBatchGenerator:
     """
     gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
     gen.prefill_step_size = prefill_step_size
+    gen.vision_prefill_token_budget = (
+        prefill_step_size
+        if vision_prefill_token_budget is None
+        else vision_prefill_token_budget
+    )
     gen.vision_cache = None
     gen.model = object()
     gen.language_model = object()
@@ -1008,9 +1015,8 @@ def _gen_with_prefill_cap(prefill_step_size: int) -> MLLMBatchGenerator:
     return gen
 
 
-def test_mllm_scheduler_config_default_prefill_step_size_covers_screenshot():
-    """``MLLMSchedulerConfig.prefill_step_size`` default must cover a
-    typical 1920×1080 screenshot's vision-token count.
+def test_mllm_scheduler_config_default_vision_budget_covers_screenshot():
+    """The independent vision budget must cover a typical screenshot.
 
     Pre-fix the default was 1024 — even an 800×600 image would have
     failed the cap on a direct ``MLLMSchedulerConfig()`` construction.
@@ -1023,10 +1029,50 @@ def test_mllm_scheduler_config_default_prefill_step_size_covers_screenshot():
     # 1920×1080 Qwen3-VL: ~2200 vision tokens + chat-template + text.
     # Default must be high enough that a single such request never
     # trips the cap on its own size (#682).
-    assert cfg.prefill_step_size >= 8192, (
-        f"MLLMSchedulerConfig.prefill_step_size default ({cfg.prefill_step_size}) "
+    assert cfg.vision_prefill_token_budget >= 8192, (
+        "MLLMSchedulerConfig.vision_prefill_token_budget default "
+        f"({cfg.vision_prefill_token_budget}) "
         f"must be at least 8192 to cover 1920×1080 screenshots without "
         f"tripping the per-batch cap (#682)."
+    )
+
+
+def test_vision_admission_budget_is_independent_from_prefill_chunk():
+    """A profile-tuned 512 chunk must still admit a normal screenshot."""
+    from vllm_mlx.mllm_batch_generator import _prefill_cap_violation
+    from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+
+    cfg = MLLMSchedulerConfig(
+        prefill_step_size=512,
+        vision_prefill_token_budget=8192,
+    )
+    req = _make_vision_cap_request(uid=0, token_count=2292)
+
+    assert cfg.prefill_step_size == 512
+    assert _prefill_cap_violation([req], cfg.vision_prefill_token_budget) is None
+    assert _prefill_cap_violation([req], cfg.prefill_step_size) is not None
+
+
+def test_vision_budget_keeps_safe_floor_and_larger_operator_value():
+    from vllm_mlx.engine.batched import _resolve_mllm_vision_prefill_token_budget
+
+    assert (
+        _resolve_mllm_vision_prefill_token_budget(
+            512, configured=None, mllm_default=8192
+        )
+        == 8192
+    )
+    assert (
+        _resolve_mllm_vision_prefill_token_budget(
+            16384, configured=None, mllm_default=8192
+        )
+        == 16384
+    )
+    assert (
+        _resolve_mllm_vision_prefill_token_budget(
+            512, configured=256, mllm_default=8192
+        )
+        == 256
     )
 
 
@@ -1191,6 +1237,23 @@ def test_per_batch_cap_does_not_fail_at_default_on_typical_screenshot(
         f"with the production MLLM default (8192), a 2292-token "
         f"single-request batch must pass the cap; got: {err_msg}"
     )
+
+
+def test_profile_chunk_uses_independent_vision_budget_in_process_prompts(
+    monkeypatch,
+):
+    """Exercise the production admission call site for the Gemma profile."""
+    gen = _gen_with_prefill_cap(
+        prefill_step_size=512,
+        vision_prefill_token_budget=8192,
+    )
+    monkeypatch.setattr(gen, "_preprocess_request", lambda req: None)
+    request = _make_vision_cap_request(uid=0, token_count=2292)
+
+    with pytest.raises(Exception) as excinfo:  # noqa: BLE001 — bare model stub
+        MLLMBatchGenerator._process_prompts(gen, [request])
+
+    assert "exceeds the per-batch cap" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

@@ -834,21 +834,73 @@ struct DownloadProgressTests {
     /// gains the speed + ETA suffix in the order documented in the
     /// header comment. This is the production read-out the user will
     /// see; if this test passes the UX works.
-    @Test("v0.7.12: progressSubtitle gains speed + ETA suffix once the rate is known")
+    @Test("ETA waits for a stable sample span while speed appears immediately")
     func progressSubtitleSpeedETA() {
         let progress = DownloadProgress()
         let t0 = Date(timeIntervalSince1970: 6_000_000)
-        // Two heartbeats one second apart, 1 MB delta on a 10 MB target.
-        progress.setTotalBytes(10 * 1024 * 1024)
-        progress.applyDiskObservation(bytes: 1 * 1024 * 1024, at: t0)
-        progress.applyDiskObservation(bytes: 2 * 1024 * 1024, at: t0.addingTimeInterval(1.0))
-        let subtitle = progress.progressSubtitle ?? ""
-        // Bytes branch reflects the LATEST observation (2 MiB of 10 MiB
-        // → 20%), then the speed token, then the ETA, joined by " · ".
-        #expect(subtitle.contains("2.0 MB / 10.0 MB"))
-        #expect(subtitle.contains("20%"))
-        #expect(subtitle.contains("MB/s") || subtitle.contains("KB/s"))
-        #expect(subtitle.contains("left"))
+        // Early samples publish speed but deliberately withhold a prediction.
+        progress.setTotalBytes(100 * 1024 * 1024)
+        progress.applyDiskObservation(bytes: 10 * 1024 * 1024, at: t0)
+        progress.applyDiskObservation(bytes: 20 * 1024 * 1024, at: t0.addingTimeInterval(1.0))
+        let early = progress.progressSubtitle ?? ""
+        #expect(early.contains("MB/s") || early.contains("KB/s"))
+        #expect(!early.contains("left"))
+        #expect(progress.etaText == nil)
+
+        // After eight seconds of observations the prediction is allowed.
+        progress.applyDiskObservation(bytes: 30 * 1024 * 1024, at: t0.addingTimeInterval(4.0))
+        progress.applyDiskObservation(bytes: 40 * 1024 * 1024, at: t0.addingTimeInterval(8.0))
+        let stable = progress.progressSubtitle ?? ""
+        #expect(stable.contains("40.0 MB / 100 MB"))
+        #expect(stable.contains("40%"))
+        #expect(stable.contains("left"))
+        #expect(progress.etaText != nil)
+    }
+
+    @Test("A brief slowdown cannot make a settled ETA jump several-fold")
+    func settledETASmoothsTransientSlowdown() {
+        let progress = DownloadProgress()
+        let mb: Int64 = 1024 * 1024
+        let t0 = Date(timeIntervalSince1970: 6_050_000)
+        progress.setTotalBytes(1_000 * mb)
+        progress.applyDiskObservation(bytes: 10 * mb, at: t0)
+        progress.applyDiskObservation(bytes: 20 * mb, at: t0.addingTimeInterval(4))
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(8))
+        let settled = try! #require(progress.etaSeconds)
+
+        // The rolling four-second rate now sees only 1 MiB/s instead of
+        // 2.5 MiB/s. Raw ETA would jump by more than 2x in one heartbeat.
+        progress.applyDiskObservation(bytes: 31 * mb, at: t0.addingTimeInterval(9))
+        let slowed = try! #require(progress.etaSeconds)
+        #expect(slowed <= settled * 1.25)
+        #expect(slowed > settled)
+        let visibleETA = try! #require(progress.etaText)
+        #expect(progress.progressSubtitle?.contains(visibleETA) == true)
+    }
+
+    @Test("ETA settles again after a stalled download resumes")
+    func resumedDownloadRestartsETAStabilityEpoch() {
+        let progress = DownloadProgress()
+        let mb: Int64 = 1024 * 1024
+        let t0 = Date(timeIntervalSince1970: 6_100_000)
+        progress.setTotalBytes(200 * mb)
+        progress.applyDiskObservation(bytes: 10 * mb, at: t0)
+        progress.applyDiskObservation(bytes: 20 * mb, at: t0.addingTimeInterval(4))
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(8))
+        #expect(progress.etaText != nil)
+
+        // The production cache monitor keeps publishing unchanged totals every
+        // few seconds during a network stall. Those liveness observations must
+        // not preserve the old stability epoch.
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(11))
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(14))
+        progress.applyDiskObservation(bytes: 30 * mb, at: t0.addingTimeInterval(17))
+        progress.applyDiskObservation(bytes: 40 * mb, at: t0.addingTimeInterval(20))
+        progress.applyDiskObservation(bytes: 50 * mb, at: t0.addingTimeInterval(21))
+        let resumed = progress.progressSubtitle ?? ""
+        #expect(resumed.contains("MB/s") || resumed.contains("KB/s"))
+        #expect(!resumed.contains("left"))
+        #expect(progress.etaText == nil)
     }
 
     /// When the total is unknown (HF didn't expose sizes), the subtitle

@@ -21,6 +21,7 @@ import SwiftUI
 /// "[Dismiss]" clears a finished job from the row.
 struct DownloadStrip: View {
     @Bindable var downloads: DownloadManager
+    var isResident: (String) -> Bool = { _ in false }
 
     /// Deep-link channel into Settings, resolved optionally so the strip still
     /// renders in a host that never injected one (previews, the snapshot
@@ -37,7 +38,11 @@ struct DownloadStrip: View {
     /// dictionary is small (typically 0-2 entries; 5+ would be
     /// pathological on a single Mac).
     private var orderedJobs: [DownloadManager.Job] {
-        let pairs = downloads.jobs.values.map { job -> (DownloadManager.Job, Int) in
+        let visible = downloads.jobs.values.filter { job in
+            if case .completed = job.status { return !isResident(job.alias) }
+            return true
+        }
+        let pairs = visible.map { job -> (DownloadManager.Job, Int) in
             // Sort key: running before terminal. Within each bucket,
             // alphabetical alias gives a stable order so newly added
             // jobs don't jump around mid-scroll.
@@ -55,17 +60,74 @@ struct DownloadStrip: View {
             .map { $0.0 }
     }
 
+    private var completedCleanupKey: String {
+        Self.completedCleanupKey(jobs: downloads.jobs, isResident: isResident)
+    }
+
+    static func completedCleanupKey(
+        jobs: [String: DownloadManager.Job],
+        isResident: (String) -> Bool
+    ) -> String {
+        jobs.values.compactMap { job -> String? in
+            guard case .completed = job.status else { return nil }
+            return "\(job.alias):\(job.instanceID):\(isResident(job.alias) ? "resident" : "cached")"
+        }.sorted().joined(separator: "|")
+    }
+
+    static func completedResidentAliases(
+        jobs: [String: DownloadManager.Job],
+        isResident: (String) -> Bool
+    ) -> [String] {
+        jobs.values.compactMap { job in
+            guard case .completed = job.status, isResident(job.alias) else { return nil }
+            return job.alias
+        }.sorted()
+    }
+
+    static func isSameCompletedJob(
+        _ job: DownloadManager.Job?,
+        as expectedID: UUID
+    ) -> Bool {
+        guard let job, job.instanceID == expectedID else { return false }
+        if case .completed = job.status { return true }
+        return false
+    }
+
     var body: some View {
-        if !orderedJobs.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(orderedJobs) { job in
-                    jobRow(job)
+        Group {
+            if !orderedJobs.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(orderedJobs) { job in jobRow(job) }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 6)
+                .background(.bar)
+                .overlay(Divider(), alignment: .bottom)
+            }
+        }
+        .task(id: completedCleanupKey) {
+            let completed = downloads.jobs.values.compactMap { job -> String? in
+                guard case .completed = job.status else { return nil }
+                return job.alias
+            }
+            for alias in Self.completedResidentAliases(
+                jobs: downloads.jobs,
+                isResident: isResident
+            ) {
+                downloads.dismissJob(alias: alias)
+            }
+            let delayed = completed.compactMap { alias -> (String, UUID)? in
+                guard !isResident(alias), let job = downloads.job(for: alias) else { return nil }
+                return (alias, job.instanceID)
+            }
+            guard !delayed.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            for (alias, originalID) in delayed {
+                if Self.isSameCompletedJob(downloads.job(for: alias), as: originalID) {
+                    downloads.dismissJob(alias: alias)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 6)
-            .background(.bar)
-            .overlay(Divider(), alignment: .bottom)
         }
     }
 
@@ -157,7 +219,7 @@ struct DownloadStrip: View {
                     : nil
             )
         case .completed:
-            return "Downloaded — ready to load"
+            return "Downloaded — start from the model picker"
         case .cancelled:
             return "Cancelled"
         case .failed(let message):
@@ -227,8 +289,10 @@ struct DownloadStrip: View {
                 downloads.cancelDownload(alias: job.alias)
             } label: {
                 Image(systemName: "xmark.circle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                    .frame(width: 24, height: 24)
+                    .background(RapidTheme.brandPrimaryTint, in: Circle())
             }
             .buttonStyle(.plain)
             .help("Cancel download (partial files stay in the HuggingFace cache and can resume on retry).")
@@ -248,4 +312,5 @@ struct DownloadStrip: View {
             .accessibilityIdentifier("DownloadStrip.Dismiss.\(job.alias)")
         }
     }
+
 }

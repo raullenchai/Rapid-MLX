@@ -201,8 +201,25 @@ final class DownloadProgress {
     /// total, bytes and rate are all known.
     var etaText: String? {
         guard let total = totalBytes, let bytes = bytesDownloaded,
-              let speed = bytesPerSecond, speed > 0, total > bytes else { return nil }
-        return Self.formatETA(bytesRemaining: total - bytes, bytesPerSecond: speed)
+              let etaSeconds, etaSeconds > 0, total > bytes,
+              etaEstimateIsStable else { return nil }
+        let remaining = total - bytes
+        return Self.formatETA(
+            bytesRemaining: remaining,
+            bytesPerSecond: Double(remaining) / etaSeconds
+        )
+    }
+
+    /// ETA is intentionally delayed while the connection ramps up. Two early
+    /// chunks can produce a mathematically valid but wildly misleading answer
+    /// (for example 1 minute, then 12 minutes). Speed remains visible during
+    /// this settling period; only the predictive copy is withheld.
+    private var etaEstimateIsStable: Bool {
+        guard let first = rateSamplingStartedAt,
+              let baseline = rateSamplingBaselineBytes,
+              let newest = rateSamples.last else { return false }
+        return newest.at.timeIntervalSince(first) >= Self.minimumETASampleSpan
+            && newest.bytes - baseline >= Self.minimumETAGrowthBytes
     }
 
     /// Recent ``(timestamp, bytes)`` samples accumulated from
@@ -213,6 +230,16 @@ final class DownloadProgress {
     /// against the OLDEST in-window sample on each call — simpler to
     /// reason about than recursive EMA and easier to test.
     private var rateSamples: [(at: Date, bytes: Int64)] = []
+    private var rateSamplingStartedAt: Date?
+    private var rateSamplingBaselineBytes: Int64?
+    private var lastGrowingSample: (at: Date, bytes: Int64)?
+    /// Smoothed prediction used for user-facing copy. A brief rate dip may
+    /// raise the estimate by at most 25% per observation, preventing a
+    /// settled ETA from jumping several-fold in one frame while still
+    /// converging when a slowdown persists.
+    private(set) var etaSeconds: Double?
+    private nonisolated static let minimumETASampleSpan: TimeInterval = 8
+    private nonisolated static let minimumETAGrowthBytes: Int64 = 16 * 1024 * 1024
 
     /// Most recent rate estimate in bytes/second, or ``nil`` if we
     /// don't have a fresh enough window to derive one. Recomputed on
@@ -264,7 +291,11 @@ final class DownloadProgress {
         baselineDiskBytes = nil
         hasObservedGrowth = false
         rateSamples.removeAll(keepingCapacity: true)
+        rateSamplingStartedAt = nil
+        rateSamplingBaselineBytes = nil
+        lastGrowingSample = nil
         bytesPerSecond = nil
+        etaSeconds = nil
     }
 
     /// Set the catalog-known total weight size. Called once when a job
@@ -324,12 +355,30 @@ final class DownloadProgress {
         lastTickAt = now
         recordRateSample(at: now, bytes: bytes)
         bytesPerSecond = computeRate(now: now)
+        updateETAEstimate()
     }
 
     /// Append a sample, drop anything older than ``rateWindowSeconds``
     /// behind the newest one, and enforce ``maxRateSamples``. Called
     /// only from ``applyDiskObservation(bytes:at:)``.
     private func recordRateSample(at now: Date, bytes: Int64) {
+        let grew = lastGrowingSample.map { bytes > $0.bytes } ?? true
+        if grew,
+           let lastGrowth = lastGrowingSample,
+           now.timeIntervalSince(lastGrowth.at) > Self.rateStaleSeconds {
+            // Cache monitors keep reporting unchanged byte counts during a
+            // network stall. Measure recovery from the last sample that
+            // actually MOVED, not the latest heartbeat, so those liveness
+            // ticks cannot preserve a stale stability epoch.
+            rateSamplingStartedAt = now
+            rateSamplingBaselineBytes = bytes
+            etaSeconds = nil
+        }
+        if rateSamplingStartedAt == nil {
+            rateSamplingStartedAt = now
+            rateSamplingBaselineBytes = bytes
+        }
+        if grew { lastGrowingSample = (now, bytes) }
         rateSamples.append((at: now, bytes: bytes))
         let cutoff = now.addingTimeInterval(-Self.rateWindowSeconds)
         while let first = rateSamples.first, first.at < cutoff {
@@ -356,6 +405,23 @@ final class DownloadProgress {
         let delta = newest.bytes - oldest.bytes
         guard delta > 0 else { return nil }
         return Double(delta) / span
+    }
+
+    private func updateETAEstimate() {
+        guard etaEstimateIsStable,
+              let total = totalBytes,
+              let bytes = bytesDownloaded,
+              let speed = bytesPerSecond,
+              speed > 0, total > bytes else {
+            etaSeconds = nil
+            return
+        }
+        let raw = Double(total - bytes) / speed
+        if let previous = etaSeconds, raw > previous {
+            etaSeconds = min(raw, previous * 1.25)
+        } else {
+            etaSeconds = raw
+        }
     }
 
     /// Ingest one stdout/stderr line from the child. Returns ``true`` if
@@ -822,7 +888,7 @@ final class DownloadProgress {
                 parts.append("\(Self.formatBytes(bytes)) / \(Self.formatBytes(total)) · \(clamped)%")
                 if let speed = bytesPerSecond {
                     parts.append(Self.formatSpeed(bytesPerSecond: speed))
-                    if let eta = Self.formatETA(bytesRemaining: total - bytes, bytesPerSecond: speed) {
+                    if let eta = etaText {
                         parts.append(eta)
                     }
                 }

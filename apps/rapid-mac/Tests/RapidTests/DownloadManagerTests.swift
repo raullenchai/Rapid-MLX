@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -434,6 +435,69 @@ struct DownloadManagerTests {
 @MainActor
 @Suite("DownloadStrip — phase caption formatting")
 struct DownloadStripCaptionTests {
+
+    @Test("A completed resident job is removed while its row is hidden")
+    @MainActor
+    func completedResidentCleanupDoesNotResurface() async throws {
+        let downloads = DownloadManager()
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        #expect(downloads.job(for: "image-model")?.status == .completed)
+
+        // Mount the real view so its `.task(id:)` lifecycle performs the
+        // hidden-resident cleanup; do not duplicate that task in the test.
+        let host = NSHostingView(
+            rootView: DownloadStrip(
+                downloads: downloads,
+                isResident: { $0 == "image-model" }
+            )
+        )
+        host.layoutSubtreeIfNeeded()
+        for _ in 0..<100 where downloads.job(for: "image-model") != nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(downloads.job(for: "image-model") == nil)
+        _ = host
+    }
+
+    @Test("A delayed cleanup cannot dismiss a newer job reusing the alias")
+    func delayedCleanupIsScopedToJobIdentity() {
+        let downloads = DownloadManager()
+        let original = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let originalID = original.instanceID
+        downloads.dismissJob(alias: "image-model")
+
+        let replacement = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        #expect(replacement.instanceID != originalID)
+        #expect(!DownloadStrip.isSameCompletedJob(
+            downloads.job(for: "image-model"),
+            as: originalID
+        ))
+        #expect(downloads.job(for: "image-model") === replacement)
+    }
+
+    @Test("A completed replacement under the same alias reschedules cleanup")
+    func completedReplacementChangesCleanupKey() {
+        let downloads = DownloadManager()
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let originalKey = DownloadStrip.completedCleanupKey(
+            jobs: downloads.jobs,
+            isResident: { _ in false }
+        )
+        downloads.dismissJob(alias: "image-model")
+
+        _ = downloads._testingSeedJob(alias: "image-model")
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let replacementKey = DownloadStrip.completedCleanupKey(
+            jobs: downloads.jobs,
+            isResident: { _ in false }
+        )
+
+        #expect(originalKey != replacementKey)
+    }
 
     @Test("Idle phase reads as 'Starting…' — the strip never shows raw enum names")
     func idleReadsAsStarting() {

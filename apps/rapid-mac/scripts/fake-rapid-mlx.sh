@@ -1100,6 +1100,11 @@ def main():
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 
+    if _setting("FAKE_REJECT_IMAGE_SIDECAR") == "1" and args.alias == FAKE_IMAGE_ALIAS:
+        _event("server_start_rejected", alias=args.alias, pid=os.getpid())
+        print(FAKE_REJECTION_DETAIL, file=sys.stderr, flush=True)
+        sys.exit(1)
+
     # The residency snapshot reports the served alias as resident, which is
     # what keeps the GUI on the in-process /v1/models/load path (#1838).
     # The assignment must use ``global``: the handler methods read the

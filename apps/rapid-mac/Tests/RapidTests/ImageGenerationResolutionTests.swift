@@ -1,9 +1,138 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
 @Suite("Image generation resolution")
 struct ImageGenerationResolutionTests {
+    @MainActor
+    private final class ControlledCatalogLoader {
+        private var continuations: [CheckedContinuation<[ModelEntry], Never>] = []
+        var requestCount: Int { continuations.count }
+
+        func load(_: URL) async -> [ModelEntry] {
+            await withCheckedContinuation { continuations.append($0) }
+        }
+
+        func finish(_ index: Int, with entries: [ModelEntry]) {
+            continuations[index].resume(returning: entries)
+        }
+    }
+
+    private static var packageRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private static func source(_ path: String) throws -> String {
+        try String(contentsOf: packageRoot.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    @Test("Images refreshes cache state live and modal engines bypass residency")
+    func liveDownloadAndModalLaunchWiring() throws {
+        let view = try Self.source("Sources/Rapid/UI/ImagesView.swift")
+        let model = try Self.source("Sources/Rapid/Images/ImageGenViewModel.swift")
+
+        #expect(view.contains("ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)"))
+        #expect(view.contains("residencyEligible: false"))
+        #expect(model.components(separatedBy: "residencyEligible: false").count - 1 == 2,
+                "Both generation and editing must use the modal process-swap path.")
+    }
+
+    @Test("A completed image pull changes the catalog key and view-model readiness to Start")
+    @MainActor
+    func completedPullInvalidatesCatalogReadiness() async throws {
+        let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")
+        let server = ServerManager(testingState: .idle, binaryPath: binary)
+        let downloads = DownloadManager()
+        var cached = false
+        let entry: (Bool) -> ModelEntry = { isCached in
+            ModelEntry(
+                alias: "image-model", hfRepo: "example/image", sizeOnDisk: "1 GiB",
+                cached: isCached, kind: .image, imageCapability: .generation
+            )
+        }
+        let viewModel = ImageGenViewModel(server: server) { _ in [entry(cached)] }
+        let host = NSHostingView(
+            rootView: ImagesView(viewModel: viewModel, server: server)
+                .environment(SettingsRouter())
+                .environment(downloads)
+        )
+        host.layoutSubtreeIfNeeded()
+
+        let beforeKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
+        for _ in 0..<100 where viewModel.imageModels.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(viewModel.imageModels.count == 1)
+        let before = ModelReadiness.resolve(
+            serverState: .idle,
+            alias: "image-model",
+            cacheState: viewModel.imageModels[0].cached ? .onDisk : .notOnDisk,
+            sizeText: "1 GiB"
+        )
+        #expect(before.action == .download(alias: "image-model"))
+
+        _ = downloads._testingSeedJob(alias: "image-model")
+        cached = true
+        downloads._testingFinish(alias: "image-model", status: 0, reason: .exit)
+        let afterKey = ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)
+        #expect(afterKey != beforeKey, "A successful pull must restart the view's keyed task.")
+
+        // The mounted ImagesView must observe cacheGeneration and refresh its
+        // catalog without a test-side call to refreshCatalog().
+        for _ in 0..<100 where viewModel.imageModels.first?.cached != true {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let after = ModelReadiness.resolve(
+            serverState: .idle,
+            alias: "image-model",
+            cacheState: viewModel.imageModels[0].cached ? .onDisk : .notOnDisk,
+            sizeText: "1 GiB"
+        )
+        #expect(after.action == .start(alias: "image-model"))
+        _ = host
+    }
+
+    @Test("A cancelled older catalog refresh cannot overwrite the newest result")
+    @MainActor
+    func overlappingCatalogRefreshesKeepNewestResult() async {
+        let binary = URL(fileURLWithPath: "/tmp/rapid-test-sidecar")
+        let server = ServerManager(testingState: .idle, binaryPath: binary)
+        let loader = ControlledCatalogLoader()
+        let viewModel = ImageGenViewModel(server: server, catalogLoader: loader.load)
+        let fresh = ModelEntry(
+            alias: "fresh-image", hfRepo: "example/fresh", sizeOnDisk: "1 GiB",
+            cached: true, kind: .image, imageCapability: .generation
+        )
+
+        let older = Task { await viewModel.refreshCatalog() }
+        while loader.requestCount < 1 { await Task.yield() }
+        older.cancel()
+        let newer = Task { await viewModel.refreshCatalog() }
+        while loader.requestCount < 2 { await Task.yield() }
+
+        loader.finish(1, with: [fresh])
+        await newer.value
+        #expect(viewModel.imageModels.map(\.alias) == ["fresh-image"])
+
+        // The cancelled subprocess may still unwind later with an empty or
+        // partial result. It must not commit after the newer generation.
+        loader.finish(0, with: [])
+        await older.value
+        #expect(viewModel.imageModels.map(\.alias) == ["fresh-image"])
+        #expect(viewModel.catalogLoaded)
+    }
+
+    @Test("Image starters wrap instead of clipping in a horizontal rail")
+    func startersRemainReadable() throws {
+        let view = try Self.source("Sources/Rapid/UI/ImagesView.swift")
+        #expect(view.contains("private var starters: some View {\n        LazyVGrid("))
+        #expect(!view.contains("private var starters: some View {\n        ScrollView(.horizontal"))
+    }
+
     @Test("Every aspect and resolution maps to the expected API size")
     func outputSizes() {
         let expected: [ImageGenViewModel.Resolution: [ImageGenViewModel.Aspect: String]] = [
