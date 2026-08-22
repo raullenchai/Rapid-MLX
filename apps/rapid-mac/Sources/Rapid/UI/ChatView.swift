@@ -235,6 +235,7 @@ struct ChatView: View {
     /// Incremented every time the user tries to send while gated. Drives
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
+    @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
     /// Refreshed from the active conversation every time the popover opens.
     /// SwiftUI may otherwise reuse the popover's old local `@State` when the
@@ -670,18 +671,8 @@ struct ChatView: View {
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Menu {
-                Button(action: chooseFiles) {
-                    Label("Upload file", systemImage: "doc")
-                }
-                .accessibilityIdentifier("ChatView.Attachments.UploadFile")
-
-                Button(action: choosePhotos) {
-                    Label("Upload photo", systemImage: "photo")
-                }
-                .disabled(!supportsImageInput)
-                .help("Current model doesn't support photos")
-                .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
+            Button {
+                showsAttachmentMenu.toggle()
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
@@ -689,13 +680,44 @@ struct ChatView: View {
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
-            .menuStyle(.button)
             .buttonStyle(.plain)
-            .menuIndicator(.hidden)
             .disabled(viewModel.isStreaming || isImportingFiles)
             .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
+            .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                    Button {
+                        showsAttachmentMenu = false
+                        chooseFiles()
+                    } label: {
+                    Label("Upload file", systemImage: "doc")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("ChatView.Attachments.UploadFile")
+
+                    Button {
+                        showsAttachmentMenu = false
+                        choosePhotos()
+                    } label: {
+                        Label("Upload photo", systemImage: "photo")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .disabled(!supportsImageInput)
+                    .help("Current model doesn't support photos")
+                    .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
+                }
+                .padding(RapidTheme.Space.sm)
+                .frame(width: 190)
+            }
             Button {
                 conversationInstructionsDraft = viewModel.conversationInstructions
                 showsConversationInstructions = true
