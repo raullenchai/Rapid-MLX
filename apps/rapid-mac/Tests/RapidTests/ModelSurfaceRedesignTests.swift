@@ -120,6 +120,9 @@ struct ModelSurfaceRedesignTests {
         let server = try String(contentsOf: root.appendingPathComponent(
             "Sources/Rapid/Server/ServerManager.swift"
         ))
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Sources/Rapid/Server/ModelCatalogCache.swift"
+        ))
         #expect(view.components(separatedBy: "supportsImageInput: supportsImageInput").count >= 4)
         #expect(model.contains("func regenerateLast(alias: String, supportsImageInput: Bool? = nil)"))
         #expect(model.contains("func retryAssistantMessage(\n        id: UUID,\n        alias: String,\n        supportsImageInput: Bool? = nil"))
@@ -134,6 +137,12 @@ struct ModelSurfaceRedesignTests {
         ))
         #expect(catalogProbe.lowerBound < criticalSection.lowerBound,
                 "catalog capability must resolve before the spawn critical section")
+        #expect(cache.contains("let entry = startLoad("))
+        #expect(cache.contains("await finish(entry)"),
+                "a completed load must publish only its captured in-flight identity")
+        #expect(cache.components(
+            separatedBy: "if let inFlight,\n           inFlight.matches("
+        ).count == 2, "only the join path may match loads by inputs")
     }
 
     // MARK: - ModelBrandStyle.displayFamily

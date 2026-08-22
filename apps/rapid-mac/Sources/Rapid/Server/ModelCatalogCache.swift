@@ -195,18 +195,12 @@ actor ModelCatalogCache {
             await finish(inFlight)
             return loaded
         }
-        let task = startLoad(
+        let entry = startLoad(
             binary: binary, override: override, binaryPath: binaryPath,
             generation: generation, overridePath: overridePath
         )
-        let loaded = await task.value
-        if let inFlight,
-           inFlight.matches(
-               binaryPath: binaryPath, generation: generation,
-               overridePath: overridePath
-           ) {
-            await finish(inFlight)
-        }
+        let loaded = await entry.task.value
+        await finish(entry)
         return loaded
     }
 
@@ -217,7 +211,7 @@ actor ModelCatalogCache {
     private func startLoad(
         binary: URL, override: URL?, binaryPath: String,
         generation: UInt, overridePath: String?
-    ) -> Task<[ModelEntry], Never> {
+    ) -> InFlight {
         let task = Task<[ModelEntry], Never> {
             await ModelCatalog.load(binary: binary, hubCacheOverride: override)
         }
@@ -228,7 +222,7 @@ actor ModelCatalogCache {
         )
         inFlight = entry
         Task { await self.finish(entry) }
-        return task
+        return entry
     }
 
     /// Await a registered load and stamp its result — unless a newer load has
