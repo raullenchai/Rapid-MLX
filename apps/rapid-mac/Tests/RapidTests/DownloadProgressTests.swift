@@ -834,21 +834,27 @@ struct DownloadProgressTests {
     /// gains the speed + ETA suffix in the order documented in the
     /// header comment. This is the production read-out the user will
     /// see; if this test passes the UX works.
-    @Test("v0.7.12: progressSubtitle gains speed + ETA suffix once the rate is known")
+    @Test("ETA waits for a stable sample span while speed appears immediately")
     func progressSubtitleSpeedETA() {
         let progress = DownloadProgress()
         let t0 = Date(timeIntervalSince1970: 6_000_000)
-        // Two heartbeats one second apart, 1 MB delta on a 10 MB target.
+        // Early samples publish speed but deliberately withhold a prediction.
         progress.setTotalBytes(10 * 1024 * 1024)
         progress.applyDiskObservation(bytes: 1 * 1024 * 1024, at: t0)
         progress.applyDiskObservation(bytes: 2 * 1024 * 1024, at: t0.addingTimeInterval(1.0))
-        let subtitle = progress.progressSubtitle ?? ""
-        // Bytes branch reflects the LATEST observation (2 MiB of 10 MiB
-        // → 20%), then the speed token, then the ETA, joined by " · ".
-        #expect(subtitle.contains("2.0 MB / 10.0 MB"))
-        #expect(subtitle.contains("20%"))
-        #expect(subtitle.contains("MB/s") || subtitle.contains("KB/s"))
-        #expect(subtitle.contains("left"))
+        let early = progress.progressSubtitle ?? ""
+        #expect(early.contains("MB/s") || early.contains("KB/s"))
+        #expect(!early.contains("left"))
+        #expect(progress.etaText == nil)
+
+        // After eight seconds of observations the prediction is allowed.
+        progress.applyDiskObservation(bytes: 3 * 1024 * 1024, at: t0.addingTimeInterval(4.0))
+        progress.applyDiskObservation(bytes: 4 * 1024 * 1024, at: t0.addingTimeInterval(8.0))
+        let stable = progress.progressSubtitle ?? ""
+        #expect(stable.contains("4.0 MB / 10.0 MB"))
+        #expect(stable.contains("40%"))
+        #expect(stable.contains("left"))
+        #expect(progress.etaText != nil)
     }
 
     /// When the total is unknown (HF didn't expose sizes), the subtitle

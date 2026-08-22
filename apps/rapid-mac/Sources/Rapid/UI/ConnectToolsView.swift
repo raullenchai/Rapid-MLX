@@ -46,6 +46,8 @@ struct ConnectToolsView: View {
     var readiness: ModelReadiness? = nil
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
     @State private var integrationTargets: [IntegrationTarget] = []
+    @State private var showsConnectionDetails = false
+    @State private var showsMoreIntegrations = false
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
@@ -160,16 +162,57 @@ struct ConnectToolsView: View {
             // and unlike the old local sentence it carries the action
             // that resolves the problem.
             if let readiness, !readiness.isReady {
-                ReadinessBanner(readiness: readiness, onAction: onReadinessAction)
+                VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                    SectionHeader(
+                        "Start here",
+                        subtitle: "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands."
+                    )
+                    ReadinessBanner(readiness: readiness, onAction: onReadinessAction)
+                }
             } else if !configReady {
                 // Either no readiness was supplied (dev snapshot), or the
                 // model is up but a value is still missing — a narrow
                 // case, but silence there would leave a half-filled
                 // config looking complete.
                 InlineNotice(message: readinessMessage, tone: .info)
+                endpointSection
+                toolsSection(tools)
+            } else {
+                toolsSection(Array(tools.prefix(3)), title: "Popular integrations")
+                Button {
+                    showsConnectionDetails.toggle()
+                } label: {
+                    disclosureLabel(
+                        "Advanced connection details",
+                        systemImage: "network",
+                        expanded: showsConnectionDetails
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("ConnectTools.AdvancedDetails")
+                if showsConnectionDetails {
+                    endpointSection.padding(.top, RapidTheme.Space.sm)
+                }
+
+                let remaining = Array(tools.dropFirst(3))
+                if !remaining.isEmpty {
+                    Button {
+                        showsMoreIntegrations.toggle()
+                    } label: {
+                        disclosureLabel(
+                            "More integrations (\(remaining.count))",
+                            systemImage: "ellipsis.circle",
+                            expanded: showsMoreIntegrations
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("ConnectTools.MoreIntegrations")
+                    if showsMoreIntegrations {
+                        toolsSection(remaining, title: "More integrations")
+                            .padding(.top, RapidTheme.Space.sm)
+                    }
+                }
             }
-            endpointSection
-            toolsSection
         }
         .frame(maxWidth: RapidTheme.Layout.pageMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -241,11 +284,14 @@ struct ConnectToolsView: View {
         }
     }
 
-    private var toolsSection: some View {
+    private func toolsSection(
+        _ displayedTools: [ConnectTool],
+        title: String = "Editors and agents"
+    ) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Editors and agents")
+            SectionHeader(title)
             VStack(spacing: 0) {
-                ForEach(Array(tools.enumerated()), id: \.element.id) { index, tool in
+                ForEach(Array(displayedTools.enumerated()), id: \.element.id) { index, tool in
                     if index > 0 { rowDivider }
                     ConnectToolRow(tool: tool, isReady: configReady)
                 }
@@ -259,6 +305,21 @@ struct ConnectToolsView: View {
             .fill(RapidTheme.hairline)
             .frame(height: 1)
             .padding(.leading, RapidTheme.Space.md)
+    }
+
+    private func disclosureLabel(
+        _ title: String,
+        systemImage: String,
+        expanded: Bool
+    ) -> some View {
+        HStack(spacing: RapidTheme.Space.sm) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .frame(width: 12)
+            Label(title, systemImage: systemImage)
+                .font(RapidFont.secondary)
+            Spacer()
+        }
+        .contentShape(Rectangle())
     }
 
     // MARK: - Tool definitions

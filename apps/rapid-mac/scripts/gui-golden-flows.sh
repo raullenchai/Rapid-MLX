@@ -3979,52 +3979,15 @@ flow_launch_integrations() {
     dismiss_first_run
     see_main "$OUT/main.json"
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
+    wait_tree_text "Connect your agents" "$OUT/launch.json" 40
 
-    # The engine-owned registry currently resolves to fourteen distinct
-    # products after the overlapping Claude Code and Continue entries are
-    # merged. Count the actual per-row action, not a container: putting the id
-    # on the row propagates it to the Copy button in SwiftUI and makes the
-    # button look addressable while preventing it from having its own stable
-    # identity.
-    for _ in {1..40}; do
-        see_main "$OUT/launch.json"
-        count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 14 ]] && break
-        sleep 0.25
-    done
-    [[ "$count" == 14 ]] || die "Launch rendered $count integrations; engine registry exposes 14 (#1715)"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch.json" >/dev/null \
-        || die "Launch omitted config-writing target Cline"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch.json" >/dev/null \
-        || die "Launch omitted adapter profile smolagents"
-    # The two one-session launch commands are the useful fast path, not an
-    # implementation-detail registry order. Keep them first and in the product
-    # order promised by the Launch page.
-    local first_two
-    first_two="$(jq -r '[.data.ui_elements[]?
-                         | select((.identifier // "")
-                                  | startswith("Launch.Integration.Copy."))
-                         | .identifier]
-                        | .[0:2]
-                        | join(",")' "$OUT/launch.json")"
-    [[ "$first_two" == "Launch.Integration.Copy.claude-code,Launch.Integration.Copy.codex" ]] \
-        || die "Launch did not lead with Claude Code then Codex (got: $first_two)"
-    # The card itself is not the action. Every visible row must publish a
-    # distinct Copy button so AX/keyboard users can invoke the same command a
-    # pointer user can, and every one is disabled honestly until a live model
-    # has minted a usable endpoint/key.
-    local copy_count enabled_copy_count
-    copy_count="$(jq '[.data.ui_elements[]?
-                       | (.identifier // "")
-                       | select(startswith("Launch.Integration.Copy."))]
-                      | unique | length' "$OUT/launch.json")"
-    [[ "$copy_count" == 14 ]] \
-        || die "Launch rendered $copy_count addressable Copy buttons for 14 integrations"
-    enabled_copy_count="$(jq '[.data.ui_elements[]?
-                               | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
-                                        and .enabled == true)] | length' "$OUT/launch.json")"
-    [[ "$enabled_copy_count" == 0 ]] \
-        || die "Launch enabled $enabled_copy_count copy commands before a model was ready"
+    # Cold Launch is a beginner path, not a wall of dead commands. It should
+    # offer the same actionable readiness banner as Chat and reveal no setup
+    # snippets until the endpoint/key actually exist.
+    count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
+    [[ "$count" == 0 ]] || die "Cold Launch rendered $count dead integration commands"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' "$OUT/launch.json" >/dev/null \
+        || die "Cold Launch offered no primary model-start action"
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -4032,7 +3995,21 @@ flow_launch_integrations() {
     start_model
     see_main "$OUT/launch-model-ready.json"
     press "$OUT/launch-model-ready.json" Sidebar.Launch "$OUT/launch-ready-open.json"
-    local i ready_copies=0
+    # Ready Launch leads with three common choices. The registry remains fully
+    # reachable behind one explicit disclosure instead of occupying the page by
+    # default.
+    wait_identifier ConnectTools.MoreIntegrations "$OUT/launch-ready.json"
+    local ready_copies
+    ready_copies="$(jq '[.data.ui_elements[]?
+                         | select(((.identifier // "")
+                                   | startswith("Launch.Integration.Copy."))
+                                  and .enabled == true)] | length' "$OUT/launch-ready.json")"
+    [[ "$ready_copies" == 3 ]] \
+        || die "Ready Launch should lead with 3 common integrations, got $ready_copies"
+    press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
+        "$OUT/launch-more-press.json" \
+        || die "More integrations disclosure is not pressable"
+    local i
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch-ready.json"
         ready_copies="$(jq '[.data.ui_elements[]?
@@ -4045,6 +4022,19 @@ flow_launch_integrations() {
     done
     [[ "$ready_copies" == 14 ]] \
         || die "Launch enabled $ready_copies of 14 copy commands after the chat model was ready"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch-ready.json" >/dev/null \
+        || die "Expanded Launch omitted config-writing target Cline"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch-ready.json" >/dev/null \
+        || die "Expanded Launch omitted adapter profile smolagents"
+    local first_two
+    first_two="$(jq -r '[.data.ui_elements[]?
+                         | select((.identifier // "")
+                                  | startswith("Launch.Integration.Copy."))
+                         | .identifier]
+                        | .[0:2]
+                        | join(",")' "$OUT/launch-ready.json")"
+    [[ "$first_two" == "Launch.Integration.Copy.claude-code,Launch.Integration.Copy.codex" ]] \
+        || die "Launch did not lead with Claude Code then Codex (got: $first_two)"
     local integration_id copied_command
     while IFS= read -r integration_id; do
         pbcopy < /dev/null

@@ -12,80 +12,11 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXHeading desc="Connect your agents, Connect any agent or editor that supports a local base URL. It's free and stays on your Mac." enabled=true
           AXScrollArea
+            AXHeading desc="Start here, Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands." enabled=true
             AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Start" enabled=true
-            AXHeading desc="Endpoint" enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="ConnectTools.Copy.OpenAI base URL" desc="Copy OpenAI base URL" help="Copy OpenAI base URL" enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="ConnectTools.Copy.Anthropic base URL" desc="Copy Anthropic base URL" help="Copy Anthropic base URL" enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="ConnectTools.Copy.API key" desc="Copy API key" help="Start a model to generate a valid key and configuration." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="ConnectTools.Copy.Model" desc="Copy Model" help="Copy Model" enabled=true
-            AXHeading desc="Editors and agents" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.kilo-code" desc="Copy Kilo Code command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.langchain" desc="Copy LangChain command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.openhands" desc="Copy OpenHands command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.pydanticai" desc="Copy PydanticAI command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.smolagents" desc="Copy smolagents command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

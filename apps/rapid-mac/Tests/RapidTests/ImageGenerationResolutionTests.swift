@@ -4,6 +4,35 @@ import Testing
 
 @Suite("Image generation resolution")
 struct ImageGenerationResolutionTests {
+    private static var packageRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private static func source(_ path: String) throws -> String {
+        try String(contentsOf: packageRoot.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    @Test("Images refreshes cache state live and modal engines bypass residency")
+    func liveDownloadAndModalLaunchWiring() throws {
+        let view = try Self.source("Sources/Rapid/UI/ImagesView.swift")
+        let model = try Self.source("Sources/Rapid/Images/ImageGenViewModel.swift")
+
+        #expect(view.contains(".task(id: downloads.cacheGeneration)"))
+        #expect(view.contains("residencyEligible: false"))
+        #expect(model.components(separatedBy: "residencyEligible: false").count - 1 == 2,
+                "Both generation and editing must use the modal process-swap path.")
+    }
+
+    @Test("Image starters wrap instead of clipping in a horizontal rail")
+    func startersRemainReadable() throws {
+        let view = try Self.source("Sources/Rapid/UI/ImagesView.swift")
+        #expect(view.contains("private var starters: some View {\n        LazyVGrid("))
+        #expect(!view.contains("private var starters: some View {\n        ScrollView(.horizontal"))
+    }
+
     @Test("Every aspect and resolution maps to the expected API size")
     func outputSizes() {
         let expected: [ImageGenViewModel.Resolution: [ImageGenViewModel.Aspect: String]] = [

@@ -255,7 +255,8 @@ final class ImageGenViewModel {
                 alias: target.alias,
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
-                imageMode: .generation
+                imageMode: .generation,
+                residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
             }
@@ -288,7 +289,8 @@ final class ImageGenViewModel {
                 alias: target.alias,
                 hfPath: target.hfPath,
                 estimatedMemoryGB: target.estimatedMemoryGB,
-                imageMode: .editing
+                imageMode: .editing,
+                residencyEligible: false
             ) else {
                 throw ImageClientError.notReady
             }

@@ -24,7 +24,7 @@ AXApplication title="Rapid-MLX"
             AXButton id="Images.Gallery.Thumb.1" desc="Image 1, replace the couch with a blue armchair, selected" enabled=true
             AXButton id="Images.Gallery.Thumb.2" desc="Image 2, the same cheetah, at night" enabled=true
             AXButton id="Images.Gallery.Thumb.3" desc="Image 3, a cheetah on a red couch" enabled=true
-          AXScrollArea
+          AXOpaqueProviderGroup subrole=AXOpaqueProviderGrid enabled=true
             AXButton id="Images.Starter.0" desc="A cozy ramen shop at night in the rain, neon, steam, 35mm" enabled=true
             AXButton id="Images.Starter.1" desc="Studio portrait of an elderly fisherman, dramatic side light" enabled=true
             AXButton id="Images.Starter.2" desc="A minimalist product shot of a ceramic mug on linen" enabled=true

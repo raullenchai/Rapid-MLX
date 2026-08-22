@@ -23,7 +23,8 @@ struct MountedRecoverySurfacesTests {
     func contentViewMountsWindowLevelSurfaces() throws {
         let content = try source("UI/ContentView.swift")
         #expect(content.contains("FailedReplaceBanner()"))
-        #expect(content.contains("DownloadStrip(downloads: downloads)"))
+        #expect(content.contains("DownloadStrip("))
+        #expect(content.contains("downloads: downloads"))
         #expect(content.contains("LogDrawer(server: server)"))
         #expect(content.contains("ServerStatusPill(state: server.state)"))
     }
