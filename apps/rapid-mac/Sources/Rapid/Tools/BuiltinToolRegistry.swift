@@ -9,11 +9,19 @@ import Foundation
 ///     key; DuckDuckGo backstop)
 ///   * ``browse`` — USER-approved per fetch (``BrowseApprovalStore``),
 ///     SSRF-guarded, byte-capped
+///   * ``read_document`` — no approval, reads only documents the user
+///     already attached (see below)
 ///
 /// One instance is constructed by ``RapidApp`` and shared by the chat
 /// view model. Filesystem / shell tools are deliberately absent: this
 /// build has no ``SandboxManager``, and a tool that touches the user's
 /// disk must not ship without one.
+///
+/// ``read_document`` is not an exception to that rule. It accepts no
+/// path — only an attachment UUID minted when the user dropped or picked
+/// a file — and resolves it solely through ``DocumentContentCache``. It
+/// can therefore reach nothing the user did not already hand over, which
+/// is also why it needs no approval prompt of its own.
 @MainActor
 final class BuiltinToolRegistry: ToolRegistry {
     /// Per-invocation approval gate for ``browse``. Held on the shared registry
@@ -38,6 +46,7 @@ final class BuiltinToolRegistry: ToolRegistry {
             WebSearchTool.definition,
             BrowseTool.definition,
             WeatherTool.definition,
+            ReadDocumentTool.definition,
         ]
     }
 
@@ -59,13 +68,15 @@ final class BuiltinToolRegistry: ToolRegistry {
             )
         case "weather":
             result = await WeatherTool.run(arguments: call.function.arguments)
+        case "read_document":
+            result = await ReadDocumentTool.run(arguments: call.function.arguments)
         default:
             // The model invented a tool name we don't ship — return an
             // error result so it gets a chance to recover instead of
             // throwing and tearing the chat loop down.
             result = ToolCallResult(
                 toolCallID: call.id,
-                content: "unknown tool '\(call.function.name)' — available: web_search, browse, weather",
+                content: "unknown tool '\(call.function.name)' — available: web_search, browse, weather, read_document",
                 isError: true
             )
         }

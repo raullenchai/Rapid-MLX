@@ -884,6 +884,11 @@ struct ChatView: View {
                         Button {
                             fileAttachments.removeAll { $0.id == attachment.id }
                             attachedSourcePaths[attachment.id] = nil
+                            // Removing the chip is the user deleting the
+                            // document: stop any background extraction still
+                            // running for it, and delete the plaintext extract
+                            // rather than leaving it in Application Support.
+                            DocumentContentCache.shared.remove(attachment.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)

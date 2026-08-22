@@ -603,7 +603,7 @@ final class MCPConnectorsTests {
     func compositeIsBuiltinWhenNoConnectors() {
         // A user who never turns connectors on must see no change at all.
         let names = makeComposite().definitions.map { $0.function.name }
-        #expect(names == ["web_search", "browse", "weather"])
+        #expect(names == ["web_search", "browse", "weather", "read_document"])
     }
 
     @Test("A built-in tool still dispatches to the built-in registry")
@@ -653,7 +653,7 @@ final class MCPConnectorsTests {
 
         // Connectors on: the connector tool sits alongside the built-in three.
         #expect(composite.definitions.map { $0.function.name }
-            == ["web_search", "browse", "weather", "time__now"])
+            == ["web_search", "browse", "weather", "read_document", "time__now"])
         // And a call for it routes to the MCP side (reaching the approval gate),
         // not the unknown-tool branch.
         async let dispatched = composite.run(
@@ -667,7 +667,7 @@ final class MCPConnectorsTests {
         // Master switch off collapses the surface back to the built-ins.
         defaults.set(false, forKey: MCPConfigStore.enabledKey)
         #expect(composite.definitions.map { $0.function.name }
-            == ["web_search", "browse", "weather"])
+            == ["web_search", "browse", "weather", "read_document"])
     }
 
     // MARK: - Catalog / hot reload

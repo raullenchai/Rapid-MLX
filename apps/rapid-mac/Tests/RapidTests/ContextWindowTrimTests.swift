@@ -83,17 +83,19 @@ struct ContextWindowTrimTests {
 
     @Test("Oldest turns are dropped when total exceeds the keep fraction")
     func dropsOldestTurnsOverBudget() {
-        // chars/4 estimate. Budget = 4 * 0.75 = 3 tokens. Each msg is
-        // 4 chars = 1 token. Last user msg must always survive.
+        // Each 4-char ASCII message costs ceil(4 * 0.42) = 2 estimated tokens,
+        // so five messages cost 10. A window of 8 gives a budget of
+        // 8 * 0.75 = 6 tokens = three messages. The last user turn always
+        // survives, so the two oldest drop.
         let history: [ChatMessage] = [
-            ChatMessage(role: .user, content: "AAAA"),       // 1 tok — drops
-            ChatMessage(role: .assistant, content: "BBBB"),  // 1 tok — drops
-            ChatMessage(role: .user, content: "CCCC"),       // 1 tok — keeps
-            ChatMessage(role: .assistant, content: "DDDD"),  // 1 tok — keeps
-            ChatMessage(role: .user, content: "EEEE"),       // 1 tok — keeps (always)
+            ChatMessage(role: .user, content: "AAAA"),       // 2 tok — drops
+            ChatMessage(role: .assistant, content: "BBBB"),  // 2 tok — drops
+            ChatMessage(role: .user, content: "CCCC"),       // 2 tok — keeps
+            ChatMessage(role: .assistant, content: "DDDD"),  // 2 tok — keeps
+            ChatMessage(role: .user, content: "EEEE"),       // 2 tok — keeps (always)
         ]
         let trimmed = ChatViewModel.trimMessagesForContextWindow(
-            history, contextWindow: 4
+            history, contextWindow: 8
         )
         #expect(trimmed.count == 3)
         #expect(trimmed.first?.content == "CCCC")
@@ -161,6 +163,38 @@ struct ContextWindowTrimTests {
         #expect(trimmed.first?.role == .user)
         #expect(!trimmed.contains { $0.role == .tool })
         #expect(!trimmed.contains { ($0.toolCalls?.isEmpty == false) })
+    }
+
+    @Test("An oversized current tool round keeps its complete user-anchored chain")
+    func oversizedToolResultKeepsCurrentTurnIntact() {
+        var toolCall = ChatMessage(role: .assistant)
+        toolCall.toolCalls = [
+            ToolCall(id: "read-1", name: "read_document", arguments: "{\"offset\":0}")
+        ]
+        let toolResult = ChatMessage(
+            role: .tool,
+            content: String(repeating: "document page content ", count: 1_000),
+            toolCallID: "read-1"
+        )
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "old question"),
+            ChatMessage(role: .assistant, content: "old answer"),
+            ChatMessage(role: .user, content: "summarize the attached report"),
+            toolCall,
+            toolResult,
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history,
+            contextWindow: 8_000
+        )
+
+        #expect(trimmed.count == 3)
+        #expect(trimmed[0].role == .user)
+        #expect(trimmed[0].content == "summarize the attached report")
+        #expect(trimmed[1].toolCalls?.first?.id == "read-1")
+        #expect(trimmed[2].role == .tool)
+        #expect(trimmed[2].toolCallID == "read-1")
     }
 
     @Test("All-assistant prefix collapses to just the last user message")
