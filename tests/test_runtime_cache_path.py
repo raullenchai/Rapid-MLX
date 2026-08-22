@@ -223,6 +223,22 @@ def test_local_indexed_nested_shard_change_invalidates(tmp_path):
     assert first != second
 
 
+def test_local_custom_model_code_change_invalidates(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "custom", "model_file": "code/model.py"})
+    )
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    model_file = code_dir / "model.py"
+    model_file.write_text("MODEL_VERSION = 1\n")
+    (tmp_path / "model.safetensors").write_bytes(b"unchanged-weights")
+    first = _cached_model_revision(str(tmp_path))
+
+    model_file.write_text("MODEL_VERSION = 2\n")
+    second = _cached_model_revision(str(tmp_path))
+    assert first != second
+
+
 def test_traversal_double_dot_does_not_escape_root():
     """A name with ``..`` must NOT escape the prefix-cache root."""
     p = _resolve("../evil")

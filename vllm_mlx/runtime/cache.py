@@ -367,6 +367,11 @@ def _cached_model_revision(model_name: str) -> str:
             weight_suffixes = {".safetensors", ".npz", ".bin", ".pt", ".pth"}
             tracked = {resolved / "config.json"}
             tracked.update(resolved.rglob("*.index.json"))
+            # A config.json::model_file can change model semantics with
+            # identical tensors, and may import sibling modules. Hash all
+            # checkpoint-local Python sources so that custom architectures
+            # cannot inherit a KV namespace across code revisions.
+            tracked.update(resolved.rglob("*.py"))
             tracked.update(
                 path
                 for path in resolved.rglob("*")
@@ -383,9 +388,9 @@ def _cached_model_revision(model_name: str) -> str:
                     continue
                 digest.update(str(relative).encode("utf-8"))
                 digest.update(_file_identity(stat).encode("ascii"))
-                # Config/index files are small and encode architecture/shard
-                # identity. Hash their bytes; large weight files use metadata.
-                if path.suffix == ".json":
+                # Config/index/code files are small and encode architecture /
+                # shard identity. Hash their bytes; large weights use metadata.
+                if path.suffix in {".json", ".py"}:
                     try:
                         digest.update(path.read_bytes())
                     except OSError:
