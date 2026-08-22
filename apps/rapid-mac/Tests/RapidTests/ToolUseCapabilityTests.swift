@@ -102,6 +102,12 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "ornith-1.5-35b-a3b-bf16") == .known)
     }
 
+    @Test("Unverified Ornith-1.5 size shapes remain .unknown")
+    func ornithUnverifiedSizesAreUnknown() {
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-19b") == .unknown)
+        #expect(ToolUseCapability.confidence(for: "ornith-1.5-135b") == .unknown)
+    }
+
     @Test("llama3-3b-4bit is .known — smallest empirically-good llama")
     func llama3_3bIsKnown() {
         #expect(ToolUseCapability.confidence(for: "llama3-3b-4bit") == .known)
