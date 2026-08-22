@@ -84,6 +84,24 @@ def test_distinct_kv_dtypes_get_distinct_cache_dirs():
     )
 
 
+def test_live_scheduler_dtype_wins_over_server_config_fallback():
+    cfg = _patched_cfg("org/model", "bf16")
+    cfg.engine = SimpleNamespace(
+        scheduler=SimpleNamespace(config=SimpleNamespace(kv_cache_dtype="int8"))
+    )
+    with (
+        patch("vllm_mlx.runtime.cache.get_config", return_value=cfg),
+        patch("vllm_mlx.runtime.cache._cached_model_revision", return_value="rev-a"),
+    ):
+        programmatic = get_cache_dir()
+    assert os.path.basename(programmatic) == os.path.basename(
+        _resolve_with_dtype("org/model", "int8")
+    )
+    assert os.path.basename(programmatic) != os.path.basename(
+        _resolve_with_dtype("org/model", "bf16")
+    )
+
+
 def test_distinct_model_revisions_get_distinct_cache_dirs():
     cfg = _patched_cfg("org/model", "int8")
     with patch("vllm_mlx.runtime.cache.get_config", return_value=cfg):
@@ -112,6 +130,20 @@ def test_local_checkpoint_fingerprint_changes_when_weights_change(tmp_path):
     first = _cached_model_revision(str(tmp_path))
 
     weights.write_bytes(b"replacement-weights")
+    second = _cached_model_revision(str(tmp_path))
+    assert first != second
+
+
+def test_local_checkpoint_same_size_preserved_mtime_still_invalidates(tmp_path):
+    weights = tmp_path / "model.safetensors"
+    weights.write_bytes(b"first-weights")
+    original = weights.stat()
+    first = _cached_model_revision(str(tmp_path))
+
+    weights.write_bytes(b"other-weights")  # same byte length
+    os.utime(weights, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert weights.stat().st_size == original.st_size
+    assert weights.stat().st_mtime_ns == original.st_mtime_ns
     second = _cached_model_revision(str(tmp_path))
     assert first != second
 

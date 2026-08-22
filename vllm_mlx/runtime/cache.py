@@ -337,7 +337,7 @@ def get_cache_dir() -> str:
     # Persisted KV tensors are reusable only for the exact model revision and
     # effective KV dtype that produced them. Tensor shape/type validation cannot
     # prove that semantic identity, so keep those axes in the directory key.
-    kv_dtype = str(getattr(cfg, "kv_cache_dtype", None) or "bf16")
+    kv_dtype = _effective_kv_cache_dtype(cfg)
     revision = _cached_model_revision(raw)
     identity = (
         f"{raw}\0prefix-cache-v{_PREFIX_CACHE_NAMESPACE_VERSION}"
@@ -376,7 +376,7 @@ def _cached_model_revision(model_name: str) -> str:
                 except OSError:
                     continue
                 digest.update(path.name.encode("utf-8"))
-                digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+                digest.update(_file_identity(stat).encode("ascii"))
                 # Config/index files are small and encode architecture/shard
                 # identity. Hash their bytes; large weight files use metadata.
                 if path.suffix == ".json":
@@ -387,7 +387,7 @@ def _cached_model_revision(model_name: str) -> str:
             return f"local-{digest.hexdigest()[:16]}"
         try:
             stat = resolved.stat()
-            return f"local-file-{stat.st_size}-{stat.st_mtime_ns}"
+            return f"local-file-{_file_identity(stat)}"
         except OSError:
             return str(resolved)
     try:
@@ -403,6 +403,26 @@ def _cached_model_revision(model_name: str) -> str:
         # optional Hugging Face cache metadata.
         pass
     return source
+
+
+def _file_identity(stat: os.stat_result) -> str:
+    """Metadata identity that changes on content replacement.
+
+    ``ctime_ns`` cannot be restored with ``utime`` after an in-place write, and
+    ``st_ino`` changes for atomic replace deployments. Together they cover the
+    same-size/preserved-mtime case without reading tens of GB of weights during
+    every server boot.
+    """
+    return f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{stat.st_ino}"
+
+
+def _effective_kv_cache_dtype(cfg) -> str:
+    """Read the canonical live scheduler dtype, falling back pre-load."""
+    engine = getattr(cfg, "engine", None)
+    scheduler = _resolve_scheduler(engine) if engine is not None else None
+    scheduler_cfg = getattr(scheduler, "config", None)
+    live = getattr(scheduler_cfg, "kv_cache_dtype", None)
+    return str(live or getattr(cfg, "kv_cache_dtype", None) or "bf16")
 
 
 def _resolved_model_source(model_name: str) -> str:
