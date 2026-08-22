@@ -481,11 +481,12 @@ def detect_install_method() -> InstallInfo:
         # point into ``~/.local/bin``. uv, pipx, and ``pip install --user``
         # use that SAME bin directory, so the launcher path is not evidence of
         # ownership. Only the resolved target identifies an install.sh venv.
-        rapid_mlx_dir = str(Path.home() / ".rapid-mlx")
+        rapid_mlx_dir = os.path.normcase(os.path.realpath(Path.home() / ".rapid-mlx"))
         try:
-            is_install_sh = os.path.commonpath(
-                [normalized, rapid_mlx_dir]
-            ) == os.path.normpath(rapid_mlx_dir)
+            is_install_sh = (
+                os.path.commonpath([os.path.normcase(normalized), rapid_mlx_dir])
+                == rapid_mlx_dir
+            )
         except ValueError:
             is_install_sh = False
         if is_install_sh:

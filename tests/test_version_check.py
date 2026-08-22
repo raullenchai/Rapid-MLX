@@ -668,7 +668,10 @@ def test_detects_tool_manager_from_resolved_launcher(
     (venv / receipt).write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: str(binary))
-    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: str(resolved) if Path(p) in {binary, resolved} else str(p),
+    )
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("PIPX_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -710,7 +713,10 @@ def test_detects_configured_tool_manager_root(
     (venv / receipt).write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: str(binary))
-    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: str(resolved) if Path(p) in {binary, resolved} else str(p),
+    )
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("PIPX_HOME", raising=False)
     monkeypatch.setenv(env_name, str(manager_root))
@@ -730,7 +736,10 @@ def test_global_pipx_requires_manual_privileged_upgrade(tmp_path, monkeypatch):
     (resolved.parent.parent / "pipx_metadata.json").write_text("managed")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: binary)
-    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: str(resolved) if Path(p) in {Path(binary), resolved} else str(p),
+    )
     monkeypatch.setenv("PIPX_GLOBAL_HOME", str(pipx_home))
 
     info = vc.detect_install_method()
@@ -750,7 +759,10 @@ def test_manager_like_path_outside_known_root_falls_back_to_pip(tmp_path, monkey
     (venv / "uv-receipt.toml").write_text("coincidental")
     monkeypatch.setattr("pathlib.Path.home", lambda: home)
     monkeypatch.setattr("shutil.which", lambda _name: str(binary))
-    monkeypatch.setattr("os.path.realpath", lambda p: str(resolved))
+    monkeypatch.setattr(
+        "os.path.realpath",
+        lambda p: str(resolved) if Path(p) in {binary, resolved} else str(p),
+    )
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
@@ -783,6 +795,31 @@ def test_manager_root_symlink_is_normalized_before_comparison(tmp_path, monkeypa
 
     assert info.method == "uv"
     assert info.upgrade_argv == ["uv", "tool", "upgrade", "rapid-mlx"]
+
+
+def test_install_sh_root_symlink_is_normalized_before_comparison(tmp_path, monkeypatch):
+    """Normalize the install.sh root as well as its resolved launcher."""
+    home = tmp_path / "home"
+    binary = home / ".local/bin/rapid-mlx"
+    expected_root = home / ".rapid-mlx"
+    canonical_root = Path("/private") / expected_root.relative_to("/")
+    canonical_binary = canonical_root / "bin/rapid-mlx"
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(binary))
+
+    def fake_realpath(path):
+        if Path(path) == binary:
+            return str(canonical_binary)
+        if Path(path) == expected_root:
+            return str(canonical_root)
+        return str(path)
+
+    monkeypatch.setattr("os.path.realpath", fake_realpath)
+
+    info = vc.detect_install_method()
+
+    assert info.method == "install_sh"
+    assert info.upgrade_argv[:2] == ["bash", "-c"]
 
 
 def _run_install_sh_upgrade(

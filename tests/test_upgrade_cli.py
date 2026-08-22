@@ -109,6 +109,30 @@ def test_missing_manager_command_exits_cleanly(
     assert f"Reinstall {method}" in out
 
 
+def test_global_pipx_prints_manual_command_without_executing(monkeypatch, capsys):
+    """Global pipx needs sudo, so the CLI must never execute its empty argv."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="unknown",
+            binary_path="/opt/pipx/venvs/rapid-mlx/bin/rapid-mlx",
+            upgrade_command="sudo pipx upgrade --global rapid-mlx",
+            upgrade_argv=[],
+        ),
+    )
+
+    with patch("subprocess.run") as run:
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+
+    run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "sudo pipx upgrade --global rapid-mlx" in out
+    assert "run the command above manually" in out
+
+
 def test_dry_run_returns_silently_when_already_up_to_date(monkeypatch, capsys):
     """If current == latest, upgrade_command returns before consulting
     install method. --dry-run should not change that — still a clean
