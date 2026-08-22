@@ -465,6 +465,10 @@ jobs:
         if: env.SIGNED == 'true'
         run: bash scripts/notarize.sh build/rapid-mlx-desktop.dmg build/rapid-mlx-desktop.dmg
 
+      - name: Validate final stapled DMG presentation
+        if: env.SIGNED == 'true'
+        run: bash scripts/validate-dmg.sh build/rapid-mlx-desktop.dmg
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
