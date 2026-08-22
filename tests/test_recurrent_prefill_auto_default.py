@@ -127,3 +127,18 @@ def test_only_bench_verified_qwen_profiles_opt_in():
         "qwen3.5-9b-8bit",
     ):
         assert resolve_profile(alias).recommended_prefill_step_size is None
+
+
+def test_prefill_help_describes_profile_scoped_recommendation():
+    serve_parser = next(
+        action.choices["serve"]
+        for action in cli.build_parser()._actions
+        if getattr(action, "choices", None) and "serve" in action.choices
+    )
+    action = next(
+        action
+        for action in serve_parser._actions
+        if "--prefill-step-size" in action.option_strings
+    )
+    assert "bench-verified model profiles" in action.help
+    assert "recurrent/linear-attention models auto-tune" not in action.help

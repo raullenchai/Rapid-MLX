@@ -9893,8 +9893,8 @@ Examples:
         type=int,
         default=2048,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 2048; recurrent/linear-attention "
-        "models auto-tune to 512 unless explicitly set)",
+        "but can improve prefill throughput. (default: 2048; bench-verified model "
+        "profiles may recommend a smaller value unless explicitly set)",
     )
     serve_parser.add_argument(
         "--vision-min-pixels",
