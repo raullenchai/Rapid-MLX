@@ -41,16 +41,17 @@ dependencies = [
     # default_stream / new_stream / new_thread_local_stream) are materialised
     # on T2 via np.array(arr). The shim adopts the worker's process-wide
     # default — the only path that round-trips cleanly across threads.
-    # Upper caps <0.32 (release-blocker, #1248): mlx / mlx-lm are floor-only
+    # Upper caps are coherence-gated (#1248): mlx / mlx-lm are floor-only
     # pinned but move fast, so a bare ``pip install rapid-mlx`` silently resolves
-    # to a NEWER, untested minor (mlx 0.32.0 is already published). The Qwen3.6
+    # to a NEWER, untested minor. The Qwen3.6
     # garbage incident (#1234) was caused by a heuristic change INSIDE
     # ``mlx_lm.models.qwen3_5.sanitize`` under an existing model — an upstream
-    # minor we never validated. Cap to the validated 0.31.x line (mlx 0.31.2 /
-    # mlx-lm 0.31.3); raising either bound is a gated coherence event — see
-    # scripts/check_mlx_bound_move.py and #1247. Patch releases within 0.31.x
-    # stay allowed.
-    "mlx>=0.31.2,<0.32",
+    # minor we never validated. MLX 0.32.1 improves long-prompt prefill by about
+    # 21-22% on Qwen hybrid/GDN models and passed the #1247 coherence campaign
+    # recorded in the accompanying performance report; retain the next-minor
+    # cap so another runtime change cannot arrive unswept. Raising either bound
+    # is a gated coherence event — see scripts/check_mlx_bound_move.py.
+    "mlx>=0.32.1,<0.33",
     "mlx-lm>=0.31.3,<0.32",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.3 added thread-local generation_stream but cross-thread eval is still broken (see shim sites). Upper cap <0.32 (#1248).
     # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
     #
@@ -443,11 +444,14 @@ video = [
 ]
 image = [
     # MLX-native text-to-image / image-edit (FLUX.1-schnell, Qwen-Image,
-    # Qwen-Image-Edit) via mflux. mflux pins ``mlx<0.32`` — the same ceiling
-    # Rapid-MLX core already tracks — and requires Python >=3.11 (Rapid-MLX
-    # core still supports 3.10, so the image lane preflight gives 3.10 users an
-    # explicit upgrade diagnostic). Only Apache-2.0 model families are wired.
-    "mflux>=0.18.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    # Qwen-Image-Edit) via mflux. mflux 0.19.0 is the first release compatible
+    # with MLX 0.32.x; the 0.18.x line pins ``mlx<0.32`` and therefore cannot
+    # coexist with the coherence-validated core runtime. Keep a minor cap so
+    # image-lane API changes remain deliberate. mflux requires Python >=3.11
+    # (Rapid-MLX core still supports 3.10, so the image lane preflight gives
+    # 3.10 users an explicit upgrade diagnostic). Only Apache-2.0 model
+    # families are wired.
+    "mflux>=0.19.0,<0.20; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.urls]

@@ -2489,6 +2489,7 @@ def _preflight_ddtree_or_exit(args):
 
 
 _DEFAULT_HYBRID_CACHE_ENTRIES = 8
+_DEFAULT_RECURRENT_PREFILL_STEP_SIZE = 512
 
 
 def _resolve_hybrid_cache_entries(
@@ -2603,6 +2604,76 @@ def _resolve_checkpoint_config(model_name: str, profile) -> dict | None:
         if metadata is not None and metadata.config:
             return metadata.config
     return None
+
+
+def _config_declares_linear_attention(config: dict | None) -> bool:
+    """Whether the language backbone declares recurrent/linear attention.
+
+    Keep the checkpoint signals aligned with ``mllm_backbone_is_hybrid``: this
+    variant accepts an already-resolved config so aliases and bare local paths
+    can share the serve prefill policy without another metadata lookup.
+    """
+    if not isinstance(config, dict):
+        return False
+
+    text_config = config.get("text_config")
+    language_config = text_config if isinstance(text_config, dict) else config
+    layer_types = language_config.get("layer_types") or []
+    if any(
+        isinstance(layer_type, str)
+        and any(
+            marker in layer_type.lower() for marker in ("linear", "mamba", "recurrent")
+        )
+        for layer_type in layer_types
+    ):
+        return True
+    return any(
+        isinstance(model_type, str)
+        and any(
+            marker in model_type.lower()
+            for marker in ("mamba", "recurrent", "qwen3_next")
+        )
+        for model_type in (language_config.get("model_type"), config.get("model_type"))
+    )
+
+
+def _prefers_recurrent_prefill_chunks(model_name: str) -> bool:
+    """Whether smaller prefill chunks improve this recurrent architecture.
+
+    Recurrent state has a much lower per-chunk memory floor than dense KV but
+    long chunks still monopolize the continuous-batching scheduler. Keep this
+    separate from ``_needs_bounded_trim_free_reuse``: sliding-window Gemma and
+    DeepSeek cache variants need bounded prefix snapshots, but are not evidence
+    for changing the prefill chunk size.
+    """
+    from .model_aliases import resolve_profile as _resolve_alias
+
+    profile = _resolve_alias(model_name)
+    if profile is not None and (
+        profile.is_hybrid or (profile.is_hybrid_explicit and not profile.is_hybrid)
+    ):
+        return True
+    return _config_declares_linear_attention(
+        _resolve_checkpoint_config(model_name, profile)
+    )
+
+
+def _resolve_prefill_step_size(
+    *, model_name: str, configured: int, user_set_explicit: bool
+) -> int:
+    """Resolve the architecture-aware serve prefill chunk size."""
+    import logging as _logging
+
+    if user_set_explicit or not _prefers_recurrent_prefill_chunks(model_name):
+        return configured
+    resolved = min(configured, _DEFAULT_RECURRENT_PREFILL_STEP_SIZE)
+    if resolved != configured:
+        _logging.getLogger(__name__).info(
+            "Recurrent/linear-attention model detected: auto-setting "
+            "--prefill-step-size=%d (pass --prefill-step-size explicitly to override)",
+            resolved,
+        )
+    return resolved
 
 
 def _needs_bounded_trim_free_reuse(model_name: str) -> bool:
@@ -3809,6 +3880,12 @@ def serve_command(args):
         or any(a.startswith("--hybrid-cache-entries=") for a in sys.argv),
         model_name=getattr(args, "_original_alias", None) or args.model,
     )
+    _prefill_step_size = _resolve_prefill_step_size(
+        model_name=getattr(args, "_original_alias", None) or args.model,
+        configured=args.prefill_step_size,
+        user_set_explicit="--prefill-step-size" in sys.argv
+        or any(a.startswith("--prefill-step-size=") for a in sys.argv),
+    )
 
     # 0.9.13 PR-A codex round-E blocker #2: resolve model_type on the
     # CLI's asyncio thread and thread it down through SchedulerConfig
@@ -3867,7 +3944,7 @@ def serve_command(args):
         # reads it off scheduler_config only; the legacy load_model kwarg was
         # accepted but never used. See #400 and the CLI ↔ Config fidelity
         # audit at scripts/audit_cli_config_fidelity.py.
-        prefill_step_size=args.prefill_step_size,
+        prefill_step_size=_prefill_step_size,
         vision_min_pixels=getattr(args, "vision_min_pixels", 0),
         vision_max_pixels=getattr(args, "vision_max_pixels", 0),
         # Speculative decoding selection.
@@ -9816,7 +9893,8 @@ Examples:
         type=int,
         default=2048,
         help="Chunk size for prompt prefill processing. Larger values use more memory "
-        "but can improve prefill throughput. (default: 2048)",
+        "but can improve prefill throughput. (default: 2048; recurrent/linear-attention "
+        "models auto-tune to 512 unless explicitly set)",
     )
     serve_parser.add_argument(
         "--vision-min-pixels",
