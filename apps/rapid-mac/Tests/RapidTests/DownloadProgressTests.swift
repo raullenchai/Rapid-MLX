@@ -874,6 +874,8 @@ struct DownloadProgressTests {
         let slowed = try! #require(progress.etaSeconds)
         #expect(slowed <= settled * 1.25)
         #expect(slowed > settled)
+        let visibleETA = try! #require(progress.etaText)
+        #expect(progress.progressSubtitle?.contains(visibleETA) == true)
     }
 
     @Test("ETA settles again after a stalled download resumes")

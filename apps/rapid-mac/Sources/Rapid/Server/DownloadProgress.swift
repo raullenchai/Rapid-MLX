@@ -888,8 +888,7 @@ final class DownloadProgress {
                 parts.append("\(Self.formatBytes(bytes)) / \(Self.formatBytes(total)) · \(clamped)%")
                 if let speed = bytesPerSecond {
                     parts.append(Self.formatSpeed(bytesPerSecond: speed))
-                    if etaEstimateIsStable,
-                       let eta = Self.formatETA(bytesRemaining: total - bytes, bytesPerSecond: speed) {
+                    if let eta = etaText {
                         parts.append(eta)
                     }
                 }

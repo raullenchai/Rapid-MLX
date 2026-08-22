@@ -437,6 +437,7 @@ struct DownloadManagerTests {
 struct DownloadStripCaptionTests {
 
     @Test("A completed resident job is removed while its row is hidden")
+    @MainActor
     func completedResidentCleanupDoesNotResurface() async throws {
         let downloads = DownloadManager()
         _ = downloads._testingSeedJob(alias: "image-model")
