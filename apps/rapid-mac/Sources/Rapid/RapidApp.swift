@@ -280,7 +280,25 @@ struct RapidApp: App {
             fixtureState: updateBusyFixture ? .busy : nil
         )
         let downloadsInstance = DownloadManager(binaryPath: manager.binaryPath)
-        let dictationController = DictationController(server: manager)
+        // TCC cannot be granted hermetically on an unattended runner. This
+        // two-key fixture exercises the real model/server warmup lifecycle
+        // while replacing only the OS permission and event-tap boundaries.
+        let dictationReadinessFixture = ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1"
+            && ProcessInfo.processInfo.environment["RAPID_GUI_DICTATION_READINESS_FIXTURE"] == "1"
+        let fixtureReadiness: DictationController.Readiness? = dictationReadinessFixture
+            ? .init(microphone: true, accessibility: true, modelSelected: true, modelOnDisk: true)
+            : nil
+        let fixtureHotkeyStart: (@MainActor () -> Bool)?
+        if dictationReadinessFixture {
+            fixtureHotkeyStart = { @MainActor in true }
+        } else {
+            fixtureHotkeyStart = nil
+        }
+        let dictationController = DictationController(
+            server: manager,
+            testingReadiness: fixtureReadiness,
+            testingHotkeyStart: fixtureHotkeyStart
+        )
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
         // background pull for the same alias before spawning serve.
         manager.attachDownloads(downloadsInstance)

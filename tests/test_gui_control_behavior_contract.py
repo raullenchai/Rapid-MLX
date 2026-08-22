@@ -27,9 +27,7 @@ def test_audio_readiness_actions_start_the_selected_model_and_clear_the_gate():
     assert "Speech loaded automatically after a download-only action" in flow
     assert "Opening Audio started a model before any user action" in flow
     assert "Opening Dictation loaded its model before the user dictated" in flow
-    assert "Transcription loaded automatically after Download" in flow
-    assert "Audio.Transcription.Run" in flow
-    assert "Audio.Transcription.Result" in flow
+    assert "Dictation loaded the model after Download while dictation was off" in flow
 
 
 def test_audio_control_journey_is_blocking_gui_ci_and_has_failure_evidence():
@@ -41,6 +39,18 @@ def test_audio_control_journey_is_blocking_gui_ci_and_has_failure_evidence():
         1
     ]
     assert "image-generation audio-readiness" in diagnostic
+
+
+def test_dictation_journey_proves_loading_before_ready():
+    source = HARNESS.read_text()
+    flow = source.split("flow_dictation() {", 1)[1].split("\n}", 1)[0]
+
+    assert "RAPID_GUI_DICTATION_READINESS_FIXTURE=1" in flow
+    assert "FAKE_AUDIO_TRANSCRIPTION_DELAY_MS=1800" in flow
+    assert "Dictation never exposed model loading before readiness" in flow
+    assert "Dictation did not become Ready after model warmup" in flow
+    assert '.event == "audio_transcription"' in flow
+    assert 'and (((.description // .value // .label // "") | tostring)' in flow
 
 
 def test_image_generation_journey_asserts_the_product_default_request_size():

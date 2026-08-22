@@ -4413,14 +4413,20 @@ flow_audio_readiness() {
 # Dictation is its own product journey, not merely the landing state of Audio.
 # Keep this separate from audio-readiness so a regression in its controls is
 # named directly in CI. Microphone and Accessibility grants are intentionally
-# not faked: their TCC state belongs to the host. The stable contract is that
-# every setup control is reachable, raw recordings remain opt-in, local
-# vocabulary edits work, mode round-trips preserve the pane, and opening it
-# alone never downloads or starts a model.
+# not globally faked: their TCC state belongs to the host. This journey opts
+# into a two-key, process-local readiness fixture only around the OS permission
+# and event-tap boundaries, allowing the real server/warmup state machine to be
+# exercised deterministically. The stable contract is that every setup control
+# is reachable, raw recordings remain opt-in, local vocabulary edits work,
+# mode round-trips preserve the pane, opening it alone never starts a model,
+# and enabling visibly transitions from Loading to Ready.
 flow_dictation() {
     log "flow: dictation"
     start_persona dictation \
-        RAPID_GUI_GOLDEN_MODE=1
+        RAPID_GUI_GOLDEN_MODE=1 \
+        RAPID_GUI_DICTATION_READINESS_FIXTURE=1 \
+        FAKE_CACHED_DICTATION=1 \
+        FAKE_AUDIO_TRANSCRIPTION_DELAY_MS=1800
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation-open.json" \
@@ -4491,7 +4497,47 @@ flow_dictation() {
         die "Opening and configuring Dictation started a model before dictation"
     fi
 
-    log "  setup controls, privacy toggle, vocabulary, and mode round-trip produced effects"
+    # Enabling is a readiness operation, not merely a preference flip. Hold
+    # the fake STT probe open long enough to observe the contract in AX: the
+    # pane says Loading while the model's lazy weights are cold, and only
+    # changes to Ready after the probe returns and the hotkey can be armed.
+    press "$OUT/dictation-restored.json" Dictation.Enable "$OUT/dictation-enable.json" \
+        || die "Dictation Enable is not pressable with complete readiness"
+    local loading_seen=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/dictation-loading.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | contains("Loading fake-whisper-small into memory")))' \
+                 "$OUT/dictation-loading.json" >/dev/null; then
+            loading_seen=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$loading_seen" == 1 ]] \
+        || die "Dictation never exposed model loading before readiness"
+    [[ "$(element_field "$OUT/dictation-loading.json" Dictation.Enable value)" == "1" ]] \
+        || die "Dictation lost the user's Enabled intent while loading"
+
+    wait_fake_event '.event == "audio_transcription"' \
+        "Dictation never sent the lazy-weight warmup probe"
+    local ready_seen=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/dictation-ready.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Ready — press")))' \
+                 "$OUT/dictation-ready.json" >/dev/null; then
+            ready_seen=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$ready_seen" == 1 ]] \
+        || die "Dictation did not become Ready after model warmup"
+
+    log "  setup controls, privacy toggle, vocabulary, mode round-trip, and Loading -> Ready produced effects"
     log "  dictation OK"
     cleanup_persona
 }

@@ -49,9 +49,6 @@ struct DictationView: View {
             if controller.vocabulary.suggestions.isEmpty {
                 await controller.vocabulary.scanForSuggestions()
             }
-            // Swap the model in while the user is still reading this page,
-            // rather than on the first hotkey press when they are mid-sentence.
-            await controller.prewarmModel()
         }
         // Runs when the selected alias's pull changes state; on completion,
         // re-read the catalog so the row flips to "Ready on disk" and the
@@ -105,6 +102,7 @@ struct DictationView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(statusHeadline)
                     .font(.subheadline.weight(.medium))
+                    .accessibilityIdentifier("Dictation.Status")
                 Text(statusDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -130,11 +128,15 @@ struct DictationView: View {
 
     private var statusColor: Color {
         guard controller.isEnabled else { return .secondary }
+        if controller.phase == .preparingModel { return .orange }
         return controller.phase == .off ? .orange : RapidTheme.green
     }
 
     private var statusHeadline: String {
         guard controller.isEnabled else { return "Dictation is off" }
+        if controller.phase == .preparingModel {
+            return "Loading \(controller.modelAlias) into memory…"
+        }
         return controller.phase == .off
             ? "Not listening — the hotkey isn't armed"
             : "Ready — press \(controller.trigger.label) in any app"
@@ -146,6 +148,9 @@ struct DictationView: View {
                 ? "Turn it on to dictate into any app."
                 : blockingReason
         }
+        if controller.phase == .preparingModel {
+            return "The local model is warming up. Recording starts when it’s ready."
+        }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
             parts.append(String(format: "%.2f s last", latency))
@@ -154,6 +159,9 @@ struct DictationView: View {
         // noticeable time, so the common warm line stays short.
         if let detail = controller.lastLatencyDetail {
             parts.append(detail)
+        }
+        if let warning = controller.lastWarmupWarning {
+            parts.append(warning)
         }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
@@ -193,6 +201,7 @@ struct DictationView: View {
                 .menuStyle(.button)
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
+                .disabled(controller.phase != .off && controller.phase != .idle)
                 .accessibilityLabel("Model")
                 .accessibilityValue(controller.modelAlias)
                 .accessibilityIdentifier("Dictation.Model")
