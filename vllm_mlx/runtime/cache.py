@@ -360,17 +360,28 @@ def _cached_model_revision(model_name: str) -> str:
             resolved = candidate
         if resolved.is_dir():
             digest = hashlib.sha256(str(resolved).encode("utf-8"))
-            tracked = [
-                resolved / "config.json",
-                resolved / "model.safetensors.index.json",
-            ]
-            tracked.extend(sorted(resolved.glob("*.safetensors")))
-            for path in tracked:
+            # Model implementations in the shared/vendored loaders may use
+            # indexed shards, nested files, or MLX/torch weight containers.
+            # Track all supported weight suffixes recursively, plus every
+            # index manifest. The manifest bytes also capture its weight_map.
+            weight_suffixes = {".safetensors", ".npz", ".bin", ".pt", ".pth"}
+            tracked = {resolved / "config.json"}
+            tracked.update(resolved.rglob("*.index.json"))
+            tracked.update(
+                path
+                for path in resolved.rglob("*")
+                if path.is_file() and path.suffix.lower() in weight_suffixes
+            )
+            for path in sorted(tracked):
                 try:
                     stat = path.stat()
                 except OSError:
                     continue
-                digest.update(path.name.encode("utf-8"))
+                try:
+                    relative = path.relative_to(resolved)
+                except ValueError:
+                    continue
+                digest.update(str(relative).encode("utf-8"))
                 digest.update(_file_identity(stat).encode("ascii"))
                 # Config/index files are small and encode architecture/shard
                 # identity. Hash their bytes; large weight files use metadata.

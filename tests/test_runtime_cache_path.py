@@ -10,6 +10,7 @@ don't permit ``..``.
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -203,6 +204,21 @@ def test_local_checkpoint_same_size_preserved_mtime_still_invalidates(tmp_path):
     os.utime(weights, ns=(original.st_atime_ns, original.st_mtime_ns))
     assert weights.stat().st_size == original.st_size
     assert weights.stat().st_mtime_ns == original.st_mtime_ns
+    second = _cached_model_revision(str(tmp_path))
+    assert first != second
+
+
+def test_local_indexed_nested_shard_change_invalidates(tmp_path):
+    shard_dir = tmp_path / "weights"
+    shard_dir.mkdir()
+    shard = shard_dir / "model-00001-of-00001.safetensors"
+    shard.write_bytes(b"first-shard")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"model.weight": str(shard.relative_to(tmp_path))}})
+    )
+    first = _cached_model_revision(str(tmp_path))
+
+    shard.write_bytes(b"replacement-shard")
     second = _cached_model_revision(str(tmp_path))
     assert first != second
 

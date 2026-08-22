@@ -714,9 +714,7 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     monkeypatch.setattr(tok, "_neutralize_unbundled_template_types", _fake_neutralize)
     monkeypatch.setattr(tok, "_try_inject_mtp_post_load", _fake_inject_mtp)
     monkeypatch.setattr(tok, "_apply_chat_template_sidecar", _fake_sidecar)
-    monkeypatch.setattr(
-        tok, "_resolve_model_path", lambda name: resolved_name
-    )
+    monkeypatch.setattr(tok, "_resolve_model_path", lambda name: resolved_name)
     monkeypatch.setattr(
         tok, "augment_eos_token_ids_from_generation_config", _fake_augment_eos
     )
