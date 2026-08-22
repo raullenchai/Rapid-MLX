@@ -393,6 +393,9 @@ final class ServerManager {
     /// whether a speculative-decoding change needs a real restart.
     private(set) var launchedPerformanceAlias: String?
     private(set) var launchedPerformanceFlags: [String] = []
+    /// Process-wide lane captured at spawn. Nil means there is no live child;
+    /// UI capability must observe this value rather than the process handle.
+    private(set) var launchedImageInputLane: Bool?
 
     func hasAppliedSpeculativeDecoding(forAlias alias: String) -> Bool {
         guard child != nil,
@@ -728,6 +731,7 @@ final class ServerManager {
     /// process death.
     internal func _testClearChild() {
         self.child = nil
+        self.launchedImageInputLane = nil
     }
 
     /// codex r1 BLOCKING #3 test seam — drive the ``state`` field
@@ -1888,6 +1892,9 @@ final class ServerManager {
         self.child = process
         self.launchedPerformanceAlias = trimmedAlias
         self.launchedPerformanceFlags = performanceFlags
+        self.launchedImageInputLane = performanceFlags.contains("--mllm")
+            && !performanceFlags.contains("--no-mllm")
+            && !performanceFlags.contains("--text-only")
         // Codex r1 P3 (#17): only publish the bearer after the spawn
         // has succeeded — see comment at the bearer guard above.
         self.activeBearer = bearer
@@ -2149,6 +2156,7 @@ final class ServerManager {
         }
         teardownPipes()
         child = nil
+        launchedImageInputLane = nil
         // #17: clear the bearer the moment the child is gone so a
         // post-stop chat request can't slip through with a stale
         // secret targeting whatever happens to bind the port next.
@@ -2237,6 +2245,7 @@ final class ServerManager {
         if !process.isProcessGroupAlive {
             teardownPipes()
             child = nil
+            launchedImageInputLane = nil
             // #17: see shutdownSync — bearer is dead the moment the
             // child is.
             activeBearer = nil
@@ -2307,6 +2316,7 @@ final class ServerManager {
         expectedStop = false
         preservingLastServedAliasDuringStop = false
         child = nil
+        launchedImageInputLane = nil
         // #17: the child owns the secret; the secret is meaningless
         // (and a leak vector) once the child is gone.
         activeBearer = nil
@@ -3014,7 +3024,7 @@ final class ServerManager {
         return Self.effectiveRunningImageCapability(
             catalogSupportsImageInput: catalogCapability,
             userOverrides: safeOverrides,
-            processLaunchFlags: child == nil ? nil : launchedPerformanceFlags
+            processLaunchFlags: launchedImageInputLane.map { $0 ? ["--mllm"] : [] }
         )
     }
 
