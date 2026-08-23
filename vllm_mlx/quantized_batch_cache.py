@@ -84,6 +84,13 @@ def _quantize(x: mx.array, group_size: int, bits: int) -> list[mx.array]:
 
 
 def _dequantize(triple: list[mx.array], group_size: int, bits: int) -> mx.array:
+    # MLX 0.32.1's quantized kernels do not honor the row strides of a prefix
+    # view such as ``storage[..., :offset, :]``.  The packed values are correct,
+    # but dequantizing that view can read the reserved capacity between heads
+    # and produce wildly corrupted output.  Materialize the small quantized
+    # tensors until MLX restores strided-view support.  ``mx.contiguous`` is a
+    # no-op when the input already has the required layout.
+    triple = [mx.contiguous(x) for x in triple]
     return mx.dequantize(
         triple[0], triple[1], triple[2], group_size=group_size, bits=bits
     )
@@ -175,7 +182,10 @@ class QuantizedBatchKVCache(_BaseCache):
         ]
 
     def _slice_seq(self, triple: list[mx.array], upto: int) -> list[mx.array]:
-        return [m[..., :upto, :] for m in triple]
+        # MLX 0.32.1 quantized attention has the same strided-prefix bug as
+        # mx.dequantize (see _dequantize above).  Attention consumes this helper's
+        # result directly, so make the returned quantized triples contiguous.
+        return [mx.contiguous(m[..., :upto, :]) for m in triple]
 
     def _resolve_group_size(self, k_head_dim: int, v_head_dim: int) -> int:
         """Coerce the group size to one that divides both head dims.
