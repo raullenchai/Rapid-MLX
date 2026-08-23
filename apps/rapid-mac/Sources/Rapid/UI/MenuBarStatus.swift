@@ -56,6 +56,7 @@ enum MenuBarStatus {
     enum MenuBarAction: Int, Equatable {
         case open
         case newChat
+        case copyEndpoint
         case update
         case checkForUpdates
         case about
@@ -88,7 +89,8 @@ enum MenuBarStatus {
 
     /// The full, ordered tray menu given the live inputs. This is the
     /// single source of truth for the menu's structure and its dynamic
-    /// branches (the update row only appears when one is available;
+    /// branches (the "Copy API endpoint" row only appears while the
+    /// backend is serving, the update row only when one is available;
     /// "Check for updates…" is disabled mid-check).
     /// ``MenuBarController.rebuildMenu`` renders exactly this list, so a
     /// test against it pins the real menu.
@@ -96,7 +98,8 @@ enum MenuBarStatus {
         state: ServerState,
         hasUpdate: Bool,
         updateVersion: String,
-        checking: Bool
+        checking: Bool,
+        baseURL: String?
     ) -> [MenuBarItem] {
         var items: [MenuBarItem] = [
             .button(.open, title: "Open Rapid-MLX", enabled: true, shortcut: nil),
@@ -108,8 +111,24 @@ enum MenuBarStatus {
             ),
             .separator,
             .status(statusLine(state: state)),
-            .separator,
         ]
+
+        // Serve-type users live in the tray and never open the main
+        // window; their highest-frequency action is copying the API
+        // endpoint into their own agent/script. Only render the row when
+        // the server is actually serving on a known host:port — otherwise
+        // it would be a dead click for a user whose backend isn't up yet.
+        if let baseURL {
+            items.append(
+                .button(
+                    .copyEndpoint,
+                    title: "Copy API endpoint",
+                    enabled: true,
+                    shortcut: nil
+                )
+            )
+        }
+        items.append(.separator)
 
         if hasUpdate {
             // Newer version visible — surface it as the primary
