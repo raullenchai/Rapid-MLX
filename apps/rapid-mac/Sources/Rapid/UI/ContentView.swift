@@ -480,20 +480,29 @@ struct ContentView: View {
         }
     }
 
-    /// Progress is only read while the server is actually starting.
+    /// Progress is only read while the selected model is being downloaded
+    /// or while the server is actually starting.
     ///
     /// This is an observation-scope decision, not a cosmetic one.
     /// ``DownloadProgress`` republishes every 500 ms, and reading it in
     /// this view's body registers ``ContentView`` — and therefore the
-    /// whole split view — as an observer. Gating on ``.starting`` keeps
-    /// that half-second churn confined to the window where the banner
-    /// genuinely needs it, instead of paying it for the entire session.
+    /// whole split view — as an observer. Gating each source keeps that
+    /// half-second churn confined to the window where the banner genuinely
+    /// needs it. The sidecar job must win: download-only pulls leave the
+    /// server idle, and are the source of truth also shown in DownloadStrip.
     private var progressSnapshot: ModelReadiness.ProgressSnapshot? {
+        if let job = downloads.job(for: alias), case .running = job.status {
+            return Self.progressSnapshot(from: job.progress)
+        }
         guard case .starting = server.state else { return nil }
-        return ModelReadiness.ProgressSnapshot(
-            activity: server.downloadProgress.startupActivity,
-            subtitle: server.downloadProgress.progressSubtitle,
-            fraction: server.downloadProgress.progressFraction
+        return Self.progressSnapshot(from: server.downloadProgress)
+    }
+
+    static func progressSnapshot(from progress: DownloadProgress) -> ModelReadiness.ProgressSnapshot {
+        ModelReadiness.ProgressSnapshot(
+            activity: progress.startupActivity,
+            subtitle: progress.progressSubtitle,
+            fraction: progress.progressFraction
         )
     }
 
