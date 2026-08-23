@@ -2090,29 +2090,34 @@ final class ChatViewModel {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
             let request: ChatStreamClient.Request
+            let requestForcedTool = allowedToolNames.contains(pendingForcedTool ?? "")
+                ? pendingForcedTool : nil
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
-                    temperature: resolved.temperature,
+                    // A forced tool turn is routing, not creative prose.
+                    // Deterministic sampling keeps small local models from
+                    // wandering into schema-invalid arguments; synthesis
+                    // rounds return to the user's configured temperature.
+                    temperature: requestForcedTool == nil ? resolved.temperature : 0,
                     topP: resolved.topP,
                     maxTokens: resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: resolved.enableThinking,
-                    forcedTool: allowedToolNames.contains(pendingForcedTool ?? "")
-                        ? pendingForcedTool : nil,
+                    forcedTool: requestForcedTool,
                     supportsImageInput: supportsImageInput
                 )
             } else {
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
+                    temperature: requestForcedTool == nil ? 0.7 : 0,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: false,
-                    forcedTool: allowedToolNames.contains(pendingForcedTool ?? "")
-                        ? pendingForcedTool : nil,
+                    forcedTool: requestForcedTool,
                     supportsImageInput: supportsImageInput
                 )
             }

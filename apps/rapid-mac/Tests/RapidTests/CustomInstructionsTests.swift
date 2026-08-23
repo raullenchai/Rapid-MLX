@@ -197,6 +197,7 @@ struct CustomInstructionsTests {
         let choice = try #require(json["tool_choice"] as? [String: Any])
         let function = try #require(choice["function"] as? [String: Any])
         #expect(function["name"] as? String == "weather")
+        #expect(json["temperature"] as? Double == 0)
         let messages = try #require(json["messages"] as? [[String: Any]])
         #expect(!messages.contains { ($0["content"] as? String) == "Welcome to Rapid MLX." })
         #expect(messages.first?["role"] as? String == "system")
