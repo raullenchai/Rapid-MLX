@@ -62,6 +62,12 @@ struct FreshWebRoutingTests {
         #expect(ChatViewModel.weatherLocation(
             for: "What is the current weather in Tokyo? Use the Weather tool."
         ) == "Tokyo")
+        #expect(ChatViewModel.weatherLocation(
+            for: "What is the current weather in Springfield, Illinois?"
+        ) == "Springfield, Illinois")
+        #expect(ChatViewModel.weatherLocation(
+            for: "What is the current weather in Washington, D.C.?"
+        ) == "Washington, D.C.")
         #expect(ChatViewModel.weatherLocation(for: "东京今天天气怎么样？") == "东京")
         #expect(ChatViewModel.weatherLocation(
             for: "Explain how weather forecasting works."

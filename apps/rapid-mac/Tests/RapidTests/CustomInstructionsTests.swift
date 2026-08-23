@@ -185,7 +185,7 @@ struct CustomInstructionsTests {
         model.seedAssistantWelcome("Welcome to Rapid MLX.")
 
         model.send(
-            "What is the current weather in Tokyo? Use the Weather tool.",
+            "What is the current weather in Springfield, Illinois? Use the Weather tool.",
             alias: "qwen3.5-9b-4bit"
         )
         for _ in 0..<200 where model.isStreaming {
@@ -200,7 +200,7 @@ struct CustomInstructionsTests {
         #expect((messages.first?["content"] as? String)?.contains("working memory") == true)
         #expect(messages.contains {
             ($0["role"] as? String) == "tool"
-                && ($0["content"] as? String) == "Current conditions for Tokyo"
+                && ($0["content"] as? String) == "Current conditions for Springfield, Illinois"
         })
         let toolAssistant = try #require(messages.first {
             ($0["role"] as? String) == "assistant" && $0["tool_calls"] != nil
@@ -208,7 +208,7 @@ struct CustomInstructionsTests {
         let calls = try #require(toolAssistant["tool_calls"] as? [[String: Any]])
         let function = try #require(calls.first?["function"] as? [String: Any])
         #expect(function["name"] as? String == "weather")
-        #expect((function["arguments"] as? String)?.contains("Tokyo") == true)
+        #expect((function["arguments"] as? String)?.contains("Springfield, Illinois") == true)
     }
 
     @Test("Removing ambient guidance preserves every user-authored layer")
@@ -334,7 +334,7 @@ private final class WeatherExecutionStub: ToolRegistry {
     func run(_ call: ToolCall) async -> ToolCallResult {
         ToolCallResult(
             toolCallID: call.id,
-            content: "Current conditions for Tokyo",
+            content: "Current conditions for Springfield, Illinois",
             isError: false
         )
     }

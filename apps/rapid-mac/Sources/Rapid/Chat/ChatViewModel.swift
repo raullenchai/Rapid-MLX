@@ -949,7 +949,10 @@ final class ChatViewModel {
     /// current-weather route promises ("weather/temperature in LOCATION").
     /// Ambiguous prompts stay on the typed model tool-choice path.
     nonisolated static func weatherLocation(for prompt: String) -> String? {
-        let englishPattern = #"(?i)(?:weather|temperature)\s+in\s+([^?!.;,]+)"#
+        // Commas and periods are location data ("Springfield, Illinois",
+        // "Washington, D.C."); stop only at sentence-level question,
+        // exclamation, or semicolon delimiters.
+        let englishPattern = #"(?i)(?:weather|temperature)\s+in\s+([^?？!！;；]+)"#
         if let regex = try? NSRegularExpression(pattern: englishPattern),
            let match = regex.firstMatch(
                 in: prompt,
