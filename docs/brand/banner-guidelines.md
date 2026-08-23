@@ -8,8 +8,8 @@ loops, and mascot stickers.
 
 - Always composite the approved cheetah PNG. Never regenerate, redraw,
   recolor, outline, crop, distort, or add a shadow or props to the mascot.
-- The cheetah faces right, retains its motion streaks, scales uniformly, and
-  keeps clear space of at least half its head width.
+- Preserve the approved cheetah's original orientation and motion streaks,
+  scale it uniformly, and keep clear space of at least half its head width.
 - Place the mascot only on cream, white, or the approved dark panel. Never put
   it on a photo or busy gradient.
 
@@ -39,7 +39,7 @@ loops, and mascot stickers.
 - Square release: `1800×1800`, centered stack, optional release pill, original
   plate, mascot at 25–35% canvas width, one claim of at most 20 characters,
   one-sentence subline, and exactly three two-word chips. Keep the bottom 12%
-  clear for the plate's IoTeX lockup.
+  clear for the approved Rapid-MLX lockup.
 - Social card: `1600×900`, 6% margins, mascot on the left and left-aligned copy
   on the right.
 - Blog or README header: `2400×1000`, claim only—no chips or release pill.
