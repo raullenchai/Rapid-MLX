@@ -35,31 +35,64 @@
 
 ---
 
-## Quick Start (60 seconds)
+## Works with your AI stack
 
-**1. Install** — pick one path (run only one of these):
+Use Rapid-MLX as a local backend for agents, apps, or your own code. If a
+client accepts an OpenAI- or Anthropic-compatible endpoint, it can usually use
+Rapid-MLX without an adapter.
 
-One-liner — detects your RAM, picks a starter model (recommended):
+[`Codex CLI`](https://github.com/openai/codex) ·
+[`Claude Code`](https://www.anthropic.com/claude-code) ·
+[`OpenCode`](https://github.com/sst/opencode) ·
+[`Qwen Code`](https://github.com/QwenLM/qwen-code) ·
+[`OpenHands`](https://github.com/All-Hands-AI/OpenHands) ·
+[`Hermes Agent`](https://github.com/NousResearch/hermes-agent) ·
+[`Aider`](https://aider.chat) ·
+[`Kilo Code`](https://github.com/Kilo-Org/kilocode) ·
+[`DeepSeek Harness`](https://github.com/deepseek-ai/deepseek-harness) ·
+[`GitHub Copilot`](https://github.com/features/copilot) ·
+[`Factory Droid`](https://factory.ai) ·
+[`Kimi Code`](https://github.com/MoonshotAI/kimi-cli) ·
+[`LangChain`](https://langchain.com) ·
+[`PydanticAI`](https://ai.pydantic.dev) ·
+[`smolagents`](https://github.com/huggingface/smolagents) · `+ any local-endpoint client`
+
+Five Tier-1 agents are exercised end-to-end on real weights before release.
+See the [tested compatibility matrix](https://rapidmlx.com/docs/matrix.html)
+for exact API coverage and setup status.
+
+---
+
+## Install
+
+### Desktop — macOS (Apple Silicon)
+
+The easiest way to chat locally, manage models, and use vision, files, voice,
+and image generation from one app.
+
+- [Download Rapid-MLX Desktop](https://rapidmlx.com/desktop)
+- [Download the latest DMG directly](https://github.com/raullenchai/Rapid-MLX/releases/latest/download/rapid-mlx-desktop.dmg)
+- Requires an M-series Mac; Windows and Linux desktop builds are not available yet
+
+### CLI and server — macOS (Apple Silicon)
 
 ```bash
+# Homebrew — prebuilt bottle from homebrew-core
+brew install rapid-mlx
+
+# Or the guided installer — detects RAM and recommends a starter model
 curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
-or Homebrew — prebuilt bottle straight from homebrew-core:
+Both install the same `rapid-mlx` CLI. Prefer `uv` or `pip`, or want to verify
+the installer before running it? See [alternative install methods](#alternative-install-methods)
+and [install security](SECURITY.md).
 
-```bash
-brew install rapid-mlx
-```
+---
 
-Both land the same `rapid-mlx` CLI. The curl installer additionally installs Python 3.10+ if missing, creates an isolated venv at `~/.rapid-mlx/`, symlinks the `rapid-mlx` CLI into `~/.local/bin/`, and prints a serve command sized to your Mac (8–15 GB → `lfm2.5-2.6b-4bit`; 16–17 GB → `qwen3.5-4b-4bit`; 18–23 GB → `qwen3.5-9b-4bit`; 24–31 GB → `bonsai-27b-2bit`; 32 GB+ → `qwen3.8-27b-4bit`).
+## Quick Start (60 seconds)
 
-> **Install security.** `install.sh` is served over HTTPS (HSTS-preload) from `rapidmlx.com` and is a byte-identical mirror of [`install.sh`](install.sh) at the release commit — read it before running if you like. If you want a cryptographically verified installer rather than trusting the website pipe, don't `curl | bash` the URL above: instead download the release's `install.sh` asset, verify it against the cosign-signed `SHA256SUMS.txt` shipped alongside it, and run that verified copy — full recipe in [SECURITY.md](SECURITY.md). PyPI artifacts additionally carry Sigstore attestations (PEP 740). Two more low-trust paths:
-> - **Pin to a commit hash** — `curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/<commit>/install.sh -o install.sh && shasum -a 256 install.sh && bash install.sh`
-> - **Skip the shell script entirely** — use Homebrew, `uv`, or `pip` below.
-
-See [Alternative install methods](#alternative-install-methods) for the non-curl paths.
-
-**2. Chat with a model right now:**
+**1. Chat with a model right now:**
 
 ```bash
 rapid-mlx chat
@@ -67,7 +100,7 @@ rapid-mlx chat
 
 Defaults to `qwen3.5-4b-4bit`. First run downloads the weights (~3 GB) with a progress bar and drops you into a REPL. Type `/help` for slash commands, `/exit` to quit.
 
-**3. Or serve it for use from other apps:**
+**2. Or serve it for use from other apps:**
 
 ```bash
 rapid-mlx serve qwen3.5-4b-4bit
@@ -90,7 +123,7 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
-**4. Or wire up your coding agent — one command:**
+**3. Or wire up your coding agent — one command:**
 
 ```bash
 rapid-mlx launch claude-code
@@ -346,18 +379,22 @@ Top three things that go wrong:
   <img src="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/demo.gif" alt="Rapid-MLX demo — install, serve Gemma 4, chat, tool calling" width="700">
 </p>
 
-## Community & Contributing
+## Community & Support
 
-- **Report a bug or request a model:** [Issues](https://github.com/raullenchai/Rapid-MLX/issues/new/choose)
-- **Report a security issue:** [Private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new) — see [SECURITY.md](SECURITY.md)
-- **Ask a question or share a build:** [Discussions](https://github.com/raullenchai/Rapid-MLX/discussions)
-- **Get live help and meet the community:** [Join the Rapid-MLX Discord](https://discord.gg/nZcXkUjY5R)
-- **Contribute code, aliases, or docs:** [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Add your hardware to the public benchmark:** `rapid-mlx bench <alias> --submit` opens the PR for you
+- **Discord:** [Join the Rapid-MLX community](https://discord.gg/nZcXkUjY5R) for live help and local-AI discussion.
+- **Questions & builds:** Ask or share in [GitHub Discussions](https://github.com/raullenchai/Rapid-MLX/discussions).
+- **Feedback & ideas:** [Report a bug, request a model, or propose a feature](https://github.com/raullenchai/Rapid-MLX/issues/new/choose).
+- **Security:** Send sensitive reports through a [private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new); see [SECURITY.md](SECURITY.md).
+- **Contributing:** Start with [CONTRIBUTING.md](CONTRIBUTING.md), or publish your Mac's benchmark with `rapid-mlx bench <alias> --submit`.
+- **Show support:** [Star this repository](https://github.com/raullenchai/Rapid-MLX) to follow releases and help others discover the project.
 
-Rapid-MLX ships **opt-in anonymous telemetry** (off by default; explicit `rapid-mlx telemetry enable` required). No prompts, completions, paths, IPs, or API keys are ever collected. → [What we do and don't collect](https://rapidmlx.com/docs/telemetry.html)
+**Privacy:** Anonymous telemetry is off by default and requires an explicit
+`rapid-mlx telemetry enable`. Prompts, completions, paths, IP addresses, and API
+keys are never collected. See [what we do and don't collect](https://rapidmlx.com/docs/telemetry.html).
 
-### 🚀 Contributors
+---
+
+## Contributors
 
 Every avatar here shipped something in rapid-mlx — model support, tool-call parsers, fixes, docs, and benchmark submissions. Thank you.
 
@@ -365,7 +402,9 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
   <img src="https://contrib.rocks/image?repo=raullenchai/Rapid-MLX" alt="rapid-mlx contributors" />
 </a>
 
-### Star History
+---
+
+## Star History
 
 <a href="https://star-history.com/#raullenchai/Rapid-MLX&Date">
   <picture>
