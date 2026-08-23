@@ -22,11 +22,18 @@ struct ThroughputCaptionIntegrationTests {
     /// 8 tokens, and the caption divided by the whole turn.
     @Test("The persisted stats separate prefill from decode on a real stream")
     func streamRecordsTimeToFirstToken() async throws {
-        PrefillHeavyProtocol.reset(prefillDelay: 0.45, contentDeltas: 12, completionTokens: 12)
+        let clock = TestStreamClock()
+        PrefillHeavyProtocol.reset(
+            prefillDelay: 0.45,
+            contentDeltas: 12,
+            completionTokens: 12,
+            clock: clock
+        )
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://prefill")!,
-                session: PrefillHeavyProtocol.session()
+                session: PrefillHeavyProtocol.session(),
+                now: clock.now
             ),
             persistsConversations: false
         )
@@ -48,7 +55,8 @@ struct ThroughputCaptionIntegrationTests {
 
         // 2. It measured the prefill, not something incidental. The fake
         //    holds the response for 0.45 s before the first delta.
-        #expect(ttft >= 0.4, "TTFT \(ttft)s is below the 0.45s the transport withheld the first token for")
+        #expect(abs(ttft - 0.45) < 0.000_001,
+                "TTFT must use the fixture's deterministic prefill interval")
         #expect(ttft < stats.elapsedSeconds, "TTFT must fall inside the turn it describes")
 
         // 3. The reported rate uses the decode window. The whole-turn
@@ -67,11 +75,18 @@ struct ThroughputCaptionIntegrationTests {
     /// It must not resurrect the whole-turn denominator either.
     @Test("A server that reports no usage still separates prefill from decode")
     func estimateAlsoExcludesPrefill() async throws {
-        PrefillHeavyProtocol.reset(prefillDelay: 0.45, contentDeltas: 12, completionTokens: nil)
+        let clock = TestStreamClock()
+        PrefillHeavyProtocol.reset(
+            prefillDelay: 0.45,
+            contentDeltas: 12,
+            completionTokens: nil,
+            clock: clock
+        )
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://prefill")!,
-                session: PrefillHeavyProtocol.session()
+                session: PrefillHeavyProtocol.session(),
+                now: clock.now
             ),
             persistsConversations: false
         )
@@ -84,7 +99,7 @@ struct ThroughputCaptionIntegrationTests {
         let stats = try #require(model.messages.last?.stats)
         #expect(stats.completionTokens == nil, "fixture must not report usage for this case")
         let ttft = try #require(stats.timeToFirstTokenSeconds)
-        #expect(ttft >= 0.4)
+        #expect(abs(ttft - 0.45) < 0.000_001)
 
         let estimate = try #require(stats.estimatedTokensPerSecond)
         let wholeTurnEstimate = (Double(stats.charCount) / 4.0) / stats.elapsedSeconds
@@ -256,6 +271,36 @@ private final class InstantBox {
     var value: ContinuousClock.Instant?
 }
 
+/// A lock-protected monotonic clock shared by the fake transport and client.
+/// Advancing virtual time at SSE boundaries tests the timestamp plumbing,
+/// without asking an overloaded test runner to wake within a narrow window.
+private final class TestStreamClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant = ContinuousClock.now
+    private var reads = 0
+    private let firstTokenSampled = DispatchSemaphore(value: 0)
+
+    func now() -> ContinuousClock.Instant {
+        lock.withLock {
+            reads += 1
+            // Read one is ChatViewModel's stream start; read two is the SSE
+            // parser sampling its first generated delta.
+            if reads == 2 { firstTokenSampled.signal() }
+            return instant
+        }
+    }
+
+    func advance(by seconds: TimeInterval) {
+        lock.withLock {
+            instant = instant.advanced(by: .seconds(seconds))
+        }
+    }
+
+    func waitUntilFirstTokenIsSampled() -> Bool {
+        firstTokenSampled.wait(timeout: .now() + 5) == .success
+    }
+}
+
 /// Occupies the main actor for real, rather than yielding it: waits for the
 /// transport to signal that the stream has begun, then holds the actor for a
 /// fixed window.
@@ -376,17 +421,20 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
     /// timed window knowing the stream is genuinely underway rather than
     /// merely enqueued.
     nonisolated(unsafe) static var loadingStarted = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) static var clock: TestStreamClock?
 
     static func reset(
         prefillDelay: TimeInterval,
         decodeWindow: TimeInterval = 0.25,
         contentDeltas: Int,
-        completionTokens: Int?
+        completionTokens: Int?,
+        clock: TestStreamClock? = nil
     ) {
         Self.prefillDelay = prefillDelay
         Self.decodeWindow = decodeWindow
         Self.contentDeltas = contentDeltas
         Self.completionTokens = completionTokens
+        Self.clock = clock
         Self.loadingStarted = DispatchSemaphore(value: 0)
     }
 
@@ -411,7 +459,11 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
 
         // The prefill. Nothing reaches the view model during this window, so
         // a correctly-wired TTFT lands at or after it.
-        Thread.sleep(forTimeInterval: Self.prefillDelay)
+        if let clock = Self.clock {
+            clock.advance(by: Self.prefillDelay)
+        } else {
+            Thread.sleep(forTimeInterval: Self.prefillDelay)
+        }
 
         // First token, then a deliberate decode window. Emitting every
         // delta back-to-back would leave a decode window of microseconds,
@@ -420,7 +472,17 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
         // runner and pass on a slow one, for reasons having nothing to do
         // with the code under test. The window is staged, not hoped for.
         emit("data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n")
-        Thread.sleep(forTimeInterval: Self.decodeWindow)
+        if let clock = Self.clock {
+            guard clock.waitUntilFirstTokenIsSampled() else {
+                client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+                return
+            }
+        }
+        if let clock = Self.clock {
+            clock.advance(by: Self.decodeWindow)
+        } else {
+            Thread.sleep(forTimeInterval: Self.decodeWindow)
+        }
 
         for _ in 1..<Self.contentDeltas {
             emit("data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n")

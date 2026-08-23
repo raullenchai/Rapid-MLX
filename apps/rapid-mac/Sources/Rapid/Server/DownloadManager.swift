@@ -183,6 +183,7 @@ final class DownloadManager {
 
     private var binaryPath: URL?
     private let resolvesBinaryAtStart: Bool
+    private let binaryLocator: () -> URL?
     private var shutdownSignalledAt: Date?
 
     private var processes: [String: Process] = [:]
@@ -213,9 +214,10 @@ final class DownloadManager {
 
     // MARK: - Construction
 
-    init(binaryPath: URL?) {
+    init(binaryPath: URL?, binaryLocator: @escaping () -> URL? = ServerLocator.find) {
         self.binaryPath = binaryPath
         self.resolvesBinaryAtStart = true
+        self.binaryLocator = binaryLocator
     }
 
     /// Internal test seam. Lets ``RapidTests`` drive the state
@@ -225,6 +227,7 @@ final class DownloadManager {
     internal init() {
         self.binaryPath = nil
         self.resolvesBinaryAtStart = false
+        self.binaryLocator = { nil }
     }
 
     // MARK: - Public API
@@ -313,7 +316,8 @@ final class DownloadManager {
         if isDownloading(trimmed) { return false }
         let binaryResolution = Self.resolveBinaryForStart(
             cached: binaryPath,
-            shouldRelocate: resolvesBinaryAtStart
+            shouldRelocate: resolvesBinaryAtStart,
+            locate: binaryLocator
         )
         guard case .resolved(let binary, let changed) = binaryResolution else {
             // Record a synthetic failed job so the picker UI can

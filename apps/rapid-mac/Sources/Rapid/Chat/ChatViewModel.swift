@@ -2641,7 +2641,7 @@ Your previous draft refused the question by claiming you lack real-time access o
         // may have been inserted seconds ago by the tool-call
         // loop (between rounds), and the user reads "elapsed
         // time" as "time the model spent on THIS round."
-        let streamStart = ContinuousClock.now
+        let streamStart = client.now()
         // #478: VoiceOver live-region feedback. Streaming replies are
         // otherwise silent to a screen-reader user — no start / progress
         // / completion signal. ``AssistantStreamAnnouncer`` is the pure,
@@ -2921,7 +2921,7 @@ Your previous draft refused the question by claiming you lack real-time access o
         // crashed mid-stream "produced" 1.7 s and 41 chars but
         // that's noise, not throughput).
         if current.status == .complete && !current.content.isEmpty {
-            let elapsed = streamStart.duration(to: .now).seconds
+            let elapsed = streamStart.duration(to: client.now()).seconds
             current.stats = MessageStats(
                 elapsedSeconds: elapsed,
                 charCount: current.content.count,

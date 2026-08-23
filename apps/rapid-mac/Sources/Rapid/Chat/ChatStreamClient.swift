@@ -36,6 +36,9 @@ struct ChatStreamClient {
     /// ``Self.loopbackURL(port:)`` so a PortAllocator fallback off
     /// the default port still reaches the live child.
     var baseURL: URL
+    /// Injectable monotonic time source keeps integration tests independent
+    /// of host scheduling while production continues to use ContinuousClock.
+    let now: @Sendable () -> ContinuousClock.Instant
 
     /// Per-request INACTIVITY deadline — the max time we wait for the
     /// *next* byte from the server, reset every time data arrives (this
@@ -366,10 +369,12 @@ struct ChatStreamClient {
 
     init(
         baseURL: URL = ChatStreamClient.defaultBaseURL,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) {
         self.baseURL = baseURL
         self.injectedSession = session
+        self.now = now
     }
 
     /// Open a streaming chat completion. ``onEvent`` is called on the
@@ -602,7 +607,7 @@ struct ChatStreamClient {
                         // shrinking the decode window and inflating the rate:
                         // the same direction of error, from the same cause,
                         // that this event was added to remove.
-                        let at = ContinuousClock.now
+                        let at = now()
                         await MainActor.run { onEvent(.firstToken(at)) }
                     }
                     if let r = delta.reasoning_content, !r.isEmpty {

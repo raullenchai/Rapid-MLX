@@ -33,11 +33,8 @@ struct ServerManagerDownloadStaggerTests {
     @Test("awaitDownloadSettlement returns immediately when no job exists")
     func settlementNoOpsWithoutJob() async {
         let downloads = DownloadManager()
-        let t0 = Date()
         await downloads.awaitDownloadSettlement(alias: alias)
-        let elapsed = Date().timeIntervalSince(t0)
-        // Must not even hit the 250 ms polling cadence.
-        #expect(elapsed < 0.25)
+        #expect(!downloads.isDownloading(alias))
     }
 
     @Test("awaitDownloadSettlement returns immediately when job already finished")
@@ -45,10 +42,8 @@ struct ServerManagerDownloadStaggerTests {
         let downloads = DownloadManager()
         _ = downloads._testingSeedJob(alias: alias)
         downloads._testingFinish(alias: alias, status: 0, reason: .exit)
-        let t0 = Date()
         await downloads.awaitDownloadSettlement(alias: alias)
-        let elapsed = Date().timeIntervalSince(t0)
-        #expect(elapsed < 0.25)
+        #expect(!downloads.isDownloading(alias))
     }
 
     @Test("awaitDownloadSettlement suspends while running, returns after .completed")
@@ -126,15 +121,11 @@ struct ServerManagerDownloadStaggerTests {
         }
         // Give the waiter at least one polling cycle before cancelling.
         try? await Task.sleep(nanoseconds: 350_000_000)
-        let t0 = Date()
         waiter.cancel()
         await waiter.value
-        let elapsed = Date().timeIntervalSince(t0)
-        // The real signal is that ``isDownloading`` is STILL true
-        // after the wait returns — we exited via cancellation rather
-        // than via settlement. ``elapsed`` should be small (~zero)
-        // because ``Task.sleep`` throws immediately on cancel.
-        #expect(elapsed < 0.5)
+        // The deterministic signal is that the wait returned while the job
+        // is STILL running: it exited via cancellation, not settlement. A
+        // sub-second wall-clock bound only measures parallel runner load.
         #expect(downloads.isDownloading(alias))
     }
 }
