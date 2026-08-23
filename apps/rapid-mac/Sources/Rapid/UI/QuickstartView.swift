@@ -151,11 +151,6 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     /// they are materially less capable, but ``lowMemory`` gives a user
     /// who cannot safely load the starter an honest escape hatch.
     let tier: Tier
-    /// Minimum physical RAM (GB) required for this choice to be shown.
-    /// ``nil`` (the default) means always available. Used to gate a hot
-    /// but heavy trade-up (e.g. a 20 GB 27B model) so a small-Mac user is
-    /// never teased with a model that would not fit.
-    let minRAMGB: Double?
 
     init(
         alias: String,
@@ -163,8 +158,7 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
         hfRepo: String?,
         downloadBytes: Int64? = nil,
         blurb: String,
-        tier: Tier,
-        minRAMGB: Double? = nil
+        tier: Tier
     ) {
         self.alias = alias
         self.displayName = displayName
@@ -172,16 +166,10 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
         self.downloadBytes = downloadBytes
         self.blurb = blurb
         self.tier = tier
-        self.minRAMGB = minRAMGB
     }
 
     var isStarter: Bool { tier == .starter }
     var isLowMemory: Bool { tier == .lowMemory }
-    /// Whether this choice should appear on a machine with the given
-    /// physical RAM. A choice with no ``minRAMGB`` is always visible.
-    func isVisible(onRAMGB ramGB: Double) -> Bool {
-        minRAMGB.map { ramGB >= $0 } ?? true
-    }
 }
 
 /// Persistent state owner + state machine for the Quickstart surface.
@@ -358,15 +346,13 @@ final class QuickstartCoordinator {
     )
 
     /// The curated onboarding ladder: the starter first (default
-    /// selection), then a couple of bigger trade-ups. This is the SHORT
-    /// hand-picked list the wizard always offers; the RAM-aware
-    /// "Recommended for your N GB Mac" row is derived separately from
-    /// ``RAMBucketedDefault`` (the SSOT), so the two tracks stay in sync
-    /// with every other surface. The full catalog lives one tap away
-    /// behind "Browse all models". The bigger options carry ``hfRepo: nil``
-    /// (tqdm-fallback progress is fine off the first-impression path);
-    /// size + benchmark meters resolve from ``ModelSizing`` /
-    /// ``BenchScoresCatalog`` at render.
+    /// selection), then a couple of bigger trade-ups. Deliberately a
+    /// SHORT fixed list, not the RAM-bucketed recommendations — the
+    /// wizard's job is "start small, one download"; the full RAM-aware
+    /// catalog lives one tap away behind "Browse all models". The bigger
+    /// options carry ``hfRepo: nil`` (tqdm-fallback progress is fine off
+    /// the first-impression path); size + benchmark meters resolve from
+    /// ``ModelSizing`` / ``BenchScoresCatalog`` at render.
     static let onboardingChoices: [QuickstartModelChoice] = [
         defaultChoice,
         lowMemoryChoice,
@@ -383,22 +369,6 @@ final class QuickstartCoordinator {
             hfRepo: nil,
             blurb: "Strong all-rounder if you have the RAM to spare.",
             tier: .tradeUp
-        ),
-        QuickstartModelChoice(
-            alias: "qwen3.8-27b-4bit",
-            displayName: "Qwen 3.8 · 27B",
-            hfRepo: nil,
-            blurb: "Currently the hottest open-weights model. Strong all-rounder on a 32 GB+ Mac.",
-            tier: .tradeUp,
-            minRAMGB: 32
-        ),
-        QuickstartModelChoice(
-            alias: "qwen3.6-35b-4bit",
-            displayName: "Qwen 3.6 · 35B",
-            hfRepo: nil,
-            blurb: "The fast pick for very high-RAM Macs — same 20 GB footprint, great speed.",
-            tier: .tradeUp,
-            minRAMGB: 48
         ),
     ]
 
@@ -429,10 +399,9 @@ final class QuickstartCoordinator {
     var seedMessage: String {
         if selection.isStarter {
             return """
-You're chatting with \(selection.displayName) — a model picked so you can start \
-chatting in about a minute. Open the picker any time to trade up to a larger \
-model: the Recommended row is chosen for this Mac's RAM, and a bigger pick is a \
-great first upgrade when you want more.
+You're chatting with \(selection.displayName) — our smallest model, picked so \
+you can start chatting in about a minute. Open the picker any time to trade up \
+to a larger model (the Recommended row is matched to your Mac's RAM).
 """
         }
         return """
@@ -2317,24 +2286,6 @@ struct QuickstartView: View {
                         ) { coordinator.select(choice) }
                     }
 
-                    if !list.recommended.isEmpty {
-                        OnboardingGroupLabel(
-                            text: "RECOMMENDED FOR YOUR \(Self.wholeGB(hardware.physicalRAMGB)) MAC"
-                        )
-                        .padding(.top, 14)
-                        ForEach(list.recommended) { choice in
-                            QuickstartCompactCard(
-                                choice: choice,
-                                selected: coordinator.selection.alias == choice.alias,
-                                sizeText: Self.sizeText(
-                                    forRecommended: choice,
-                                    physicalRAMGB: hardware.physicalRAMGB
-                                ),
-                                onActivate: { activatePrimary(in: .shortlist) }
-                            ) { coordinator.select(choice) }
-                        }
-                    }
-
                     if !list.lowMemory.isEmpty {
                         OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
                             .padding(.top, 14)
@@ -2394,15 +2345,6 @@ struct QuickstartView: View {
                     .padding(.top, 2)
                     .accessibilityIdentifier("Quickstart.BrowseAll")
                     .accessibilityLabel("Browse all models")
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("B = 参数数量（十亿），越大越聪明")
-                        Text("4-bit = 量化精度，更省内存、更适合 Mac")
-                    }
-                    .scaledSystemFont(11, weight: .regular)
-                    .foregroundStyle(RapidTheme.textTertiary)
-                    .accessibilityIdentifier("Quickstart.SizeLegend")
-                    .padding(.top, 10)
                 }
                 .padding(.trailing, 2)
             }
@@ -2900,23 +2842,6 @@ struct QuickstartView: View {
                         onActivate: { activatePrimary(in: .review) }
                     ) { coordinator.select(choice) }
                 }
-                if !list.recommended.isEmpty {
-                    OnboardingGroupLabel(
-                        text: "RECOMMENDED FOR YOUR \(Self.wholeGB(hardware.physicalRAMGB)) MAC"
-                    )
-                    .padding(.top, 14)
-                    ForEach(list.recommended) { choice in
-                        QuickstartCompactCard(
-                            choice: choice,
-                            selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(
-                                forRecommended: choice,
-                                physicalRAMGB: hardware.physicalRAMGB
-                            ),
-                            onActivate: { activatePrimary(in: .review) }
-                        ) { coordinator.select(choice) }
-                    }
-                }
                 if !list.lowMemory.isEmpty {
                     OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
                         .padding(.top, 14)
@@ -3137,11 +3062,6 @@ struct QuickstartView: View {
         var cached: [ModelEntry] = []
         var cachedAlternates: [ModelEntry] = []
         var starters: [QuickstartModelChoice] = []
-        /// The RAM-aware "RECOMMENDED FOR YOUR N GB MAC" row — SSOT picks for
-        /// this Mac's RAM, deduplicated against the starter and the authored
-        /// trade-ups so no model renders twice. Empty when no RAM is supplied
-        /// (the pure seam's 2-arg form) so behavior there is unchanged.
-        var recommended: [QuickstartModelChoice] = []
         var lowMemory: [QuickstartModelChoice] = []
         var tradeUps: [QuickstartModelChoice] = []
         /// Approved default D2 — a catalogue pick carried back by Back.
@@ -3150,20 +3070,12 @@ struct QuickstartView: View {
         /// Every alias the user can currently see and click, in render order.
         /// This is the "visible" half of `selection ∩ visible rows`.
         func visibleAliases(includeCachedAlternates: Bool) -> [String] {
-            // Built via append(contentsOf:) rather than one chained `+` so each
-            // `map(\.keypath)` is type-checked in isolation — the single-chain
-            // form tipped the compiler's constraint-expression timeout once a
-            // sixth `map` (the RAM-aware recommended row) was added.
-            var aliases: [String] = []
-            aliases.append(contentsOf: cached.map(\.alias))
-            if includeCachedAlternates {
-                aliases.append(contentsOf: cachedAlternates.map(\.alias))
-            }
-            aliases.append(contentsOf: starters.map(\.alias))
-            aliases.append(contentsOf: recommended.map(\.alias))
-            aliases.append(contentsOf: lowMemory.map(\.alias))
-            aliases.append(contentsOf: tradeUps.map(\.alias))
-            if let yourPick { aliases.append(yourPick.alias) }
+            let aliases = cached.map(\.alias)
+                + (includeCachedAlternates ? cachedAlternates.map(\.alias) : [])
+                + starters.map(\.alias)
+                + lowMemory.map(\.alias)
+                + tradeUps.map(\.alias)
+                + (yourPick.map { [$0.alias] } ?? [])
             return aliases.reduce(into: []) { result, alias in
                 guard !result.contains(alias) else { return }
                 result.append(alias)
@@ -3178,109 +3090,27 @@ struct QuickstartView: View {
 
     /// Build the shortlist. Static and pure so the YOUR PICK rule and the
     /// visible-alias set can be pinned without a SwiftUI host.
-    ///
-    /// ``physicalRAMGB`` drives both the RAM gate on heavy trade-ups AND the
-    /// RAM-aware "recommended" row (the SSOT's smart+fast picks for this Mac).
-    /// When ``nil`` (the 2-arg form used by tests) no gating applies, the
-    /// recommended row is empty, and every trade-up is listed — preserving the
-    /// seam's prior behavior.
-    static func shortlist(
-        catalog: [ModelEntry],
-        selection: String,
-        physicalRAMGB: Double? = nil
-    ) -> Shortlist {
+    static func shortlist(catalog: [ModelEntry], selection: String) -> Shortlist {
         let choices = QuickstartCoordinator.onboardingChoices
         let cachedPresentation = quickstartCachedPresentation(catalog, limit: 6)
         let existing = cachedPresentation.primary
         let existingAliases = Set(existing.map(\.alias))
-        // The RAM-aware recommended row: SSOT picks for this Mac, dropped if
-        // they equal the starter (avoid duplicating the ✓ row) or are already
-        // cached (they render in "ALREADY ON THIS MAC").
-        var recommended: [QuickstartModelChoice] = []
-        if let ram = physicalRAMGB {
-            var excluded = existingAliases
-            excluded.insert(QuickstartCoordinator.defaultChoice.alias)
-            recommended = Self.recommendedChoices(
-                from: RAMBucketedDefault.picks(forPhysicalRAMGB: ram),
-                authored: choices,
-                excludedAliases: excluded
-            )
-        }
-        let recommendedAliases = Set(recommended.map(\.alias))
         var native = existingAliases
         native.formUnion(choices.map(\.alias))
-        let tradeUps = choices.filter { choice in
-            guard choice.tier == .tradeUp,
-                  !existingAliases.contains(choice.alias),
-                  // A recommended pick is already shown in the RAM-aware row;
-                  // do not also list it as a trade-up.
-                  !recommendedAliases.contains(choice.alias) else {
-                return false
-            }
-            return physicalRAMGB.map { choice.isVisible(onRAMGB: $0) } ?? true
-        }
         return Shortlist(
             cached: existing,
             cachedAlternates: cachedPresentation.alternates,
             starters: choices.filter { $0.isStarter && !existingAliases.contains($0.alias) },
-            recommended: recommended,
             lowMemory: choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) },
-            tradeUps: tradeUps,
+            tradeUps: choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) },
             yourPick: native.contains(selection)
                 ? nil
                 : onboardingCatalogModels(catalog).first { $0.alias == selection }
         )
     }
 
-    /// Map the SSOT's RAM-tier picks into renderable wizard choices.
-    ///
-    /// Each `Pick` first tries to reuse the authored ``QuickstartModelChoice``
-    /// of the same alias (so it inherits the curated name + blurb); an alias
-    /// the wizard does not author (e.g. ``bonsai-27b-2bit`` on a 24 GB Mac)
-    /// is synthesized with a beautified display name. Picks whose alias is in
-    /// ``excludedAliases`` are skipped (the starter and anything already on
-    /// disk), so the row never duplicates a ✓ card above it.
-    static func recommendedChoices(
-        from picks: [RAMBucketedDefault.Pick],
-        authored choices: [QuickstartModelChoice],
-        excludedAliases: Set<String>
-    ) -> [QuickstartModelChoice] {
-        picks.compactMap { pick in
-            guard !excludedAliases.contains(pick.alias) else { return nil }
-            if let authored = choices.first(where: { $0.alias == pick.alias }) {
-                return authored
-            }
-            return QuickstartModelChoice(
-                alias: pick.alias,
-                displayName: beautifiedDisplayName(for: pick.alias),
-                hfRepo: nil,
-                blurb: pick.caveat ?? "Recommended for this Mac's memory and speed.",
-                tier: .tradeUp
-            )
-        }
-    }
-
-    /// Human-friendly model name from a raw alias, for recommended picks the
-    /// wizard doesn't author a label for — e.g. ``bonsai-27b-2bit`` →
-    /// "bonsai · 27B". Splits off the leading ``<n>b`` size token; anything
-    /// without one keeps the alias verbatim (matching the rest of the wizard's
-    /// treatment of uncurated aliases).
-    static func beautifiedDisplayName(for alias: String) -> String {
-        let parts = alias.split(separator: "-")
-        guard let size = parts.first(where: { $0.hasSuffix("b") }),
-              let idx = parts.firstIndex(of: size), idx > 0 else {
-            return alias
-        }
-        let brand = parts[..<idx].joined(separator: "-")
-        return "\(brand) · \(size.uppercased())"
-    }
-
     private var shortlist: Shortlist {
-        Self.shortlist(
-            catalog: cachedModels,
-            selection: coordinator.selection.alias,
-            physicalRAMGB: hardware.physicalRAMGB
-        )
+        Self.shortlist(catalog: cachedModels, selection: coordinator.selection.alias)
     }
 
     /// The catalogue slice onboarding may offer (approved default D4): chat
@@ -3423,31 +3253,6 @@ struct QuickstartView: View {
             return "~\(Int(mib.rounded())) MB"
         }
         return String(format: "%.1f GB", mib / 1024)
-    }
-
-    /// The size lane a "Recommended for your N GB Mac" card shows: the SSOT's
-    /// measured footprint plus its capability score, e.g. ``"20 GB · 92%"``.
-    /// Integral footprints render without a decimal ("20 GB"), non-integral
-    /// with one ("8.7 GB").
-    static func recommendationSizeText(from pick: RAMBucketedDefault.Pick) -> String {
-        let gb = pick.footprintGB.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(pick.footprintGB))
-            : String(format: "%.1f", pick.footprintGB)
-        return "\(gb) GB · \(pick.capabilityPct)%"
-    }
-
-    /// Size lane for a recommended card, looked up from the SSOT by alias so
-    /// the shown footprint matches what Settings/GUI would recommend. Falls
-    /// back to the authored-download-size lane if the alias isn't a pick.
-    static func sizeText(
-        forRecommended choice: QuickstartModelChoice,
-        physicalRAMGB: Double
-    ) -> String {
-        guard let pick = RAMBucketedDefault.picks(forPhysicalRAMGB: physicalRAMGB)
-            .first(where: { $0.alias == choice.alias }) else {
-            return sizeText(for: choice)
-        }
-        return recommendationSizeText(from: pick)
     }
 
     /// Stable, bounded presentation for models already on disk. The catalogue

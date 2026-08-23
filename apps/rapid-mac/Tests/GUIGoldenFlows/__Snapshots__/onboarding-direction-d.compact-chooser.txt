@@ -12,15 +12,11 @@ AXApplication title="Rapid-MLX"
         AXButton id="Quickstart.CachedModel.fake-external-alias" desc="fake-external-alias. Already downloaded by another MLX app.. on disk <size>" enabled=true
         AXButton id="Quickstart.Choice.<model>" desc="LFM2.5 · 1.2B. recommended starter. Small download (~<size>), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.. download ~<size>. instant, runs on any Mac" enabled=true
         AXStaticText value=text enabled=true
-        AXButton id="Quickstart.Choice.<model>" desc="lfm2.5 · 2.6B. Not for coding. download <size> · 64%" enabled=true
-        AXStaticText value=text enabled=true
         AXButton id="Quickstart.Choice.<model>" desc="Qwen 3 · 0.6B. Lowest memory. Lowest memory and fastest startup. Good for basic chat, but less accurate and not recommended for tools. Download ~<size>" enabled=true
         AXStaticText value=text enabled=true
         AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Better everyday quality. Still light on disk.. download <size>" enabled=true
         AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare.. download <size>" enabled=true
         AXButton id="Quickstart.BrowseAll" desc="Browse all models" enabled=true
-        AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
-        AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
       AXButton id="Quickstart.Footer.Back" desc="Back" enabled=true
       AXButton id="Quickstart.Footer.Primary" desc="Review download" enabled=true
     AXButton subrole=AXCloseButton enabled=true
