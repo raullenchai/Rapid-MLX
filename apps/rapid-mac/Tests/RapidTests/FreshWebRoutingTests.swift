@@ -15,6 +15,38 @@ struct FreshWebRoutingTests {
         ) == "web_search")
     }
 
+    @Test("Current weather uses the dedicated Weather tool")
+    func currentWeatherUsesWeatherTool() {
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "What is the current weather in Tokyo? Use the Weather tool.",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == "weather")
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "东京今天天气怎么样？",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == "weather")
+    }
+
+    @Test("Current weather falls back to web search when Weather is disabled")
+    func currentWeatherFallsBackToSearch() {
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "What is the current weather in Tokyo?",
+            priorMessages: [],
+            enabledToolNames: ["web_search"]
+        ) == "web_search")
+    }
+
+    @Test("Weather substrings do not force the Weather tool")
+    func weatherSubstringIsNotAWeatherRequest() {
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "Why is weathering steel corrosion resistant?",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == nil)
+    }
+
     @Test("Current World Cup research prompt forces web search in Chinese")
     func chineseCurrentWorldCup() {
         #expect(ChatViewModel.forcedToolForUserTurn(

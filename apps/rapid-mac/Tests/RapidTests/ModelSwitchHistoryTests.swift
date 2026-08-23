@@ -30,6 +30,26 @@ import Testing
 @Suite("v0.4.35 model-switch silent-failure defense")
 struct ModelSwitchHistoryTests {
 
+    @Test("Local onboarding welcome is omitted from model wire history")
+    func dropsLeadingAssistantWelcome() {
+        let user = ChatMessage(role: .user, content: "My name is Maya. Remember code 391.")
+        let filtered = ChatViewModel.filterLeadingAssistantsForWire([
+            ChatMessage(role: .assistant, content: "Welcome to Rapid MLX."),
+            user,
+        ])
+        #expect(filtered.map(\.id) == [user.id])
+    }
+
+    @Test("Real assistant turns after a user remain in model wire history")
+    func preservesConversationAssistants() {
+        let history = [
+            ChatMessage(role: .user, content: "Hello"),
+            ChatMessage(role: .assistant, content: "Hi"),
+            ChatMessage(role: .user, content: "My name is Maya"),
+        ]
+        #expect(ChatViewModel.filterLeadingAssistantsForWire(history) == history)
+    }
+
     // MARK: - filterEmptyAssistantsForWire
 
     @Test("Empty-prose assistant turn is stripped from wire history")
