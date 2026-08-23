@@ -32,17 +32,21 @@ struct ServerManagerDownloadStaggerTests {
 
     @Test("awaitDownloadSettlement returns immediately when no job exists")
     func settlementNoOpsWithoutJob() async {
-        let downloads = DownloadManager()
+        let probe = SettlementSleepProbe()
+        let downloads = DownloadManager(settlementSleep: probe.sleep)
         await downloads.awaitDownloadSettlement(alias: alias)
+        #expect(probe.callCount == 0, "a settled alias must not enter the polling sleep")
         #expect(!downloads.isDownloading(alias))
     }
 
     @Test("awaitDownloadSettlement returns immediately when job already finished")
     func settlementNoOpsAfterTerminalStatus() async {
-        let downloads = DownloadManager()
+        let probe = SettlementSleepProbe()
+        let downloads = DownloadManager(settlementSleep: probe.sleep)
         _ = downloads._testingSeedJob(alias: alias)
         downloads._testingFinish(alias: alias, status: 0, reason: .exit)
         await downloads.awaitDownloadSettlement(alias: alias)
+        #expect(probe.callCount == 0, "a terminal job must not enter the polling sleep")
         #expect(!downloads.isDownloading(alias))
     }
 
@@ -112,20 +116,44 @@ struct ServerManagerDownloadStaggerTests {
         // becomes a tight MainActor busy-poll that freezes the UI
         // until the pull settles. The fix returns out of the loop on
         // cancellation so the start ``Task`` can unwind cleanly.
-        let downloads = DownloadManager()
+        let probe = SettlementSleepProbe()
+        let downloads = DownloadManager(settlementSleep: probe.sleep)
         _ = downloads._testingSeedJob(alias: alias)
         #expect(downloads.isDownloading(alias))
 
         let waiter = Task { @MainActor in
             await downloads.awaitDownloadSettlement(alias: alias)
         }
-        // Give the waiter at least one polling cycle before cancelling.
-        try? await Task.sleep(nanoseconds: 350_000_000)
+        // Synchronize on the exact polling boundary instead of guessing when
+        // a loaded runner has scheduled 350 ms of wall time.
+        await probe.waitUntilEntered()
         waiter.cancel()
         await waiter.value
         // The deterministic signal is that the wait returned while the job
         // is STILL running: it exited via cancellation, not settlement. A
         // sub-second wall-clock bound only measures parallel runner load.
+        #expect(probe.callCount == 1, "cancellation must not re-enter the polling loop")
         #expect(downloads.isDownloading(alias))
+    }
+}
+
+@MainActor
+private final class SettlementSleepProbe {
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var callCount = 0
+
+    func waitUntilEntered() async {
+        if callCount > 0 { return }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func sleep() async throws {
+        callCount += 1
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        try await Task.sleep(for: .seconds(60))
     }
 }

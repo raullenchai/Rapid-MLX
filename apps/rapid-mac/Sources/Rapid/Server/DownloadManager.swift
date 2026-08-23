@@ -184,6 +184,7 @@ final class DownloadManager {
     private var binaryPath: URL?
     private let resolvesBinaryAtStart: Bool
     private let binaryLocator: () -> URL?
+    private let settlementSleep: @MainActor () async throws -> Void
     private var shutdownSignalledAt: Date?
 
     private var processes: [String: Process] = [:]
@@ -218,16 +219,24 @@ final class DownloadManager {
         self.binaryPath = binaryPath
         self.resolvesBinaryAtStart = true
         self.binaryLocator = binaryLocator
+        self.settlementSleep = {
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
     }
 
     /// Internal test seam. Lets ``RapidTests`` drive the state
     /// machine without spawning a real subprocess: callers seed a
     /// job, ingest synthetic tqdm lines via ``_testingIngest``, and
     /// finalize via ``_testingFinish``.
-    internal init() {
+    internal init(
+        settlementSleep: @escaping @MainActor () async throws -> Void = {
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+    ) {
         self.binaryPath = nil
         self.resolvesBinaryAtStart = false
         self.binaryLocator = { nil }
+        self.settlementSleep = settlementSleep
     }
 
     // MARK: - Public API
@@ -273,7 +282,7 @@ final class DownloadManager {
         guard !trimmed.isEmpty else { return }
         while isDownloading(trimmed) {
             do {
-                try await Task.sleep(nanoseconds: 250_000_000)
+                try await settlementSleep()
             } catch {
                 // Task cancellation — bail instead of busy-looping on a
                 // sleep that throws immediately every iteration.
