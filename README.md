@@ -410,6 +410,14 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 
 ---
 
+## Star History
+
+<a href="https://github.com/raullenchai/Rapid-MLX/stargazers">
+  <img src="docs/assets/star-history.png" alt="Rapid-MLX GitHub star history through August 23, 2026" />
+</a>
+
+---
+
 ## Acknowledgements
 
 Rapid-MLX began as **[vLLM-MLX](https://github.com/waybarrios/vllm-mlx)** by
