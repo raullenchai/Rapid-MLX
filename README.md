@@ -1,4 +1,4 @@
-<img width="1600" height="800" alt="banner" src="https://github.com/user-attachments/assets/f3743bb7-7287-4b24-ac97-a7037974396f" />
+<img width="2400" height="1000" alt="Rapid-MLX — the fastest local AI engine for Apple Silicon" src="docs/assets/readme-banner.png" />
 
 <p align="center">
   <strong>The fastest local AI engine for Apple Silicon.</strong>
