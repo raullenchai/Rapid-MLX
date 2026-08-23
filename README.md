@@ -71,7 +71,7 @@ The easiest way to chat locally, manage models, and use vision, files, voice,
 and image generation from one app.
 
 - [Download Rapid-MLX Desktop](https://rapidmlx.com/desktop)
-- [Download the latest DMG directly](https://github.com/raullenchai/Rapid-MLX/releases/latest/download/rapid-mlx-desktop.dmg)
+- [Browse signed Desktop releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac-v)
 - Requires an M-series Mac; Windows and Linux desktop builds are not available yet
 
 ### CLI and server — macOS (Apple Silicon)
