@@ -168,7 +168,7 @@ struct CustomInstructionsTests {
         )
     }
 
-    @Test("Qwen weather send omits local welcome and forces Weather on the wire")
+    @Test("Qwen weather send omits local welcome and executes Weather before synthesis")
     func qwenWeatherWireContract() async throws {
         QwenWeatherCaptureProtocol.reset()
         let (defaults, name) = freshDefaults()
@@ -178,7 +178,7 @@ struct CustomInstructionsTests {
                 baseURL: URL(string: "fake://qwen-weather")!,
                 session: QwenWeatherCaptureProtocol.session()
             ),
-            tools: BuiltinToolRegistry(),
+            tools: WeatherExecutionStub(),
             toolDefaults: defaults,
             persistsConversations: false
         )
@@ -194,14 +194,21 @@ struct CustomInstructionsTests {
 
         let body = try #require(QwenWeatherCaptureProtocol.lastRequestBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let choice = try #require(json["tool_choice"] as? [String: Any])
-        let function = try #require(choice["function"] as? [String: Any])
-        #expect(function["name"] as? String == "weather")
-        #expect(json["temperature"] as? Double == 0)
         let messages = try #require(json["messages"] as? [[String: Any]])
         #expect(!messages.contains { ($0["content"] as? String) == "Welcome to Rapid MLX." })
         #expect(messages.first?["role"] as? String == "system")
         #expect((messages.first?["content"] as? String)?.contains("working memory") == true)
+        #expect(messages.contains {
+            ($0["role"] as? String) == "tool"
+                && ($0["content"] as? String) == "Current conditions for Tokyo"
+        })
+        let toolAssistant = try #require(messages.first {
+            ($0["role"] as? String) == "assistant" && $0["tool_calls"] != nil
+        })
+        let calls = try #require(toolAssistant["tool_calls"] as? [[String: Any]])
+        let function = try #require(calls.first?["function"] as? [String: Any])
+        #expect(function["name"] as? String == "weather")
+        #expect((function["arguments"] as? String)?.contains("Tokyo") == true)
     }
 
     @Test("Removing ambient guidance preserves every user-authored layer")
@@ -316,6 +323,19 @@ struct CustomInstructionsTests {
             stripped.contains(
                 "accessibilityIdentifier:\"ChatView.ConversationInstructions.Editor\",autoFocus:true"
             )
+        )
+    }
+}
+
+@MainActor
+private final class WeatherExecutionStub: ToolRegistry {
+    var definitions: [ToolDefinition] { [WeatherTool.definition] }
+
+    func run(_ call: ToolCall) async -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: call.id,
+            content: "Current conditions for Tokyo",
+            isError: false
         )
     }
 }

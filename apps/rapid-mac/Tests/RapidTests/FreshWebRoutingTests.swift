@@ -45,6 +45,27 @@ struct FreshWebRoutingTests {
             priorMessages: [],
             enabledToolNames: enabled
         ) == nil)
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "Explain how weather forecasting works.",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == nil)
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "What is Tokyo's forecast next week?",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == nil)
+    }
+
+    @Test("Current-weather location extraction is conservative")
+    func currentWeatherLocationExtraction() {
+        #expect(ChatViewModel.weatherLocation(
+            for: "What is the current weather in Tokyo? Use the Weather tool."
+        ) == "Tokyo")
+        #expect(ChatViewModel.weatherLocation(for: "东京今天天气怎么样？") == "东京")
+        #expect(ChatViewModel.weatherLocation(
+            for: "Explain how weather forecasting works."
+        ) == nil)
     }
 
     @Test("Current World Cup research prompt forces web search in Chinese")

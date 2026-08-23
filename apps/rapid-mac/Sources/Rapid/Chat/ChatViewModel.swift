@@ -773,6 +773,9 @@ final class ChatViewModel {
         let forcedWebSearchQuery = forcedTool == "web_search"
             ? Self.webSearchQuery(for: trimmed, priorMessages: messages)
             : nil
+        let forcedWeatherLocation = forcedTool == "weather"
+            ? Self.weatherLocation(for: trimmed)
+            : nil
 
         let user = ChatMessage(
             role: .user,
@@ -793,7 +796,8 @@ final class ChatViewModel {
             alias: alias,
             supportsImageInput: resolvedImageCapability,
             forcedTool: forcedTool,
-            forcedWebSearchQuery: forcedWebSearchQuery
+            forcedWebSearchQuery: forcedWebSearchQuery,
+            forcedWeatherLocation: forcedWeatherLocation
         )
     }
 
@@ -810,7 +814,8 @@ final class ChatViewModel {
         alias: String,
         supportsImageInput: Bool,
         forcedTool: String?,
-        forcedWebSearchQuery: String?
+        forcedWebSearchQuery: String?,
+        forcedWeatherLocation: String?
     ) {
         let placeholder = ChatMessage(role: .assistant, status: .streaming)
         let placeholderIndex = appendMessage(placeholder)
@@ -883,6 +888,7 @@ final class ChatViewModel {
                 supportsImageInput: supportsImageInput,
                 forcedTool: forcedTool,
                 forcedWebSearchQuery: forcedWebSearchQuery,
+                forcedWeatherLocation: forcedWeatherLocation,
                 globalInstruction: globalInstruction,
                 conversationInstruction: chatInstruction
             )
@@ -902,7 +908,10 @@ final class ChatViewModel {
         // web search whenever the user explicitly asks for weather and the
         // tool is available. This check must precede the generic freshness
         // classifier below ("current weather" is intentionally fresh too).
-        if enabledToolNames.contains("weather"), promptRequestsWeather(prompt) {
+        if enabledToolNames.contains("weather"),
+           promptRequestsWeather(prompt),
+           weatherLocation(for: prompt) != nil
+        {
             return "weather"
         }
 
@@ -923,12 +932,50 @@ final class ChatViewModel {
     nonisolated static func promptRequestsWeather(_ prompt: String) -> Bool {
         let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else { return false }
-        let words = Set(value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }))
-        return words.contains("weather")
-            || words.contains("forecast")
-            || value.contains("temperature in")
-            || value.contains("天气")
-            || value.contains("气温")
+        let futurePhrases = [
+            "tomorrow", "next week", "next month", "long-range", "forecast",
+            "明天", "下周", "下个月", "预报"
+        ]
+        if futurePhrases.contains(where: value.contains) { return false }
+        let currentPhrases = [
+            "current weather", "weather right now", "weather now", "weather today",
+            "today's weather", "temperature in", "use the weather tool",
+            "当前天气", "现在天气", "今天天气", "当前气温", "现在气温"
+        ]
+        return currentPhrases.contains(where: value.contains)
+    }
+
+    /// Extract only the conservative English location shape the deterministic
+    /// current-weather route promises ("weather/temperature in LOCATION").
+    /// Ambiguous prompts stay on the typed model tool-choice path.
+    nonisolated static func weatherLocation(for prompt: String) -> String? {
+        let englishPattern = #"(?i)(?:weather|temperature)\s+in\s+([^?!.;,]+)"#
+        if let regex = try? NSRegularExpression(pattern: englishPattern),
+           let match = regex.firstMatch(
+                in: prompt,
+                range: NSRange(prompt.startIndex..., in: prompt)
+           ),
+           let range = Range(match.range(at: 1), in: prompt)
+        {
+            let location = prompt[range]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !location.isEmpty, location.count <= 160 { return location }
+        }
+
+        let chinesePattern = #"([^\s?？!！。，,]{1,80}?)(?:当前|现在|今天)(?:天气|气温)"#
+        guard let regex = try? NSRegularExpression(pattern: chinesePattern),
+              let match = regex.firstMatch(
+                in: prompt,
+                range: NSRange(prompt.startIndex..., in: prompt)
+              ),
+              let range = Range(match.range(at: 1), in: prompt)
+        else { return nil }
+        var location = String(prompt[range])
+        for prefix in ["请问", "帮我查一下", "查一下"] where location.hasPrefix(prefix) {
+            location.removeFirst(prefix.count)
+            break
+        }
+        return location.isEmpty ? nil : location
     }
 
     nonisolated static func promptRequiresFreshWebEvidence(_ prompt: String) -> Bool {
@@ -971,6 +1018,15 @@ final class ChatViewModel {
         )
         return data.flatMap { String(data: $0, encoding: .utf8) }
             ?? #"{"query":""}"#
+    }
+
+    nonisolated static func weatherArguments(location: String) -> String {
+        let data = try? JSONSerialization.data(
+            withJSONObject: ["location": location],
+            options: [.sortedKeys]
+        )
+        return data.flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"location":""}"#
     }
 
     /// Preserve the live-time scope when a follow-up is elliptical. Searching
@@ -1623,6 +1679,9 @@ final class ChatViewModel {
             forcedTool: forcedTool,
             forcedWebSearchQuery: forcedTool == "web_search"
                 ? Self.webSearchQuery(for: userMessage.content, priorMessages: messages)
+                : nil,
+            forcedWeatherLocation: forcedTool == "weather"
+                ? Self.weatherLocation(for: userMessage.content)
                 : nil
         )
     }
@@ -1924,6 +1983,7 @@ final class ChatViewModel {
         supportsImageInput: Bool,
         forcedTool: String? = nil,
         forcedWebSearchQuery: String? = nil,
+        forcedWeatherLocation: String? = nil,
         globalInstruction: String = "",
         conversationInstruction: String = ""
     ) async {
@@ -1953,36 +2013,47 @@ final class ChatViewModel {
         // A named tool choice applies only to the model's first request. Once
         // that call has been made, synthesis and any subsequent tool rounds
         // return to automatic routing.
-        var pendingForcedTool = forcedWebSearchQuery == nil ? forcedTool : nil
+        var pendingForcedTool = forcedWebSearchQuery == nil && forcedWeatherLocation == nil
+            ? forcedTool : nil
 
         // `tool_choice:function` is advisory in several local chat templates:
         // the shipped 1.2B starter can ignore it and answer "I can search".
         // For an unambiguous fresh-information prompt, dispatch the harmless
-        // search directly and give the model the same assistant(tool_calls) +
+        // tool directly and give the model the same assistant(tool_calls) +
         // tool(result) transcript it would have produced itself. The model's
         // job is then only evidence synthesis, which is much more reliable.
-        if let query = forcedWebSearchQuery,
-           toolExecutionsLeft > 0,
-           !query.isEmpty
-        {
-            let call = ToolCall(
+        let directCall: ToolCall?
+        if let query = forcedWebSearchQuery, !query.isEmpty {
+            directCall = ToolCall(
                 id: "app_search_\(UUID().uuidString)",
                 name: "web_search",
                 arguments: Self.webSearchArguments(query: query)
             )
+        } else if let location = forcedWeatherLocation, !location.isEmpty {
+            directCall = ToolCall(
+                id: "app_weather_\(UUID().uuidString)",
+                name: "weather",
+                arguments: Self.weatherArguments(location: location)
+            )
+        } else {
+            directCall = nil
+        }
+        if let call = directCall, toolExecutionsLeft > 0 {
             if var staged = currentMessage(index: currentPlaceholder) {
                 staged.toolCalls = [call]
                 staged.status = .complete
                 updateMessage(at: currentPlaceholder, with: staged)
             }
             let result = await tools.run(call)
-            appGroundingSources = Self.groundingSources(from: result.content)
+            if call.function.name == "web_search" {
+                appGroundingSources = Self.groundingSources(from: result.content)
+            }
             guard epoch == conversationEpoch, !Task.isCancelled else {
                 finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
                 return
             }
             let failureKind = result.failureKind ?? FailureDiagnoser.toolFailureKind(
-                toolName: "web_search",
+                toolName: call.function.name,
                 content: result.content,
                 isError: result.isError
             )
