@@ -88,6 +88,8 @@ Both install the same `rapid-mlx` CLI. Prefer `uv` or `pip`, or want to verify
 the installer before running it? See [alternative install methods](#alternative-install-methods)
 and [install security](SECURITY.md).
 
+The guided installer prints a serve command sized to your Mac (8–15 GB → `lfm2.5-2.6b-4bit`; 16–17 GB → `qwen3.5-4b-4bit`; 18–23 GB → `qwen3.5-9b-4bit`; 24–31 GB → `bonsai-27b-2bit`; 32 GB+ → `qwen3.8-27b-4bit`).
+
 ---
 
 ## Quick Start (60 seconds)
