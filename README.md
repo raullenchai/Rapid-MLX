@@ -41,21 +41,24 @@ Use Rapid-MLX as a local backend for agents, apps, or your own code. If a
 client accepts an OpenAI- or Anthropic-compatible endpoint, it can usually use
 Rapid-MLX without an adapter.
 
-[`Codex CLI`](https://github.com/openai/codex) ·
-[`Claude Code`](https://www.anthropic.com/claude-code) ·
-[`OpenCode`](https://github.com/sst/opencode) ·
-[`Qwen Code`](https://github.com/QwenLM/qwen-code) ·
-[`OpenHands`](https://github.com/All-Hands-AI/OpenHands) ·
-[`Hermes Agent`](https://github.com/NousResearch/hermes-agent) ·
-[`Aider`](https://aider.chat) ·
-[`Kilo Code`](https://github.com/Kilo-Org/kilocode) ·
-[`DeepSeek Harness`](https://github.com/deepseek-ai/deepseek-harness) ·
-[`GitHub Copilot`](https://github.com/features/copilot) ·
-[`Factory Droid`](https://factory.ai) ·
-[`Kimi Code`](https://github.com/MoonshotAI/kimi-cli) ·
-[`LangChain`](https://langchain.com) ·
-[`PydanticAI`](https://ai.pydantic.dev) ·
-[`smolagents`](https://github.com/huggingface/smolagents) · `+ any local-endpoint client`
+<p>
+  <a href="https://github.com/openai/codex"><img src="https://img.shields.io/badge/Codex_CLI-F3F4F6?style=flat&amp;logo=openai&amp;logoColor=111827" alt="Codex CLI"></a>
+  <a href="https://www.anthropic.com/claude-code"><img src="https://img.shields.io/badge/Claude_Code-F3F4F6?style=flat&amp;logo=anthropic&amp;logoColor=111827" alt="Claude Code"></a>
+  <a href="https://github.com/sst/opencode"><img src="https://img.shields.io/badge/OpenCode-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="OpenCode"></a>
+  <a href="https://github.com/QwenLM/qwen-code"><img src="https://img.shields.io/badge/Qwen_Code-F3F4F6?style=flat&amp;logo=alibabacloud&amp;logoColor=111827" alt="Qwen Code"></a>
+  <a href="https://github.com/All-Hands-AI/OpenHands"><img src="https://img.shields.io/badge/OpenHands-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="OpenHands"></a>
+  <a href="https://github.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/Hermes_Agent-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Hermes Agent"></a>
+  <a href="https://aider.chat"><img src="https://img.shields.io/badge/Aider-F3F4F6?style=flat&amp;logo=git&amp;logoColor=111827" alt="Aider"></a>
+  <a href="https://github.com/Kilo-Org/kilocode"><img src="https://img.shields.io/badge/Kilo_Code-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Kilo Code"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DeepSeek_Harness-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="DeepSeek Harness"></a>
+  <a href="https://github.com/features/copilot"><img src="https://img.shields.io/badge/GitHub_Copilot-F3F4F6?style=flat&amp;logo=githubcopilot&amp;logoColor=111827" alt="GitHub Copilot"></a>
+  <a href="https://factory.ai"><img src="https://img.shields.io/badge/Factory_Droid-F3F4F6?style=flat&amp;logo=robotframework&amp;logoColor=111827" alt="Factory Droid"></a>
+  <a href="https://github.com/MoonshotAI/kimi-cli"><img src="https://img.shields.io/badge/Kimi_Code-F3F4F6?style=flat&amp;logo=github&amp;logoColor=111827" alt="Kimi Code"></a>
+  <a href="https://langchain.com"><img src="https://img.shields.io/badge/LangChain-F3F4F6?style=flat&amp;logo=langchain&amp;logoColor=111827" alt="LangChain"></a>
+  <a href="https://ai.pydantic.dev"><img src="https://img.shields.io/badge/PydanticAI-F3F4F6?style=flat&amp;logo=pydantic&amp;logoColor=111827" alt="PydanticAI"></a>
+  <a href="https://github.com/huggingface/smolagents"><img src="https://img.shields.io/badge/smolagents-F3F4F6?style=flat&amp;logo=huggingface&amp;logoColor=111827" alt="smolagents"></a>
+  <img src="https://img.shields.io/badge/%2B_any_local--endpoint_client-F3F4F6?style=flat" alt="Any local-endpoint client">
+</p>
 
 Five Tier-1 agents are exercised end-to-end on real weights before release.
 See the [tested compatibility matrix](https://rapidmlx.com/docs/matrix.html)
