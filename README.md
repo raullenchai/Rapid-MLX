@@ -384,6 +384,7 @@ Top three things that go wrong:
 ## Community & Support
 
 - **Discord:** [Join the Rapid-MLX community](https://discord.gg/nZcXkUjY5R) for live help and local-AI discussion.
+- **Twitter / X:** Follow [@rapidmlx](https://x.com/rapidmlx) for releases, benchmarks, and project updates.
 - **Questions & builds:** Ask or share in [GitHub Discussions](https://github.com/raullenchai/Rapid-MLX/discussions).
 - **Feedback & ideas:** [Report a bug, request a model, or propose a feature](https://github.com/raullenchai/Rapid-MLX/issues/new/choose).
 - **Security:** Send sensitive reports through a [private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new); see [SECURITY.md](SECURITY.md).
@@ -402,18 +403,6 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 
 <a href="https://github.com/raullenchai/Rapid-MLX/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=raullenchai/Rapid-MLX" alt="rapid-mlx contributors" />
-</a>
-
----
-
-## Star History
-
-<a href="https://star-history.com/#raullenchai/Rapid-MLX&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=raullenchai/Rapid-MLX&type=Date" />
-  </picture>
 </a>
 
 ---
