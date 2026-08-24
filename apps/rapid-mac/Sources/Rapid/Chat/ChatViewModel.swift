@@ -2370,6 +2370,20 @@ final class ChatViewModel {
         } ?? MessageTree.defaultLeaf(in: remaining, preferring: branchChoices)
         adoptTree(MessageTree.promotingOrphans(remaining), activeLeafID: leaf)
         persistActive()
+        // Deleting the turns deletes the documents attached to them, for the
+        // same reason ``deleteConversation`` does: once the bubble is gone the
+        // user has no way to see — let alone remove — the extract behind it.
+        //
+        // Only ids that NOTHING surviving still references: an edit branches
+        // the tree by re-sending the same attachment, so two siblings can carry
+        // the same attachment id, and removing every doomed id would empty the
+        // cache out from under a branch still on screen.
+        let stillReferenced = Set(remaining.flatMap { $0.fileAttachments.map(\.id) })
+        let orphaned = tree
+            .filter { doomed.contains($0.id) }
+            .flatMap { $0.fileAttachments.map(\.id) }
+            .filter { !stillReferenced.contains($0) }
+        documentCache.remove(contentsOf: Set(orphaned))
         return true
     }
 

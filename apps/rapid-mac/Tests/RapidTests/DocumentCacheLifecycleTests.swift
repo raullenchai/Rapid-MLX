@@ -339,6 +339,101 @@ struct DocumentCacheLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: diskFile(dir, branched.id).path))
     }
 
+    // MARK: - Message deletion
+
+    @Test("Deleting a subtree deletes the documents attached inside it")
+    func deletingSubtreeDeletesItsExtracts() throws {
+        // Same privacy contract as conversation deletion, one level down: the
+        // deleted bubbles were the only place these attachments were visible.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let viewModel = ChatViewModel(
+            persistsConversations: false,
+            documentCache: cache
+        )
+
+        let attachment = try ChatFileAttachment(
+            filename: "invoice.pdf",
+            kind: .pdf,
+            extractedText: "amount due",
+            sourceByteCount: 1_000
+        )
+        cache.put(attachment.id, entry: DocumentContentCache.Entry(
+            filename: "invoice.pdf",
+            text: "the whole invoice, at length"
+        ))
+
+        let keptPrompt = ChatMessage(role: .user, content: "hello")
+        let doomed = ChatMessage(
+            role: .user,
+            content: "and this one",
+            fileAttachments: [attachment]
+        )
+        viewModel.devSeedMessages([
+            keptPrompt,
+            ChatMessage(role: .assistant, content: "hi"),
+            doomed,
+        ])
+
+        #expect(viewModel.deleteMessage(id: doomed.id))
+
+        #expect(cache.get(attachment.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, attachment.id).path))
+    }
+
+    @Test("A document still referenced by a surviving branch is not deleted")
+    func subtreeDeletionSparesSharedAttachments() throws {
+        // Editing a prompt re-sends the SAME attachment down a new branch, so
+        // one attachment id can appear on two sibling turns. Deleting one of
+        // them must not empty the cache out from under the other.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let viewModel = ChatViewModel(
+            persistsConversations: false,
+            documentCache: cache
+        )
+
+        let attachment = try ChatFileAttachment(
+            filename: "shared.pdf",
+            kind: .pdf,
+            extractedText: "shared preview",
+            sourceByteCount: 1_000
+        )
+        cache.put(attachment.id, entry: DocumentContentCache.Entry(
+            filename: "shared.pdf",
+            text: "the shared document"
+        ))
+
+        let original = ChatMessage(
+            role: .user,
+            content: "first draft",
+            fileAttachments: [attachment]
+        )
+        viewModel.devSeedMessages([
+            original,
+            ChatMessage(role: .assistant, content: "an answer"),
+        ])
+        // The edit carries the attachment onto a sibling turn.
+        _ = viewModel.editUserMessage(
+            id: original.id,
+            newContent: "second draft",
+            alias: "test-model"
+        )
+        viewModel.stopAndPersist()
+        let survivor = try #require(viewModel.messages.first)
+        #expect(survivor.fileAttachments.map(\.id) == [attachment.id])
+
+        // Delete the branched-away original — its attachment id is still
+        // referenced by the turn on screen.
+        #expect(viewModel.deleteMessage(id: original.id))
+
+        #expect(cache.get(attachment.id) != nil)
+    }
+
     // MARK: - TTL
 
     @Test("An extract older than the TTL is deleted even with room to spare")
