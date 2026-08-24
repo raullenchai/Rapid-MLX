@@ -1766,6 +1766,10 @@ final class ChatViewModel {
     ///     always kept — even if it overshoots the budget. During a tool loop,
     ///     the newest row is a tool result rather than the user question, and
     ///     neither half of that chain is valid on its own.
+    ///   * When that mandatory tail alone overshoots, its oldest TOOL RESULTS
+    ///     have their bodies elided until it fits (see
+    ///     ``elidingOldestToolResults``). The rows stay, so the
+    ///     assistant(tool_calls) → tool pairing the wire body needs is intact.
     ///   * After cutting, drop leading non-user rows so the kept tail
     ///     never starts mid-tool-chain (a bare ``tool`` or
     ///     ``assistant(tool_calls)`` row at the head of a wire body is
@@ -1825,6 +1829,14 @@ final class ChatViewModel {
             return system.map { [$0] } ?? []
         }
         var keep = Array(body[currentTurnStart...])
+        // The tail is mandatory, but "mandatory" cannot mean "unbounded". One
+        // ``read_document`` slice is ~6.3k tokens of ASCII (~9.75k of CJK) and
+        // ``maxDocumentReads`` allows twelve of them, so a tool loop can pile
+        // 75k+ tokens into a single turn — enough to blow past an 8k window on
+        // the FIRST read and a 32k one well before the budget is spent. Elide
+        // the oldest tool bodies until the tail fits rather than shipping a
+        // body the model will silently RoPE-extrapolate through.
+        keep = Self.elidingOldestToolResults(keep, within: bodyBudget, cost: perRowCost)
         var running = keep.reduce(0) { $0 + perRowCost($1) }
         for msg in body[..<currentTurnStart].reversed() {
             let cost = perRowCost(msg)
@@ -1840,6 +1852,65 @@ final class ChatViewModel {
             keep.insert(sys, at: 0)
         }
         return keep
+    }
+
+    /// Replacement body for a tool result the context budget could not carry.
+    ///
+    /// The model has to be told the evidence is GONE rather than empty — a
+    /// bare "" reads as "the tool found nothing", which is exactly the
+    /// confabulation the ambient tool preamble exists to prevent.
+    nonisolated static let elidedToolResultBody = """
+    [This tool result was dropped from the request because the conversation \
+    exceeded the model's context window. Its contents are no longer available. \
+    Do not answer from it — call the tool again if you still need it, and say \
+    so if the answer depends on evidence you can no longer see.]
+    """
+
+    /// Shrink a mandatory tool tail to `budget` by emptying its OLDEST tool
+    /// results, oldest-first, and stopping as soon as the tail fits.
+    ///
+    /// ## Why elide rather than drop
+    ///
+    /// A `tool` row is only valid on the wire alongside the
+    /// `assistant(tool_calls)` row that requested it: most chat templates
+    /// render an unmatched pair into a malformed prompt, and several servers
+    /// 400 outright. So the ROWS have to survive even when their CONTENT
+    /// cannot. Replacing the body keeps the chain's shape while returning the
+    /// tokens, which is what the caller actually needs back.
+    ///
+    /// ## Why oldest-first
+    ///
+    /// The newest result is the one the model is about to reason over — during
+    /// a document read it is the page it just asked for. Older ones have
+    /// usually been summarised into the assistant prose that follows them, so
+    /// they are the cheapest evidence to lose.
+    ///
+    /// The user row is never touched: it is the question, and eliding it would
+    /// leave the model answering something it can no longer read. A tail that
+    /// still overshoots after every tool body is gone is returned as-is —
+    /// there is nothing further to give back without breaking the turn.
+    nonisolated static func elidingOldestToolResults(
+        _ tail: [ChatMessage],
+        within budget: Int,
+        cost: (ChatMessage) -> Int
+    ) -> [ChatMessage] {
+        var result = tail
+        var total = result.reduce(0) { $0 + cost($1) }
+        guard total > budget else { return result }
+
+        for index in result.indices where result[index].role == .tool {
+            guard total > budget else { break }
+            let before = cost(result[index])
+            var candidate = result[index]
+            candidate.content = elidedToolResultBody
+            let after = cost(candidate)
+            // The notice costs ~50 tokens of its own, so eliding a SHORT result
+            // would make the tail bigger. Those are not what put it over budget.
+            guard after < before else { continue }
+            result[index] = candidate
+            total -= before - after
+        }
+        return result
     }
 
     /// v0.4.35: classify a terminal stream as a soft failure when it
