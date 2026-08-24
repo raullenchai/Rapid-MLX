@@ -57,6 +57,23 @@ final class MenuBarController: NSObject {
         AppDelegate.shared.updater?.availableUpdate != nil
     }
 
+    /// The running server's OpenAI-style base URL, or `nil` when the
+    /// backend is not ready to serve.
+    ///
+    /// The API port is NOT pinned (it sweeps 8000–8009 — see
+    /// ``ConnectToolsView``), so the URL must be read from the live
+    /// ``ServerManager`` rather than hardcoded. Only a `.ready` backend
+    /// has a meaningful URL; in any other lifecycle state there is
+    /// nothing worth copying to the clipboard.
+    private static func apiBaseURL() -> String? {
+        guard let server = AppDelegate.shared.server,
+              case .ready = server.state
+        else {
+            return nil
+        }
+        return "http://\(server.host):\(server.activePort)/v1"
+    }
+
     private func configureButton() {
         guard let button = statusItem.button else { return }
         button.image = Self.trayGlyph()
@@ -130,7 +147,8 @@ final class MenuBarController: NSObject {
             state: AppDelegate.shared.server?.state ?? .idle,
             hasUpdate: Self.hasAvailableUpdate(),
             updateVersion: AppDelegate.shared.updater?.availableUpdate?.version ?? "",
-            checking: AppDelegate.shared.updater?.checking ?? false
+            checking: AppDelegate.shared.updater?.checking ?? false,
+            baseURL: Self.apiBaseURL()
         ) {
             switch item {
             case .separator:
@@ -218,6 +236,14 @@ final class MenuBarController: NSObject {
             Task { _ = await AppDelegate.shared.updater?.check() }
             NSApp.activate(ignoringOtherApps: true)
             AppDelegate.openSettingsWindowAt?(.app)
+        case .copyEndpoint:
+            guard let url = Self.apiBaseURL() else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(url, forType: .string)
+            // Transient "Copied ✓" feedback. The menu rebuilds on every
+            // open (``menuNeedsUpdate``), so this label self-heals back
+            // to "Copy API endpoint" next time without a timer.
+            sender.title = "Copied ✓"
         case .about:
             if let server = AppDelegate.shared.server {
                 AboutPanel.show(server: server)

@@ -94,8 +94,15 @@ def _detect_context_window() -> int:
 
 
 def ensure_hermes_config():
-    """Update ~/.hermes/config.yaml to point to the current server/model."""
-    config_dir = os.path.expanduser("~/.hermes")
+    """Update Hermes' active config to point to the current server/model.
+
+    Release gates redirect ``HERMES_HOME`` to an ephemeral directory so they
+    neither consume nor mutate an operator's real provider configuration.
+    Honour that same home override here; hard-coding ``~/.hermes`` makes the
+    harness silently hit a personal remote provider even though setup wrote a
+    correct isolated fixture.
+    """
+    config_dir = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "config.yaml")
     ctx = _detect_context_window()

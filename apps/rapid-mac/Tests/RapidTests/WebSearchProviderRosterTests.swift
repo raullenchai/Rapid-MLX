@@ -209,6 +209,55 @@ struct KeenableClientTests {
         return try! JSONSerialization.data(withJSONObject: obj)
     }
 
+    private static func response(statusCode: Int) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: URL(string: KeenableSearchClient.restEndpoint)!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+    }
+
+    @Test(
+        "Keyed HTTP account failures stamp their producer-owned diagnosis",
+        arguments: [
+            (401, FailureDiagnosis.Kind.webSearchKeyRejected),
+            (403, FailureDiagnosis.Kind.webSearchKeyRejected),
+            (402, FailureDiagnosis.Kind.webSearchKeyQuotaExceeded),
+            (429, FailureDiagnosis.Kind.webSearchKeyRateLimited),
+        ]
+    )
+    func keyedAccountFailureKind(statusCode: Int, expected: FailureDiagnosis.Kind) async {
+        let transport: WebSearchTool.KeenableTransport = { request in
+            #expect(request.value(forHTTPHeaderField: "X-API-Key") == "keen_valid")
+            return (Data("{}".utf8), Self.response(statusCode: statusCode))
+        }
+        let result = await WebSearchTool.runKeenable(
+            query: "current news",
+            apiKey: "keen_valid",
+            fallbackNote: nil,
+            transport: transport
+        )
+        #expect(result.isError)
+        #expect(result.failureKind == expected)
+    }
+
+    @Test("A malformed stored key points to key settings without touching transport")
+    func malformedKeyFailureKind() async {
+        let transport: WebSearchTool.KeenableTransport = { _ in
+            Issue.record("Malformed key must fail before transport")
+            throw CancellationError()
+        }
+        let result = await WebSearchTool.runKeenable(
+            query: "current news",
+            apiKey: "keen_valid\r\nX-Evil: 1",
+            fallbackNote: nil,
+            transport: transport
+        )
+        #expect(result.isError)
+        #expect(result.failureKind == .webSearchKeyRejected)
+    }
+
     @Test("Keyless request is a single JSON-RPC tools/call POST with the snippet cap clamped to the server minimum")
     func keylessRequestShape() throws {
         let req = try #require(KeenableSearchClient.buildKeylessRequest(query: "hello world", snippetMaxLength: 100))

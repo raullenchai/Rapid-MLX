@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from .base import AgentProfile
@@ -19,7 +22,88 @@ class _MergeParseError(Exception):
     """Raised when an existing config file cannot be parsed for merging."""
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+_TOOLSET_ALIASES = {"image": "image_gen"}
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _merge_toolset_list(
+    existing: list, configured: list, supported: set[str] | None = None
+) -> list:
+    """Merge stable profile defaults with user-enabled Hermes toolsets."""
+    result = list(configured)
+    for item in existing:
+        if not isinstance(item, str):
+            raise _MergeParseError("platform_toolsets.cli entries must be strings")
+        normalized = item
+        if item == "image" and supported is not None and "image_gen" in supported:
+            normalized = "image_gen"
+        if (
+            supported is not None
+            and normalized in {"image", "image_gen", "computer_use"}
+            and normalized not in supported
+        ):
+            continue
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _hermes_supported_toolsets() -> set[str] | None:
+    """Read the installed Hermes CLI's official built-in toolset registry."""
+    binary = shutil.which("hermes")
+    if binary is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "tools", "list", "--platform", "cli"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    names = set()
+    output = _ANSI_ESCAPE_RE.sub("", proc.stdout)
+    for line in output.splitlines():
+        match = re.match(r"^\s*[✓✗]\s+\w+\s+([a-z][a-z0-9_-]*)\b", line)
+        if match:
+            names.add(match.group(1))
+    return names or None
+
+
+def _render_hermes_runtime_toolsets(rendered: str, supported: set[str] | None) -> str:
+    """Resolve optional Hermes capabilities from its runtime registry."""
+    if supported is None:
+        return rendered
+    import yaml
+
+    config = yaml.safe_load(rendered)
+    if not isinstance(config, dict):
+        return rendered
+    platform = config.get("platform_toolsets")
+    if not isinstance(platform, dict) or not isinstance(platform.get("cli"), list):
+        return rendered
+    configured = [
+        _TOOLSET_ALIASES.get(item, item)
+        for item in platform["cli"]
+        if _TOOLSET_ALIASES.get(item, item) in supported
+    ]
+    if "computer_use" in supported and "computer_use" not in configured:
+        configured.append("computer_use")
+    platform["cli"] = configured
+    return yaml.safe_dump(config, sort_keys=False)
+
+
+def _deep_merge(
+    base: dict,
+    override: dict,
+    *,
+    _path: tuple[str, ...] = (),
+    _supported_toolsets: set[str] | None = None,
+) -> dict:
     """Recursively merge *override* into *base*.
 
     - Dict values are merged recursively (existing keys in *base* that
@@ -31,12 +115,23 @@ def _deep_merge(base: dict, override: dict) -> dict:
     merged = dict(base)
     for key, val in override.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
-            merged[key] = _deep_merge(merged[key], val)
+            merged[key] = _deep_merge(
+                merged[key],
+                val,
+                _path=(*_path, key),
+                _supported_toolsets=_supported_toolsets,
+            )
+        elif (
+            (*_path, key) == ("platform_toolsets", "cli")
+            and isinstance(merged.get(key), list)
+            and isinstance(val, list)
+        ):
+            # Hermes toolsets are capabilities, not an authoritative preset.
+            # Keep user-enabled capabilities while normalizing renamed
+            # upstream identifiers. Other lists retain replace semantics.
+            merged[key] = _merge_toolset_list(merged[key], val, _supported_toolsets)
         else:
             # Lists and scalars: template value wins unconditionally.
-            # This ensures template-defined toolsets are authoritative
-            # (user customizations at the dict-key level are preserved,
-            # but list contents come from the template).
             merged[key] = val
     return merged
 
@@ -139,6 +234,11 @@ def setup_agent_config(
     )
     cfg = profile.get_config_for_version(agent_version)
 
+    hermes_supported_toolsets = None
+    if profile.name == "hermes" and isinstance(rendered, str):
+        hermes_supported_toolsets = _hermes_supported_toolsets()
+        rendered = _render_hermes_runtime_toolsets(rendered, hermes_supported_toolsets)
+
     if cfg.type == "env":
         lines = []
         for key, val in rendered.items():
@@ -178,7 +278,12 @@ def setup_agent_config(
                     )
 
         try:
-            merged_text = _merge_file_config(config_path, rendered, cfg.type)
+            merged_text = _merge_file_config(
+                config_path,
+                rendered,
+                cfg.type,
+                hermes_supported_toolsets=hermes_supported_toolsets,
+            )
         except OSError as exc:
             return (
                 f"Cannot read existing config at {config_path} ({exc}). "
@@ -220,7 +325,13 @@ def setup_agent_config(
     return "No config to write (template not specified)"
 
 
-def _merge_file_config(existing_path: Path, rendered: str, config_type: str) -> str:
+def _merge_file_config(
+    existing_path: Path,
+    rendered: str,
+    config_type: str,
+    *,
+    hermes_supported_toolsets: set[str] | None = None,
+) -> str:
     """Merge *rendered* template into an existing config file.
 
     Returns *rendered* unchanged when the file does not exist (fresh
@@ -239,7 +350,11 @@ def _merge_file_config(existing_path: Path, rendered: str, config_type: str) -> 
     existing_text = existing_path.read_text(encoding="utf-8")
 
     if config_type == "yaml":
-        return _merge_yaml(existing_text, rendered)
+        return _merge_yaml(
+            existing_text,
+            rendered,
+            supported_toolsets=hermes_supported_toolsets,
+        )
     if config_type == "toml":
         return _merge_toml(existing_text, rendered)
     return _merge_json(existing_text, rendered)
@@ -288,7 +403,12 @@ def _merge_toml(existing_text: str, rendered: str) -> str:
     return tomli_w.dumps(merged)
 
 
-def _merge_yaml(existing_text: str, rendered: str) -> str:
+def _merge_yaml(
+    existing_text: str,
+    rendered: str,
+    *,
+    supported_toolsets: set[str] | None = None,
+) -> str:
     """Parse both YAML strings, deep-merge, and re-serialize.
 
     Raises ``_MergeParseError`` when the existing content is malformed
@@ -313,7 +433,7 @@ def _merge_yaml(existing_text: str, rendered: str) -> str:
         raise _MergeParseError(f"rendered template is not valid YAML: {exc}") from exc
     if not isinstance(template, dict):
         raise _MergeParseError("rendered template is not a YAML mapping")
-    merged = _deep_merge(existing, template)
+    merged = _deep_merge(existing, template, _supported_toolsets=supported_toolsets)
     return yaml.dump(merged, default_flow_style=False, sort_keys=False)
 
 

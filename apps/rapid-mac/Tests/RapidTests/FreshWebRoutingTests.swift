@@ -3,100 +3,48 @@ import Testing
 @testable import Rapid
 
 @Suite("Fresh web routing")
+@MainActor
 struct FreshWebRoutingTests {
-    private let enabled: Set<String> = ["web_search", "browse", "weather"]
+    @Test("Free-typed weather stays in the native schema-driven tool loop")
+    func freeTypedWeatherUsesNativeAutoRouting() async throws {
+        NativeRoutingCaptureProtocol.reset()
+        let suite = "NativeRoutingTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let registry = NativeRoutingRegistry()
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://native-routing")!,
+                session: NativeRoutingCaptureProtocol.session()
+            ),
+            tools: registry,
+            toolDefaults: defaults,
+            persistsConversations: false
+        )
 
-    @Test("Explicit recent-news prompt forces web search")
-    func explicitRecentNews() {
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "What's a major news story from the last week?",
-            priorMessages: [],
-            enabledToolNames: enabled
-        ) == "web_search")
-    }
-
-    @Test("Current World Cup research prompt forces web search in Chinese")
-    func chineseCurrentWorldCup() {
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "Codex，你研究下今年世界杯为什么 Spain 夺冠了",
-            priorMessages: [],
-            enabledToolNames: enabled
-        ) == "web_search")
-    }
-
-    @Test("Restored-thread follow-up inherits fresh evidence intent")
-    func restoredFollowUp() {
-        let history = [
-            ChatMessage(role: .user, content: "What's a major news story from the last week?"),
-            ChatMessage(role: .assistant, content: "I found several sources."),
-            ChatMessage(role: .tool, content: "Web search via DuckDuckGo: results")
-        ]
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "What about technology? Find one concrete story and summarize it.",
-            priorMessages: history,
-            enabledToolNames: enabled
-        ) == "web_search")
-        #expect(ChatViewModel.webSearchQuery(
-            for: "What about technology? Find one concrete story and summarize it.",
-            priorMessages: history
-        ).contains("last week"))
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "Why is the sky blue?",
-            priorMessages: history,
-            enabledToolNames: enabled
-        ) == nil)
-    }
-
-    @Test("Evergreen and casual prompts remain automatic")
-    func evergreenPrompts() {
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "What is the capital of France?",
-            priorMessages: [],
-            enabledToolNames: enabled
-        ) == nil)
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "Tell me a joke",
-            priorMessages: [],
-            enabledToolNames: enabled
-        ) == nil)
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "Explain electric current and a current account",
-            priorMessages: [],
-            enabledToolNames: enabled
-        ) == nil)
-    }
-
-    @Test("Follow-up survives a long multi-tool preceding turn")
-    func longToolTurnFollowUp() {
-        var history = [ChatMessage(
-            role: .user,
-            content: "What happened in the news last week?"
-        )]
-        for index in 0..<6 {
-            history.append(ChatMessage(
-                role: .assistant,
-                toolCalls: [ToolCall(id: "c\(index)", name: "web_search", arguments: "{}")]
-            ))
-            history.append(ChatMessage(
-                role: .tool,
-                content: "result \(index)",
-                toolCallID: "c\(index)"
-            ))
+        model.send(
+            "What is the current weather in Tokyo? Use the Weather tool.",
+            alias: "qwen3.5-9b-4bit"
+        )
+        for _ in 0..<200 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "What about technology?",
-            priorMessages: history,
-            enabledToolNames: enabled
-        ) == "web_search")
+
+        let body = try #require(NativeRoutingCaptureProtocol.lastRequestBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["tool_choice"] as? String == "auto")
+        let tools = try #require(json["tools"] as? [[String: Any]])
+        let names = tools.compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        }
+        #expect(Set(names) == ["weather", "web_search"])
+        #expect(registry.runCount == 0, "the app must not parse or execute free-typed weather itself")
     }
 
-    @Test("Disabled web search is never forced")
-    func disabledSearch() {
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            "latest technology news",
-            priorMessages: [],
-            enabledToolNames: ["weather"]
-        ) == nil)
+    @Test("Tool schemas, not prompt keywords, define weather ownership")
+    func schemasDefineWeatherOwnership() {
+        #expect(WeatherTool.definition.function.description.contains("not web_search"))
+        #expect(WebSearchTool.definition.function.description.contains("Do not use it for current weather"))
     }
 
     @Test("Last-week query uses the previous complete calendar week")
@@ -164,5 +112,63 @@ struct FreshWebRoutingTests {
             .init(title: "First [story]", url: "https://example.com/one"),
             .init(title: "Second story", url: "https://example.com/two")
         ])
+    }
+}
+
+@MainActor
+private final class NativeRoutingRegistry: ToolRegistry {
+    var definitions: [ToolDefinition] { [WeatherTool.definition, WebSearchTool.definition] }
+    private(set) var runCount = 0
+
+    func run(_ call: ToolCall) async -> ToolCallResult {
+        runCount += 1
+        return ToolCallResult(toolCallID: call.id, content: "unexpected execution", isError: true)
+    }
+}
+
+private final class NativeRoutingCaptureProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var lastRequestBody: Data?
+
+    static func reset() { lastRequestBody = nil }
+
+    static func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NativeRoutingCaptureProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lastRequestBody = Self.bodyData(from: request)
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("""
+        data: {"choices":[{"delta":{"content":"Ask the model to choose."},"finish_reason":"stop"}]}\n
+        data: [DONE]\n
+        """.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func bodyData(from request: URLRequest) -> Data? {
+        guard let stream = request.httpBodyStream else { return request.httpBody }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = buffer.withUnsafeMutableBufferPointer {
+                stream.read($0.baseAddress!, maxLength: $0.count)
+            }
+            if count > 0 { data.append(buffer, count: count) }
+            if count == 0 { return data }
+            if count < 0 { return nil }
+        }
     }
 }

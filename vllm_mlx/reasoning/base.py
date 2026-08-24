@@ -125,6 +125,43 @@ class ReasoningParser(ABC):
         """
         pass
 
+    @property
+    def reasoning_start_str(self) -> str | None:  # noqa: B027
+        """Protocol marker that opens reasoning, when one exists.
+
+        The serving layer uses this explicit capability when it must
+        synthesize a reasoning boundary (for example after a per-request
+        reasoning budget is exhausted). Parsers without textual boundaries
+        keep the default ``None``.
+        """
+        return None
+
+    @property
+    def reasoning_end_str(self) -> str | None:  # noqa: B027
+        """Protocol marker that closes reasoning, when one exists."""
+        return None
+
+    def finish_stream(self) -> "DeltaMessage | None":  # noqa: B027
+        """Drain bytes held only for incremental marker detection.
+
+        This is the streaming-detector lifecycle hook. Unlike
+        :meth:`finalize_streaming`, it must not re-parse accumulated output or
+        reclassify an already emitted response; it may only release bytes the
+        incremental parser still owns. The postprocessor invokes it once at
+        end-of-stream for every parser. Stateless parsers return ``None``.
+        """
+        return None
+
+    def prepare_forced_reasoning_end(self) -> None:  # noqa: B027
+        """Notify a stateful parser that the next end marker is synthetic.
+
+        The default is a no-op because ordinary think-tag parsers use the same
+        post-close state for natural and budget-forced transitions. Protocols
+        whose model will later emit its genuine close marker may override this
+        to keep that later marker structural rather than user-visible.
+        """
+        return None
+
     def finalize_streaming(  # noqa: B027
         self,
         accumulated_text: str,

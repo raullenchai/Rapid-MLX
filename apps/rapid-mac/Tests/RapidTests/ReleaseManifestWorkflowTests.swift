@@ -57,7 +57,7 @@ struct ReleaseManifestWorkflowTests {
         #expect(branchEnd.upperBound < firstUpload.lowerBound)
         #expect(job.contains(#"[[ "$R2_BUCKET" == "rapid-desktop-dist" ]]"#))
         #expect(job.contains(#"[[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]]"#))
-        #expect(job.contains(#"[[ "$TAG" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$ ]]"#))
+        #expect(job.contains(#"[[ "$TAG" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]"#))
     }
 
     @Test("manifest describes the bundled DMG and is committed last")

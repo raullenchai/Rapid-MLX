@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/Tests/RapidUITests/RapidUITests.xcodeproj"
 APP="$ROOT/build/Rapid-MLX Desktop.app"
 RESULT_BUNDLE="${RAPID_XCUI_RESULT_BUNDLE:-$ROOT/build/RapidUITests-$(date +%s)-$$.xcresult}"
+ONLY_TESTING="${RAPID_XCUI_ONLY_TESTING:-}"
 
 [[ -d "$APP" ]] || { echo "error: build the app first: $APP" >&2; exit 1; }
 xcodebuild -version >/dev/null 2>&1 || {
@@ -21,9 +22,15 @@ xcodebuild -version >/dev/null 2>&1 || {
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$LSREGISTER" -f "$APP"
 
+test_selection=()
+if [[ -n "$ONLY_TESTING" ]]; then
+    test_selection+=("-only-testing:$ONLY_TESTING")
+fi
+
 xcodebuild test \
     -project "$PROJECT" \
     -scheme RapidUITests \
     -destination 'platform=macOS' \
     -resultBundlePath "$RESULT_BUNDLE" \
+    "${test_selection[@]}" \
     CODE_SIGNING_ALLOWED=NO

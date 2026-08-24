@@ -93,15 +93,11 @@ def test_cache_layout_and_weight_key_cleanup_need_no_model_weights() -> None:
 
 
 def test_checkpoint_profile_defaults_and_conservative_capabilities() -> None:
-    # The ``north`` reasoning parser landed in #2171 (the vendoring PR
-    # shipped these checkpoints with default parsing and this exact
-    # comment pointing at the follow-up). Tool calling remains
-    # conservative: no tool parser is declared for North yet.
     profile = detect_model_config("mlx-community/North-Mini-Code-1.0-bf16")
 
     assert profile is not None
     assert profile.tool_call_parser is None
-    assert profile.reasoning_parser == "north"
+    assert profile.reasoning_parser == "cohere_command4"
     assert profile.is_hybrid is False
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
@@ -118,7 +114,7 @@ def test_public_4bit_alias_defaults_and_conservative_capabilities() -> None:
     assert profile is not None
     assert profile.hf_path == "mlx-community/North-Mini-Code-1.0-4bit"
     assert profile.tool_call_parser is None
-    assert profile.reasoning_parser == "north"
+    assert profile.reasoning_parser == "cohere_command4"
     assert profile.is_hybrid is False
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False

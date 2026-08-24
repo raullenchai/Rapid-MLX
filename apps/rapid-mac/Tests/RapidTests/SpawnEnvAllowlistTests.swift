@@ -17,6 +17,15 @@ import Testing
 @MainActor
 @Suite("Spawn env allowlist (issue #272)")
 struct SpawnEnvAllowlistTests {
+    @Test("Desktop disables background prefix-cache restore")
+    func desktopDisablesPrefixCacheAutoload() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "test-bearer",
+            ambient: ["RAPID_MLX_PREFIX_CACHE_AUTOLOAD": "1"]
+        )
+
+        #expect(env["RAPID_MLX_PREFIX_CACHE_AUTOLOAD"] == "0")
+    }
 
     // MARK: - PATH augmentation for Dock-launched runs
 
@@ -300,7 +309,8 @@ struct SpawnEnvAllowlistTests {
     @Test("Empty ambient yields only the desktop-injected layer")
     func emptyAmbientYieldsOnlyInjected() {
         // No allowlisted var present means the result is the desktop-
-        // injected layer — bearer + PYTHONUNBUFFERED + HF pinning — plus
+        // injected layer — bearer + PYTHONUNBUFFERED + HF pinning + the
+        // Desktop prefix-cache autoload opt-out — plus
         // ``PATH``, which is deliberately always set (see
         // ``augmentedToolchainPATH``): a sidecar with no PATH at all
         // cannot resolve any stdio MCP server command. Anything BEYOND
@@ -316,6 +326,7 @@ struct SpawnEnvAllowlistTests {
             "HF_HUB_DISABLE_PROGRESS_BARS",
             "HF_HUB_DISABLE_XET",
             "HF_HUB_DOWNLOAD_TIMEOUT",
+            "RAPID_MLX_PREFIX_CACHE_AUTOLOAD",
             "PATH",
         ]
         #expect(Set(env.keys) == expectedKeys)

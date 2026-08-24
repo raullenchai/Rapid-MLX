@@ -192,6 +192,8 @@ struct ChatView: View {
     /// hero and the composer read their copy off this, so they cannot
     /// describe the same lifecycle differently.
     var readiness: ModelReadiness
+    /// Catalog-backed capability shared with launch and request encoding.
+    var supportsImageInput: Bool = false
     /// First launch must not inspect model caches behind the consent sheet.
     /// The parent flips this after the user makes that one-time decision.
     var catalogRefreshEnabled: Bool = true
@@ -218,23 +220,13 @@ struct ChatView: View {
     @Environment(QuickstartCoordinator.self) private var quickstart
 
     @State private var draft: String = ""
-    @State private var imageAttachments: [ChatImageAttachment] = []
-    @State private var fileAttachments: [ChatFileAttachment] = []
-    /// Source path per attachment, image or document, so the same file cannot
-    /// be added twice.
-    ///
-    /// Kept beside the attachments rather than on the attachment types: both
-    /// are `Codable` and persist with the conversation, and an absolute path
-    /// written into chat history carries the user's account name and stops
-    /// being true the moment the file moves.
-    @State private var attachedSourcePaths: [UUID: String] = [:]
-    @State private var attachmentNotice: String?
+    @State private var attachmentDrafts = ChatAttachmentDraftStore()
     @State private var isAttachmentDropTarget = false
-    @State private var isImportingFiles = false
     @State private var composeFocusToken: Int = 0
     /// Incremented every time the user tries to send while gated. Drives
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
+    @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
     /// Refreshed from the active conversation every time the popover opens.
     /// SwiftUI may otherwise reuse the popover's old local `@State` when the
@@ -256,6 +248,10 @@ struct ChatView: View {
     @State private var scrollToBottomRequest = 0
 
     private var messages: [ChatMessage] { viewModel.messages }
+    private var attachmentDraft: ChatAttachmentDraft {
+        get { attachmentDrafts[viewModel.activeConversationID] }
+        nonmutating set { attachmentDrafts[viewModel.activeConversationID] = newValue }
+    }
 
     var body: some View {
         // The reader exists for one value: the surface's own width, which
@@ -302,6 +298,8 @@ struct ChatView: View {
             guard request != 0 else { return }
             composeFocusToken &+= 1
         }
+        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
+        .onChange(of: viewModel.activeConversationID) { _, _ in pruneAttachmentDrafts() }
     }
 
     // MARK: - Transcript
@@ -426,14 +424,16 @@ struct ChatView: View {
                             return viewModel.editUserMessage(
                                 id: message.id,
                                 newContent: newContent,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         onRetry: {
                             guard acknowledgeIfNotReady() else { return false }
                             return viewModel.retryAssistantMessage(
                                 id: message.id,
-                                alias: alias
+                                alias: alias,
+                                supportsImageInput: supportsImageInput
                             )
                         },
                         // Retry re-enters ``send``, so it answers to the same
@@ -603,7 +603,7 @@ struct ChatView: View {
                 InlineNotice(message: error, tone: .error)
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
-            } else if let attachmentNotice {
+            } else if let attachmentNotice = attachmentDraft.notice {
                 InlineNotice(message: attachmentNotice, tone: .error)
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
@@ -618,7 +618,7 @@ struct ChatView: View {
             // tall and read as a card that happened to contain a text
             // area; this reads as a text field with controls in it.
             VStack(spacing: RapidTheme.Space.sm - 2) {
-                if !imageAttachments.isEmpty || !fileAttachments.isEmpty {
+                if attachmentDraft.hasAttachments {
                     attachmentStrip
                 }
                 // The field stays live in every state — a user may draft
@@ -670,7 +670,9 @@ struct ChatView: View {
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Button(action: chooseAttachments) {
+            Button {
+                showsAttachmentMenu.toggle()
+            } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primary)
@@ -678,10 +680,55 @@ struct ChatView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isStreaming || isImportingFiles)
-            .help(supportsImageInput ? "Add files or photos" : "Add PDF, CSV, or TXT files")
+            .disabled(viewModel.isStreaming || attachmentDraft.isImportingFiles)
+            .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
+            .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                    Button {
+                        showsAttachmentMenu = false
+                        chooseFiles()
+                    } label: {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "doc")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload file")
+                        }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("ChatView.Attachments.UploadFile")
+
+                    Button {
+                        showsAttachmentMenu = false
+                        choosePhotos()
+                    } label: {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Image(systemName: "photo")
+                                .frame(width: 16, alignment: .center)
+                            Text("Upload photo")
+                        }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.vertical, RapidTheme.Space.xs)
+                    .contentShape(Rectangle())
+                    .disabled(!supportsImageInput)
+                    .help(
+                        supportsImageInput
+                            ? "Upload photo"
+                            : "Current model doesn't support photos"
+                    )
+                    .accessibilityIdentifier("ChatView.Attachments.UploadPhoto")
+                }
+                .padding(RapidTheme.Space.sm)
+                .frame(width: 190)
+            }
             Button {
                 conversationInstructionsDraft = viewModel.conversationInstructions
                 showsConversationInstructions = true
@@ -784,14 +831,13 @@ struct ChatView: View {
     /// replaces the old behaviour where pressing Send on a cold model
     /// silently kicked off a multi-gigabyte download behind a spinner.
     private var sendEnabled: Bool {
-        hasDraft && readiness.sendAllowed && !isImportingFiles
-            && (imageAttachments.isEmpty || supportsImageInput)
+        hasDraft && readiness.sendAllowed && !attachmentDraft.isImportingFiles
+            && (attachmentDraft.images.isEmpty || supportsImageInput)
     }
 
     private var hasDraft: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !imageAttachments.isEmpty
-            || !fileAttachments.isEmpty
+            || attachmentDraft.hasAttachments
     }
 
     // MARK: - Actions
@@ -799,11 +845,10 @@ struct ChatView: View {
     private func send() {
         let text = draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !imageAttachments.isEmpty
-                || !fileAttachments.isEmpty else { return }
+                || attachmentDraft.hasAttachments else { return }
         guard !viewModel.isStreaming else { return }
-        guard !isImportingFiles else { return }
-        guard imageAttachments.isEmpty || supportsImageInput else {
+        guard !attachmentDraft.isImportingFiles else { return }
+        guard attachmentDraft.images.isEmpty || supportsImageInput else {
             rejectImageInputForCurrentModel()
             return
         }
@@ -819,29 +864,21 @@ struct ChatView: View {
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
         draft = ""
-        let images = imageAttachments
-        let files = fileAttachments
-        imageAttachments = []
-        fileAttachments = []
-        attachedSourcePaths = [:]
-        attachmentNotice = nil
+        let submission = attachmentDraft.takeSubmission()
         composeFocusToken &+= 1
         viewModel.send(
             text,
             alias: alias,
-            imageAttachments: images,
-            fileAttachments: files
+            supportsImageInput: supportsImageInput,
+            imageAttachments: submission.images,
+            fileAttachments: submission.files
         )
-    }
-
-    private var supportsImageInput: Bool {
-        ModelBrandStyle.supportsImageInput(forAlias: alias)
     }
 
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: RapidTheme.Space.sm) {
-                ForEach(imageAttachments) { attachment in
+                ForEach(attachmentDraft.images) { attachment in
                     ZStack(alignment: .topTrailing) {
                         if let image = NSImage(data: attachment.data) {
                             Image(nsImage: image)
@@ -851,8 +888,7 @@ struct ChatView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         Button {
-                            imageAttachments.removeAll { $0.id == attachment.id }
-                            attachedSourcePaths[attachment.id] = nil
+                            attachmentDraft.removeImage(id: attachment.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .symbolRenderingMode(.palette)
@@ -866,7 +902,7 @@ struct ChatView: View {
                         )
                     }
                 }
-                ForEach(fileAttachments) { attachment in
+                ForEach(attachmentDraft.files) { attachment in
                     HStack(spacing: RapidTheme.Space.sm) {
                         Image(systemName: attachment.kind.systemImage)
                             .font(.system(size: 20))
@@ -882,8 +918,7 @@ struct ChatView: View {
                                 .lineLimit(1)
                         }
                         Button {
-                            fileAttachments.removeAll { $0.id == attachment.id }
-                            attachedSourcePaths[attachment.id] = nil
+                            attachmentDraft.removeFile(id: attachment.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -907,11 +942,19 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func chooseAttachments() {
+    private func choosePhotos() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = supportsImageInput
-            ? [.pdf, .commaSeparatedText, .plainText, .png, .jpeg, .gif]
-            : [.pdf, .commaSeparatedText, .plainText]
+        panel.allowedContentTypes = [.png, .jpeg, .gif]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        _ = addAttachmentURLs(panel.urls)
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -921,18 +964,16 @@ struct ChatView: View {
 
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
-        guard !isImportingFiles else { return false }
+        guard !attachmentDraft.isImportingFiles else { return false }
         // Filter before splitting, so images and documents get the same
         // answer to "is this already here". Re-attaching is not merely
         // redundant for a document: the per-message character budget is split
         // evenly across attachments (``fittedForMessage``), so the same PDF
         // added four times sends a quarter of it four times over instead of
         // the whole thing once, and says so only with a "partial" chip.
-        let (urls, duplicates) = Self.withoutAlreadyAttached(
-            urls, attached: Set(attachedSourcePaths.values)
-        )
+        let (urls, duplicates) = attachmentDraft.filteringAlreadyAttached(urls)
         guard !urls.isEmpty else {
-            attachmentNotice = duplicates == 1
+            attachmentDraft.notice = duplicates == 1
                 ? "That file is already attached."
                 : "Those files are already attached."
             return false
@@ -964,57 +1005,58 @@ struct ChatView: View {
             accepted = addFileURLs(fileURLs) || accepted
         }
         if unsupported {
-            attachmentNotice = "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files."
+            attachmentDraft.notice = "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files."
         }
         return accepted
     }
 
     private func addImageURLs(_ urls: [URL]) {
-        var accepted: [ChatImageAttachment] = []
+        var accepted: [(attachment: ChatImageAttachment, sourceURL: URL)] = []
         var rejection: String?
         for url in urls {
             do {
-                let attachment = try ChatImageAttachment(contentsOf: url)
-                attachedSourcePaths[attachment.id] = Self.attachmentKey(for: url)
-                accepted.append(attachment)
+                accepted.append((try ChatImageAttachment(contentsOf: url), url))
             }
             catch { rejection = error.localizedDescription }
         }
-        imageAttachments.append(contentsOf: accepted)
-        attachmentNotice = rejection
+        attachmentDraft.appendImages(accepted)
+        attachmentDraft.notice = rejection
     }
 
     @discardableResult
     private func addFileURLs(_ urls: [URL]) -> Bool {
         let selection = ChatFileAttachment.importCandidates(
             urls,
-            existingCount: fileAttachments.count
+            existingCount: attachmentDraft.files.count
         )
         guard !selection.accepted.isEmpty else {
-            attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
+            attachmentDraft.notice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
             return false
         }
-        isImportingFiles = true
+        guard let importRequest = attachmentDrafts.beginFileImport(
+            conversationID: viewModel.activeConversationID
+        ) else { return false }
         Task { @MainActor in
             let outcome = await Task.detached(priority: .userInitiated) {
                 Self.loadFileAttachments(selection.accepted)
             }.value
 
-            let combined = fileAttachments + outcome.0.map(\.attachment)
-            fileAttachments = ChatFileAttachment.fittedForMessage(combined)
-            for imported in outcome.0 {
-                attachedSourcePaths[imported.attachment.id] = Self.attachmentKey(
-                    for: imported.sourceURL
-                )
-            }
-            if selection.rejectedCount > 0 {
-                attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
-            } else {
-                attachmentNotice = outcome.1
-            }
-            isImportingFiles = false
+            let notice = selection.rejectedCount > 0
+                ? "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
+                : outcome.1
+            attachmentDrafts.finishFileImport(
+                request: importRequest,
+                outcome.0,
+                notice: notice
+            )
         }
         return true
+    }
+
+    private func pruneAttachmentDrafts() {
+        attachmentDrafts.retainDrafts(
+            for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
+        )
     }
 
     /// Parse candidates without losing which source produced each attachment.
@@ -1069,42 +1111,18 @@ struct ChatView: View {
                 return true
             }
             do {
-                imageAttachments.append(try ChatImageAttachment(
+                attachmentDraft.appendImage(try ChatImageAttachment(
                     filename: "Pasted image.png", mimeType: "image/png", data: png
                 ))
-                attachmentNotice = nil
-            } catch { attachmentNotice = error.localizedDescription }
+                attachmentDraft.notice = nil
+            } catch { attachmentDraft.notice = error.localizedDescription }
         }
         return true
     }
 
-    /// Identity for "the same file". Symlinks and `..` segments are resolved
-    /// so two spellings of one path do not read as two files; the same bytes
-    /// living at two real paths deliberately still count as two, because
-    /// deciding otherwise would mean reading every candidate before we know
-    /// whether we want it.
-    nonisolated static func attachmentKey(for url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
-    }
-
-    /// Split incoming URLs into ones not yet attached and a count of the rest.
-    /// Also collapses repeats WITHIN one batch — selecting the same file twice
-    /// in the open panel is the same mistake as pasting it twice.
-    nonisolated static func withoutAlreadyAttached(
-        _ urls: [URL], attached: Set<String>
-    ) -> (fresh: [URL], duplicates: Int) {
-        var seen = attached
-        var fresh: [URL] = []
-        for url in urls {
-            let key = attachmentKey(for: url)
-            if seen.insert(key).inserted { fresh.append(url) }
-        }
-        return (fresh, urls.count - fresh.count)
-    }
-
     private func rejectImageInputForCurrentModel() {
-        attachmentNotice = "\(alias) doesn't support image input. Choose a vision model to add photos."
-        VoiceOverAnnouncer.announce(attachmentNotice ?? "This model doesn't support images.")
+        attachmentDraft.notice = "\(alias) doesn't support image input. Choose a vision model to add photos."
+        VoiceOverAnnouncer.announce(attachmentDraft.notice ?? "This model doesn't support images.")
     }
 
     /// The shared lifecycle gate for every path that would start a turn:
@@ -2149,6 +2167,30 @@ final class AutosizingTextView: NSTextView {
     override func paste(_ sender: Any?) {
         if onPasteAttachments?() == true { return }
         super.paste(sender)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // A plain-text NSTextView can reject an image-only pasteboard before
+        // AppKit dispatches paste(_:). Give the composer first refusal on the
+        // native Command-V event so screenshot/Preview image copies still
+        // reach the attachment importer. Shift-Command-V remains AppKit's
+        // alternate paste behavior.
+        if Self.isStandardPasteKeyEquivalent(event),
+           onPasteAttachments?() == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    static func isStandardPasteKeyEquivalent(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.charactersIgnoringModifiers?.lowercased() == "v" else {
+            return false
+        }
+        let relevant = event.modifierFlags.intersection([
+            .command, .control, .option, .shift,
+        ])
+        return relevant == .command
     }
 
     /// Height of the laid-out text plus the editor's vertical insets.

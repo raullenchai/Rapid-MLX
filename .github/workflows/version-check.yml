@@ -55,7 +55,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
 
@@ -107,14 +107,12 @@ jobs:
           # docs/development/pr_merge_sop.md) — merge bump PRs with an explicit
           # --subject, per releasing.md.
           TITLE_IS_RELEASE=false
-          if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
+          if TITLE_VER=$(python3 scripts/release_version.py subject --allow-pr-suffix "$TITLE"); then
             TITLE_IS_RELEASE=true
             # The title's X.Y.Z must equal the new pyproject version — a title
             # claiming 0.10.6 must not greenlight a pyproject change to 0.10.7
             # (that mismatch is exactly the drift class this guard exists to
             # stop).
-            TITLE_VER=$(echo "$TITLE" \
-              | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/')
             if [ "$TITLE_VER" = "$HEAD_VER" ]; then
               IS_BUMP=true
               REASON="PR title matches 'chore: bump version to $HEAD_VER'"
@@ -215,8 +213,8 @@ jobs:
           # would sort-normalize under ``sort -V`` (so ``1.00.1`` could read as
           # greater than ``1.0.1``) and would also confuse PyPI's canonical
           # ordering. A malformed version is always a hard error.
-          if ! echo "$HEAD_VER" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-            echo "❌ New version '$HEAD_VER' is not a well-formed X.Y.Z (no leading zeros)." >&2
+          if ! python3 scripts/release_version.py validate "$HEAD_VER" >/dev/null; then
+            echo "❌ New version '$HEAD_VER' is not X.Y.Z or X.Y.Z-rcN (no leading zeros)." >&2
             exit 1
           fi
 
@@ -237,12 +235,11 @@ jobs:
           # strictly greater. ``sort -V`` is safe now that leading zeros are
           # rejected on HEAD; guard BASE the same way so a malformed base can't
           # skew the comparison.
-          if ! echo "$BASE_VER" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-            echo "❌ Base version '$BASE_VER' is not a well-formed X.Y.Z — cannot compare." >&2
+          if ! python3 scripts/release_version.py validate "$BASE_VER" >/dev/null; then
+            echo "❌ Base version '$BASE_VER' is not X.Y.Z or X.Y.Z-rcN — cannot compare." >&2
             exit 1
           fi
-          GREATER=$(printf '%s\n%s\n' "$BASE_VER" "$HEAD_VER" | sort -V | tail -1)
-          if [ "$GREATER" != "$HEAD_VER" ]; then
+          if ! python3 scripts/release_version.py greater "$BASE_VER" "$HEAD_VER" >/dev/null; then
             echo "❌ New version '$HEAD_VER' is not greater than base '$BASE_VER'." >&2
             exit 1
           fi

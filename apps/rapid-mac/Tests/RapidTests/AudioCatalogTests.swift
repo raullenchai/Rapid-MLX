@@ -45,6 +45,70 @@ struct AudioCatalogTests {
         #expect(AudioViewModel.previewText(for: "Sohee").hasPrefix("안녕하세요"))
     }
 
+    @Test("speech-to-text model guidance explains language and tradeoffs")
+    @MainActor
+    func transcriptionModelGuidance() {
+        let recommended = AudioViewModel.transcriptionDetails(
+            alias: "whisper-large-v3-turbo",
+            family: "whisper"
+        )
+        #expect(recommended.displayName == "Whisper Large v3 Turbo")
+        #expect(recommended.isRecommended)
+        #expect(recommended.summary.contains("99+ languages"))
+
+        let parakeet = AudioViewModel.transcriptionDetails(
+            alias: "parakeet-v3",
+            family: "parakeet"
+        )
+        #expect(parakeet.displayName == "Parakeet TDT v3")
+        #expect(parakeet.badge == "English")
+        #expect(parakeet.summary.contains("English"))
+        #expect(!parakeet.summary.contains("25"))
+        #expect(parakeet.summary.contains("punctuation"))
+
+        let qwen = AudioViewModel.transcriptionDetails(
+            alias: "qwen3-asr",
+            family: "qwen3_asr"
+        )
+        #expect(qwen.summary.contains("code-switching"))
+
+        let unknown = AudioViewModel.transcriptionDetails(
+            alias: "future-stt",
+            family: "future_family"
+        )
+        #expect(unknown.displayName == "future-stt")
+        #expect(unknown.summary.contains("Runs offline"))
+    }
+
+    @Test("speech-to-text picker collapses compatibility aliases by checkpoint")
+    @MainActor
+    func transcriptionPickerDeduplicatesAliases() {
+        let duplicateRepo = "mlx-community/whisper-large-v3-mlx"
+        let rows = [
+            audioEntry(alias: "whisper", capability: .transcription, family: "whisper", repo: duplicateRepo),
+            audioEntry(alias: "whisper-1", capability: .transcription, family: "whisper", repo: duplicateRepo),
+            audioEntry(alias: "whisper-large-v3", capability: .transcription, family: "whisper", repo: duplicateRepo),
+            audioEntry(alias: "whisper-small", capability: .transcription, family: "whisper"),
+            audioEntry(alias: "whisper-large-v3-turbo", capability: .transcription, family: "whisper"),
+        ]
+
+        let visible = AudioViewModel.deduplicatedTranscriptionModels(rows)
+        #expect(visible.map(\.alias) == [
+            "whisper-large-v3-turbo", "whisper-large-v3", "whisper-small",
+        ])
+    }
+
+    @Test("speech-to-text picker renders explanatory rows instead of a native alias menu")
+    func transcriptionPickerUsesRichRows() throws {
+        let source = try String(contentsOf: Self.dictationViewURL, encoding: .utf8)
+
+        #expect(source.contains("TranscriptionModelOptionRow("))
+        #expect(source.contains("details.summary"))
+        #expect(source.contains("pickerBadge(\"recommended\""))
+        #expect(source.contains(".popover(isPresented: $showModelPicker"))
+        #expect(!source.contains("Picker(\"\", selection: $controller.modelAlias)"))
+    }
+
     @Test("parser extracts audio rows and preserves subtype, family, size, and repo")
     func parsesRows() {
         let rows = ModelCatalog.parseAudioRows(Self.sample)
@@ -268,11 +332,12 @@ struct AudioCatalogTests {
     private func audioEntry(
         alias: String,
         capability: AudioModelCapability,
-        family: String
+        family: String,
+        repo: String? = nil
     ) -> ModelEntry {
         ModelEntry(
             alias: alias,
-            hfRepo: "mlx-community/\(alias)",
+            hfRepo: repo ?? "mlx-community/\(alias)",
             sizeOnDisk: nil,
             cached: false,
             kind: .audio,
@@ -287,5 +352,9 @@ struct AudioCatalogTests {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // rapid-mac
             .appendingPathComponent("Sources/Rapid/UI/AudioView.swift")
+    }
+
+    private static var dictationViewURL: URL {
+        audioViewURL.deletingLastPathComponent().appendingPathComponent("DictationView.swift")
     }
 }

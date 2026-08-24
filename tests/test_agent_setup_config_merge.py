@@ -2,7 +2,7 @@
 
 Covers:
   1. context_length placeholder is resolved from server-reported context_window
-  2. hermes template includes image + computer_use in platform_toolsets
+  2. hermes template uses valid cross-version platform toolsets by default
   3. merge-on-write preserves existing user config keys
   4. fresh write works when no config file exists
 """
@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import subprocess
 import textwrap
 
 import pytest
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover — Python 3.10 only
 
 from vllm_mlx.agents.adapter import (
     _deep_merge,
+    _hermes_supported_toolsets,
     _merge_file_config,
     _MergeParseError,
     _valid_context_window,
@@ -116,8 +118,8 @@ class TestContextLengthPlaceholder:
 
 
 class TestHermesToolsets:
-    def test_hermes_yaml_includes_image_and_computer_use(self):
-        """Hermes profile template must include image + computer_use tools."""
+    def test_hermes_yaml_uses_cross_version_toolsets(self):
+        """Hermes setup must only enable toolsets shared by supported versions."""
         from vllm_mlx.agents import get_profile, load_profiles
 
         load_profiles()
@@ -129,10 +131,80 @@ class TestHermesToolsets:
         )
         parsed = yaml.safe_load(rendered)
         toolsets = parsed.get("platform_toolsets", {}).get("cli", [])
-        assert "image" in toolsets, f"'image' missing from cli toolsets: {toolsets}"
-        assert "computer_use" in toolsets, (
-            f"'computer_use' missing from cli toolsets: {toolsets}"
+        assert toolsets == [
+            "terminal",
+            "file",
+            "code_execution",
+            "web",
+            "browser",
+            "skills",
+            "image_gen",
+        ]
+
+    def test_setup_uses_the_installed_hermes_toolset_registry(
+        self, tmp_path, monkeypatch
+    ):
+        config_path = tmp_path / "config.yaml"
+        profile = _hermes_profile(
+            config=AgentConfigSpec(
+                type="yaml",
+                path=str(config_path),
+                template=_hermes_profile().config.template,
+            )
         )
+        monkeypatch.setattr(
+            "vllm_mlx.agents.adapter._hermes_supported_toolsets",
+            lambda: {
+                "terminal",
+                "file",
+                "code_execution",
+                "web",
+                "browser",
+                "skills",
+                "image_gen",
+                "computer_use",
+            },
+        )
+
+        setup_agent_config(profile, model_id="test-model")
+
+        parsed = yaml.safe_load(config_path.read_text())
+        assert parsed["platform_toolsets"]["cli"][-2:] == [
+            "image_gen",
+            "computer_use",
+        ]
+
+    def test_registry_discovery_parses_real_format_and_ansi(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda name: "/opt/bin/hermes")
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=(
+                    "Built-in toolsets (cli):\n"
+                    "  ✓ enabled  image_gen  Image Generation\n"
+                    "  \x1b[32m✗ disabled\x1b[0m  computer_use  Computer Use\n"
+                ),
+                stderr="",
+            ),
+        )
+
+        assert _hermes_supported_toolsets() == {"image_gen", "computer_use"}
+
+    @pytest.mark.parametrize("failure", ["nonzero", "timeout", "malformed"])
+    def test_registry_discovery_failures_are_unknown(self, monkeypatch, failure):
+        monkeypatch.setattr("shutil.which", lambda name: "/opt/bin/hermes")
+
+        def fake_run(*args, **kwargs):
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(args[0], 5)
+            if failure == "nonzero":
+                return subprocess.CompletedProcess(args[0], 2, "", "boom")
+            return subprocess.CompletedProcess(args[0], 0, "unexpected output", "")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        assert _hermes_supported_toolsets() is None
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +247,7 @@ class TestMergeOnWrite:
                   max_tokens: 4096
                 my_custom_setting: true
                 platform_toolsets:
-                  cli: [terminal, file, image, my_custom_tool]
+                  cli: [terminal, file, image, computer_use, my_custom_tool]
             """)
         )
 
@@ -187,10 +259,24 @@ class TestMergeOnWrite:
               context_length: 131072
               max_tokens: 4096
             platform_toolsets:
-              cli: [terminal, file, code_execution, web, browser, skills, image, computer_use]
+              cli: [terminal, file, code_execution, web, browser, skills, image_gen, computer_use]
         """)
 
-        result = _merge_file_config(existing, new_template, "yaml")
+        result = _merge_file_config(
+            existing,
+            new_template,
+            "yaml",
+            hermes_supported_toolsets={
+                "terminal",
+                "file",
+                "code_execution",
+                "web",
+                "browser",
+                "skills",
+                "image_gen",
+                "computer_use",
+            },
+        )
         parsed = yaml.safe_load(result)
 
         # Template values win
@@ -198,10 +284,96 @@ class TestMergeOnWrite:
         assert parsed["model"]["context_length"] == 131072
         # User's custom key is preserved
         assert parsed["my_custom_setting"] is True
-        # platform_toolsets.cli is replaced by template (authoritative)
+        # Stable defaults come first; user-enabled capabilities survive.
         cli = parsed["platform_toolsets"]["cli"]
-        assert "code_execution" in cli  # from template
-        assert "my_custom_tool" not in cli  # template list wins
+        assert cli == [
+            "terminal",
+            "file",
+            "code_execution",
+            "web",
+            "browser",
+            "skills",
+            "image_gen",
+            "computer_use",
+            "my_custom_tool",
+        ]
+        assert "image" not in cli
+
+    def test_yaml_merge_migrates_the_exact_legacy_rapid_toolset_list(self, tmp_path):
+        existing = tmp_path / "config.yaml"
+        existing.write_text(
+            "platform_toolsets:\n"
+            "  cli: [terminal, file, code_execution, web, browser, skills, image, computer_use]\n"
+        )
+        template = (
+            "platform_toolsets:\n"
+            "  cli: [terminal, file, code_execution, web, browser, skills, image_gen]\n"
+        )
+
+        parsed = yaml.safe_load(
+            _merge_file_config(
+                existing,
+                template,
+                "yaml",
+                hermes_supported_toolsets={
+                    "terminal",
+                    "file",
+                    "code_execution",
+                    "web",
+                    "browser",
+                    "skills",
+                    "image_gen",
+                },
+            )
+        )
+        assert parsed["platform_toolsets"]["cli"] == [
+            "terminal",
+            "file",
+            "code_execution",
+            "web",
+            "browser",
+            "skills",
+            "image_gen",
+        ]
+
+    def test_yaml_merge_preserves_capabilities_when_detection_is_unavailable(
+        self, tmp_path
+    ):
+        existing = tmp_path / "config.yaml"
+        existing.write_text(
+            "platform_toolsets:\n  cli: [terminal, image, computer_use, spotify]\n"
+        )
+        template = "platform_toolsets:\n  cli: [terminal, image_gen]\n"
+
+        parsed = yaml.safe_load(_merge_file_config(existing, template, "yaml"))
+
+        assert parsed["platform_toolsets"]["cli"] == [
+            "terminal",
+            "image_gen",
+            "image",
+            "computer_use",
+            "spotify",
+        ]
+
+    def test_yaml_merge_registry_filters_managed_tools_but_keeps_user_delta(
+        self, tmp_path
+    ):
+        existing = tmp_path / "config.yaml"
+        existing.write_text(
+            "platform_toolsets:\n  cli: [terminal, image, computer_use, spotify]\n"
+        )
+        template = "platform_toolsets:\n  cli: [terminal]\n"
+
+        parsed = yaml.safe_load(
+            _merge_file_config(
+                existing,
+                template,
+                "yaml",
+                hermes_supported_toolsets={"terminal"},
+            )
+        )
+
+        assert parsed["platform_toolsets"]["cli"] == ["terminal", "spotify"]
 
     def test_json_merge_preserves_user_keys(self, tmp_path):
         existing = tmp_path / "config.json"
@@ -273,6 +445,30 @@ class TestMergeOnWrite:
         )
         summary = setup_agent_config(profile, "http://x/v1", "m")
         assert summary.startswith("Cannot")
+
+    def test_setup_reports_failure_on_non_string_hermes_toolset(
+        self, tmp_path, monkeypatch
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "platform_toolsets:\n  cli: [terminal, {custom: true}]\n"
+        )
+        profile = _hermes_profile(
+            config=AgentConfigSpec(
+                type="yaml",
+                path=str(config_path),
+                template=("platform_toolsets:\n  cli: [terminal, file, image_gen]\n"),
+            )
+        )
+        monkeypatch.setattr(
+            "vllm_mlx.agents.adapter._hermes_supported_toolsets",
+            lambda: {"terminal", "file", "image_gen"},
+        )
+
+        summary = setup_agent_config(profile, "http://x/v1", "m")
+
+        assert summary.startswith("Cannot parse existing config")
+        assert "entries must be strings" in summary
 
     def test_dry_run_does_not_touch_an_existing_config(self, tmp_path):
         """``--dry-run`` must preview, never write.

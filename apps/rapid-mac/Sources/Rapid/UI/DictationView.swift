@@ -15,6 +15,7 @@ struct DictationView: View {
 
     @State private var newTerm = ""
     @State private var fixTarget: DictationHistory.Entry?
+    @State private var showModelPicker = false
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -175,36 +176,22 @@ struct DictationView: View {
                 done: controller.readinessSnapshot.modelSelected
                     && controller.readinessSnapshot.modelOnDisk
             ) {
-                Menu {
-                    Picker("", selection: $controller.modelAlias) {
-                        Text("Choose…").tag("")
-                        ForEach(viewModel.transcriptionModels, id: \.alias) { entry in
-                            // Same menu grammar as the Audio tabs' pickers:
-                            // the cache glyph says up front which choices are
-                            // a download and which are ready now.
-                            Label(
-                                entry.alias,
-                                systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
-                            )
-                            .tag(entry.alias)
-                        }
-                    }
-                    .accessibilityIdentifier("Dictation.Model.Options")
-                    .pickerStyle(.inline)
-                    .labelsHidden()
+                Button {
+                    showModelPicker.toggle()
                 } label: {
                     PopupControlChrome(
-                        title: controller.modelAlias.isEmpty ? "Choose…" : controller.modelAlias,
+                        title: selectedModelDetails?.displayName ?? "Choose…",
                         width: 260
                     )
                 }
-                .menuStyle(.button)
                 .buttonStyle(.plain)
-                .menuIndicator(.hidden)
                 .disabled(controller.phase != .off && controller.phase != .idle)
                 .accessibilityLabel("Model")
                 .accessibilityValue(controller.modelAlias)
                 .accessibilityIdentifier("Dictation.Model")
+                .popover(isPresented: $showModelPicker, arrowEdge: .top) {
+                    transcriptionModelPicker
+                }
             } detail: {
                 Text(modelDetail)
             }
@@ -312,7 +299,56 @@ struct DictationView: View {
     }
 
     private var selectedModelEntry: ModelEntry? {
-        viewModel.transcriptionModels.first { $0.alias == controller.modelAlias }
+        viewModel.audioModels.first {
+            $0.alias == controller.modelAlias
+                && $0.audioCapability?.supportsTranscription == true
+        }
+    }
+
+    /// Compatibility aliases hidden by the picker still resolve to the same
+    /// canonical row. Existing users keep a truthful selected state without a
+    /// forced model restart; choosing that row later migrates the stored alias.
+    private func isSelectedModel(_ entry: ModelEntry) -> Bool {
+        guard let selectedModelEntry else { return false }
+        if selectedModelEntry.alias == entry.alias { return true }
+        guard let selectedRepo = selectedModelEntry.hfRepo,
+              let entryRepo = entry.hfRepo else { return false }
+        return selectedRepo.caseInsensitiveCompare(entryRepo) == .orderedSame
+    }
+
+    private var selectedModelDetails: AudioViewModel.TranscriptionModelDetails? {
+        guard let entry = selectedModelEntry else { return nil }
+        return AudioViewModel.transcriptionDetails(
+            alias: entry.alias,
+            family: entry.audioFamily
+        )
+    }
+
+    private var transcriptionModelPicker: some View {
+        ScrollView {
+            LazyVStack(spacing: RapidTheme.Space.xs) {
+                ForEach(viewModel.transcriptionModels, id: \.alias) { entry in
+                    TranscriptionModelOptionRow(
+                        entry: entry,
+                        details: AudioViewModel.transcriptionDetails(
+                            alias: entry.alias,
+                            family: entry.audioFamily
+                        ),
+                        isSelected: isSelectedModel(entry)
+                    ) {
+                        controller.modelAlias = entry.alias
+                        showModelPicker = false
+                    }
+                }
+            }
+            .padding(RapidTheme.Space.sm)
+            .accessibilityIdentifier("Dictation.Model.Options")
+        }
+        .frame(width: 410, height: transcriptionModelPopoverHeight)
+    }
+
+    private var transcriptionModelPopoverHeight: CGFloat {
+        min(max(CGFloat(viewModel.transcriptionModels.count) * 76 + 16, 92), 460)
     }
 
     /// Alias + job status folded into one value so `.task(id:)` re-fires on
@@ -356,7 +392,7 @@ struct DictationView: View {
     private func handleModelReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .download(let alias), .retry(let alias):
-            guard let entry = viewModel.transcriptionModels.first(where: { $0.alias == alias }),
+            guard let entry = viewModel.audioModels.first(where: { $0.alias == alias }),
                   !downloads.isDownloading(alias) else { return }
             if case .failed = downloads.job(for: alias)?.status {
                 downloads.dismissJob(alias: alias)
@@ -684,6 +720,91 @@ struct DictationView: View {
             }
         }
         .padding(RapidTheme.Space.lg)
+    }
+}
+
+private struct TranscriptionModelOptionRow: View {
+    let entry: ModelEntry
+    let details: AudioViewModel.TranscriptionModelDetails
+    let isSelected: Bool
+    let select: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: select) {
+            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .opacity(isSelected ? 1 : 0)
+                    .frame(width: 14, height: 18)
+
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                    HStack(spacing: RapidTheme.Space.xs) {
+                        Text(details.displayName)
+                            .font(RapidFont.body)
+                            .lineLimit(1)
+                        pickerBadge("offline")
+                        pickerBadge(details.badge)
+                        if details.isRecommended {
+                            pickerBadge("recommended", emphasized: true)
+                        }
+                        Spacer(minLength: RapidTheme.Space.xs)
+                        if let size = entry.sizeOnDisk {
+                            Text(size)
+                                .font(RapidFont.caption)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Image(systemName: ModelPickerBar.cacheGlyph(cached: entry.cached))
+                            .font(.caption)
+                            .foregroundStyle(entry.cached ? RapidTheme.green : .secondary)
+                            .accessibilityHidden(true)
+                    }
+                    Text(details.summary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .padding(.horizontal, RapidTheme.Space.sm)
+            .padding(.vertical, RapidTheme.Space.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                .fill(isSelected || hovering ? RapidTheme.hoverFill : .clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous))
+        .onHover { hovering = $0 }
+        .rapidAnimation(RapidMotion.quick, value: hovering)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("Dictation.Model.Option.\(entry.alias)")
+    }
+
+    private func pickerBadge(_ text: String, emphasized: Bool = false) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(emphasized ? RapidTheme.green : Color.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                Capsule().fill(emphasized ? RapidTheme.green.opacity(0.12) : RapidTheme.hoverFill)
+            )
+            .lineLimit(1)
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [details.displayName, details.badge]
+        if details.isRecommended { parts.append("Recommended") }
+        parts.append(entry.cached ? "Downloaded" : "Not downloaded")
+        if let size = entry.sizeOnDisk { parts.append(size) }
+        parts.append(details.summary)
+        return parts.joined(separator: ", ")
     }
 }
 

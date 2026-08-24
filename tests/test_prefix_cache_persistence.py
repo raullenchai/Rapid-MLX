@@ -1651,6 +1651,30 @@ def test_shutdown_save_prefix_cache_no_op_when_engine_missing(monkeypatch):
     asyncio.run(_server_mod._shutdown_save_prefix_cache())  # must not raise
 
 
+def test_shutdown_save_skipped_when_autoload_disabled(monkeypatch, caplog):
+    """A cold Desktop process must not replace a snapshot it never restored."""
+    import asyncio
+
+    from vllm_mlx import server as _server_mod
+
+    class _ExplodingEngine:
+        def save_cache_to_disk(self, *args, **kwargs):
+            raise AssertionError("automatic shutdown save reached the engine")
+
+    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_AUTOLOAD", "0")
+    monkeypatch.setattr(_server_mod, "_engine", _ExplodingEngine())
+    monkeypatch.setattr(
+        _server_mod,
+        "_save_prefix_cache_to_disk",
+        lambda: (_ for _ in ()).throw(AssertionError("cache saver was called")),
+    )
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(_server_mod._shutdown_save_prefix_cache())
+
+    assert "Prefix-cache auto-save disabled with auto-load" in caplog.text
+
+
 def test_save_prefix_cache_to_disk_respects_budget(tmp_path, monkeypatch):
     """``save_prefix_cache_to_disk`` must build a deadline predicate from
     the budget arg and forward it as ``should_abort`` to the engine. With

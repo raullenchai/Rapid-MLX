@@ -3,11 +3,11 @@
 # rapid-mlx-desktop.dmg (legacy alias Rapid.dmg published alongside
 # in CI — see release.yml R2 upload step).
 #
-# We deliberately use Apple's built-in `hdiutil` (and don't pull in
-# `create-dmg` from Homebrew) so a contributor can build a release on a
-# clean machine without `brew install`. The trade-off is no custom
-# background image or icon layout — Finder's default view is fine for
-# v1; we can drop in a `.DS_Store` template later.
+# We deliberately use Apple's built-in `hdiutil`, Finder and `sips` (and don't
+# pull in `create-dmg` from Homebrew) so a contributor can build a release on a
+# clean machine without `brew install`. ``configure-dmg-layout.sh`` applies the
+# custom background and left-to-right icon positions while the intermediate
+# image is writable.
 #
 # Layout inside the volume:
 #   Rapid-MLX Desktop.app  ← the SwiftUI executable bundle
@@ -26,7 +26,21 @@ BUILD="$ROOT/build"
 APP="$BUILD/Rapid-MLX Desktop.app"
 DMG="$BUILD/rapid-mlx-desktop.dmg"
 STAGING="$BUILD/dmg-staging"
+UDRW="$BUILD/rapid-mlx-desktop.udrw.dmg"
 VOL_NAME="Rapid-MLX Desktop"
+MOUNT=""
+
+cleanup() {
+    if [[ -n "$MOUNT" && -d "$MOUNT" ]] && mount | grep -Fq " on $MOUNT "; then
+        hdiutil detach "$MOUNT" -quiet 2>/dev/null \
+            || hdiutil detach "$MOUNT" -force -quiet 2>/dev/null \
+            || true
+    fi
+    [[ -n "$MOUNT" ]] && rmdir "$MOUNT" 2>/dev/null || true
+    rm -rf "$STAGING"
+    rm -f "$UDRW"
+}
+trap cleanup EXIT
 
 if [[ ! -d "$APP" ]]; then
     echo "==> Rapid-MLX Desktop.app missing — running build.sh first"
@@ -41,19 +55,30 @@ mkdir -p "$STAGING"
 cp -R "$APP" "$STAGING/Rapid-MLX Desktop.app"
 ln -s /Applications "$STAGING/Applications"
 
-echo "==> hdiutil create $DMG"
-rm -f "$DMG"
-# UDZO = zlib-compressed read-only. Smallest distribution size, good
-# enough decompression speed on modern Macs (the .app is mostly
-# already-compressed Swift runtime bytes).
+echo "==> hdiutil create writable layout image"
+rm -f "$UDRW" "$DMG"
+# Finder can only persist icon positions and the background picture on a
+# writable volume. Build UDRW first, apply the presentation, then convert to
+# the same zlib-compressed UDZO shipping format used previously.
 hdiutil create \
     -volname "$VOL_NAME" \
     -srcfolder "$STAGING" \
     -ov \
     -fs HFS+ \
-    -format UDZO \
-    "$DMG" \
+    -format UDRW \
+    "$UDRW" \
     >/dev/null
+
+MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/rapid-dmg-layout-XXXXXX")"
+hdiutil attach "$UDRW" -nobrowse -mountpoint "$MOUNT" -quiet
+bash "$ROOT/scripts/configure-dmg-layout.sh" "$MOUNT"
+hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet
+rmdir "$MOUNT" 2>/dev/null || true
+MOUNT=""
+
+echo "==> hdiutil convert UDRW -> UDZO ($DMG)"
+hdiutil convert "$UDRW" -format UDZO -ov -o "$DMG" >/dev/null
+rm -f "$UDRW"
 
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
@@ -66,9 +91,6 @@ codesign --verify "$DMG"
 
 echo "==> hdiutil verify (CRC + structure)"
 hdiutil verify "$DMG" >/dev/null
-
-# Tidy up — staging is reproducible; only the .dmg is the artifact.
-rm -rf "$STAGING"
 
 SIZE="$(du -h "$DMG" | cut -f1)"
 echo

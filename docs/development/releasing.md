@@ -46,7 +46,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    Post-tag verification: `python3 scripts/release_smoke.py --version X.Y.Z`
    re-runs the gate against the wheel actually published to PyPI.
 
-2. **Bump `pyproject.toml` in a dedicated bump PR** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). Never push the bump directly to `main`: `version-check.yml` only accepts a `version`-line change in a PR titled `chore: bump version to X.Y.Z` (see "Safety nets" below), and direct pushes to `main` are against repo convention anyway.
+2. **Bump `pyproject.toml` in a dedicated bump PR** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). A release candidate uses `X.Y.Z-rcN`, beginning at `rc1`; RCs publish as GitHub/PyPI prereleases and immutable desktop artifacts, but deliberately do not replace the stable desktop updater feed. Never push the bump directly to `main`: `version-check.yml` only accepts a `version`-line change in a PR titled `chore: bump version to X.Y.Z` or `chore: bump version to X.Y.Z-rcN` (see "Safety nets" below), and direct pushes to `main` are against repo convention anyway.
 
    ```bash
    git checkout -b chore/bump-0.6.16 raullenchai/main
@@ -115,10 +115,16 @@ separately. If this really is the release bump, title the PR
 ### `_version_check.py` — warn end users on stale local installs
 
 `rapid-mlx models` (and any other entrypoint that calls `print_staleness_warning_if_any()`) prints a one-line warning when:
-- installed version is `>= 2 patch` versions behind the latest GitHub release
-- and the same major.minor (no cross-minor nag)
-- and stderr is a TTY (no nag in pipes / CI)
+- the latest GitHub release is newer than the installed version by any amount (patch, minor, or major)
+- and stderr is a TTY for ordinary interactive commands (no nag in pipes)
 - and `RAPID_MLX_DISABLE_VERSION_CHECK` isn't set
+- and the command isn't running with `CI` set
+
+Text and audio `rapid-mlx serve` processes also emit this passive notice to
+non-TTY startup logs so launchd and other daemon operators can see that an
+update is available. The explicit `RAPID_MLX_DISABLE_VERSION_CHECK` and `CI`
+opt-outs still apply. Current or development versions ahead of the latest
+release remain silent.
 
 Cache: `~/.cache/rapid-mlx/version_check.json` (24h TTL). Network timeout: 2s. **Fail-silent on every error path** — staleness warnings must never break the CLI. See `tests/test_version_check.py` for the contract.
 

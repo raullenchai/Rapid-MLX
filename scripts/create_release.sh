@@ -39,6 +39,8 @@ set -euo pipefail
 : "${NOTES_FILE:?create_release.sh: NOTES_FILE is required}"
 : "${GITHUB_REPOSITORY:?create_release.sh: GITHUB_REPOSITORY is required}"
 GH_BIN="${GH:-gh}"
+PRERELEASE_FLAG=""
+[[ "$TAG" =~ -rc[1-9][0-9]*$ ]] && PRERELEASE_FLAG="--prerelease"
 [ -f "$NOTES_FILE" ] || { echo "❌ notes file missing: $NOTES_FILE" >&2; exit 1; }
 AUTOMATION_MARKER="<!-- rapid-mlx-auto-release:$TAG:$RELEASE_SHA -->"
 DRAFT_NOTES_FILE=$(mktemp)
@@ -122,6 +124,7 @@ finish_verified_existing_release() {
     "$GH_BIN" release edit "$TAG" \
       --title "$TAG" \
       --notes-file "$NOTES_FILE" \
+      $PRERELEASE_FLAG \
       --draft=false
     local published_sha
     published_sha=$(resolve_tag_commit || true)
@@ -179,6 +182,7 @@ if ! CREATE_ERROR=$(
     --title "$TAG" \
     --notes-file "$DRAFT_NOTES_FILE" \
     --target "$RELEASE_SHA" \
+    $PRERELEASE_FLAG \
     --draft 2>&1
 ); then
   # Close the second race: another run can publish after our re-check but
@@ -206,6 +210,7 @@ fi
 "$GH_BIN" release edit "$TAG" \
   --title "$TAG" \
   --notes-file "$NOTES_FILE" \
+  $PRERELEASE_FLAG \
   --draft=false
 
 # Defense in depth for an out-of-policy force-update after the pre-publish

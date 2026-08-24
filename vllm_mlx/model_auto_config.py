@@ -395,15 +395,12 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
-    # Cohere North family (North-Mini-Code) — <|START_THINKING|> /
-    # <|END_THINKING|> reasoning markers with <|START_TEXT|> content
-    # wrappers. No tool parser yet: North's <|START_ACTION|> tool format
-    # has no parser in the registry.
+    # Cohere Command typed-channel protocol used by North Mini Code.
     (
         re.compile(r"north[-_]?mini", re.IGNORECASE),
         ModelConfig(
             tool_call_parser=None,
-            reasoning_parser="north",
+            reasoning_parser="cohere_command4",
         ),
     ),
     # MiniMax M2.5

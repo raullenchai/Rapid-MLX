@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
 from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
@@ -89,6 +90,25 @@ class TestStreamingPostProcessorBasic:
         content = [e for e in events if e.type == "content"]
         if content:
             assert "<|endoftext|>" not in content[0].content
+
+    def test_reasoning_finish_failure_is_logged_and_does_not_abort(self, caplog):
+        class RaisingFinishParser(ReasoningParser):
+            def extract_reasoning(self, model_output, **kwargs):
+                return None, model_output
+
+            def extract_reasoning_streaming(
+                self, previous_text, current_text, delta_text
+            ):
+                return DeltaMessage(reasoning=delta_text)
+
+            def finish_stream(self):
+                raise RuntimeError("drain failed")
+
+        cfg = _make_cfg(reasoning_parser=RaisingFinishParser())
+        pp = StreamingPostProcessor(cfg)
+
+        assert pp.finalize() == []
+        assert "Reasoning parser finish_stream raised" in caplog.text
 
 
 class TestStreamingPostProcessorChannelRouted:

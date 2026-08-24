@@ -119,6 +119,57 @@ def test_deferred_load_prefix_cache_swallows_errors(monkeypatch, caplog):
     assert "deferred prefix-cache load failed" in caplog.text
 
 
+def test_deferred_load_prefix_cache_honors_autoload_opt_out(monkeypatch, caplog):
+    """Desktop can prefer a truthful cold first turn over disk-cache restore.
+
+    The restore runs on the engine's sole MLX step thread.  If it is slow, a
+    server can report Ready while every generation request queues behind it.
+    The opt-out must return before touching either the cache directory or the
+    engine loader; persisted files remain available for explicit import.
+    """
+    from vllm_mlx import server as _server_mod
+
+    class _ExplodingEngine:
+        def load_cache_from_disk(self, *args, **kwargs):
+            raise AssertionError("autoload opt-out reached the engine")
+
+    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_AUTOLOAD", "0")
+    monkeypatch.setattr(_server_mod, "_engine", _ExplodingEngine())
+    monkeypatch.setattr(
+        _server_mod,
+        "_load_prefix_cache_from_disk",
+        lambda: (_ for _ in ()).throw(AssertionError("cache loader was called")),
+    )
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(_server_mod._deferred_load_prefix_cache())
+
+    assert "Prefix-cache auto-load disabled" in caplog.text
+
+
+def test_autoload_opt_out_does_not_disable_explicit_loader(monkeypatch):
+    """The Desktop startup policy must not change the general load operation."""
+    from vllm_mlx.runtime import cache as _cache_mod
+
+    calls = []
+
+    class _Engine:
+        def load_cache_from_disk(self, path, *, protected_import):
+            calls.append((path, protected_import))
+            return 0
+
+    class _Config:
+        engine = _Engine()
+
+    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_AUTOLOAD", "0")
+    monkeypatch.setattr(_cache_mod, "get_config", lambda: _Config())
+    monkeypatch.setattr(_cache_mod, "get_cache_dir", lambda: "/tmp/explicit-cache")
+
+    _cache_mod.load_prefix_cache_from_disk()
+
+    assert calls == [("/tmp/explicit-cache", False)]
+
+
 def test_drain_awaits_load_to_completion(monkeypatch):
     """Shutdown drain must AWAIT the load to completion, not cancel it.
 

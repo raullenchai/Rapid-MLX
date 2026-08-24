@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1678" height="1176" viewBox="0 0 1678 1176">
+<rect width="1678" height="1176" fill="#f8fbff"/>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.title{font-size:25px;font-weight:700;fill:#14213d}.lane{font-size:16px;font-weight:700;fill:#243b63}.node{font-size:14px;font-weight:650;fill:#172033}.status{font-size:12px;fill:#475569}.edge{stroke:#94a3b8;stroke-width:1.4;fill:none;marker-end:url(#arrow)}</style>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#64748b"/></marker></defs>
+<text x="28" y="42" class="title">Rapid-MLX model management and performance decision SSOT</text>
+<text x="28" y="70" class="status">architecture v0.1 · generated from architecture.yaml</text>
+<path d="M183.0,189.0 L183.0,311.0" class="edge" opacity=".42"/>
+<path d="M183.0,311.0 L183.0,433.0" class="edge" opacity=".42"/>
+<path d="M183.0,433.0 L183.0,555.0" class="edge" opacity=".42"/>
+<path d="M183.0,555.0 L183.0,677.0" class="edge" opacity=".42"/>
+<path d="M183.0,555.0 L183.0,799.0" class="edge" opacity=".42"/>
+<path d="M183.0,555.0 L183.0,1043.0" class="edge" opacity=".42"/>
+<path d="M183.0,433.0 L183.0,921.0" class="edge" opacity=".42"/>
+<path d="M511.0,189.0 L511.0,311.0" class="edge" opacity=".42"/>
+<path d="M511.0,555.0 L511.0,677.0" class="edge" opacity=".42"/>
+<path d="M511.0,677.0 L511.0,799.0" class="edge" opacity=".42"/>
+<path d="M511.0,799.0 L511.0,921.0" class="edge" opacity=".42"/>
+<path d="M511.0,921.0 L511.0,1043.0" class="edge" opacity=".42"/>
+<path d="M511.0,311.0 L839.0,189.0" class="edge" opacity=".42"/>
+<path d="M183.0,1043.0 L839.0,189.0" class="edge" opacity=".42"/>
+<path d="M839.0,189.0 L839.0,311.0" class="edge" opacity=".42"/>
+<path d="M839.0,311.0 L839.0,555.0" class="edge" opacity=".42"/>
+<path d="M839.0,433.0 L839.0,555.0" class="edge" opacity=".42"/>
+<path d="M839.0,555.0 L839.0,677.0" class="edge" opacity=".42"/>
+<path d="M839.0,677.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M1167.0,189.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M511.0,1043.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M511.0,311.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M511.0,433.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M183.0,799.0 L1167.0,311.0" class="edge" opacity=".42"/>
+<path d="M1167.0,311.0 L1167.0,433.0" class="edge" opacity=".42"/>
+<path d="M1167.0,433.0 L1167.0,555.0" class="edge" opacity=".42"/>
+<path d="M1167.0,433.0 L1167.0,677.0" class="edge" opacity=".42"/>
+<path d="M1167.0,555.0 L1495.0,189.0" class="edge" opacity=".42"/>
+<path d="M1167.0,677.0 L1495.0,189.0" class="edge" opacity=".42"/>
+<path d="M1495.0,189.0 L1495.0,311.0" class="edge" opacity=".42"/>
+<path d="M1495.0,311.0 L511.0,555.0" class="edge" opacity=".42"/>
+<rect x="28" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="42" y="118" class="lane">Stable model facts</text>
+<rect x="40" y="138" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="54" y="166" class="node">
+<tspan x="54" y="166">ModelFamily</tspan>
+</text>
+<text x="54" y="216" class="status">🟡 partial · phase 2 · atlas</text>
+<rect x="40" y="260" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="54" y="288" class="node">
+<tspan x="54" y="288">ModelRelease</tspan>
+</text>
+<text x="54" y="338" class="status">⚪ planned · phase 2 · atlas</text>
+<rect x="40" y="382" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="54" y="410" class="node">
+<tspan x="54" y="410">ModelVariant</tspan>
+</text>
+<text x="54" y="460" class="status">🟡 partial · phase 2 · atlas</text>
+<rect x="40" y="504" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="54" y="532" class="node">
+<tspan x="54" y="532">Artifact</tspan>
+</text>
+<text x="54" y="582" class="status">⚪ planned · phase 2 · atlas</text>
+<rect x="40" y="626" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="54" y="654" class="node">
+<tspan x="54" y="654">Capabilities</tspan>
+</text>
+<text x="54" y="704" class="status">🟡 partial · phase 2 · atlas</text>
+<rect x="40" y="748" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="54" y="776" class="node">
+<tspan x="54" y="776">RuntimeCompatibility</tspan>
+</text>
+<text x="54" y="826" class="status">🟡 partial · phase 2 · atlas</text>
+<rect x="40" y="870" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="54" y="898" class="node">
+<tspan x="54" y="898">Alias / DisplayMetadata</tspan>
+</text>
+<text x="54" y="948" class="status">🟡 partial · phase 2 · pixel</text>
+<rect x="40" y="992" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="54" y="1020" class="node">
+<tspan x="54" y="1020">VariantQualification</tspan>
+</text>
+<text x="54" y="1070" class="status">⚪ planned · phase 3 · atlas</text>
+<rect x="356" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="370" y="118" class="lane">Machine, workload, and evidence</text>
+<rect x="368" y="138" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="382" y="166" class="node">
+<tspan x="382" y="166">MachineFingerprint</tspan>
+</text>
+<text x="382" y="216" class="status">⚪ planned · phase 2 · vector</text>
+<rect x="368" y="260" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="382" y="288" class="node">
+<tspan x="382" y="288">MachineClass</tspan>
+</text>
+<text x="382" y="338" class="status">⚪ planned · phase 2 · vector</text>
+<rect x="368" y="382" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="382" y="410" class="node">
+<tspan x="382" y="410">WorkloadProfile</tspan>
+</text>
+<text x="382" y="460" class="status">⚪ planned · phase 2 · vector</text>
+<rect x="368" y="504" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="382" y="532" class="node">
+<tspan x="382" y="532">CommunityBenchmarkSubmission</tspan>
+</text>
+<text x="382" y="582" class="status">🟡 partial · phase 4 · vector</text>
+<rect x="368" y="626" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="382" y="654" class="node">
+<tspan x="382" y="654">ValidatedBenchmarkRun</tspan>
+</text>
+<text x="382" y="704" class="status">🟡 partial · phase 4 · vector</text>
+<rect x="368" y="748" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="382" y="776" class="node">
+<tspan x="382" y="776">BenchmarkAggregate</tspan>
+</text>
+<text x="382" y="826" class="status">🟡 partial · phase 4 · vector</text>
+<rect x="368" y="870" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="382" y="898" class="node">
+<tspan x="382" y="898">ProfileCandidate</tspan>
+</text>
+<text x="382" y="948" class="status">🟡 partial · phase 2 · vector</text>
+<rect x="368" y="992" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="382" y="1020" class="node">
+<tspan x="382" y="1020">PerformanceProfile</tspan>
+</text>
+<text x="382" y="1070" class="status">🟡 partial · phase 2 · vector</text>
+<rect x="684" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="698" y="118" class="lane">Product recommendation</text>
+<rect x="696" y="138" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="710" y="166" class="node">
+<tspan x="710" y="166">RecommendationPolicy</tspan>
+</text>
+<text x="710" y="216" class="status">🟡 partial · phase 4 · atlas</text>
+<rect x="696" y="260" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="710" y="288" class="node">
+<tspan x="710" y="288">RankedRecommendationSet</tspan>
+</text>
+<text x="710" y="338" class="status">⚪ planned · phase 4 · atlas</text>
+<rect x="696" y="382" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="710" y="410" class="node">
+<tspan x="710" y="410">ModelSelectionOverride</tspan>
+</text>
+<text x="710" y="460" class="status">⚪ planned · phase 4 · atlas</text>
+<rect x="696" y="504" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="710" y="532" class="node">
+<tspan x="710" y="532">Selection</tspan>
+</text>
+<text x="710" y="582" class="status">🟡 partial · phase 4 · atlas</text>
+<rect x="696" y="626" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="710" y="654" class="node">
+<tspan x="710" y="654">SelectedModelVariant</tspan>
+</text>
+<text x="710" y="704" class="status">⚪ planned · phase 4 · atlas</text>
+<rect x="1012" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="1026" y="118" class="lane">Runtime resolution and consumption</text>
+<rect x="1024" y="138" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="1038" y="166" class="node">
+<tspan x="1038" y="166">RuntimeConfigOverride</tspan>
+</text>
+<text x="1038" y="216" class="status">🟡 partial · phase 1 · atlas</text>
+<rect x="1024" y="260" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="1038" y="288" class="node">
+<tspan x="1038" y="288">RuntimeResolver</tspan>
+</text>
+<text x="1038" y="338" class="status">🟡 partial · phase 1 · atlas</text>
+<rect x="1024" y="382" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="1038" y="410" class="node">
+<tspan x="1038" y="410">EffectiveRuntimeConfig</tspan>
+</text>
+<text x="1038" y="460" class="status">⚪ planned · phase 1 · atlas</text>
+<rect x="1024" y="504" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="1038" y="532" class="node">
+<tspan x="1038" y="532">Rapid Desktop GUI</tspan>
+</text>
+<text x="1038" y="582" class="status">🟡 partial · phase 1 · pixel</text>
+<rect x="1024" y="626" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="1038" y="654" class="node">
+<tspan x="1038" y="654">Rapid Server / CLI</tspan>
+</text>
+<text x="1038" y="704" class="status">🟡 partial · phase 1 · atlas</text>
+<rect x="1340" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
+<text x="1354" y="118" class="lane">Safe learning loop</text>
+<rect x="1352" y="138" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="1366" y="166" class="node">
+<tspan x="1366" y="166">ActualRuntimeTelemetry</tspan>
+</text>
+<text x="1366" y="216" class="status">⚪ planned · phase 4 · vector</text>
+<rect x="1352" y="260" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<text x="1366" y="288" class="node">
+<tspan x="1366" y="288">FeedbackGateway /</tspan>
+<tspan x="1366" y="308">RegressionDetection</tspan>
+</text>
+<text x="1366" y="338" class="status">⚪ planned · phase 4 · vector</text>
+</svg>

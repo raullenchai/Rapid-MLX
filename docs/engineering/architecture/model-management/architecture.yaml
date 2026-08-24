@@ -1,0 +1,347 @@
+schema_version: 1
+architecture_version: "0.1"
+title: Rapid-MLX model management and performance decision SSOT
+adr: ../../decisions/2026-08-22-model-management-performance-ssot.md
+status_values: [planned, in_progress, partial, implemented, migrating, blocked, deprecated]
+lanes:
+  facts: Stable model facts
+  evidence: Machine, workload, and evidence
+  product: Product recommendation
+  runtime: Runtime resolution and consumption
+  learning: Safe learning loop
+components:
+  model_family:
+    name: ModelFamily
+    lane: facts
+    status: partial
+    phase: 2
+    owner: atlas
+    summary: Stable family identity independent of release and quantization.
+    files: [vllm_mlx/model_profile.py, vllm_mlx/model_aliases.py, vllm_mlx/aliases.json]
+    tests: [tests/test_aliases_contract.py]
+    missing: First-class stable family ID separate from alias metadata.
+  model_release:
+    name: ModelRelease
+    lane: facts
+    status: planned
+    phase: 2
+    owner: atlas
+    summary: Family release and parameter-scale identity.
+    files: []
+    tests: []
+    missing: Release schema and stable parent relationship.
+  model_variant:
+    name: ModelVariant
+    lane: facts
+    status: partial
+    phase: 2
+    owner: atlas
+    summary: Quantization, modality, format, and stable variant aliases.
+    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json]
+    tests: [tests/test_aliases_contract.py]
+    missing: First-class variant ID and quantization identity.
+  artifact:
+    name: Artifact
+    lane: facts
+    status: planned
+    phase: 2
+    owner: atlas
+    summary: Immutable repository revision, file manifest, tokenizer, and config.
+    files: []
+    tests: []
+    missing: Immutable revision/hash and reproducible artifact manifest.
+  capabilities:
+    name: Capabilities
+    lane: facts
+    status: partial
+    phase: 2
+    owner: atlas
+    summary: What a variant can do, without quality judgement or default selection.
+    files: [vllm_mlx/model_profile.py]
+    tests: [tests/test_aliases_contract.py]
+    missing: Separate capability contract from the general ModelProfile.
+  runtime_compatibility:
+    name: RuntimeCompatibility
+    lane: facts
+    status: partial
+    phase: 2
+    owner: atlas
+    summary: Runtime ranges and hard feature/safety constraints.
+    files: [vllm_mlx/model_profile.py, vllm_mlx/model_auto_config.py]
+    tests: [tests/test_aliases_contract.py]
+    missing: Versioned compatibility record bound to an artifact revision.
+  alias_metadata:
+    name: Alias / DisplayMetadata
+    lane: facts
+    status: partial
+    phase: 2
+    owner: pixel
+    summary: Mutable user-facing names, branding, descriptions, icons, and aliases.
+    files: [vllm_mlx/aliases.json]
+    tests: [tests/test_aliases_contract.py]
+    missing: Separation from stable model and variant identity.
+  variant_qualification:
+    name: VariantQualification
+    lane: facts
+    status: planned
+    phase: 3
+    owner: atlas
+    summary: Versioned quality gate bound to artifact, runtime range, and eval suite.
+    files: []
+    tests: []
+    missing: Qualification schema, expiry, revocation, and product eval pipeline.
+  machine_fingerprint:
+    name: MachineFingerprint
+    lane: evidence
+    status: planned
+    phase: 2
+    owner: vector
+    summary: Exact observed hardware, OS, RAM, thermal, and power state.
+    files: []
+    tests: []
+    missing: Typed schema and privacy-safe collection.
+  machine_class:
+    name: MachineClass
+    lane: evidence
+    status: planned
+    phase: 2
+    owner: vector
+    summary: Normalized reusable profile target such as m3-max-64.
+    files: []
+    tests: []
+    missing: Normalization and model-fit versus available-RAM safety rules.
+  workload_profile:
+    name: WorkloadProfile
+    lane: evidence
+    status: planned
+    phase: 2
+    owner: vector
+    summary: Structured modality, context, concurrency, objective, cache, and media shape.
+    files: []
+    tests: []
+    missing: Stable buckets and applicability matching.
+  benchmark_submission:
+    name: CommunityBenchmarkSubmission
+    lane: evidence
+    status: partial
+    phase: 4
+    owner: vector
+    summary: Reproducible raw metrics bound to fingerprint, workload, protocol, and runtime.
+    files: [scripts/benchmark_model_recommendations.py, docs/engineering/performance/README.md]
+    tests: [tests/test_community_bench.py]
+    missing: Unified submission protocol, contributor trust, signature, and privacy contract.
+  validated_benchmark_run:
+    name: ValidatedBenchmarkRun
+    lane: evidence
+    status: partial
+    phase: 4
+    owner: vector
+    summary: Correctness, environment, deduplication, fraud, outlier, and trust checks.
+    files: [scripts/benchmark_model_recommendations.py]
+    tests: [tests/test_community_bench.py]
+    missing: Unified validation record and promotion eligibility contract.
+  benchmark_aggregate:
+    name: BenchmarkAggregate
+    lane: evidence
+    status: partial
+    phase: 4
+    owner: vector
+    summary: Scoped median, percentiles, variance, confidence, correctness, and sample counts.
+    files: [scripts/benchmark_model_recommendations.py]
+    tests: [tests/test_community_bench_aggregate.py]
+    missing: Artifact/machine/workload/runtime/protocol compound key and confidence contract.
+  profile_candidate:
+    name: ProfileCandidate
+    lane: evidence
+    status: partial
+    phase: 2
+    owner: vector
+    summary: Proposed knobs and supporting evidence before production promotion.
+    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json, vllm_mlx/cli.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py]
+    evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
+    migrations: [migrations/001-prefill-profile-extraction.md]
+    missing: Explicit staging status, scoped evidence ID, review, expiry, and promotion contract.
+  performance_profile:
+    name: PerformanceProfile
+    lane: evidence
+    status: partial
+    phase: 2
+    owner: vector
+    summary: Promoted, production-eligible runtime defaults with audit and rollback.
+    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json, vllm_mlx/cli.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py]
+    evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
+    migrations: [migrations/001-prefill-profile-extraction.md]
+    missing: Machine/workload/runtime keys, evidence ID, promotion audit, rollback, and expiry.
+  recommendation_policy:
+    name: RecommendationPolicy
+    lane: product
+    status: partial
+    phase: 4
+    owner: atlas
+    summary: Ordered qualified variants with reason codes, tradeoffs, and limitations.
+    files: [vllm_mlx/model_profile.py]
+    tests: [tests/test_ram_tier_recommendations_agree.py]
+    missing: Explicit quality gate, policy version, and reason-code contract.
+  ranked_recommendation_set:
+    name: RankedRecommendationSet
+    lane: product
+    status: planned
+    phase: 4
+    owner: atlas
+    summary: Ordered candidate list with roles, reasons, tradeoffs, and known limitations.
+    files: []
+    tests: []
+    missing: Versioned ordered-candidate schema and provenance.
+  model_selection_override:
+    name: ModelSelectionOverride
+    lane: product
+    status: planned
+    phase: 4
+    owner: atlas
+    summary: Explicit user model, quantization, or recommendation-role choice.
+    files: []
+    tests: []
+    missing: Typed override separate from runtime knob overrides.
+  selection:
+    name: Selection
+    lane: product
+    status: partial
+    phase: 4
+    owner: atlas
+    summary: Selects a qualified model variant; never a performance profile.
+    files: [vllm_mlx/model_aliases.py]
+    tests: [tests/test_aliases_contract.py]
+    missing: First-class qualified selection decision.
+  selected_model_variant:
+    name: SelectedModelVariant
+    lane: product
+    status: planned
+    phase: 4
+    owner: atlas
+    summary: The sole model-selection output passed to runtime resolution.
+    files: []
+    tests: []
+    missing: Stable selected-variant contract and selection decision ID.
+  runtime_config_override:
+    name: RuntimeConfigOverride
+    lane: runtime
+    status: partial
+    phase: 1
+    owner: atlas
+    summary: Explicit advanced runtime knobs; user value wins within hard constraints.
+    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
+    missing: Typed override layer shared across CLI, Server, and Desktop.
+  runtime_resolver:
+    name: RuntimeResolver
+    lane: runtime
+    status: partial
+    phase: 1
+    owner: atlas
+    summary: Sole authority for resolving how the selected variant runs.
+    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
+    migrations: [migrations/002-effective-runtime-config.md]
+    missing: One API shared by every entry point and typed runtime overrides.
+  effective_runtime_config:
+    name: EffectiveRuntimeConfig
+    lane: runtime
+    status: planned
+    phase: 1
+    owner: atlas
+    summary: Immutable final values with field-level source, reason, evidence, and fallback trace.
+    files: []
+    tests: []
+    migrations: [migrations/002-effective-runtime-config.md]
+    missing: Schema, resolver output, read-only API, and provenance contract.
+  desktop_gui:
+    name: Rapid Desktop GUI
+    lane: runtime
+    status: partial
+    phase: 1
+    owner: pixel
+    summary: Consumes effective config and displays reasons, tradeoffs, limitations, and overrides.
+    files: [vllm_mlx/cli.py]
+    tests: [tests/test_recurrent_prefill_auto_default.py]
+    evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
+    missing: Resolved-config DTO and provenance/reason presentation without duplicated policy.
+  rapid_server:
+    name: Rapid Server / CLI
+    lane: runtime
+    status: partial
+    phase: 1
+    owner: atlas
+    summary: Consumes and exposes the same resolved configuration and provenance.
+    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
+    tests: [tests/test_cli_config_fidelity.py]
+    missing: Central resolved-config contract and provenance API.
+  actual_runtime_telemetry:
+    name: ActualRuntimeTelemetry
+    lane: learning
+    status: planned
+    phase: 4
+    owner: vector
+    summary: Effective-config-linked runtime facts collected locally and submitted only with consent.
+    files: []
+    tests: []
+    missing: Minimized schema, consent, effective-config linkage, and retention policy.
+  feedback_gateway:
+    name: FeedbackGateway / RegressionDetection
+    lane: learning
+    status: planned
+    phase: 4
+    owner: vector
+    summary: Privacy filter and anomaly detection route evidence back through validation.
+    files: []
+    tests: []
+    missing: Privacy filter, anomaly rules, alerts, and safe submission bridge.
+relations:
+  - [model_family, model_release, contains]
+  - [model_release, model_variant, contains]
+  - [model_variant, artifact, resolves_to]
+  - [artifact, capabilities, derives]
+  - [artifact, runtime_compatibility, constrains]
+  - [artifact, variant_qualification, qualifies]
+  - [model_variant, alias_metadata, presents_as]
+  - [machine_fingerprint, machine_class, normalizes]
+  - [benchmark_submission, validated_benchmark_run, validates]
+  - [validated_benchmark_run, benchmark_aggregate, aggregates]
+  - [benchmark_aggregate, profile_candidate, proposes]
+  - [profile_candidate, performance_profile, promotes]
+  - [machine_class, recommendation_policy, scopes]
+  - [variant_qualification, recommendation_policy, gates]
+  - [recommendation_policy, ranked_recommendation_set, ranks]
+  - [ranked_recommendation_set, selection, supplies]
+  - [model_selection_override, selection, overrides]
+  - [selection, selected_model_variant, selects]
+  - [selected_model_variant, runtime_resolver, resolves]
+  - [runtime_config_override, runtime_resolver, overrides]
+  - [performance_profile, runtime_resolver, tunes]
+  - [machine_class, runtime_resolver, scopes]
+  - [workload_profile, runtime_resolver, scopes]
+  - [runtime_compatibility, runtime_resolver, constrains]
+  - [runtime_resolver, effective_runtime_config, resolves]
+  - [effective_runtime_config, desktop_gui, consumed_by]
+  - [effective_runtime_config, rapid_server, consumed_by]
+  - [desktop_gui, actual_runtime_telemetry, observes]
+  - [rapid_server, actual_runtime_telemetry, observes]
+  - [actual_runtime_telemetry, feedback_gateway, filters]
+  - [feedback_gateway, benchmark_submission, validates_into]
+phases:
+  0:
+    name: Preserve measured baseline
+    exit: Existing verified defaults and explicit-user override precedence remain regression-tested.
+  1:
+    name: Make runtime decisions observable
+    exit: CLI, Server, and Desktop receive identical resolved config with field provenance.
+  2:
+    name: Separate model facts from scoped performance
+    exit: One compatible vertical slice varies safely by machine and workload.
+  3:
+    name: Evidence promotion and quality qualification
+    exit: Every new automatic default is an auditable, reversible promotion.
+  4:
+    name: Product recommendation and community learning
+    exit: Community evidence improves recommendations without bypassing validation or qualification.

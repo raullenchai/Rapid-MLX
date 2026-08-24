@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for env-only authentication of local HTTP clients."""
 
+import importlib.util
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -61,3 +62,24 @@ def test_hermes_cli_receives_process_scoped_auth_without_persisting_it():
         "def _hermes_subprocess_env", 1
     )[0]
     assert "api_key" not in config_block
+    assert 'os.environ.get("HERMES_HOME")' in config_block
+    assert 'or os.path.expanduser("~/.hermes")' in config_block
+
+
+def test_hermes_harness_writes_config_to_overridden_home(monkeypatch, tmp_path):
+    """The release gate fixture must never fall back to operator state."""
+    source = REPO_ROOT / "vllm_mlx" / "_integration_tests" / "test_hermes.py"
+    spec = importlib.util.spec_from_file_location("hermes_home_contract", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    isolated_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(isolated_home))
+    monkeypatch.setattr(module, "_detect_context_window", lambda: 65_536)
+
+    module.ensure_hermes_config()
+
+    config = (isolated_home / "config.yaml").read_text()
+    assert f'base_url: "{module.BASE_URL}"' in config
+    assert "context_length: 65536" in config

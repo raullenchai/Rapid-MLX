@@ -47,6 +47,26 @@ def test_create_then_verify_round_trips(manifest_module, tmp_path):
     )
 
 
+def test_release_candidate_uses_pep440_artifact_spelling(manifest_module, tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "rapid_mlx-0.13.0rc1-py3-none-any.whl").write_bytes(b"wheel")
+    (dist / "rapid_mlx-0.13.0rc1.tar.gz").write_bytes(b"sdist")
+    manifest = manifest_module.create_manifest(
+        dist_dir=dist, source_sha=_SHA, version="0.13.0-rc1"
+    )
+    assert manifest["version"] == "0.13.0-rc1"
+    assert {item["filename"] for item in manifest["artifacts"]} == {
+        "rapid_mlx-0.13.0rc1-py3-none-any.whl",
+        "rapid_mlx-0.13.0rc1.tar.gz",
+    }
+    output = tmp_path / "release-manifest.json"
+    manifest_module.write_manifest(manifest, output)
+    assert (
+        manifest_module.verify_manifest(dist_dir=dist, manifest_path=output) == manifest
+    )
+
+
 def test_verify_rejects_changed_artifact(manifest_module, tmp_path):
     dist, wheel, _ = _dist(tmp_path)
     output = tmp_path / "release-manifest.json"

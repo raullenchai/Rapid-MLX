@@ -182,6 +182,13 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "bonsai-1.7b-2bit") == .known)
     }
 
+    @Test("Bonsai tool evidence is checkpoint-specific")
+    func bonsaiEvidenceDoesNotLeakAcrossSizes() {
+        #expect(ToolUseCapability.confidence(for: "bonsai-8b-2bit") == .broken)
+        #expect(ToolUseCapability.confidence(for: "bonsai-8b-4bit") == .broken)
+        #expect(ToolUseCapability.confidence(for: "bonsai-4b-unpacked") == .unknown)
+    }
+
     // MARK: - shouldDisableToolsChip helper
 
     @Test("shouldDisableToolsChip is true for every .broken alias")

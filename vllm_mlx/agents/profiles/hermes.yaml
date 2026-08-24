@@ -16,7 +16,7 @@ config:
       context_length: {context_length}
       max_tokens: 4096
     platform_toolsets:
-      cli: [terminal, file, code_execution, web, browser, skills, image, computer_use]
+      cli: [terminal, file, code_execution, web, browser, skills, image_gen]
 
 models:
   recommended:

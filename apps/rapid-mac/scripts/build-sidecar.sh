@@ -256,6 +256,41 @@ fi
     "${RAPID_MLX_SOURCE}[audio-desktop]" \
     'transformers>=5.5.0,<5.13'
 
+# pip normally selects wheels for the BUILD host. A sidecar assembled on
+# macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
+# the Desktop app's deployment target is macOS 14. Moving that otherwise
+# valid app to a macOS 14/15 Mac then fails at the first Metal operation with
+# "metallib language version 4.0 is not supported on this OS". Reinstall the
+# exact versions selected above from their macOS 14 wheels: those wheels run
+# on newer systems too, making the packaged runtime match the app contract.
+MLX_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx"))')"
+MLX_METAL_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
+    "$STAGE/python/bin/python3.12" -c \
+    'from importlib.metadata import version; print(version("mlx-metal"))')"
+echo "==> pinning MLX wheels to Desktop's macOS 14 deployment target"
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --platform macosx_14_0_arm64 \
+    --only-binary=:all: \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    --upgrade \
+    --force-reinstall \
+    "mlx==${MLX_VERSION}" \
+    "mlx-metal==${MLX_METAL_VERSION}"
+
+for wheel in \
+    "$STAGE/site-packages/mlx-${MLX_VERSION}.dist-info/WHEEL" \
+    "$STAGE/site-packages/mlx_metal-${MLX_METAL_VERSION}.dist-info/WHEEL"; do
+    grep -q '^Tag: .*macosx_14_0_arm64$' "$wheel" || {
+        echo "ERR: Desktop sidecar resolved a non-macOS-14 MLX wheel: $wheel" >&2
+        exit 1
+    }
+done
+
 # ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
 #
 # Even though we skip the [vision] extras to stay under rapid-desktop's
@@ -375,6 +410,35 @@ target.write_text(src)
 print("==> mflux torch imports deferred into the 3 torch-only loading modes")
 PY
 
+# mflux 0.19.0's PiD checkpoint converter is imported transitively by every
+# Qwen Image model even though it is only used for the separate PiD upscaler.
+# Keep that optional PyTorch conversion path lazy too, otherwise selecting the
+# bundled qwen-image alias fails before model construction with
+# ``ModuleNotFoundError: No module named 'torch'``.
+"$STAGE/python/bin/python3.12" - "$STAGE/site-packages" <<'PY'
+import pathlib
+import sys
+
+target = pathlib.Path(sys.argv[1]) / "mflux/models/common/pid_decoder/pid_weight_mapping.py"
+src = target.read_text()
+eager = "import torch\n"
+functions = (
+    "def convert_checkpoint(pth_path: str) -> dict[str, mx.array]:\n",
+    "def _to_mx_array(tensor: torch.Tensor) -> mx.array:\n",
+)
+if src.count(eager) != 1 or any(src.count(function) != 1 for function in functions):
+    raise SystemExit(
+        "ERR: mflux PiD weight mapping changed. Re-verify the torch-free "
+        "qwen-image path before bumping the mflux pin."
+    )
+src = src.replace(eager, "", 1)
+for function in functions:
+    replacement = function.replace("tensor: torch.Tensor", "tensor")
+    src = src.replace(function, replacement + '    import torch\n', 1)
+target.write_text(src)
+print("==> mflux PiD torch import deferred behind checkpoint conversion")
+PY
+
 # Fail closed: with no torch in the stage, importing mflux's weight loader
 # is itself the proof that the image lane no longer needs a 363 MB
 # dependency. A regression here means every Images-tab generation 500s.
@@ -383,6 +447,7 @@ import importlib
 import sys
 
 importlib.import_module("mflux.models.common.weights.loading.weight_loader")
+importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
 if "torch" in sys.modules:
     raise SystemExit("ERR: mflux still pulls torch at import time")
 print("==> mflux image lane imports without torch: OK")
@@ -850,8 +915,17 @@ else
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import mlx_vlm; print("mlx_vlm", mlx_vlm.__version__); from mlx_vlm.models import gemma4_unified' 2>&1)" || {
-        echo "ERR: bundled mlx_vlm import failed — gemma-4 aliases would crash at runtime:" >&2
+        'import importlib.util
+import mlx_vlm
+from mlx_vlm.models import (
+    diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
+    qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
+)
+assert importlib.util.find_spec("cv2") is None
+assert importlib.util.find_spec("torch") is None
+assert importlib.util.find_spec("torchvision") is None
+print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>&1)" || {
+        echo "ERR: bundled mlx_vlm desktop architecture smoke failed:" >&2
         echo "$VLM_OUT" >&2
         echo "ERR: usually means a new mlx-vlm release added an eager top-level import" >&2
         echo "     not currently in the --no-deps bundle. Inspect the traceback for the" >&2

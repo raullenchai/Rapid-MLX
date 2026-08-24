@@ -64,6 +64,7 @@ contains "$(cat "$WORKFLOW")" "bash scripts/create_release.sh" \
 #   MOCK_CONCURRENT_RELEASE "yes" -> losing tag claim observes a new Release
 #   MOCK_CREATE_RACE    "yes" -> create loses to a concurrent Release writer
 run_script() {
+  local release_tag="${TEST_TAG:-v1.2.3}"
   export GH="$TMP/mock-gh"
   : > "$TMP/calls"
   cat > "$GH" <<MOCK
@@ -80,10 +81,10 @@ case "\$cmd" in
           if [ "${MOCK_WRONG_TAG_MARKER:-}" = "yes" ]; then
             echo '<!-- rapid-mlx-auto-release:v9.9.9:$SHA_GOOD -->'
           elif [ "${MOCK_MARKER_NOT_FIRST:-}" = "yes" ]; then
-            printf 'manual preface\n<!-- rapid-mlx-auto-release:v1.2.3:$SHA_GOOD -->\n'
+            printf 'manual preface\n<!-- rapid-mlx-auto-release:$release_tag:$SHA_GOOD -->\n'
           elif [ "${MOCK_RELEASE_MARKED:-}" = "yes" ] || \
              [ "\$(cat "$TMP/release-state" 2>/dev/null)" = "draft-marked" ]; then
-            echo '<!-- rapid-mlx-auto-release:v1.2.3:$SHA_GOOD -->'
+            echo '<!-- rapid-mlx-auto-release:$release_tag:$SHA_GOOD -->'
           else
             echo 'manually staged draft notes'
           fi
@@ -91,9 +92,9 @@ case "\$cmd" in
         fi
         if [ "${MOCK_RELEASE_DRAFT:-}" = "yes" ] || \
            [[ "\$(cat "$TMP/release-state" 2>/dev/null)" == draft* ]]; then
-          printf 'v1.2.3\ttrue\n'
+          printf '$release_tag\ttrue\n'
         else
-          printf 'v1.2.3\tfalse\n'
+          printf '$release_tag\tfalse\n'
         fi
       else
         exit 1
@@ -113,12 +114,12 @@ case "\$cmd" in
         shift
       done
       if [ -n "\$NOTES_ARG" ] && grep -qF \
-        '<!-- rapid-mlx-auto-release:v1.2.3:$SHA_GOOD -->' "\$NOTES_ARG"; then
+        '<!-- rapid-mlx-auto-release:$release_tag:$SHA_GOOD -->' "\$NOTES_ARG"; then
         echo draft-marked > "$TMP/release-state"
       else
         echo draft > "$TMP/release-state"
       fi
-      echo "created-v1.2.3" >&2
+      echo "created-$release_tag" >&2
     elif [ "\$sub" = "edit" ]; then
       echo published > "$TMP/release-state"
     else
@@ -148,10 +149,10 @@ case "\$cmd" in
           shift
         fi
       done
-      [ "\$SUBMITTED_REF" = "refs/tags/v1.2.3" ] || exit 3
+      [ "\$SUBMITTED_REF" = "refs/tags/$release_tag" ] || exit 3
       [ "\$SUBMITTED_SHA" = "$SHA_GOOD" ] || exit 3
       echo "\$SUBMITTED_SHA" > "$TMP/ref-state"
-      echo '{"ref":"refs/tags/v1.2.3"}'
+      echo '{"ref":"refs/tags/$release_tag"}'
     elif [[ "\$1" == repos/o/r/git/tags/* ]]; then
       if [ "${MOCK_REF_UNREADABLE:-}" = "yes" ]; then exit 1; fi
       printf 'commit\t%s\n' "${MOCK_TAG_REF:-$SHA_GOOD}"
@@ -188,7 +189,7 @@ MOCK
   export MOCK_RELEASE_VIEW MOCK_CLAIM_FAILS MOCK_TAG_REF MOCK_CREATE_FAILS
   export MOCK_RELEASE_DRAFT MOCK_RELEASE_MARKED MOCK_REF_UNREADABLE MOCK_TAG_TYPE
   export MOCK_CONCURRENT_RELEASE MOCK_CREATE_RACE
-  if GH_TOKEN=test TAG=v1.2.3 RELEASE_SHA="$SHA_GOOD" \
+  if GH_TOKEN=test TAG="$release_tag" RELEASE_SHA="$SHA_GOOD" \
      NOTES_FILE="$TMP/notes.md" GITHUB_REPOSITORY="o/r" \
      bash "$SCRIPT" >"$TMP/out" 2>"$TMP/err"; then
     echo "0"
@@ -204,6 +205,7 @@ run_case() (
   export MOCK_CLAIM_FAILS=no MOCK_TAG_REF="" MOCK_TAG_TYPE=commit
   export MOCK_CREATE_FAILS=no MOCK_CREATE_RACE=no MOCK_REF_UNREADABLE=no
   export MOCK_CONCURRENT_RELEASE=no
+  export TEST_TAG=v1.2.3
   for setting in "$@"; do
     export "$setting"
   done
@@ -229,6 +231,13 @@ contains "$CREATE_CALL" "--draft" "release create starts as a draft"
 contains "$(call_order)" \
   "release edit v1.2.3 --title v1.2.3 --notes-file $TMP/notes.md --draft=false" \
   "verified draft is explicitly published"
+
+RC=$(run_case TEST_TAG=v1.2.3-rc1)
+[ "$RC" = "0" ] && ok "fresh RC release succeeds" || bad "fresh RC release succeeds (rc=$RC)"
+contains "$(grep '^release create' "$TMP/calls" | head -1)" "--prerelease" \
+  "RC Release draft is explicitly marked prerelease"
+contains "$(grep '^release edit' "$TMP/calls" | tail -1)" "--prerelease" \
+  "RC Release remains prerelease when published"
 
 # Negative control: prove the mock fails if production submits the wrong SHA,
 # rather than hard-coding a successful claim independently of request args.

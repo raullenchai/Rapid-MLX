@@ -194,6 +194,14 @@ class BaseThinkingReasoningParser(ReasoningParser):
     def end_token(self) -> str:
         """The token/tag that ends reasoning content (e.g., '</think>')."""
 
+    @property
+    def reasoning_start_str(self) -> str:
+        return self.start_token
+
+    @property
+    def reasoning_end_str(self) -> str:
+        return self.end_token
+
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self._saw_any_tag = False

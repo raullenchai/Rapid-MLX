@@ -366,10 +366,6 @@ class StreamingPostProcessor:
                         )
                     )
                 if "json_mode" in configure_parameters:
-                    # Explicit response_format signal for parsers whose
-                    # template contracts change under JSON mode (North
-                    # emits bare JSON with no channel markers — codex
-                    # final-round #1 on #2171).
                     configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
@@ -425,6 +421,11 @@ class StreamingPostProcessor:
         # onboarding sweep finding #5.
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
+        # A malformed Hermes call is deliberately promoted into a rejected
+        # tool invocation so the model can retry. Preserve ordinary prose
+        # following that synthetic call without changing the long-standing
+        # suppression behavior for valid/channel-routed calls.
+        self._preserve_post_tool_content = False
         # R11-A invariant tracker (PR 0.8.13 hotfix). Counts ``tool_call``
         # StreamEvents the postprocessor has actually emitted to the wire
         # this turn (i.e. the route layer will serialize a ``delta.tool_calls``
@@ -1752,25 +1753,31 @@ class StreamingPostProcessor:
         if self.reasoning_parser is None:
             # Standard / channel-routed path doesn't need the injection.
             return delta_text
-        # Prepend the marker so the parser sees its close token BEFORE
-        # the next body bytes. The caller flips
-        # ``_reasoning_close_injected`` only after the parser call
-        # succeeds. Ask the parser for ITS closer (codex round-2 MAJOR
-        # on #2171): north transitions on ``<|END_THINKING|>``, not
-        # ``</think>`` — a hard-coded ``</think>`` is swallowed as
-        # reasoning bytes and the cap latch then reroutes the rest of
-        # the thought trace to visible content.
+        self._prepare_forced_reasoning_end()
+        # Prepend the parser's protocol boundary BEFORE the next body bytes.
+        # The caller flips ``_reasoning_close_injected`` only after the parser
+        # call succeeds.
         return self._reasoning_close_marker() + delta_text
 
     def _reasoning_close_marker(self) -> str:
-        """The configured parser's thinking-close token, for cap-hit
-        forced-close injection. Falls back to ``</think>`` for parsers
-        that don't expose ``end_token`` (the think-tag family default).
+        """Return the configured protocol's reasoning terminator.
+
+        ``</think>`` remains the compatibility fallback for legacy and
+        third-party parsers that predate the explicit boundary capability.
         """
+        marker = getattr(self.reasoning_parser, "reasoning_end_str", None)
+        if isinstance(marker, str) and marker:
+            return marker
         marker = getattr(self.reasoning_parser, "end_token", None)
         if isinstance(marker, str) and marker:
             return marker
         return "</think>"
+
+    def _prepare_forced_reasoning_end(self) -> None:
+        """Invoke the typed boundary hook with legacy-parser compatibility."""
+        prepare = getattr(self.reasoning_parser, "prepare_forced_reasoning_end", None)
+        if callable(prepare):
+            prepare()
 
     def _forced_tool_choice_name(self) -> str | None:
         """Return the forced ``tool_choice`` function name, if any.
@@ -2406,6 +2413,7 @@ class StreamingPostProcessor:
         self.tool_accumulated_text = ""
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
+        self._preserve_post_tool_content = False
         # R11-A invariant tracker — see ``__init__`` for the contract. The
         # reset MUST clear this so a re-used processor doesn't carry the
         # prior turn's emitted-count into a new stream and lie to
@@ -2499,10 +2507,6 @@ class StreamingPostProcessor:
                         )
                     )
                 if "json_mode" in configure_parameters:
-                    # Explicit response_format signal for parsers whose
-                    # template contracts change under JSON mode (North
-                    # emits bare JSON with no channel markers — codex
-                    # final-round #1 on #2171).
                     configure_kwargs["json_mode"] = self.json_mode
                 _configure(**configure_kwargs)
             else:
@@ -2869,6 +2873,9 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                self._preserve_post_tool_content = bool(
+                    result.get("preserve_post_tool_content")
+                )
                 # When the streaming parser carries BOTH a content
                 # delta AND a tool-call delta in one return (one
                 # delta carried ``preface + tool_close`` — codex r4
@@ -2957,6 +2964,19 @@ class StreamingPostProcessor:
             content = result.get("content", "")
 
         if self.tool_calls_detected:
+            if self._preserve_post_tool_content and content:
+                content = sanitize_output(content)
+                if content:
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason=self._compute_finish_reason(output),
+                                content=content,
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return [StreamEvent(type="content", content=content)]
             if output.finished:
                 # R11-A: route the finish through ``_compute_finish_reason``
                 # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
@@ -3155,12 +3175,10 @@ class StreamingPostProcessor:
                     # this represents the model output "up to the cap
                     # firing point" from the parser's POV.
                     flip_previous = previous_text + kept_reasoning
-                    # Parser-owned closer, same as the other two
-                    # injection sites (codex round-3 on #2171): north
-                    # flips on <|END_THINKING|>, not </think>.
                     flip_delta = self._reasoning_close_marker()
                     flip_current = flip_previous + flip_delta
                     try:
+                        self._prepare_forced_reasoning_end()
                         flip_msg = self.reasoning_parser.extract_reasoning_streaming(
                             flip_previous, flip_current, flip_delta
                         )
@@ -3267,6 +3285,9 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                self._preserve_post_tool_content = bool(
+                    result.get("preserve_post_tool_content")
+                )
                 # Combined content+tool delta — emit content half
                 # regardless of how the parallel-cap rules out the
                 # tool half (codex r6 MAJOR: enabling
@@ -3352,6 +3373,19 @@ class StreamingPostProcessor:
             content = result.get("content", "")
 
         if self.tool_calls_detected:
+            if self._preserve_post_tool_content and content:
+                content = sanitize_output(content)
+                if content:
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason=self._compute_finish_reason(output),
+                                content=content,
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return [StreamEvent(type="content", content=content)]
             if output.finished:
                 # R11-A: route the finish through ``_compute_finish_reason``
                 # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
@@ -3468,6 +3502,9 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                self._preserve_post_tool_content = bool(
+                    result.get("preserve_post_tool_content")
+                )
                 # Combined content+tool delta — emit content half
                 # regardless of how the parallel-cap rules out the
                 # tool half (codex r6 MAJOR). Match the plain-content
@@ -3563,6 +3600,19 @@ class StreamingPostProcessor:
             content = strip_special_tokens(result.get("content", ""))
 
         if self.tool_calls_detected:
+            if self._preserve_post_tool_content and content:
+                content = sanitize_output(content)
+                if content:
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason=self._compute_finish_reason(output),
+                                content=content,
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return [StreamEvent(type="content", content=content)]
             if output.finished:
                 # R11-A: route the finish through ``_compute_finish_reason``
                 # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
@@ -3675,8 +3725,6 @@ class StreamingPostProcessor:
         ):
             self._reasoning_close_injected = True
             previous_text = self.accumulated_text
-            # Same parser-owned closer as the mid-stream site (codex
-            # round-2 MAJOR on #2171) — north needs <|END_THINKING|>.
             injected_delta = self._reasoning_close_marker()
             # Codex round-5 BLOCKING #1: build the parser's view of
             # ``current`` LOCALLY rather than mutating
@@ -3693,6 +3741,7 @@ class StreamingPostProcessor:
             local_current = previous_text + injected_delta
             delta_msg = None
             try:
+                self._prepare_forced_reasoning_end()
                 delta_msg = self.reasoning_parser.extract_reasoning_streaming(
                     previous_text, local_current, injected_delta
                 )
@@ -3899,6 +3948,34 @@ class StreamingPostProcessor:
                     )
                     self.tool_calls_detected = True
 
+        # Drain incremental detector state for every parser. Parsers that do
+        # not buffer marker prefixes inherit the no-op base implementation.
+        # This lifecycle is intentionally separate from
+        # ``finalize_streaming(accumulated_text)``: that older hook may
+        # reclassify or re-parse an entire response and is not safe to call
+        # generically.
+        if self.reasoning_parser is not None:
+            try:
+                finish_stream = getattr(self.reasoning_parser, "finish_stream", None)
+                final_msg = finish_stream() if callable(finish_stream) else None
+            except Exception as e:
+                logger.warning(
+                    "Reasoning parser finish_stream raised: %s — buffered "
+                    "trailing bytes may not be emitted for this request",
+                    e,
+                )
+                final_msg = None
+            if final_msg is not None:
+                final_reasoning = getattr(final_msg, "reasoning", None)
+                if isinstance(final_reasoning, str) and final_reasoning:
+                    self.accumulated_reasoning += final_reasoning
+                    events.append(
+                        StreamEvent(type="reasoning", reasoning=final_reasoning)
+                    )
+                final_content = getattr(final_msg, "content", None)
+                if isinstance(final_content, str) and final_content:
+                    events.append(StreamEvent(type="content", content=final_content))
+
         # Dogfood F-R1-04 (codex r5 BLOCKING): UI-TARS reasoning
         # parser-specific EOF flush. The opener-prefix hold-back
         # logic returns ``None`` (no event) while the buffer is a
@@ -3908,31 +3985,15 @@ class StreamingPostProcessor:
         # mid-token, or the model genuinely produced bare
         # ``"Thought"`` text), those bytes are otherwise silently
         # dropped at EOF. Mirror the ``tool_parser.flush_held_content``
-        # pattern below but scope it via the ``stream_eof_flush``
-        # opt-in attribute (UI-TARS by name for back-compat; the North
-        # parser opts in — its marker-withhold machinery has the same
-        # end-of-stream shape). Other reasoning parsers (``qwen3`` /
-        # ``deepseek_r1`` / ``gemma4``) have their own
+        # pattern below but scope it to the UI-TARS reasoning
+        # parser specifically — other reasoning parsers
+        # (``qwen3`` / ``deepseek_r1`` / ``gemma4``) have their own
         # ``finalize_streaming`` semantics tied to specific call
-        # sites that this generic hook would clash with, and do NOT
-        # set the attribute.
+        # sites that this generic hook would clash with.
         if (
             self.reasoning_parser is not None
             and self.accumulated_text
-            and (
-                type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
-                # Strict ``is True``: the opt-in must be the literal class
-                # attribute (north sets ``stream_eof_flush = True``). A
-                # truthiness check fires for ANY object whose attribute
-                # lookup fabricates values (MagicMock doubles in tests,
-                # __getattr__-based proxies) and then calls
-                # ``finalize_streaming`` on parsers with re-parse
-                # semantics — re-releasing bytes the forced-close
-                # extraction already emitted (the exact duplicate-flush
-                # hazard test_finalize_does_not_emit_close_marker_
-                # through_parser_twice pins).
-                or getattr(self.reasoning_parser, "stream_eof_flush", False) is True
-            )
+            and type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
         ):
             try:
                 final_msg = self.reasoning_parser.finalize_streaming(

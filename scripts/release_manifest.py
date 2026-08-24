@@ -18,6 +18,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+try:
+    from release_version import parse_version
+except ModuleNotFoundError:  # imported by tests as ``scripts.*`` from repo root
+    from scripts.release_version import parse_version
+
 
 def sha256(path: Path) -> str:
     """Return the SHA-256 digest of a regular file."""
@@ -52,13 +57,18 @@ def release_files(dist_dir: Path) -> list[Path]:
 def validate_artifact_versions(files: list[Path], version: str) -> None:
     """Require artifact filenames to bind to the declared release version."""
 
+    parse_version(version)
+    # PEP 440 normalizes our human/tag spelling ``X.Y.Z-rcN`` to ``X.Y.ZrcN``
+    # in wheel and sdist filenames. The manifest retains the source spelling,
+    # but binds it to the canonical artifact spelling here.
+    artifact_version = version.replace("-rc", "rc")
     wheel = next(path for path in files if path.suffix == ".whl")
     sdist = next(path for path in files if path.name.endswith(".tar.gz"))
-    if not wheel.name.startswith(f"rapid_mlx-{version}-"):
+    if not wheel.name.startswith(f"rapid_mlx-{artifact_version}-"):
         raise ValueError(
             f"wheel filename {wheel.name!r} does not match release version {version!r}"
         )
-    expected_sdist = f"rapid_mlx-{version}.tar.gz"
+    expected_sdist = f"rapid_mlx-{artifact_version}.tar.gz"
     if sdist.name != expected_sdist:
         raise ValueError(
             f"sdist filename {sdist.name!r} does not match release version {version!r}"

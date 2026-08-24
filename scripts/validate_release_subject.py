@@ -4,7 +4,7 @@
 
 The ``auto-release.yml`` workflow watches for a strict subject:
 
-    chore: bump version to X.Y.Z
+    chore: bump version to X.Y.Z[-rcN]
 
 GitHub's default squash-merge appends ``(#NN)`` to the subject unless
 the merger passes ``--subject``. That suffix breaks the regex match and
@@ -26,8 +26,10 @@ import argparse
 import re
 import sys
 
-# Mirror auto-release.yml's regex EXACTLY. If you tweak one, tweak both.
-SUBJECT_RE = re.compile(r"^chore: bump version to \d+\.\d+\.\d+$")
+try:
+    from release_version import SUBJECT_RE
+except ModuleNotFoundError:  # imported by tests as ``scripts.*`` from repo root
+    from scripts.release_version import SUBJECT_RE
 
 
 def diagnose(subject: str) -> list[str]:
@@ -46,14 +48,14 @@ def diagnose(subject: str) -> list[str]:
         problems.append(
             "subject has a `(#NN)` PR-number suffix — GitHub's default "
             'squash-merge added it. Pass `--subject "chore: bump version '
-            'to X.Y.Z"` to `gh pr merge` to strip it.'
+            'to X.Y.Z[-rcN]"` to `gh pr merge` to strip it.'
         )
     if not subject.startswith("chore: bump version to "):
         problems.append(
             "subject does not start with the literal `chore: bump version to ` prefix"
         )
-    if not re.search(r"\b\d+\.\d+\.\d+\b", subject):
-        problems.append("subject contains no X.Y.Z version number")
+    if not re.search(r"\b\d+\.\d+\.\d+(?:-rc\d+)?\b", subject):
+        problems.append("subject contains no X.Y.Z or X.Y.Z-rcN version number")
     if "\n" in subject:
         problems.append(
             "subject contains a newline — only the first line is the subject"
@@ -85,10 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     for prob in problems:
         print(f"  - {prob}", file=sys.stderr)
     print(
-        "\nFix: rename the PR to exactly `chore: bump version to X.Y.Z` and, "
+        "\nFix: rename the PR to exactly `chore: bump version to X.Y.Z[-rcN]` and, "
         "at merge time, use:\n"
         "  gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash "
-        '--subject "chore: bump version to X.Y.Z" --delete-branch',
+        '--subject "chore: bump version to X.Y.Z[-rcN]" --delete-branch',
         file=sys.stderr,
     )
     return 1

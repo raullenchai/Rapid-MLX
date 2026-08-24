@@ -41,6 +41,9 @@ struct SettingsView: View {
     /// without re-triggering the one-time prompt, plus a "Reset
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
+    @Environment(QuickstartCoordinator.self) private var quickstart
+    @State private var confirmingSetupRestart = false
+    @State private var restartingSetup = false
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -742,7 +745,44 @@ struct SettingsView: View {
             }
 
             diagnosticsSection
+            setupSection
             dockVisibilitySection
+        }
+        .confirmationDialog(
+            ReonboardingReset.confirmation(for: .onboarding).title,
+            isPresented: $confirmingSetupRestart,
+            titleVisibility: .visible
+        ) {
+            Button("Restart into setup", role: .destructive) { restartIntoSetup() }
+                .accessibilityIdentifier("Settings.App.ConfirmRunSetupAgain")
+            Button("Cancel", role: .cancel) { confirmingSetupRestart = false }
+                .accessibilityIdentifier("Settings.App.CancelRunSetupAgain")
+        } message: {
+            Text(ReonboardingReset.confirmation(for: .onboarding).message)
+        }
+    }
+
+    @ViewBuilder
+    private var setupSection: some View {
+        SettingsSection(
+            "Setup",
+            subtitle: "Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched."
+        ) {
+            HStack {
+                Spacer(minLength: 0)
+                Button("Run setup again…") { confirmingSetupRestart = true }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .disabled(restartingSetup)
+                    .accessibilityIdentifier("Settings.App.RunSetupAgain")
+            }
+        }
+    }
+
+    private func restartIntoSetup() {
+        restartingSetup = true
+        Task { @MainActor in
+            await ReonboardingReset.perform(scope: .onboarding, quickstart: quickstart)
+            ReonboardingReset.relaunch()
         }
     }
 

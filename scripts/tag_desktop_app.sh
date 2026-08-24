@@ -75,14 +75,9 @@ HAVE_PAT="${HAVE_PAT-true}"
 
 # The tag is built from this string, so a value the tag namespace cannot
 # carry has to fail here rather than produce ``rapid-mac-v0.12.7\n``.
-case "$VERSION" in
-  *[!0-9.]* | *..* | .* | *. | "")
-    echo "❌ VERSION is '$VERSION', which is not X.Y.Z" >&2
-    exit 1
-    ;;
-esac
-if [ "$(printf '%s' "$VERSION" | tr -cd '.' | wc -c | tr -d ' ')" != "2" ]; then
-  echo "❌ VERSION is '$VERSION', which is not X.Y.Z" >&2
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if ! python3 "$REPO_ROOT/scripts/release_version.py" validate "$VERSION" >/dev/null; then
+  echo "❌ VERSION is '$VERSION', which is not X.Y.Z or X.Y.Z-rcN" >&2
   exit 1
 fi
 

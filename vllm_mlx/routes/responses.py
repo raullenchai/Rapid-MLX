@@ -15,6 +15,7 @@ history every turn in ``input``.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -91,6 +92,7 @@ from ..service.helpers import (
     _effective_enable_thinking,
     _extract_thinking_from_request,
     _finalize_content_and_reasoning,
+    _is_structured_output_requested,
     _parse_tool_calls_with_parser,
     _release_admission_unless_committed,
     _resolve_enable_thinking,
@@ -2153,6 +2155,9 @@ async def _non_stream(
         # the rationale. Forwarded so the /v1/responses path picks up
         # the same gemma4 / glm4 / minimax fixes.
         finish_reason=getattr(output, "finish_reason", None),
+        json_mode=_is_structured_output_requested(
+            getattr(openai_request, "response_format", None)
+        ),
     )
 
     final_content = None
@@ -3042,9 +3047,29 @@ async def _stream_responses(
                             tools_requested=bool(chat_kwargs.get("tools")),
                         )
                     )
+                configure_parameters: Mapping[str, inspect.Parameter] = (
+                    inspect.signature(configure_request).parameters
+                )
+                if "json_mode" in configure_parameters:
+                    configure_kwargs["json_mode"] = _is_structured_output_requested(
+                        getattr(openai_request, "response_format", None)
+                    )
                 configure_request(**configure_kwargs)
             else:
                 reasoning_parser.reset_state()
+
+        reasoning_close_marker = "</think>"
+        if reasoning_parser is not None:
+            configured_marker = getattr(
+                reasoning_parser, "reasoning_end_str", None
+            ) or getattr(reasoning_parser, "end_token", None)
+            if isinstance(configured_marker, str) and configured_marker:
+                reasoning_close_marker = configured_marker
+
+        def _prepare_forced_reasoning_end() -> None:
+            prepare = getattr(reasoning_parser, "prepare_forced_reasoning_end", None)
+            if callable(prepare):
+                prepare()
 
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # Responses SSE drops reasoning to the floor (Codex doesn't read
@@ -3555,7 +3580,8 @@ async def _stream_responses(
                 # leaving the parser permanently mid-think.
                 injected_this_chunk = False
                 if _reasoning_cap_hit and not _reasoning_close_injected:
-                    parser_delta_text = "</think>" + delta_text
+                    _prepare_forced_reasoning_end()
+                    parser_delta_text = reasoning_close_marker + delta_text
                     parser_current = previous_raw + parser_delta_text
                     injected_this_chunk = True
                 else:
@@ -3631,9 +3657,10 @@ async def _stream_responses(
                         # would see ``</think>`` AFTER the over-budget
                         # bytes and potentially mis-classify them.
                         flip_previous = previous_raw + kept_reasoning
-                        flip_delta = "</think>"
+                        flip_delta = reasoning_close_marker
                         flip_current = flip_previous + flip_delta
                         try:
+                            _prepare_forced_reasoning_end()
                             flip_msg = reasoning_parser.extract_reasoning_streaming(
                                 flip_previous, flip_current, flip_delta
                             )
@@ -3800,9 +3827,10 @@ async def _stream_responses(
             # bytes as model output. Symmetric with the postprocessor
             # fix in service/postprocessor.py.
             previous_raw = accumulated_raw
-            injected_delta = "</think>"
+            injected_delta = reasoning_close_marker
             local_current = previous_raw + injected_delta
             try:
+                _prepare_forced_reasoning_end()
                 final_inject = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, local_current, injected_delta
                 )

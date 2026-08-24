@@ -61,15 +61,18 @@ covered, and each one names the defect it would have caught:
     lets the user iterate by re-prompting (see **Image generation** below). The
     instruction-edit path is available as a cancellable action and the same
     journey continues through generated-result editing and iterative editing.
-12. `chat-document-attachment` — a vision-language model accepts a PNG through
-    the Chat composer, renders it in the user turn, and sends typed
-    `text` + `image_url` content; the same composer keeps its attachment
-    control visible but disabled for a text-only alias and rejects paste/drop.
-13. `window-close-prompt` — the first native main-window close reaches the
+12. `chat-document-attachment` — a text-only model exposes the two-action
+    attachment menu, keeps files enabled and photos visibly disabled, then
+    pastes, de-duplicates, sends, and restores a locally parsed document.
+13. `chat-multimodal-attachments` — a fake vision model receives two different
+    images on consecutive turns and proves the second request contains only the
+    current image. A following document request must contain extracted text and
+    zero historical image URLs.
+14. `window-close-prompt` — the first native main-window close reaches the
     Dock-visibility prompt, exposes both decisions plus “Don't ask again”, and
     choosing No completes a normal close. This pins the SwiftUI-to-NSWindow
     installation seam that #1590 found entirely disconnected.
-14. `chat-restore` also exercises the formerly unmounted #1588 recovery and
+15. `chat-restore` also exercises the formerly unmounted #1588 recovery and
     utility surface: the status-footer log toggle opens and closes the real
     drawer, and a restored assistant message opens the cross-paragraph
     “Select text” sheet.
@@ -86,17 +89,17 @@ were all invisible to journey-shaped tests:
 
 ### Full flow roster
 
-The numbered narrative above is selective. The authoritative, complete set of
-flows the harness can run is the dispatch table in `scripts/gui-golden-flows.sh`
-(`case "$FLOW" in …`). As of this checkout that is 26 flows: `fresh-install`,
-`cached-quickstart`, `cached-curated-tradeup`, `download-progress`,
-`settings-persistence`, `settings-mtp`, `chat-restore`, `message-actions`,
-`restored-tools`, `tool-loop-budget`, `chat-depth`, `math-rendering`,
-`slow-stream-stop`, `model-crash-recovery`, `low-memory-choice`, `update-state`,
-`window-close-prompt`, `no-dead-controls`, `catalog-integrity`,
-`browse-all-destination`, `chat-document-attachment`, `image-generation`,
-`dictation`, `audio-readiness`, `resident-load-rejected`, `launch-integrations`.
-`--flow all` runs them in that order.
+The numbered narrative above is selective. The authoritative inventory is
+`Tests/GUIGoldenFlows/journeys.yaml`. It records every journey's group, risk,
+driver, fixtures, source-path mapping, CI tier, and structural-baseline
+ownership. Contract tests fail if it drifts from the shell dispatcher or the
+PR workflow. `chat-depth` is explicitly local-only because the hosted runner's
+small window virtualizes its oldest transcript rows; all other declared flows
+are PR-gated when the full Desktop gate is selected.
+
+Each journey execution writes a `result.json` containing its outcome, UTC start
+time, execution duration in seconds, and artifact directory. This makes per-journey
+timing and failure evidence machine-readable without parsing Actions logs.
 
 ### Current baseline
 
@@ -257,16 +260,18 @@ low-memory category remains visible.
 
 ### Chat attachments
 
-`chat-document-attachment` covers image input inside the normal Chat tab. This is
-separate from `image-generation`: the former asks a VLM to understand an image;
-the latter asks a diffusion model to create one.
+`chat-document-attachment` covers the text-only/file lane and
+`chat-multimodal-attachments` covers image input inside the normal Chat tab.
+Both are separate from `image-generation`: chat attachments ask a model to
+understand input; image generation asks a diffusion model to create output.
 
 The deterministic lane should use a fake VLM alias and a small fixture PNG, and
 walk both halves of the capability boundary:
 
-1. select the fake VLM alias and assert `ChatView.AddAttachments` is present and
-   enabled;
-2. add the fixture through the standard open panel, then assert the thumbnail's
+1. open `ChatView.AddAttachments` and assert the menu contains exactly
+   `Upload file` and `Upload photo`; the file action remains enabled for every
+   model, while the photo action follows the selected model's vision capability;
+2. select the fake VLM alias, add the fixture through `Upload photo`, then assert the thumbnail's
    `ChatView.Attachment.Remove.<filename>` control is present;
 3. enter a caption question, send, and assert the user bubble contains the
    attachment while the fake sidecar records an `image_url` data URI alongside
@@ -280,9 +285,11 @@ walk both halves of the capability boundary:
    before a text-only request is encoded.
 
 The standard file picker itself remains outside the structural AX baseline, as
-with the Images-tab save panel. The flow drives it only to supply the fixture;
-the product assertions begin at the composer thumbnail and end at the recorded
-wire request.
+with the Images-tab save panel. A native XCUITest drives both **Upload photo**
+and **Upload file** through `NSOpenPanel`, then switches conversations and
+matches the visible chips to the fake sidecar's image hashes and document text.
+The AX journeys retain paste coverage and independent transcript/persistence
+evidence; neither layer substitutes for the other.
 
 Real-weight dogfood on 2026-08-09 used the locally built
 `rapid_mlx-0.12.7` wheel with its `[vision]` extra and

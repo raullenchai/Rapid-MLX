@@ -46,9 +46,13 @@ file move.
 from __future__ import annotations
 
 import plistlib
-import re
 import sys
 from pathlib import Path
+
+try:
+    from release_version import VERSION_RE
+except ModuleNotFoundError:  # imported by tests as ``scripts.*`` from repo root
+    from scripts.release_version import VERSION_RE
 
 try:  # 3.11+
     import tomllib
@@ -60,7 +64,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 INFO_PLIST = ROOT / "apps" / "rapid-mac" / "Resources" / "Info.plist"
 
 # Both numbers feed release tags and an updater that compares them, so a
-# value neither side can order (``0.12``, ``1.0.0-rc1``, an empty string)
+# value neither side can order (``0.12``, ``1.0.0-beta1``, an empty string)
 # is a defect wherever it appears, not merely a mismatch.
 #
 # Matched with ``fullmatch`` and an explicit ASCII class, not ``^…$`` and
@@ -74,8 +78,7 @@ INFO_PLIST = ROOT / "apps" / "rapid-mac" / "Resources" / "Info.plist"
 # ``1.2.3`` while the plist and the git tag keep ``01.02.3``. Both files
 # would agree and this check would pass, having produced exactly the
 # split version it exists to prevent.
-_NUM = r"(?:0|[1-9][0-9]*)"
-SEMVER = re.compile(rf"{_NUM}\.{_NUM}\.{_NUM}")
+SEMVER = VERSION_RE
 
 
 class VersionSyncError(Exception):
@@ -108,7 +111,7 @@ def engine_version(pyproject: Path = PYPROJECT) -> str:
     if not SEMVER.fullmatch(version):
         raise VersionSyncError(
             f"{_rel(pyproject)} [project] version is {version!r}, "
-            "which is not X.Y.Z — release tags are built from it"
+            "which is not X.Y.Z or X.Y.Z-rcN — release tags are built from it"
         )
     return version
 
@@ -145,7 +148,7 @@ def app_version(info_plist: Path = INFO_PLIST) -> str:
     if not SEMVER.fullmatch(version):
         raise VersionSyncError(
             f"{_rel(info_plist)} CFBundleShortVersionString is {version!r}, "
-            "which is not X.Y.Z — the rapid-mac-v tag is built from it"
+            "which is not X.Y.Z or X.Y.Z-rcN — the rapid-mac-v tag is built from it"
         )
     return version
 

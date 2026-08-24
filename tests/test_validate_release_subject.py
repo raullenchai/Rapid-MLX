@@ -43,6 +43,16 @@ def test_any_three_part_semver_is_accepted(vrs, version):
     assert vrs.diagnose(f"chore: bump version to {version}") == []
 
 
+@pytest.mark.parametrize("version", ["0.13.0-rc1", "2.0.0-rc12"])
+def test_release_candidate_subject_is_accepted(vrs, version):
+    assert vrs.diagnose(f"chore: bump version to {version}") == []
+
+
+@pytest.mark.parametrize("version", ["0.13.0-rc0", "0.13.0-rc", "0.13.0-beta1"])
+def test_malformed_prerelease_subject_is_rejected(vrs, version):
+    assert vrs.diagnose(f"chore: bump version to {version}") != []
+
+
 # ---------- the suffix trap (PF-1, primary class of bug) -------------
 
 

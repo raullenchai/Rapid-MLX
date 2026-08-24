@@ -8,6 +8,10 @@ config:
   env_vars:
     OPENAI_API_BASE: "{base_url}"
     OPENAI_API_KEY: "not-needed"
+    # Aider defaults to a hosted Anthropic model when its HOME is clean.
+    # Pin the one-shot harness (and `agents aider --setup`) to the model the
+    # local Rapid-MLX server is actually serving.
+    AIDER_MODEL: "openai/{model_id}"
 
 models:
   recommended:

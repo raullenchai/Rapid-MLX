@@ -84,6 +84,8 @@ struct FailureDiagnosisView: View {
         case .modelOutOfMemory: return "memorychip"
         case .engineNotRunning, .modelLoadFailed: return "bolt.slash"
         case .webSearchOffline, .webSearchUnavailable: return "wifi.exclamationmark"
+        case .webSearchKeyRejected, .webSearchKeyQuotaExceeded,
+             .webSearchKeyRateLimited: return "key.fill"
         case .webSearchRateLimited: return "hourglass"
         case .browsePageTooLarge: return "doc.text.magnifyingglass"
         case .commandPermissionDenied, .filePermissionDenied: return "hand.raised.fill"

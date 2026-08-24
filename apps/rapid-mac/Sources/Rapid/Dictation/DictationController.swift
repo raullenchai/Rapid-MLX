@@ -275,45 +275,37 @@ final class DictationController {
         // after ``disable()`` has already torn the session down.
         guard isEnabled, enableRequestID == requestID else { return }
         refreshReadiness()
-        guard readinessSnapshot.microphone else {
-            lastError = "Dictation needs Microphone access before it can be enabled."
+        let decision = DictationEnablePolicy.evaluate(.init(
+            microphone: readinessSnapshot.microphone,
+            accessibility: readinessSnapshot.accessibility,
+            modelSelected: readinessSnapshot.modelSelected,
+            modelOnDisk: readinessSnapshot.modelOnDisk,
+            modelAlias: modelAlias
+        ))
+        if case .reject(let message, let disableIntent) = decision {
+            lastError = message
             phase = .off
-            isEnabled = false
-            return
-        }
-        guard readinessSnapshot.modelSelected else {
-            lastError = "Choose a transcription model before enabling dictation."
-            phase = .off
-            isEnabled = false
-            return
-        }
-        guard readinessSnapshot.modelOnDisk else {
-            lastError = "\(modelAlias) isn't downloaded yet. Download it in the Model row, then turn dictation on."
-            phase = .off
-            isEnabled = false
-            return
-        }
-        guard readinessSnapshot.accessibility else {
-            lastError = "Dictation needs Accessibility access before the hotkey can be used."
-            // The switch records the user's intent and is left alone. Writing
-            // it back to off means a permission that lapses once disables
-            // dictation permanently: the grant is fixed later, but the stored
-            // flag stays false and nothing re-arms. The UI shows an amber dot
-            // and an Arm control for this state, and turning it off by hand is
-            // never blocked, so nobody is stranded by keeping it on.
-            phase = .off
+            // Missing local model/recording prerequisites make the persisted
+            // intent invalid. Accessibility is different: the user already
+            // expressed intent, and granting TCC later should allow re-arm.
+            if disableIntent { isEnabled = false }
             return
         }
         hotkey.stop()
         phase = .preparingModel
         let preparingAlias = modelAlias
-        guard await prewarmModel(replacingCurrent: replacingCurrentPrewarm),
-              isEnabled,
-              enableRequestID == requestID,
-              modelAlias == preparingAlias,
-              phase == .preparingModel,
-              server.servingAlias == preparingAlias
-        else {
+        let prewarmSucceeded = await prewarmModel(
+            replacingCurrent: replacingCurrentPrewarm
+        )
+        guard DictationEnablePolicy.mayRegisterHotkey(after: .init(
+            prewarmSucceeded: prewarmSucceeded,
+            isEnabled: isEnabled,
+            requestIsCurrent: enableRequestID == requestID,
+            selectedAlias: modelAlias,
+            preparingAlias: preparingAlias,
+            isPreparing: phase == .preparingModel,
+            servingAlias: server.servingAlias
+        )) else {
             if isEnabled, enableRequestID == requestID, modelAlias == preparingAlias {
                 lastError = "\(preparingAlias) couldn't load. There may not be enough memory to start dictation."
                 phase = .off

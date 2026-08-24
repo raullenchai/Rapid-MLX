@@ -188,6 +188,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Idle release of reusable prefix/KV state. This changes only cache
         # retention after requests finish; it does not select a model or lane.
         "RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS",
+        # Startup persistence toggle. This only skips warming reusable prefix
+        # state from disk; it does not select a model, parser, or engine lane.
+        "RAPID_MLX_PREFIX_CACHE_AUTOLOAD",
         # ``RAPID_MLX_MTP_PROMPT_LOOKUP`` is the explicit opt-in (default
         # OFF) held until Qwen's hybrid SSM target path is proven
         # token-lossless across verification chunk boundaries; the other

@@ -1,0 +1,247 @@
+version: 1
+
+# Machine-readable inventory for GUI coverage and future source-based routing.
+# `source_paths` are intentionally conservative product-area prefixes, not a
+# promise that every edit below them requires this journey. Routing will be a
+# separate, fail-closed change once this inventory is established.
+journeys:
+  - name: fresh-install
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/RapidApp.swift]
+    owns_baseline: true
+  - name: cached-quickstart
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, cached-model, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: false
+  - name: cached-curated-tradeup
+    group: onboarding-settings
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, cached-model, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: false
+  - name: cached-variant-collapse
+    group: models
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, cached-model, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: false
+  - name: download-progress
+    group: onboarding-settings
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, slow-download, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: false
+  - name: settings-persistence
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/SettingsView.swift]
+    owns_baseline: true
+  - name: settings-mtp
+    group: onboarding-settings
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/, apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: true
+  - name: chat-restore
+    group: chat
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/UI/ChatView.swift]
+    owns_baseline: true
+  - name: message-actions
+    group: chat
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: false
+  - name: restored-tools
+    group: chat
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/Tools/]
+    owns_baseline: false
+  - name: tool-loop-budget
+    group: chat
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/Tools/]
+    owns_baseline: false
+  - name: chat-depth
+    group: chat
+    risk: low
+    driver: ax
+    ci_tier: local
+    fixtures: [fake-sidecar, large-window, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: true
+  - name: math-rendering
+    group: chat
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/UI/Markdown/]
+    owns_baseline: false
+  - name: slow-stream-stop
+    group: chat
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, slow-stream, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: true
+  - name: model-crash-recovery
+    group: app-lifecycle
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, crash-once, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/]
+    owns_baseline: true
+  - name: low-memory-choice
+    group: models
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, low-memory, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/UI/]
+    owns_baseline: false
+  - name: update-state
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, update-state, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/SettingsView.swift, apps/rapid-mac/Sources/Rapid/Updater/]
+    owns_baseline: true
+  - name: update-busy
+    group: onboarding-settings
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, update-busy, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/SettingsView.swift, apps/rapid-mac/Sources/Rapid/Updater/]
+    owns_baseline: true
+  - name: campaign-banner
+    group: app-lifecycle
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, campaign, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/CampaignBanner.swift, apps/rapid-mac/Sources/Rapid/RapidApp.swift]
+    owns_baseline: true
+  - name: window-close-prompt
+    group: app-lifecycle
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/MainWindowCloseInterceptor.swift, apps/rapid-mac/Sources/Rapid/UI/DockVisibilityPrompt.swift]
+    owns_baseline: false
+  - name: no-dead-controls
+    group: onboarding-settings
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/]
+    owns_baseline: false
+  - name: catalog-integrity
+    group: models
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, mixed-capability-catalog, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: false
+  - name: browse-all-destination
+    group: onboarding-settings
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/]
+    owns_baseline: false
+  - name: chat-document-attachment
+    group: chat
+    risk: high
+    driver: hybrid
+    ci_tier: pr
+    fixtures: [fake-sidecar, document, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: false
+  - name: chat-multimodal-attachments
+    group: chat
+    risk: high
+    driver: hybrid
+    ci_tier: pr
+    fixtures: [fake-sidecar, two-images, document, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    owns_baseline: false
+  - name: image-generation
+    group: images
+    risk: high
+    driver: hybrid
+    ci_tier: pr
+    fixtures: [fake-sidecar, generated-images, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Images/, apps/rapid-mac/Sources/Rapid/UI/ImagesView.swift]
+    owns_baseline: true
+  - name: dictation
+    group: audio
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, delayed-transcription, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Dictation/, apps/rapid-mac/Sources/Rapid/Audio/, apps/rapid-mac/Sources/Rapid/UI/DictationView.swift]
+    owns_baseline: false
+  - name: audio-readiness
+    group: audio
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, audio-models, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Audio/, apps/rapid-mac/Sources/Rapid/Dictation/, apps/rapid-mac/Sources/Rapid/UI/AudioView.swift, apps/rapid-mac/Sources/Rapid/UI/DictationView.swift]
+    owns_baseline: true
+  - name: resident-load-rejected
+    group: models
+    risk: high
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, resident-model, low-memory, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/Audio/]
+    owns_baseline: false
+  - name: launch-integrations
+    group: app-lifecycle
+    risk: medium
+    driver: ax
+    ci_tier: pr
+    fixtures: [fake-sidecar, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/RapidApp.swift, apps/rapid-mac/Sources/Rapid/UI/]
+    owns_baseline: true

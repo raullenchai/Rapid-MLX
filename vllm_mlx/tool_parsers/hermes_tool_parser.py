@@ -26,6 +26,13 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    """Read a request/tool field from either wire dicts or typed models."""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
 def _parse_function_body(
     body: str, valid_names: set[str] | None = None
 ) -> dict[str, Any] | None:
@@ -145,6 +152,19 @@ class HermesToolParser(ToolParser):
     NEMOTRON_PATTERN = re.compile(
         r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>", re.DOTALL
     )
+    # Recovery boundary for a canonical wrapper whose inner XML was cut off.
+    # This deliberately captures ONLY a closed <tool_call> wrapper with an
+    # explicit function header. It does not repair the body into executable
+    # JSON: callers must receive a normal tool call whose arguments fail their
+    # schema/JSON boundary, then return that parse error to the model for a
+    # correction round.
+    MALFORMED_NEMOTRON_PATTERN = re.compile(
+        r"<tool_call>\s*<function=([^>]+)>(.*?)</tool_call>", re.DOTALL
+    )
+    MALFORMED_JSON_INTENT_PATTERN = re.compile(
+        r'^\{\s*"name"\s*:\s*"([A-Za-z0-9_.:-]+)"\s*,\s*"arguments"\s*:'
+    )
+    CLOSED_TOOL_WRAPPER_PATTERN = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
     PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
     REASONING_PATTERN = re.compile(
         r"<tool_call_reasoning>(.*?)</tool_call_reasoning>", re.DOTALL
@@ -306,6 +326,38 @@ class HermesToolParser(ToolParser):
                 if args is None:
                     return None
                 return (m.end(), name, json.dumps(args, ensure_ascii=False))
+            # A closed outer wrapper is enough to identify the protocol
+            # boundary, but never enough to authorize execution when the
+            # inner function/parameter XML is incomplete. Surface the call
+            # only when the request actually advertised that exact name and
+            # preserve the malformed body as deliberately non-JSON arguments.
+            # The executor then follows its ordinary fail-closed path and the
+            # tool error is fed back to the model for self-correction.
+            request_tools = _field(request, "tools", []) or []
+            declared_names = {
+                _field(_field(tool, "function"), "name") for tool in request_tools
+            }
+            malformed = cls.MALFORMED_NEMOTRON_PATTERN.match(text, pos)
+            if malformed is not None and "</function>" not in malformed.group(0):
+                name = malformed.group(1).strip()
+                if name and name in declared_names:
+                    raw_body = malformed.group(2).strip()
+                    arguments = f"<malformed_function_body>{raw_body}"
+                    return (malformed.end(), name, arguments)
+            # Same contract for the canonical JSON-body envelope: an outer
+            # close plus an advertised name and an arguments key establishes
+            # intent, but invalid JSON must remain invalid for the executor.
+            wrapper_end = text.find("</tool_call>", pos)
+            if wrapper_end >= 0:
+                end = wrapper_end + len("</tool_call>")
+                body = text[pos + len("<tool_call>") : wrapper_end].strip()
+                intent_match = cls.MALFORMED_JSON_INTENT_PATTERN.match(body)
+                if intent_match is not None and intent_match.group(1) in declared_names:
+                    return (
+                        end,
+                        intent_match.group(1),
+                        f"<malformed_json_arguments>{body}",
+                    )
             return None
         if shape == "function_eq":
             # Shape #3: <function=NAME>...</function>
@@ -596,11 +648,25 @@ class HermesToolParser(ToolParser):
         return full_text[len(self._safe_content_prefix(full_text)) :]
 
     @classmethod
-    def _has_incomplete_structured_block(cls, text: str) -> bool:
+    def _has_incomplete_structured_block(
+        cls, text: str, request: dict[str, Any] | None = None
+    ) -> bool:
         """Heuristic: is the text currently inside an unclosed structured
         block of any of the three wire shapes? Used by the streaming
         branch to decide whether to suppress emit while a block is
         being assembled."""
+        # Remove every block the request-aware scanner can already account
+        # for. This matters for a closed outer wrapper whose inner function
+        # XML is malformed: its missing ``</function>`` must not keep the
+        # streaming parser wedged after the call has been safely promoted.
+        _, text = cls._scan_tool_call_shapes(text, request)
+        # A closed outer wrapper cannot still be an in-flight block. Unknown
+        # malformed function names intentionally remain ordinary content, so
+        # the request-aware scanner does not consume them; remove only their
+        # closed protocol boundary here to avoid wedging streaming forever on
+        # the unmatched inner ``<function=...>`` marker.
+        text = cls.CLOSED_TOOL_WRAPPER_PATTERN.sub("", text)
+
         # Shape #1 + #2 (<tool_call> wrapper)
         if text.count("<tool_call>") > text.count("</tool_call>"):
             return True
@@ -640,6 +706,27 @@ class HermesToolParser(ToolParser):
         matches, _ = cls._scan_tool_call_shapes(text)
         return len(matches)
 
+    @staticmethod
+    def _residual_after_malformed_calls(
+        current_text: str,
+        spans: list[tuple[int, int, str, str]],
+        calls: list[dict[str, Any]],
+    ) -> str:
+        """Return prose after malformed calls, stopping at the next call."""
+        residual: list[str] = []
+        for index, ((_start, end, _name, _arguments), call) in enumerate(
+            zip(spans, calls, strict=True)
+        ):
+            if not call["arguments"].startswith(
+                ("<malformed_function_body>", "<malformed_json_arguments>")
+            ):
+                continue
+            next_start = (
+                spans[index + 1][0] if index + 1 < len(spans) else len(current_text)
+            )
+            residual.append(current_text[end:next_start])
+        return "".join(residual)
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -674,7 +761,7 @@ class HermesToolParser(ToolParser):
         )
 
         if has_any_opener:
-            if self._has_incomplete_structured_block(current_text):
+            if self._has_incomplete_structured_block(current_text, request):
                 # Inside an incomplete structured block — suppress output.
                 return None
 
@@ -688,8 +775,10 @@ class HermesToolParser(ToolParser):
             # up bare shapes nested inside (e.g. mid-stream Nemotron
             # XML reaches ``</function>\n`` before its outer
             # ``</tool_call>``).
-            prev_completed = self._completed_structured_tool_calls(previous_text)
-            cur_completed = self._completed_structured_tool_calls(current_text)
+            previous_matches, _ = self._scan_tool_call_shapes(previous_text, request)
+            current_matches, _ = self._scan_tool_call_shapes(current_text, request)
+            prev_completed = len(previous_matches)
+            cur_completed = len(current_matches)
             if cur_completed > prev_completed:
                 # Re-run the source-of-truth scan on current_text to
                 # get the WIRE-ORDERED list of completed tool calls in
@@ -699,9 +788,25 @@ class HermesToolParser(ToolParser):
                 if result.tools_called and len(result.tool_calls) > prev_completed:
                     new_calls = result.tool_calls[prev_completed:]
                     if new_calls:
-                        return self._format_streaming_tool_calls(
+                        formatted = self._format_streaming_tool_calls(
                             new_calls, start_index=prev_completed
                         )
+                        malformed_prefixes = (
+                            "<malformed_function_body>",
+                            "<malformed_json_arguments>",
+                        )
+                        final_call_is_malformed = new_calls[-1]["arguments"].startswith(
+                            malformed_prefixes
+                        )
+                        new_matches = current_matches[prev_completed:]
+                        residual = self._residual_after_malformed_calls(
+                            current_text, new_matches, new_calls
+                        )
+                        if residual:
+                            formatted["content"] = residual
+                        if final_call_is_malformed:
+                            formatted["preserve_post_tool_content"] = True
+                        return formatted
 
             # All current tool calls already emitted; emit post-call
             # content with prefix-hold applied so any partial sentinel

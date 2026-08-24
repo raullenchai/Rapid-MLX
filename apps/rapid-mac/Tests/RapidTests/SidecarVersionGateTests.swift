@@ -75,7 +75,7 @@ struct SidecarVersionGateTests {
         )
     }
 
-    @Test("scripts/build.sh's bash regex empirically accepts dotted-digit + rejects SHA / pre-release (#411 layer 2 — empirical)")
+    @Test("scripts/build.sh accepts dotted-digit/RC and rejects malformed versions (#411 layer 2 — empirical)")
     func buildScriptRegexEmpiricalBehaviour() throws {
         // Codex #412 r2 MINOR: source-substring assertions catch
         // accidental deletions but not subtle regex breakage (e.g. a
@@ -99,8 +99,12 @@ struct SidecarVersionGateTests {
             ("0.8.18", true),         // canonical sidecar release
             ("1.2.3", true),          // generic semver
             ("0.8", true),            // two-segment also acceptable to validator
+            ("0.13.0-rc1", true),     // supported release candidate
+            ("0.13.0-rc12", true),    // multi-digit RC sequence
             ("26ac5b4", false),       // the v0.8.6 bug
             ("0.8.19-rc.1", false),   // codex r1 BLOCKING — must reject
+            ("0.8.19-rc0", false),    // RC numbering begins at one
+            ("0.8.19-beta1", false),  // unsupported prerelease family
             ("0.8.18+build.7", false),// build suffix — must reject
             ("v0.8.18", false),       // leading ``v`` not allowed at this layer (bootstrapper strips it ITSELF; we hand off the bare form)
             ("0.8.", false),          // trailing dot
@@ -136,8 +140,8 @@ struct SidecarVersionGateTests {
     func tarballScriptHasDefenseInDepth() throws {
         let body = try Self.load(Self.tarballScriptPath)
         #expect(
-            body.contains("^[0-9]+(\\.[0-9]+)+$"),
-            "scripts/build-sidecar-tarball.sh must SemVer-regex-gate ``$SIDECAR_VERSION`` against the strict dotted-digit form ``^[0-9]+(\\.[0-9]+)+$`` (no pre-release suffix). Codex #412 r1 BLOCKING: a looser suffix regex would accept ``0.8.19-rc.1`` here while the bootstrapper validator rejects it at runtime — re-creating #411."
+            body.contains("^[0-9]+(\\.[0-9]+)+(-rc[1-9][0-9]*)?$"),
+            "scripts/build-sidecar-tarball.sh must accept only dotted-digit versions with an optional strict -rcN suffix. A looser suffix regex would accept ``0.8.19-rc.1`` while the bootstrapper validator rejects it at runtime — re-creating #411."
         )
         #expect(
             body.contains("Bootstrapper validator (BootstrapCoordinator.isValidVersionString) would reject"),

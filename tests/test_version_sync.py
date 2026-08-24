@@ -89,6 +89,14 @@ def test_match_is_accepted(tmp_path):
     assert check(pyproject, plist) == ("0.12.7", "0.12.7")
 
 
+def test_matching_release_candidate_is_accepted(tmp_path):
+    pyproject = write_pyproject(tmp_path / "pyproject.toml", "0.13.0-rc1")
+    plist = write_plist(
+        tmp_path / "Info.plist", CFBundleShortVersionString="0.13.0-rc1"
+    )
+    assert check(pyproject, plist) == ("0.13.0-rc1", "0.13.0-rc1")
+
+
 @pytest.mark.parametrize("missing", ["pyproject", "plist"])
 def test_missing_input_fails_rather_than_passes(tmp_path, missing):
     """A file move must turn the guard RED, not silently disable it."""
@@ -161,7 +169,8 @@ def test_non_dict_plist_root_fails(tmp_path):
     "bad",
     [
         "0.12",
-        "1.0.0-rc1",
+        "1.0.0-rc0",
+        "1.0.0-beta1",
         "v1.2.3",
         "",
         # ``$`` matches BEFORE a trailing newline, so an ``^…$`` check

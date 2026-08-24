@@ -145,10 +145,15 @@ contains "$OUT" "refusing to guess" "says why it stopped"
 # ==========================================================================
 echo "== 6. a version the tag namespace cannot carry is rejected =="
 # ==========================================================================
-for BADV in "0.12" "0.12.8-rc1" "v0.12.8" ""; do
+for BADV in "0.12" "0.12.8-rc0" "0.12.8-beta1" "v0.12.8" ""; do
   OUT=$(run free "" "$BADV") && RC=0 || RC=$?
   [ "${RC:-0}" -ne 0 ] && ok "rejects VERSION='$BADV'" || bad "rejects VERSION='$BADV'"
 done
+
+OUT=$(run free "" "0.13.0-rc1") && RC=0 || RC=$?
+[ "${RC:-0}" -eq 0 ] && ok "accepts VERSION='0.13.0-rc1'" || bad "accepts VERSION='0.13.0-rc1'"
+contains "$(cat "$TMP/calls")" "ref=refs/tags/rapid-mac-v0.13.0-rc1" \
+  "RC desktop tag keeps the prerelease suffix"
 
 # ==========================================================================
 echo "== 6b. a deep annotated-tag chain still peels to its commit =="

@@ -187,6 +187,7 @@ def _finalize_content_and_reasoning(
     prompt_thinking_active: bool | None = None,
     reasoning_max_tokens: int | None = None,
     finish_reason: str | None = None,
+    json_mode: bool = False,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -366,6 +367,8 @@ def _finalize_content_and_reasoning(
         extract_kwargs["enable_thinking"] = enable_thinking
     if _parser_accepts_parameter(reasoning_parser, "prompt_thinking_active"):
         extract_kwargs["prompt_thinking_active"] = prompt_thinking_active
+    if _parser_accepts_parameter(reasoning_parser, "json_mode"):
+        extract_kwargs["json_mode"] = json_mode
     extract = lambda text: reasoning_parser.extract_reasoning(text, **extract_kwargs)
     if tool_calls:
         reasoning_text, _ = extract(raw_text)
@@ -790,11 +793,6 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
-# Implicit-think marker pairs recognised by ``_should_start_in_thinking``.
-# Each entry is (opener, closer) as they appear in chat template source.
-# ``<think>`` covers the Qwen/DeepSeek/GLM think-tag families;
-# ``<|START_THINKING|>`` covers Cohere North (North-Mini-Code), whose
-# template ends the generation prompt inside the thinking channel.
 _IMPLICIT_THINK_MARKER_PAIRS = (
     ("<think>", "</think>"),
     ("<|START_THINKING|>", "<|END_THINKING|>"),
@@ -850,10 +848,6 @@ def _should_start_in_thinking(
     if enable_thinking is False and not unconditional:
         return False
     if unconditional:
-        # Consider EVERY marker family present in the template source —
-        # a conditional template can contain both ``<think>`` and North
-        # markers, and inspecting only the first-present pair could pick
-        # the wrong family after rendering (codex on #2171).
         present_pairs = [
             pair for pair in _IMPLICIT_THINK_MARKER_PAIRS if pair[0] in chat_template
         ]

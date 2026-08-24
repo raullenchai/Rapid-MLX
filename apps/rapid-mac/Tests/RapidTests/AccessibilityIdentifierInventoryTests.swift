@@ -24,6 +24,19 @@ import Testing
 @Suite("Accessibility identifier inventory")
 struct AccessibilityIdentifierInventoryTests {
 
+    @Test("Settings → App names the re-onboarding confirmation controls")
+    func settingsAppReonboardingIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.App.RunSetupAgain""#,
+                #""Settings.App.ConfirmRunSetupAgain""#,
+                #""Settings.App.CancelRunSetupAgain""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsView.swift",
+            surface: "Settings → App setup"
+        )
+    }
+
     private static var sourceRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // RapidTests

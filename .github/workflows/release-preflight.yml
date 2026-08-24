@@ -41,6 +41,7 @@ jobs:
       is_bump: ${{ steps.check.outputs.is_bump }}
       version: ${{ steps.check.outputs.version }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - id: check
         env:
           TITLE: ${{ github.event.pull_request.title }}
@@ -48,8 +49,7 @@ jobs:
           # Match the auto-release.yml regex EXACTLY. If the PR title
           # doesn't match, every job below is skipped — non-bump PRs
           # pay zero CI cost.
-          if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+$'; then
-            VERSION=$(echo "$TITLE" | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+          if VERSION=$(python3 scripts/release_version.py subject "$TITLE"); then
             echo "is_bump=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "Detected bump PR for v$VERSION"
@@ -66,8 +66,8 @@ jobs:
     if: needs.detect-bump-pr.outputs.is_bump == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: PF-1 — validate bump PR title matches auto-release regex
@@ -101,8 +101,8 @@ jobs:
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: Install PyYAML
@@ -136,8 +136,8 @@ jobs:
     if: needs.detect-bump-pr.outputs.is_bump == 'true'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: G1 — build once and smoke the exact release distributions
@@ -157,8 +157,8 @@ jobs:
     if: needs.detect-bump-pr.outputs.is_bump == 'true'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: Install mlx-lm + mlx-vlm at pyproject-pinned versions
@@ -186,8 +186,8 @@ jobs:
     if: needs.detect-bump-pr.outputs.is_bump == 'true'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: Install project (vision extras for full surface coverage)

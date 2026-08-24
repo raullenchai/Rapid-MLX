@@ -111,7 +111,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -163,7 +163,13 @@ func string(_ element: AXUIElement, _ name: CFString) -> String? {
 func jsonValue(_ value: AnyObject?) -> Any? {
     switch value {
     case let text as String: return text
-    case let number as NSNumber: return number
+    case let number as NSNumber:
+        // AX occasionally publishes ±infinity for transient progress/range
+        // values. Foundation raises an Objective-C exception when such an
+        // NSNumber reaches JSONSerialization, taking down the whole driver.
+        // The value carries no stable assertion signal, so omit only the
+        // non-finite representation and keep ordinary integers/bools/floats.
+        return number.doubleValue.isFinite ? number : nil
     default: return nil
     }
 }
@@ -231,7 +237,9 @@ func walk(_ element: AXUIElement, depth: Int) {
     if let help = string(element, kAXHelpAttribute as CFString), !help.isEmpty { record["help"] = help }
     if let value = jsonValue(attribute(element, kAXValueAttribute as CFString)) { record["value"] = value }
     if let origin = point(element, kAXPositionAttribute as CFString),
-       let extent = size(element, kAXSizeAttribute as CFString) {
+       let extent = size(element, kAXSizeAttribute as CFString),
+       origin.x.isFinite, origin.y.isFinite,
+       extent.width.isFinite, extent.height.isFinite {
         record["bounds"] = [
             "x": origin.x, "y": origin.y,
             "width": extent.width, "height": extent.height
@@ -389,6 +397,20 @@ switch command {
 case "press":
     let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
     guard result == .success else { fail("AXPress \(identifier) failed: \(result.rawValue)") }
+case "click-center":
+    guard let origin = point(target, kAXPositionAttribute as CFString),
+          let extent = size(target, kAXSizeAttribute as CFString),
+          extent.width > 0, extent.height > 0
+    else { fail("click-center \(identifier) has no usable AX bounds") }
+    let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
+    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                             mouseCursorPosition: center, mouseButton: .left),
+          let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                           mouseCursorPosition: center, mouseButton: .left)
+    else { fail("could not create click-center events for \(identifier)") }
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
+    usleep(150_000)
 case "set-scroll-value":
     guard CommandLine.arguments.count > 3,
           let value = Double(CommandLine.arguments[3]),

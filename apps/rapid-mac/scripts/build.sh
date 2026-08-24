@@ -343,7 +343,7 @@ else
     # IS the engine, so its VERSION is the engine version. Downstream
     # consumers (AboutPanel, bootstrapper manifest emit at
     # scripts/build-sidecar-tarball.sh, BootstrapCoordinator validator)
-    # all require a strict SemVer-shaped string.
+    # all require a stable or RC SemVer-shaped string.
     #
     # SSOT precedence:
     #   1. the engine's pyproject.toml ``[project] version = "X.Y.Z"`` at
@@ -357,9 +357,10 @@ else
     # installs on v0.8.6 (issue #411). Grammar MUST stay in lockstep with
     # ``Sources/Rapid/Bootstrapper/BootstrapCoordinator.swift``'s
     # ``isValidVersionString`` (strip optional ``v``/``V`` then every
-    # dot-separated segment must be pure decimal digits). No pre-release
-    # or build suffixes (codex #412 r1 BLOCKING).
-    SIDECAR_SEMVER_RE='^[0-9]+(\.[0-9]+)+$'
+    # dot-separated segment must be pure decimal digits). The only supported
+    # prerelease suffix is ``-rcN``; arbitrary prerelease/build suffixes remain
+    # forbidden so malformed values cannot enter the manifest.
+    SIDECAR_SEMVER_RE='^[0-9]+(\.[0-9]+)+(-rc[1-9][0-9]*)?$'
     SIDECAR_VERSION=""
     if [[ -f "$ENGINE_ROOT/pyproject.toml" ]]; then
         # Scope to the [project] table so a version key in another table

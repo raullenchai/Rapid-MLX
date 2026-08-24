@@ -90,4 +90,64 @@ struct MacHardwareTests {
         let hw = MacHardware.detect()
         #expect(hw.physicalRAMBytes > 0)
     }
+
+    @Test("RAPID_HARDWARE_RAM_GB pins the golden-flow RAM tier")
+    func goldenRAMOverride() {
+        // The first-run golden flows pin a fixed tier so their structural
+        // AX baselines are deterministic across hosts — a 14 GB CI runner
+        // and a 256 GB release Mac must render the same recommended row.
+        let gb: UInt64 = 8
+        let pinned = MacHardware.physicalRAMBytes(environment: [
+            "RAPID_GUI_HARDWARE_FIXTURE": "1",
+            "RAPID_HARDWARE_RAM_GB": "8",
+        ])
+        // 8 × 2^30 = 8589934592; allow a *bit* of rounding latitude.
+        #expect(abs(Int64(pinned) - Int64(gb * UInt64(1 << 30))) < 16)
+    }
+
+    @Test("RAM override is ignored when not set or invalid")
+    func goldenRAMOverrideIgnoredWhenAbsent() {
+        let fallback: UInt64 = 24 * UInt64(1 << 30)
+        let fixture = ["RAPID_GUI_HARDWARE_FIXTURE": "1"]
+        // Missing, malformed, non-finite, and implausibly large values must
+        // return the exact probe result, not merely an arbitrary nonzero value.
+        let absent = MacHardware.physicalRAMBytes(environment: [:]) { fallback }
+        #expect(absent == fallback)
+        let bad = MacHardware.physicalRAMBytes(
+            environment: fixture.merging(["RAPID_HARDWARE_RAM_GB": "not-a-number"]) { _, new in new }
+        ) { fallback }
+        #expect(bad == fallback)
+        let nonFinite = MacHardware.physicalRAMBytes(
+            environment: fixture.merging(["RAPID_HARDWARE_RAM_GB": "inf"]) { _, new in new }
+        ) { fallback }
+        #expect(nonFinite == fallback)
+        let implausiblyLarge = MacHardware.physicalRAMBytes(
+            environment: fixture.merging(["RAPID_HARDWARE_RAM_GB": "1e100"]) { _, new in new }
+        ) { fallback }
+        #expect(implausiblyLarge == fallback)
+        let underflow = MacHardware.physicalRAMBytes(
+            environment: fixture.merging(["RAPID_HARDWARE_RAM_GB": "1e-300"]) { _, new in new }
+        ) { fallback }
+        #expect(underflow == fallback)
+        let ungated = MacHardware.physicalRAMBytes(
+            environment: ["RAPID_HARDWARE_RAM_GB": "1024"]
+        ) { fallback }
+        #expect(ungated == fallback)
+    }
+
+    @Test("Golden hardware brand is deterministic and bounded")
+    func goldenHardwareBrand() {
+        #expect(MacHardware.brandString(environment: [
+            "RAPID_GUI_HARDWARE_FIXTURE": "1",
+            "RAPID_HARDWARE_BRAND": "Apple M1",
+        ]) == "Apple M1")
+        #expect(MacHardware.brandString(environment: [
+            "RAPID_GUI_HARDWARE_FIXTURE": "1",
+            "RAPID_HARDWARE_BRAND": String(repeating: "x", count: 129),
+        ], fallback: { "Apple Test Host" }) == "Apple Test Host")
+        #expect(MacHardware.brandString(
+            environment: ["RAPID_HARDWARE_BRAND": "Apple M1"],
+            fallback: { "Apple Test Host" }
+        ) == "Apple Test Host")
+    }
 }

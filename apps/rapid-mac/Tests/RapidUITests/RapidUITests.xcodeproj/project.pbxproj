@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		3608146521E5B0C044E55806 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB04F3C22EF0AAABD315027F /* main.swift */; };
+		BAAEA208E5B564003CD10FA9 /* RapidUITestHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 981AB696C88019DDE1FC4C44 /* RapidUITestHarness.swift */; };
+		CA82A5D835D063658376D1AD /* ChatAttachmentJourneyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D3511FF388A5B23AA16F8D1 /* ChatAttachmentJourneyTests.swift */; };
 		D71E30DFF3F95D912DA8B3D5 /* ImageGenerationPixelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -24,7 +26,9 @@
 /* Begin PBXFileReference section */
 		09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageGenerationPixelTests.swift; sourceTree = "<group>"; };
 		132399B0849D8BAAFA1DCC11 /* RapidUITestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RapidUITestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D3511FF388A5B23AA16F8D1 /* ChatAttachmentJourneyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAttachmentJourneyTests.swift; sourceTree = "<group>"; };
 		7425B296704FF8766ABDBEC3 /* RapidUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RapidUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		981AB696C88019DDE1FC4C44 /* RapidUITestHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RapidUITestHarness.swift; sourceTree = "<group>"; };
 		C125516144CFDFB692F0EA16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		CB04F3C22EF0AAABD315027F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -60,7 +64,9 @@
 		F27E5155342C1F7C1AFFB341 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				3D3511FF388A5B23AA16F8D1 /* ChatAttachmentJourneyTests.swift */,
 				09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */,
+				981AB696C88019DDE1FC4C44 /* RapidUITestHarness.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -146,7 +152,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CA82A5D835D063658376D1AD /* ChatAttachmentJourneyTests.swift in Sources */,
 				D71E30DFF3F95D912DA8B3D5 /* ImageGenerationPixelTests.swift in Sources */,
+				BAAEA208E5B564003CD10FA9 /* RapidUITestHarness.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

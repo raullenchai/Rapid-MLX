@@ -5,18 +5,78 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  # Merge queue candidates are synthetic commits.  They need their own trigger
+  # or GitHub waits forever for the required `tests` check.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      engine: ${{ steps.policy.outputs.engine }}
+      desktop: ${{ steps.policy.outputs.desktop }}
+      docs_only: ${{ steps.policy.outputs.docs_only }}
+      full_gate: ${{ steps.policy.outputs.full_gate }}
+      l1_matrix: ${{ steps.policy.outputs.l1_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify validation lanes
+        id: policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # Classify the actual diff even during full-ci promotion. Promotion
+            # broadens coverage inside the affected lane; it must not turn an
+            # engine-only PR into a full Desktop run (or vice versa).
+            # Disable rename folding so both the removed source path and the
+            # new destination participate in classification.
+            git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA" > /tmp/changed-paths
+            python scripts/classify_ci_changes.py \
+              --paths-file /tmp/changed-paths \
+              --github-output "$GITHUB_OUTPUT"
+            full_gate="$FULL_CI"
+            echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
+            if [ "$full_gate" = true ]; then
+              echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}' >> "$GITHUB_OUTPUT"
+            else
+              echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"}]}' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # A merge-group commit may contain several independently classified
+            # PRs.  Validate the combined candidate in full. Push-to-main keeps
+            # the same coverage as before this policy was introduced.
+            {
+              echo 'engine=true'
+              echo 'desktop=true'
+              echo 'docs_only=false'
+              echo 'full_gate=true'
+              echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
 
@@ -33,19 +93,6 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check .
 
-      # Structural check — catches "silent flag drop" bugs where a CLI
-      # arg is defined but never plumbed to its target config (#400).
-      # Pure stdlib + AST — no mlx import required, runs on Linux.
-      - name: CLI ↔ Config fidelity audit
-        run: python scripts/audit_cli_config_fidelity.py
-
-      # The engine and the desktop app ship ONE version number. Two
-      # hand-maintained sources (pyproject.toml and the app's Info.plist)
-      # had nothing between them and drifted to 0.12.5 vs 0.12.6, both
-      # called "the latest release". Stdlib only — no mlx, no macOS.
-      - name: Engine ↔ desktop app version sync
-        run: python scripts/check_version_sync.py
-
       # PF-3 — all GitHub Actions are immutable 40-char commit SHA pins.
       # Dependabot or a reviewed PR is required to advance an action.
       - name: GitHub Actions SHA pinning
@@ -58,6 +105,35 @@ jobs:
       # comment took the release pipeline down for a full day.
       - name: Workflow expression sanity
         run: python scripts/check_workflow_expressions.py
+
+      # The model-management diagram and status tables are generated from one
+      # reviewed YAML manifest. Fail if a PR edits status/relationships without
+      # regenerating the GitHub-facing Mermaid/SVG views.
+      - name: Model-management architecture SSOT
+        run: python scripts/render_model_management_architecture.py --check
+
+      # The engine and the desktop app ship ONE version number. Keep this
+      # universal because either side of that cross-product contract can change.
+      - name: Engine ↔ desktop app version sync
+        run: python scripts/check_version_sync.py
+
+  engine-contracts:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+
+      # Structural check — catches "silent flag drop" bugs where a CLI
+      # arg is defined but never plumbed to its target config (#400).
+      # Pure stdlib + AST — no mlx import required, runs on Linux.
+      - name: CLI ↔ Config fidelity audit
+        run: python scripts/audit_cli_config_fidelity.py
 
       # The release scripts cannot be exercised without cutting a release, so
       # their tag-claim, recovery and refuse-to-move paths are covered offline
@@ -108,15 +184,18 @@ jobs:
     # unless a guarded specifier actually changes. PR-only: it diffs the head
     # against the PR base, which a push-to-main event has no meaningful analogue
     # for (origin/main == the pushed commit).
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -138,41 +217,49 @@ jobs:
         run: python scripts/check_mlx_bound_move.py
 
   type-check:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mypy pydantic fastapi
+          # The checked-in budget belongs to this fully pinned type surface.
+          pip install --requirement config/mypy-requirements.txt
 
-      - name: Run mypy
-        run: mypy vllm_mlx/ --ignore-missing-imports --no-error-summary
-        continue-on-error: true
+      - name: Enforce shrink-only mypy error budget
+        run: python scripts/check_mypy_error_budget.py
 
   test-matrix:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # diff-cover compares the PR head with the immutable base SHA. A
+          # shallow checkout can make that commit unavailable.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests pyyaml
+          pip install pytest pytest-asyncio pytest-cov "diff-cover==8.0.3" pydantic fastapi jsonschema httpx psutil transformers requests pyyaml
 
       - name: Run unit tests (no MLX required)
         # NOTE: tests in this list MUST not import mlx / mlx_lm at module
@@ -183,6 +270,16 @@ jobs:
             tests/test_mcp_security.py \
             tests/test_structured_output.py \
             tests/test_reasoning_parser.py \
+            tests/test_cohere_command_reasoning_parser.py \
+            tests/test_responses_route.py::TestResponsesNonStream::test_structured_output_keeps_bare_json_out_of_reasoning \
+            tests/test_responses_route.py::TestResponsesStream::test_structured_output_streams_bare_json_as_output_text \
+            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_uses_command_protocol_boundary \
+            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_injects_boundary_on_following_chunk \
+            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_exact_terminal_boundary_finishes_cleanly \
+            tests/test_postprocessor.py \
+            tests/test_reasoning_parser_truncation_finalize.py \
+            tests/test_reasoning_finalize_stop_in_think.py \
+            tests/test_per_request_thinking_budget.py \
             tests/test_tool_parsers.py \
             tests/test_native_tool_format.py \
             tests/test_prefix_cache.py \
@@ -203,6 +300,9 @@ jobs:
             tests/test_release_baselines.py \
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
+            tests/test_check_mypy_error_budget.py \
+            tests/test_classify_ci_changes.py \
+            tests/test_ci_lane_promotion.py \
             tests/test_check_mlx_upstream_calls.py \
             tests/test_no_out_of_band_routing.py \
             tests/test_microbench_parsers.py \
@@ -220,6 +320,17 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml
 
+      - name: Enforce changed-lines coverage
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -m diff_cover.diff_cover_tool \
+            coverage.xml \
+            --compare-branch "$PR_BASE_SHA" \
+            --show-uncovered \
+            --fail-under 100
+
       - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4
@@ -228,12 +339,14 @@ jobs:
           fail_ci_if_error: false
 
   test-apple-silicon:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
 
@@ -301,29 +414,20 @@ jobs:
     #
     # The aggregate ``tests`` job requires this matrix, so a contract failure is
     # release-blocking rather than an informational red check.
+    needs: changes
+    if: needs.changes.outputs.engine == 'true'
     runs-on: macos-14
     timeout-minutes: 20
     strategy:
       # Don't cancel the other legs when one family fails — we want to see
       # which families regressed, not just the first failure.
       fail-fast: false
-      matrix:
-        include:
-          - model: qwen3.5-4b-4bit  # hermes parser + GOLDEN coherence
-            contract_only: "0"
-          - model: llama3-3b-4bit  # llama parser + GOLDEN coherence
-            contract_only: "0"
-          - model: gemma3-4b-qat-4bit  # #1677 excluded G12 4B tier
-            contract_only: "1"
-          - model: qwen3-4b-instruct-2507-4bit
-            contract_only: "1"
-          - model: qwen3-4b-thinking-2507-4bit
-            contract_only: "1"
+      matrix: ${{ fromJSON(needs.changes.outputs.l1_matrix) }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
 
@@ -358,12 +462,51 @@ jobs:
         run: bash scripts/l1_smoke.sh "${{ matrix.model }}"
 
   tests:
-    needs: [test-matrix, test-apple-silicon, l1-smoke]
+    needs:
+      - changes
+      - lint
+      - engine-contracts
+      - mlx-bound-guard
+      - type-check
+      - test-matrix
+      - test-apple-silicon
+      - l1-smoke
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check test results
         run: |
+          if [ "${{ needs.changes.result }}" != success ]; then
+            echo "CI change classifier failed"
+            exit 1
+          fi
+          if [ "${{ needs.lint.result }}" != success ]; then
+            echo "Universal repository guards failed"
+            exit 1
+          fi
+          expected="${{ needs.changes.outputs.engine }}"
+          if [ "$expected" != "true" ]; then
+            echo "Engine lanes not required for this change"
+            exit 0
+          fi
+          if [ "${{ needs.engine-contracts.result }}" != success ]; then
+            echo "Engine lint and static contracts failed"
+            exit 1
+          fi
+          if [ "${{ needs.type-check.result }}" != success ]; then
+            echo "Type-check job failed"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = pull_request ] \
+            && [ "${{ needs.mlx-bound-guard.result }}" != success ]; then
+            echo "MLX dependency-bound guard failed"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "${{ needs.changes.outputs.full_gate }}" != "true" ]; then
+            echo "Engine PR gate passed; apply the full-ci label when this PR is ready to merge"
+            exit 1
+          fi
           if [ "${{ needs.test-matrix.result }}" != "success" ]; then
             echo "Unit tests failed"
             exit 1

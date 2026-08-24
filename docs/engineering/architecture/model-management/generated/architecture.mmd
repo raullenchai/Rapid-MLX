@@ -1,0 +1,107 @@
+flowchart LR
+  subgraph lane_facts["Stable model facts"]
+    model_family["ModelFamily<br/><small>partial</small>"]
+    model_release["ModelRelease<br/><small>planned</small>"]
+    model_variant["ModelVariant<br/><small>partial</small>"]
+    artifact["Artifact<br/><small>planned</small>"]
+    capabilities["Capabilities<br/><small>partial</small>"]
+    runtime_compatibility["RuntimeCompatibility<br/><small>partial</small>"]
+    alias_metadata["Alias / DisplayMetadata<br/><small>partial</small>"]
+    variant_qualification["VariantQualification<br/><small>planned</small>"]
+  end
+  subgraph lane_evidence["Machine, workload, and evidence"]
+    machine_fingerprint["MachineFingerprint<br/><small>planned</small>"]
+    machine_class["MachineClass<br/><small>planned</small>"]
+    workload_profile["WorkloadProfile<br/><small>planned</small>"]
+    benchmark_submission["CommunityBenchmarkSubmission<br/><small>partial</small>"]
+    validated_benchmark_run["ValidatedBenchmarkRun<br/><small>partial</small>"]
+    benchmark_aggregate["BenchmarkAggregate<br/><small>partial</small>"]
+    profile_candidate["ProfileCandidate<br/><small>partial</small>"]
+    performance_profile["PerformanceProfile<br/><small>partial</small>"]
+  end
+  subgraph lane_product["Product recommendation"]
+    recommendation_policy["RecommendationPolicy<br/><small>partial</small>"]
+    ranked_recommendation_set["RankedRecommendationSet<br/><small>planned</small>"]
+    model_selection_override["ModelSelectionOverride<br/><small>planned</small>"]
+    selection["Selection<br/><small>partial</small>"]
+    selected_model_variant["SelectedModelVariant<br/><small>planned</small>"]
+  end
+  subgraph lane_runtime["Runtime resolution and consumption"]
+    runtime_config_override["RuntimeConfigOverride<br/><small>partial</small>"]
+    runtime_resolver["RuntimeResolver<br/><small>partial</small>"]
+    effective_runtime_config["EffectiveRuntimeConfig<br/><small>planned</small>"]
+    desktop_gui["Rapid Desktop GUI<br/><small>partial</small>"]
+    rapid_server["Rapid Server / CLI<br/><small>partial</small>"]
+  end
+  subgraph lane_learning["Safe learning loop"]
+    actual_runtime_telemetry["ActualRuntimeTelemetry<br/><small>planned</small>"]
+    feedback_gateway["FeedbackGateway / RegressionDetection<br/><small>planned</small>"]
+  end
+
+  model_family -->|contains| model_release
+  model_release -->|contains| model_variant
+  model_variant -->|resolves_to| artifact
+  artifact -->|derives| capabilities
+  artifact -->|constrains| runtime_compatibility
+  artifact -->|qualifies| variant_qualification
+  model_variant -->|presents_as| alias_metadata
+  machine_fingerprint -->|normalizes| machine_class
+  benchmark_submission -->|validates| validated_benchmark_run
+  validated_benchmark_run -->|aggregates| benchmark_aggregate
+  benchmark_aggregate -->|proposes| profile_candidate
+  profile_candidate -->|promotes| performance_profile
+  machine_class -->|scopes| recommendation_policy
+  variant_qualification -->|gates| recommendation_policy
+  recommendation_policy -->|ranks| ranked_recommendation_set
+  ranked_recommendation_set -->|supplies| selection
+  model_selection_override -->|overrides| selection
+  selection -->|selects| selected_model_variant
+  selected_model_variant -->|resolves| runtime_resolver
+  runtime_config_override -->|overrides| runtime_resolver
+  performance_profile -->|tunes| runtime_resolver
+  machine_class -->|scopes| runtime_resolver
+  workload_profile -->|scopes| runtime_resolver
+  runtime_compatibility -->|constrains| runtime_resolver
+  runtime_resolver -->|resolves| effective_runtime_config
+  effective_runtime_config -->|consumed_by| desktop_gui
+  effective_runtime_config -->|consumed_by| rapid_server
+  desktop_gui -->|observes| actual_runtime_telemetry
+  rapid_server -->|observes| actual_runtime_telemetry
+  actual_runtime_telemetry -->|filters| feedback_gateway
+  feedback_gateway -->|validates_into| benchmark_submission
+
+  classDef implemented fill:#dcfce7,stroke:#16a34a,color:#172033,stroke-width:2px
+  classDef partial fill:#fef3c7,stroke:#d97706,color:#172033,stroke-width:2px
+  classDef in_progress fill:#dbeafe,stroke:#2563eb,color:#172033,stroke-width:2px
+  classDef migrating fill:#f3e8ff,stroke:#9333ea,color:#172033,stroke-width:2px
+  classDef planned fill:#f1f5f9,stroke:#64748b,color:#172033,stroke-width:2px
+  classDef blocked fill:#fee2e2,stroke:#dc2626,color:#172033,stroke-width:2px
+  classDef deprecated fill:#e5e7eb,stroke:#374151,color:#172033,stroke-width:2px
+  class model_family partial
+  class model_release planned
+  class model_variant partial
+  class artifact planned
+  class capabilities partial
+  class runtime_compatibility partial
+  class alias_metadata partial
+  class variant_qualification planned
+  class machine_fingerprint planned
+  class machine_class planned
+  class workload_profile planned
+  class benchmark_submission partial
+  class validated_benchmark_run partial
+  class benchmark_aggregate partial
+  class profile_candidate partial
+  class performance_profile partial
+  class recommendation_policy partial
+  class ranked_recommendation_set planned
+  class model_selection_override planned
+  class selection partial
+  class selected_model_variant planned
+  class runtime_config_override partial
+  class runtime_resolver partial
+  class effective_runtime_config planned
+  class desktop_gui partial
+  class rapid_server partial
+  class actual_runtime_telemetry planned
+  class feedback_gateway planned

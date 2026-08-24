@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import importlib.metadata as _im
 import importlib.util as _iu
+import json
 import os
 import platform
 import plistlib
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1233,6 +1236,117 @@ def section_optional_tools(
 
 
 # ---------------------------------------------------------------------------
+# Section: Agent Integrations
+# ---------------------------------------------------------------------------
+
+
+def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
+    """Read the local endpoint selected by each supported agent client."""
+    configs = [
+        ("Claude Code", home / ".claude/settings.json"),
+        ("Continue.dev", home / ".continue/config.json"),
+    ]
+    cline_roots = (
+        home / "Library/Application Support/Code/User/globalStorage",
+        home / "Library/Application Support/Code - Insiders/User/globalStorage",
+        home / "Library/Application Support/VSCodium/User/globalStorage",
+        home / ".config/Code/User/globalStorage",
+        home / ".config/Code - Insiders/User/globalStorage",
+        home / ".config/VSCodium/User/globalStorage",
+    )
+    configs.extend(
+        ("Cline", root / "saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+        for root in cline_roots
+    )
+
+    integrations = []
+    for name, path in configs:
+        if not path.is_file():
+            continue
+        url = None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                integrations.append((name, path, None))
+                continue
+            if name == "Claude Code" and isinstance(data.get("env"), dict):
+                url = data["env"].get("ANTHROPIC_BASE_URL")
+            elif name == "Continue.dev" and isinstance(data.get("models"), list):
+                url = next(
+                    (
+                        model.get("apiBase")
+                        for model in data["models"]
+                        if isinstance(model, dict)
+                        and model.get("title") == "rapid-mlx"
+                        and model.get("provider") == "openai"
+                    ),
+                    None,
+                )
+            elif name == "Cline" and data.get("apiProvider") == "openai":
+                url = data.get("openAiBaseUrl")
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+        integrations.append((name, path, url if isinstance(url, str) else None))
+    return integrations
+
+
+def _server_reachable(
+    url: str,
+    *,
+    connect: Callable[..., object] = socket.create_connection,
+) -> bool:
+    """Perform a short TCP reachability check; do not interpret engine APIs."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        connection = connect((parsed.hostname, port), timeout=0.25)
+        close = getattr(connection, "close", None)
+        if close:
+            close()
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def section_agent_integrations(
+    *,
+    home: Path | None = None,
+    connect: Callable[..., object] = socket.create_connection,
+) -> Section:
+    """Report whether installed agent configs point to a reachable server."""
+    section = Section("Agent Integrations")
+    integrations = _agent_integrations(home or Path.home())
+    if not integrations:
+        section.add(
+            "No Claude Code, Cline, or Continue.dev config found", CheckStatus.OK
+        )
+        return section
+
+    for name, path, url in integrations:
+        if not url:
+            section.add(
+                f"{name} config found, but Rapid-MLX is not configured",
+                CheckStatus.WARN,
+                detail=f"path={path}",
+            )
+        elif _server_reachable(url, connect=connect):
+            section.add(
+                f"{name} server is reachable",
+                CheckStatus.OK,
+                detail=f"path={path}",
+            )
+        else:
+            section.add(
+                f"{name} server is not reachable",
+                CheckStatus.WARN,
+                detail=f"path={path}",
+            )
+    return section
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -1250,6 +1364,7 @@ _SECTION_BUILDERS = (
     section_network,
     section_shell_integration,
     section_optional_tools,
+    section_agent_integrations,
 )
 
 

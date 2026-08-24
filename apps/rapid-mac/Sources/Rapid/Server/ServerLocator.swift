@@ -226,12 +226,26 @@ enum ServerLocator {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// Strict dotted-numeric parser matching the sidecar build gate.
-    private static func parsedVersion(_ raw: String?) -> [Int]? {
+    private struct ParsedVersion {
+        let parts: [Int]
+        let rc: Int?
+    }
+
+    /// Strict dotted-numeric/RC parser matching the sidecar build gate.
+    private static func parsedVersion(_ raw: String?) -> ParsedVersion? {
         guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else { return nil }
         if value.hasPrefix("v") || value.hasPrefix("V") {
             value.removeFirst()
+        }
+        var rc: Int?
+        if let range = value.range(of: "-rc", options: .backwards) {
+            let suffix = value[range.upperBound...]
+            guard !suffix.isEmpty,
+                  suffix.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+                  let parsedRC = Int(suffix), parsedRC >= 1 else { return nil }
+            rc = parsedRC
+            value = String(value[..<range.lowerBound])
         }
         let fields = value.split(separator: ".", omittingEmptySubsequences: false)
         guard fields.count >= 2 else { return nil }
@@ -243,14 +257,24 @@ enum ServerLocator {
                   let part = Int(field) else { return nil }
             parts.append(part)
         }
-        return parts
+        return ParsedVersion(parts: parts, rc: rc)
     }
 
-    private static func compareVersion(_ lhs: [Int], _ rhs: [Int]) -> ComparisonResult {
-        let width = max(lhs.count, rhs.count)
+    private static func compareVersion(
+        _ lhs: ParsedVersion, _ rhs: ParsedVersion
+    ) -> ComparisonResult {
+        let width = max(lhs.parts.count, rhs.parts.count)
         for index in 0..<width {
-            let left = index < lhs.count ? lhs[index] : 0
-            let right = index < rhs.count ? rhs[index] : 0
+            let left = index < lhs.parts.count ? lhs.parts[index] : 0
+            let right = index < rhs.parts.count ? rhs.parts[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        switch (lhs.rc, rhs.rc) {
+        case (nil, nil): return .orderedSame
+        case (nil, _): return .orderedDescending
+        case (_, nil): return .orderedAscending
+        case let (left?, right?):
             if left < right { return .orderedAscending }
             if left > right { return .orderedDescending }
         }

@@ -991,6 +991,15 @@ class TestStressPreexistingClassification:
 
 
 class TestLangChainGuidedCapabilityHandling:
+    def test_harness_script_semantics_override_parent_pytest_import(self, monkeypatch):
+        from tests.integrations import test_langchain
+
+        assert not test_langchain._should_run_tests()
+
+        monkeypatch.setattr(test_langchain, "__name__", "__main__")
+
+        assert test_langchain._should_run_tests()
+
     def test_guided_extra_error_is_skip_eligible(self):
         from tests.integrations import test_langchain
 

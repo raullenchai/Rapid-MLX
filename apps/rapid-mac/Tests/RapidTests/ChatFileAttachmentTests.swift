@@ -217,6 +217,50 @@ struct ChatFileAttachmentTests {
         #expect(textView.string.isEmpty)
     }
 
+    @Test("Command-V offers image-only clipboard events to the attachment importer")
+    func nativePasteKeyEquivalentUsesAttachmentImporter() throws {
+        let textView = AutosizingTextView()
+        var calls = 0
+        textView.onPasteAttachments = {
+            calls += 1
+            return true
+        }
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        ))
+
+        #expect(textView.performKeyEquivalent(with: event))
+        #expect(calls == 1)
+        #expect(textView.string.isEmpty)
+    }
+
+    @Test("Shift-Command-V retains AppKit alternate paste behavior")
+    func alternatePasteKeyEquivalentIsNotIntercepted() throws {
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "V",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        ))
+
+        #expect(!AutosizingTextView.isStandardPasteKeyEquivalent(event))
+    }
+
     @Test("Retry preserves the locally extracted source")
     func retryPreservesAttachment() throws {
         let attachment = try ChatFileAttachment(

@@ -211,6 +211,43 @@ struct WebSearchThrottleTests {
         #expect(unavailable.action == .retry)
     }
 
+    @Test("Keenable keyed failures retain their exact cause and settings remedy")
+    func keenableKeyedFailureDiagnosis() {
+        let cases: [(String, FailureDiagnosis.Kind, String)] = [
+            (
+                "web_search error: Keenable rejected the API key (HTTP 401). Re-paste it in Settings → Tools → Web search.",
+                .webSearchKeyRejected,
+                "rejected this API key"
+            ),
+            (
+                "web_search error: the Keenable key's monthly credit allowance is used up (HTTP 402). Searches continue on the keyless pool if you clear the key.",
+                .webSearchKeyQuotaExceeded,
+                "monthly credits"
+            ),
+            (
+                "web_search error: Keenable rate limit hit for this API key (HTTP 429). Wait a moment or check the plan's limits.",
+                .webSearchKeyRateLimited,
+                "rate-limited"
+            ),
+        ]
+
+        for (content, expectedKind, messageFragment) in cases {
+            let kind = FailureDiagnoser.toolFailureKind(
+                toolName: "web_search",
+                content: content,
+                isError: true
+            )
+            #expect(kind == expectedKind)
+            let diagnosis = FailureDiagnoser.diagnosis(for: expectedKind)
+            #expect(diagnosis.message.contains(messageFragment))
+            #expect(diagnosis.action == .openWebSearchSettings)
+            #expect(FailureDiagnosis.inlineToolCardAction(
+                for: diagnosis,
+                canRouteToSettings: true
+            ) == .openWebSearchSettings)
+        }
+    }
+
     // MARK: - Fallback classification (restored transcripts)
 
     @Test("A restored throttle row without a stored kind still classifies")

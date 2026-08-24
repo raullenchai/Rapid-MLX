@@ -4,6 +4,13 @@ import Observation
 @MainActor
 @Observable
 final class AudioViewModel {
+    struct TranscriptionModelDetails: Equatable, Sendable {
+        let displayName: String
+        let badge: String
+        let summary: String
+        let isRecommended: Bool
+    }
+
     enum Mode: String, CaseIterable, Identifiable {
         case dictation
         case speech
@@ -54,10 +61,11 @@ final class AudioViewModel {
     }
 
     var transcriptionModels: [ModelEntry] {
-        audioModels.filter {
+        let candidates = audioModels.filter {
             $0.audioCapability?.supportsTranscription == true
                 && ModelCatalog.isDesktopAudioAliasVisible($0.alias)
         }
+        return Self.deduplicatedTranscriptionModels(candidates)
     }
 
     var speechModels: [ModelEntry] {
@@ -216,6 +224,148 @@ final class AudioViewModel {
         case "ono_anna": return "Japanese · Female"
         case "sohee": return "Korean · Female"
         default: return "Multilingual"
+        }
+    }
+
+    /// Product-facing guidance for the Speech to Text picker. The engine's
+    /// alias catalog is deliberately technical; this layer answers the user's
+    /// actual question: which model fits my language and speed/quality needs?
+    /// Keep the fallback useful so a newly added engine alias never lands in
+    /// the UI as an unexplained name.
+    static func transcriptionDetails(
+        alias: String,
+        family: String?
+    ) -> TranscriptionModelDetails {
+        let normalized = alias.lowercased()
+        switch normalized {
+        case "whisper", "whisper-1", "whisper-large-v3":
+            return .init(
+                displayName: "Whisper Large v3",
+                badge: "best quality",
+                summary: "Highest-accuracy Whisper model. Supports 99+ languages and difficult accents.",
+                isRecommended: false
+            )
+        case "whisper-large-v3-turbo":
+            return .init(
+                displayName: "Whisper Large v3 Turbo",
+                badge: "balanced",
+                summary: "Near Large v3 accuracy with much faster transcription. Supports 99+ languages.",
+                isRecommended: true
+            )
+        case "whisper-medium":
+            return .init(
+                displayName: "Whisper Medium",
+                badge: "multilingual",
+                summary: "Good multilingual accuracy with lower memory use than the Large models.",
+                isRecommended: false
+            )
+        case "whisper-small":
+            return .init(
+                displayName: "Whisper Small",
+                badge: "fast",
+                summary: "Fast, lightweight multilingual transcription for everyday dictation.",
+                isRecommended: false
+            )
+        case "whisper-base":
+            return .init(
+                displayName: "Whisper Base",
+                badge: "low memory",
+                summary: "A compact multilingual model for older Macs. Faster, with lower accuracy.",
+                isRecommended: false
+            )
+        case "parakeet-v3", "parakeet-tdt-0.6b-v3":
+            return .init(
+                displayName: "Parakeet TDT v3",
+                badge: "English",
+                summary: "Fast English transcription with improved accuracy over v2 and automatic punctuation.",
+                isRecommended: false
+            )
+        case "parakeet", "parakeet-tdt-0.6b", "parakeet-tdt-0.6b-v2":
+            return .init(
+                displayName: "Parakeet TDT v2",
+                badge: "English",
+                summary: "English-only transcription. Very fast with strong punctuation and capitalization.",
+                isRecommended: false
+            )
+        case "qwen3-asr", "qwen3-asr-1.7b":
+            return .init(
+                displayName: "Qwen3 ASR 1.7B",
+                badge: "code-switching",
+                summary: "Strong Chinese and English code-switching, punctuation, and custom vocabulary hints.",
+                isRecommended: false
+            )
+        case "qwen3-asr-0.6b":
+            return .init(
+                displayName: "Qwen3 ASR 0.6B",
+                badge: "fast",
+                summary: "A smaller, faster Chinese and English model with a modest accuracy tradeoff.",
+                isRecommended: false
+            )
+        case "sensevoice", "sensevoice-small":
+            return .init(
+                displayName: "SenseVoice Small",
+                badge: "Asian languages",
+                summary: "Fast Chinese, Cantonese, Japanese, Korean, and English recognition with sound-event tags.",
+                isRecommended: false
+            )
+        default:
+            let familyName = family?
+                .replacingOccurrences(of: "_", with: " ")
+                .capitalized ?? "Speech"
+            return .init(
+                displayName: alias,
+                badge: familyName,
+                summary: "Local speech-to-text model. Runs offline after its first download.",
+                isRecommended: false
+            )
+        }
+    }
+
+    /// The engine exposes compatibility aliases for API and CLI callers, but
+    /// a visual picker should not show the same checkpoint three times. Group
+    /// by HF repo and keep the explicit product alias where one exists.
+    static func deduplicatedTranscriptionModels(_ entries: [ModelEntry]) -> [ModelEntry] {
+        var order: [String] = []
+        var representative: [String: ModelEntry] = [:]
+
+        for entry in entries {
+            let key = entry.hfRepo?.lowercased() ?? "alias:\(entry.alias.lowercased())"
+            guard let current = representative[key] else {
+                order.append(key)
+                representative[key] = entry
+                continue
+            }
+            if transcriptionAliasPriority(entry.alias)
+                < transcriptionAliasPriority(current.alias) {
+                representative[key] = entry
+            }
+        }
+        let position = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        return order.compactMap { representative[$0] }.sorted { lhs, rhs in
+            let lhsRecommended = transcriptionDetails(
+                alias: lhs.alias, family: lhs.audioFamily
+            ).isRecommended
+            let rhsRecommended = transcriptionDetails(
+                alias: rhs.alias, family: rhs.audioFamily
+            ).isRecommended
+            if lhsRecommended != rhsRecommended { return lhsRecommended }
+            if lhs.cached != rhs.cached { return lhs.cached }
+            let lhsKey = lhs.hfRepo?.lowercased() ?? "alias:\(lhs.alias.lowercased())"
+            let rhsKey = rhs.hfRepo?.lowercased() ?? "alias:\(rhs.alias.lowercased())"
+            return position[lhsKey, default: .max] < position[rhsKey, default: .max]
+        }
+    }
+
+    private static func transcriptionAliasPriority(_ alias: String) -> Int {
+        switch alias.lowercased() {
+        case "whisper-large-v3", "parakeet", "parakeet-v3", "qwen3-asr", "sensevoice":
+            return 0
+        case "whisper", "whisper-1", "parakeet-tdt-0.6b",
+             "parakeet-tdt-0.6b-v2", "parakeet-tdt-0.6b-v3",
+             "qwen3-asr-1.7b", "sensevoice-small":
+            return 2
+        default:
+            return 1
         }
     }
 

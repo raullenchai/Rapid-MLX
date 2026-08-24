@@ -5904,6 +5904,7 @@ async def _create_chat_completion_impl(
         # into ``content``. ``None`` keeps the pre-r5-D behaviour on
         # any caller that hasn't been threaded yet.
         finish_reason=getattr(output, "finish_reason", None),
+        json_mode=_is_structured_output_requested(response_format),
     )
     if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
@@ -6738,22 +6739,25 @@ async def stream_chat_completion(
             elif event.type == "content" and event.content:
                 finalize_content_parts.append(event.content)
             elif event.type == "reasoning" and event.reasoning:
-                # A stream_eof_flush parser (north) that ends while still
-                # in the thinking phase releases its withheld marker tail
-                # as a ``reasoning`` event. Content events get merged into
-                # the terminal chunk below, but nothing there carries a
-                # reasoning channel — so without this branch the tail is
-                # silently dropped from ``reasoning_content``, violating
-                # the same never-drop contract this finalize pass exists
-                # to uphold for content.
                 finalize_reasoning_parts.append(event.reasoning)
         finalize_content = "".join(finalize_content_parts)
         if finalize_reasoning_parts:
-            if first_token_ts is None:
-                first_token_ts = time.perf_counter()
-            yield _fast_sse_chunk(
-                "".join(finalize_reasoning_parts), "reasoning_content"
-            )
+            finalize_reasoning = "".join(finalize_reasoning_parts)
+            if buffered_finish is not None:
+                from dataclasses import replace as _replace_finish
+
+                finish_event, finish_output = buffered_finish
+                buffered_finish = (
+                    _replace_finish(
+                        finish_event,
+                        reasoning=(finish_event.reasoning or "") + finalize_reasoning,
+                    ),
+                    finish_output,
+                )
+            else:
+                if first_token_ts is None:
+                    first_token_ts = time.perf_counter()
+                yield _fast_sse_chunk(finalize_reasoning, "reasoning_content")
 
         # #447 streaming-parity synthesis (2026-06-26). The non-stream
         # chat path at chat.py:~3147 / ~3215 falls back to

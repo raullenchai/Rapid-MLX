@@ -2,16 +2,13 @@
 # Post-build validation for build/rapid-mlx-desktop.dmg.
 #
 # Closes audit P1 `release.yml:106–110` — "DMG bg image / icon
-# positions / Applications symlink not validated post-build." We
-# don't ship a custom bg or icon layout (plain DMG by design), but
-# the Applications drop-target symlink IS load-bearing UX — without
-# it the user opens the DMG and has nowhere obvious to drag the
-# app bundle onto. A regression that silently drops the symlink
-# (or staging path change) is exactly the kind of thing that
-# doesn't surface until a user complains. Validate at build time.
+# positions / Applications symlink not validated post-build." The
+# Applications link, branded background and persisted Finder layout
+# are all load-bearing first-install UX. A staging regression must
+# fail the release instead of silently publishing a plain disk image.
 #
 # Steps:
-#   1. Attach the DMG read-only at a temp mount point.
+#   1. Attach the DMG read-only at its normal /Volumes location.
 #   2. Assert exactly one *.app exists at the root with a parseable
 #      Info.plist + the expected ``com.rapidmlx.rapid`` bundle id.
 #      Strict default (#164): only ``Rapid-MLX Desktop.app`` passes.
@@ -20,7 +17,9 @@
 #      pre-v0.5.22 ``Rapid.app`` name (used when re-validating a
 #      legacy build artifact locally).
 #   3. Assert the Applications symlink exists and points at /Applications.
-#   4. Always detach on exit (trap), even on assertion failure.
+#   4. Assert the 720x460 branded background and Finder .DS_Store
+#      are present.
+#   5. Always detach on exit (trap), even on assertion failure.
 #
 # Usage:
 #   scripts/validate-dmg.sh                                # uses build/rapid-mlx-desktop.dmg
@@ -41,7 +40,14 @@ for arg in "$@"; do
     case "$arg" in
         --allow-legacy) ALLOW_LEGACY=1 ;;
         --*) echo "validate-dmg: unknown option $arg" >&2; exit 1 ;;
-        *) [[ -z "$DMG" ]] && DMG="$arg" || { echo "validate-dmg: too many positional args" >&2; exit 1; } ;;
+        *)
+            if [[ -z "$DMG" ]]; then
+                DMG="$arg"
+            else
+                echo "validate-dmg: too many positional args" >&2
+                exit 1
+            fi
+            ;;
     esac
 done
 DMG="${DMG:-$ROOT/build/rapid-mlx-desktop.dmg}"
@@ -51,24 +57,36 @@ if [[ ! -f "$DMG" ]]; then
     exit 1
 fi
 
-MOUNT="$(mktemp -d -t rapid-dmg-validate-XXXXXX)"
+MOUNT=""
+DEVICE=""
 ATTACHED=0
 
 cleanup() {
     if [[ "$ATTACHED" -eq 1 ]]; then
-        hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet || true
+        local detach_target="${DEVICE:-$MOUNT}"
+        if [[ -n "$detach_target" ]]; then
+            hdiutil detach "$detach_target" -quiet \
+                || hdiutil detach "$detach_target" -force -quiet \
+                || true
+        fi
     fi
-    rm -rf "$MOUNT"
 }
 trap cleanup EXIT
 
-echo "==> attaching $DMG at $MOUNT"
-hdiutil attach "$DMG" \
-    -mountpoint "$MOUNT" \
-    -nobrowse \
-    -readonly \
-    -quiet
+echo "==> attaching $DMG as a user-mounted volume"
+# Let DiskImages choose /Volumes/<volume name>, matching a real double-click.
+# An arbitrary mktemp mount point makes Finder identify the disk by the random
+# directory name and can resolve .DS_Store aliases against a stale prior mount.
+ATTACH_OUTPUT="$(hdiutil attach "$DMG" -nobrowse -readonly)"
 ATTACHED=1
+DEVICE="$(printf '%s\n' "$ATTACH_OUTPUT" | awk '$1 ~ /^\/dev\// { print $1; exit }')"
+MOUNT="$(printf '%s\n' "$ATTACH_OUTPUT" | awk -F '\t' 'NF >= 3 && $3 != "" { print $3 }' | tail -1)"
+[[ -n "$MOUNT" && -d "$MOUNT" ]] || {
+    echo "$ATTACH_OUTPUT" >&2
+    echo "validate-dmg: FAIL — could not determine mounted volume path" >&2
+    exit 1
+}
+echo "==> mounted at $MOUNT"
 
 fail() {
     echo "validate-dmg: FAIL — $*" >&2
@@ -85,6 +103,7 @@ fail() {
 # above) re-admits the legacy name for local re-validation of
 # older artifacts.
 APPS=()
+LEGACY_ARTIFACT=0
 while IFS= read -r entry; do
     [[ -n "$entry" ]] && APPS+=("$entry")
 done < <(find "$MOUNT" -maxdepth 1 -type d -name "*.app" -not -name ".*" -print)
@@ -99,6 +118,7 @@ case "$APP_NAME" in
         ;;
     "Rapid.app")
         if [[ "$ALLOW_LEGACY" == "1" ]]; then
+            LEGACY_ARTIFACT=1
             echo "==> bundle: $APP_NAME (legacy name accepted via RAPID_VALIDATE_DMG_ALLOW_LEGACY=1)"
         else
             fail "legacy bundle name 'Rapid.app' found (expected 'Rapid-MLX Desktop.app'). Re-run with RAPID_VALIDATE_DMG_ALLOW_LEGACY=1 to accept legacy artifacts."
@@ -123,5 +143,63 @@ APPS_LINK="$MOUNT/Applications"
 TARGET="$(readlink "$APPS_LINK")"
 [[ "$TARGET" == "/Applications" ]] || fail "Applications symlink points at '$TARGET', expected '/Applications'"
 echo "==> Applications -> $TARGET"
+
+# 4. Branded Finder presentation. Legacy mode exists specifically to inspect
+# pre-v0.5.22 artifacts, which predate this presentation contract.
+if [[ "$LEGACY_ARTIFACT" == "1" ]]; then
+    echo "==> Finder presentation: skipped for pre-v0.5.22 legacy artifact"
+    echo "==> validate-dmg: OK"
+    exit 0
+fi
+
+# Dot-prefixed support files remain hidden
+# from the user's icon view but must survive both UDRW -> UDZO conversion and
+# release notarisation.
+BACKGROUND="$MOUNT/.background/background.png"
+[[ -f "$BACKGROUND" ]] || fail "Finder background missing at .background/background.png"
+BG_WIDTH="$(sips -g pixelWidth "$BACKGROUND" | awk '/pixelWidth:/ {print $2}')"
+BG_HEIGHT="$(sips -g pixelHeight "$BACKGROUND" | awk '/pixelHeight:/ {print $2}')"
+[[ "$BG_WIDTH" == "720" && "$BG_HEIGHT" == "460" ]] \
+    || fail "Finder background is ${BG_WIDTH}x${BG_HEIGHT}, expected 720x460"
+[[ -s "$MOUNT/.DS_Store" ]] || fail "Finder layout .DS_Store missing or empty"
+
+# A present PNG is not enough: structurally parse the active icvp blob and
+# verify its backgroundImageAlias points to the volume-relative image.
+python3 "$ROOT/scripts/verify-dmg-background.py" "$MOUNT/.DS_Store" \
+    || fail "Finder background alias is missing or invalid"
+
+# Do not stop at file presence: a .DS_Store can carry an absolute alias to the
+# build-time mount and look complete on disk while Finder silently falls back
+# to a blank, auto-arranged window for users. Open the final read-only image
+# and read back the presentation through Finder itself.
+FINDER_LAYOUT="$(osascript - "$MOUNT" <<'APPLESCRIPT'
+on pointText(p)
+    return (item 1 of p as text) & "," & (item 2 of p as text)
+end pointText
+
+on rectText(r)
+    return (item 1 of r as text) & "," & (item 2 of r as text) & "," & (item 3 of r as text) & "," & (item 4 of r as text)
+end rectText
+
+on run argv
+    set volumeFolder to POSIX file (item 1 of argv) as alias
+    tell application "Finder"
+        open volumeFolder
+        delay 0.5
+        set dmgWindow to container window of volumeFolder
+        set appPosition to position of item "Rapid-MLX Desktop.app" of volumeFolder
+        set applicationsPosition to position of item "Applications" of volumeFolder
+        set iconSizeValue to icon size of icon view options of dmgWindow
+        set windowBounds to bounds of dmgWindow
+        close dmgWindow
+        return my pointText(appPosition) & "|" & my pointText(applicationsPosition) & "|" & (iconSizeValue as text) & "|" & my rectText(windowBounds)
+    end tell
+end run
+APPLESCRIPT
+)" || fail "Finder could not read the persisted DMG layout"
+
+[[ "$FINDER_LAYOUT" == "180,228|540,228|96|180,120,900,580" ]] \
+    || fail "unexpected Finder layout '$FINDER_LAYOUT' (expected app|Applications|icon|bounds = 180,228|540,228|96|180,120,900,580)"
+echo "==> Finder presentation: ${BG_WIDTH}x${BG_HEIGHT}; $FINDER_LAYOUT"
 
 echo "==> validate-dmg: OK"

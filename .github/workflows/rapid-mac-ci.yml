@@ -27,21 +27,9 @@ name: rapid-mac CI
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "apps/rapid-mac/**"
-      - ".github/workflows/rapid-mac-ci.yml"
-      # The gate script itself, so a change to the detector re-runs it...
-      - "scripts/check_rapid_mac_ax_identifiers.py"
-      # ...and its regression suite, which is the only thing that runs when a
-      # PR touches the detector but no Swift at all.
-      - "tests/test_rapid_mac_ax_identifiers.py"
-      # Same reasoning for the harness contract suites and the captured
-      # cross-OS dumps they assert against: a PR that edits only those must
-      # still run them.
-      - "tests/test_ax_baseline_os_variance.py"
-      - "tests/test_gui_preflight_contract.py"
-      - "tests/fixtures/ax_baseline/**"
-      - "tests/test_fake_sidecar_image_catalog.py"
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -52,26 +40,73 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.policy.outputs.desktop }}
+      full_gate: ${{ steps.policy.outputs.full_gate }}
+      gui_flows: ${{ steps.policy.outputs.gui_flows }}
+      gui_flow_count: ${{ steps.policy.outputs.gui_flow_count }}
+      gui_shards: ${{ steps.policy.outputs.gui_shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify desktop lane
+        id: policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            # A future merge queue candidate may combine independently scoped
+            # PRs, so validate both product lanes.
+            python scripts/classify_ci_changes.py --github-output "$GITHUB_OUTPUT"
+            python scripts/select_gui_flows.py --github-output "$GITHUB_OUTPUT"
+            {
+              echo 'full_gate=true'
+            } >> "$GITHUB_OUTPUT"
+          else
+            # Keep full-ci promotion scoped to the lanes selected by the real
+            # PR diff. An engine-only PR must not allocate a full GUI run, and
+            # a Desktop-only PR must not allocate model runners.
+            # Disable rename folding so both the removed source path and the
+            # new destination participate in classification.
+            git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA" > /tmp/changed-paths
+            python scripts/classify_ci_changes.py \
+              --paths-file /tmp/changed-paths \
+              --github-output "$GITHUB_OUTPUT"
+            python scripts/select_gui_flows.py \
+              --paths-file /tmp/changed-paths \
+              --github-output "$GITHUB_OUTPUT"
+            echo "full_gate=$FULL_CI" >> "$GITHUB_OUTPUT"
+          fi
+
   # Pure text lint over the diff — no Swift toolchain, no simulator, no app
   # build. It runs on ubuntu in ~15s beside the multi-minute macOS build rather
   # than inside it, so a missing identifier reads as its own red check with its
   # own log instead of hiding at the bottom of a compile job.
   accessibility-identifiers:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # The gate is scoped to lines this PR ADDED, which needs the
           # merge-base with the target branch — not a shallow single commit.
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
-      # checkout@v4 with fetch-depth 0 normally leaves origin/<base> in place;
+      # actions/checkout with fetch-depth 0 normally leaves origin/<base> in place;
       # this is the same belt-and-braces fetch the mlx-bound-guard job in ci.yml
       # does, so the merge-base lookup cannot fail on a runner that resolved
       # refs differently.
@@ -99,13 +134,15 @@ jobs:
   # to redden the tests without also taking down the gate that needs no
   # network at all.
   accessibility-identifier-tests:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -136,18 +173,20 @@ jobs:
   #     nothing else notices, and the failure surfaces on a Mac, hours later,
   #     disguised as a product defect.
   gui-harness-contracts:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install GUI contract test dependencies
+        run: pip install pytest PyYAML
 
       # Separate steps so a red names which contract broke.
       - name: Baselines are OS-independent
@@ -156,10 +195,29 @@ jobs:
       - name: GUI preflight contract
         run: pytest tests/test_gui_preflight_contract.py -q
 
+      - name: GUI golden-flow coverage contract
+        run: |
+          pytest \
+            tests/test_gui_app_artifact.py \
+            tests/test_gui_golden_ci_coverage.py \
+            tests/test_gui_flow_routing.py \
+            -q
+
       - name: Fake sidecar catalog contract
         run: pytest tests/test_fake_sidecar_image_catalog.py -q
 
+      - name: GUI and XCUITest workflow contracts
+        run: |
+          pytest \
+            tests/test_ax_baseline.py \
+            tests/test_gui_control_behavior_contract.py \
+            tests/test_gui_walk_completeness.py \
+            tests/test_rapid_mac_xcui_target.py \
+            -q
+
   build:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
     # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
     # swift-tools-version and the release workflow's runner. macos-latest still
     # resolves to macos-14 (Swift 5.x) on GitHub-hosted runners.
@@ -174,7 +232,7 @@ jobs:
       run:
         working-directory: apps/rapid-mac
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: swift build
         run: swift build
@@ -213,6 +271,52 @@ jobs:
       - name: verify chat timeout contract
         run: swift scripts/verify-chat-timeout.swift
 
+  # Build the release-shaped, sidecar-free app exactly once for every full
+  # Desktop gate. GUI consumers must use this commit-bound artifact instead of
+  # compiling their own copy. Keeping this as a dedicated producer makes the
+  # next step (parallel journey shards) cheap without trusting a cache as test
+  # evidence: the archive and its manifest are immutable outputs of this run.
+  gui-app-build:
+    needs: changes
+    if: >-
+      needs.changes.outputs.desktop == 'true' &&
+      needs.changes.outputs.full_gate == 'true'
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/rapid-mac
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Build release-shaped GUI app
+        env:
+          SKIP_SIDECAR: "1"
+          RAPID_BUILD_CONFIG: release
+        run: ./scripts/build.sh
+
+      - name: Verify and package GUI app
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/gui-app-artifact
+        run: |
+          set -euo pipefail
+          app="build/Rapid-MLX Desktop.app"
+          codesign --verify --deep --strict "$app"
+          mkdir -p "$ARTIFACT_DIR"
+          ditto -c -k --keepParent "$app" "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip"
+          python ../../scripts/gui_app_artifact.py create \
+            --archive "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip" \
+            --source-sha "$GITHUB_SHA" \
+            --output "$ARTIFACT_DIR/manifest.json"
+
+      - name: Upload commit-bound GUI app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-gui-app-${{ github.sha }}
+          path: ${{ runner.temp }}/gui-app-artifact
+          if-no-files-found: error
+          retention-days: 1
+
   # Drives the REAL .app through real user journeys and diffs the resulting
   # accessibility tree against committed structural baselines.
   #
@@ -232,18 +336,37 @@ jobs:
   # session so an .app can actually open a window. Both are image properties,
   # not promises — which is what the preflight step below is for.
   gui-golden-flows:
+    needs:
+      - changes
+      - gui-app-build
+    if: >-
+      needs.changes.outputs.desktop == 'true' &&
+      needs.changes.outputs.full_gate == 'true'
     # macos-15 for the same reason as the build job: Package.swift is
     # swift-tools-version 6.0, and macos-14 still defaults to Swift 5.x.
     runs-on: macos-15
-    # Build is ~the same cost as the build job; the flows are seconds each
-    # (6-11 s on an M3 Ultra). 30 leaves room for a cold package resolve
-    # without letting a wedged app sit on the 6-hour default.
+    strategy:
+      # A failure in one product journey must not cancel independent evidence
+      # from the other selected groups. The stable desktop-tests facade still
+      # blocks unless every matrix child succeeds.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.gui_shards) }}
+    # The shared app is already built. Individual flows are usually seconds
+    # each (6-11 s on an M3 Ultra), while hosted-runner launch variance can be
+    # much higher. 30 minutes catches a wedged shard far before the six-hour
+    # default without weakening the existing journey time budget.
     timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/rapid-mac
+    env:
+      # Each matrix child receives only one manifest group. Every named step
+      # remains visible, but the harness exits before launch for journeys owned
+      # by another shard. Separate hosted VMs isolate HOME, defaults, ports,
+      # app processes, and result directories by construction.
+      GUI_FLOWS: ${{ matrix.gui_flows }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # BEFORE the build, because it is the cheap question and the one most
       # likely to be answered "no" by a future runner-image change. If the
@@ -267,21 +390,29 @@ jobs:
           echo "Dock pid: $dock_pid"
           "$RUNNER_TEMP/rapid-ax" trust "$dock_pid"
 
-      # SKIP_SIDECAR=1 drops the 5-10 min pip install of the bundled Python
-      # engine. The golden flows never touch it: every flow points RAPID_BIN
-      # at scripts/fake-rapid-mlx.sh, so there is no model download, no GPU
-      # work and no network in the run at all.
-      #
-      # Exercise the same compile-time surface users receive. Debug builds add
-      # Settings → Developer, so comparing a Debug app against release golden
-      # baselines makes every Settings journey fail even when the product is
-      # unchanged. Optimisation does not matter here; matching the shipped UI
-      # contract does.
-      - name: Build Rapid-MLX Desktop.app
+      - name: Download commit-bound GUI app
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          name: rapid-gui-app-${{ github.sha }}
+          path: ${{ runner.temp }}/gui-app-artifact
+
+      # Do not merely trust the artifact name. Verify both its declared source
+      # commit and its bytes before extraction, then verify the app's code seal.
+      # Missing, stale, corrupt, or substituted artifacts therefore fail the
+      # merge gate before any journey launches.
+      - name: Verify and extract GUI app
         env:
-          SKIP_SIDECAR: "1"
-          RAPID_BUILD_CONFIG: release
-        run: ./scripts/build.sh
+          ARTIFACT_DIR: ${{ runner.temp }}/gui-app-artifact
+        run: |
+          set -euo pipefail
+          python ../../scripts/gui_app_artifact.py verify \
+            --archive "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip" \
+            --manifest "$ARTIFACT_DIR/manifest.json" \
+            --expected-source-sha "$GITHUB_SHA"
+          rm -rf "build/Rapid-MLX Desktop.app"
+          mkdir -p build
+          ditto -x -k "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip" build
+          codesign --verify --deep --strict "build/Rapid-MLX Desktop.app"
 
       # #1719 — the first native XCUITest journey complements (and does not
       # replace) the AX flows below. XCTest can capture an individual element,
@@ -289,17 +420,30 @@ jobs:
       # records actually draw different pixels rather than the same bitmap.
       - name: 'XCUITest: image-generation pixels'
         id: xcui
+        if: contains(fromJSON(matrix.gui_flows), 'image-generation')
         continue-on-error: true
         env:
-          RAPID_XCUI_RESULT_BUNDLE: ${{ runner.temp }}/RapidUITests.xcresult
+          RAPID_XCUI_RESULT_BUNDLE: ${{ runner.temp }}/RapidImageUITests.xcresult
+          RAPID_XCUI_ONLY_TESTING: RapidUITests/ImageGenerationPixelTests
+        run: ./scripts/run-xcui-tests.sh
+
+      - name: 'XCUITest: chat attachment ownership'
+        id: chat_xcui
+        if: >-
+          contains(fromJSON(matrix.gui_flows), 'chat-multimodal-attachments') ||
+          contains(fromJSON(matrix.gui_flows), 'chat-document-attachment')
+        continue-on-error: true
+        env:
+          RAPID_XCUI_RESULT_BUNDLE: ${{ runner.temp }}/RapidChatAttachmentUITests.xcresult
+          RAPID_XCUI_ONLY_TESTING: RapidUITests/ChatAttachmentJourneyTests
         run: ./scripts/run-xcui-tests.sh
 
       - name: Upload XCUITest evidence
-        if: steps.xcui.outcome == 'failure'
+        if: steps.xcui.outcome == 'failure' || steps.chat_xcui.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          name: rapid-xcui-evidence
-          path: ${{ runner.temp }}/RapidUITests.xcresult
+          name: rapid-xcui-evidence-${{ matrix.group }}
+          path: ${{ runner.temp }}/Rapid*UITests.xcresult
           if-no-files-found: ignore
 
       # One step per flow so a red check names the journey that broke rather
@@ -362,6 +506,15 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow chat-restore
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
+
+      # Exercise the vision sidecar before the long sequence of isolated app
+      # launches below can create artificial cold-start pressure on the hosted
+      # Mac. Payload correctness is still asserted by the flow itself.
+      - name: 'Golden flow: chat-multimodal-attachments'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow chat-multimodal-attachments
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
 
       - name: 'Golden flow: message-actions'
         continue-on-error: true
@@ -496,6 +649,7 @@ jobs:
         if: always()
         env:
           GOLDEN_ROOT: ${{ runner.temp }}/golden
+          EXPECTED_FLOW_COUNT: ${{ matrix.flow_count }}
         run: |
           python3 - <<'PY'
           import json
@@ -503,7 +657,7 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["GOLDEN_ROOT"])
-          expected = 28
+          expected = int(os.environ["EXPECTED_FLOW_COUNT"])
           results = sorted(root.glob("*/result.json"))
           failures = []
           for path in results:
@@ -540,9 +694,22 @@ jobs:
       - name: Regenerate baselines on this runner (diagnostic)
         if: failure()
         env:
+          GOLDEN_ROOT: ${{ runner.temp }}/golden
           SCRATCH: ${{ runner.temp }}/os-baselines
         run: |
           set -uo pipefail
+          structural_failure=0
+          for result in "$GOLDEN_ROOT"/*/result.json; do
+            if jq -e '.status != "pass"' "$result" >/dev/null \
+              && find "$(dirname "$result")" -name '*.observed.txt' -print -quit | grep -q .; then
+              structural_failure=1
+              break
+            fi
+          done
+          if [[ "$structural_failure" != 1 ]]; then
+            echo "No structural baseline mismatch; skipping baseline regeneration."
+            exit 0
+          fi
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
           for flow in fresh-install settings-persistence settings-mtp chat-restore slow-stream-stop model-crash-recovery update-state update-busy campaign-banner image-generation audio-readiness launch-integrations; do
@@ -562,7 +729,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          name: gui-golden-flow-evidence
+          name: gui-golden-flow-evidence-${{ matrix.group }}
           # Both halves: the failing flow's own dumps, and the full
           # runner-vs-committed regeneration from the diagnostic step above.
           path: |
@@ -578,8 +745,72 @@ jobs:
         if: always()
         env:
           XCUI_OUTCOME: ${{ steps.xcui.outcome }}
+          CHAT_XCUI_OUTCOME: ${{ steps.chat_xcui.outcome }}
+          IMAGE_SELECTED: ${{ contains(fromJSON(matrix.gui_flows), 'image-generation') }}
+          CHAT_SELECTED: ${{ contains(fromJSON(matrix.gui_flows), 'chat-multimodal-attachments') || contains(fromJSON(matrix.gui_flows), 'chat-document-attachment') }}
         run: |
-          if [[ "$XCUI_OUTCOME" != success ]]; then
+          if [[ "$IMAGE_SELECTED" == true && "$XCUI_OUTCOME" != success ]]; then
             echo "::error::Native XCUITest failed ($XCUI_OUTCOME)"
             exit 1
+          fi
+          if [[ "$CHAT_SELECTED" == true && "$CHAT_XCUI_OUTCOME" != success ]]; then
+            echo "::error::Native Chat attachment XCUITest failed ($CHAT_XCUI_OUTCOME)"
+            exit 1
+          fi
+          echo "All selected native XCUITests passed"
+
+  desktop-tests:
+    # Stable required-check facade. It is present even on non-desktop PRs,
+    # unlike workflow-level path filters, and upgrades merge-queue candidates
+    # to the complete GUI golden-flow gate.
+    needs:
+      - changes
+      - accessibility-identifiers
+      - accessibility-identifier-tests
+      - gui-harness-contracts
+      - build
+      - gui-app-build
+      - gui-golden-flows
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check desktop results
+        env:
+          DESKTOP_EXPECTED: ${{ needs.changes.outputs.desktop }}
+          FULL_GATE: ${{ needs.changes.outputs.full_gate }}
+          IDENTIFIERS: ${{ needs.accessibility-identifiers.result }}
+          IDENTIFIER_TESTS: ${{ needs.accessibility-identifier-tests.result }}
+          HARNESS_CONTRACTS: ${{ needs.gui-harness-contracts.result }}
+          BUILD: ${{ needs.build.result }}
+          GUI_APP_BUILD: ${{ needs.gui-app-build.result }}
+          GOLDEN_FLOWS: ${{ needs.gui-golden-flows.result }}
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.changes.result }}" != success ]; then
+            echo "Desktop change classifier failed"
+            exit 1
+          fi
+          if [ "$DESKTOP_EXPECTED" != true ]; then
+            echo "Desktop lane not required for this PR"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = pull_request ] && [ "$FULL_GATE" != true ]; then
+            echo "Desktop PR gate passed; apply the full-ci label when this PR is ready to merge"
+            exit 1
+          fi
+          for result in "$IDENTIFIERS" "$IDENTIFIER_TESTS" "$HARNESS_CONTRACTS" "$BUILD"; do
+            if [ "$result" != success ]; then
+              echo "A desktop PR gate failed: $result"
+              exit 1
+            fi
+          done
+          if [ "$FULL_GATE" = true ]; then
+            if [ "$GUI_APP_BUILD" != success ]; then
+              echo "GUI app artifact build failed: $GUI_APP_BUILD"
+              exit 1
+            fi
+            if [ "$GOLDEN_FLOWS" != success ]; then
+              echo "GUI golden-flow merge gate failed: $GOLDEN_FLOWS"
+              exit 1
+            fi
           fi

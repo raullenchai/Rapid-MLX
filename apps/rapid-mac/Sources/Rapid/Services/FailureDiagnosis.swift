@@ -15,6 +15,15 @@ struct FailureDiagnosis: Equatable, Sendable {
         case engineNotRunning
         case webSearchOffline
         case webSearchUnavailable
+        /// A user-supplied Keenable key was rejected. Keep keyed account
+        /// failures distinct from provider availability: the network is up,
+        /// retrying the same request cannot repair the credential, and the
+        /// useful destination is the key field in Settings.
+        case webSearchKeyRejected
+        /// The stored Keenable key has exhausted its monthly credit allowance.
+        case webSearchKeyQuotaExceeded
+        /// The stored Keenable key hit its account/organisation rate cap.
+        case webSearchKeyRateLimited
         /// The free DuckDuckGo backend throttled this machine. Distinct from
         /// ``webSearchUnavailable`` because the remedy is different: nothing in
         /// Settings is misconfigured, so "check its settings" sends the user to
@@ -68,7 +77,8 @@ struct FailureDiagnosis: Equatable, Sendable {
             // ``webSearchUnavailable`` is the honest ancestor — it is the kind
             // this very condition used to land on, so an older build shows the
             // copy it always showed for a throttled search.
-            case .webSearchRateLimited:
+            case .webSearchRateLimited, .webSearchKeyRejected,
+                 .webSearchKeyQuotaExceeded, .webSearchKeyRateLimited:
                 return .webSearchUnavailable
             case .browsePageTooLarge:
                 return .toolFailed
@@ -218,6 +228,8 @@ extension FailureDiagnosis.Kind {
         // copy and deep-link do the recovering.
         case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
              .webSearchOffline, .webSearchUnavailable, .webSearchRateLimited,
+             .webSearchKeyRejected, .webSearchKeyQuotaExceeded,
+             .webSearchKeyRateLimited,
              .browsePageTooLarge,
              .commandPermissionDenied, .commandFailed,
              .fileNotFound, .filePermissionDenied, .toolFailed,
@@ -259,6 +271,15 @@ enum FailureDiagnoser {
         case .webSearchUnavailable:
             message = "Web search couldn't finish. Check its settings, then try again."
             action = .retry
+        case .webSearchKeyRejected:
+            message = "Keenable rejected this API key. Re-paste it in Settings → Tools, or clear it to use keyless search."
+            action = .openWebSearchSettings
+        case .webSearchKeyQuotaExceeded:
+            message = "This Keenable key has used its monthly credits. Check its plan, or clear the key in Settings → Tools to use keyless search."
+            action = .openWebSearchSettings
+        case .webSearchKeyRateLimited:
+            message = "This Keenable key is rate-limited. Wait a moment, check its plan, or clear the key in Settings → Tools to use keyless search."
+            action = .openWebSearchSettings
         case .webSearchRateLimited:
             // Deliberately NOT "check its settings": everything in Settings is
             // already correct when this fires. DuckDuckGo rate-limits the free
@@ -370,6 +391,19 @@ enum FailureDiagnoser {
         }
 
         if toolName == "web_search" {
+            // Keenable deliberately returns account failures as errors instead
+            // of silently falling back to the shared keyless pool. Preserve
+            // that precise cause at the UI boundary; collapsing all three to
+            // ``webSearchUnavailable`` hid the only useful recovery action.
+            if raw.contains("keenable rejected the api key") {
+                return .webSearchKeyRejected
+            }
+            if raw.contains("keenable key's monthly credit allowance is used up") {
+                return .webSearchKeyQuotaExceeded
+            }
+            if raw.contains("keenable rate limit hit for this api key") {
+                return .webSearchKeyRateLimited
+            }
             // ``WebSearchTool`` stamps ``.webSearchRateLimited`` on the result
             // directly, so this branch only matters for rows restored from an
             // older transcript (no stored kind) — hence the narrow, DDG-anchored

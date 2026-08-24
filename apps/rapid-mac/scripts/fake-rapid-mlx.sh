@@ -806,6 +806,27 @@ class Handler(BaseHTTPRequestHandler):
                 body = {}
         messages = body.get("messages") if isinstance(body.get("messages"), list) else []
         definitions = body.get("tools") if isinstance(body.get("tools"), list) else []
+        user_payloads = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            texts = []
+            image_hashes = []
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if isinstance(part.get("text"), str):
+                        texts.append(part["text"])
+                    image_url = part.get("image_url")
+                    if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                        image_hashes.append(
+                            hashlib.sha256(image_url["url"].encode()).hexdigest()
+                        )
+            user_payloads.append({"text": "\n".join(texts), "image_url_sha256": image_hashes})
         _event(
             "chat_request",
             roles=[m.get("role") for m in messages if isinstance(m, dict)],
@@ -818,6 +839,7 @@ class Handler(BaseHTTPRequestHandler):
                 m.get("content") for m in messages
                 if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
             ],
+            user_payloads=user_payloads,
         )
 
 
@@ -852,6 +874,33 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             _event("tool_loop_synthesis", tool_results=tool_results)
             return
+
+        # Native web-tool fixture. The fake stands in for the model here: on
+        # each new user turn it chooses the advertised web_search tool, then
+        # synthesizes normally once the app has appended that call's result.
+        # This deliberately does not inspect prompt keywords; product routing
+        # belongs to the model's tool choice, never to app-side regexes.
+        if _setting("RAPID_GUI_WEB_SEARCH_FIXTURE") == "1" and any(
+            isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and definition["function"].get("name") == "web_search"
+            for definition in definitions
+        ):
+            last_user_index = max((
+                index for index, message in enumerate(messages)
+                if isinstance(message, dict) and message.get("role") == "user"
+            ), default=-1)
+            has_result_for_turn = any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in messages[last_user_index + 1:]
+            )
+            if not has_result_for_turn:
+                call_id = f"golden_search_{last_user_index}"
+                self.wfile.write(_sse(_tool_call_delta(call_id)))
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                _event("native_web_search_call", call_id=call_id)
+                return
 
         # #896 crash-recovery harness: when FAKE_DIE_AFTER_CHUNKS
         # is set to a positive integer N, we abruptly os._exit(1)
@@ -921,6 +970,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 FAKE_REPO = "fake-org/fake-repo"
+FAKE_VISION_ALIAS = "qwen3-vl-2b-4bit"
+FAKE_VISION_REPO = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
 
 
 def _emit_catalog(subcommand, alias):
@@ -937,6 +988,43 @@ def _emit_catalog(subcommand, alias):
     to fall through to the server.
     """
     if subcommand == "models":
+        if "--json" in sys.argv:
+            aliases = []
+            if _setting("FAKE_INCLUDE_STARTER") == "1":
+                aliases.append("lfm2.5-1b-4bit")
+            if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+                aliases.extend([f"a-cached-{index}" for index in range(6)])
+                aliases.append("qwen3.5-4b-4bit")
+            if _setting("FAKE_CACHED_VARIANTS") == "1":
+                aliases.extend(["qwen3-0.6b-8bit", "qwen3-0.6b-4bit", "qwen3-4b-4bit"])
+            aliases.append(FAKE_VISION_ALIAS if _setting("FAKE_VISION_CHAT") == "1" else "fake-alias")
+            aliases.append("fake-external-alias")
+            if _setting("FAKE_SETTINGS_MTP") == "1":
+                aliases.append("qwen3.8-27b-4bit")
+            text = []
+            for item in aliases:
+                is_builtin = item != "fake-external-alias"
+                text.append({
+                    "alias": item,
+                    "hf_path": (
+                        FAKE_VISION_REPO if item == FAKE_VISION_ALIAS else FAKE_REPO
+                    ),
+                    "supports_spec_decode": False,
+                    "mtp_draft_model": (
+                        "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"
+                        if item == "qwen3.8-27b-4bit" else None
+                    ),
+                    "mtp_speculative_tokens": 3 if item == "qwen3.8-27b-4bit" else None,
+                    "is_builtin": is_builtin,
+                    "is_text_only": item == "qwen3.5-4b-4bit",
+                })
+            print(json.dumps({
+                "text": text,
+                "video": [{"alias": "fake-video-alias"}],
+                "image": [{"alias": FAKE_IMAGE_ALIAS}],
+                "audio": [{"alias": "fake-qwen3-tts"}, {"alias": "fake-whisper-small"}],
+            }))
+            return True
         print("Available models")
         print("Alias                  Parser           Reasoning        Preset")
         print("---------------------  ---------------  ---------------  --------")
@@ -954,7 +1042,10 @@ def _emit_catalog(subcommand, alias):
             print("qwen3-0.6b-8bit       hermes           qwen3")
             print("qwen3-0.6b-4bit       hermes           qwen3")
             print("qwen3-4b-4bit         hermes           qwen3")
-        print("fake-alias             hermes           qwen3")
+        if _setting("FAKE_VISION_CHAT") == "1":
+            print("qwen3-vl-2b-4bit      hermes           qwen3")
+        else:
+            print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         if _setting("FAKE_SETTINGS_MTP") == "1":
             print("qwen3.8-27b-4bit       hermes           qwen3           MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3")
@@ -993,7 +1084,14 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
         if _setting("FAKE_SETTINGS_MTP") != "1":
-            print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+            if _setting("FAKE_VISION_CHAT") == "1":
+                # This is a behavioural fixture, not a real checkpoint.  Keep
+                # its footprint below the hosted runner's live-memory warning
+                # threshold so an unrelated confirmation sheet cannot turn an
+                # attachment journey into a memory-admission test.
+                print(f"{FAKE_VISION_ALIAS}      {FAKE_VISION_REPO}  256 MB")
+            else:
+                print(f"fake-alias             {FAKE_REPO}        1.2 GB")
             print("(external)             fake-external-alias     2.4 GB")
         if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
             for index in range(6):
@@ -1034,6 +1132,7 @@ def _emit_catalog(subcommand, alias):
             "fake-qwen3-tts": "fake/qwen3-tts",
             "fake-whisper-small": "fake/whisper-small",
             "qwen3.8-27b-4bit": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+            FAKE_VISION_ALIAS: FAKE_VISION_REPO,
         }.get(alias, FAKE_REPO)
         print(f"Alias: {alias} -> {repo}")
         return True
@@ -1099,6 +1198,13 @@ def main():
             sys.exit(0)
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
+
+    # XCUITest cleanup must not depend on reaching the later readiness event:
+    # record ownership as soon as this process commits to the long-lived serve
+    # path, so a startup hang can still be reaped without touching real models.
+    if pid_path := _setting("FAKE_PID_FILE"):
+        with open(pid_path, "w", encoding="utf-8") as stream:
+            stream.write(f"{os.getpid()}\n")
 
     if _setting("FAKE_REJECT_IMAGE_SIDECAR") == "1" and args.alias == FAKE_IMAGE_ALIAS:
         _event("server_start_rejected", alias=args.alias, pid=os.getpid())

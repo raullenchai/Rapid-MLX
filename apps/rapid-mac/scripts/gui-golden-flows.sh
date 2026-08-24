@@ -19,6 +19,21 @@ FAKE_ALIAS="fake-alias"
 # baselines for the same reason as FAKE_ALIAS: renaming a fixture must not read
 # as a structural change to the UI.
 FAKE_IMAGE_ALIAS="fake-image-alias"
+# Phase B made the first-run wizard's "RECOMMENDED FOR YOUR N GB MAC" row
+# derive from the host's REAL physical RAM. A single committed golden
+# baseline therefore can't be host-independent: a 14 GB CI runner lands on
+# the 8 GB tier (lfm2.5-2.6B) while a 256 GB release Mac lands on 48+
+# (qwen3.8-27B + qwen3.6-35B). The golden gate runs in BOTH places (CI and
+# the operator's release Mac), so every persona that renders the chooser
+# pins the same tier to keep its AX baseline deterministic.
+# 8 = the 8 GB tier, which is exactly what the committed compact-chooser
+# baseline captures (smart lfm2.5-2.6B; its fast pick lfm2.5-1B equals the
+# starter, so the row renders just the one card). Pinning 8 also happens to
+# be the safe tier for cached-curated-tradeup: its assertion needs
+# qwen3.5-4b to stay a native curated trade-up, which 8 GB guarantees
+# (16/24/32 GB hosts fold qwen3.5-4b into the recommended row instead).
+GOLDEN_RAM_GB=8
+GOLDEN_BRAND="Apple M1"
 UPDATE_BASELINES=0
 FLOW="all"
 KEEP=0
@@ -30,6 +45,8 @@ MAIN_WINDOW_ID=""
 BUNDLE_ID=""
 AX_DRIVER=""
 RESULT_WRITTEN=0
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_STARTED_EPOCH="$(date +%s)"
 PERSONA_ENV=()
 
 usage() {
@@ -40,7 +57,7 @@ Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, image-generation, dictation, audio-readiness, all
+       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -71,9 +88,38 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# CI may route a Desktop diff to a subset of the manifest's journey groups.
+# Keep the selection check before preflight, app launch, output-directory
+# creation, and cleanup registration so an unaffected named workflow step is a
+# true no-op. Empty/malformed routing input fails closed by running the flow.
+if [[ -n "${GUI_FLOWS:-}" && "$FLOW" != all ]]; then
+    if selected="$(jq -r --arg flow "$FLOW" \
+        'if type == "array" then any(.[]; . == $flow) else error("not an array") end' \
+        <<<"$GUI_FLOWS" 2>/dev/null)"; then
+        if [[ "$selected" != true ]]; then
+            printf '[gui-golden] SKIP — %s is outside the selected risk groups\n' "$FLOW"
+            exit 0
+        fi
+    else
+        printf '[gui-golden] WARN: invalid GUI_FLOWS; running %s fail-closed\n' "$FLOW" >&2
+    fi
+fi
+
 log() { printf '[gui-golden] %s\n' "$*"; }
 die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
+write_result() {
+    local status="$1" exit_code="$2" finished_epoch duration_seconds
+    finished_epoch="$(date +%s)"
+    duration_seconds=$((finished_epoch - RUN_STARTED_EPOCH))
+    jq -n --arg status "$status" --arg flow "$FLOW" --arg app "$APP_SOURCE" \
+        --arg started_at "$RUN_STARTED_AT" --arg artifact_path "$OUT_ROOT" \
+        --argjson duration_seconds "$duration_seconds" \
+        --argjson exit_code "$exit_code" \
+        '{status: $status, flow: $flow, app: $app, started_at: $started_at,
+          duration_seconds: $duration_seconds, artifact_path: $artifact_path,
+          exit_code: $exit_code}' > "$OUT_ROOT/result.json"
+}
 flow_requires_screen_recording() {
     case "$FLOW" in
         all) return 0 ;;
@@ -100,7 +146,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -168,18 +214,21 @@ cleanup_operator_server() {
 finish() {
     local status=$?
     set +e
-    if [[ "$status" -ne 0 && "$RESULT_WRITTEN" == 0 && -d "$OUT_ROOT" ]]; then
-        jq -n --arg status fail --arg flow "$FLOW" --arg app "$APP_SOURCE" \
-            --argjson exit_code "$status" \
-            '{status: $status, flow: $flow, app: $app, exit_code: $exit_code}' \
-            > "$OUT_ROOT/result.json" 2>/dev/null || true
-    fi
     cleanup_persona
     cleanup_operator_server
+    if [[ "$status" -ne 0 && "$RESULT_WRITTEN" == 0 ]]; then
+        mkdir -p "$OUT_ROOT" 2>/dev/null || true
+        if [[ -d "$OUT_ROOT" ]]; then
+            write_result fail "$status" 2>/dev/null || true
+        fi
+    fi
 }
 trap finish EXIT
-trap 'cleanup_persona; cleanup_operator_server; exit 130' INT
-trap 'cleanup_persona; cleanup_operator_server; exit 143' TERM
+# Signal handlers only select the conventional exit code. The EXIT handler is
+# the single owner of cleanup and final evidence, avoiding double-cleanup and
+# ensuring cancellation/timeout failures receive the same result schema.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The preconditions every flow depends on and none of them can observe:
 # permission to read another process's AX tree, and a session that can actually
@@ -1038,7 +1087,13 @@ wait_settings_stable() {
 }
 
 start_model() {
-    wait_identifier Readiness.Action "$OUT/readiness-start.json"
+    # The readiness band is mounted before its action becomes interactive
+    # while the catalog finishes resolving the selected model.  Pressing the
+    # merely-present button is accepted by AX but dropped by SwiftUI, which
+    # made slower hosted runners wait a full minute for a sidecar that was
+    # never asked to start.  Gate the interaction on the same enabled state a
+    # user needs before clicking it.
+    wait_identifier_enabled Readiness.Action "$OUT/readiness-start.json"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
     # ``server_started`` says the fake bound its port; it does NOT say the app
     # has finished wiring up to it. The old gate also tested
@@ -1046,8 +1101,29 @@ start_model() {
     # whole startup — including while its hint still reads "<alias> is still
     # starting." So this returned early, ``send_prompt`` pressed into a closed
     # readiness gate, and the press was silently dropped (observed: 1 run in 2).
-    for _ in {1..120}; do
+    # Hosted macOS runners can spend more than 30 seconds cold-starting the
+    # bundled fake sidecar after a full release build. Keep the event-based
+    # readiness proof, but allow 60 seconds before declaring startup broken.
+    local memory_confirmed=0
+    for _ in {1..240}; do
         grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
+        # Authoritative aliases retain their production footprint estimate
+        # even though this journey launches the zero-weight fake sidecar.  A
+        # memory-constrained hosted runner can therefore present the real
+        # safety confirmation after Start.  Confirm only when that explicit
+        # sheet exists; this keeps the product gate covered without leaving a
+        # fake-model GUI journey dependent on the runner's ambient pressure.
+        if [[ "$memory_confirmed" == 0 ]]; then
+            see_main "$OUT/readiness-after-start.json"
+            if jq -e '.data.ui_elements[]?
+                      | select(.identifier == "MemoryWarning.Confirm" and .enabled == true)' \
+                "$OUT/readiness-after-start.json" >/dev/null; then
+                "$AX_DRIVER" click-center "$APP_PID" MemoryWarning.Confirm \
+                    > "$OUT/readiness-memory-confirm.json"
+                memory_confirmed=1
+                log "  confirmed hosted-runner memory warning for fake sidecar"
+            fi
+        fi
         sleep 0.25
     done
     grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null \
@@ -1157,7 +1233,9 @@ flow_fresh_install() {
     # The real engine registry always contains the starter. Without this row,
     # the fake catalog makes the app correctly fall back to its only chat row
     # and the assertion below can never prove the production first-run rule.
-    start_persona fresh-install FAKE_INCLUDE_STARTER=1
+    start_persona fresh-install FAKE_INCLUDE_STARTER=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
@@ -1308,7 +1386,9 @@ flow_cached_quickstart() {
     # never promote that notice into a selectable model named "No" (#1918).
     # A fresh persona keeps this onboarding assertion independent from the
     # launch-sweep assertion above.
-    start_persona cached-quickstart FAKE_EMPTY_CACHE_NOTICE=1
+    start_persona cached-quickstart FAKE_EMPTY_CACHE_NOTICE=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
     see_main "$OUT/consent.json"
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
@@ -1384,7 +1464,9 @@ flow_cached_quickstart() {
 
 flow_cached_curated_tradeup() {
     log "cached curated trade-up keeps its on-disk state past the six-row cap"
-    start_persona cached-curated-tradeup FAKE_CACHED_CURATED_TRADEUP=1
+    start_persona cached-curated-tradeup FAKE_CACHED_CURATED_TRADEUP=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
     see_main "$OUT/consent.json"
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
         "$OUT/consent.json" >/dev/null; then
@@ -1414,7 +1496,9 @@ flow_cached_curated_tradeup() {
 
 flow_cached_variant_collapse() {
     log "first-run chooser collapses cached quant siblings (#2033 finding 3)"
-    start_persona cached-variant-collapse FAKE_CACHED_VARIANTS=1
+    start_persona cached-variant-collapse FAKE_CACHED_VARIANTS=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
     see_main "$OUT/consent.json"
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
         "$OUT/consent.json" >/dev/null; then
@@ -1439,7 +1523,9 @@ flow_cached_variant_collapse() {
 
 flow_download_progress() {
     log "download progress never shows observed bytes above its total (#1550)"
-    start_persona download-progress FAKE_DOWNLOAD_OVERRUN=1
+    start_persona download-progress FAKE_DOWNLOAD_OVERRUN=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
     see_main "$OUT/consent.json"
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
@@ -1481,9 +1567,14 @@ flow_download_progress() {
         "$OUT/downloading.json" >/dev/null; then
         die "download progress still shows observed bytes above its displayed total"
     fi
-    jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
-        "$OUT/fake-events.jsonl" >/dev/null \
-        || die "download-progress flow never exercised the pull subprocess"
+    # The progress pipe can become AX-visible a few milliseconds before the
+    # separately opened JSONL witness is observable after several personas
+    # have run back-to-back. Poll the independent witness like the image/audio
+    # flows do instead of treating that filesystem scheduling window as a
+    # product failure.
+    wait_fake_event \
+        '.event == "command" and .subcommand == "pull"' \
+        "download-progress flow never exercised the pull subprocess"
 
     # Onboarding covers the global DownloadStrip, so Step 3 must provide its
     # own reachable cancellation path. Exercise the live process rather than
@@ -2212,10 +2303,13 @@ flow_restored_tools() {
     assert_tree_text "$OUT/followup-settled.json" "Golden technology story"
 
     jq -s -e '[.[] | select(.event == "chat_request")
-        | select((.roles | index("tool")) != null)
+        | select(.roles[-1] == "tool")
         | select((.tools | index("web_search")) != null)] | length == 2' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "fresh/restored synthesis requests did not both carry web evidence and tools"
+    jq -s -e '[.[] | select(.event == "native_web_search_call")] | length == 2' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the fake model did not natively choose web_search on both user turns"
     cleanup_persona
 }
 
@@ -2386,7 +2480,9 @@ flow_model_crash_recovery() {
 
 flow_low_memory_choice() {
     log "6/6 low-memory onboarding escape"
-    start_persona low-memory-choice
+    start_persona low-memory-choice \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
     local tree="$OUT/onboarding.json"
     see_main "$tree"
@@ -2894,7 +2990,9 @@ flow_browse_all_destination() {
     # supersedes it — the catalogue is now a micro-stage INSIDE Step 2. So the
     # assertions below are the same three questions, asked of the new
     # destination: did anything happen, did setup survive, did the pick.
-    start_persona browse-all-destination
+    start_persona browse-all-destination \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
     # Only the consent sheet — the wizard has to stay up, it is the subject.
     local tree="$OUT/ba-first-run.json"
@@ -3235,6 +3333,36 @@ flow_chat_document_attachment() {
 
     local fixture="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
     see_main "$OUT/document-compose.json"
+
+    # The composer's single plus affordance expands to exactly the two product
+    # actions: documents remain available for every chat model, while photos
+    # stay visible-but-disabled for this text-only fixture alias. Keeping the
+    # disabled row visible teaches the capability boundary without pretending
+    # Rapid itself lacks image input.
+    press "$OUT/document-compose.json" ChatView.AddAttachments \
+        "$OUT/attachment-menu-open.json"
+    local attachment_menu_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/attachment-menu.json"
+        if jq -e '[.data.ui_elements[]?
+                   | select(.identifier == "ChatView.Attachments.UploadFile"
+                            or .identifier == "ChatView.Attachments.UploadPhoto")]
+                  | length == 2' "$OUT/attachment-menu.json" >/dev/null; then
+            attachment_menu_ready=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$attachment_menu_ready" == 1 ]] \
+        || die "the attachment plus menu did not expose Upload file and Upload photo"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadFile" and .enabled == true)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload file was not enabled for a text-only chat model"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadPhoto" and .enabled == false)' \
+        "$OUT/attachment-menu.json" >/dev/null \
+        || die "Upload photo did not expose the text-only model capability boundary"
+
     "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
         > "$OUT/document-paste.json"
 
@@ -3312,6 +3440,75 @@ flow_chat_document_attachment() {
         "$OUT/document-restored.json" >/dev/null; then
         die "extracted document contents leaked into the visible transcript"
     fi
+    cleanup_persona
+}
+
+flow_chat_multimodal_attachments() {
+    start_persona chat-multimodal-attachments FAKE_VISION_CHAT=1
+    dismiss_first_run
+    start_model
+
+    local first="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-28.png"
+    local second="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
+    local document="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
+
+    see_main "$OUT/mm-compose.json"
+    press "$OUT/mm-compose.json" ChatView.AddAttachments "$OUT/mm-menu-open.json"
+    wait_identifier ChatView.Attachments.UploadPhoto "$OUT/mm-menu.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachments.UploadPhoto" and .enabled == true)' \
+        "$OUT/mm-menu.json" >/dev/null \
+        || die "Upload photo was not enabled for a vision chat model"
+    # Dismiss the popover by pressing its anchor again before exercising the
+    # native paste ingress. The two picker actions are source-wired to the same
+    # importer and pinned by AttachmentDedupTests; this flow proves the mounted
+    # menu exposes the correct enabled action.
+    press "$OUT/mm-menu.json" ChatView.AddAttachments "$OUT/mm-menu-close.json"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$first" > "$OUT/mm-first-paste.json"
+    wait_identifier ChatView.Attachment.Remove.cheetah-logo-28.png "$OUT/mm-first-attached.json"
+    send_prompt "Describe current image one" mm-first
+    wait_send_idle "$OUT/mm-first-complete.json"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$second" > "$OUT/mm-second-paste.json"
+    wait_identifier ChatView.Attachment.Remove.cheetah-logo-96.png "$OUT/mm-second-attached.json"
+    send_prompt "Describe current image two" mm-second
+    wait_send_idle "$OUT/mm-second-complete.json"
+
+    local first_hash second_hash
+    first_hash="$(python3 - "$first" <<'PY'
+import base64, hashlib, pathlib, sys
+url = "data:image/png;base64," + base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode()
+print(hashlib.sha256(url.encode()).hexdigest())
+PY
+)"
+    second_hash="$(python3 - "$second" <<'PY'
+import base64, hashlib, pathlib, sys
+url = "data:image/png;base64," + base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode()
+print(hashlib.sha256(url.encode()).hexdigest())
+PY
+)"
+    jq -e -s --arg first "$first_hash" --arg second "$second_hash" '
+        [ .[] | select(.event == "chat_request") ][1]
+        | .user_payloads[-1].image_url_sha256 == [$second]
+          and ([.user_payloads[]?.image_url_sha256[]?] | index($first) | not)
+    ' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the second image request resent the first image or omitted the second"
+
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$document" > "$OUT/mm-document-paste.json"
+    wait_identifier ChatView.Attachment.Remove.chat-document.txt "$OUT/mm-document-attached.json"
+    send_prompt "Review current document" mm-document
+    wait_send_idle "$OUT/mm-document-complete.json"
+    jq -e -s '
+        [ .[] | select(.event == "chat_request") ][2]
+        | ([.user_payloads[]?.image_url_sha256[]?] | length) == 0
+          and (.user_payloads[-1].text
+               | contains("BEGIN RAPID ATTACHMENT")
+                 and contains("Revenue: 42")
+                 and contains("Region: APAC"))
+    ' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the document request retained historical images or omitted extracted text"
+
     cleanup_persona
 }
 
@@ -3495,18 +3692,21 @@ flow_image_generation() {
 
     # The in-flight card. Asserted BEFORE the result so a render that returns
     # instantly (or a card that never appears) is a failure rather than a frame
-    # nobody looked at.
+    # nobody looked at.  SwiftUI mounts Cancel one layout pass before the
+    # indeterminate indicator the baseline owns; require both so the snapshot
+    # cannot race that valid intermediate tree.
     local inflight=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/ig-inflight.json"
-        if jq -e '.data.ui_elements[]? | select(.identifier == "Images.Cancel")' \
+        if jq -e 'any(.data.ui_elements[]?; .identifier == "Images.Cancel")
+                  and any(.data.ui_elements[]?; .role == "AXBusyIndicator")' \
                "$OUT/ig-inflight.json" >/dev/null; then
             inflight=1; break
         fi
         sleep 0.1
     done
     [[ "$inflight" == 1 ]] \
-        || die "no in-flight progress card: Images.Cancel never appeared during a render"
+        || die "no settled in-flight progress card with Cancel and busy indicator"
     baseline image-generation.inflight "$OUT/ig-inflight.json"
 
     # Sampling completion is followed by VAE decode / encoding. That tail must
@@ -4572,6 +4772,7 @@ case "$FLOW" in
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
     chat-document-attachment) flow_chat_document_attachment ;;
+    chat-multimodal-attachments) flow_chat_multimodal_attachments ;;
     image-generation) flow_image_generation ;;
     dictation) flow_dictation ;;
     audio-readiness) flow_audio_readiness ;;
@@ -4602,6 +4803,7 @@ case "$FLOW" in
         flow_catalog_integrity
         flow_browse_all_destination
         flow_chat_document_attachment
+        flow_chat_multimodal_attachments
         flow_image_generation
         flow_dictation
         flow_audio_readiness
@@ -4611,8 +4813,7 @@ case "$FLOW" in
     *) die "unknown flow: $FLOW" ;;
 esac
 
-jq -n --arg status pass --arg flow "$FLOW" --arg app "$APP_SOURCE" \
-    '{status: $status, flow: $flow, app: $app}' > "$OUT_ROOT/result.json"
+write_result pass 0
 RESULT_WRITTEN=1
 log "PASS — $FLOW"
 log "artifacts: $OUT_ROOT"

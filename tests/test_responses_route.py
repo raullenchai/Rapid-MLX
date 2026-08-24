@@ -150,7 +150,22 @@ def responses_client(monkeypatch):
     from vllm_mlx.config import reset_config
     from vllm_mlx.middleware.auth import rate_limiter
     from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.responses import router
+    from vllm_mlx.routes import responses as responses_route
+
+    # The route tests deliberately run without MLX. Admission is covered by
+    # its own contracts and otherwise imports the MLX scheduler lazily on the
+    # first request, so isolate that unrelated boundary in this harness.
+    monkeypatch.setattr(
+        responses_route, "_check_admission_or_503", lambda _engine: None
+    )
+
+    async def _await_without_scheduler(coro, _request, timeout):
+        del timeout
+        return await coro
+
+    monkeypatch.setattr(
+        responses_route, "_wait_with_disconnect", _await_without_scheduler
+    )
 
     cfg = reset_config()
     cfg.api_key = "test-secret"
@@ -170,9 +185,10 @@ def responses_client(monkeypatch):
     # producing the 400 instead, which masked the leak this fixture is
     # meant to gate against.
     install_exception_handlers(app)
-    app.include_router(router)
+    app.include_router(responses_route.router)
     yield SimpleNamespace(
         client=TestClient(app),
+        cfg=cfg,
         engine=cfg.engine,
         rate_limiter=rate_limiter,
         reset_config=reset_config,
@@ -288,6 +304,51 @@ class TestResponsesNonStream:
         assert body["usage"]["input_tokens"] == 3
         assert body["usage"]["output_tokens"] == 2
         assert body["usage"]["total_tokens"] == 5
+
+    def test_structured_output_keeps_bare_json_out_of_reasoning(self, responses_client):
+        from vllm_mlx.reasoning.cohere_command_parser import (
+            CohereCommand4ReasoningParser,
+        )
+
+        document = '{"answer":4}'
+        engine = responses_client.engine
+
+        async def chat(messages, **kwargs):
+            engine.calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
+            return _GenerationOutput(
+                text=document,
+                raw_text=document,
+                prompt_tokens=3,
+                completion_tokens=4,
+                finish_reason="length",
+            )
+
+        engine.chat = chat
+        responses_client.cfg.reasoning_parser = CohereCommand4ReasoningParser()
+
+        response = responses_client.client.post(
+            "/v1/responses",
+            json=_payload(
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "answer",
+                        "schema": {
+                            "type": "object",
+                            "properties": {"answer": {"type": "integer"}},
+                            "required": ["answer"],
+                            "additionalProperties": False,
+                        },
+                    }
+                }
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["output"][0]["content"][0]["text"] == document
+        assert all(item["type"] != "reasoning" for item in body["output"])
 
     def test_response_carries_loaded_model_not_request_alias(self, responses_client):
         """The response.model field must be the loaded engine's model
@@ -959,6 +1020,152 @@ def _parse_sse(body_text: str) -> list[tuple[str, dict]]:
 
 
 class TestResponsesStream:
+    @staticmethod
+    def _install_cohere_stream(responses_client, deltas):
+        engine = responses_client.engine
+
+        async def stream_chat(messages, **kwargs):
+            engine.stream_calls.append(
+                SimpleNamespace(messages=messages, kwargs=kwargs)
+            )
+            accumulated = ""
+            for index, delta in enumerate(deltas):
+                accumulated += delta
+                final = index == len(deltas) - 1
+                yield _GenerationOutput(
+                    text=accumulated,
+                    raw_text=accumulated,
+                    new_text=delta,
+                    prompt_tokens=3,
+                    completion_tokens=index + 1,
+                    finished=final,
+                    finish_reason="stop" if final else None,
+                )
+
+        engine.stream_chat = stream_chat
+        responses_client.cfg.reasoning_parser_name = "cohere_command4"
+
+    def test_structured_output_streams_bare_json_as_output_text(self, responses_client):
+        document = '{"answer":4}'
+        self._install_cohere_stream(responses_client, [document[:5], document[5:]])
+
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "answer",
+                        "schema": {
+                            "type": "object",
+                            "properties": {"answer": {"type": "integer"}},
+                            "required": ["answer"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        ) as response:
+            assert response.status_code == 200, response.text
+            events = _parse_sse("".join(response.iter_text()))
+
+        output_text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        reasoning_text = "".join(
+            data.get("delta", "")
+            for name, data in events
+            if name == "response.reasoning_summary_text.delta"
+        )
+        assert output_text == document
+        assert reasoning_text == ""
+
+    def test_reasoning_cap_uses_command_protocol_boundary(self, responses_client):
+        from vllm_mlx.reasoning.cohere_command_parser import (
+            TEXT_END,
+            TEXT_START,
+            THINK_END,
+        )
+
+        self._install_cohere_stream(
+            responses_client,
+            ["abcdefgh", THINK_END, TEXT_START, "answer", TEXT_END],
+        )
+
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(stream=True, reasoning_max_tokens=1),
+            headers={"Authorization": "Bearer test-secret"},
+        ) as response:
+            assert response.status_code == 200, response.text
+            events = _parse_sse("".join(response.iter_text()))
+
+        output_text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert output_text == "efghanswer"
+        assert "<|" not in output_text
+
+    def test_reasoning_cap_injects_boundary_on_following_chunk(self, responses_client):
+        from vllm_mlx.reasoning.cohere_command_parser import (
+            TEXT_END,
+            TEXT_START,
+            THINK_END,
+        )
+
+        self._install_cohere_stream(
+            responses_client,
+            ["abcd", "overflow", THINK_END, TEXT_START, "final", TEXT_END],
+        )
+
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(stream=True, reasoning_max_tokens=1),
+            headers={"Authorization": "Bearer test-secret"},
+        ) as response:
+            events = _parse_sse("".join(response.iter_text()))
+
+        output_text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert output_text == "overflowfinal"
+
+    def test_reasoning_cap_exact_terminal_boundary_finishes_cleanly(
+        self, responses_client
+    ):
+        prefix = "<|END_THI"
+        self._install_cohere_stream(responses_client, [f"abcd{prefix}"])
+
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(stream=True, reasoning_max_tokens=1),
+            headers={"Authorization": "Bearer test-secret"},
+        ) as response:
+            assert response.status_code == 200
+            events = _parse_sse("".join(response.iter_text()))
+
+        names = [name for name, _ in events]
+        output_text = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert names[-1] == "response.completed"
+        assert output_text == prefix
+        assert "<|END_THINKING|>" not in output_text
+
     def test_stream_emits_codex_required_events(self, responses_client):
         """Codex CLI hard-requires ``response.created`` first and
         ``response.completed`` last; ``response.output_text.delta``

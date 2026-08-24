@@ -20,7 +20,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
-          AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add PDF, CSV, or TXT files" enabled=true
+          AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add photos or files" enabled=true
           AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
@@ -85,6 +85,8 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
         AXHeading desc="Diagnostics, Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data." enabled=true
         AXButton id="Settings.App.ExportDiagnostics" desc="Export diagnostics…" enabled=true
+        AXHeading desc="Setup, Run the guided model setup again. Your settings, conversations, downloaded models, and telemetry choice stay untouched." enabled=true
+        AXButton id="Settings.App.RunSetupAgain" desc="Run setup again…" enabled=true
         AXHeading desc="Window, Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible." enabled=true
         AXCheckBox subrole=AXToggle id="Settings.App.HideDockOnCloseToggle" desc="Hide Dock icon when closing window" help="Rapid-MLX remains available from the menu bar." value=bool:false enabled=true
         AXButton id="Settings.App.ResetDockOnboardingCTA" desc="Reset onboarding alerts" enabled=true

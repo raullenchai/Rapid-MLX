@@ -251,7 +251,9 @@ def stub_heavy_serve_deps(monkeypatch):
     from vllm_mlx import server as server_mod
 
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
-    monkeypatch.setattr(_version_check, "print_staleness_warning_if_any", lambda: None)
+    monkeypatch.setattr(
+        _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
+    )
     monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", lambda model: None)
     monkeypatch.setattr(cli_mod, "_check_memory_capacity", lambda *a, **kw: None)
     monkeypatch.setattr(cli_mod, "_check_disk_space", lambda *a, **kw: None)

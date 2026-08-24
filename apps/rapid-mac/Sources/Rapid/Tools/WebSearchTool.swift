@@ -8,9 +8,11 @@ import Foundation
 /// + snippet per result, identically shaped whatever backend
 /// answered.
 enum WebSearchTool {
+    typealias KeenableTransport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
     static let definition = ToolDefinition(
         name: "web_search",
-        description: "Search the web and get the top results (title + URL + snippet). Use this when the user asks about current events, recent news, or facts that might have changed since the model was trained.",
+        description: "Search the web and get the top results (title + URL + snippet). Use this for current events, recent news, or facts that may have changed since training. Do not use it for current weather when the weather tool is available.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([
@@ -368,7 +370,10 @@ enum WebSearchTool {
     static func runKeenable(
         query q: String,
         apiKey: String?,
-        fallbackNote: String?
+        fallbackNote: String?,
+        transport: KeenableTransport = { request in
+            try await cappedData(for: request)
+        }
     ) async -> ToolCallResult {
         let toolName = "web_search"
         let request: URLRequest?
@@ -387,11 +392,12 @@ enum WebSearchTool {
             return ToolCallResult(
                 toolCallID: "",
                 content: "\(toolName) error: could not build Keenable request — re-paste the API key in Settings → Tools → Web search.",
-                isError: true
+                isError: true,
+                failureKind: .webSearchKeyRejected
             )
         }
         do {
-            let (data, response) = try await cappedData(for: request)
+            let (data, response) = try await transport(request)
             guard let http = response as? HTTPURLResponse else {
                 return await duckDuckGoBackstop(query: q, fallbackNote: fallbackNote)
             }
@@ -415,13 +421,15 @@ enum WebSearchTool {
                 return ToolCallResult(
                     toolCallID: "",
                     content: "\(toolName) error: Keenable rejected the API key (HTTP \(http.statusCode)). Re-paste it in Settings → Tools → Web search.",
-                    isError: true
+                    isError: true,
+                    failureKind: .webSearchKeyRejected
                 )
             case 402 where apiKey != nil:
                 return ToolCallResult(
                     toolCallID: "",
                     content: "\(toolName) error: the Keenable key's monthly credit allowance is used up (HTTP 402). Searches continue on the keyless pool if you clear the key.",
-                    isError: true
+                    isError: true,
+                    failureKind: .webSearchKeyQuotaExceeded
                 )
             case 429 where apiKey != nil:
                 // Codex r1 MAJOR: a keyed 429 is an account problem
@@ -432,7 +440,8 @@ enum WebSearchTool {
                 return ToolCallResult(
                     toolCallID: "",
                     content: "\(toolName) error: Keenable rate limit hit for this API key (HTTP 429). Wait a moment or check the plan's limits.",
-                    isError: true
+                    isError: true,
+                    failureKind: .webSearchKeyRateLimited
                 )
             default:
                 // Keyless 429 (shared pool exhausted), 5xx, or any

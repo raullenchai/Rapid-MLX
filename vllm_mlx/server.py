@@ -338,6 +338,17 @@ from .runtime.cache import (
 )
 
 
+def _automatic_prefix_cache_persistence_enabled() -> bool:
+    """Whether lifespan-owned prefix-cache restore/save should run.
+
+    Restore and save are one policy: skipping restore but still replacing the
+    disk snapshot at shutdown would discard entries this process never loaded.
+    Explicit cache import/export endpoints do not use this lifecycle gate.
+    """
+    raw = os.environ.get("RAPID_MLX_PREFIX_CACHE_AUTOLOAD", "1")
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 async def _shutdown_save_prefix_cache() -> None:
     """Lifespan shutdown step: persist prefix cache off the event loop.
 
@@ -358,6 +369,12 @@ async def _shutdown_save_prefix_cache() -> None:
     save; if anyone in the future replaces the ``await asyncio.to_thread
     (...)`` line below with a direct call, the regression fires.
     """
+    if not _automatic_prefix_cache_persistence_enabled():
+        logger.info(
+            "[lifespan] Prefix-cache auto-save disabled with auto-load by "
+            "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
+        )
+        return
     if _engine is None or not hasattr(_engine, "save_cache_to_disk"):
         return
     await asyncio.to_thread(_save_prefix_cache_to_disk)
@@ -378,6 +395,12 @@ async def _deferred_load_prefix_cache() -> None:
     during-load regression fires. Failures are non-fatal — a cold cache only
     costs a few early prefix recomputes, never a wedged server.
     """
+    if not _automatic_prefix_cache_persistence_enabled():
+        logger.info(
+            "[lifespan] Prefix-cache auto-load disabled by "
+            "RAPID_MLX_PREFIX_CACHE_AUTOLOAD"
+        )
+        return
     if _engine is None or not hasattr(_engine, "load_cache_from_disk"):
         return
     try:

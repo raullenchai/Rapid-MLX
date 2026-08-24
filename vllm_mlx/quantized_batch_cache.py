@@ -15,8 +15,10 @@ model reads KV through ``update_and_fetch``, which returns the **quantized
 triples**, and the cache exposes ``bits`` / ``group_size`` — so
 ``mlx_lm.models.base.scaled_dot_product_attention`` dispatches to the fused
 ``quantized_scaled_dot_product_attention`` and attention reads the packed KV
-directly through ``mx.quantized_matmul`` with no per-step full-precision
-materialization (#1751). The original dequant-on-read design rebuilt the
+through ``mx.quantized_matmul`` with no per-step full-precision materialization
+(#1751). MLX 0.32.1 requires prefix views to be made contiguous before its
+quantized kernels consume them; that copies only the compressed representation,
+not a bf16 history. The original dequant-on-read design rebuilt the
 layer's full bf16 history every decode step — an O(context) tax measured at
 -27% (int4) / -36% (int8) decode throughput at 16k on qwen3.5-4b
 (#1853/#1857); the fused read costs ~-8% vs bf16 while keeping the 4x/2x
@@ -84,6 +86,13 @@ def _quantize(x: mx.array, group_size: int, bits: int) -> list[mx.array]:
 
 
 def _dequantize(triple: list[mx.array], group_size: int, bits: int) -> mx.array:
+    # MLX 0.32.1's quantized kernels do not honor the row strides of a prefix
+    # view such as ``storage[..., :offset, :]``.  The packed values are correct,
+    # but dequantizing that view can read the reserved capacity between heads
+    # and produce wildly corrupted output.  Materialize the compressed tensors
+    # until MLX restores strided-view support.  ``mx.contiguous`` is a
+    # no-op when the input already has the required layout.
+    triple = [mx.contiguous(x) for x in triple]
     return mx.dequantize(
         triple[0], triple[1], triple[2], group_size=group_size, bits=bits
     )
@@ -175,7 +184,10 @@ class QuantizedBatchKVCache(_BaseCache):
         ]
 
     def _slice_seq(self, triple: list[mx.array], upto: int) -> list[mx.array]:
-        return [m[..., :upto, :] for m in triple]
+        # MLX 0.32.1 quantized attention has the same strided-prefix bug as
+        # mx.dequantize (see _dequantize above).  Attention consumes this helper's
+        # result directly, so make the returned quantized triples contiguous.
+        return [mx.contiguous(m[..., :upto, :]) for m in triple]
 
     def _resolve_group_size(self, k_head_dim: int, v_head_dim: int) -> int:
         """Coerce the group size to one that divides both head dims.

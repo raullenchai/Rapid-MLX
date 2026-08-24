@@ -74,7 +74,8 @@ def _drive_serve(monkeypatch):
         "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", _ALIAS, "--port", "0"])
     cli.main()

@@ -142,6 +142,76 @@ def test_install_location_reported():
 
 
 # ---------------------------------------------------------------------------
+# Section: Agent integrations
+# ---------------------------------------------------------------------------
+
+
+class _Connection:
+    def close(self):
+        pass
+
+
+def test_agent_integrations_are_quiet_when_no_client_is_configured(tmp_path):
+    section = eh.section_agent_integrations(home=tmp_path)
+    assert section.checks[0].status is eh.CheckStatus.OK
+
+
+def test_agent_integrations_report_config_and_server_reachability(tmp_path):
+    claude = tmp_path / ".claude/settings.json"
+    claude.parent.mkdir(parents=True)
+    claude.write_text('{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:8000"}}')
+    cont = tmp_path / ".continue/config.json"
+    cont.parent.mkdir(parents=True)
+    cont.write_text(
+        '{"models":[{"title":"rapid-mlx","provider":"openai",'
+        '"apiBase":"http://localhost:8001/v1"}]}'
+    )
+
+    def connect(address, *, timeout):
+        assert timeout == 0.25
+        if address[1] == 8001:
+            raise ConnectionRefusedError
+        return _Connection()
+
+    section = eh.section_agent_integrations(home=tmp_path, connect=connect)
+
+    assert [check.status for check in section.checks] == [
+        eh.CheckStatus.OK,
+        eh.CheckStatus.WARN,
+    ]
+    assert [check.label for check in section.checks] == [
+        "Claude Code server is reachable",
+        "Continue.dev server is not reachable",
+    ]
+
+
+@pytest.mark.parametrize("claude_config", ["not json", "null", "[]"])
+def test_agent_integrations_warn_for_malformed_or_inactive_config(
+    tmp_path, claude_config
+):
+    claude = tmp_path / ".claude/settings.json"
+    claude.parent.mkdir(parents=True)
+    claude.write_text(claude_config)
+    cline = (
+        tmp_path
+        / "Library/Application Support/Code/User/globalStorage"
+        / "saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+    )
+    cline.parent.mkdir(parents=True)
+    cline.write_text(
+        '{"apiProvider":"anthropic","openAiBaseUrl":"http://localhost:8000/v1"}'
+    )
+
+    section = eh.section_agent_integrations(
+        home=tmp_path,
+        connect=lambda *_args, **_kwargs: pytest.fail("must not connect"),
+    )
+
+    assert len(section.checks) == 2
+    assert all(check.status is eh.CheckStatus.WARN for check in section.checks)
+
+
+# ---------------------------------------------------------------------------
 # Section: Required + optional packages
 # ---------------------------------------------------------------------------
 
@@ -841,6 +911,7 @@ def test_run_all_returns_all_sections():
         "Network",
         "Shell Integration",
         "Optional Tools",
+        "Agent Integrations",
     ]
     assert titles == expected, (
         f"sections drifted from spec order. got {titles}, expected {expected}"

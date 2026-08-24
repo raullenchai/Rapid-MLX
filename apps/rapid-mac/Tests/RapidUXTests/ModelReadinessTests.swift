@@ -714,6 +714,21 @@ struct ModelReadinessTests {
         XCTAssertEqual(state.statusRole, .working)
     }
 
+    @Test
+    @MainActor
+    func testContentBannerSnapshotCarriesDownloadManagerProgress() {
+        let progress = DownloadProgress()
+        progress.ingest(
+            "model-00006-of-00007.safetensors:  86%|████████▌ | 4.30G/5.00G [01:28<00:14, 50.0MB/s]"
+        )
+
+        let snapshot = ContentView.progressSnapshot(from: progress)
+
+        XCTAssertEqual(snapshot.activity, .downloading)
+        XCTAssertEqual(snapshot.fraction, 0.86)
+        XCTAssertTrue(snapshot.subtitle?.contains("86%") == true)
+    }
+
     /// Loading / warming up are NOT downloading. The word "Downloading"
     /// may only appear when bytes are provably moving — the invariant
     /// ``DownloadProgress.startupActivity`` exists to protect.

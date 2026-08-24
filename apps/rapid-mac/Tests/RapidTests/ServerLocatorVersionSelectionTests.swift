@@ -112,6 +112,22 @@ struct ServerLocatorVersionSelectionTests {
             runtimeOverrideVersion: "0.12.4.0",
             bundledVersion: "0.12.4"
         ))
+        #expect(ServerLocator.shouldPreferBundled(
+            runtimeOverrideVersion: "0.12.18",
+            bundledVersion: "0.13.0-rc1"
+        ))
+        #expect(ServerLocator.shouldPreferBundled(
+            runtimeOverrideVersion: "0.13.0-rc1",
+            bundledVersion: "0.13.0-rc2"
+        ))
+        #expect(!ServerLocator.shouldPreferBundled(
+            runtimeOverrideVersion: "0.13.0",
+            bundledVersion: "0.13.0-rc2"
+        ))
+        #expect(ServerLocator.shouldPreferBundled(
+            runtimeOverrideVersion: "0.13.0-rc0",
+            bundledVersion: "0.13.0-rc1"
+        ))
     }
 }
 

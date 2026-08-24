@@ -644,7 +644,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
         )
         # Stub staleness banner so it doesn't print to stderr.
         monkeypatch.setattr(
-            "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+            "vllm_mlx._version_check.print_staleness_warning_if_any",
+            lambda **_kwargs: None,
         )
         # The ``main()`` alias resolver writes ``args._original_alias``;
         # we want to avoid hitting the real alias registry just to keep
@@ -746,7 +747,8 @@ class TestCliServeCommandWiresEnableAudioFlag:
             "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
         )
         monkeypatch.setattr(
-            "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+            "vllm_mlx._version_check.print_staleness_warning_if_any",
+            lambda **_kwargs: None,
         )
 
         monkeypatch.setattr(

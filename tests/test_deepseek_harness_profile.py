@@ -43,6 +43,13 @@ def test_aider_profile_runs_the_real_cli():
     assert profile is not None
     assert profile.testing.binary == "aider"
     assert profile.testing.query_cmd is not None
+    assert profile.render_config(
+        "http://127.0.0.1:8153/v1", "mlx-community/Qwen3.5-9B-4bit"
+    ) == {
+        "OPENAI_API_BASE": "http://127.0.0.1:8153/v1",
+        "OPENAI_API_KEY": "not-needed",
+        "AIDER_MODEL": "openai/mlx-community/Qwen3.5-9B-4bit",
+    }
 
 
 def test_qwen_code_profile_matches_current_provider_schema():

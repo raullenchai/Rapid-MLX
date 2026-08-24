@@ -64,6 +64,36 @@ final class BuiltinToolsTests {
         #expect(result.isError)
     }
 
+    @Test("Native executor filters arguments by the advertised schema")
+    func nativeExecutorNormalizesArguments() throws {
+        let call = ToolCall(
+            id: "weather_1",
+            name: "weather",
+            arguments: #"{"location":"Tokyo","country":"Japan","invented":"drop me"}"#
+        )
+        let normalized = try #require(NativeToolCallExecutor.normalized(
+            call,
+            for: WeatherTool.definition
+        ))
+        let data = try #require(normalized.function.arguments.data(using: .utf8))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+        #expect(object["location"] == "Tokyo")
+        #expect(object["country"] == "Japan")
+        #expect(object["invented"] == nil)
+    }
+
+    @Test("Native executor rejects non-object or malformed arguments generically")
+    func nativeExecutorRejectsMalformedArguments() {
+        #expect(NativeToolCallExecutor.normalized(
+            ToolCall(id: "bad_1", name: "weather", arguments: #"["Tokyo"]"#),
+            for: WeatherTool.definition
+        ) == nil)
+        #expect(NativeToolCallExecutor.normalized(
+            ToolCall(id: "bad_2", name: "weather", arguments: #"{"location":"Tokyo""#),
+            for: WeatherTool.definition
+        ) == nil)
+    }
+
     // MARK: - Per-tool enable/disable
 
     @Test("A tool toggled off is stripped from the definitions sent to the model")
@@ -137,6 +167,7 @@ final class BuiltinToolsTests {
         // confidently-hallucinated answer with no chip to warn the user.
         let enabled = makeRegistry().definitions
         #expect(ChatViewModel.wireDefinitions(forAlias: "hermes3-8b-4bit", enabled: enabled).isEmpty)
+        #expect(ChatViewModel.wireDefinitions(forAlias: "bonsai-8b-2bit", enabled: enabled).isEmpty)
         #expect(ChatViewModel.wireDefinitions(forAlias: "qwen3.5-4b-4bit", enabled: enabled).count == 3)
     }
 

@@ -25,46 +25,6 @@ struct DownloadManagerTests {
         return predicate()
     }
 
-    /// Synchronous env mutation helper.
-    ///
-    /// ``setenv`` mutates a **process-global** singleton. The full
-    /// ``swift test`` run schedules many ``@MainActor`` tests onto
-    /// the same actor; whenever the host test ``await``s during the
-    /// mutation window, the main actor is free to pick up an unrelated
-    /// ``@MainActor`` test that reads ``RAPID_BIN`` via
-    /// ``DownloadManager.resolveBinaryForStart`` — and it sees our
-    /// override instead of its own real binary. That spawned the
-    /// pre-fix flake where ``startDownloadUsesRefreshedBinaryPath`` and
-    /// ``cancelDuringRealPull`` corrupted each other's process spawns
-    /// only in the full suite (979 tests / 2 fail) but passed when run
-    /// in isolation or in the paired
-    /// ``DownloadManagerTests|DownloadManagerIntegrationTests`` filter.
-    ///
-    /// Keeping the helper synchronous + non-throwing pins the env
-    /// mutation to a single main-actor scheduling slot — no ``await``
-    /// inside means no opportunity for an unrelated test to slip in.
-    /// The body must be sync; if a test needs to ``await`` after the
-    /// env-sensitive call, it should do so *outside* this helper, since
-    /// once a sync ``Process.run()`` returns macOS has already captured
-    /// the spawned child's environment block and the parent process
-    /// env can be safely restored.
-    private func withEnvironmentValueSync<T>(
-        _ key: String,
-        _ value: String,
-        run body: () -> T
-    ) -> T {
-        let previous = getenv(key).map { String(cString: $0) }
-        setenv(key, value, 1)
-        defer {
-            if let previous {
-                setenv(key, previous, 1)
-            } else {
-                unsetenv(key)
-            }
-        }
-        return body()
-    }
-
     private func writeFakeRapidMLX(
         at binary: URL,
         marker: URL
@@ -134,23 +94,12 @@ struct DownloadManagerTests {
         let marker = root.appendingPathComponent("invocation.txt")
         try writeFakeRapidMLX(at: fresh, marker: marker)
 
-        // Keep ``RAPID_BIN`` overridden only across the synchronous
-        // ``startDownload`` window. ``Process.run()`` captures the
-        // child's environment at spawn time (see ``DownloadManager``
-        // line 196: ``process.environment = augmentedEnv(for: binary)``)
-        // so the fake script's invocation is locked in by the time
-        // ``startDownload`` returns. Releasing the env before the
-        // ``await waitUntil`` below stops the override from leaking
-        // into any concurrently scheduled ``@MainActor`` test that
-        // happens to read ``RAPID_BIN`` via the same
-        // ``resolveBinaryForStart`` code path. Pre-fix this leak
-        // overwrote the fake-script's marker with another test's
-        // ``pull qwen3-0.6b-8bit`` payload — see helper comment for
-        // the full diagnosis.
-        let mgr = DownloadManager(binaryPath: stale)
-        let started = withEnvironmentValueSync("RAPID_BIN", fresh.path) {
-            mgr.startDownload(alias: "fake-alias")
-        }
+        // Inject the resolver instead of mutating process-global RAPID_BIN.
+        // Parallel suites may resolve or override that environment variable
+        // concurrently, which made this deterministic unit test depend on
+        // unrelated full-suite scheduling.
+        let mgr = DownloadManager(binaryPath: stale, binaryLocator: { fresh })
+        let started = mgr.startDownload(alias: "fake-alias")
         #expect(started)
 
         let done = await waitUntil(deadline: Date().addingTimeInterval(5)) {

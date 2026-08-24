@@ -30,6 +30,66 @@ import Testing
 @Suite("v0.4.35 model-switch silent-failure defense")
 struct ModelSwitchHistoryTests {
 
+    @Test("Transcript-only onboarding welcome is omitted from every wire request")
+    func dropsTranscriptOnlyWelcome() {
+        let welcome = ChatMessage(
+            role: .assistant,
+            content: "Welcome to Rapid MLX.",
+            wireVisibility: .transcriptOnly
+        )
+        let user = ChatMessage(role: .user, content: "My name is Maya. Remember code 391.")
+        let request = ChatStreamClient.Request(alias: "qwen3.5-9b-4bit", messages: [welcome, user])
+        #expect(request.messages.count == 1)
+        #expect(request.messages.first?.role == "user")
+    }
+
+    @Test("A real leading assistant row remains model-visible")
+    func preservesLegitimateLeadingAssistant() {
+        let history = [
+            ChatMessage(role: .assistant, content: "Hi"),
+            ChatMessage(role: .user, content: "My name is Maya"),
+        ]
+        let request = ChatStreamClient.Request(alias: "qwen3.5-9b-4bit", messages: history)
+        #expect(request.messages.map(\.role) == ["assistant", "user"])
+    }
+
+    @Test("Wire visibility survives persistence and legacy Quickstart rows migrate off wire")
+    func wireVisibilityPersistsCompatibly() throws {
+        let local = ChatMessage(
+            role: .assistant,
+            content: "Welcome",
+            wireVisibility: .transcriptOnly
+        )
+        let encoded = try JSONEncoder().encode(local)
+        #expect(try JSONDecoder().decode(ChatMessage.self, from: encoded).wireVisibility == .transcriptOnly)
+
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "wireVisibility")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        #expect(try JSONDecoder().decode(ChatMessage.self, from: legacy).wireVisibility == .model)
+
+        object["content"] = "You're chatting with Qwen 3.5 9B, running entirely on your Mac. Open the picker any time to switch models."
+        let legacyWelcome = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: legacyWelcome).wireVisibility
+                == .transcriptOnly
+        )
+
+        object["content"] = "You're chatting with LFM2.5 1.2B — a model picked so you can start chatting in about a minute. Open the picker any time to trade up to a larger model: the Recommended row is chosen for this Mac's RAM, and a bigger pick is a great first upgrade when you want more."
+        let legacyStarterWelcome = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: legacyStarterWelcome).wireVisibility
+                == .transcriptOnly
+        )
+
+        object["content"] = "You're chatting with Qwen about local inference."
+        let ordinaryAssistant = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: ordinaryAssistant).wireVisibility
+                == .model
+        )
+    }
+
     // MARK: - filterEmptyAssistantsForWire
 
     @Test("Empty-prose assistant turn is stripped from wire history")

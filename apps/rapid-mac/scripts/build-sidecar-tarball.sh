@@ -96,7 +96,7 @@ if [[ -f "$SIDECAR_VERSION_FILE" ]]; then
 fi
 # Defense-in-depth (#411): the bootstrapper's manifest validator at
 # Sources/Rapid/Bootstrapper/BootstrapCoordinator.swift's
-# ``isValidVersionString`` enforces a strict dotted-digit grammar on
+# ``isValidVersionString`` enforces a strict dotted-digit or ``-rcN`` grammar on
 # ``sidecar_version`` (the optional leading ``v`` is stripped). v0.8.6
 # shipped ``sidecar_version: "26ac5b4"`` because the upstream VERSION
 # file carried a short SHA — that bricked 100% of slim-DMG installs.
@@ -104,13 +104,13 @@ fi
 # reject. scripts/build.sh has the upstream tag-based derivation; this
 # regex gate is the floor.
 # Grammar MUST match Sources/Rapid/Bootstrapper/BootstrapCoordinator
-# .swift's isValidVersionString: pure dotted-digit, no pre-release or
-# build suffix. Codex #412 r1 BLOCKING: a looser ``[-+][0-9A-Za-z.-]+``
+# .swift's isValidVersionString: pure dotted-digit with an optional ``-rcN``;
+# no arbitrary pre-release or build suffix. A looser ``[-+][0-9A-Za-z.-]+``
 # tail would accept ``0.8.19-rc.1`` here but the bootstrapper would
 # reject the manifest at runtime — re-creating exactly the #411
 # bricking bug for a different upstream value.
-if [[ ! "$SIDECAR_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
-  echo "::error::sidecar VERSION '$SIDECAR_VERSION' is not dotted-digit (expected e.g. '0.8.18'). Bootstrapper validator (BootstrapCoordinator.isValidVersionString) would reject this manifest — refusing to emit. See $SIDECAR_VERSION_FILE; fix scripts/build.sh's submodule derivation upstream (#411)." >&2
+if [[ ! "$SIDECAR_VERSION" =~ ^[0-9]+(\.[0-9]+)+(-rc[1-9][0-9]*)?$ ]]; then
+  echo "::error::sidecar VERSION '$SIDECAR_VERSION' is not dotted-digit or an -rcN candidate (expected e.g. '0.8.18' or '0.13.0-rc1'). Bootstrapper validator (BootstrapCoordinator.isValidVersionString) would reject this manifest — refusing to emit. See $SIDECAR_VERSION_FILE; fix scripts/build.sh's submodule derivation upstream (#411)." >&2
   exit 1
 fi
 
