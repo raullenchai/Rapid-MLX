@@ -765,7 +765,7 @@ struct ReadDocumentToolTests {
         #expect(entry.isComplete)
     }
 
-    @Test("A partial extract never reports has_more=false at its end")
+    @Test("A partial extract reports unreachable continuation, not a phantom page")
     func partialExtractKeepsHasMoreTrue() async throws {
         let cache = freshCache()
         let id = UUID()
@@ -779,14 +779,38 @@ struct ReadDocumentToolTests {
         let result = await run(["document_id": id.uuidString], cache: cache)
         let body = try payload(result)
 
-        // The cursor HAS reached the end of what was captured — but the
-        // document did not end there, and saying `has_more: false` is what
-        // made a four-page fragment look like a finished 529-page book.
-        #expect(body["has_more"] as? Bool == true)
+        // `has_more` means strictly "this cursor can advance". Overloading it
+        // to also mean "the source continues" produced a self-contradictory
+        // result — has_more with no next_offset — whose only compliant reading
+        // was to re-read the same slice until the twelve-call budget ran out.
+        #expect(body["has_more"] as? Bool == false)
+        #expect(body["next_offset"] == nil)
+        #expect(body["continuation_unavailable"] as? Bool == true)
         #expect(body["extract_complete"] as? Bool == false)
         let note = try #require(body["note"] as? String)
         #expect(note.localizedCaseInsensitiveContains("attach the file again"))
-        #expect(note.localizedCaseInsensitiveContains("did not finish"))
+        #expect(note.localizedCaseInsensitiveContains("do not retry"))
+    }
+
+    @Test("A partial extract mid-way still offers its next page")
+    func partialExtractStillPagesWithinWhatItHas() async throws {
+        // Incompleteness of the SOURCE must not suppress paging through the
+        // part that was captured.
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "scan.pdf",
+            text: String(repeating: "captured text\n", count: 4_000),
+            pageCount: 529,
+            isComplete: false
+        ))
+
+        let body = try payload(await run(["document_id": id.uuidString], cache: cache))
+
+        #expect(body["has_more"] as? Bool == true)
+        #expect(body["next_offset"] as? Int != nil)
+        #expect(body["continuation_unavailable"] == nil)
+        #expect(body["extract_complete"] as? Bool == false)
     }
 
     @Test("A complete extract carries no incompleteness warning")
@@ -798,6 +822,7 @@ struct ReadDocumentToolTests {
 
         #expect(body["has_more"] as? Bool == false)
         #expect(body["extract_complete"] == nil)
+        #expect(body["continuation_unavailable"] == nil)
     }
 
     @Test("Outline and grep also disclose an unfinished extract")
@@ -817,6 +842,9 @@ struct ReadDocumentToolTests {
         ] {
             let body = try payload(await run(arguments, cache: cache))
             #expect(body["extract_complete"] as? Bool == false)
+            // Neither mode carries a cursor, so the missing text is
+            // unreachable from them by construction.
+            #expect(body["continuation_unavailable"] as? Bool == true)
             let note = try #require(body["note"] as? String)
             #expect(note.localizedCaseInsensitiveContains("attach the file again"))
         }

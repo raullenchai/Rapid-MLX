@@ -38,6 +38,22 @@ enum PDFTextRecognizer {
         (page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
     }
 
+    /// Outcome of a bounded extraction pass.
+    ///
+    /// `reachedEnd` is what lets a caller distinguish "this is the whole
+    /// document" from "this is as much as the budget allowed". Length alone
+    /// cannot answer that — a run that stops one character short of the
+    /// ceiling looks identical to one that consumed the last page — and
+    /// guessing wrong marks a truncated extract complete, which is exactly
+    /// the claim ``DocumentContentCache/Entry/isComplete`` exists to make
+    /// honestly.
+    struct Extraction {
+        let text: String
+        /// True when every page in the requested range was consumed in full.
+        /// False when the character budget, or cancellation, stopped the run.
+        let reachedEnd: Bool
+    }
+
     /// Recognize `range`, returning page-tagged text in the same shape the
     /// selectable-text path produces so downstream code cannot tell them apart.
     ///
@@ -55,11 +71,10 @@ enum PDFTextRecognizer {
     /// copy — at once. Stopping the accumulation instead means the process
     /// never holds more than the budget, whatever the source contains.
     ///
-    /// The budget is applied to each page's raw text BEFORE it is trimmed and
-    /// tagged. Bounding only the accumulated array still let one pathological
-    /// page — a single highly-compressed sheet holding more text than the whole
-    /// budget — exist three times over (the trimmed copy, the interpolated
-    /// copy, and the prefix) before anything clamped it.
+    /// The budget also bounds each page BEFORE its text becomes a Swift
+    /// string, via ``boundedText(of:limit:)``. Reading `page.string` and then
+    /// slicing is far too late for a single highly-compressed sheet that
+    /// decompresses to more text than the whole budget.
     ///
     /// `onPageComplete` fires after each page so a caller waiting on this work
     /// can tell "still running" from "stalled" — the wait is far too long to
@@ -69,23 +84,23 @@ enum PDFTextRecognizer {
         range: Range<Int>,
         characterBudget: Int = .max,
         onPageComplete: (() -> Void)? = nil
-    ) -> String {
+    ) -> Extraction {
         var pages: [String] = []
         var remaining = characterBudget
         for index in range {
-            if Task.isCancelled { break }
-            if remaining <= 0 { break }
+            if Task.isCancelled { return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false) }
+            if remaining <= 0 { return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false) }
             defer { onPageComplete?() }
             guard let page = document.page(at: index) else { continue }
 
-            let raw = page.string ?? ""
-            let clamped = raw.count > remaining
-            let existing = String(raw.prefix(remaining))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // A page whose bounded head is blank but whose full text is not is
-            // not an OCR candidate — it is a page the budget already cut off,
-            // and recognizing it would spend ~0.69 s on text with nowhere to go.
-            if existing.isEmpty && clamped { break }
+            let bounded = boundedText(of: page, limit: remaining)
+            // The budget cut this page short, so whatever follows on it — and
+            // every page after — is lost. Recognizing it would also be wasted
+            // work: there is nowhere to put the result.
+            if bounded.clamped, bounded.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false)
+            }
+            let existing = bounded.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let text = existing.isEmpty ? recognize(page: page, characterBudget: remaining) : existing
             guard !text.isEmpty else { continue }
             let tagged = "[Page \(index + 1)]\n\(text)"
@@ -94,12 +109,45 @@ enum PDFTextRecognizer {
             let cost = tagged.count + (pages.isEmpty ? 0 : 2)
             guard cost <= remaining else {
                 pages.append(String(tagged.prefix(max(0, remaining - 2))))
-                break
+                return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false)
             }
             remaining -= cost
             pages.append(tagged)
+            // A page whose own text was clipped means the rest of the document
+            // is unreachable even though the accumulator still has room.
+            if bounded.clamped {
+                return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false)
+            }
         }
-        return pages.joined(separator: "\n\n")
+        return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: true)
+    }
+
+    /// At most `limit` characters of a page's selectable text, without ever
+    /// materializing more than that.
+    ///
+    /// ``PDFPage/string`` returns the ENTIRE text layer as one Swift string,
+    /// so slicing it afterwards is a bound on the result, not on peak memory:
+    /// a single highly-compressed sheet that decompresses to hundreds of
+    /// megabytes of text is fully resident (and copied again by trimming and
+    /// interpolation) before any ceiling applies. ``numberOfCharacters`` reads
+    /// the layer's length without copying it, and ``selection(for:)`` copies
+    /// only the requested range, so an oversized page costs `limit`
+    /// characters instead of its own size.
+    ///
+    /// - Returns: the bounded text, and whether the page had more to give.
+    static func boundedText(of page: PDFPage, limit: Int) -> (text: String, clamped: Bool) {
+        guard limit > 0 else { return ("", page.numberOfCharacters > 0) }
+        let available = page.numberOfCharacters
+        guard available > limit else { return (page.string ?? "", false) }
+        // A page longer than the budget: copy only the head. If PDFKit cannot
+        // produce the selection, fall back to the whole string rather than
+        // silently dropping the page — correctness first, and this is the
+        // path a malformed text layer takes, not the pathological-size one.
+        guard let selection = page.selection(for: NSRange(location: 0, length: limit)),
+              let text = selection.string else {
+            return (String((page.string ?? "").prefix(limit)), true)
+        }
+        return (String(text.prefix(limit)), true)
     }
 
     /// Recognize a single page. Returns "" when the page cannot be rendered or

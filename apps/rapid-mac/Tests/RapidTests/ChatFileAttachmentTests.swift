@@ -466,7 +466,9 @@ struct ChatFileAttachmentTests {
             range: 0..<document.pageCount,
             characterBudget: budget
         )
-        #expect(bounded.count <= budget)
+        #expect(bounded.text.count <= budget)
+        // The budget stopped it, so it cannot claim to have read the document.
+        #expect(!bounded.reachedEnd)
 
         // Unbudgeted, the same range yields more — so the cap is what stopped
         // it, not a short document.
@@ -474,8 +476,9 @@ struct ChatFileAttachmentTests {
             of: document,
             range: 0..<document.pageCount
         )
-        #expect(whole.count > budget)
-        #expect(whole.hasPrefix(String(bounded.prefix(100))))
+        #expect(whole.text.count > budget)
+        #expect(whole.reachedEnd)
+        #expect(whole.text.hasPrefix(String(bounded.text.prefix(100))))
     }
 
     @Test("A budget of zero stops before any page is read")
@@ -489,7 +492,8 @@ struct ChatFileAttachmentTests {
             range: 0..<document.pageCount,
             characterBudget: 0
         )
-        #expect(bounded.isEmpty)
+        #expect(bounded.text.isEmpty)
+        #expect(!bounded.reachedEnd)
     }
 
     @Test("A budget larger than the document returns the whole thing")
@@ -507,35 +511,74 @@ struct ChatFileAttachmentTests {
             range: 0..<document.pageCount,
             characterBudget: ChatFileAttachment.maxExtractedCharacters
         )
-        #expect(budgeted == whole)
+        #expect(budgeted.text == whole.text)
+        #expect(budgeted.reachedEnd)
     }
 
-    @Test("A single oversized page is bounded before it is trimmed and tagged")
+    @Test("A single oversized page is bounded before its text is materialized")
     func singlePageCannotOverrunTheBudget() throws {
-        // The residual hole the earlier accumulation bound left open: the
-        // budget stopped the ARRAY from growing, but each page's own text was
-        // still fully materialized, cleaned and interpolated before `prefix`
-        // could clamp it. One highly-compressed sheet holding more text than
-        // the whole budget therefore existed several times over first.
+        // The residual hole the accumulation bound left open: `page.string`
+        // returns the ENTIRE text layer, so slicing afterwards bounded the
+        // RESULT, not peak memory. `boundedText` reads the layer's length
+        // without copying it and asks PDFKit for only the head.
         let url = try textPDF(pages: 1, charactersPerPage: 20_000)
         defer { try? FileManager.default.removeItem(at: url) }
         let document = try #require(PDFDocument(url: url))
+        let page = try #require(document.page(at: 0))
 
         let budget = 200
-        let bounded = PDFTextRecognizer.recognizePages(
+        let bounded = PDFTextRecognizer.boundedText(of: page, limit: budget)
+        #expect(bounded.text.count <= budget)
+        #expect(bounded.clamped)
+        // The head is real text from the page, not a placeholder.
+        #expect(try #require(page.string).hasPrefix(bounded.text))
+
+        let extraction = PDFTextRecognizer.recognizePages(
             of: document,
             range: 0..<document.pageCount,
             characterBudget: budget
         )
-        #expect(bounded.count <= budget)
-        #expect(!bounded.isEmpty)
+        #expect(extraction.text.count <= budget)
+        #expect(!extraction.text.isEmpty)
+        // A page cut short means the rest of the document is unreachable.
+        #expect(!extraction.reachedEnd)
+    }
 
-        // The unbudgeted read of that same single page is far larger, so the
-        // cap is what stopped it rather than a small page.
-        let whole = PDFTextRecognizer.recognizePages(
-            of: document,
-            range: 0..<document.pageCount
-        )
-        #expect(whole.count > budget * 10)
+    @Test("A page that fits reports itself unclamped")
+    func smallPageIsNotClamped() throws {
+        let url = try textPDF(pages: 1, charactersPerPage: 200)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let page = try #require(PDFDocument(url: url)?.page(at: 0))
+
+        let bounded = PDFTextRecognizer.boundedText(of: page, limit: 1_000_000)
+        #expect(!bounded.clamped)
+        #expect(bounded.text == page.string)
+    }
+
+    @Test("Completeness follows the extraction outcome, not the page count")
+    func completenessFollowsTheExtractionOutcome() throws {
+        // Page count alone answered "did we finish?", so a run whose character
+        // budget ran out mid-document was still cached complete and
+        // `read_document` reported a truncated extract as the whole file.
+        // ``Extraction.reachedEnd`` is what the cached flag now follows.
+        let url = try textPDF(pages: 4, charactersPerPage: 400)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+
+        // Every page consumed in full.
+        #expect(PDFTextRecognizer.recognizePages(
+            of: document, range: 0..<document.pageCount
+        ).reachedEnd)
+        // The same range, stopped by the budget partway through.
+        #expect(!PDFTextRecognizer.recognizePages(
+            of: document, range: 0..<document.pageCount, characterBudget: 600
+        ).reachedEnd)
+
+        // An ordinary import — well inside every ceiling — must still be
+        // cached as complete, or the warning would fire on every attachment.
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let imported = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let entry = try #require(cache.get(imported.id))
+        #expect(entry.isComplete)
     }
 }

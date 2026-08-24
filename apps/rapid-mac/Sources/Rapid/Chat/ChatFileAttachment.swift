@@ -223,6 +223,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let cleaned = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw ValidationError.noExtractableText(kind) }
         let complete = String(cleaned.prefix(Self.maxExtractedCharacters))
+        // The retention ceiling truncates just as really as an unfinished
+        // background pass does. A 20M-character TXT keeps its head and loses
+        // its tail, so the cached entry is a fragment however the caller got
+        // here, and `read_document` must not report it as the whole file.
+        let withinCeiling = complete.count == cleaned.count
         let id = UUID()
         try self.init(
             id: id,
@@ -233,7 +238,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             pageCount: pageCount,
             rowCount: rowCount,
             columnCount: columnCount,
-            wasTruncated: complete.count < cleaned.count,
+            wasTruncated: !withinCeiling,
             totalCharacterCount: complete.count,
             totalIsPending: !totalIsKnown
         )
@@ -248,7 +253,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 // running must say so on disk: the pending mark is in-memory
                 // only, and a quit before the pass lands would otherwise leave
                 // an entry that reads back as the whole document.
-                isComplete: totalIsKnown
+                isComplete: totalIsKnown && withinCeiling
             )
         )
     }
@@ -331,7 +336,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             range: 0..<eagerLimit,
             characterBudget: Self.maxExtractedCharacters
         )
-        guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !head.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             // No selectable text in the eager window: this is a scan. Recognize
             // a few pages so the turn has a preview, and leave the rest to the
             // background pass — at ~0.69 s/page a 529-page book is ~6 minutes,
@@ -346,9 +351,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             return
         }
 
-        let isComplete = eagerLimit == document.pageCount
+        // "Complete" needs BOTH: every page seen, and no page cut short. A
+        // budget that ran out mid-document loses the tail just as surely as
+        // stopping early does, and marking that complete is what makes
+        // ``read_document`` claim a truncated extract is the whole file.
+        let isComplete = eagerLimit == document.pageCount && head.reachedEnd
         try self.init(
-            fullText: Self.collapsingLayoutNoise(head),
+            fullText: Self.collapsingLayoutNoise(head.text),
             filename: filename,
             kind: .pdf,
             sourceByteCount: data.count,
@@ -360,7 +369,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             totalIsKnown: isComplete,
             outline: outline
         )
-        guard !isComplete else { return }
+        guard eagerLimit < document.pageCount else { return }
 
         // Finish the document in the background, then republish the complete
         // text under the same id. The PDFDocument is captured deliberately:
@@ -384,18 +393,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             // ``recognizePages`` passes selectable text straight through and
             // only rasterizes pages that have none, so a mostly-typeset book
             // pays the OCR cost for its scanned plates alone and nothing else.
-            let full = Self.collapsingLayoutNoise(
-                PDFTextRecognizer.recognizePages(
-                    of: document,
-                    range: 0..<pageCount,
-                    characterBudget: Self.maxExtractedCharacters,
-                    onPageComplete: { cache.reportProgress(id) }
-                )
+            let extracted = PDFTextRecognizer.recognizePages(
+                of: document,
+                range: 0..<pageCount,
+                characterBudget: Self.maxExtractedCharacters,
+                onPageComplete: { cache.reportProgress(id) }
             )
-            let bounded = String(
-                full.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .prefix(Self.maxExtractedCharacters)
-            )
+            let full = Self.collapsingLayoutNoise(extracted.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let bounded = String(full.prefix(Self.maxExtractedCharacters))
             guard !bounded.isEmpty else { return }
             // Conditional: a no-op if the document was removed while this ran.
             cache.publish(
@@ -405,10 +411,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     text: bounded,
                     pageCount: pageCount,
                     outline: Self.resolvingOutlineOffsets(outline, in: bounded),
-                    // A cancelled run publishes only the pages it reached, so
-                    // the entry it leaves behind is still a partial document
-                    // and must not claim otherwise after a relaunch.
-                    isComplete: !Task.isCancelled
+                    // Complete only if the pass actually consumed the document.
+                    // A cancelled run stops mid-book, and an extract that hit
+                    // ``maxExtractedCharacters`` lost its tail — both leave a
+                    // partial entry that must not claim otherwise on relaunch.
+                    isComplete: extracted.reachedEnd
+                        && !Task.isCancelled
+                        && bounded.count == full.count
                 ),
                 ifGenerationIs: generation
             )
@@ -438,7 +447,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             let recognized = PDFTextRecognizer.recognizePages(
                 of: document,
                 range: pageIndex..<(pageIndex + 1)
-            )
+            ).text
             pagesInspected = pageIndex + 1
             guard !recognized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
@@ -493,18 +502,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             // or remains reachable from the importing task.
             guard let workerDocument = PDFDocument(data: data),
                   workerDocument.pageCount == pageCount else { return }
-            let full = Self.collapsingLayoutNoise(
-                PDFTextRecognizer.recognizePages(
-                    of: workerDocument,
-                    range: 0..<pageCount,
-                    characterBudget: Self.maxExtractedCharacters,
-                    onPageComplete: { cache.reportProgress(id) }
-                )
+            let extracted = PDFTextRecognizer.recognizePages(
+                of: workerDocument,
+                range: 0..<pageCount,
+                characterBudget: Self.maxExtractedCharacters,
+                onPageComplete: { cache.reportProgress(id) }
             )
-            let bounded = String(
-                full.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .prefix(Self.maxExtractedCharacters)
-            )
+            let full = Self.collapsingLayoutNoise(extracted.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let bounded = String(full.prefix(Self.maxExtractedCharacters))
             // A cancelled run returns only the pages it reached. Publishing
             // that is right — partial recognized text beats none — but never
             // publish something SHORTER than the preview already on screen.
@@ -516,7 +522,9 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     text: bounded,
                     pageCount: pageCount,
                     outline: Self.resolvingOutlineOffsets(outline, in: bounded),
-                    isComplete: !Task.isCancelled
+                    isComplete: extracted.reachedEnd
+                        && !Task.isCancelled
+                        && bounded.count == full.count
                 ),
                 ifGenerationIs: generation
             )
@@ -530,33 +538,53 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     /// `characterBudget` stops the accumulation rather than trimming the
     /// finished string, so the process never holds more than the budget even
     /// for a PDF whose pages decompress to far more text than the file's size
-    /// suggests. It is applied to each page's raw text BEFORE trimming and
-    /// tagging, so a single oversized page cannot exist three times over
-    /// before the budget clamps it. See
+    /// suggests. Each page is bounded through
+    /// ``PDFTextRecognizer/boundedText(of:limit:)`` so a single oversized
+    /// sheet is never fully materialized either. See
     /// ``PDFTextRecognizer/recognizePages(of:range:characterBudget:onPageComplete:)``.
     private static func extractPages(
         _ document: PDFDocument,
         range: Range<Int>,
         characterBudget: Int = .max
-    ) -> String {
+    ) -> PDFTextRecognizer.Extraction {
         var pages: [String] = []
         var remaining = characterBudget
         for index in range {
-            guard remaining > 0 else { break }
-            guard let raw = document.page(at: index)?.string else { continue }
-            let text = String(raw.prefix(remaining))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
+            guard remaining > 0 else {
+                return PDFTextRecognizer.Extraction(
+                    text: pages.joined(separator: "\n\n"), reachedEnd: false
+                )
+            }
+            guard let page = document.page(at: index) else { continue }
+            let bounded = PDFTextRecognizer.boundedText(of: page, limit: remaining)
+            let text = bounded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                if bounded.clamped {
+                    return PDFTextRecognizer.Extraction(
+                        text: pages.joined(separator: "\n\n"), reachedEnd: false
+                    )
+                }
+                continue
+            }
             let tagged = "[Page \(index + 1)]\n\(text)"
             let cost = tagged.count + (pages.isEmpty ? 0 : 2)
             guard cost <= remaining else {
                 pages.append(String(tagged.prefix(max(0, remaining - 2))))
-                break
+                return PDFTextRecognizer.Extraction(
+                    text: pages.joined(separator: "\n\n"), reachedEnd: false
+                )
             }
             remaining -= cost
             pages.append(tagged)
+            if bounded.clamped {
+                return PDFTextRecognizer.Extraction(
+                    text: pages.joined(separator: "\n\n"), reachedEnd: false
+                )
+            }
         }
-        return pages.joined(separator: "\n\n")
+        return PDFTextRecognizer.Extraction(
+            text: pages.joined(separator: "\n\n"), reachedEnd: true
+        )
     }
 
     /// Flatten the PDF's bookmark tree into depth-tagged rows.

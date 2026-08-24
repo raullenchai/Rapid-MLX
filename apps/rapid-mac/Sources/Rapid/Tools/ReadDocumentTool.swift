@@ -333,10 +333,14 @@ enum ReadDocumentTool {
             "content": content,
             "offset": start,
             "total_chars": total,
-            // An incomplete extract has more document behind it even when the
-            // cursor has reached the end of what was captured, so `has_more`
-            // must not read as "you have now seen the whole file".
-            "has_more": hasMore || !entry.isComplete,
+            // Strictly "this cursor can advance". Overloading it to also mean
+            // "the source document continues" made the two halves of the
+            // protocol contradict each other: at the end of a partial extract
+            // it said has_more without a next_offset, so the model's only way
+            // to comply was to re-read the same slice until the twelve-call
+            // budget ran out. The source's incompleteness is reported by
+            // `extract_complete` / `continuation_unavailable` instead.
+            "has_more": hasMore,
         ]
         if let pages = entry.pageCount { payload["total_pages"] = pages }
         if hasMore {
@@ -344,6 +348,11 @@ enum ReadDocumentTool {
             payload["note"] = "Showing characters \(start)–\(end) of \(total). Call read_document again with offset=\(end) to continue, or pass a 'grep' pattern to jump to a specific passage."
         } else if start >= total && total > 0 {
             payload["note"] = "offset \(start) is at or past the end of this \(total)-character document."
+        }
+        if !hasMore, !entry.isComplete {
+            // Nothing further to page to, and nothing that would make a retry
+            // succeed. Saying so explicitly is what stops the retry loop.
+            payload["continuation_unavailable"] = true
         }
         return ToolCallResult(
             toolCallID: "",
@@ -372,7 +381,13 @@ enum ReadDocumentTool {
         guard !entry.isComplete else { return payload }
         var payload = payload
         payload["extract_complete"] = false
-        let warning = "WARNING: only the first \(entry.count) characters of this document were ever extracted — the background pass that would have read the rest did not finish, and it cannot be resumed. Do not treat the text above as the whole document or conclude anything from its absence. Tell the user to remove this attachment and attach the file again."
+        // Paged results set this themselves — only at the end of the extract,
+        // where it is true. Outline and grep have no cursor at all, so for
+        // them the missing text is unreachable by construction.
+        if payload["continuation_unavailable"] == nil, payload["has_more"] == nil {
+            payload["continuation_unavailable"] = true
+        }
+        let warning = "WARNING: only the first \(entry.count) characters of this document were ever extracted — the pass that would have read the rest did not finish (it was cancelled, interrupted by a quit, or stopped at Rapid's extraction ceiling) and it CANNOT be resumed. Reading further offsets will not return more; do not retry for the missing part. Do not treat the text above as the whole document or conclude anything from its absence. Tell the user to remove this attachment and attach the file again."
         payload["note"] = (payload["note"] as? String).map { "\($0) \(warning)" } ?? warning
         return payload
     }
