@@ -14,7 +14,8 @@ from importlib.resources import files
 
 logger = logging.getLogger(__name__)
 
-ChatTemplateValue = str | dict[str, str] | list[dict[str, str]]
+ChatTemplateValue = str | dict[str, str]
+ChatTemplateInput = ChatTemplateValue | list[dict[str, str]]
 
 _TEMPLATE_ASSETS: dict[str, str] = {
     "gemma4_compact": "gemma4_compact.jinja",
@@ -53,7 +54,7 @@ def resolve_chat_template(
     applicator,
     template_id: str | None,
     *,
-    explicit_template: ChatTemplateValue | None = None,
+    explicit_template: ChatTemplateInput | None = None,
 ) -> bool:
     """Resolve one template onto a loaded tokenizer or processor.
 
@@ -66,7 +67,15 @@ def resolve_chat_template(
     if owner is None:
         return False
     if explicit_template is not None:
-        selected = explicit_template
+        # Tokenizer configs historically serialize named templates as a list
+        # of {name, template} objects.  Transformers normalizes that config
+        # shape to the runtime mapping consumed by apply_chat_template; do the
+        # same here instead of restoring the raw, unhashable list post-load.
+        selected: ChatTemplateValue = (
+            {item["name"]: item["template"] for item in explicit_template}
+            if isinstance(explicit_template, list)
+            else explicit_template
+        )
         source = "explicit override"
     elif template_id is not None:
         selected = bundled_chat_template(template_id)
@@ -85,7 +94,7 @@ def resolve_profile_chat_template(
     applicator,
     model_name: str,
     *,
-    explicit_template: ChatTemplateValue | None = None,
+    explicit_template: ChatTemplateInput | None = None,
 ) -> bool:
     """Resolve the template declared for an alias or exact repository path."""
 

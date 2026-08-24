@@ -110,7 +110,12 @@ def test_unknown_checkpoint_and_explicit_override_are_preserved(explicit) -> Non
     assert not resolve_profile_chat_template(unknown, "owner/private-checkpoint")
     assert unknown.chat_template == "custom {{ messages }}"
     assert resolve_chat_template(declared, "gemma4_full", explicit_template=explicit)
-    assert declared.chat_template == explicit
+    expected = (
+        {item["name"]: item["template"] for item in explicit}
+        if isinstance(explicit, list)
+        else explicit
+    )
+    assert declared.chat_template == expected
 
 
 def test_registry_handles_nested_processor_and_missing_selection() -> None:
@@ -421,7 +426,18 @@ def test_text_loader_preserves_named_explicit_template_overrides(
         tokenizer_config={"chat_template": explicit},
     )
 
-    assert loaded_tokenizer.chat_template == explicit
+    expected = (
+        {item["name"]: item["template"] for item in explicit}
+        if isinstance(explicit, list)
+        else explicit
+    )
+    assert loaded_tokenizer.chat_template == expected
+    rendered = loaded_tokenizer.apply_chat_template(
+        [{"role": "user", "content": "hello"}],
+        chat_template="default",
+        tokenize=False,
+    )
+    assert rendered.startswith("explicit default")
 
 
 def test_renderer_does_not_resolve_or_mutate_templates() -> None:
