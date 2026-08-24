@@ -1,0 +1,85 @@
+{
+  "baseline": "final-baseline-throughput8k-c1.json",
+  "baseline_summary": {
+    "aggregate_completion_tokens_per_s": 40.794665475714865,
+    "completion_tokens": 1024,
+    "failed_requests": 0,
+    "latency_s": {
+      "median": 5.9776295414194465,
+      "p95": 7.193409149907529
+    },
+    "pooled_completion_tokens_per_s": 40.79575763929995,
+    "prompt_tokens": 33183,
+    "requests": 4,
+    "successful_requests": 4,
+    "ttft_s": {
+      "median": 3.281486895401031,
+      "p95": 4.283590591885149
+    }
+  },
+  "created_at": "2026-08-24T14:36:13.535215+00:00",
+  "mtp": "final-mtp-throughput8k-c1.json",
+  "mtp_cumulative_metric_delta": {
+    "rapid_mlx_spec_decode_accepts_total{family=qwen3.5,method=mtp}": 358.0,
+    "rapid_mlx_spec_decode_attempts_total{family=qwen3.5,method=mtp}": 578.0,
+    "rapid_mlx_spec_decode_k_chosen_rounds_total{family=qwen3.5,method=mtp}": 665.0,
+    "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=0,method=mtp}": 98.0,
+    "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=1,method=mtp}": 557.0,
+    "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=2,method=mtp}": 9.0,
+    "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=3,method=mtp}": 1.0,
+    "rapid_mlx_spec_decode_park_total{family=qwen3.5,method=mtp}": 98.0,
+    "rapid_mlx_spec_decode_tokens_saved_total{family=qwen3.5,method=mtp}": 358.0
+  },
+  "mtp_gauges_after": {
+    "rapid_mlx_spec_decode_accept_ratio{family=qwen3.5,method=mtp}": 0.7214,
+    "rapid_mlx_spec_decode_k_cost_ms{k=0,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 13.3,
+    "rapid_mlx_spec_decode_k_cost_ms{k=1,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 16.825,
+    "rapid_mlx_spec_decode_k_cost_ms{k=2,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 19.807,
+    "rapid_mlx_spec_decode_k_cost_ms{k=3,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 23.158
+  },
+  "mtp_summary": {
+    "aggregate_completion_tokens_per_s": 41.722543597225794,
+    "completion_tokens": 1024,
+    "failed_requests": 0,
+    "latency_s": {
+      "median": 6.062836271012202,
+      "p95": 6.406763843959197
+    },
+    "pooled_completion_tokens_per_s": 41.723540159331854,
+    "prompt_tokens": 33183,
+    "requests": 4,
+    "successful_requests": 4,
+    "ttft_s": {
+      "median": 3.5280636246316135,
+      "p95": 3.7608261874178424
+    }
+  },
+  "ratios": {
+    "aggregate_completion_tokens_per_s": 1.0227450846989614,
+    "median_latency": 1.0142542673483446,
+    "median_ttft": 1.0751417686830191,
+    "pooled_completion_tokens_per_s": 1.0227421323617762
+  },
+  "schema_version": 1,
+  "workload": {
+    "bench": "throughput_8k",
+    "category": null,
+    "concurrency": 1,
+    "dataset": "nvidia/SPEED-Bench",
+    "dataset_revision": "487aa718444e816458d1a0a52bfce7a454285cf4",
+    "max_tokens": 256,
+    "sample_ids": [
+      "658dbd96a19e4b138e0aafe43eea1101",
+      "9a936eebf8794621a11f963a56c92120",
+      "76a912cd332e4ebeb09b0fef3d1df531",
+      "123e80a2d63e442cb5a363cda00864ea"
+    ],
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "turns": 4,
+    "warmup_samples": 1
+  }
+}

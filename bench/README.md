@@ -36,3 +36,48 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
 
   Add `--require-parity` to return exit 1 on a divergence. Exit 2 always means
   the result is invalid because a requested speculative arm did not engage.
+
+- `bench_spec_decode_mtp_server.py` — production-serving benchmark using
+  NVIDIA SPEED-Bench workloads and Rapid's OpenAI-compatible streaming API.
+  It captures TTFT, end-to-end latency, completion throughput, multi-turn
+  context, raw request results, and before/after MTP Prometheus counters in an
+  atomic JSON receipt with a SHA-256 sidecar. It does not import or compare
+  against llama.cpp tooling.
+
+  Capture baseline and MTP arms from separate, freshly started servers. Keep
+  the model, sample IDs, sampling, context workload, output limit, and
+  concurrency identical. The MTP arm's positive-control lane must use
+  concurrency 1 and `--require-mtp-activity`:
+
+  ```bash
+  python3 bench/bench_spec_decode_mtp_server.py run \
+    --base-url http://127.0.0.1:18000 \
+    --target-revision 8b2b98c00a6b4d291155e4890773ca8f769aee53 \
+    --server-label baseline --sidecar none \
+    --bench qualitative --category coding --limit 8 \
+    --max-tokens 512 --concurrency 1 --warmup-samples 1 \
+    --output artifacts/mtp-server-baseline.json
+
+  python3 bench/bench_spec_decode_mtp_server.py run \
+    --base-url http://127.0.0.1:18001 \
+    --target-revision 8b2b98c00a6b4d291155e4890773ca8f769aee53 \
+    --server-label mtp \
+    --sidecar mlx-community/Qwen3.5-9B-MTP-4bit@REVISION \
+    --bench qualitative --category coding --limit 8 \
+    --max-tokens 512 --concurrency 1 --warmup-samples 1 \
+    --require-mtp-activity \
+    --output artifacts/mtp-server-mtp.json
+
+  python3 bench/bench_spec_decode_mtp_server.py compare \
+    --baseline artifacts/mtp-server-baseline.json \
+    --mtp artifacts/mtp-server-mtp.json \
+    --output artifacts/mtp-server-comparison.json
+  ```
+
+  Rapid currently enables MTP only when the scheduler's generation batch has
+  one UID. Concurrency 2/4 cells therefore test production scheduler behavior
+  and may mix ordinary-AR batches with moments where one request runs alone;
+  they are not evidence of concurrent verification overlap. Report their
+  attempts and K histograms as observed rather than assuming MTP engaged.
+  The default SPEED-Bench dataset revision is pinned; pass an explicit
+  `--dataset-revision` only when intentionally re-baselining the workload.

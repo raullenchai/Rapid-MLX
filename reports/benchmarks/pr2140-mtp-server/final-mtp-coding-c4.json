@@ -1,0 +1,234 @@
+{
+  "benchmark_sha256": "f65502ea11b589a9e85e3dc235a7428f083c5dde4501110615093775e808be3b",
+  "created_at": "2026-08-24T14:29:55.121154+00:00",
+  "environment": {
+    "cpu_brand": "Apple M5 Max",
+    "machine": "arm64",
+    "memory_bytes": 68719476736,
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "processor": "arm",
+    "python": "3.12.13 (main, Mar  3 2026, 12:39:30) [Clang 21.0.0 (clang-2100.0.123.102)]"
+  },
+  "metrics": {
+    "after": {
+      "rapid_mlx_spec_decode_accept_ratio{family=qwen3.5,method=mtp}": 0.8082,
+      "rapid_mlx_spec_decode_accepts_total{family=qwen3.5,method=mtp}": 902.0,
+      "rapid_mlx_spec_decode_attempts_total{family=qwen3.5,method=mtp}": 1116.0,
+      "rapid_mlx_spec_decode_k_chosen_rounds_total{family=qwen3.5,method=mtp}": 919.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=0,method=mtp}": 29.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=1,method=mtp}": 744.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=2,method=mtp}": 66.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=3,method=mtp}": 80.0,
+      "rapid_mlx_spec_decode_k_cost_ms{k=0,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 11.852,
+      "rapid_mlx_spec_decode_k_cost_ms{k=1,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 16.139,
+      "rapid_mlx_spec_decode_k_cost_ms{k=2,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 18.981,
+      "rapid_mlx_spec_decode_k_cost_ms{k=3,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 22.133,
+      "rapid_mlx_spec_decode_park_total{family=qwen3.5,method=mtp}": 29.0,
+      "rapid_mlx_spec_decode_tokens_saved_total{family=qwen3.5,method=mtp}": 902.0
+    },
+    "before": {
+      "rapid_mlx_spec_decode_accept_ratio{family=qwen3.5,method=mtp}": 0.7969,
+      "rapid_mlx_spec_decode_accepts_total{family=qwen3.5,method=mtp}": 769.0,
+      "rapid_mlx_spec_decode_attempts_total{family=qwen3.5,method=mtp}": 965.0,
+      "rapid_mlx_spec_decode_k_chosen_rounds_total{family=qwen3.5,method=mtp}": 796.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=0,method=mtp}": 26.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=1,method=mtp}": 645.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=2,method=mtp}": 55.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=3,method=mtp}": 70.0,
+      "rapid_mlx_spec_decode_k_cost_ms{k=0,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 11.774,
+      "rapid_mlx_spec_decode_k_cost_ms{k=1,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 14.697,
+      "rapid_mlx_spec_decode_k_cost_ms{k=2,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 19.243,
+      "rapid_mlx_spec_decode_k_cost_ms{k=3,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 22.897,
+      "rapid_mlx_spec_decode_park_total{family=qwen3.5,method=mtp}": 26.0,
+      "rapid_mlx_spec_decode_tokens_saved_total{family=qwen3.5,method=mtp}": 769.0
+    },
+    "cumulative_delta": {
+      "rapid_mlx_spec_decode_accepts_total{family=qwen3.5,method=mtp}": 133.0,
+      "rapid_mlx_spec_decode_attempts_total{family=qwen3.5,method=mtp}": 151.0,
+      "rapid_mlx_spec_decode_k_chosen_rounds_total{family=qwen3.5,method=mtp}": 123.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=0,method=mtp}": 3.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=1,method=mtp}": 99.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=2,method=mtp}": 11.0,
+      "rapid_mlx_spec_decode_k_chosen_total{family=qwen3.5,k=3,method=mtp}": 10.0,
+      "rapid_mlx_spec_decode_park_total{family=qwen3.5,method=mtp}": 3.0,
+      "rapid_mlx_spec_decode_tokens_saved_total{family=qwen3.5,method=mtp}": 133.0
+    },
+    "derived": {
+      "accept_ratio": 0.8807947019867549,
+      "k_counts": {
+        "0": 3.0,
+        "1": 99.0,
+        "2": 11.0,
+        "3": 10.0
+      },
+      "k_shares": {
+        "0": 0.024390243902439025,
+        "1": 0.8048780487804879,
+        "2": 0.08943089430894309,
+        "3": 0.08130081300813008
+      },
+      "tokens_saved_per_attempt": 0.8807947019867549
+    },
+    "gauges_after": {
+      "rapid_mlx_spec_decode_accept_ratio{family=qwen3.5,method=mtp}": 0.8082,
+      "rapid_mlx_spec_decode_k_cost_ms{k=0,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 11.852,
+      "rapid_mlx_spec_decode_k_cost_ms{k=1,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 16.139,
+      "rapid_mlx_spec_decode_k_cost_ms{k=2,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 18.981,
+      "rapid_mlx_spec_decode_k_cost_ms{k=3,method=mtp,model_id=29:mlx-community/Qwen3.5-9B-4bit+mtp:mlx-community/Qwen3.5-9B-MTP-4bit}": 22.133
+    },
+    "rounds_delta": 123.0
+  },
+  "rapid_git_sha": "7421ce3826d21b67dfa63d590c40ff2e899f489d",
+  "requests": [
+    {
+      "category": "coding",
+      "completion_tokens": 142,
+      "error": null,
+      "finish_reason": "stop",
+      "latency_s": 2.2644601659849286,
+      "ok": true,
+      "prompt_tokens": 61,
+      "response_sha256": "0bc9c6356f2f0b58e18579a553959562872da3accc6a89b7828f832fae08a58b",
+      "sample_id": "0daf539b787c4dccbb547330a8b4c3d7",
+      "ttft_s": 0.4181372500024736,
+      "turn_index": 0
+    },
+    {
+      "category": "coding",
+      "completion_tokens": 256,
+      "error": null,
+      "finish_reason": "length",
+      "latency_s": 3.6940759997814894,
+      "ok": true,
+      "prompt_tokens": 301,
+      "response_sha256": "07e5d0a3c8fc714e936fff74b0a69a8e65f53da4c079fae10f98d16c0150a307",
+      "sample_id": "135c7fe91faa48fd83ca5eac94c09f00",
+      "ttft_s": 0.4180472078733146,
+      "turn_index": 0
+    },
+    {
+      "category": "coding",
+      "completion_tokens": 256,
+      "error": null,
+      "finish_reason": "length",
+      "latency_s": 3.6939586247317493,
+      "ok": true,
+      "prompt_tokens": 166,
+      "response_sha256": "7c46b36279d8a65e81c31ef2921450cb8757268d98122616796cdfbee292786e",
+      "sample_id": "37f349607a3d46b8bc5aafcefb5fd518",
+      "ttft_s": 0.41786629194393754,
+      "turn_index": 0
+    },
+    {
+      "category": "coding",
+      "completion_tokens": 256,
+      "error": null,
+      "finish_reason": "length",
+      "latency_s": 3.693932667374611,
+      "ok": true,
+      "prompt_tokens": 39,
+      "response_sha256": "aafa4380e44a1757ccb10ae6846443711ca4113cf0d0a84853c7acd8b7069e6b",
+      "sample_id": "1fd6d82bbde647f29b93afd7b4eb14b0",
+      "ttft_s": 0.41780633432790637,
+      "turn_index": 0
+    },
+    {
+      "category": "coding",
+      "completion_tokens": 256,
+      "error": null,
+      "finish_reason": "length",
+      "latency_s": 2.148581708781421,
+      "ok": true,
+      "prompt_tokens": 317,
+      "response_sha256": "8e40afd40eab7a60ed721cf205ac09683673321dea305f0884a0f3e465fcaa8e",
+      "sample_id": "1fd6d82bbde647f29b93afd7b4eb14b0",
+      "ttft_s": 0.13598462520167232,
+      "turn_index": 1
+    }
+  ],
+  "schema_version": 1,
+  "server": {
+    "available_models": [
+      "qwen35-9b-bench"
+    ],
+    "base_url": "http://127.0.0.1:18001",
+    "label": "mtp-qwen35-9b-4bit",
+    "model": "qwen35-9b-bench",
+    "sidecar": "mlx-community/Qwen3.5-9B-MTP-4bit@222dfd2c23fc9518d7b817e4f8e0cb0571787489",
+    "target_revision": "8b2b98c00a6b4d291155e4890773ca8f769aee53"
+  },
+  "summary": {
+    "aggregate_completion_tokens_per_s": 199.55023471303969,
+    "completion_tokens": 1166,
+    "failed_requests": 0,
+    "latency_s": {
+      "median": 3.693932667374611,
+      "p95": 3.6940525247715414
+    },
+    "pooled_completion_tokens_per_s": 75.25003615417491,
+    "prompt_tokens": 884,
+    "requests": 5,
+    "successful_requests": 5,
+    "ttft_s": {
+      "median": 0.41786629194393754,
+      "p95": 0.4181192415766418
+    }
+  },
+  "validity": {
+    "mtp_activity": {
+      "attempts_delta": 151.0,
+      "passed": true,
+      "required": false
+    },
+    "mtp_fallback": {
+      "passed": false,
+      "reason": "Rapid currently routes generation batches larger than one to AR",
+      "required": false
+    },
+    "passed": true,
+    "request_success": true,
+    "warmup_success": true
+  },
+  "wall_time_s": 5.843140208162367,
+  "warmup": {
+    "summary": {
+      "aggregate_completion_tokens_per_s": 111.49396745165532,
+      "completion_tokens": 159,
+      "failed_requests": 0,
+      "latency_s": {
+        "median": 1.4259114158339798,
+        "p95": 1.4259114158339798
+      },
+      "pooled_completion_tokens_per_s": 111.50762819793043,
+      "prompt_tokens": 61,
+      "requests": 1,
+      "successful_requests": 1,
+      "ttft_s": {
+        "median": 0.13773512514308095,
+        "p95": 0.13773512514308095
+      }
+    },
+    "wall_time_s": 1.4260861249640584
+  },
+  "workload": {
+    "bench": "qualitative",
+    "category": "coding",
+    "concurrency": 4,
+    "dataset": "nvidia/SPEED-Bench",
+    "dataset_revision": "487aa718444e816458d1a0a52bfce7a454285cf4",
+    "max_tokens": 256,
+    "sample_ids": [
+      "0daf539b787c4dccbb547330a8b4c3d7",
+      "135c7fe91faa48fd83ca5eac94c09f00",
+      "37f349607a3d46b8bc5aafcefb5fd518",
+      "1fd6d82bbde647f29b93afd7b4eb14b0"
+    ],
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "turns": 5,
+    "warmup_samples": 1
+  }
+}
