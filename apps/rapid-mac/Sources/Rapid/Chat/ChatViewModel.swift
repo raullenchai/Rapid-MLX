@@ -965,12 +965,24 @@ final class ChatViewModel {
         // Collect the attachment ids BEFORE the transcript is torn down: the
         // active-conversation branch below empties `messages`, and the stored
         // conversation is removed after that.
+        //
+        // Both sources are read as TREES, not as the visible path. ``messages``
+        // and ``ChatConversation/messages`` each hold only the branch the user
+        // is currently looking at; a document attached to a turn the user later
+        // regenerated away sits in ``branchedAway`` / ``branches``, is just as
+        // deleted from the user's point of view, and walking the path alone
+        // would leave its plaintext in Application Support forever.
+        var seen: Set<UUID> = []
         var attachmentIDs: [UUID] = []
-        if id == activeConversationID {
-            attachmentIDs += messages.flatMap { $0.fileAttachments.map(\.id) }
+        func collect(_ nodes: [ChatMessage]) {
+            for attachment in nodes.flatMap(\.fileAttachments)
+            where seen.insert(attachment.id).inserted {
+                attachmentIDs.append(attachment.id)
+            }
         }
+        if id == activeConversationID { collect(liveTree()) }
         if let stored = conversations.first(where: { $0.id == id }) {
-            attachmentIDs += stored.messages.flatMap { $0.fileAttachments.map(\.id) }
+            collect(stored.allMessages)
         }
 
         // If deleting the OPEN conversation, tear down the live transcript

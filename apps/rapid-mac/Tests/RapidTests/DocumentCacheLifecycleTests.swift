@@ -41,6 +41,26 @@ struct DocumentCacheLifecycleTests {
         directory.appendingPathComponent("\(id.uuidString).json", isDirectory: false)
     }
 
+    /// An attachment whose full text is already in `cache` — the state after a
+    /// real import, where the preview rides on the message and the complete
+    /// extract lives in the store.
+    private func seedAttachment(
+        _ name: String,
+        in cache: DocumentContentCache
+    ) throws -> ChatFileAttachment {
+        let attachment = try ChatFileAttachment(
+            filename: name,
+            kind: .txt,
+            extractedText: "preview of \(name)",
+            sourceByteCount: 100
+        )
+        cache.put(attachment.id, entry: DocumentContentCache.Entry(
+            filename: name,
+            text: "full text of \(name)"
+        ))
+        return attachment
+    }
+
     // MARK: - Deletion
 
     @Test("Removing a document deletes its persisted plaintext, not just the hot copy")
@@ -184,17 +204,7 @@ struct DocumentCacheLifecycleTests {
         )
 
         func attach(_ name: String) throws -> ChatFileAttachment {
-            let attachment = try ChatFileAttachment(
-                filename: name,
-                kind: .txt,
-                extractedText: "preview of \(name)",
-                sourceByteCount: 100
-            )
-            cache.put(attachment.id, entry: DocumentContentCache.Entry(
-                filename: name,
-                text: "full text of \(name)"
-            ))
-            return attachment
+            try seedAttachment(name, in: cache)
         }
 
         // First conversation, then archived by starting a second one —
@@ -215,6 +225,118 @@ struct DocumentCacheLifecycleTests {
 
         #expect(cache.get(first.id) == nil)
         #expect(cache.get(second.id) != nil)
+    }
+
+    /// A conversation whose visible path and off-path branch carry DIFFERENT
+    /// documents, written straight to a store file.
+    ///
+    /// Built by hand rather than by driving ``editUserMessage``: that path
+    /// re-sends the original turn's attachments, so both siblings end up
+    /// sharing one id and the "did we walk the branches?" question never
+    /// actually gets asked.
+    private func seedBranchedConversation(
+        storeURL: URL,
+        visible: ChatFileAttachment,
+        branched: ChatFileAttachment
+    ) -> UUID {
+        let root = ChatMessage(role: .user, content: "root prompt")
+        var onPath = ChatMessage(
+            role: .assistant,
+            content: "kept answer",
+            fileAttachments: [visible]
+        )
+        onPath.parentID = root.id
+        var offPath = ChatMessage(
+            role: .assistant,
+            content: "superseded answer",
+            fileAttachments: [branched]
+        )
+        offPath.parentID = root.id
+
+        let conversation = ChatConversation(
+            id: UUID(),
+            title: "branched",
+            messages: [root, onPath],
+            branches: [offPath],
+            activeLeafID: onPath.id,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        ConversationStore.save([conversation], to: storeURL)
+        // Writes go through an async serial queue; the view model below reads
+        // the file synchronously on init.
+        ConversationStore.flush()
+        return conversation.id
+    }
+
+    @Test("Deleting a stored conversation also deletes documents on its OTHER branches")
+    func deletingStoredConversationCoversBranchedAwayAttachments() throws {
+        // ``ChatConversation/messages`` is only the branch the user was
+        // looking at. A document attached to a turn they later regenerated
+        // away sits in ``branches`` — just as deleted from the user's point of
+        // view, and just as much plaintext left in Application Support.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conv-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        let visible = try seedAttachment("visible.txt", in: cache)
+        let branched = try seedAttachment("branched.txt", in: cache)
+        let conversationID = seedBranchedConversation(
+            storeURL: storeURL,
+            visible: visible,
+            branched: branched
+        )
+
+        let viewModel = ChatViewModel(
+            conversationStoreURL: storeURL,
+            documentCache: cache
+        )
+        viewModel.deleteConversation(conversationID)
+
+        #expect(cache.get(visible.id) == nil)
+        #expect(cache.get(branched.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, branched.id).path))
+    }
+
+    @Test("Deleting the OPEN conversation also deletes documents on its other branches")
+    func deletingActiveConversationCoversBranchedAwayAttachments() throws {
+        // Same gap on the live side: ``messages`` holds the visible path and
+        // everything else is in ``branchedAway``, so the collection has to
+        // read the tree rather than the path.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = diskCache(in: dir)
+
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conv-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: storeURL) }
+
+        let visible = try seedAttachment("visible.txt", in: cache)
+        let branched = try seedAttachment("branched.txt", in: cache)
+        let conversationID = seedBranchedConversation(
+            storeURL: storeURL,
+            visible: visible,
+            branched: branched
+        )
+
+        let viewModel = ChatViewModel(
+            conversationStoreURL: storeURL,
+            documentCache: cache
+        )
+        // Opening it splits the tree into path + branchedAway, which is the
+        // shape the live deletion path actually sees.
+        viewModel.selectConversation(conversationID)
+        #expect(viewModel.activeConversationID == conversationID)
+        #expect(!viewModel.messages.contains { $0.content == "superseded answer" })
+
+        viewModel.deleteConversation(conversationID)
+
+        #expect(cache.get(branched.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, branched.id).path))
     }
 
     // MARK: - TTL
