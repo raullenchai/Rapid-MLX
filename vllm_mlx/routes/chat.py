@@ -2510,6 +2510,15 @@ _TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(r"[\"'](?:name|arguments)[\"']\s*:")
 _TOOL_WIRE_XML_PAYLOAD_HINT_RE = re.compile(
     r"<function=[^>\s]+>.*?<parameter=[^>\s]+>", re.DOTALL
 )
+# Same payload shape when generation ends before the outer wrapper closes.
+# The tempered body deliberately refuses to cross a real ``</tool_call>``;
+# closed spans remain owned by the balanced/cross-family passes below.
+_TOOL_WIRE_UNCLOSED_XML_TO_EOF_RE = re.compile(
+    r"<tool_call>\s*<function=[^>\s]+>"
+    r"(?:(?!</tool_call>).)*?<parameter=[^>\s]+>"
+    r"(?:(?!</tool_call>).)*\Z",
+    re.DOTALL,
+)
 
 
 def _balanced_json_end(text: str, start: int, *, max_scan: int = 8192) -> int | None:
@@ -2590,11 +2599,14 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     if not text:
         return False
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
-        match = balanced_re.search(text)
-        if match and _span_has_tool_payload(match.group(0)):
+        if any(_span_has_tool_payload(m.group(0)) for m in balanced_re.finditer(text)):
             return True
-    cross_match = _CROSS_FAMILY_SPAN_RE.search(text)
-    if cross_match and _span_has_tool_payload(cross_match.group(0)):
+    if any(
+        _span_has_tool_payload(m.group(0))
+        for m in _CROSS_FAMILY_SPAN_RE.finditer(text)
+    ):
+        return True
+    if _TOOL_WIRE_UNCLOSED_XML_TO_EOF_RE.search(text):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         match = marker_re.search(text)
@@ -2627,6 +2639,10 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
     if not text:
         return text or ""
     result = text
+    # A true EOF truncation has no closer for the balanced passes to anchor
+    # on. Remove the action envelope from its unambiguous structured opener
+    # through EOF; preceding prose remains intact.
+    result = _TOOL_WIRE_UNCLOSED_XML_TO_EOF_RE.sub("", result)
     # DeepSeek V3.1 orphan fragment:
     # ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{...}`` without a closer.
     # Remove the whole fragment so the opener/name prefix cannot leak

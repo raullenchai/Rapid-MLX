@@ -1449,6 +1449,32 @@ def test_visible_scrub_preserves_xml_marker_prose_without_parameter_payload():
     assert _scrub_visible_tool_wire_leaks(prose) == prose
 
 
+def test_visible_scrub_checks_later_envelopes_after_harmless_marker_prose():
+    wire = (
+        "Example: <tool_call>example</tool_call>. "
+        "Then: <tool_call><function=browse><parameter=url>"
+        "https://example.com/private</tool_call>"
+    )
+
+    assert _contains_structural_tool_wire_leak(wire)
+    out = _scrub_visible_tool_wire_leaks(wire)
+    assert "<tool_call>example</tool_call>" in out
+    assert "https://example.com/private" not in out
+    assert "<function=browse>" not in out
+
+
+def test_visible_scrub_removes_xml_parameter_wire_truncated_at_eof():
+    wire = (
+        "Let me retry. "
+        "<tool_call><function=browse><parameter=url>https://example.com/private"
+    )
+
+    assert _contains_structural_tool_wire_leak(wire)
+    out = _scrub_visible_tool_wire_leaks(wire)
+    assert out == "Let me retry."
+    assert "https://example.com/private" not in out
+
+
 def test_auto_choice_route_scrubs_truncated_xml_parameter_tool_wire():
     wire = (
         "Let me retry.\n"
@@ -1545,6 +1571,96 @@ def test_auto_choice_stream_scrubs_truncated_xml_parameter_tool_wire():
     assert "<parameter=a>" not in wire
     assert "Let me retry." in wire
     assert "Please retry the request." in wire
+
+
+def test_auto_choice_route_scrubs_later_xml_envelope_truncated_at_eof():
+    wire = (
+        "Example: <tool_call>example</tool_call>. Let me retry. "
+        "<tool_call><function=add_numbers><parameter=a>1"
+    )
+    engine = _RecordingEngine(text=wire, raw_text=wire)
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add one and two"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "auto",
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    content = resp.json()["choices"][0]["message"].get("content") or ""
+    assert "<tool_call>example</tool_call>" in content
+    assert "<function=add_numbers>" not in content
+    assert "<parameter=a>" not in content
+
+
+def test_auto_choice_stream_scrubs_later_xml_envelope_truncated_at_eof():
+    deltas = [
+        "Example: <tool_call>example</tool_call>. ",
+        "Let me retry. ",
+        "<tool_call><function=add_numbers>",
+        "<parameter=a>1",
+    ]
+
+    class _EOFXMLStreamEngine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            accumulated = ""
+            for index, delta in enumerate(deltas):
+                accumulated += delta
+                finished = index == len(deltas) - 1
+                yield GenerationOutput(
+                    text=accumulated,
+                    raw_text=accumulated,
+                    new_text=delta,
+                    prompt_tokens=4,
+                    completion_tokens=index + 1,
+                    finished=finished,
+                    finish_reason="stop" if finished else None,
+                    channel=None,
+                )
+
+    engine = _EOFXMLStreamEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add one and two"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "<tool_call>example</tool_call>" in resp.text
+    assert "<function=add_numbers>" not in resp.text
+    assert "<parameter=a>" not in resp.text
 
 
 def test_1676_forced_deepseek_section_is_removed_from_visible_channels():
