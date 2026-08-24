@@ -793,9 +793,13 @@ def _install_mtp_vendored(
       short-circuits to argmax (the pre-existing, unchanged fast path);
       above it the accept test is ``min(1, p_target/p_draft)`` with a
       resample from the normalized residual
-      ``max(p_target - p_draft, 0)`` on reject, which preserves the
-      request's sampling marginal. This route is exact but unoptimized
-      — a batched/sparse top-k variant is a follow-up. Requests whose
+      ``max(p_target - p_draft, 0)`` on reject, which preserves the sampling
+      marginal for the target distribution produced by the verification
+      forward. Equivalence between that batched target forward and sequential
+      one-token AR is a separate model/cache invariant;
+      ``bench/repro_mtp_forced_k_parity.py`` checks it on real weights. This
+      route is unoptimized — a batched/sparse top-k variant is a follow-up.
+      Requests whose
       sampler cannot be reproduced inside the generator (unresolvable
       bookkeeping, ``temperature is None``, or a per-request PRNG
       ``seed``) still fall through to ``_orig_step``.
@@ -1027,8 +1031,10 @@ def _install_mtp_vendored(
         and the caller forwards the answer to the generator so the
         exact same filter chain (top_p / top_k / min_p, then
         temperature-scaled categorical) drives BOTH the draft and the
-        verify step. That shared chain is what keeps the accepted
-        marginal equal to the request's own sampling distribution;
+        verify step. That shared chain keeps the accepted marginal equal to
+        the verification target's sampling distribution. Whether a batched
+        verify forward is numerically equivalent to sequential AR is a
+        separate model/cache invariant;
         it is the same nucleus math the scheduler's
         ``make_fused_top_p_temp_sampler`` fast path implements for
         plain decode, expressed as a distribution rather than a bare
