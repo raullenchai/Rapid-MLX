@@ -30,24 +30,43 @@ import Testing
 @Suite("v0.4.35 model-switch silent-failure defense")
 struct ModelSwitchHistoryTests {
 
-    @Test("Local onboarding welcome is omitted from model wire history")
-    func dropsLeadingAssistantWelcome() {
+    @Test("Transcript-only onboarding welcome is omitted from every wire request")
+    func dropsTranscriptOnlyWelcome() {
+        let welcome = ChatMessage(
+            role: .assistant,
+            content: "Welcome to Rapid MLX.",
+            wireVisibility: .transcriptOnly
+        )
         let user = ChatMessage(role: .user, content: "My name is Maya. Remember code 391.")
-        let filtered = ChatViewModel.filterLeadingAssistantsForWire([
-            ChatMessage(role: .assistant, content: "Welcome to Rapid MLX."),
-            user,
-        ])
-        #expect(filtered.map(\.id) == [user.id])
+        let request = ChatStreamClient.Request(alias: "qwen3.5-9b-4bit", messages: [welcome, user])
+        #expect(request.messages.count == 1)
+        #expect(request.messages.first?.role == "user")
     }
 
-    @Test("Real assistant turns after a user remain in model wire history")
-    func preservesConversationAssistants() {
+    @Test("A real leading assistant row remains model-visible")
+    func preservesLegitimateLeadingAssistant() {
         let history = [
-            ChatMessage(role: .user, content: "Hello"),
             ChatMessage(role: .assistant, content: "Hi"),
             ChatMessage(role: .user, content: "My name is Maya"),
         ]
-        #expect(ChatViewModel.filterLeadingAssistantsForWire(history) == history)
+        let request = ChatStreamClient.Request(alias: "qwen3.5-9b-4bit", messages: history)
+        #expect(request.messages.map(\.role) == ["assistant", "user"])
+    }
+
+    @Test("Wire visibility survives persistence and old rows default to model-visible")
+    func wireVisibilityPersistsCompatibly() throws {
+        let local = ChatMessage(
+            role: .assistant,
+            content: "Welcome",
+            wireVisibility: .transcriptOnly
+        )
+        let encoded = try JSONEncoder().encode(local)
+        #expect(try JSONDecoder().decode(ChatMessage.self, from: encoded).wireVisibility == .transcriptOnly)
+
+        var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "wireVisibility")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        #expect(try JSONDecoder().decode(ChatMessage.self, from: legacy).wireVisibility == .model)
     }
 
     // MARK: - filterEmptyAssistantsForWire

@@ -2303,10 +2303,13 @@ flow_restored_tools() {
     assert_tree_text "$OUT/followup-settled.json" "Golden technology story"
 
     jq -s -e '[.[] | select(.event == "chat_request")
-        | select((.roles | index("tool")) != null)
+        | select(.roles[-1] == "tool")
         | select((.tools | index("web_search")) != null)] | length == 2' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "fresh/restored synthesis requests did not both carry web evidence and tools"
+    jq -s -e '[.[] | select(.event == "native_web_search_call")] | length == 2' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the fake model did not natively choose web_search on both user turns"
     cleanup_persona
 }
 

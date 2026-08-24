@@ -11,7 +11,7 @@ import Foundation
 enum WeatherTool {
     static let definition = ToolDefinition(
         name: "weather",
-        description: "Get the current weather for a city or place. Preserve the user's place name, and include country or state/province when known. Ambiguous places are not guessed.",
+        description: "Get current weather or current temperature for a city or place. Use this tool—not web_search—for current conditions. Pass the location from the user's request, preserving country or state/province qualifiers. This tool does not provide future forecasts, and ambiguous places are not guessed.",
         parameters: .object([
             "type": .string("object"),
             "properties": .object([

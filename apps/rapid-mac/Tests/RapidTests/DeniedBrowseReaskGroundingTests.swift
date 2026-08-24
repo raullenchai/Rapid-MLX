@@ -7,25 +7,12 @@ import Testing
 /// The field report: after tapping "Don't allow" on a browse approval, asking
 /// the SAME news question again ran `web_search` but the assistant ignored its
 /// own result and repeated a canned "I can't access real-time information"
-/// line. The two deterministic, engine-agnostic mechanisms that decide whether
-/// that turn stays grounded both live in ``ChatViewModel``, and each already
-/// has a fix — but nothing pinned the *combination* the report actually hit
-/// (a poisoned history from the declined turn feeding the re-ask):
-///
-///   A. ``forcedToolForUserTurn`` must still force `web_search` on the re-ask,
-///      even though the prior turn left a declined `.tool` row and an
-///      "I can't access" refusal in history (the #1694 fresh-routing path).
-///   B. ``carriesToolResultForThisTurn`` must arm the anti-confabulation
-///      preamble only once a *real* result lands — not off the stale declined
-///      row, and not before the fresh search runs (the #1556 path).
-///
-/// These are pure functions over the wire history, so they reproduce the
-/// decision the live turn makes without a server, a model, or a network.
+/// line. The native tool loop now owns routing. Once it calls a tool,
+/// ``carriesToolResultForThisTurn`` must arm the anti-confabulation preamble
+/// only for a real result from this turn — not the stale declined row.
 @Suite("Denied-browse re-ask grounding")
 @MainActor
 struct DeniedBrowseReaskGroundingTests {
-    private let enabled: Set<String> = ["web_search", "browse", "weather"]
-
     /// The history a denied-browse turn leaves behind: the model tried to
     /// browse, the user declined, and the assistant fell back to a canned
     /// "can't access real-time info" reply.
@@ -39,15 +26,6 @@ struct DeniedBrowseReaskGroundingTests {
     }
 
     private let reaskPrompt = "What's the latest news about the AI industry this week?"
-
-    @Test("A re-ask after a denied browse still forces web_search")
-    func reaskStillForcesSearch() {
-        #expect(ChatViewModel.forcedToolForUserTurn(
-            reaskPrompt,
-            priorMessages: deniedBrowseHistory,
-            enabledToolNames: enabled
-        ) == "web_search")
-    }
 
     @Test("The stale declined row does not arm the preamble on the bare re-ask")
     func staleDeclinedRowDoesNotArm() {

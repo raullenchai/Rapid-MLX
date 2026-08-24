@@ -215,6 +215,86 @@ protocol ToolRegistry: AnyObject, Sendable {
     func run(_ call: ToolCall) async -> ToolCallResult
 }
 
+/// Schema-driven execution boundary for native model tool calls.
+///
+/// The model chooses a tool from the definitions advertised on this round.
+/// This executor then applies the same policy to every built-in and connector:
+/// refuse tools that were not advertised, require an arguments object, remove
+/// top-level fields outside the tool's JSON schema, and only then dispatch.
+/// Tool-specific intent parsing does not belong here or in the view model.
+@MainActor
+struct NativeToolCallExecutor {
+    let registry: ToolRegistry
+
+    func execute(
+        _ call: ToolCall,
+        advertised definitions: [ToolDefinition]
+    ) async -> ToolCallResult {
+        let knownNames = Set(registry.definitions.map { $0.function.name })
+        guard let definition = definitions.first(where: {
+            $0.function.name == call.function.name
+        }) else {
+            return ToolCallResult(
+                toolCallID: call.id,
+                content: Self.refusalMessage(
+                    name: call.function.name,
+                    allowed: Set(definitions.map { $0.function.name }),
+                    known: knownNames
+                ) ?? "tool '\(call.function.name)' is unavailable",
+                isError: true,
+                failureKind: .toolFailed
+            )
+        }
+
+        guard let normalized = Self.normalized(call, for: definition) else {
+            return ToolCallResult(
+                toolCallID: call.id,
+                content: "tool '\(call.function.name)' error: arguments must be a JSON object matching the advertised schema",
+                isError: true,
+                failureKind: .toolFailed
+            )
+        }
+        return await registry.run(normalized)
+    }
+
+    nonisolated static func refusalMessage(
+        name: String,
+        allowed: Set<String>,
+        known: Set<String>
+    ) -> String? {
+        if allowed.contains(name) { return nil }
+        if known.contains(name) {
+            return "tool '\(name)' isn't available in this conversation — answer directly, or ask the user to enable it in Settings."
+        }
+        let list = allowed.sorted().joined(separator: ", ")
+        return "unknown tool '\(name)'\(list.isEmpty ? "" : " — available: \(list)"). Answer directly instead."
+    }
+
+    /// Normalize only the generic OpenAI tool envelope. Nested semantics stay
+    /// with the tool's own decoder; this boundary intentionally knows nothing
+    /// about locations, URLs, queries, or connector-specific values.
+    nonisolated static func normalized(
+        _ call: ToolCall,
+        for definition: ToolDefinition
+    ) -> ToolCall? {
+        let raw = call.function.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = Data((raw.isEmpty ? "{}" : raw).utf8)
+        guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        if case .object(let schema) = definition.function.parameters,
+           case .object(let properties)? = schema["properties"]
+        {
+            object = object.filter { properties.keys.contains($0.key) }
+        }
+        guard JSONSerialization.isValidJSONObject(object),
+              let normalized = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let arguments = String(data: normalized, encoding: .utf8)
+        else { return nil }
+        return ToolCall(id: call.id, name: call.function.name, arguments: arguments)
+    }
+}
+
 /// Trivial empty registry. Used when no tool plumbing is wired up
 /// yet — the chat loop sends ``tools: nil`` and skips the tool round-
 /// trip. P4 swaps this for the real ``FilesystemToolRegistry``.

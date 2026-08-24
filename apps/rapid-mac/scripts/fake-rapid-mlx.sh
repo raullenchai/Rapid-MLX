@@ -875,6 +875,33 @@ class Handler(BaseHTTPRequestHandler):
             _event("tool_loop_synthesis", tool_results=tool_results)
             return
 
+        # Native web-tool fixture. The fake stands in for the model here: on
+        # each new user turn it chooses the advertised web_search tool, then
+        # synthesizes normally once the app has appended that call's result.
+        # This deliberately does not inspect prompt keywords; product routing
+        # belongs to the model's tool choice, never to app-side regexes.
+        if _setting("RAPID_GUI_WEB_SEARCH_FIXTURE") == "1" and any(
+            isinstance(definition, dict)
+            and isinstance(definition.get("function"), dict)
+            and definition["function"].get("name") == "web_search"
+            for definition in definitions
+        ):
+            last_user_index = max((
+                index for index, message in enumerate(messages)
+                if isinstance(message, dict) and message.get("role") == "user"
+            ), default=-1)
+            has_result_for_turn = any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in messages[last_user_index + 1:]
+            )
+            if not has_result_for_turn:
+                call_id = f"golden_search_{last_user_index}"
+                self.wfile.write(_sse(_tool_call_delta(call_id)))
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                _event("native_web_search_call", call_id=call_id)
+                return
+
         # #896 crash-recovery harness: when FAKE_DIE_AFTER_CHUNKS
         # is set to a positive integer N, we abruptly os._exit(1)
         # after streaming N content deltas — simulating the real

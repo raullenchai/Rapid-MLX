@@ -42,10 +42,9 @@ struct GroundingConfabulationRetryTests {
         // The final answer is the grounded retry, not the confabulated draft.
         #expect(model.messages.last?.content == kGroundedAnswer)
         #expect(model.messages.last?.status == .complete)
-        // Exactly two synthesis requests: the confabulated one, then one
-        // correction. (The forced web_search itself is dispatched app-side and
-        // is not an HTTP request.)
-        #expect(ConfabRetryProtocol.requestBodies.count == 2)
+        // Native tool loop: model chooses web_search, synthesizes a denial,
+        // then receives exactly one tools-disabled correction request.
+        #expect(ConfabRetryProtocol.requestBodies.count == 3)
         // The correction round is tools-disabled and carries a failure-specific
         // system instruction.
         let correction = try #require(ConfabRetryProtocol.requestBodies.last)
@@ -84,15 +83,15 @@ struct GroundingConfabulationRetryTests {
 
         #expect(!model.isStreaming)
         #expect(model.messages.last?.content == kGroundedAnswer)
-        // A clean grounded answer must not spend a second synthesis round.
-        #expect(ConfabRetryProtocol.requestBodies.count == 1)
+        // Model tool choice + one clean synthesis; no correction round.
+        #expect(ConfabRetryProtocol.requestBodies.count == 2)
     }
 
     @Test("A failed/empty correction round restores the original draft, not a blank")
     func failedCorrectionRestoresOriginalDraft() async throws {
-        // Request 1 confabulates → correction is forced; request 2 (the
-        // correction) comes back empty → the loop must restore the original
-        // answer rather than leave the blanked placeholder empty.
+        // Request 1 chooses the tool; request 2 confabulates, so request 3 is
+        // the correction. It comes back empty, and the loop must restore the
+        // original answer rather than leave the placeholder blank.
         ConfabRetryProtocol.reset(firstAnswer: kConfabAnswer)
         ConfabRetryProtocol.emptySecondResponse = true
         defer { ConfabRetryProtocol.emptySecondResponse = false }
@@ -112,8 +111,8 @@ struct GroundingConfabulationRetryTests {
         }
 
         #expect(!model.isStreaming)
-        // The correction was attempted (two requests) but produced nothing…
-        #expect(ConfabRetryProtocol.requestBodies.count == 2)
+        // The correction was attempted (three native-loop requests total)…
+        #expect(ConfabRetryProtocol.requestBodies.count == 3)
         // …so the original draft is preserved, and the message is not blank.
         #expect(model.messages.last?.content == kConfabAnswer)
         #expect(model.messages.last?.status == .complete)
@@ -142,7 +141,7 @@ struct GroundingConfabulationRetryTests {
         // on the evidence ("the search result shows …"), so the combined guard
         // must NOT retry it — the answer is preserved verbatim.
         #expect(model.messages.last?.content == Self.caveat)
-        #expect(ConfabRetryProtocol.requestBodies.count == 1)
+        #expect(ConfabRetryProtocol.requestBodies.count == 2)
     }
 }
 
@@ -395,16 +394,26 @@ private final class ConfabRetryProtocol: URLProtocol, @unchecked Sendable {
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
 
-        let answer =
-            requestNumber == 1
-            ? Self.firstAnswer
-            : (Self.emptySecondResponse ? "" : kGroundedAnswer)
-        let stream = """
-        data: {"choices":[{"delta":{"content":\(Self.jsonString(answer))},"finish_reason":"stop"}]}
+        let stream: String
+        if requestNumber == 1 {
+            // The model—not the app—selects the advertised tool.
+            stream = """
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"search_1","type":"function","function":{"name":"web_search","arguments":"{\\\"query\\\":\\\"major news last week\\\"}"}}]},"finish_reason":"tool_calls"}]}
 
-        data: [DONE]
+            data: [DONE]
 
-        """
+            """
+        } else {
+            let answer = requestNumber == 2
+                ? Self.firstAnswer
+                : (Self.emptySecondResponse ? "" : kGroundedAnswer)
+            stream = """
+            data: {"choices":[{"delta":{"content":\(Self.jsonString(answer))},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """
+        }
         client?.urlProtocol(self, didLoad: Data(stream.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }

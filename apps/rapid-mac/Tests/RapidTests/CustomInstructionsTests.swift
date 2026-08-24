@@ -64,16 +64,6 @@ struct CustomInstructionsTests {
         #expect(result == [user])
     }
 
-    @Test("Qwen 3.5 9B gets same-session continuity guidance only")
-    func qwenContinuityGuidanceIsNarrowlyScoped() {
-        #expect(ChatViewModel.modelContinuityPreamble(forAlias: "qwen3.5-9b-4bit") != nil)
-        #expect(ChatViewModel.modelContinuityPreamble(
-            forAlias: "mlx-community/Qwen3.5-9B-8bit"
-        ) != nil)
-        #expect(ChatViewModel.modelContinuityPreamble(forAlias: "qwen3.5-4b-4bit") == nil)
-        #expect(ChatViewModel.modelContinuityPreamble(forAlias: "llama-3.1-8b") == nil)
-    }
-
     @Test("Ambient, existing, global, and conversation layers share one ordered system row")
     func layersMergeInOrder() {
         let existing = ChatMessage(role: .system, content: "App system", status: .complete)
@@ -166,49 +156,6 @@ struct CustomInstructionsTests {
                 "If they conflict with the global user instructions above, follow THESE conversation instructions."
             )
         )
-    }
-
-    @Test("Qwen weather send omits local welcome and executes Weather before synthesis")
-    func qwenWeatherWireContract() async throws {
-        QwenWeatherCaptureProtocol.reset()
-        let (defaults, name) = freshDefaults()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let model = ChatViewModel(
-            client: ChatStreamClient(
-                baseURL: URL(string: "fake://qwen-weather")!,
-                session: QwenWeatherCaptureProtocol.session()
-            ),
-            tools: WeatherExecutionStub(),
-            toolDefaults: defaults,
-            persistsConversations: false
-        )
-        model.seedAssistantWelcome("Welcome to Rapid MLX.")
-
-        model.send(
-            "What is the current weather in Springfield, Illinois? Use the Weather tool.",
-            alias: "qwen3.5-9b-4bit"
-        )
-        for _ in 0..<200 where model.isStreaming {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-
-        let body = try #require(QwenWeatherCaptureProtocol.lastRequestBody)
-        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        let messages = try #require(json["messages"] as? [[String: Any]])
-        #expect(!messages.contains { ($0["content"] as? String) == "Welcome to Rapid MLX." })
-        #expect(messages.first?["role"] as? String == "system")
-        #expect((messages.first?["content"] as? String)?.contains("working memory") == true)
-        #expect(messages.contains {
-            ($0["role"] as? String) == "tool"
-                && ($0["content"] as? String) == "Current conditions for Springfield, Illinois"
-        })
-        let toolAssistant = try #require(messages.first {
-            ($0["role"] as? String) == "assistant" && $0["tool_calls"] != nil
-        })
-        let calls = try #require(toolAssistant["tool_calls"] as? [[String: Any]])
-        let function = try #require(calls.first?["function"] as? [String: Any])
-        #expect(function["name"] as? String == "weather")
-        #expect((function["arguments"] as? String)?.contains("Springfield, Illinois") == true)
     }
 
     @Test("Removing ambient guidance preserves every user-authored layer")
@@ -327,19 +274,6 @@ struct CustomInstructionsTests {
     }
 }
 
-@MainActor
-private final class WeatherExecutionStub: ToolRegistry {
-    var definitions: [ToolDefinition] { [WeatherTool.definition] }
-
-    func run(_ call: ToolCall) async -> ToolCallResult {
-        ToolCallResult(
-            toolCallID: call.id,
-            content: "Current conditions for Springfield, Illinois",
-            isError: false
-        )
-    }
-}
-
 private final class CustomInstructionsCaptureProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var lastRequestBody: Data?
 
@@ -384,53 +318,6 @@ private final class CustomInstructionsCaptureProtocol: URLProtocol, @unchecked S
         while true {
             let count = buffer.withUnsafeMutableBufferPointer { pointer in
                 stream.read(pointer.baseAddress!, maxLength: pointer.count)
-            }
-            if count > 0 { data.append(buffer, count: count) }
-            if count == 0 { return data }
-            if count < 0 { return nil }
-        }
-    }
-}
-
-private final class QwenWeatherCaptureProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var lastRequestBody: Data?
-
-    static func reset() { lastRequestBody = nil }
-
-    static func session() -> URLSession {
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [QwenWeatherCaptureProtocol.self]
-        return URLSession(configuration: config)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.lastRequestBody = Self.bodyData(from: request)
-        let response = HTTPURLResponse(
-            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "text/event-stream"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("""
-        data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n
-        data: [DONE]\n
-        """.utf8))
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-
-    private static func bodyData(from request: URLRequest) -> Data? {
-        guard let stream = request.httpBodyStream else { return request.httpBody }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = buffer.withUnsafeMutableBufferPointer {
-                stream.read($0.baseAddress!, maxLength: $0.count)
             }
             if count > 0 { data.append(buffer, count: count) }
             if count == 0 { return data }

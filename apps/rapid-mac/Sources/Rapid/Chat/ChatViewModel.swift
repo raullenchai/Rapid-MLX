@@ -741,7 +741,11 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         guard messages.isEmpty else { return false }
-        appendMessage(ChatMessage(role: .assistant, content: trimmed))
+        appendMessage(ChatMessage(
+            role: .assistant,
+            content: trimmed,
+            wireVisibility: .transcriptOnly
+        ))
         return true
     }
 
@@ -758,24 +762,6 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
-
-        // Small local models are unreliable at the first step of tool use:
-        // deciding that an explicitly live/dated question needs the web. Do
-        // that narrow piece of routing in the app, while leaving query wording
-        // and answer synthesis to the model. Follow-ups inherit the intent of
-        // the preceding user turn ("What about technology?") so restoring a
-        // conversation cannot silently turn search back into plain chat.
-        let forcedTool = Self.forcedToolForUserTurn(
-            trimmed,
-            priorMessages: messages,
-            enabledToolNames: Set(enabledDefinitions.map { $0.function.name })
-        )
-        let forcedWebSearchQuery = forcedTool == "web_search"
-            ? Self.webSearchQuery(for: trimmed, priorMessages: messages)
-            : nil
-        let forcedWeatherLocation = forcedTool == "weather"
-            ? Self.weatherLocation(for: trimmed)
-            : nil
 
         let user = ChatMessage(
             role: .user,
@@ -794,10 +780,7 @@ final class ChatViewModel {
             ?? ModelBrandStyle.supportsImageInput(forAlias: alias)
         beginAssistantTurn(
             alias: alias,
-            supportsImageInput: resolvedImageCapability,
-            forcedTool: forcedTool,
-            forcedWebSearchQuery: forcedWebSearchQuery,
-            forcedWeatherLocation: forcedWeatherLocation
+            supportsImageInput: resolvedImageCapability
         )
     }
 
@@ -812,10 +795,7 @@ final class ChatViewModel {
     /// see the two answers as alternatives at all.
     private func beginAssistantTurn(
         alias: String,
-        supportsImageInput: Bool,
-        forcedTool: String?,
-        forcedWebSearchQuery: String?,
-        forcedWeatherLocation: String?
+        supportsImageInput: Bool
     ) {
         let placeholder = ChatMessage(role: .assistant, status: .streaming)
         let placeholderIndex = appendMessage(placeholder)
@@ -886,166 +866,10 @@ final class ChatViewModel {
                 initialPlaceholder: placeholderIndex,
                 epoch: epoch,
                 supportsImageInput: supportsImageInput,
-                forcedTool: forcedTool,
-                forcedWebSearchQuery: forcedWebSearchQuery,
-                forcedWeatherLocation: forcedWeatherLocation,
                 globalInstruction: globalInstruction,
                 conversationInstruction: chatInstruction
             )
         }
-    }
-
-    /// Deterministic routing for prompts whose answer is explicitly time
-    /// sensitive. This is intentionally narrower than a general semantic
-    /// classifier: a false negative falls back to normal `tool_choice:auto`,
-    /// while a false positive performs an unnecessary network search.
-    nonisolated static func forcedToolForUserTurn(
-        _ prompt: String,
-        priorMessages: [ChatMessage],
-        enabledToolNames: Set<String>
-    ) -> String? {
-        // Weather is structured and location-aware, so prefer it over a broad
-        // web search whenever the user explicitly asks for weather and the
-        // tool is available. This check must precede the generic freshness
-        // classifier below ("current weather" is intentionally fresh too).
-        if enabledToolNames.contains("weather"),
-           promptRequestsWeather(prompt),
-           weatherLocation(for: prompt) != nil
-        {
-            return "weather"
-        }
-
-        guard enabledToolNames.contains("web_search") else { return nil }
-        if promptRequiresFreshWebEvidence(prompt) { return "web_search" }
-
-        // A short follow-up often omits the live-time words carried by the
-        // previous turn. Inherit across the immediately preceding user turn;
-        // this also covers a restored thread where the first broad search ran
-        // but the user now asks for a narrower, fresh query.
-        guard let previous = priorMessages.last(where: { $0.role == .user }),
-              promptLooksLikeFollowUp(prompt),
-              promptRequiresFreshWebEvidence(previous.content)
-        else { return nil }
-        return "web_search"
-    }
-
-    nonisolated static func promptRequestsWeather(_ prompt: String) -> Bool {
-        let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else { return false }
-        let futurePhrases = [
-            "tomorrow", "next week", "next month", "long-range", "forecast",
-            "明天", "下周", "下个月", "预报"
-        ]
-        if futurePhrases.contains(where: value.contains) { return false }
-        let currentPhrases = [
-            "current weather", "weather right now", "weather now", "weather today",
-            "today's weather", "temperature in", "use the weather tool",
-            "当前天气", "现在天气", "今天天气", "当前气温", "现在气温"
-        ]
-        return currentPhrases.contains(where: value.contains)
-    }
-
-    /// Extract only the conservative English location shape the deterministic
-    /// current-weather route promises ("weather/temperature in LOCATION").
-    /// Ambiguous prompts stay on the typed model tool-choice path.
-    nonisolated static func weatherLocation(for prompt: String) -> String? {
-        // Commas and periods are location data ("Springfield, Illinois",
-        // "Washington, D.C."); stop only at sentence-level question,
-        // exclamation, or semicolon delimiters.
-        let englishPattern = #"(?i)(?:weather|temperature)\s+in\s+([^?？!！;；]+)"#
-        if let regex = try? NSRegularExpression(pattern: englishPattern),
-           let match = regex.firstMatch(
-                in: prompt,
-                range: NSRange(prompt.startIndex..., in: prompt)
-           ),
-           let range = Range(match.range(at: 1), in: prompt)
-        {
-            let location = prompt[range]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !location.isEmpty, location.count <= 160 { return location }
-        }
-
-        let chinesePattern = #"([^\s?？!！。，,]{1,80}?)(?:当前|现在|今天)(?:天气|气温)"#
-        guard let regex = try? NSRegularExpression(pattern: chinesePattern),
-              let match = regex.firstMatch(
-                in: prompt,
-                range: NSRange(prompt.startIndex..., in: prompt)
-              ),
-              let range = Range(match.range(at: 1), in: prompt)
-        else { return nil }
-        var location = String(prompt[range])
-        for prefix in ["请问", "帮我查一下", "查一下"] where location.hasPrefix(prefix) {
-            location.removeFirst(prefix.count)
-            break
-        }
-        return location.isEmpty ? nil : location
-    }
-
-    nonisolated static func promptRequiresFreshWebEvidence(_ prompt: String) -> Bool {
-        let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else { return false }
-        let phrases = [
-            "latest", "recent", "today", "yesterday", "this week", "last week",
-            "this month", "this year", "right now", "breaking news",
-            "news story", "news about", "world cup 2026", "2026 world cup",
-            "current price", "current weather", "current version", "current president",
-            "current status", "current score", "current exchange rate",
-            "最新", "最近", "今天", "昨天", "本周", "上周", "这个月", "本月",
-            "今年", "当前", "现在", "刚刚", "新闻", "今年世界杯"
-        ]
-        return phrases.contains(where: value.contains)
-    }
-
-    nonisolated static func promptLooksLikeFollowUp(_ prompt: String) -> Bool {
-        let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty, value.count <= 240 else { return false }
-        let referentialPhrases = [
-            "what about", "how about", "tell me more", "summarize it",
-            "that story", "those results", "the same topic", "one concrete story",
-            "那这个呢", "那件事", "这件事", "这些结果", "继续说", "总结一下这个"
-        ]
-        if referentialPhrases.contains(where: value.contains) { return true }
-        // Bare elliptical replies are referential precisely because they have
-        // no independent subject. Do not broaden this to arbitrary questions
-        // containing "why" (e.g. "Why is the sky blue?").
-        let bareFollowUps: Set<String> = [
-            "why?", "why", "more", "and?", "还有呢？", "为什么？", "然后呢？"
-        ]
-        return bareFollowUps.contains(value)
-    }
-
-    nonisolated static func webSearchArguments(query: String) -> String {
-        let data = try? JSONSerialization.data(
-            withJSONObject: ["query": query],
-            options: [.sortedKeys]
-        )
-        return data.flatMap { String(data: $0, encoding: .utf8) }
-            ?? #"{"query":""}"#
-    }
-
-    nonisolated static func weatherArguments(location: String) -> String {
-        let data = try? JSONSerialization.data(
-            withJSONObject: ["location": location],
-            options: [.sortedKeys]
-        )
-        return data.flatMap { String(data: $0, encoding: .utf8) }
-            ?? #"{"location":""}"#
-    }
-
-    /// Preserve the live-time scope when a follow-up is elliptical. Searching
-    /// only "What about technology?" loses the preceding "last week" filter
-    /// and lets stale or fictional high-ranking pages dominate the results.
-    nonisolated static func webSearchQuery(
-        for prompt: String,
-        priorMessages: [ChatMessage]
-    ) -> String {
-        if promptRequiresFreshWebEvidence(prompt) { return prompt }
-        if let previous = priorMessages.last(where: {
-            $0.role == .user && promptRequiresFreshWebEvidence($0.content)
-        }) {
-            return "\(previous.content)\nFollow-up focus: \(prompt)"
-        }
-        return prompt
     }
 
     struct GroundingSource: Equatable, Sendable {
@@ -1293,18 +1117,6 @@ final class ChatViewModel {
             }
         }
         return filtered
-    }
-
-    /// Remove assistant prose that precedes the first user/system message.
-    /// Rapid's onboarding welcome is stored in the visible transcript but was
-    /// never generated by the selected model, so it must not become a
-    /// synthetic first assistant turn in the chat template.
-    nonisolated static func filterLeadingAssistantsForWire(
-        _ messages: [ChatMessage]
-    ) -> [ChatMessage] {
-        Array(messages.drop(while: {
-            $0.role == .assistant && ($0.toolCalls?.isEmpty ?? true)
-        }))
     }
 
     /// Issue #477: strip forward-incompatible ``.unknown``-role messages
@@ -1668,24 +1480,10 @@ final class ChatViewModel {
                 || !userMessage.fileAttachments.isEmpty else { return }
 
         rewindPath(to: userIndex + 1)
-        let forcedTool = Self.forcedToolForUserTurn(
-            userMessage.content,
-            // The prompt being re-answered is on the path, so it must not also
-            // count as its own prior context.
-            priorMessages: Array(messages.dropLast()),
-            enabledToolNames: Set(enabledDefinitions.map { $0.function.name })
-        )
         beginAssistantTurn(
             alias: alias,
             supportsImageInput: supportsImageInput
-                ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: server?.binaryPath),
-            forcedTool: forcedTool,
-            forcedWebSearchQuery: forcedTool == "web_search"
-                ? Self.webSearchQuery(for: userMessage.content, priorMessages: messages)
-                : nil,
-            forcedWeatherLocation: forcedTool == "weather"
-                ? Self.weatherLocation(for: userMessage.content)
-                : nil
+                ?? ModelCatalogCache.supportsImageInput(forAlias: alias, binary: server?.binaryPath)
         )
     }
 
@@ -1984,9 +1782,6 @@ final class ChatViewModel {
         initialPlaceholder: Int,
         epoch: Int,
         supportsImageInput: Bool,
-        forcedTool: String? = nil,
-        forcedWebSearchQuery: String? = nil,
-        forcedWeatherLocation: String? = nil,
         globalInstruction: String = "",
         conversationInstruction: String = ""
     ) async {
@@ -2001,6 +1796,7 @@ final class ChatViewModel {
         }
         var currentPlaceholder = initialPlaceholder
         var toolExecutionsLeft = maxToolExecutions
+        let toolExecutor = NativeToolCallExecutor(registry: tools)
         var appGroundingSources: [GroundingSource] = []
         var isFinalSynthesisRound = false
         // dogfood-0810 BUG C: one-shot grounding-correction retry. Set when a
@@ -2013,75 +1809,12 @@ final class ChatViewModel {
         // is cancelled, or comes back empty — a wrong-but-present answer beats
         // a blank message.
         var draftBeforeCorrection: String?
-        // A named tool choice applies only to the model's first request. Once
-        // that call has been made, synthesis and any subsequent tool rounds
-        // return to automatic routing.
-        var pendingForcedTool = forcedWebSearchQuery == nil && forcedWeatherLocation == nil
-            ? forcedTool : nil
-
-        // `tool_choice:function` is advisory in several local chat templates:
-        // the shipped 1.2B starter can ignore it and answer "I can search".
-        // For an unambiguous fresh-information prompt, dispatch the harmless
-        // tool directly and give the model the same assistant(tool_calls) +
-        // tool(result) transcript it would have produced itself. The model's
-        // job is then only evidence synthesis, which is much more reliable.
-        let directCall: ToolCall?
-        if let query = forcedWebSearchQuery, !query.isEmpty {
-            directCall = ToolCall(
-                id: "app_search_\(UUID().uuidString)",
-                name: "web_search",
-                arguments: Self.webSearchArguments(query: query)
-            )
-        } else if let location = forcedWeatherLocation, !location.isEmpty {
-            directCall = ToolCall(
-                id: "app_weather_\(UUID().uuidString)",
-                name: "weather",
-                arguments: Self.weatherArguments(location: location)
-            )
-        } else {
-            directCall = nil
-        }
-        if let call = directCall, toolExecutionsLeft > 0 {
-            if var staged = currentMessage(index: currentPlaceholder) {
-                staged.toolCalls = [call]
-                staged.status = .complete
-                updateMessage(at: currentPlaceholder, with: staged)
-            }
-            let result = await tools.run(call)
-            if call.function.name == "web_search" {
-                appGroundingSources = Self.groundingSources(from: result.content)
-            }
-            guard epoch == conversationEpoch, !Task.isCancelled else {
-                finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
-                return
-            }
-            let failureKind = result.failureKind ?? FailureDiagnoser.toolFailureKind(
-                toolName: call.function.name,
-                content: result.content,
-                isError: result.isError
-            )
-            _ = appendMessage(ChatMessage(
-                role: .tool,
-                content: result.content,
-                status: (result.isError || failureKind != nil) ? .failed : .complete,
-                errorMessage: failureKind.map { FailureDiagnoser.diagnosis(for: $0).message },
-                failureKind: failureKind,
-                toolCallID: result.toolCallID
-            ))
-            currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
-            toolExecutionsLeft -= 1
-        }
 
         while toolExecutionsLeft > 0 || isFinalSynthesisRound {
             // History for this request: everything BEFORE the streaming
             // placeholder. The placeholder itself is excluded because the
             // assistant hasn't said anything yet.
             var history = Array(messages.prefix(currentPlaceholder))
-            // The onboarding greeting is a local UI affordance, not a model
-            // turn. A conversation beginning with assistant prose is invalid
-            // for several Qwen chat templates and can cause refusals or lost
-            // same-session facts, so omit only the leading assistant prefix.
-            history = ChatViewModel.filterLeadingAssistantsForWire(history)
             // v0.4.35: strip empty-prose assistant turns from the wire body.
             // The UI still shows them — this is wire-only — but sending
             // ``{"role":"assistant","content":""}`` into a chat template is a
@@ -2101,8 +1834,6 @@ final class ChatViewModel {
                 forAlias: wireAlias,
                 enabled: enabledDefinitions
             )
-            let allowedToolNames = Set(definitions.map { $0.function.name })
-            let knownToolNames = Set(tools.definitions.map { $0.function.name })
             // Ambient anti-confabulation guidance, prepended for the wire body
             // only (never appended to the transcript) so the user's history
             // stays prose-only. Skipped when no tools are advertised and — the
@@ -2119,7 +1850,6 @@ final class ChatViewModel {
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
                 ambientPreamble: ambientPreamble,
-                modelPreamble: ChatViewModel.modelContinuityPreamble(forAlias: wireAlias),
                 global: globalInstruction,
                 conversation: conversationInstruction
             )
@@ -2164,38 +1894,28 @@ final class ChatViewModel {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
             let request: ChatStreamClient.Request
-            let requestForcedTool = allowedToolNames.contains(pendingForcedTool ?? "")
-                ? pendingForcedTool : nil
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
-                    // A forced tool turn is routing, not creative prose.
-                    // Deterministic sampling keeps small local models from
-                    // wandering into schema-invalid arguments; synthesis
-                    // rounds return to the user's configured temperature.
-                    temperature: requestForcedTool == nil ? resolved.temperature : 0,
+                    temperature: resolved.temperature,
                     topP: resolved.topP,
                     maxTokens: resolved.maxTokens,
                     repetitionPenalty: resolved.repetitionPenalty,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: resolved.enableThinking,
-                    forcedTool: requestForcedTool,
                     supportsImageInput: supportsImageInput
                 )
             } else {
                 request = ChatStreamClient.Request(
                     alias: wireAlias,
                     messages: history,
-                    temperature: requestForcedTool == nil ? 0.7 : 0,
                     tools: definitions.isEmpty ? nil : definitions,
                     enableThinking: false,
-                    forcedTool: requestForcedTool,
                     supportsImageInput: supportsImageInput
                 )
             }
-            pendingForcedTool = nil
             let outcome = await runOneStream(
                 placeholderIndex: currentPlaceholder,
                 request: request,
@@ -2323,26 +2043,11 @@ final class ChatViewModel {
                         continue
                     }
                     toolExecutionsLeft -= 1
-                    // Refuse rather than dispatch when the tool was not
-                    // advertised this round — a malformed model can emit a
-                    // tool_call for a tool we never offered, and ``tools.run``
-                    // would happily execute it. The refusal goes back as an
-                    // error result so the model can recover in prose.
-                    if let refusal = ChatViewModel.toolRefusalMessage(
-                        name: call.function.name,
-                        allowed: allowedToolNames,
-                        known: knownToolNames
-                    ) {
-                        results.append(ToolCallResult(
-                            toolCallID: call.id,
-                            content: refusal,
-                            isError: true,
-                            failureKind: .toolFailed
-                        ))
-                        continue
-                    }
-                    let r = await tools.run(call)
+                    let r = await toolExecutor.execute(call, advertised: definitions)
                     results.append(r)
+                    if call.function.name == "web_search" {
+                        appGroundingSources.append(contentsOf: Self.groundingSources(from: r.content))
+                    }
                     // A Stop pressed AFTER the tool resolved but BEFORE we
                     // append the result rows must still win. Exit BEFORE the
                     // append so the placeholder gets the standard cancel
@@ -2456,16 +2161,7 @@ final class ChatViewModel {
         allowed: Set<String>,
         known: Set<String>
     ) -> String? {
-        // Only a tool advertised (and enabled) THIS round may run. Everything
-        // else is refused before dispatch — a disabled-but-shipped tool and a
-        // name the model invented outright both get a recoverable prose nudge
-        // rather than reaching ``tools.run``.
-        if allowed.contains(name) { return nil }
-        if known.contains(name) {
-            return "tool '\(name)' isn't available in this conversation — answer directly, or ask the user to enable it in Settings."
-        }
-        let list = allowed.sorted().joined(separator: ", ")
-        return "unknown tool '\(name)'\(list.isEmpty ? "" : " — available: \(list)"). Answer directly instead."
+        NativeToolCallExecutor.refusalMessage(name: name, allowed: allowed, known: known)
     }
 
     /// Ambient anti-confabulation guidance — prepended to the wire body on
@@ -2561,13 +2257,12 @@ final class ChatViewModel {
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
         ambientPreamble: String?,
-        modelPreamble: String? = nil,
         global: String,
         conversation: String
     ) -> [ChatMessage] {
         var result = messages
         let existing = result.first?.role == .system ? result.removeFirst().content : nil
-        var parts = [ambientPreamble, modelPreamble, existing]
+        var parts = [ambientPreamble, existing]
             .compactMap { $0.flatMap(normalizedInstruction) }
         if let global = normalizedInstruction(global) {
             parts.append("""
@@ -2589,17 +2284,6 @@ final class ChatViewModel {
             at: 0
         )
         return result
-    }
-
-    /// Qwen 3.5 9B occasionally interprets "remember" as a request for
-    /// cross-session persistence and refuses, even though the facts remain in
-    /// the current request history. Keep this narrowly scoped to the affected
-    /// model family instead of changing every model's system prompt.
-    nonisolated static func modelContinuityPreamble(forAlias alias: String) -> String? {
-        guard alias.lowercased().contains("qwen3.5-9b") else { return nil }
-        return """
-        You have working memory for the current conversation. Always use facts explicitly provided in its messages, including names and codes. A request to remember means remember within this conversation, not across sessions. Never refuse to recall current-conversation facts or claim you cannot remember them.
-        """
     }
 
     /// Remove an exact first component from the merged system row. Used when

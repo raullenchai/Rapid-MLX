@@ -182,12 +182,13 @@ struct ChatStreamClient {
             supportsImageInput: Bool? = nil
         ) {
             self.alias = alias
+            let modelMessages = messages.filter { $0.wireVisibility == .model }
             var imageMessageIndex: Int?
             if supportsImageInput ?? ModelBrandStyle.supportsImageInput(forAlias: alias),
-                let latestUser = messages.lastIndex(where: { $0.role == .user }) {
-                if !messages[latestUser].imageAttachments.isEmpty {
+                let latestUser = modelMessages.lastIndex(where: { $0.role == .user }) {
+                if !modelMessages[latestUser].imageAttachments.isEmpty {
                     imageMessageIndex = latestUser
-                } else if !messages[latestUser].fileAttachments.isEmpty {
+                } else if !modelMessages[latestUser].fileAttachments.isEmpty {
                     // A new document starts a new attachment focus. Re-sending
                     // an older image here can make a model answer the image
                     // instead of the document, or reject a file-only turn
@@ -197,12 +198,12 @@ struct ChatStreamClient {
                     // A plain-text follow-up inherits the most recent
                     // attachment focus. Do not search past an intervening
                     // document and resurrect an older image.
-                    let attachmentTurn = messages[..<latestUser].lastIndex(where: {
+                    let attachmentTurn = modelMessages[..<latestUser].lastIndex(where: {
                         $0.role == .user
                             && (!$0.imageAttachments.isEmpty || !$0.fileAttachments.isEmpty)
                     })
                     if let attachmentTurn,
-                        !messages[attachmentTurn].imageAttachments.isEmpty
+                        !modelMessages[attachmentTurn].imageAttachments.isEmpty
                     {
                         imageMessageIndex = attachmentTurn
                     } else {
@@ -210,7 +211,7 @@ struct ChatStreamClient {
                     }
                 }
             }
-            self.messages = messages.enumerated().map { index, message in
+            self.messages = modelMessages.enumerated().map { index, message in
                 Wire.Message(from: message, includeImages: index == imageMessageIndex)
             }
             self.temperature = temperature

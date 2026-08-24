@@ -118,6 +118,14 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         }
     }
 
+    /// Whether a locally stored row belongs in the model-facing transcript.
+    /// UI-authored affordances such as the onboarding welcome remain visible
+    /// and persisted, but are not synthetic assistant turns on the wire.
+    enum WireVisibility: String, Codable, Sendable {
+        case model
+        case transcriptOnly
+    }
+
     let id: UUID
     let role: Role
     /// The visible assistant prose / user prompt body. For Qwen3.5/3.6
@@ -245,6 +253,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// ``reasoningTruncated`` / ``contentTruncated`` /
     /// ``toolNotCalledFlagged``).
     var toolCallArtifactSuppressed: Bool
+    var wireVisibility: WireVisibility
     /// Parent node in the conversation tree, or ``nil`` for a root turn.
     ///
     /// A conversation stores EVERY branch, not just the visible transcript;
@@ -284,6 +293,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         contentTruncated: Bool = false,
         toolNotCalledFlagged: Bool = false,
         toolCallArtifactSuppressed: Bool = false,
+        wireVisibility: WireVisibility = .model,
         parentID: UUID? = nil,
         createdAt: Date = Date()
     ) {
@@ -303,6 +313,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.contentTruncated = contentTruncated
         self.toolNotCalledFlagged = toolNotCalledFlagged
         self.toolCallArtifactSuppressed = toolCallArtifactSuppressed
+        self.wireVisibility = wireVisibility
         self.parentID = parentID
         self.createdAt = createdAt
     }
@@ -319,6 +330,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         case stats, reasoningTruncated, contentTruncated
         case toolNotCalledFlagged
         case toolCallArtifactSuppressed
+        case wireVisibility
         case parentID
         case createdAt
         /// The outcome as THIS build understands it. ``failureKind`` carries
@@ -362,6 +374,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         try c.encode(contentTruncated, forKey: .contentTruncated)
         try c.encode(toolNotCalledFlagged, forKey: .toolNotCalledFlagged)
         try c.encode(toolCallArtifactSuppressed, forKey: .toolCallArtifactSuppressed)
+        try c.encode(wireVisibility, forKey: .wireVisibility)
         // Omitted for root turns. Non-root rows always carry it — including
         // in conversations that never branched — which is safe because it is
         // an additive key every shipped decoder ignores; the conversation-
@@ -406,6 +419,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // release have no key for this field; default to false so old
         // transcripts decode cleanly.
         self.toolCallArtifactSuppressed = try c.decodeIfPresent(Bool.self, forKey: .toolCallArtifactSuppressed) ?? false
+        self.wireVisibility = try c.decodeIfPresent(WireVisibility.self, forKey: .wireVisibility) ?? .model
         // Absent on every row written before branching shipped, and absent on
         // root turns thereafter. ``ChatConversation``'s decode rebuilds the
         // parent chain for a legacy linear array, so ``nil`` here is not
