@@ -311,6 +311,7 @@ jobs:
             tests/test_community_bench_upload.py \
             tests/test_music_engine.py \
             tests/test_aliases_contract.py \
+            tests/test_chat_template_registry.py \
             tests/test_alias_subfolder.py \
             tests/test_ram_tier_recommendations_agree.py \
             tests/test_version_sync.py \

@@ -3458,9 +3458,6 @@ class BatchedEngine(BaseEngine):
 
         self._model = model
         self._tokenizer = tokenizer
-        from ..utils.chat_template_registry import resolve_profile_chat_template
-
-        resolve_profile_chat_template(self._tokenizer, self._model_name)
 
         # Create engine config
         scheduler_config = self._scheduler_config or SchedulerConfig()

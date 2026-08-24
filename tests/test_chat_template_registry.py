@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tokenizers import Tokenizer, models
@@ -111,6 +112,33 @@ def test_unknown_checkpoint_and_explicit_override_are_preserved(explicit) -> Non
     assert declared.chat_template == explicit
 
 
+def test_registry_handles_nested_processor_and_missing_selection() -> None:
+    tokenizer = _tokenizer()
+    processor = SimpleNamespace(tokenizer=tokenizer)
+
+    assert resolve_chat_template(processor, "gemma4_compact")
+    assert tokenizer.chat_template == bundled_chat_template("gemma4_compact")
+    assert not resolve_chat_template(SimpleNamespace(), "gemma4_full")
+    assert not resolve_chat_template(_tokenizer(), None)
+
+
+def test_unknown_registry_id_fails_closed() -> None:
+    with pytest.raises(ValueError, match="unknown chat template ID"):
+        bundled_chat_template("unregistered")
+
+
+@pytest.mark.parametrize("invalid", [391, "unknown-template"])
+def test_alias_schema_rejects_invalid_template_id(invalid) -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    expected = "must be a string" if not isinstance(invalid, str) else "not in"
+    with pytest.raises(ValueError, match=expected):
+        _coerce(
+            "invalid-template",
+            {"hf_path": "owner/checkpoint", "chat_template_id": invalid},
+        )
+
+
 def _stub_text_loader(monkeypatch, tokenizer):
     from vllm_mlx.utils import tokenizer as tokenizer_module
 
@@ -153,6 +181,80 @@ def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
     assert loaded_model is model
     assert loaded_tokenizer is tokenizer
     assert tokenizer.chat_template == bundled_chat_template("gemma4_full")
+
+
+def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
+    import mlx_lm
+
+    tokenizer = _tokenizer()
+    tokenizer_module, model = _stub_text_loader(monkeypatch, tokenizer)
+    monkeypatch.setattr(
+        tokenizer_module,
+        "_neutralize_unbundled_template_types",
+        lambda name, config: config,
+    )
+    monkeypatch.setattr(tokenizer_module, "_try_inject_mtp_post_load", lambda *a: None)
+    monkeypatch.setattr(
+        tokenizer_module,
+        "augment_eos_token_ids_from_generation_config",
+        lambda *a: None,
+    )
+    monkeypatch.setattr(tokenizer_module, "repair_byte_level_decoder", lambda *a: None)
+    monkeypatch.setattr(mlx_lm, "load", lambda *a, **kw: (model, tokenizer))
+
+    loaded_model, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
+        "gemma-4-e2b-4bit", lazy=True
+    )
+
+    assert loaded_model is model
+    assert loaded_tokenizer is tokenizer
+    assert tokenizer.chat_template == bundled_chat_template("gemma4_compact")
+
+
+@pytest.mark.asyncio
+async def test_mllm_start_resolves_profile_template_at_processor_load(
+    monkeypatch,
+) -> None:
+    from vllm_mlx import engine_core, mllm_scheduler
+    from vllm_mlx.engine import batched as batched_module
+    from vllm_mlx.models import mllm as mllm_module
+
+    processor = _tokenizer()
+
+    class FakeMultimodalLM:
+        def __init__(self, model_name, trust_remote_code=True):
+            self.model = SimpleNamespace()
+            self.processor = processor
+
+        def load(self) -> None:
+            pass
+
+    class FakeScheduler:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(mllm_module, "MLXMultimodalLM", FakeMultimodalLM)
+    monkeypatch.setattr(mllm_scheduler, "MLLMScheduler", FakeScheduler)
+    monkeypatch.setattr(batched_module, "_probe_mllm_cache_type", lambda model: None)
+
+    engine = object.__new__(batched_module.BatchedEngine)
+    engine._model_name = "gemma-4-e2b-4bit"
+    engine._trust_remote_code = False
+    engine._force_mllm = False
+    engine._scheduler_config = None
+    engine._model_load_executor = None
+
+    try:
+        await engine._start_mllm()
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)
+
+    assert processor.chat_template == bundled_chat_template("gemma4_compact")
 
 
 @pytest.mark.parametrize(
