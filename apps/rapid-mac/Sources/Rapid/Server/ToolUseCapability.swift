@@ -116,6 +116,7 @@ enum ToolUseCapability {
     /// Individually dogfooded aliases whose evidence must not be widened to
     /// arbitrary size siblings by a family rule.
     static let exactKnownAliases: Set<String> = [
+        "bonsai-1.7b-2bit",
         "ornith-1.5-9b-bf16",
         "ornith-1.5-35b-a3b-bf16",
     ]
@@ -245,6 +246,14 @@ enum ToolUseCapability {
         // variants may tool-call and must not be locked out (see the
         // IMPORTANT note above).
         "deepseek-r1-8b",
+        // 2026-08-24 release-candidate dogfood: bonsai-8b-2bit
+        // answered an explicit Tokyo-weather request from its priors
+        // ("22 C, clear skies") instead of emitting the advertised
+        // weather tool call. Keep this weight family out of the native
+        // tool path until it passes the same behavioral gate as the
+        // separately verified 1.7B checkpoint. Quant siblings share the
+        // same weights, so the size-qualified prefix is intentional.
+        "bonsai-8b",
         // NOTE: the Mistral / Devstral family was here (2026-07-09
         // sweep: PARSER MISCONFIG, not model incapacity — the model
         // emits a textbook ``[TOOL_CALLS]name[ARGS]{json}`` call but
@@ -311,14 +320,12 @@ enum ToolUseCapability {
 
         // MARK: Bonsai (Ternary) family — the first-run starter
 
-        // bonsai — PrismML Ternary Bonsai, a real Qwen3-architecture
-        // checkpoint packed at 1.58-bit (MLX-2bit). Verified 6/6 clean
-        // tool_calls (hermes parser) on the 1.7B in the eval harness
-        // (rapid-mlx PR #1092); it's the first-run starter, so promoting
-        // it to .known lets the empty-state capability chips surface.
-        // 1.5B floor: the starter is 1.7B (below the 3.0 floor the other
-        // rows use), and the smallest shipped ternary is 1.7B.
-        KnownFamily(prefix: "bonsai-", minSizeBillions: 1.5, note: "Ternary Bonsai (Qwen3 arch); 6/6 clean tool_calls on 1.7B, hermes parser; rapid-mlx PR #1092. NOT the first-run starter since 2026-08-05 — it degenerates on plain chat; see QuickstartCoordinator.defaultChoice"),
+        // Bonsai is intentionally not a family-level promotion. The 1.7B
+        // checkpoint has direct 6/6 evidence and lives in
+        // ``exactKnownAliases``; that result must not be inherited by other
+        // independently trained sizes. RC dogfood proved the 8B checkpoint
+        // silently ignores an explicit weather request, so it is pinned in
+        // ``brokenPrefixes`` above.
 
         // MARK: Llama family
 

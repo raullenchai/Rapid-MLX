@@ -167,6 +167,7 @@ final class BuiltinToolsTests {
         // confidently-hallucinated answer with no chip to warn the user.
         let enabled = makeRegistry().definitions
         #expect(ChatViewModel.wireDefinitions(forAlias: "hermes3-8b-4bit", enabled: enabled).isEmpty)
+        #expect(ChatViewModel.wireDefinitions(forAlias: "bonsai-8b-2bit", enabled: enabled).isEmpty)
         #expect(ChatViewModel.wireDefinitions(forAlias: "qwen3.5-4b-4bit", enabled: enabled).count == 3)
     }
 
