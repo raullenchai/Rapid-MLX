@@ -198,6 +198,17 @@ def test_text_loader_accepts_preserved_profile_contract_for_local_path(
     assert loaded_tokenizer.chat_template == bundled_chat_template("gemma4_full")
 
 
+def test_text_loader_preserves_unidentified_local_checkpoint(monkeypatch) -> None:
+    tokenizer = _tokenizer("custom local {{ messages }}")
+    tokenizer_module, _ = _stub_text_loader(monkeypatch, tokenizer)
+
+    _, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
+        "/private/models/unidentified-checkpoint"
+    )
+
+    assert loaded_tokenizer.chat_template == "custom local {{ messages }}"
+
+
 def test_engine_resolves_or_preserves_profile_contract(monkeypatch) -> None:
     from vllm_mlx.engine import batched as batched_module
 
