@@ -2499,6 +2499,17 @@ def _contains_tool_wire_literal(text: str | None) -> bool:
 
 
 _TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(r"[\"'](?:name|arguments)[\"']\s*:")
+# A model can close the outer ``<tool_call>`` wrapper after truncating the
+# inner Nemotron/Qwen XML (for example, omitting both ``</parameter>`` and
+# ``</function>``).  There is no JSON object for the detector below to use,
+# but a function opener followed by a named parameter is still unambiguous
+# tool-wire structure.  Treat it as payload-bearing residue so it is
+# quarantined instead of rendered verbatim to API/Desktop users.  We do NOT
+# repair or execute the malformed call: guessing structure at this boundary
+# would turn corrupted model output into an action.
+_TOOL_WIRE_XML_PAYLOAD_HINT_RE = re.compile(
+    r"<function=[^>\s]+>.*?<parameter=[^>\s]+>", re.DOTALL
+)
 
 
 def _balanced_json_end(text: str, start: int, *, max_scan: int = 8192) -> int | None:
@@ -2550,7 +2561,9 @@ def _payload_object_after_marker(
     return pos, object_end
 
 
-def _span_has_tool_payload_object(span: str) -> bool:
+def _span_has_tool_payload(span: str) -> bool:
+    if _TOOL_WIRE_XML_PAYLOAD_HINT_RE.search(span):
+        return True
     object_start = span.find("{")
     while object_start != -1:
         object_end = _balanced_json_end(span, object_start)
@@ -2578,10 +2591,10 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
         return False
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         match = balanced_re.search(text)
-        if match and _span_has_tool_payload_object(match.group(0)):
+        if match and _span_has_tool_payload(match.group(0)):
             return True
     cross_match = _CROSS_FAMILY_SPAN_RE.search(text)
-    if cross_match and _span_has_tool_payload_object(cross_match.group(0)):
+    if cross_match and _span_has_tool_payload(cross_match.group(0)):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         match = marker_re.search(text)
@@ -2646,11 +2659,11 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
         search_pos = begin
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         result = balanced_re.sub(
-            lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+            lambda m: "" if _span_has_tool_payload(m.group(0)) else m.group(0),
             result,
         )
     result = _CROSS_FAMILY_SPAN_RE.sub(
-        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+        lambda m: "" if _span_has_tool_payload(m.group(0)) else m.group(0),
         result,
     )
     for _ in range(4):
@@ -2752,7 +2765,7 @@ def _scrub_tool_wire_literals(text: str | None) -> str:
     # between the opener and the unrelated closer survives as
     # ``content`` (codex r3 BLOCKING #1).
     result = _CROSS_FAMILY_SPAN_RE.sub(
-        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+        lambda m: "" if _span_has_tool_payload(m.group(0)) else m.group(0),
         result,
     )
     # Phase 2: strip standalone marker tokens (orphan opener OR
@@ -5909,6 +5922,17 @@ async def _create_chat_completion_impl(
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
     if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
         reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
+    # Auto tool choice can also end on a malformed structured envelope.  There
+    # is no structured call to authorize or execute in that case, but exposing
+    # the raw XML teaches the UI user nothing and can poison the next turn.
+    # Keep the forced-choice compatibility rule above intact: this narrower
+    # fallback fires only when tools were offered, parsing produced NO call,
+    # and the visible channel contains payload-bearing wire structure.
+    if request.tools and not tool_calls:
+        if _contains_structural_tool_wire_leak(cleaned_text):
+            cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
+        if reasoning_text and _contains_structural_tool_wire_leak(reasoning_text):
+            reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
     if _is_forced_choice and tool_calls:
         # #1676/#1677: a recovered valid DeepSeek call may be followed by a
         # malformed duplicate.  Never expose that native section through the
@@ -7018,6 +7042,37 @@ async def stream_chat_completion(
                 if _forced_terminal_content_consumed
                 else finish_content + finalize_content
             )
+            # Streaming parity for the non-stream auto-mode fallback above.
+            # A truncated XML action is held by the parser until EOF, so this
+            # terminal merge is the last safe point before it becomes visible
+            # SSE content.  Never repair/execute it; preserve surrounding prose
+            # and remove only the payload-bearing wire span.
+            if (
+                request.tools
+                and not fallback_tool_calls
+                and processor._tool_calls_emitted_to_wire == 0
+                and _contains_structural_tool_wire_leak(
+                    content_buffer or terminal_content
+                )
+            ):
+                recovered_content = _scrub_visible_tool_wire_leaks(
+                    content_buffer or terminal_content
+                )
+                # The parser may already have streamed safe prose before the
+                # malformed opener.  Emit only the recovered suffix so this
+                # terminal repair does not replay that prefix.
+                streamed_normalized = re.sub(r"\s+", " ", streamed_content).strip()
+                if streamed_normalized and recovered_content.startswith(
+                    streamed_normalized
+                ):
+                    recovered_content = recovered_content[
+                        len(streamed_normalized) :
+                    ].lstrip()
+                    terminal_content = (
+                        f" {recovered_content}" if recovered_content else ""
+                    )
+                else:
+                    terminal_content = recovered_content
 
             # Issue #569 streaming rescue: if NOTHING was streamed as
             # ``content`` across the whole turn AND no ``tool_calls``

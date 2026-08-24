@@ -1417,6 +1417,136 @@ def test_codex_r13_visible_scrub_skips_broken_deepseek_begin_then_scrubs_payload
     assert "suffix" in out
 
 
+def test_visible_scrub_removes_truncated_xml_parameter_tool_wire():
+    """A real Qwen retry closed only the outer wrapper and leaked the rest.
+
+    The route must fail closed: remove the malformed action envelope rather
+    than showing it or guessing missing closing tags and executing it.
+    """
+
+    wire = (
+        "Let me retry.\n"
+        "<tool_call> <function=browse> <parameter=url> "
+        "https://example.com/page </tool_call>\n"
+        "Please try again."
+    )
+    assert _contains_structural_tool_wire_leak(wire)
+
+    out = _scrub_visible_tool_wire_leaks(wire)
+
+    assert "<tool_call>" not in out
+    assert "<function=browse>" not in out
+    assert "<parameter=url>" not in out
+    assert "https://example.com/page" not in out
+    assert "Let me retry." in out
+    assert "Please try again." in out
+
+
+def test_visible_scrub_preserves_xml_marker_prose_without_parameter_payload():
+    prose = "The <function=browse> marker names a function in this example."
+
+    assert not _contains_structural_tool_wire_leak(prose)
+    assert _scrub_visible_tool_wire_leaks(prose) == prose
+
+
+def test_auto_choice_route_scrubs_truncated_xml_parameter_tool_wire():
+    wire = (
+        "Let me retry.\n"
+        "<tool_call> <function=add_numbers> <parameter=a> 1 </tool_call>\n"
+        "Please retry the request."
+    )
+    engine = _RecordingEngine(text=wire, raw_text=wire)
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add one and two"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "auto",
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    message = resp.json()["choices"][0]["message"]
+    assert not message.get("tool_calls")
+    content = message.get("content") or ""
+    assert "<tool_call>" not in content
+    assert "<function=add_numbers>" not in content
+    assert "<parameter=a>" not in content
+    assert "Let me retry." in content
+    assert "Please retry the request." in content
+
+
+def test_auto_choice_stream_scrubs_truncated_xml_parameter_tool_wire():
+    deltas = [
+        "Let me retry.\n",
+        "<tool_call> <function=add_numbers> ",
+        "<parameter=a> 1 </tool_call>\n",
+        "Please retry the request.",
+    ]
+
+    class _MalformedXMLStreamEngine(_RecordingEngine):
+        async def stream_chat(self, messages, **kwargs):
+            accumulated = ""
+            for index, delta in enumerate(deltas):
+                accumulated += delta
+                finished = index == len(deltas) - 1
+                yield GenerationOutput(
+                    text=accumulated,
+                    raw_text=accumulated,
+                    new_text=delta,
+                    prompt_tokens=4,
+                    completion_tokens=index + 1,
+                    finished=finished,
+                    finish_reason="stop" if finished else None,
+                    channel=None,
+                )
+
+    engine = _MalformedXMLStreamEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add one and two"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    wire = resp.text
+    assert "<tool_call>" not in wire
+    assert "<function=add_numbers>" not in wire
+    assert "<parameter=a>" not in wire
+    assert "Let me retry." in wire
+    assert "Please retry the request." in wire
+
+
 def test_1676_forced_deepseek_section_is_removed_from_visible_channels():
     fullwidth = (
         "narration\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>"
