@@ -126,6 +126,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         case transcriptOnly
     }
 
+    /// Messages written before ``wireVisibility`` shipped need one narrow
+    /// migration: Quickstart's product-authored welcome was persisted as an
+    /// ordinary assistant turn. Match only the two stable Rapid copy shapes;
+    /// this is history-schema migration, not classification of user text.
+    private static func isLegacyQuickstartWelcome(_ content: String) -> Bool {
+        guard content.hasPrefix("You're chatting with ") else { return false }
+        return content.hasSuffix(
+            ", running entirely on your Mac. Open the picker any time to switch models."
+        ) || (
+            content.contains(" — a model picked so you can start chatting in about a minute. ")
+                && content.hasSuffix("great first upgrade when you want more.")
+        )
+    }
+
     let id: UUID
     let role: Role
     /// The visible assistant prose / user prompt body. For Qwen3.5/3.6
@@ -419,7 +433,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // release have no key for this field; default to false so old
         // transcripts decode cleanly.
         self.toolCallArtifactSuppressed = try c.decodeIfPresent(Bool.self, forKey: .toolCallArtifactSuppressed) ?? false
-        self.wireVisibility = try c.decodeIfPresent(WireVisibility.self, forKey: .wireVisibility) ?? .model
+        if let storedVisibility = try c.decodeIfPresent(WireVisibility.self, forKey: .wireVisibility) {
+            self.wireVisibility = storedVisibility
+        } else {
+            self.wireVisibility = role == .assistant && Self.isLegacyQuickstartWelcome(content)
+                ? .transcriptOnly
+                : .model
+        }
         // Absent on every row written before branching shipped, and absent on
         // root turns thereafter. ``ChatConversation``'s decode rebuilds the
         // parent chain for a legacy linear array, so ``nil`` here is not

@@ -53,7 +53,7 @@ struct ModelSwitchHistoryTests {
         #expect(request.messages.map(\.role) == ["assistant", "user"])
     }
 
-    @Test("Wire visibility survives persistence and old rows default to model-visible")
+    @Test("Wire visibility survives persistence and legacy Quickstart rows migrate off wire")
     func wireVisibilityPersistsCompatibly() throws {
         let local = ChatMessage(
             role: .assistant,
@@ -67,6 +67,27 @@ struct ModelSwitchHistoryTests {
         object.removeValue(forKey: "wireVisibility")
         let legacy = try JSONSerialization.data(withJSONObject: object)
         #expect(try JSONDecoder().decode(ChatMessage.self, from: legacy).wireVisibility == .model)
+
+        object["content"] = "You're chatting with Qwen 3.5 9B, running entirely on your Mac. Open the picker any time to switch models."
+        let legacyWelcome = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: legacyWelcome).wireVisibility
+                == .transcriptOnly
+        )
+
+        object["content"] = "You're chatting with LFM2.5 1.2B — a model picked so you can start chatting in about a minute. Open the picker any time to trade up to a larger model: the Recommended row is chosen for this Mac's RAM, and a bigger pick is a great first upgrade when you want more."
+        let legacyStarterWelcome = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: legacyStarterWelcome).wireVisibility
+                == .transcriptOnly
+        )
+
+        object["content"] = "You're chatting with Qwen about local inference."
+        let ordinaryAssistant = try JSONSerialization.data(withJSONObject: object)
+        #expect(
+            try JSONDecoder().decode(ChatMessage.self, from: ordinaryAssistant).wireVisibility
+                == .model
+        )
     }
 
     // MARK: - filterEmptyAssistantsForWire
