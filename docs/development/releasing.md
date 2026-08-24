@@ -115,10 +115,16 @@ separately. If this really is the release bump, title the PR
 ### `_version_check.py` — warn end users on stale local installs
 
 `rapid-mlx models` (and any other entrypoint that calls `print_staleness_warning_if_any()`) prints a one-line warning when:
-- installed version is `>= 2 patch` versions behind the latest GitHub release
-- and the same major.minor (no cross-minor nag)
-- and stderr is a TTY (no nag in pipes / CI)
+- the latest GitHub release is newer than the installed version by any amount (patch, minor, or major)
+- and stderr is a TTY for ordinary interactive commands (no nag in pipes)
 - and `RAPID_MLX_DISABLE_VERSION_CHECK` isn't set
+- and the command isn't running with `CI` set
+
+Text and audio `rapid-mlx serve` processes also emit this passive notice to
+non-TTY startup logs so launchd and other daemon operators can see that an
+update is available. The explicit `RAPID_MLX_DISABLE_VERSION_CHECK` and `CI`
+opt-outs still apply. Current or development versions ahead of the latest
+release remain silent.
 
 Cache: `~/.cache/rapid-mlx/version_check.json` (24h TTL). Network timeout: 2s. **Fail-silent on every error path** — staleness warnings must never break the CLI. See `tests/test_version_check.py` for the contract.
 
