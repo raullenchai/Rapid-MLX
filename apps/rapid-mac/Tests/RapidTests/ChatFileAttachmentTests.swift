@@ -555,6 +555,28 @@ struct ChatFileAttachmentTests {
         #expect(bounded.text == page.string)
     }
 
+    @Test("An oversized page whose selection fails yields nothing, not a full read")
+    func unselectableOversizedPageIsDropped() throws {
+        // "Malformed text layer" and "pathological size" are not mutually
+        // exclusive: a hostile PDF can present both, and a fallback reaching
+        // for `page.string` hands it exactly the unbounded allocation the
+        // bound exists to prevent. Losing the page is the correct trade.
+        final class UnselectablePage: PDFPage, @unchecked Sendable {
+            override var numberOfCharacters: Int { 50_000_000 }
+            override var string: String? {
+                Issue.record("page.string must not be read for an oversized page")
+                return String(repeating: "x", count: 1_000)
+            }
+            override func selection(for range: NSRange) -> PDFSelection? { nil }
+        }
+
+        let bounded = PDFTextRecognizer.boundedText(of: UnselectablePage(), limit: 1_000)
+        #expect(bounded.text.isEmpty)
+        // Still reported as clamped, so the caller marks the extract truncated
+        // rather than treating a dropped page as an empty one.
+        #expect(bounded.clamped)
+    }
+
     @Test("Completeness follows the extraction outcome, not the page count")
     func completenessFollowsTheExtractionOutcome() throws {
         // Page count alone answered "did we finish?", so a run whose character
@@ -580,5 +602,49 @@ struct ChatFileAttachmentTests {
         let imported = try ChatFileAttachment(contentsOf: url, cache: cache)
         let entry = try #require(cache.get(imported.id))
         #expect(entry.isComplete)
+        #expect(!entry.hitSizeCeiling)
+        // A finished import must never be left waiting on a total that no
+        // background task will ever supply.
+        #expect(imported.totalCharacterCount != nil)
+    }
+
+    @Test("Only a pending extraction may withhold the total character count")
+    func onlyPendingWithholdsTheTotal() throws {
+        // The state this closes: an extraction stopped by the character budget
+        // was reported as "total unknown", but having seen every page it
+        // started no background task — so totalCharacterCount stayed nil and
+        // wasTruncated stayed false for the life of the conversation, with
+        // nothing that could ever resolve either.
+        //
+        // ``ChatFileAttachment.ExtractionState`` makes that unrepresentable:
+        // `.truncated` is a distinct case from `.pending`, and only `.pending`
+        // withholds the total. Reaching the budget-truncated branch itself
+        // needs a >20M-character PDF, so this pins the invariant on the
+        // reachable paths and on the encoding that enforces it.
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let url = try textPDF(pages: 2, charactersPerPage: 400)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let imported = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(imported.totalCharacterCount != nil)
+        #expect(!imported.wasTruncated)
+        #expect(try #require(cache.get(imported.id)).isComplete)
+
+        // A pending attachment is the ONLY shape allowed to say "unknown", and
+        // it must survive a history round trip saying so.
+        let pending = try ChatFileAttachment(
+            filename: "scan.pdf",
+            kind: .pdf,
+            extractedText: "first four pages",
+            sourceByteCount: 4_096,
+            totalCharacterCount: nil,
+            totalIsPending: true
+        )
+        #expect(pending.totalCharacterCount == nil)
+        let decoded = try JSONDecoder().decode(
+            ChatFileAttachment.self,
+            from: JSONEncoder().encode(pending)
+        )
+        #expect(decoded.totalCharacterCount == nil)
     }
 }

@@ -811,6 +811,52 @@ struct ReadDocumentToolTests {
         #expect(body["next_offset"] as? Int != nil)
         #expect(body["continuation_unavailable"] == nil)
         #expect(body["extract_complete"] as? Bool == false)
+        // The warning must not tell the model to stop reading while there is
+        // still captured text one call away — that abandons cache it has.
+        let note = try #require(body["note"] as? String)
+        #expect(note.localizedCaseInsensitiveContains("keep reading from 'next_offset'"))
+        #expect(!note.localizedCaseInsensitiveContains("will not return more"))
+    }
+
+    @Test("An extract stopped by the size ceiling does not advise re-attaching")
+    func sizeCeilingRemediationIsNotRetry() async throws {
+        // Re-attaching truncates at exactly the same point, so the interrupted
+        // pass's advice sends the user around a loop that cannot terminate.
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "huge.pdf",
+            text: "as much as Rapid will ever extract",
+            pageCount: 40_000,
+            isComplete: false,
+            hitSizeCeiling: true
+        ))
+
+        let body = try payload(await run(["document_id": id.uuidString], cache: cache))
+        let note = try #require(body["note"] as? String)
+
+        #expect(note.localizedCaseInsensitiveContains("larger than Rapid can extract"))
+        #expect(note.localizedCaseInsensitiveContains("split the file"))
+        #expect(!note.localizedCaseInsensitiveContains("attach the file again"))
+    }
+
+    @Test("The ceiling reason survives a relaunch alongside the partial text")
+    func ceilingReasonIsPersisted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let id = UUID()
+        DocumentContentCache(diskDirectory: directory).put(id, entry: DocumentContentCache.Entry(
+            filename: "huge.pdf",
+            text: "head only",
+            isComplete: false,
+            hitSizeCeiling: true
+        ))
+
+        let entry = try #require(DocumentContentCache(diskDirectory: directory).get(id))
+        #expect(!entry.isComplete)
+        #expect(entry.hitSizeCeiling)
     }
 
     @Test("A complete extract carries no incompleteness warning")

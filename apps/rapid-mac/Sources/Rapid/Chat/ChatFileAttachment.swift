@@ -202,6 +202,26 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         if totalCharacterCount == nil { try c.encode(true, forKey: .totalIsPending) }
     }
 
+    /// How an import left the extract, which decides what the attachment may
+    /// claim about it.
+    ///
+    /// The two failure modes are NOT interchangeable, and collapsing them into
+    /// one `totalIsKnown` flag produced a state nothing could ever leave: a
+    /// short PDF that exhausted the character budget was marked pending, but
+    /// having seen every page it started no background task, so
+    /// `totalCharacterCount` stayed nil for the life of the conversation
+    /// while `wasTruncated` stayed false.
+    enum ExtractionState {
+        /// The whole document was extracted.
+        case complete
+        /// A background pass is running and will republish the full text.
+        /// Only valid when that task is actually started.
+        case pending
+        /// Stopped by the character budget or the retention ceiling. This is
+        /// as much as there will ever be — no pass will finish it.
+        case truncated
+    }
+
     /// Build an attachment from a complete extract: register the full text in
     /// the document cache under a fresh id, then keep a preview inline.
     ///
@@ -217,7 +237,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         rowCount: Int? = nil,
         columnCount: Int? = nil,
         cache: DocumentContentCache = .shared,
-        totalIsKnown: Bool = true,
+        state: ExtractionState = .complete,
         outline: [DocumentContentCache.OutlineNode] = []
     ) throws {
         let cleaned = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -238,9 +258,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             pageCount: pageCount,
             rowCount: rowCount,
             columnCount: columnCount,
-            wasTruncated: !withinCeiling,
+            wasTruncated: !withinCeiling || state == .truncated,
             totalCharacterCount: complete.count,
-            totalIsPending: !totalIsKnown
+            // Pending ONLY when something will actually republish. A truncated
+            // extract's total is known — it is what we have — and claiming it
+            // unknown would leave the envelope permanently unable to say how
+            // much document is there.
+            totalIsPending: state == .pending
         )
         cache.put(
             id,
@@ -253,7 +277,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 // running must say so on disk: the pending mark is in-memory
                 // only, and a quit before the pass lands would otherwise leave
                 // an entry that reads back as the whole document.
-                isComplete: totalIsKnown && withinCeiling
+                isComplete: state == .complete && withinCeiling,
+                hitSizeCeiling: !withinCeiling || state == .truncated
             )
         )
     }
@@ -351,11 +376,16 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             return
         }
 
-        // "Complete" needs BOTH: every page seen, and no page cut short. A
-        // budget that ran out mid-document loses the tail just as surely as
-        // stopping early does, and marking that complete is what makes
-        // ``read_document`` claim a truncated extract is the whole file.
-        let isComplete = eagerLimit == document.pageCount && head.reachedEnd
+        // Three distinct outcomes, and they must not be conflated. Every page
+        // read in full is complete; pages left over means a background pass
+        // will finish them (pending); a budget that stopped the read means
+        // there is nothing more to get, whether or not pages remain — no task
+        // is started for it, so calling it pending would leave the attachment
+        // permanently waiting on work that does not exist.
+        let sawEveryPage = eagerLimit == document.pageCount
+        let state: ExtractionState = !head.reachedEnd
+            ? .truncated
+            : (sawEveryPage ? .complete : .pending)
         try self.init(
             fullText: Self.collapsingLayoutNoise(head.text),
             filename: filename,
@@ -366,10 +396,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             // A partially-extracted document must not advertise the head's
             // length as the total, or the envelope would tell the model the
             // document ends where the preview does.
-            totalIsKnown: isComplete,
+            state: state,
             outline: outline
         )
-        guard eagerLimit < document.pageCount else { return }
+        guard state == .pending else { return }
 
         // Finish the document in the background, then republish the complete
         // text under the same id. The PDFDocument is captured deliberately:
@@ -417,7 +447,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     // partial entry that must not claim otherwise on relaunch.
                     isComplete: extracted.reachedEnd
                         && !Task.isCancelled
-                        && bounded.count == full.count
+                        && bounded.count == full.count,
+                    // Only the CEILING makes a retry pointless — the same file
+                    // truncates at the same point. A cancelled run is worth
+                    // attaching again, so it must not be reported this way.
+                    hitSizeCeiling: !Task.isCancelled
+                        && (!extracted.reachedEnd || bounded.count < full.count)
                 ),
                 ifGenerationIs: generation
             )
@@ -463,7 +498,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             throw ValidationError.noExtractableText(.pdf)
         }
 
-        let isComplete = pagesInspected == document.pageCount
+        // The probe runs unbudgeted (one page at a time), so the only question
+        // here is whether it covered the document.
+        let state: ExtractionState = pagesInspected == document.pageCount
+            ? .complete
+            : .pending
         try self.init(
             fullText: Self.collapsingLayoutNoise(head),
             filename: filename,
@@ -471,10 +510,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             sourceByteCount: data.count,
             pageCount: document.pageCount,
             cache: cache,
-            totalIsKnown: isComplete,
+            state: state,
             outline: outline
         )
-        guard !isComplete else { return }
+        guard state == .pending else { return }
 
         let id = self.id
         let pageCount = document.pageCount
@@ -524,7 +563,9 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     outline: Self.resolvingOutlineOffsets(outline, in: bounded),
                     isComplete: extracted.reachedEnd
                         && !Task.isCancelled
-                        && bounded.count == full.count
+                        && bounded.count == full.count,
+                    hitSizeCeiling: !Task.isCancelled
+                        && (!extracted.reachedEnd || bounded.count < full.count)
                 ),
                 ifGenerationIs: generation
             )

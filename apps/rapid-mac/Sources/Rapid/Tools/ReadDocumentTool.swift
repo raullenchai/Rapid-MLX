@@ -371,9 +371,22 @@ enum ReadDocumentTool {
     /// because the source file is not retained.
     ///
     /// So the model has to be told plainly, on every mode, that what it read
-    /// is a fragment and the rest is unreachable. Silence here is the harmful
-    /// case: the model would answer "the document does not mention X" about a
-    /// document it saw four pages of.
+    /// is a fragment. Silence here is the harmful case: the model would answer
+    /// "the document does not mention X" about a document it saw four pages of.
+    ///
+    /// ## Two axes, and why one sentence cannot cover both
+    ///
+    /// The advice depends on facts a single warning got wrong in both
+    /// directions:
+    ///
+    ///   * Whether the CACHE can still be paged. A mid-document slice carries
+    ///     `has_more` and a `next_offset`, so telling the model that "reading
+    ///     further offsets will not return more" makes it abandon captured
+    ///     text it was one call away from reading.
+    ///   * Whether re-attaching would help. An interrupted pass is fixed by
+    ///     attaching the file again; a document past Rapid's size ceiling
+    ///     truncates at exactly the same point every time, so that advice
+    ///     sends the user around a loop that cannot terminate.
     static func annotatingIncompleteExtract(
         _ payload: [String: Any],
         entry: DocumentContentCache.Entry
@@ -384,10 +397,20 @@ enum ReadDocumentTool {
         // Paged results set this themselves — only at the end of the extract,
         // where it is true. Outline and grep have no cursor at all, so for
         // them the missing text is unreachable by construction.
-        if payload["continuation_unavailable"] == nil, payload["has_more"] == nil {
+        let canPageFurther = payload["has_more"] as? Bool == true
+        if !canPageFurther, payload["continuation_unavailable"] == nil {
             payload["continuation_unavailable"] = true
         }
-        let warning = "WARNING: only the first \(entry.count) characters of this document were ever extracted — the pass that would have read the rest did not finish (it was cancelled, interrupted by a quit, or stopped at Rapid's extraction ceiling) and it CANNOT be resumed. Reading further offsets will not return more; do not retry for the missing part. Do not treat the text above as the whole document or conclude anything from its absence. Tell the user to remove this attachment and attach the file again."
+
+        var warning = "WARNING: only the first \(entry.count) characters of this document were extracted"
+        warning += entry.hitSizeCeiling
+            ? " — the document is larger than Rapid can extract, so this is all there will ever be. Attaching the file again will truncate at the same point; do not suggest it. If the user needs the rest, they must split the file or extract the part they care about."
+            : " — the pass that would have read the rest did not finish (it was cancelled, or interrupted by a quit) and cannot be resumed. Tell the user to remove this attachment and attach the file again."
+        warning += canPageFurther
+            ? " The captured part continues past this slice: keep reading from 'next_offset' before you conclude anything."
+            : " Reading further offsets will not return more; do not retry for the missing part."
+        warning += " Do not treat what you have read as the whole document, or conclude anything from the absence of something in it."
+
         payload["note"] = (payload["note"] as? String).map { "\($0) \(warning)" } ?? warning
         return payload
     }

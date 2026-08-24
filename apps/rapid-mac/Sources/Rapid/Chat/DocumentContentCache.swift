@@ -94,24 +94,35 @@ final class DocumentContentCache: @unchecked Sendable {
         /// reach `count`, and reports `has_more: false` — presenting the first
         /// four pages of a 529-page scan as the complete document.
         let isComplete: Bool
+        /// True when the extract stopped at Rapid's own size ceiling rather
+        /// than being cut short by an interruption.
+        ///
+        /// The two need different advice, and giving the wrong one wastes the
+        /// user's time: an interrupted pass is fixed by attaching the file
+        /// again, while a document larger than the ceiling would truncate at
+        /// exactly the same point on every retry. Only meaningful when
+        /// ``isComplete`` is false.
+        let hitSizeCeiling: Bool
 
         init(
             filename: String,
             text: String,
             pageCount: Int? = nil,
             outline: [OutlineNode] = [],
-            isComplete: Bool = true
+            isComplete: Bool = true,
+            hitSizeCeiling: Bool = false
         ) {
             self.filename = filename
             self.text = text
             self.pageCount = pageCount
             self.outline = outline
             self.isComplete = isComplete
+            self.hitSizeCeiling = hitSizeCeiling
             (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(text)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case filename, text, pageCount, outline, isComplete
+            case filename, text, pageCount, outline, isComplete, hitSizeCeiling
         }
 
         init(from decoder: Decoder) throws {
@@ -126,6 +137,7 @@ final class DocumentContentCache: @unchecked Sendable {
             // predate deferred extraction's disk exposure, and defaulting them
             // to complete keeps an old conversation reading exactly as it did.
             isComplete = try container.decodeIfPresent(Bool.self, forKey: .isComplete) ?? true
+            hitSizeCeiling = try container.decodeIfPresent(Bool.self, forKey: .hitSizeCeiling) ?? false
             (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(text)
         }
 
@@ -136,6 +148,7 @@ final class DocumentContentCache: @unchecked Sendable {
             try container.encodeIfPresent(pageCount, forKey: .pageCount)
             if !outline.isEmpty { try container.encode(outline, forKey: .outline) }
             if !isComplete { try container.encode(false, forKey: .isComplete) }
+            if hitSizeCeiling { try container.encode(true, forKey: .hitSizeCeiling) }
         }
 
         var count: Int { characterCount }

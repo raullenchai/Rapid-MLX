@@ -134,18 +134,26 @@ enum PDFTextRecognizer {
     /// only the requested range, so an oversized page costs `limit`
     /// characters instead of its own size.
     ///
+    /// An oversized page whose selection cannot be produced yields NOTHING
+    /// rather than falling back to the full read. "Malformed text layer" and
+    /// "pathological size" are not mutually exclusive — a hostile PDF can
+    /// present both at once — so a fallback that reaches for `page.string`
+    /// hands that document exactly the unbounded allocation this function
+    /// exists to prevent. Losing one page is the correct trade: the caller
+    /// reports the extract as truncated, which is true and recoverable.
+    ///
     /// - Returns: the bounded text, and whether the page had more to give.
+    ///   Empty text with `clamped == true` means the page could not be read
+    ///   within the budget at all.
     static func boundedText(of page: PDFPage, limit: Int) -> (text: String, clamped: Bool) {
         guard limit > 0 else { return ("", page.numberOfCharacters > 0) }
         let available = page.numberOfCharacters
+        // Small enough to read whole: the only path that touches `page.string`,
+        // and it is bounded by the check above.
         guard available > limit else { return (page.string ?? "", false) }
-        // A page longer than the budget: copy only the head. If PDFKit cannot
-        // produce the selection, fall back to the whole string rather than
-        // silently dropping the page — correctness first, and this is the
-        // path a malformed text layer takes, not the pathological-size one.
         guard let selection = page.selection(for: NSRange(location: 0, length: limit)),
               let text = selection.string else {
-            return (String((page.string ?? "").prefix(limit)), true)
+            return ("", true)
         }
         return (String(text.prefix(limit)), true)
     }
