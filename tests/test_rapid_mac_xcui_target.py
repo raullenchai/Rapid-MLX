@@ -76,6 +76,9 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         MAC / "Tests/RapidUITests/Tests/ImageGenerationPixelTests.swift"
     ).read_text()
     harness = (MAC / "Tests/RapidUITests/Tests/RapidUITestHarness.swift").read_text()
+    chat_source = (
+        MAC / "Tests/RapidUITests/Tests/ChatAttachmentJourneyTests.swift"
+    ).read_text()
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
@@ -91,6 +94,27 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "String(contentsOf: sidecarPIDFile" in harness
     assert 'element("MemoryWarning.Confirm")' in harness
     assert 'app.dialogs["open-panel"].buttons["OKButton"]' in harness
+    assert (
+        'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")' in harness
+    )
+    assert 'matching(identifier: "RapidUITests.FileDragSource")' in harness
+    assert 'let dropTarget = element("ChatView.AddAttachments")' in harness
+    assert "click(forDuration: 1, thenDragTo: dropTarget)" in harness
+    assert "NSImage(data: data)" in harness
+    assert "pasteboard.writeObjects([image])" in harness
+    assert "XCTAssertNotNil(NSImage(pasteboard: pasteboard))" in harness
+    assert 'composer.typeKey("v", modifierFlags: .command)' in harness
+    assert "reserveLoopbackPort" in harness
+    assert "reservationTransferred" in harness
+    assert "Darwin.close(reservedPort.descriptor)" in harness
+    assert "releasePortReservation()" in harness
+    assert "restorePasteboardIfOwned" in harness
+    assert "pasteboard.changeCount == ownedPasteboardChangeCount" in harness
+    assert "originalPasteboardItems == nil || !stillOwnsPasteboard" in harness
+    assert "testDragPasteAndRemovalPreserveWireIdentity" in chat_source
+    assert 'element("ChatView.Attachment.Remove.Pasted image.png")' in chat_source
+    assert "port: 65_001" not in chat_source
+    assert "port: 65_002" not in chat_source
     assert '"RAPID_DESKTOP_PORT": "65000"' in source
     assert '"RAPID_DESKTOP_NO_PORT_SWEEP": "1"' in source
     assert (

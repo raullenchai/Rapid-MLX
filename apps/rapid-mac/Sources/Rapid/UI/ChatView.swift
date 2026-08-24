@@ -2169,6 +2169,30 @@ final class AutosizingTextView: NSTextView {
         super.paste(sender)
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // A plain-text NSTextView can reject an image-only pasteboard before
+        // AppKit dispatches paste(_:). Give the composer first refusal on the
+        // native Command-V event so screenshot/Preview image copies still
+        // reach the attachment importer. Shift-Command-V remains AppKit's
+        // alternate paste behavior.
+        if Self.isStandardPasteKeyEquivalent(event),
+           onPasteAttachments?() == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    static func isStandardPasteKeyEquivalent(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown,
+              event.charactersIgnoringModifiers?.lowercased() == "v" else {
+            return false
+        }
+        let relevant = event.modifierFlags.intersection([
+            .command, .control, .option, .shift,
+        ])
+        return relevant == .command
+    }
+
     /// Height of the laid-out text plus the editor's vertical insets.
     var measuredHeight: CGFloat {
         guard let lm = layoutManager, let tc = textContainer else { return 28 }
