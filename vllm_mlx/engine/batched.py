@@ -35,7 +35,10 @@ _PREFIX_BOUNDARY_REPLAY_TOKENS = 8
 
 
 def _load_lazy_and_install_disk_stream(
-    model_name: str, tokenizer_config: dict, cache_budget_gb: float
+    model_name: str,
+    tokenizer_config: dict,
+    cache_budget_gb: float,
+    chat_template_id: str | None = None,
 ):
     """``--disk-stream`` model-load step, run as a single unit on the
     mlx-step worker (see the ``_start_llm`` call site) so both the lazy
@@ -55,6 +58,7 @@ def _load_lazy_and_install_disk_stream(
     model, tokenizer, config, checkpoint_source = load_model_with_fallback(
         model_name,
         tokenizer_config,
+        chat_template_id=chat_template_id,
         lazy=True,
         return_config=True,
         return_source=True,
@@ -782,6 +786,7 @@ class BatchedEngine(BaseEngine):
         no_openai_harmony_streaming: bool = False,
         enable_disk_stream: bool = False,
         disk_stream_cache_gb: float = 1.0,
+        chat_template_id: str | None = None,
     ):
         """
         Initialize the batched engine.
@@ -815,8 +820,17 @@ class BatchedEngine(BaseEngine):
             disk_stream_cache_gb: Keyword-only. Byte budget (GB) for the
                 disk-stream expert LRU cache. Only used when
                 ``enable_disk_stream`` is True.
+            chat_template_id: Keyword-only model-profile prompt contract.
+                Control-plane callers pass this when ``model_name`` is a local
+                snapshot path whose originating profile is already known.
         """
         self._model_name = model_name
+        if chat_template_id is None:
+            from ..model_aliases import resolve_profile
+
+            profile = resolve_profile(model_name)
+            chat_template_id = profile.chat_template_id if profile is not None else None
+        self._chat_template_id = chat_template_id
         # Lazily resolved by ``_muse_wire_model()`` — gates the ATEM
         # channel demux in ``clean_output_text`` on the SERVING MODEL's
         # checkpoint model_type, never on output bytes (codex r6 #1).
@@ -1144,9 +1158,9 @@ class BatchedEngine(BaseEngine):
         self._processor = self._mllm_instance.processor
         # MLLM processors bypass the text tokenizer loader, so resolve their
         # profile-declared prompt contract at this load boundary as well.
-        from ..utils.chat_template_registry import resolve_profile_chat_template
+        from ..utils.chat_template_registry import resolve_chat_template
 
-        resolve_profile_chat_template(self._processor, self._model_name)
+        resolve_chat_template(self._processor, self._chat_template_id)
 
         vision_min_pixels = getattr(self._scheduler_config, "vision_min_pixels", 0)
         vision_max_pixels = getattr(self._scheduler_config, "vision_max_pixels", 0)
@@ -1329,10 +1343,13 @@ class BatchedEngine(BaseEngine):
                     self._model_name,
                     tokenizer_config,
                     getattr(self, "_disk_stream_cache_gb", 1.0),
+                    getattr(self, "_chat_template_id", None),
                 ).result()
             )
         else:
             load_kwargs = {"tokenizer_config": tokenizer_config}
+            if chat_template_id := getattr(self, "_chat_template_id", None):
+                load_kwargs["chat_template_id"] = chat_template_id
             if self._scheduler_config is not None and (
                 getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
             ):

@@ -183,6 +183,73 @@ def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
     assert tokenizer.chat_template == bundled_chat_template("gemma4_full")
 
 
+def test_text_loader_accepts_preserved_profile_contract_for_local_path(
+    monkeypatch,
+) -> None:
+    tokenizer = _tokenizer()
+    tokenizer_module, _ = _stub_text_loader(monkeypatch, tokenizer)
+
+    _, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
+        "/private/cache/snapshots/opaque-revision",
+        chat_template_id="gemma4_full",
+    )
+
+    assert loaded_tokenizer.chat_template == bundled_chat_template("gemma4_full")
+
+
+def test_engine_resolves_or_preserves_profile_contract(monkeypatch) -> None:
+    from vllm_mlx.engine import batched as batched_module
+
+    monkeypatch.setattr(batched_module, "is_mllm_model", lambda name: False)
+
+    declared = batched_module.BatchedEngine("gemma-4-e2b-4bit")
+    preserved = batched_module.BatchedEngine(
+        "/private/cache/snapshots/opaque-revision",
+        chat_template_id="gemma4_full",
+    )
+    unknown = batched_module.BatchedEngine("/private/models/custom")
+
+    assert declared._chat_template_id == "gemma4_compact"
+    assert preserved._chat_template_id == "gemma4_full"
+    assert unknown._chat_template_id is None
+
+
+@pytest.mark.asyncio
+async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> None:
+    from vllm_mlx import engine_core
+    from vllm_mlx.engine import batched as batched_module
+    from vllm_mlx.utils import tokenizer as tokenizer_module
+
+    captured = {}
+
+    class LoadBoundaryReachedError(RuntimeError):
+        pass
+
+    def fake_load(model_name, **kwargs):
+        captured.update(kwargs)
+        raise LoadBoundaryReachedError
+
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", fake_load)
+
+    engine = object.__new__(batched_module.BatchedEngine)
+    engine._model_name = "/private/cache/snapshots/opaque-revision"
+    engine._chat_template_id = "gemma4_full"
+    engine._trust_remote_code = False
+    engine._scheduler_config = None
+    engine._enable_disk_stream = False
+    engine._model_load_executor = None
+
+    try:
+        with pytest.raises(LoadBoundaryReachedError):
+            await engine._start_llm()
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)
+
+    assert captured["chat_template_id"] == "gemma4_full"
+
+
 def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
     import mlx_lm
 
@@ -242,7 +309,8 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
     monkeypatch.setattr(batched_module, "_probe_mllm_cache_type", lambda model: None)
 
     engine = object.__new__(batched_module.BatchedEngine)
-    engine._model_name = "gemma-4-e2b-4bit"
+    engine._model_name = "/private/cache/snapshots/opaque-revision"
+    engine._chat_template_id = "gemma4_compact"
     engine._trust_remote_code = False
     engine._force_mllm = False
     engine._scheduler_config = None
@@ -255,6 +323,36 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
             engine._model_load_executor.shutdown(wait=True)
 
     assert processor.chat_template == bundled_chat_template("gemma4_compact")
+
+
+@pytest.mark.asyncio
+async def test_dynamic_residency_preserves_profile_contract_for_local_path(
+    monkeypatch,
+) -> None:
+    from vllm_mlx import server
+
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.is_mllm = False
+
+        async def start(self) -> None:
+            pass
+
+        def generate_warmup(self) -> None:
+            pass
+
+    monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+
+    await server._load_dynamic_resident_model(
+        "gemma-4-e2b-4bit",
+        "/private/cache/snapshots/opaque-revision",
+    )
+
+    assert captured["model_name"] == "/private/cache/snapshots/opaque-revision"
+    assert captured["chat_template_id"] == "gemma4_compact"
 
 
 @pytest.mark.parametrize(

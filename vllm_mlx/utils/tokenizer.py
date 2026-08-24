@@ -1091,6 +1091,7 @@ def load_model_with_fallback(
     tokenizer_config: dict = None,
     *,
     enable_dspark: bool = False,
+    chat_template_id: str | None = None,
     lazy: bool = False,
     return_config: bool = False,
     return_source: bool = False,
@@ -1139,6 +1140,15 @@ def load_model_with_fallback(
     from ..model_aliases import resolve_profile
 
     requested_profile = resolve_profile(model_name)
+    requested_chat_template_id = (
+        chat_template_id
+        if chat_template_id is not None
+        else (
+            requested_profile.chat_template_id
+            if requested_profile is not None
+            else None
+        )
+    )
     raw_explicit_chat_template = (
         tokenizer_config.get("chat_template")
         if isinstance(tokenizer_config, dict)
@@ -1155,9 +1165,7 @@ def load_model_with_fallback(
 
         resolve_chat_template(
             result[1],
-            requested_profile.chat_template_id
-            if requested_profile is not None
-            else None,
+            requested_chat_template_id,
             explicit_template=explicit_chat_template,
         )
 

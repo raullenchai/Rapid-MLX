@@ -2059,6 +2059,9 @@ def load_model(
         logger.info(f"Loading model with BatchedEngine: {model_name}")
         _engine = BatchedEngine(
             model_name=model_name,
+            chat_template_id=(
+                _profile.chat_template_id if _profile is not None else None
+            ),
             scheduler_config=scheduler_config,
             stream_interval=stream_interval,
             force_mllm=force_mllm,
@@ -2247,6 +2250,9 @@ async def _load_dynamic_resident_model(
 
         engine = BatchedEngine(
             model_name=resolved_path,
+            chat_template_id=(
+                profile.chat_template_id if profile is not None else None
+            ),
             force_text=bool(profile is not None and profile.is_text_only),
             gpu_memory_utilization=_resident_gpu_memory_utilization,
             scheduler_config=SchedulerConfig(**resident_scheduler_kwargs(performance)),
