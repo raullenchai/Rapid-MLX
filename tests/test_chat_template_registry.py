@@ -87,10 +87,23 @@ def test_declared_profile_replaces_checkpoint_template_without_hash_or_name_prob
     assert not resolve_profile_chat_template(tokenizer, "gemma-4-e2b-4bit")
 
 
-def test_unknown_checkpoint_and_explicit_override_are_preserved() -> None:
+@pytest.mark.parametrize(
+    "explicit",
+    [
+        "explicit {{ messages }}",
+        {
+            "default": "explicit default {{ messages }}",
+            "tool_use": "explicit tools {{ messages }}",
+        },
+        [
+            {"name": "default", "template": "explicit default {{ messages }}"},
+            {"name": "tool_use", "template": "explicit tools {{ messages }}"},
+        ],
+    ],
+)
+def test_unknown_checkpoint_and_explicit_override_are_preserved(explicit) -> None:
     unknown = _tokenizer("custom {{ messages }}")
     declared = _tokenizer()
-    explicit = "explicit {{ messages }}"
 
     assert not resolve_profile_chat_template(unknown, "owner/private-checkpoint")
     assert unknown.chat_template == "custom {{ messages }}"
@@ -98,10 +111,9 @@ def test_unknown_checkpoint_and_explicit_override_are_preserved() -> None:
     assert declared.chat_template == explicit
 
 
-def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
+def _stub_text_loader(monkeypatch, tokenizer):
     from vllm_mlx.utils import tokenizer as tokenizer_module
 
-    tokenizer = _tokenizer()
     model = object()
     monkeypatch.setattr(
         tokenizer_module, "_resolve_subfolder_checkpoint", lambda name: name
@@ -127,6 +139,12 @@ def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
         lambda name, config: (model, tokenizer),
     )
     monkeypatch.setattr(tokenizer_module, "_post_load_ubc_evict", lambda name: None)
+    return tokenizer_module, model
+
+
+def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
+    tokenizer = _tokenizer()
+    tokenizer_module, model = _stub_text_loader(monkeypatch, tokenizer)
 
     loaded_model, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
         "gemma-4-26b-4bit"
@@ -135,6 +153,33 @@ def test_text_loader_resolves_profile_template_once(monkeypatch) -> None:
     assert loaded_model is model
     assert loaded_tokenizer is tokenizer
     assert tokenizer.chat_template == bundled_chat_template("gemma4_full")
+
+
+@pytest.mark.parametrize(
+    "explicit",
+    [
+        {
+            "default": "explicit default {{ messages }}",
+            "tool_use": "explicit tools {{ messages }}",
+        },
+        [
+            {"name": "default", "template": "explicit default {{ messages }}"},
+            {"name": "tool_use", "template": "explicit tools {{ messages }}"},
+        ],
+    ],
+)
+def test_text_loader_preserves_named_explicit_template_overrides(
+    monkeypatch, explicit
+) -> None:
+    tokenizer = _tokenizer()
+    tokenizer_module, _ = _stub_text_loader(monkeypatch, tokenizer)
+
+    _, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
+        "gemma-4-26b-4bit",
+        tokenizer_config={"chat_template": explicit},
+    )
+
+    assert loaded_tokenizer.chat_template == explicit
 
 
 def test_renderer_does_not_resolve_or_mutate_templates() -> None:

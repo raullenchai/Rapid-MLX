@@ -1139,10 +1139,14 @@ def load_model_with_fallback(
     from ..model_aliases import resolve_profile
 
     requested_profile = resolve_profile(model_name)
-    explicit_chat_template = (
+    raw_explicit_chat_template = (
         tokenizer_config.get("chat_template")
         if isinstance(tokenizer_config, dict)
-        and isinstance(tokenizer_config.get("chat_template"), str)
+        else None
+    )
+    explicit_chat_template = (
+        raw_explicit_chat_template
+        if isinstance(raw_explicit_chat_template, (str, dict, list))
         else None
     )
 

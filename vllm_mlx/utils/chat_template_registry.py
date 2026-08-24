@@ -14,6 +14,8 @@ from importlib.resources import files
 
 logger = logging.getLogger(__name__)
 
+ChatTemplateValue = str | dict[str, str] | list[dict[str, str]]
+
 _TEMPLATE_ASSETS: dict[str, str] = {
     "gemma4_compact": "gemma4_compact.jinja",
     "gemma4_full": "gemma4_full.jinja",
@@ -51,7 +53,7 @@ def resolve_chat_template(
     applicator,
     template_id: str | None,
     *,
-    explicit_template: str | None = None,
+    explicit_template: ChatTemplateValue | None = None,
 ) -> bool:
     """Resolve one template onto a loaded tokenizer or processor.
 
@@ -83,7 +85,7 @@ def resolve_profile_chat_template(
     applicator,
     model_name: str,
     *,
-    explicit_template: str | None = None,
+    explicit_template: ChatTemplateValue | None = None,
 ) -> bool:
     """Resolve the template declared for an alias or exact repository path."""
 
