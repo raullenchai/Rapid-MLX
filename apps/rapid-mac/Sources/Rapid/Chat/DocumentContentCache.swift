@@ -200,6 +200,14 @@ final class DocumentContentCache: @unchecked Sendable {
         }
     }
 
+    /// An entry returned after waiting, plus whether its extraction was still
+    /// running when the wait ended. A stall timeout is not a terminal state:
+    /// the current OCR page may simply take longer than the timeout.
+    struct AwaitedEntry: Sendable {
+        let entry: Entry
+        let extractionPending: Bool
+    }
+
     static let shared = DocumentContentCache()
 
     private let memoryLock = NSLock()
@@ -457,10 +465,24 @@ final class DocumentContentCache: @unchecked Sendable {
     /// the complete document instead of a partial one.
     ///
     /// On timeout the caller still gets whatever has been published, which is
-    /// partial but real.
+    /// partial but real. Callers that need to explain why it is partial use
+    /// ``getAwaitingCompletionStatus(_:stallTimeout:)`` so they do not mistake
+    /// a slow current page for a permanently interrupted pass.
     func getAwaitingCompletion(_ id: UUID, stallTimeout: TimeInterval = 30) -> Entry? {
+        getAwaitingCompletionStatus(id, stallTimeout: stallTimeout)?.entry
+    }
+
+    func getAwaitingCompletionStatus(
+        _ id: UUID,
+        stallTimeout: TimeInterval = 30
+    ) -> AwaitedEntry? {
         if isPending(id) { waitForPending(id, stallTimeout: stallTimeout) }
-        return get(id)
+        // Snapshot pending BEFORE reading the entry. A finishing worker
+        // publishes first and clears pending in its defer, so observing false
+        // guarantees the following get can see its terminal publication.
+        let extractionPending = isPending(id)
+        guard let entry = get(id) else { return nil }
+        return AwaitedEntry(entry: entry, extractionPending: extractionPending)
     }
 
     func get(_ id: UUID) -> Entry? {

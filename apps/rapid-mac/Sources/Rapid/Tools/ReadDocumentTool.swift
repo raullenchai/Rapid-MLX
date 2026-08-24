@@ -105,7 +105,8 @@ enum ReadDocumentTool {
 
     static func run(
         arguments: String,
-        cache: DocumentContentCache = .shared
+        cache: DocumentContentCache = .shared,
+        stallTimeout: TimeInterval = 30
     ) async -> ToolCallResult {
         let tool = "read_document"
         guard let data = arguments.data(using: .utf8),
@@ -123,24 +124,44 @@ enum ReadDocumentTool {
         // A large PDF finishes extracting on a background task, so this waits
         // for that work rather than reporting a document the user can plainly
         // see as missing.
-        guard let entry = cache.getAwaitingCompletion(id) else {
+        guard let awaited = cache.getAwaitingCompletionStatus(
+            id,
+            stallTimeout: stallTimeout
+        ) else {
             return err(tool, "no attached document with id \(rawID) — Rapid keeps the full text of an attachment for \(DocumentContentCache.retentionDays) days, and this one has expired (or was deleted). Tell the user the document is no longer available to read and ask them to attach the file again.")
         }
+        let entry = awaited.entry
 
         if args.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "outline" {
-            return outlineResult(id: rawID, entry: entry)
+            return outlineResult(
+                id: rawID,
+                entry: entry,
+                extractionPending: awaited.extractionPending
+            )
         }
         if let pattern = args.grep?.trimmingCharacters(in: .whitespacesAndNewlines), !pattern.isEmpty {
-            return grepResult(tool: tool, id: rawID, entry: entry, pattern: pattern)
+            return grepResult(
+                tool: tool,
+                id: rawID,
+                entry: entry,
+                pattern: pattern,
+                extractionPending: awaited.extractionPending
+            )
         }
-        return sliceResult(id: rawID, entry: entry, offset: max(0, args.offset ?? 0))
+        return sliceResult(
+            id: rawID,
+            entry: entry,
+            offset: max(0, args.offset ?? 0),
+            extractionPending: awaited.extractionPending
+        )
     }
 
     // MARK: - Outline
 
     static func outlineResult(
         id: String,
-        entry: DocumentContentCache.Entry
+        entry: DocumentContentCache.Entry,
+        extractionPending: Bool = false
     ) -> ToolCallResult {
         // Bookmarks first — authored by whoever made the PDF, with exact
         // pages. Only fall back to guessing from prose when there are none.
@@ -154,13 +175,22 @@ enum ReadDocumentTool {
         guard !rows.isEmpty else {
             // Saying so plainly beats returning an empty list, which the model
             // could read as "this document is empty".
-            return ToolCallResult(toolCallID: "", content: jsonString(annotatingIncompleteExtract([
-                "document_id": id,
-                "filename": entry.filename,
-                "outline": [],
-                "total_chars": entry.count,
-                "note": "This document has no detectable section structure — no PDF bookmarks and no heading-like lines. Read it sequentially with offset=0, or use 'grep' if you know what you are looking for.",
-            ], entry: entry)), isError: false)
+            return ToolCallResult(
+                toolCallID: "",
+                content: jsonString(annotatingIncompleteExtract(
+                    [
+                        "document_id": id,
+                        "filename": entry.filename,
+                        "outline": [],
+                        "total_chars": entry.count,
+                        "note": "This document has no detectable section structure — no PDF bookmarks and no heading-like lines. Read it sequentially with offset=0, or use 'grep' if you know what you are looking for.",
+                    ],
+                    entry: entry,
+                    capturedContinuationAvailable: true,
+                    extractionPending: extractionPending
+                )),
+                isError: false
+            )
         }
 
         let (trimmed, keptDepth) = budgeted(rows)
@@ -193,7 +223,12 @@ enum ReadDocumentTool {
         payload["note"] = note
         return ToolCallResult(
             toolCallID: "",
-            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            content: jsonString(annotatingIncompleteExtract(
+                payload,
+                entry: entry,
+                capturedContinuationAvailable: true,
+                extractionPending: extractionPending
+            )),
             isError: false
         )
     }
@@ -312,7 +347,8 @@ enum ReadDocumentTool {
     static func sliceResult(
         id: String,
         entry: DocumentContentCache.Entry,
-        offset: Int
+        offset: Int,
+        extractionPending: Bool = false
     ) -> ToolCallResult {
         let total = entry.count
         let start = min(max(0, offset), total)
@@ -350,13 +386,18 @@ enum ReadDocumentTool {
             payload["note"] = "offset \(start) is at or past the end of this \(total)-character document."
         }
         if !hasMore, !entry.isComplete {
-            // Nothing further to page to, and nothing that would make a retry
-            // succeed. Saying so explicitly is what stops the retry loop.
+            // The annotator removes this provisional terminal marker when the
+            // background extraction is still running and may publish more.
             payload["continuation_unavailable"] = true
         }
         return ToolCallResult(
             toolCallID: "",
-            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            content: jsonString(annotatingIncompleteExtract(
+                payload,
+                entry: entry,
+                capturedContinuationAvailable: hasMore,
+                extractionPending: extractionPending
+            )),
             isError: false
         )
     }
@@ -374,9 +415,9 @@ enum ReadDocumentTool {
     /// is a fragment. Silence here is the harmful case: the model would answer
     /// "the document does not mention X" about a document it saw four pages of.
     ///
-    /// ## Two axes, and why one sentence cannot cover both
+    /// ## Independent axes, and why one sentence cannot cover them
     ///
-    /// The advice depends on facts a single warning got wrong in both
+    /// The advice depends on facts a single warning got wrong in several
     /// directions:
     ///
     ///   * Whether the CACHE can still be paged. A mid-document slice carries
@@ -387,28 +428,45 @@ enum ReadDocumentTool {
     ///     attaching the file again; a document past Rapid's size ceiling
     ///     truncates at exactly the same point every time, so that advice
     ///     sends the user around a loop that cannot terminate.
+    ///   * Whether extraction is still running. A page-level progress stall is
+    ///     not proof of interruption, so a timed-out waiter must tell the model
+    ///     to retry later instead of sending the user through a re-attach loop.
     static func annotatingIncompleteExtract(
         _ payload: [String: Any],
-        entry: DocumentContentCache.Entry
+        entry: DocumentContentCache.Entry,
+        capturedContinuationAvailable: Bool = false,
+        extractionPending: Bool = false
     ) -> [String: Any] {
         guard !entry.isComplete else { return payload }
         var payload = payload
         payload["extract_complete"] = false
-        // Paged results set this themselves — only at the end of the extract,
-        // where it is true. Outline and grep have no cursor at all, so for
-        // them the missing text is unreachable by construction.
-        let canPageFurther = payload["has_more"] as? Bool == true
-        if !canPageFurther, payload["continuation_unavailable"] == nil {
+        // This field is strictly about navigating the text already captured.
+        // Outline and grep expose reusable offsets even without a top-level
+        // cursor, so they must not be labelled unavailable. A still-running
+        // extraction may also make more text available after this response.
+        if extractionPending {
+            payload.removeValue(forKey: "continuation_unavailable")
+            payload["extract_pending"] = true
+        } else if !capturedContinuationAvailable,
+                  payload["continuation_unavailable"] == nil {
             payload["continuation_unavailable"] = true
         }
 
         var warning = "WARNING: only the first \(entry.count) characters of this document were extracted"
-        warning += entry.hitSizeCeiling
-            ? " — the document is larger than Rapid can extract, so this is all there will ever be. Attaching the file again will truncate at the same point; do not suggest it. If the user needs the rest, they must split the file or extract the part they care about."
-            : " — the pass that would have read the rest did not finish (it was cancelled, or interrupted by a quit) and cannot be resumed. Tell the user to remove this attachment and attach the file again."
-        warning += canPageFurther
-            ? " The captured part continues past this slice: keep reading from 'next_offset' before you conclude anything."
-            : " Reading further offsets will not return more; do not retry for the missing part."
+        if extractionPending {
+            warning += " so far — the background extraction is still running. Do not ask the user to re-attach the file. Retry read_document later for text that has not landed yet."
+        } else if entry.hitSizeCeiling {
+            warning += " — the document is larger than Rapid can extract, so this is all there will ever be. Attaching the file again will truncate at the same point; do not suggest it. If the user needs the rest, they must split the file or extract the part they care about."
+        } else {
+            warning += " — the pass that would have read the rest did not finish (it was cancelled, or interrupted by a quit) and cannot be resumed. Tell the user to remove this attachment and attach the file again."
+        }
+        if capturedContinuationAvailable {
+            warning += payload["next_offset"] != nil
+                ? " The captured part continues past this slice: keep reading from 'next_offset' before you conclude anything."
+                : " The captured extract remains readable: use the offsets above, or offset=0, before you conclude anything."
+        } else if !extractionPending {
+            warning += " Reading further offsets will not return more; do not retry for the missing part."
+        }
         warning += " Do not treat what you have read as the whole document, or conclude anything from the absence of something in it."
 
         payload["note"] = (payload["note"] as? String).map { "\($0) \(warning)" } ?? warning
@@ -449,7 +507,8 @@ enum ReadDocumentTool {
         tool: String,
         id: String,
         entry: DocumentContentCache.Entry,
-        pattern: String
+        pattern: String,
+        extractionPending: Bool = false
     ) -> ToolCallResult {
         guard pattern.count <= maxGrepPatternLength else {
             return err(
@@ -541,7 +600,12 @@ enum ReadDocumentTool {
                 : "Search for '\(pattern)' was stopped after \(Int(grepTimeBudget))s without finding a match — the pattern is too expensive to run over this document. Try a plain phrase instead of an elaborate expression."
             return ToolCallResult(
                 toolCallID: "",
-                content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+                content: jsonString(annotatingIncompleteExtract(
+                    payload,
+                    entry: entry,
+                    capturedContinuationAvailable: true,
+                    extractionPending: extractionPending
+                )),
                 isError: false
             )
         }
@@ -566,7 +630,12 @@ enum ReadDocumentTool {
         }
         return ToolCallResult(
             toolCallID: "",
-            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            content: jsonString(annotatingIncompleteExtract(
+                payload,
+                entry: entry,
+                capturedContinuationAvailable: true,
+                extractionPending: extractionPending
+            )),
             isError: false
         )
     }

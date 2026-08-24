@@ -37,12 +37,14 @@ struct ReadDocumentToolTests {
 
     private func run(
         _ arguments: [String: Any],
-        cache: DocumentContentCache
+        cache: DocumentContentCache,
+        stallTimeout: TimeInterval = 30
     ) async -> ToolCallResult {
         let data = try! JSONSerialization.data(withJSONObject: arguments)
         return await ReadDocumentTool.run(
             arguments: String(data: data, encoding: .utf8)!,
-            cache: cache
+            cache: cache,
+            stallTimeout: stallTimeout
         )
     }
 
@@ -888,12 +890,63 @@ struct ReadDocumentToolTests {
         ] {
             let body = try payload(await run(arguments, cache: cache))
             #expect(body["extract_complete"] as? Bool == false)
-            // Neither mode carries a cursor, so the missing text is
-            // unreachable from them by construction.
-            #expect(body["continuation_unavailable"] as? Bool == true)
+            // Both modes expose a way back into the captured text: outline
+            // rows and grep passages carry reusable offsets, while their notes
+            // also offer offset=0 as the sequential fallback.
+            #expect(body["continuation_unavailable"] == nil)
             let note = try #require(body["note"] as? String)
             #expect(note.localizedCaseInsensitiveContains("attach the file again"))
+            #expect(note.localizedCaseInsensitiveContains("captured extract remains readable"))
+            #expect(!note.localizedCaseInsensitiveContains("further offsets will not return more"))
         }
+    }
+
+    @Test("A stalled wait reports a running extraction, not a permanent interruption")
+    func stalledWaitPreservesPendingState() async throws {
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "slow-scan.pdf",
+            text: "first recognized page",
+            pageCount: 200,
+            isComplete: false
+        ))
+        cache.beginPending(id)
+        let generation = cache.generation(for: id)
+        let completion = Task.detached {
+            try? await Task.sleep(for: .milliseconds(150))
+            _ = cache.publish(
+                id,
+                entry: DocumentContentCache.Entry(
+                    filename: "slow-scan.pdf",
+                    text: "the complete recognized document",
+                    pageCount: 200
+                ),
+                ifGenerationIs: generation
+            )
+            cache.finishPending(id)
+        }
+
+        let partialResult = await run(
+            ["document_id": id.uuidString],
+            cache: cache,
+            stallTimeout: 0.03
+        )
+        await completion.value
+        let partial = try payload(partialResult)
+
+        #expect(partial["extract_pending"] as? Bool == true)
+        #expect(partial["continuation_unavailable"] == nil)
+        let note = try #require(partial["note"] as? String)
+        #expect(note.localizedCaseInsensitiveContains("background extraction is still running"))
+        #expect(note.localizedCaseInsensitiveContains("retry read_document later"))
+        #expect(!note.localizedCaseInsensitiveContains("attach the file again"))
+        #expect(!note.localizedCaseInsensitiveContains("cannot be resumed"))
+
+        let complete = try payload(await run(["document_id": id.uuidString], cache: cache))
+        #expect(complete["content"] as? String == "the complete recognized document")
+        #expect(complete["extract_pending"] == nil)
+        #expect(complete["extract_complete"] == nil)
     }
 
     // MARK: - Outline fallback allocation
