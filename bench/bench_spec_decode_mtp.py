@@ -2,33 +2,66 @@
 # SPDX-License-Identifier: Apache-2.0
 """MTP speculative-decode decode-tok/s bench (R15-P1 #302).
 
-Compares ``--spec-decode mtp`` against ``--spec-decode none`` on a
-Qwen3.5 / Qwen3.6 checkpoint that has been converted with the
-upstream PR #990 ``sanitize()`` path (preserving ``mtp.*`` weights).
-Mirrors the upstream bench script
+Runs three arms over a Qwen3.5 / Qwen3.6 checkpoint converted with the
+upstream PR #990 ``sanitize()`` path (preserving ``mtp.*`` weights):
+
+``none``
+    plain ``mlx_lm.generate_step`` — the upstream PR #990 baseline.
+``ar``
+    this generator with ``max_k=0`` and auto-K disabled, i.e. the exact
+    MTP code path with speculation parked. Differs from ``mtp`` only in
+    whether speculation runs, so the ratio between them attributes the
+    delta to speculation and to nothing else.
+``mtp``
+    this generator with speculation live.
+
+Prompt suite and shape mirror the upstream bench script
 (`gist <https://gist.github.com/AirRunner/e3aafd4de78c2cba4f4e233261cd64f2>`_)
 referenced in PR #990's results table — 8 diverse prompts, 3 runs per
-condition, conditions interleaved to avoid thermal drift.
+condition.
 
-**Deferred execution** — at vendoring time the GPU is contended with
-the Stage B PonyExl3 Viterbi conversion (PID 56486). Running this
-bench in parallel would thrash, so the script is written but NOT
-executed in the same agent run that opens the PR. Operators (or the
-follow-up agent on a quiet box) run::
+**Estimator** — conditions are interleaved in the innermost loop, so for
+every ``(run_idx, prompt_idx)`` the arms execute back to back. The
+headline speedup is therefore reported *paired*: the per-cell
+``mtp/ar`` ratios are collected and summarised as median + IQR. Pairing
+matters because Apple-silicon thermal drift moves whole runs together —
+on an M5 Max the identical greedy ``ar`` cell has read 20% apart across
+back-to-back invocations, which is larger than the speculation effect
+being measured. Drift that moves both arms together cancels in the
+ratio; it does not cancel in a pooled mean, and it does not cancel at
+all when two separate invocations of this script are compared to each
+other. Never A/B sampler configurations across invocations — vary them
+inside one process, or the drift will dominate the result.
+
+The pooled ``speedup_vs_baseline`` is retained alongside for continuity
+with PR #990's reporting convention.
+
+**Running it** — the bench needs a quiet box; anything else contending
+for the GPU shows up as drift, which is the one thing this measurement
+cannot absorb. Greedy reference::
 
     python bench/bench_spec_decode_mtp.py \\
-        --model /path/to/qwen3.5-9b-mtp-4bit \\
-        --runs 3 \\
-        --max-tokens 256
+        --model mlx-community/Qwen3.5-9B-4bit \\
+        --mtp-sidecar mlx-community/Qwen3.5-9B-MTP-4bit \\
+        --runs 3 --max-tokens 256 --format markdown
 
-Outputs JSON (default) or a markdown table for the PR follow-up
-comment::
+and the same command with ``--temp 0.6 --top-p 0.95 --top-k 20`` for the
+non-greedy arm. ``--runs 3`` over the 8-prompt suite yields 24 pairs per
+condition, which is enough for the IQR to be meaningful; fewer than ~12
+pairs and the median starts moving around.
 
-    python bench/bench_spec_decode_mtp.py --format markdown
+``--mtp-sidecar`` is required for checkpoints whose MTP weights live in
+a separate repo (mlx-lm's conversion strips ``mtp.*`` from the base
+model). Pass a single fused checkpoint to ``--model`` alone if you have
+one. ``--skip-mlx-lm-arm`` drops the ``none`` arm when only the
+speculation delta is of interest, and roughly halves wall time.
 
-Expected numbers (from PR #990 update comment, Qwen3.5-27B-4bit on
-M4 Pro): baseline 15.3 tok/s, MTP temp=0 24.0 tok/s (1.57×, 85.2%
-accept). The bench script reports the same triplet.
+Outputs JSON (default) or a markdown table for PR comments.
+
+Expected numbers for the ``none`` arm (from PR #990's update comment,
+Qwen3.5-27B-4bit on M4 Pro): baseline 15.3 tok/s, MTP temp=0 24.0 tok/s
+(1.57×, 85.2% accept). That comparison predates the ``ar`` arm, so it
+is the ``mtp``-vs-``none`` pair; the ``ar`` arm reports separately.
 
 **Dry-run mode** — ``--dry-run`` skips the actual model load and
 generation, runs through argument parsing + condition setup only,
@@ -133,6 +166,12 @@ class ConditionSummary:
     Pooled means ``sum(tokens) / sum(seconds)`` rather than
     ``mean(per-prompt tok/s)`` — matches PR #990's reporting
     convention so the numbers are directly comparable.
+
+    ``speedup_vs_baseline`` is that pooled ratio. The ``paired_*``
+    fields carry the drift-resistant estimator described in the module
+    docstring: per-``(run_idx, prompt_idx)`` ratios against the same
+    cell of the reference arm, summarised as median + IQR. Prefer the
+    paired median when reading results off a thermally noisy machine.
     """
 
     condition: str
@@ -143,6 +182,12 @@ class ConditionSummary:
     accept_ratio: float
     speedup_vs_baseline: float | None
     notes: str
+    paired_speedup_median: float | None = None
+    paired_speedup_p25: float | None = None
+    paired_speedup_p75: float | None = None
+    paired_speedup_min: float | None = None
+    paired_pairs: int = 0
+    paired_pairs_slower: int = 0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -244,6 +289,16 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-mlx-lm-arm",
+        action="store_true",
+        help=(
+            "Skip the mlx_lm ``stream_generate`` baseline and run only the "
+            "same-path arms (--spec-decode off via K=0, and MTP). Halves "
+            "wall time when the question is purely 'does speculation pay "
+            "off', since that is answered by the ar-vs-mtp ratio alone."
+        ),
+    )
+    parser.add_argument(
         "--mtp-max-k",
         type=int,
         default=3,
@@ -283,37 +338,81 @@ def _evaluate_landing_gates(
     min_speedup: float | None,
     speedup: float | None,
 ) -> dict[str, Any]:
-    """Evaluate correctness/performance gates without hiding missing runs."""
+    """Evaluate correctness/performance gates without hiding missing runs.
 
-    baseline = {(r.run_idx, r.prompt_idx): r for r in results["none"]}
+    The greedy lossless contract is checked against every baseline arm
+    that actually ran, and each is a distinct claim:
+
+    * vs ``none`` — MTP reproduces *mlx_lm's* reference decode. This is
+      the externally meaningful statement.
+    * vs ``ar``   — MTP reproduces the same generator with speculation
+      switched off. This isolates the speculation logic from the rest
+      of the vendored harness, so a failure here points at the verify
+      path rather than at any sampler/harness difference.
+
+    Both must hold when both arms are present; a missing arm is skipped
+    rather than silently treated as passing.
+    """
+
     mtp = {(r.run_idx, r.prompt_idx): r for r in results["mtp"]}
-    paired_keys = sorted(baseline.keys() & mtp.keys())
-    mismatches = [
-        {"run_idx": key[0], "prompt_idx": key[1]}
-        for key in paired_keys
-        if baseline[key].token_sha256 != mtp[key].token_sha256
-    ]
+
+    per_baseline: dict[str, Any] = {}
+    lossless_passed = True
+    all_paired: set[tuple[int, int]] = set()
+    for name in ("none", "ar"):
+        arm = {(r.run_idx, r.prompt_idx): r for r in results.get(name, [])}
+        if not arm:
+            continue
+        paired = sorted(arm.keys() & mtp.keys())
+        all_paired |= set(paired)
+        mismatches = [
+            {"run_idx": key[0], "prompt_idx": key[1]}
+            for key in paired
+            if arm[key].token_sha256 != mtp[key].token_sha256
+        ]
+        arm_complete = (
+            len(arm) == expected_pairs
+            and len(mtp) == expected_pairs
+            and len(paired) == expected_pairs
+        )
+        arm_passed = (not require_lossless) or (arm_complete and not mismatches)
+        lossless_passed = lossless_passed and arm_passed
+        per_baseline[name] = {
+            "passed": arm_passed,
+            "complete": arm_complete,
+            "complete_pairs": len(paired),
+            "mismatches": mismatches,
+        }
+
+    # With no baseline arm at all there is nothing to compare against,
+    # so a required lossless gate cannot be satisfied.
+    if require_lossless and not per_baseline:
+        lossless_passed = False
+
     complete = (
-        len(baseline) == expected_pairs
-        and len(mtp) == expected_pairs
-        and len(paired_keys) == expected_pairs
+        len(mtp) == expected_pairs
+        and bool(per_baseline)
+        and all(b["complete"] for b in per_baseline.values())
     )
-    lossless_passed = (not require_lossless) or (complete and not mismatches)
     speedup_passed = (not min_speedup) or (
         complete and speedup is not None and speedup >= min_speedup
     )
     return {
         "passed": lossless_passed and speedup_passed,
-        "complete_pairs": len(paired_keys),
+        "complete_pairs": len(all_paired),
         "expected_pairs": expected_pairs,
         "lossless": {
             "required": require_lossless,
             "passed": lossless_passed,
-            "mismatches": mismatches,
+            "per_baseline": per_baseline,
         },
         "performance": {
             "minimum_speedup": min_speedup,
             "observed_speedup": speedup,
+            # Which arm ``observed_speedup`` is measured against. "ar"
+            # is the speculation-isolating comparison and is preferred
+            # whenever that arm ran.
+            "reference_arm": "ar" if results.get("ar") else "none",
             "passed": speedup_passed,
         },
     }
@@ -351,6 +450,13 @@ def _resolve_mtp_sidecar(model_alias: str, explicit: str | None) -> str | None:
 def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
     """Return the bench plan as a JSON-serializable dict (dry-run mode)."""
     n_prompts = min(args.prompts, len(_BENCH_PROMPTS))
+    if args.mtp_only:
+        conditions = ["mtp"]
+    elif args.skip_mlx_lm_arm:
+        conditions = ["ar", "mtp"]
+    else:
+        conditions = ["none", "ar", "mtp"]
+    n_conditions = len(conditions)
     return {
         "model": args.model,
         "runs_per_condition": args.runs,
@@ -361,11 +467,11 @@ def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
         "top_k": args.top_k,
         "mtp_max_k": args.mtp_max_k,
         "mtp_disable_auto_k": args.mtp_disable_auto_k,
-        "conditions": ["none", "mtp"],
+        "conditions": conditions,
         "prompts": list(_BENCH_PROMPTS[:n_prompts]),
-        "total_generations": 2 * args.runs * n_prompts,
+        "total_generations": n_conditions * args.runs * n_prompts,
         "estimated_wall_time_seconds_at_15_tok_per_sec": (
-            2 * args.runs * n_prompts * args.max_tokens / 15.0
+            n_conditions * args.runs * n_prompts * args.max_tokens / 15.0
         ),
     }
 
@@ -407,8 +513,22 @@ def _run_once(
     model, tokenizer = load(model_alias)
 
     last_response = None
-    if condition == "mtp":
-        from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    # Two of the three arms drive the SAME generator:
+    #
+    #   "mtp"  — speculation on, depth K in [0, mtp_max_k]
+    #   "ar"   — speculation off, depth pinned to K=0 (the controller
+    #            "parks"), i.e. plain autoregressive decode through the
+    #            identical code path, sampler chain, stop-token handling
+    #            and (absence of) detokenization
+    #   "none" — mlx_lm ``stream_generate``, kept as an absolute floor
+    #
+    # "mtp" vs "ar" is the only comparison that isolates speculation:
+    # it holds the harness fixed and varies K alone. "mtp" vs "none"
+    # additionally folds in every difference between the two harnesses
+    # (entry point, sampler implementation, per-token detokenization),
+    # so a regression there does not by itself implicate speculation.
+    uses_generator = condition in ("mtp", "ar")
+    if uses_generator:
         from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
             inject_mtp_support,
             validate_mtp_support,
@@ -451,8 +571,15 @@ def _run_once(
     t0 = time.perf_counter()
     n = 0
     emitted_token_ids: list[int] = []
-    if condition == "mtp":
+    if uses_generator:
+        from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
         timing_stats: dict[str, float] = {}
+        # K=0 with the adaptive controller disabled is a hard park: the
+        # generator never drafts, so this is plain AR decode down the
+        # identical path the "mtp" arm uses.
+        effective_max_k = 0 if condition == "ar" else mtp_max_k
+        effective_disable_auto_k = True if condition == "ar" else mtp_disable_auto_k
         gen = mtp_generate_step(
             prompt_ids,
             model,
@@ -461,8 +588,8 @@ def _run_once(
             top_p=top_p,
             top_k=top_k,
             accept_counter=counter,
-            max_k=mtp_max_k,
-            disable_auto_k=mtp_disable_auto_k,
+            max_k=effective_max_k,
+            disable_auto_k=effective_disable_auto_k,
             stop_tokens=stop_tokens,
             timing_stats=timing_stats,
         )
@@ -502,18 +629,27 @@ def _run_once(
     }
 
     snap = counter.snapshot()
-    if condition != "mtp":
+    if not uses_generator:
         # ``none`` path doesn't touch the counter; report 0/0.
         snap_attempts, snap_accepts = 0, 0
     else:
+        # Reported verbatim for both generator arms. The "ar" arm must
+        # come back 0/0 — a nonzero attempt count there would mean the
+        # K=0 park did not hold and the arm is not a clean AR baseline.
         snap_attempts, snap_accepts = snap.attempts, snap.accepts
+        if condition == "ar" and snap_attempts != 0:
+            raise RuntimeError(
+                f"ar arm drafted {snap_attempts} positions despite max_k=0; "
+                "the K=0 park did not hold, so this arm is not a valid "
+                "same-path AR baseline"
+            )
     # Sanity-check: global counter shouldn't have moved (per-run
     # counter is what mtp_generate_step bumps via the
     # ``accept_counter=`` kwarg).
     assert get_global_counter().snapshot().attempts == prior_attempts
     assert get_global_counter().snapshot().accepts == prior_accepts
 
-    if condition == "mtp":
+    if uses_generator:
         prompt_eval_seconds = timing_stats.get("prompt_eval_seconds", 0.0)
         decode_elapsed = max(0.0, elapsed - prompt_eval_seconds)
         tok_per_sec = n / decode_elapsed if decode_elapsed > 0 else 0.0
@@ -562,7 +698,7 @@ def _run_once(
         prompt_lookup_mtp_sync_seconds=timing_stats.get(
             "prompt_lookup_mtp_sync_seconds", 0.0
         ),
-        k_histogram=k_histogram if condition == "mtp" else {},
+        k_histogram=k_histogram if uses_generator else {},
     )
 
 
@@ -609,6 +745,60 @@ def _summarize(
     )
 
 
+def _quantile(ordered: list[float], frac: float) -> float:
+    """Linear-interpolated quantile over an already-sorted list."""
+    if not ordered:
+        return 0.0
+    pos = frac * (len(ordered) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
+
+
+def _paired_ratios(
+    results: list[RunResult],
+    reference: list[RunResult],
+) -> list[float]:
+    """Per-cell tok/s ratios against the same ``(run, prompt)`` reference.
+
+    Conditions run interleaved in the innermost loop, so the two arms of
+    a cell execute back to back and share whatever thermal state the
+    machine was in. Taking the ratio inside the cell cancels drift that
+    a pooled mean would keep.
+    """
+    ref = {
+        (r.run_idx, r.prompt_idx): r.decode_tok_per_sec
+        for r in reference
+        if r.decode_tok_per_sec > 0
+    }
+    ratios = []
+    for r in results:
+        base = ref.get((r.run_idx, r.prompt_idx))
+        if base and r.decode_tok_per_sec > 0:
+            ratios.append(r.decode_tok_per_sec / base)
+    return sorted(ratios)
+
+
+def _with_paired_speedup(
+    summary: ConditionSummary,
+    results: list[RunResult],
+    reference: list[RunResult],
+) -> ConditionSummary:
+    """Attach the paired-ratio statistics to an already-pooled summary."""
+    ratios = _paired_ratios(results, reference)
+    if not ratios:
+        return summary
+    return replace(
+        summary,
+        paired_speedup_median=round(statistics.median(ratios), 3),
+        paired_speedup_p25=round(_quantile(ratios, 0.25), 3),
+        paired_speedup_p75=round(_quantile(ratios, 0.75), 3),
+        paired_speedup_min=round(ratios[0], 3),
+        paired_pairs=len(ratios),
+        paired_pairs_slower=sum(1 for x in ratios if x < 1.0),
+    )
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -644,7 +834,12 @@ def main() -> int:
     n_prompts = len(prompts)
 
     mtp_sidecar = _resolve_mtp_sidecar(args.model, args.mtp_sidecar)
-    conditions: tuple[str, ...] = ("mtp",) if args.mtp_only else ("none", "mtp")
+    if args.mtp_only:
+        conditions: tuple[str, ...] = ("mtp",)
+    elif args.skip_mlx_lm_arm:
+        conditions = ("ar", "mtp")
+    else:
+        conditions = ("none", "ar", "mtp")
 
     print(
         f"[bench_spec_decode_mtp] model={args.model} runs={args.runs} "
@@ -656,7 +851,7 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    all_results: dict[str, list[RunResult]] = {"none": [], "mtp": []}
+    all_results: dict[str, list[RunResult]] = {"none": [], "ar": [], "mtp": []}
     # Interleave conditions per run to avoid thermal drift bias (PR
     # #990 follows the same protocol).
     for run_idx in range(args.runs):
@@ -707,9 +902,29 @@ def main() -> int:
                 )
 
     baseline_summary = _summarize("none", all_results["none"], None)
-    mtp_summary = _summarize(
-        "mtp", all_results["mtp"], baseline_summary.pooled_tok_per_sec
+    ar_summary = _summarize(
+        "ar", all_results["ar"], baseline_summary.pooled_tok_per_sec
     )
+
+    # Headline speedup is measured against the same-path AR arm when it
+    # ran: that arm differs from "mtp" only in whether speculation is
+    # enabled, so the ratio attributes the delta to speculation and to
+    # nothing else. Falling back to the mlx_lm arm keeps the old
+    # behaviour when only that baseline is available, but the ratio then
+    # also carries the harness difference between the two entry points.
+    reference_tok_per_sec = (
+        ar_summary.pooled_tok_per_sec
+        if all_results["ar"]
+        else baseline_summary.pooled_tok_per_sec
+    )
+    mtp_summary = _summarize("mtp", all_results["mtp"], reference_tok_per_sec)
+
+    reference_runs = all_results["ar"] or all_results["none"]
+    ar_summary = _with_paired_speedup(
+        ar_summary, all_results["ar"], all_results["none"]
+    )
+    mtp_summary = _with_paired_speedup(mtp_summary, all_results["mtp"], reference_runs)
+
     gates = _evaluate_landing_gates(
         all_results,
         expected_pairs=args.runs * n_prompts,
@@ -718,6 +933,7 @@ def main() -> int:
         speedup=mtp_summary.speedup_vs_baseline,
     )
 
+    summaries = [baseline_summary, ar_summary, mtp_summary]
     out = {
         "model": args.model,
         "max_tokens": args.max_tokens,
@@ -725,7 +941,8 @@ def main() -> int:
         "top_p": args.top_p,
         "top_k": args.top_k,
         "seed": args.seed,
-        "summaries": [asdict(baseline_summary), asdict(mtp_summary)],
+        "speedup_reference_arm": "ar" if all_results["ar"] else "none",
+        "summaries": [asdict(s) for s in summaries],
         "landing_gates": gates,
         "raw_runs": [asdict(r) for c in all_results.values() for r in c],
     }
@@ -734,13 +951,44 @@ def main() -> int:
         print(
             f"Model: `{args.model}`  max_tokens: {args.max_tokens}  temp: {args.temp}\n"
         )
-        print("| Condition | Tok/s pooled | Speedup | Accept (A/V) |")
-        print("|---|---|---|---|")
-        for s in (baseline_summary, mtp_summary):
+        ref_arm = "ar" if all_results["ar"] else "none"
+        print(
+            f"Speedup column is measured against the `{ref_arm}` arm."
+            + (
+                "  `ar` = this same generator with K pinned to 0, so the "
+                "`mtp` ratio isolates speculation.\n"
+                if ref_arm == "ar"
+                else "  No same-path arm ran, so the ratio also carries the "
+                "harness difference between entry points.\n"
+            )
+        )
+        print(
+            "Paired speedup is the median per-`(run, prompt)` ratio against "
+            "that same cell of the reference arm, with the interquartile "
+            "range — it is the drift-resistant number; the pooled column is "
+            "kept for continuity with PR #990.\n"
+        )
+        print(
+            "| Condition | Tok/s pooled | Speedup pooled | "
+            "Speedup paired (IQR) | Accept (A/V) |"
+        )
+        print("|---|---|---|---|---|")
+        for s in summaries:
+            if s.n_runs == 0:
+                continue
             speedup = f"{s.speedup_vs_baseline:.2f}×" if s.speedup_vs_baseline else "—"
+            if s.paired_speedup_median:
+                paired = (
+                    f"{s.paired_speedup_median:.3f}× "
+                    f"({s.paired_speedup_p25:.3f}–{s.paired_speedup_p75:.3f}, "
+                    f"n={s.paired_pairs}, {s.paired_pairs_slower} slower)"
+                )
+            else:
+                paired = "—"
             accept = f"{s.accept_ratio:.1%}" if s.accept_ratio else "—"
             print(
-                f"| {s.condition} | {s.pooled_tok_per_sec:.1f} | {speedup} | {accept} |"
+                f"| {s.condition} | {s.pooled_tok_per_sec:.1f} | {speedup} "
+                f"| {paired} | {accept} |"
             )
     else:
         print(json.dumps(out, indent=2))
