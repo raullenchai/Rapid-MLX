@@ -4,7 +4,7 @@ This inventory ranks Desktop surfaces where product behavior is still owned by
 SwiftUI views. It guides small extraction PRs; it is not a proposal to replace
 SwiftUI, create a new framework, or move rendering-only state out of views.
 
-Snapshot: `main` at `a9c0b000` (2026-08-24). Re-check the source before starting
+Snapshot: `main` at `a9c0b000` (2026-08-23). Re-check the source before starting
 an item, and update this document when ownership moves.
 
 ## Ranking method
