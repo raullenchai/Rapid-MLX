@@ -144,7 +144,6 @@ vllm_mlx/tool_parsers/xlam_tool_parser.py 1
 vllm_mlx/turboquant.py 1
 vllm_mlx/utils/chat_template.py 6
 vllm_mlx/utils/decode.py 2
-vllm_mlx/utils/gemma4_chat_template.py 1
 vllm_mlx/utils/tokenizer.py 18
 vllm_mlx/video/engine.py 2
 vllm_mlx/video/wan.py 1

@@ -28,7 +28,12 @@ def bundled_chat_template(template_id: str) -> str:
         asset = _TEMPLATE_ASSETS[template_id]
     except KeyError as exc:
         raise ValueError(f"unknown chat template ID: {template_id!r}") from exc
-    return files("vllm_mlx").joinpath("templates", asset).read_text(encoding="utf-8")
+    return (
+        files("vllm_mlx")
+        .joinpath("templates")
+        .joinpath(asset)
+        .read_text(encoding="utf-8")
+    )
 
 
 def _template_owner(applicator):
