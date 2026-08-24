@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from tokenizers import Tokenizer, models
@@ -216,7 +217,6 @@ def test_engine_resolves_or_preserves_profile_contract(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> None:
-    from vllm_mlx import engine_core
     from vllm_mlx.engine import batched as batched_module
     from vllm_mlx.utils import tokenizer as tokenizer_module
 
@@ -229,7 +229,14 @@ async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> 
         captured.update(kwargs)
         raise LoadBoundaryReachedError
 
-    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core.AsyncEngineCore = object
+    engine_core.EngineConfig = object
+    engine_core._init_mlx_step_thread = lambda: None
+    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler.SchedulerConfig = object
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
     monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", fake_load)
 
     engine = object.__new__(batched_module.BatchedEngine)
@@ -251,10 +258,11 @@ async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> 
 
 
 def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
-    import mlx_lm
-
     tokenizer = _tokenizer()
     tokenizer_module, model = _stub_text_loader(monkeypatch, tokenizer)
+    mlx_lm = ModuleType("mlx_lm")
+    mlx_lm.load = lambda *a, **kw: (model, tokenizer)
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
     monkeypatch.setattr(
         tokenizer_module,
         "_neutralize_unbundled_template_types",
@@ -267,8 +275,6 @@ def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
         lambda *a: None,
     )
     monkeypatch.setattr(tokenizer_module, "repair_byte_level_decoder", lambda *a: None)
-    monkeypatch.setattr(mlx_lm, "load", lambda *a, **kw: (model, tokenizer))
-
     loaded_model, loaded_tokenizer = tokenizer_module.load_model_with_fallback(
         "gemma-4-e2b-4bit", lazy=True
     )
@@ -282,9 +288,7 @@ def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
 async def test_mllm_start_resolves_profile_template_at_processor_load(
     monkeypatch,
 ) -> None:
-    from vllm_mlx import engine_core, mllm_scheduler
     from vllm_mlx.engine import batched as batched_module
-    from vllm_mlx.models import mllm as mllm_module
 
     processor = _tokenizer()
 
@@ -303,9 +307,35 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
         async def start(self) -> None:
             pass
 
-    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
-    monkeypatch.setattr(mllm_module, "MLXMultimodalLM", FakeMultimodalLM)
-    monkeypatch.setattr(mllm_scheduler, "MLLMScheduler", FakeScheduler)
+    class FakeMLLMSchedulerConfig:
+        __dataclass_fields__ = {
+            "prefill_step_size": SimpleNamespace(default=4096),
+        }
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeSchedulerConfig:
+        __dataclass_fields__ = {
+            "prefill_step_size": SimpleNamespace(default=2048),
+        }
+
+    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core._init_mlx_step_thread = lambda: None
+    mllm_scheduler = ModuleType("vllm_mlx.mllm_scheduler")
+    mllm_scheduler.MLLMScheduler = FakeScheduler
+    mllm_scheduler.MLLMSchedulerConfig = FakeMLLMSchedulerConfig
+    mllm_module = ModuleType("vllm_mlx.models.mllm")
+    mllm_module.MLXMultimodalLM = FakeMultimodalLM
+    mllm_module.TextOnlyCheckpointError = type(
+        "TextOnlyCheckpointError", (RuntimeError,), {}
+    )
+    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler.SchedulerConfig = FakeSchedulerConfig
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.mllm_scheduler", mllm_scheduler)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.models.mllm", mllm_module)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
     monkeypatch.setattr(batched_module, "_probe_mllm_cache_type", lambda model: None)
 
     engine = object.__new__(batched_module.BatchedEngine)
@@ -329,6 +359,7 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
 async def test_dynamic_residency_preserves_profile_contract_for_local_path(
     monkeypatch,
 ) -> None:
+    pytest.importorskip("uvicorn")
     from vllm_mlx import server
 
     captured = {}
