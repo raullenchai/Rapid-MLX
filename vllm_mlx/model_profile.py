@@ -120,6 +120,10 @@ class ModelProfile:
     # --- Parser defaults ---
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
+    # Optional key into the bundled chat-template registry.  This is resolved
+    # once when the tokenizer/processor is loaded; request rendering never
+    # infers a template from a model name or from template contents.
+    chat_template_id: str | None = None
 
     # --- Architecture / capability gates ---
     # ``is_hybrid`` = the model uses linear-attention or recurrent layers

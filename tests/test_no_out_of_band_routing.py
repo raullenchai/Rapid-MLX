@@ -1430,6 +1430,9 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             "subfolder",
             "tool_call_parser",  # parser key, see PARSER_REGISTRY
             "reasoning_parser",  # parser key, see PARSER_REGISTRY
+            # Closed, validated key into the load-time template registry.
+            # It selects prompt serialization, not an engine/runtime lane.
+            "chat_template_id",
             "suffix_decoding_tier",  # one of VALID_SUFFIX_TIERS — non-routing data
             "dflash_draft_model",  # HF path for the spec-decode drafter
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter

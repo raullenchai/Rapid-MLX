@@ -1133,6 +1133,30 @@ def load_model_with_fallback(
         ``return_source=True``; or ``(model, tokenizer, config, source)``
         when both flags are true.
     """
+    # Resolve model-owned prompt serialization before ``model_name`` becomes a
+    # cache snapshot path.  The selected template is installed once after the
+    # tokenizer loads; request rendering does no model/template inference.
+    from ..model_aliases import resolve_profile
+
+    requested_profile = resolve_profile(model_name)
+    explicit_chat_template = (
+        tokenizer_config.get("chat_template")
+        if isinstance(tokenizer_config, dict)
+        and isinstance(tokenizer_config.get("chat_template"), str)
+        else None
+    )
+
+    def _resolve_loaded_template(result) -> None:
+        from .chat_template_registry import resolve_chat_template
+
+        resolve_chat_template(
+            result[1],
+            requested_profile.chat_template_id
+            if requested_profile is not None
+            else None,
+            explicit_template=explicit_chat_template,
+        )
+
     # Publishers who ship one repo per model with a folder per quant
     # (``LiquidAI/LFM2.5-2.6B-MLX`` → ``4bit/``, ``8bit/``, ``bf16/`` …)
     # need the repo id turned into a concrete directory before mlx-lm
@@ -1235,6 +1259,7 @@ def load_model_with_fallback(
                 _apply_chat_template_sidecar(mp, tokenizer)
         augment_eos_token_ids_from_generation_config(tokenizer, model_name)
         repair_byte_level_decoder(tokenizer)
+        _resolve_loaded_template(result)
 
         # Still legitimately skipped for `lazy=True`: the Gemma-4 native/
         # legacy routing (`gemma4_family_kind` gate + its own duplicate
@@ -1262,6 +1287,7 @@ def load_model_with_fallback(
         # Preserve the historical two-argument call shape for downstream
         # wrappers and tests that instrument this internal dispatch boundary.
         result = _load_model_with_fallback_impl(model_name, tokenizer_config)
+    _resolve_loaded_template(result)
     # Defect 4: evict UBC mirror of safetensors shards on Darwin so
     # the (mmap mirror + materialised weights) burst does not double
     # the load-window memory footprint. Runs ONLY after a successful

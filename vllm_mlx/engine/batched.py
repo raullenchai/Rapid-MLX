@@ -1142,6 +1142,11 @@ class BatchedEngine(BaseEngine):
 
         self._model = self._mllm_instance.model
         self._processor = self._mllm_instance.processor
+        # MLLM processors bypass the text tokenizer loader, so resolve their
+        # profile-declared prompt contract at this load boundary as well.
+        from ..utils.chat_template_registry import resolve_profile_chat_template
+
+        resolve_profile_chat_template(self._processor, self._model_name)
 
         vision_min_pixels = getattr(self._scheduler_config, "vision_min_pixels", 0)
         vision_max_pixels = getattr(self._scheduler_config, "vision_max_pixels", 0)
@@ -3453,6 +3458,9 @@ class BatchedEngine(BaseEngine):
 
         self._model = model
         self._tokenizer = tokenizer
+        from ..utils.chat_template_registry import resolve_profile_chat_template
+
+        resolve_profile_chat_template(self._tokenizer, self._model_name)
 
         # Create engine config
         scheduler_config = self._scheduler_config or SchedulerConfig()

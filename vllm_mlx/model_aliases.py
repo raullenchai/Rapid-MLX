@@ -73,6 +73,11 @@ VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 # explicit CLI still wins. Mirrors ``pflash_tier`` in shape.
 VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
 
+# Bundled chat-template contracts that may be selected by a model profile.
+# The value is declarative model data, not a request-time heuristic: aliases
+# opt into one exact template and the tokenizer loader resolves it once.
+VALID_CHAT_TEMPLATE_IDS: frozenset[str] = frozenset({"gemma4_compact", "gemma4_full"})
+
 
 # Canonical names for block-diffusion speculative-decoding drafter kinds.
 # Kept as module constants so eligibility checks, CLI flag handlers, and
@@ -164,6 +169,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "is_text_only",
             "tool_call_parser",
             "reasoning_parser",
+            "chat_template_id",
             "is_hybrid",
             # r6-A R6-C1: pin the JSON-declared is_hybrid value so the
             # runtime ArraysCache probe in
@@ -532,6 +538,19 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: mtp_speculative_tokens must be a positive integer"
         )
 
+    chat_template_id = value.get("chat_template_id")
+    if chat_template_id is not None:
+        if not isinstance(chat_template_id, str):
+            raise ValueError(
+                f"alias {alias!r}: chat_template_id must be a string, "
+                f"got {type(chat_template_id).__name__}"
+            )
+        if chat_template_id not in VALID_CHAT_TEMPLATE_IDS:
+            raise ValueError(
+                f"alias {alias!r}: chat_template_id={chat_template_id!r} not in "
+                f"{sorted(VALID_CHAT_TEMPLATE_IDS)}"
+            )
+
     return AliasProfile(
         hf_path=hf_path,
         subfolder=subfolder,
@@ -539,6 +558,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         is_text_only=is_text_only,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
+        chat_template_id=chat_template_id,
         is_hybrid=_strict_bool("is_hybrid", False),
         is_hybrid_explicit=_strict_bool("is_hybrid_explicit", False),
         is_moe=_strict_bool("is_moe", False),

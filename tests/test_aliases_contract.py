@@ -60,6 +60,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "is_text_only",
         "tool_call_parser",
         "reasoning_parser",
+        "chat_template_id",
         "is_hybrid",
         # r6-A R6-C1: explicit-pin flag that suppresses the runtime
         # ArraysCache → is_hybrid=True auto-promotion. See
