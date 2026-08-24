@@ -1344,11 +1344,24 @@ struct ChatView: View {
             let notice = selection.rejectedCount > 0
                 ? "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
                 : outcome.1
-            attachmentDrafts.finishFileImport(
+            let adopted = attachmentDrafts.finishFileImport(
                 request: importRequest,
                 outcome.0,
                 notice: notice
             )
+            // The import registered each document's full text in the shared
+            // cache the moment it parsed, which is BEFORE any draft agreed to
+            // take ownership of it. When the draft is gone — its conversation
+            // was deleted, or a never-sent draft was replaced by a new
+            // conversation — nothing on screen references these documents, so
+            // no chip and no ``deleteConversation`` can ever clean them up.
+            // Delete them here; ``remove`` also cancels the background OCR,
+            // which for a large scan is minutes of Vision work nobody awaits.
+            if !adopted {
+                DocumentContentCache.shared.remove(
+                    contentsOf: outcome.0.map(\.attachment.id)
+                )
+            }
         }
         return true
     }

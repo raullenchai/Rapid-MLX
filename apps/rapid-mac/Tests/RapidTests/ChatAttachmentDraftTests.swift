@@ -488,7 +488,13 @@ struct ChatAttachmentDraftTests {
             "letimportRequest=attachmentDrafts.beginFileImport(conversationID:viewModel.activeConversationID)"
         ))
         #expect(stripped.contains(
-            "attachmentDrafts.finishFileImport(request:importRequest,outcome.0,notice:notice)"
+            "letadopted=attachmentDrafts.finishFileImport(request:importRequest,outcome.0,notice:notice)"
+        ))
+        // A draft that never took ownership leaves the imported documents in
+        // the shared cache with no visible owner; the import path must delete
+        // them itself.
+        #expect(stripped.contains(
+            "if!adopted{DocumentContentCache.shared.remove(contentsOf:outcome.0.map(\\.attachment.id))}"
         ))
         #expect(stripped.contains(
             ".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()photoCapabilityNotice.dismiss()}"
