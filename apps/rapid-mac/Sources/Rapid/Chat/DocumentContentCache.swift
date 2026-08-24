@@ -82,22 +82,36 @@ final class DocumentContentCache: @unchecked Sendable {
         /// The document's structural map, when it has one. Empty for formats
         /// and files that carry no headings.
         let outline: [OutlineNode]
+        /// False while ``text`` is only the eagerly-extracted PREVIEW and the
+        /// background pass that would replace it with the whole document has
+        /// not landed.
+        ///
+        /// This has to be PERSISTED, not merely tracked in ``pending``. The
+        /// preview is written to `<uuid>.json` as soon as it is parsed, so
+        /// quitting during a ~6-minute OCR pass leaves a disk entry whose
+        /// in-memory pending mark is gone on the next launch. Without this
+        /// flag ``read_document`` reads that preview back, sees the cursor
+        /// reach `count`, and reports `has_more: false` — presenting the first
+        /// four pages of a 529-page scan as the complete document.
+        let isComplete: Bool
 
         init(
             filename: String,
             text: String,
             pageCount: Int? = nil,
-            outline: [OutlineNode] = []
+            outline: [OutlineNode] = [],
+            isComplete: Bool = true
         ) {
             self.filename = filename
             self.text = text
             self.pageCount = pageCount
             self.outline = outline
+            self.isComplete = isComplete
             (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(text)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case filename, text, pageCount, outline
+            case filename, text, pageCount, outline, isComplete
         }
 
         init(from decoder: Decoder) throws {
@@ -108,6 +122,10 @@ final class DocumentContentCache: @unchecked Sendable {
             // Absent in entries written before outline support; an empty map
             // degrades to "this document has no outline", which is correct.
             outline = try container.decodeIfPresent([OutlineNode].self, forKey: .outline) ?? []
+            // Absent in entries written before completeness was tracked. Those
+            // predate deferred extraction's disk exposure, and defaulting them
+            // to complete keeps an old conversation reading exactly as it did.
+            isComplete = try container.decodeIfPresent(Bool.self, forKey: .isComplete) ?? true
             (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(text)
         }
 
@@ -117,6 +135,7 @@ final class DocumentContentCache: @unchecked Sendable {
             try container.encode(text, forKey: .text)
             try container.encodeIfPresent(pageCount, forKey: .pageCount)
             if !outline.isEmpty { try container.encode(outline, forKey: .outline) }
+            if !isComplete { try container.encode(false, forKey: .isComplete) }
         }
 
         var count: Int { characterCount }

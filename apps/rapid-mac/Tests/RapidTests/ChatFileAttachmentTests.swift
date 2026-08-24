@@ -509,4 +509,33 @@ struct ChatFileAttachmentTests {
         )
         #expect(budgeted == whole)
     }
+
+    @Test("A single oversized page is bounded before it is trimmed and tagged")
+    func singlePageCannotOverrunTheBudget() throws {
+        // The residual hole the earlier accumulation bound left open: the
+        // budget stopped the ARRAY from growing, but each page's own text was
+        // still fully materialized, cleaned and interpolated before `prefix`
+        // could clamp it. One highly-compressed sheet holding more text than
+        // the whole budget therefore existed several times over first.
+        let url = try textPDF(pages: 1, charactersPerPage: 20_000)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+
+        let budget = 200
+        let bounded = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount,
+            characterBudget: budget
+        )
+        #expect(bounded.count <= budget)
+        #expect(!bounded.isEmpty)
+
+        // The unbudgeted read of that same single page is far larger, so the
+        // cap is what stopped it rather than a small page.
+        let whole = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount
+        )
+        #expect(whole.count > budget * 10)
+    }
 }

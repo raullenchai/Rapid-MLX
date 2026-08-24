@@ -722,4 +722,158 @@ struct ReadDocumentToolTests {
         let entry = cache.getAwaitingCompletion(id, stallTimeout: 5.0)
         #expect(entry?.text == "complete text")
     }
+
+    // MARK: - An extraction that never finished
+    //
+    // A large PDF's preview is persisted BEFORE the background pass replaces
+    // it with the whole document. The pending mark lives in memory only, so
+    // quitting mid-OCR leaves a disk entry that a later launch cannot tell
+    // apart from a finished one — and `read_document` would present the first
+    // four pages of a 529-page scan as the complete document.
+
+    @Test("A partial extract survives a relaunch still marked incomplete")
+    func incompletenessIsPersisted() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let id = UUID()
+        let writing = DocumentContentCache(diskDirectory: directory)
+        writing.put(id, entry: DocumentContentCache.Entry(
+            filename: "scan.pdf",
+            text: "first four pages",
+            pageCount: 529,
+            isComplete: false
+        ))
+
+        // A fresh instance is the relaunch: no pending set, no extraction task.
+        let relaunched = DocumentContentCache(diskDirectory: directory)
+        let entry = try #require(relaunched.get(id))
+        #expect(entry.text == "first four pages")
+        #expect(!entry.isComplete)
+    }
+
+    @Test("An entry written before completeness tracking still reads as complete")
+    func legacyEntriesDefaultToComplete() throws {
+        // Those predate deferred extraction's disk exposure; defaulting them
+        // to partial would put a spurious warning on every old conversation.
+        let json = #"{"filename":"old.pdf","text":"whole document"}"#
+        let entry = try JSONDecoder().decode(
+            DocumentContentCache.Entry.self,
+            from: Data(json.utf8)
+        )
+        #expect(entry.isComplete)
+    }
+
+    @Test("A partial extract never reports has_more=false at its end")
+    func partialExtractKeepsHasMoreTrue() async throws {
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "scan.pdf",
+            text: "the only pages that were ever extracted",
+            pageCount: 529,
+            isComplete: false
+        ))
+
+        let result = await run(["document_id": id.uuidString], cache: cache)
+        let body = try payload(result)
+
+        // The cursor HAS reached the end of what was captured — but the
+        // document did not end there, and saying `has_more: false` is what
+        // made a four-page fragment look like a finished 529-page book.
+        #expect(body["has_more"] as? Bool == true)
+        #expect(body["extract_complete"] as? Bool == false)
+        let note = try #require(body["note"] as? String)
+        #expect(note.localizedCaseInsensitiveContains("attach the file again"))
+        #expect(note.localizedCaseInsensitiveContains("did not finish"))
+    }
+
+    @Test("A complete extract carries no incompleteness warning")
+    func completeExtractIsNotAnnotated() async throws {
+        let cache = freshCache()
+        let id = store("the whole document", in: cache)
+
+        let body = try payload(await run(["document_id": id.uuidString], cache: cache))
+
+        #expect(body["has_more"] as? Bool == false)
+        #expect(body["extract_complete"] == nil)
+    }
+
+    @Test("Outline and grep also disclose an unfinished extract")
+    func otherModesAnnotateIncompleteness() async throws {
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: "scan.pdf",
+            text: "第 1 章 总则\n合同的赔偿条款在此。",
+            pageCount: 529,
+            isComplete: false
+        ))
+
+        for arguments in [
+            ["document_id": id.uuidString, "mode": "outline"],
+            ["document_id": id.uuidString, "grep": "赔偿"],
+        ] {
+            let body = try payload(await run(arguments, cache: cache))
+            #expect(body["extract_complete"] as? Bool == false)
+            let note = try #require(body["note"] as? String)
+            #expect(note.localizedCaseInsensitiveContains("attach the file again"))
+        }
+    }
+
+    // MARK: - Outline fallback allocation
+
+    @Test("Inferred outline stops scanning once the row cap is reached")
+    func inferredOutlineIsBoundedByRows() throws {
+        // ``split(separator:)`` materialized the WHOLE `[Substring]` before
+        // the row cap could stop anything, so a densely-newlined 20M-character
+        // extract allocated millions of slices to return a few hundred rows.
+        // Far more headings than the cap, each on its own short line.
+        let headings = (1...(ReadDocumentTool.maxOutlineRows * 4))
+            .map { "\($0) Section title" }
+            .joined(separator: "\n")
+        let entry = DocumentContentCache.Entry(filename: "report.pdf", text: headings)
+
+        let rows = ReadDocumentTool.inferredOutline(in: entry)
+
+        #expect(rows.count == ReadDocumentTool.maxOutlineRows * 2)
+        #expect(rows.first?.title == "1 Section title")
+    }
+
+    @Test("Lazy line scanning reports the same rows, pages and offsets as before")
+    func inferredOutlineKeepsOffsets() throws {
+        let text = """
+        [Page 1]
+        1 Introduction
+        body text that is far too long to be mistaken for a heading, at length.
+        [Page 7]
+        1.2 Scope
+        第 2 章 定义
+        """
+        let entry = DocumentContentCache.Entry(filename: "report.pdf", text: text)
+
+        let rows = ReadDocumentTool.inferredOutline(in: entry)
+
+        #expect(rows.map(\.title) == ["1 Introduction", "1.2 Scope", "第 2 章 定义"])
+        #expect(rows.map(\.depth) == [0, 1, 0])
+        #expect(rows.map(\.page) == [1, 7, 7])
+        // Offsets must still address the real character positions, since the
+        // model passes them straight back as `offset`.
+        for row in rows {
+            let offset = try #require(row.offset)
+            let start = entry.index(atCharacterOffset: offset)
+            #expect(entry.text[start...].hasPrefix(row.title))
+        }
+    }
+
+    @Test("A trailing line with no newline is still scanned")
+    func inferredOutlineReadsFinalLine() throws {
+        let entry = DocumentContentCache.Entry(
+            filename: "report.pdf",
+            text: "preamble prose that says nothing structural at all here.\n3 Conclusion"
+        )
+
+        #expect(ReadDocumentTool.inferredOutline(in: entry).map(\.title) == ["3 Conclusion"])
+    }
 }

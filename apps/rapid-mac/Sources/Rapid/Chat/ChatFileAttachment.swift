@@ -243,7 +243,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 filename: filename,
                 text: complete,
                 pageCount: pageCount,
-                outline: Self.resolvingOutlineOffsets(outline, in: complete)
+                outline: Self.resolvingOutlineOffsets(outline, in: complete),
+                // A preview persisted while its background pass is still
+                // running must say so on disk: the pending mark is in-memory
+                // only, and a quit before the pass lands would otherwise leave
+                // an entry that reads back as the whole document.
+                isComplete: totalIsKnown
             )
         )
     }
@@ -399,7 +404,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     filename: filename,
                     text: bounded,
                     pageCount: pageCount,
-                    outline: Self.resolvingOutlineOffsets(outline, in: bounded)
+                    outline: Self.resolvingOutlineOffsets(outline, in: bounded),
+                    // A cancelled run publishes only the pages it reached, so
+                    // the entry it leaves behind is still a partial document
+                    // and must not claim otherwise after a relaunch.
+                    isComplete: !Task.isCancelled
                 ),
                 ifGenerationIs: generation
             )
@@ -506,7 +515,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     filename: filename,
                     text: bounded,
                     pageCount: pageCount,
-                    outline: Self.resolvingOutlineOffsets(outline, in: bounded)
+                    outline: Self.resolvingOutlineOffsets(outline, in: bounded),
+                    isComplete: !Task.isCancelled
                 ),
                 ifGenerationIs: generation
             )
@@ -520,7 +530,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     /// `characterBudget` stops the accumulation rather than trimming the
     /// finished string, so the process never holds more than the budget even
     /// for a PDF whose pages decompress to far more text than the file's size
-    /// suggests. See ``PDFTextRecognizer/recognizePages(of:range:characterBudget:onPageComplete:)``.
+    /// suggests. It is applied to each page's raw text BEFORE trimming and
+    /// tagging, so a single oversized page cannot exist three times over
+    /// before the budget clamps it. See
+    /// ``PDFTextRecognizer/recognizePages(of:range:characterBudget:onPageComplete:)``.
     private static func extractPages(
         _ document: PDFDocument,
         range: Range<Int>,
@@ -530,10 +543,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         var remaining = characterBudget
         for index in range {
             guard remaining > 0 else { break }
-            guard let text = document.page(at: index)?.string?
-                .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
-                continue
-            }
+            guard let raw = document.page(at: index)?.string else { continue }
+            let text = String(raw.prefix(remaining))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
             let tagged = "[Page \(index + 1)]\n\(text)"
             let cost = tagged.count + (pages.isEmpty ? 0 : 2)
             guard cost <= remaining else {

@@ -154,13 +154,13 @@ enum ReadDocumentTool {
         guard !rows.isEmpty else {
             // Saying so plainly beats returning an empty list, which the model
             // could read as "this document is empty".
-            return ToolCallResult(toolCallID: "", content: jsonString([
+            return ToolCallResult(toolCallID: "", content: jsonString(annotatingIncompleteExtract([
                 "document_id": id,
                 "filename": entry.filename,
                 "outline": [],
                 "total_chars": entry.count,
                 "note": "This document has no detectable section structure — no PDF bookmarks and no heading-like lines. Read it sequentially with offset=0, or use 'grep' if you know what you are looking for.",
-            ]), isError: false)
+            ], entry: entry)), isError: false)
         }
 
         let (trimmed, keptDepth) = budgeted(rows)
@@ -191,7 +191,11 @@ enum ReadDocumentTool {
             note += " This document carries no bookmarks, so the structure was inferred from heading-like lines and may be imperfect."
         }
         payload["note"] = note
-        return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
+        return ToolCallResult(
+            toolCallID: "",
+            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            isError: false
+        )
     }
 
     /// Trim an outline to the token budget by dropping the DEEPEST levels
@@ -254,36 +258,51 @@ enum ReadDocumentTool {
         var nodes: [DocumentContentCache.OutlineNode] = []
         var offset = 0
         var currentPage: Int?
-        for line in entry.text.split(separator: "\n", omittingEmptySubsequences: false) {
-            defer { offset += line.count + 1 }
-            guard nodes.count < maxOutlineRows * 2 else { break }
+        // Scanned line by line rather than with ``split(separator:)``. Split
+        // materializes the WHOLE `[Substring]` before the row cap can stop
+        // anything, so a 20,000,000-character extract with dense newlines
+        // allocates millions of slices to produce at most a few hundred rows.
+        // Walking to the next "\n" holds one line at a time and stops the
+        // instant the cap is reached.
+        let text = entry.text
+        var lineStart = text.startIndex
+        while nodes.count < maxOutlineRows * 2 {
+            let lineEnd = text[lineStart...].firstIndex(of: "\n") ?? text.endIndex
+            let line = text[lineStart..<lineEnd]
+            defer {
+                offset += line.count + 1
+                lineStart = lineEnd < text.endIndex ? text.index(after: lineEnd) : text.endIndex
+            }
 
             if line.hasPrefix("[Page "), line.hasSuffix("]"),
                let page = Int(line.dropFirst("[Page ".count).dropLast()) {
                 currentPage = page
+                if lineEnd == text.endIndex { break }
                 continue
             }
 
             let title = line.trimmingCharacters(in: .whitespaces)
             // Headings are short and standalone; a long line is prose.
-            guard title.count >= 3, title.count <= 90 else { continue }
-            let range = NSRange(location: 0, length: (title as NSString).length)
-            for (regex, fixedDepth) in patterns
-            where regex.firstMatch(in: title, range: range) != nil {
-                var depth = fixedDepth
-                if depth < 0 {
-                    // "1.2.3" nests one level per dot.
-                    depth = title.prefix { $0.isNumber || $0 == "." }
-                        .filter { $0 == "." }.count
+            if title.count >= 3, title.count <= 90 {
+                let range = NSRange(location: 0, length: (title as NSString).length)
+                for (regex, fixedDepth) in patterns
+                where regex.firstMatch(in: title, range: range) != nil {
+                    var depth = fixedDepth
+                    if depth < 0 {
+                        // "1.2.3" nests one level per dot.
+                        depth = title.prefix { $0.isNumber || $0 == "." }
+                            .filter { $0 == "." }.count
+                    }
+                    nodes.append(DocumentContentCache.OutlineNode(
+                        title: title,
+                        depth: depth,
+                        page: currentPage,
+                        offset: offset
+                    ))
+                    break
                 }
-                nodes.append(DocumentContentCache.OutlineNode(
-                    title: title,
-                    depth: depth,
-                    page: currentPage,
-                    offset: offset
-                ))
-                break
             }
+            if lineEnd == text.endIndex { break }
         }
         return nodes
     }
@@ -314,7 +333,10 @@ enum ReadDocumentTool {
             "content": content,
             "offset": start,
             "total_chars": total,
-            "has_more": hasMore,
+            // An incomplete extract has more document behind it even when the
+            // cursor has reached the end of what was captured, so `has_more`
+            // must not read as "you have now seen the whole file".
+            "has_more": hasMore || !entry.isComplete,
         ]
         if let pages = entry.pageCount { payload["total_pages"] = pages }
         if hasMore {
@@ -323,7 +345,36 @@ enum ReadDocumentTool {
         } else if start >= total && total > 0 {
             payload["note"] = "offset \(start) is at or past the end of this \(total)-character document."
         }
-        return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
+        return ToolCallResult(
+            toolCallID: "",
+            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            isError: false
+        )
+    }
+
+    /// Mark a result drawn from an extract that was never finished.
+    ///
+    /// Extraction of a large PDF continues on a background pass, and the
+    /// PREVIEW is persisted before that pass lands. A quit in between leaves a
+    /// disk entry holding the first few pages of a 529-page scan with no
+    /// in-memory pending mark to recover — the tool cannot wait for work that
+    /// is no longer running, and the run cannot be resumed from the cache
+    /// because the source file is not retained.
+    ///
+    /// So the model has to be told plainly, on every mode, that what it read
+    /// is a fragment and the rest is unreachable. Silence here is the harmful
+    /// case: the model would answer "the document does not mention X" about a
+    /// document it saw four pages of.
+    static func annotatingIncompleteExtract(
+        _ payload: [String: Any],
+        entry: DocumentContentCache.Entry
+    ) -> [String: Any] {
+        guard !entry.isComplete else { return payload }
+        var payload = payload
+        payload["extract_complete"] = false
+        let warning = "WARNING: only the first \(entry.count) characters of this document were ever extracted — the background pass that would have read the rest did not finish, and it cannot be resumed. Do not treat the text above as the whole document or conclude anything from its absence. Tell the user to remove this attachment and attach the file again."
+        payload["note"] = (payload["note"] as? String).map { "\($0) \(warning)" } ?? warning
+        return payload
     }
 
     // MARK: - Grep
@@ -450,7 +501,11 @@ enum ReadDocumentTool {
             payload["note"] = searchComplete
                 ? "No match for '\(pattern)' in this document. Try a broader pattern, or read sequentially with offset=0."
                 : "Search for '\(pattern)' was stopped after \(Int(grepTimeBudget))s without finding a match — the pattern is too expensive to run over this document. Try a plain phrase instead of an elaborate expression."
-            return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
+            return ToolCallResult(
+                toolCallID: "",
+                content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+                isError: false
+            )
         }
 
         var payload: [String: Any] = [
@@ -471,7 +526,11 @@ enum ReadDocumentTool {
             // search never established.
             payload["note"] = "Showing the first \(passages.count) matches; the document contains at least that many and the search stopped before reaching the end. Narrow the pattern, or use the 'offset' of a passage to read around it sequentially."
         }
-        return ToolCallResult(toolCallID: "", content: jsonString(payload), isError: false)
+        return ToolCallResult(
+            toolCallID: "",
+            content: jsonString(annotatingIncompleteExtract(payload, entry: entry)),
+            isError: false
+        )
     }
 
     // MARK: - Helpers

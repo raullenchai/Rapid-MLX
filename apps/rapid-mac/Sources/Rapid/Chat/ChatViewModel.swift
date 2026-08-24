@@ -1878,6 +1878,28 @@ final class ChatViewModel {
     so if the answer depends on evidence you can no longer see.]
     """
 
+    /// Appended to a tool result that was cut down to fit rather than emptied.
+    ///
+    /// The distinction matters to the model: unlike ``elidedToolResultBody``
+    /// the text above this marker is real evidence it may use. What it must
+    /// not do is treat the truncation point as the end of the source.
+    nonisolated static let truncatedToolResultSuffix = """
+
+
+    [This tool result was cut off here to fit the model's context window. The \
+    text above is the beginning of the result and can be used; everything \
+    after the cut is not available in this request. Do not treat the cut as \
+    the end of the source — call the tool again for a smaller range (for \
+    read_document, a later 'offset') if you need more.]
+    """
+
+    /// Smallest tool result worth keeping in truncated form.
+    ///
+    /// Below this the surviving head is too small to answer anything from, and
+    /// shipping a few hundred characters plus a truncation notice costs the
+    /// tokens of the full elision notice for less usable evidence.
+    nonisolated static let minRetainedToolResultTokens = 512
+
     /// Shrink a mandatory tool tail to `budget` by emptying its OLDEST tool
     /// results, oldest-first, and stopping as soon as the tail fits.
     ///
@@ -1890,17 +1912,29 @@ final class ChatViewModel {
     /// cannot. Replacing the body keeps the chain's shape while returning the
     /// tokens, which is what the caller actually needs back.
     ///
-    /// ## Why oldest-first
+    /// ## Why oldest-first, and why the newest is never emptied
     ///
     /// The newest result is the one the model is about to reason over — during
     /// a document read it is the page it just asked for. Older ones have
     /// usually been summarised into the assistant prose that follows them, so
     /// they are the cheapest evidence to lose.
     ///
+    /// Emptying the newest was not merely suboptimal, it made the feature
+    /// unusable on a small model: one ``read_document`` slice is ~6.3k tokens
+    /// of ASCII (~9.75k of CJK) against a 6.1k body budget on an 8k window, so
+    /// the FIRST read — the only tool row in the tail, and the one the loop
+    /// reached immediately — came back as "the result was dropped, call the
+    /// tool again". Twelve retries later the model still had not read a
+    /// character of the document. So the newest result is truncated to
+    /// whatever the budget allows instead, keeping its head (which for
+    /// ``read_document`` includes the document id and offset the model needs
+    /// to continue), and is only emptied when even
+    /// ``minRetainedToolResultTokens`` will not fit.
+    ///
     /// The user row is never touched: it is the question, and eliding it would
     /// leave the model answering something it can no longer read. A tail that
-    /// still overshoots after every tool body is gone is returned as-is —
-    /// there is nothing further to give back without breaking the turn.
+    /// still overshoots after that is returned as-is — there is nothing
+    /// further to give back without breaking the turn.
     nonisolated static func elidingOldestToolResults(
         _ tail: [ChatMessage],
         within budget: Int,
@@ -1910,7 +1944,9 @@ final class ChatViewModel {
         var total = result.reduce(0) { $0 + cost($1) }
         guard total > budget else { return result }
 
-        for index in result.indices where result[index].role == .tool {
+        let newest = result.lastIndex { $0.role == .tool }
+        for index in result.indices
+        where result[index].role == .tool && index != newest {
             guard total > budget else { break }
             let before = cost(result[index])
             var candidate = result[index]
@@ -1922,8 +1958,136 @@ final class ChatViewModel {
             result[index] = candidate
             total -= before - after
         }
+
+        guard total > budget, let newest else { return result }
+        let before = cost(result[newest])
+        // What the rest of the tail — the user question, the assistant
+        // tool_calls rows, the already-elided older results — leaves for it.
+        let allowance = budget - (total - before)
+        var candidate = result[newest]
+        // Price candidate bodies through the caller's own estimator, on this
+        // row, so what is measured here is exactly what the trim measures.
+        let bodyCost: (String) -> Int = { body in
+            var probe = result[newest]
+            probe.content = body
+            return cost(probe)
+        }
+        if allowance >= minRetainedToolResultTokens,
+           let shortened = truncatingToolResultBody(
+               candidate.content,
+               withinTokens: allowance,
+               cost: bodyCost
+           ) {
+            candidate.content = shortened
+        } else {
+            candidate.content = elidedToolResultBody
+        }
+        guard cost(candidate) < before else { return result }
+        result[newest] = candidate
         return result
     }
+
+    /// Cut a tool result down to `tokenBudget` while keeping it USABLE.
+    ///
+    /// A blind ``TokenEstimate/prefix`` is not good enough here. Tool results
+    /// are JSON objects, and the payload the model needs in order to CONTINUE
+    /// — `document_id`, `offset`, `total_chars` — is a handful of short fields
+    /// sharing the object with one enormous `content` string. Cutting the
+    /// serialized form at a token boundary lands inside that string, which
+    /// both destroys the JSON and (because keys are emitted sorted, so
+    /// `content` comes first) throws away exactly the cursor fields the next
+    /// call needs.
+    ///
+    /// So the object is re-serialized instead: every short field survives
+    /// intact and only the single largest string value is shortened. When the
+    /// body is not a JSON object — a plain-text error, another tool's format —
+    /// this falls back to a plain prefix, which is the best available.
+    ///
+    /// Returns nil when nothing usable fits, leaving the caller to elide.
+    ///
+    /// `cost` is the caller's own per-row estimator rather than a bare token
+    /// count, so what is measured here is what the trim will measure. JSON
+    /// escaping inflates the serialized form unpredictably (a document full of
+    /// quotes or newlines costs more than its raw text), so the result is
+    /// verified and re-cut proportionally rather than trusted.
+    nonisolated static func truncatingToolResultBody(
+        _ body: String,
+        withinTokens tokenBudget: Int,
+        cost: (String) -> Int
+    ) -> String? {
+        guard tokenBudget > 0 else { return nil }
+
+        func fit(_ build: (Int) -> String?) -> String? {
+            var headTokens = tokenBudget
+            // Three passes: measure, correct once for escaping, and correct
+            // again for a pathological expansion. Beyond that the caller's
+            // elision path is the honest answer.
+            for _ in 0..<3 {
+                guard headTokens > 0, let candidate = build(headTokens) else { return nil }
+                let actual = cost(candidate)
+                if actual <= tokenBudget { return candidate }
+                // Scale the head down by however much it overshot.
+                headTokens = headTokens * tokenBudget / max(1, actual) - 1
+            }
+            return nil
+        }
+
+        guard let data = body.data(using: .utf8),
+              let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let field = payload
+                .compactMap({ key, value in (value as? String).map { (key, $0) } })
+                .max(by: { $0.1.count < $1.1.count }),
+              // A payload whose largest string is already small is not what
+              // put the row over budget; there is nothing here to give back.
+              field.1.count > 512
+        else {
+            return fit { headTokens in
+                let suffixTokens = TokenEstimate.tokens(in: truncatedToolResultSuffix)
+                guard headTokens > suffixTokens else { return nil }
+                return TokenEstimate.prefix(body, withinTokens: headTokens - suffixTokens)
+                    + truncatedToolResultSuffix
+            }
+        }
+
+        return fit { headTokens in
+            // Price the envelope — every OTHER field, plus the notice — with
+            // the big field emptied, so the head gets exactly what is left.
+            var envelope = payload
+            envelope[field.0] = ""
+            envelope["\(field.0)_truncated"] = true
+            envelope["truncation_note"] = truncatedToolResultNote
+            guard let envelopeData = try? JSONSerialization.data(
+                withJSONObject: envelope, options: [.sortedKeys]
+            ), let envelopeString = String(data: envelopeData, encoding: .utf8) else { return nil }
+            let headRoom = headTokens - cost(envelopeString)
+            guard headRoom > 0 else { return nil }
+
+            let head = TokenEstimate.prefix(field.1, withinTokens: headRoom)
+            guard !head.isEmpty else { return nil }
+            var truncated = envelope
+            truncated[field.0] = head
+            // The cursor the tool handed back points past the WHOLE slice, so
+            // reusing it would silently skip the part cut off here. Advance it
+            // to the end of what actually survived instead. Driven by the
+            // fields present rather than by the tool's name: any paginated
+            // result carrying `offset` continues the same way.
+            if let offset = payload["offset"] as? Int, payload["content"] != nil {
+                truncated["next_offset"] = offset + head.count
+                truncated["has_more"] = true
+            }
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: truncated, options: [.sortedKeys]
+            ) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+    }
+
+    /// Explains a re-serialized, shortened tool result to the model.
+    nonisolated static let truncatedToolResultNote = """
+    This result was shortened to fit the model's context window. The text it \
+    carries is real and can be used, but it stops early — do not treat its end \
+    as the end of the source. Continue from 'next_offset' if you need more.
+    """
 
     /// v0.4.35: classify a terminal stream as a soft failure when it
     /// produced no visible text and no tool calls. Lifted out of

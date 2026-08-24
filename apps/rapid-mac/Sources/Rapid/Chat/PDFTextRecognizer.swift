@@ -55,6 +55,12 @@ enum PDFTextRecognizer {
     /// copy — at once. Stopping the accumulation instead means the process
     /// never holds more than the budget, whatever the source contains.
     ///
+    /// The budget is applied to each page's raw text BEFORE it is trimmed and
+    /// tagged. Bounding only the accumulated array still let one pathological
+    /// page — a single highly-compressed sheet holding more text than the whole
+    /// budget — exist three times over (the trimmed copy, the interpolated
+    /// copy, and the prefix) before anything clamped it.
+    ///
     /// `onPageComplete` fires after each page so a caller waiting on this work
     /// can tell "still running" from "stalled" — the wait is far too long to
     /// bound with a fixed timeout.
@@ -72,8 +78,15 @@ enum PDFTextRecognizer {
             defer { onPageComplete?() }
             guard let page = document.page(at: index) else { continue }
 
-            let existing = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let text = existing.isEmpty ? recognize(page: page) : existing
+            let raw = page.string ?? ""
+            let clamped = raw.count > remaining
+            let existing = String(raw.prefix(remaining))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // A page whose bounded head is blank but whose full text is not is
+            // not an OCR candidate — it is a page the budget already cut off,
+            // and recognizing it would spend ~0.69 s on text with nowhere to go.
+            if existing.isEmpty && clamped { break }
+            let text = existing.isEmpty ? recognize(page: page, characterBudget: remaining) : existing
             guard !text.isEmpty else { continue }
             let tagged = "[Page \(index + 1)]\n\(text)"
             // Charge the separator too, so the joined result cannot exceed the
@@ -91,7 +104,12 @@ enum PDFTextRecognizer {
 
     /// Recognize a single page. Returns "" when the page cannot be rendered or
     /// holds no legible text — a blank scan is a normal outcome, not an error.
-    static func recognize(page: PDFPage) -> String {
+    ///
+    /// `characterBudget` stops collecting observations rather than truncating
+    /// the joined result, for the same reason ``recognizePages`` bounds its
+    /// accumulation: a dense page can carry more recognized text than the
+    /// caller's whole remaining budget.
+    static func recognize(page: PDFPage, characterBudget: Int = .max) -> String {
         guard let image = render(page) else { return "" }
 
         let request = VNRecognizeTextRequest()
@@ -106,9 +124,20 @@ enum PDFTextRecognizer {
         } catch {
             return ""
         }
-        return (request.results ?? [])
-            .compactMap { $0.topCandidates(1).first?.string }
-            .joined(separator: "\n")
+        var lines: [String] = []
+        var remaining = characterBudget
+        for observation in request.results ?? [] {
+            guard remaining > 0 else { break }
+            guard let line = observation.topCandidates(1).first?.string else { continue }
+            let cost = line.count + (lines.isEmpty ? 0 : 1)
+            guard cost <= remaining else {
+                lines.append(String(line.prefix(max(0, remaining - 1))))
+                break
+            }
+            remaining -= cost
+            lines.append(line)
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Rasterize a page onto an opaque white background.

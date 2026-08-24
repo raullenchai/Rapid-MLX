@@ -169,7 +169,7 @@ struct ContextWindowTrimTests {
     }
 
     @Test("An oversized current tool round keeps its complete user-anchored chain")
-    func oversizedToolResultKeepsCurrentTurnIntact() {
+    func oversizedToolResultKeepsCurrentTurnIntact() throws {
         var toolCall = ChatMessage(role: .assistant)
         toolCall.toolCalls = [
             ToolCall(id: "read-1", name: "read_document", arguments: "{\"offset\":0}")
@@ -200,8 +200,12 @@ struct ContextWindowTrimTests {
         #expect(chain.last?.role == .tool)
         #expect(chain.last?.toolCallID == "read-1")
         // …but it does not get to overshoot the window. This result is ~9.2k
-        // estimated tokens against a 6k budget, so its body is elided.
-        #expect(chain.last?.content == ChatViewModel.elidedToolResultBody)
+        // estimated tokens against a 6k budget, so it is cut down — but NOT
+        // emptied: it is the only evidence this turn has.
+        let body = try #require(chain.last?.content)
+        #expect(body != ChatViewModel.elidedToolResultBody)
+        #expect(body.hasPrefix("document page content"))
+        #expect(body.hasSuffix(ChatViewModel.truncatedToolResultSuffix))
     }
 
     @Test("All-assistant prefix collapses to just the last user message")
@@ -232,8 +236,8 @@ struct ContextWindowTrimTests {
     // budget is spent. Elision returns those tokens without breaking the
     // assistant(tool_calls) → tool pairing the wire body needs.
 
-    @Test("A single oversized tool result is elided rather than shipped whole")
-    func oversizedToolTailIsElided() {
+    @Test("A single oversized tool result is truncated rather than shipped whole")
+    func oversizedToolTailIsElided() throws {
         var toolCall = ChatMessage(role: .assistant)
         toolCall.toolCalls = [
             ToolCall(id: "read-1", name: "read_document", arguments: "{\"offset\":0}")
@@ -256,7 +260,12 @@ struct ContextWindowTrimTests {
         #expect(trimmed.count == 3)
         #expect(trimmed[1].toolCalls?.first?.id == "read-1")
         #expect(trimmed[2].toolCallID == "read-1")
-        #expect(trimmed[2].content == ChatViewModel.elidedToolResultBody)
+        // The evidence is CUT, not thrown away: this is the only read the
+        // model has, and emptying it made the whole feature unusable on an
+        // 8k model — twelve retries, never a character of the document.
+        let body = trimmed[2].content
+        #expect(body != ChatViewModel.elidedToolResultBody)
+        #expect(body.hasPrefix("document page content"))
         let total = trimmed.reduce(0) { $0 + TokenEstimate.tokens(in: $1.modelContent) }
         #expect(total <= Int(8_192 * 0.75))
     }
@@ -341,5 +350,149 @@ struct ContextWindowTrimTests {
 
         #expect(trimmed.count == 3)
         #expect(trimmed.last?.content == "sunny, 21C")
+    }
+
+    // MARK: - Keeping the newest result readable
+    //
+    // Emptying the newest tool result was not merely suboptimal: one
+    // ``read_document`` slice is ~6.3k tokens of ASCII (~9.75k of CJK) against
+    // the ~6.1k body budget of an 8k window, so the FIRST read came back as
+    // "the result was dropped, call the tool again" — twelve times over, never
+    // yielding a character of the document.
+
+    @Test("The newest tool result is never emptied while it can be truncated")
+    func newestResultIsTruncatedNotElided() throws {
+        var toolCall = ChatMessage(role: .assistant)
+        toolCall.toolCalls = [ToolCall(id: "r1", name: "read_document", arguments: "{}")]
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "what does this document say?"),
+            toolCall,
+            ChatMessage(
+                role: .tool,
+                content: String(repeating: "important finding. ", count: 2_000),
+                toolCallID: "r1"
+            ),
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history, contextWindow: 8_000
+        )
+
+        let body = try #require(trimmed.last?.content)
+        #expect(body != ChatViewModel.elidedToolResultBody)
+        #expect(body.contains("important finding."))
+        #expect(TokenEstimate.tokens(in: body) <= Int(8_000 * 0.75))
+    }
+
+    @Test("A CJK slice on an 8k window still delivers readable document text")
+    func cjkSliceSurvivesSmallWindow() throws {
+        // The reported failure case: CJK costs ~0.65 tokens/char, so one
+        // 15,000-character slice is ~9.75k tokens against a ~6.1k budget.
+        var toolCall = ChatMessage(role: .assistant)
+        toolCall.toolCalls = [ToolCall(id: "r1", name: "read_document", arguments: "{}")]
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "这份文件讲了什么？"),
+            toolCall,
+            ChatMessage(
+                role: .tool,
+                content: String(repeating: "本章讨论合同的赔偿条款。", count: 1_250),
+                toolCallID: "r1"
+            ),
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history, contextWindow: 8_192
+        )
+
+        let body = try #require(trimmed.last?.content)
+        #expect(body.contains("赔偿条款"))
+        #expect(TokenEstimate.tokens(in: body) <= Int(8_192 * 0.75))
+    }
+
+    @Test("Truncating a read_document payload keeps its cursor fields intact")
+    func truncationPreservesPaginationCursor() throws {
+        // A blind prefix would cut inside `content` — which sorts FIRST — and
+        // take the document id and offset with it, leaving the model unable
+        // to continue even though it was handed real text.
+        let payload = ReadDocumentTool.jsonString([
+            "document_id": "5B1D8F3E-0000-0000-0000-000000000000",
+            "filename": "report.pdf",
+            "content": String(repeating: "clause text ", count: 2_000),
+            "offset": 0,
+            "total_chars": 400_000,
+            "has_more": true,
+            "next_offset": 24_000,
+        ])
+
+        let shortened = try #require(ChatViewModel.truncatingToolResultBody(
+            payload,
+            withinTokens: 2_000,
+            cost: { TokenEstimate.tokens(in: $0) }
+        ))
+
+        let data = try #require(shortened.data(using: .utf8))
+        let object = try #require(
+            (try JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        )
+        #expect(object["document_id"] as? String == "5B1D8F3E-0000-0000-0000-000000000000")
+        #expect(object["filename"] as? String == "report.pdf")
+        #expect(object["total_chars"] as? Int == 400_000)
+        #expect(object["content_truncated"] as? Bool == true)
+        #expect(object["has_more"] as? Bool == true)
+        let content = try #require(object["content"] as? String)
+        #expect(content.hasPrefix("clause text"))
+        // The cursor must point at the end of what SURVIVED, not past the
+        // whole slice — reusing the original 24,000 would silently skip the
+        // part that was cut off here.
+        #expect(object["next_offset"] as? Int == content.count)
+        #expect(TokenEstimate.tokens(in: shortened) <= 2_000)
+    }
+
+    @Test("A non-JSON tool body falls back to a plain annotated prefix")
+    func nonJSONBodyFallsBackToPrefix() throws {
+        let body = String(repeating: "plain text output ", count: 2_000)
+        let shortened = try #require(ChatViewModel.truncatingToolResultBody(
+            body,
+            withinTokens: 1_000,
+            cost: { TokenEstimate.tokens(in: $0) }
+        ))
+        #expect(shortened.hasPrefix("plain text output"))
+        #expect(shortened.hasSuffix(ChatViewModel.truncatedToolResultSuffix))
+        #expect(TokenEstimate.tokens(in: shortened) <= 1_000)
+    }
+
+    @Test("Too small an allowance falls back to elision rather than a stub")
+    func tinyAllowanceStillElides() throws {
+        var toolCall = ChatMessage(role: .assistant)
+        toolCall.toolCalls = [ToolCall(id: "r1", name: "read_document", arguments: "{}")]
+        // The question alone nearly fills the window, so no usable head fits.
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: String(repeating: "question ", count: 700)),
+            toolCall,
+            ChatMessage(
+                role: .tool,
+                content: String(repeating: "document ", count: 4_000),
+                toolCallID: "r1"
+            ),
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history, contextWindow: 4_096
+        )
+
+        #expect(trimmed.last?.content == ChatViewModel.elidedToolResultBody)
+    }
+
+    @Test("A truncated result says it was cut, not that the source ended")
+    func truncationNoticeIsExplicit() {
+        // Silence here is the harmful case: the model would read the cut as
+        // the end of the document and answer "it does not mention X".
+        for notice in [
+            ChatViewModel.truncatedToolResultSuffix,
+            ChatViewModel.truncatedToolResultNote,
+        ] {
+            #expect(notice.localizedCaseInsensitiveContains("do not treat"))
+            #expect(notice.localizedCaseInsensitiveContains("end of the source"))
+        }
     }
 }

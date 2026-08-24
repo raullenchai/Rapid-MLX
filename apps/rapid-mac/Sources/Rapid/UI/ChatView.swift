@@ -1367,9 +1367,16 @@ struct ChatView: View {
     }
 
     private func pruneAttachmentDrafts() {
-        attachmentDrafts.retainDrafts(
+        // A dropped draft takes its documents with it. The import registered
+        // their full text in the shared cache before any draft owned it, so
+        // once the chip is unreachable — the conversation was deleted, or a
+        // never-sent draft was replaced by New Chat — this is the only
+        // remaining opportunity to delete that plaintext. ``remove`` also
+        // cancels any extraction still running for them.
+        let discarded = attachmentDrafts.retainDrafts(
             for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
         )
+        DocumentContentCache.shared.remove(contentsOf: discarded)
     }
 
     /// Parse candidates without losing which source produced each attachment.
