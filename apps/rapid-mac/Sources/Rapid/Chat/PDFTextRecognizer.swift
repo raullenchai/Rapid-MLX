@@ -48,24 +48,43 @@ enum PDFTextRecognizer {
     /// document with scanned plates among typeset pages pays the OCR cost only
     /// for the plates.
     ///
+    /// `characterBudget` bounds PEAK memory, not just the returned string. The
+    /// caller's own ceiling is applied to the finished text, which is far too
+    /// late: a 100 MB PDF can decompress to gigabytes of text, and collecting
+    /// every page before truncating means holding all of it — plus the joined
+    /// copy — at once. Stopping the accumulation instead means the process
+    /// never holds more than the budget, whatever the source contains.
+    ///
     /// `onPageComplete` fires after each page so a caller waiting on this work
     /// can tell "still running" from "stalled" — the wait is far too long to
     /// bound with a fixed timeout.
     static func recognizePages(
         of document: PDFDocument,
         range: Range<Int>,
+        characterBudget: Int = .max,
         onPageComplete: (() -> Void)? = nil
     ) -> String {
         var pages: [String] = []
+        var remaining = characterBudget
         for index in range {
             if Task.isCancelled { break }
+            if remaining <= 0 { break }
             defer { onPageComplete?() }
             guard let page = document.page(at: index) else { continue }
 
             let existing = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let text = existing.isEmpty ? recognize(page: page) : existing
             guard !text.isEmpty else { continue }
-            pages.append("[Page \(index + 1)]\n\(text)")
+            let tagged = "[Page \(index + 1)]\n\(text)"
+            // Charge the separator too, so the joined result cannot exceed the
+            // budget by the number of pages.
+            let cost = tagged.count + (pages.isEmpty ? 0 : 2)
+            guard cost <= remaining else {
+                pages.append(String(tagged.prefix(max(0, remaining - 2))))
+                break
+            }
+            remaining -= cost
+            pages.append(tagged)
         }
         return pages.joined(separator: "\n\n")
     }

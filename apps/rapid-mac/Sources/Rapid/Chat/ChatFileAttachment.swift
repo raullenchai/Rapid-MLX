@@ -321,7 +321,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let outline = Self.bookmarkOutline(of: document)
 
         let eagerLimit = min(Self.eagerPageCount, document.pageCount)
-        let head = Self.extractPages(document, range: 0..<eagerLimit)
+        let head = Self.extractPages(
+            document,
+            range: 0..<eagerLimit,
+            characterBudget: Self.maxExtractedCharacters
+        )
         guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             // No selectable text in the eager window: this is a scan. Recognize
             // a few pages so the turn has a preview, and leave the rest to the
@@ -379,6 +383,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 PDFTextRecognizer.recognizePages(
                     of: document,
                     range: 0..<pageCount,
+                    characterBudget: Self.maxExtractedCharacters,
                     onPageComplete: { cache.reportProgress(id) }
                 )
             )
@@ -483,6 +488,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 PDFTextRecognizer.recognizePages(
                     of: workerDocument,
                     range: 0..<pageCount,
+                    characterBudget: Self.maxExtractedCharacters,
                     onPageComplete: { cache.reportProgress(id) }
                 )
             )
@@ -510,14 +516,32 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
 
     /// Concatenate the selectable text of `range`, tagging each page so the
     /// model can cite one. Pages with no text (images) are skipped.
-    private static func extractPages(_ document: PDFDocument, range: Range<Int>) -> String {
+    ///
+    /// `characterBudget` stops the accumulation rather than trimming the
+    /// finished string, so the process never holds more than the budget even
+    /// for a PDF whose pages decompress to far more text than the file's size
+    /// suggests. See ``PDFTextRecognizer/recognizePages(of:range:characterBudget:onPageComplete:)``.
+    private static func extractPages(
+        _ document: PDFDocument,
+        range: Range<Int>,
+        characterBudget: Int = .max
+    ) -> String {
         var pages: [String] = []
+        var remaining = characterBudget
         for index in range {
+            guard remaining > 0 else { break }
             guard let text = document.page(at: index)?.string?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
                 continue
             }
-            pages.append("[Page \(index + 1)]\n\(text)")
+            let tagged = "[Page \(index + 1)]\n\(text)"
+            let cost = tagged.count + (pages.isEmpty ? 0 : 2)
+            guard cost <= remaining else {
+                pages.append(String(tagged.prefix(max(0, remaining - 2))))
+                break
+            }
+            remaining -= cost
+            pages.append(tagged)
         }
         return pages.joined(separator: "\n\n")
     }

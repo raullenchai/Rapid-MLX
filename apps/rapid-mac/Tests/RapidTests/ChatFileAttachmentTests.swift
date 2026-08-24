@@ -431,4 +431,82 @@ struct ChatFileAttachmentTests {
         #expect(viewModel.messages.first?.fileAttachments == [attachment])
         #expect(viewModel.messages.last?.status == .streaming)
     }
+
+    // MARK: - Extraction memory bound
+
+    /// A text PDF whose pages each carry `charactersPerPage` of prose.
+    private func textPDF(pages: Int, charactersPerPage: Int) throws -> URL {
+        let document = PDFDocument()
+        for index in 0..<pages {
+            let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 2_000, height: 2_000))
+            view.string = String(repeating: "page \(index) body text. ",
+                                 count: max(1, charactersPerPage / 20))
+            guard let page = PDFDocument(data: view.dataWithPDF(inside: view.bounds))?
+                .page(at: 0) else { continue }
+            document.insert(page, at: document.pageCount)
+        }
+        let url = temporaryURL(extension: "pdf")
+        try #require(document.dataRepresentation()).write(to: url)
+        return url
+    }
+
+    @Test("Page recognition stops accumulating at its character budget")
+    func recognizePagesHonoursTheCharacterBudget() throws {
+        // The bound has to apply DURING accumulation, not after. Truncating a
+        // finished string means every page's text — plus the joined copy — was
+        // already resident, so a PDF that decompresses to gigabytes of prose
+        // exhausts the process before the ceiling is ever consulted.
+        let url = try textPDF(pages: 6, charactersPerPage: 400)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+
+        let budget = 500
+        let bounded = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount,
+            characterBudget: budget
+        )
+        #expect(bounded.count <= budget)
+
+        // Unbudgeted, the same range yields more — so the cap is what stopped
+        // it, not a short document.
+        let whole = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount
+        )
+        #expect(whole.count > budget)
+        #expect(whole.hasPrefix(String(bounded.prefix(100))))
+    }
+
+    @Test("A budget of zero stops before any page is read")
+    func zeroBudgetReadsNothing() throws {
+        let url = try textPDF(pages: 3, charactersPerPage: 200)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+
+        let bounded = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount,
+            characterBudget: 0
+        )
+        #expect(bounded.isEmpty)
+    }
+
+    @Test("A budget larger than the document returns the whole thing")
+    func generousBudgetIsTransparent() throws {
+        let url = try textPDF(pages: 3, charactersPerPage: 200)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+
+        let whole = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount
+        )
+        let budgeted = PDFTextRecognizer.recognizePages(
+            of: document,
+            range: 0..<document.pageCount,
+            characterBudget: ChatFileAttachment.maxExtractedCharacters
+        )
+        #expect(budgeted == whole)
+    }
 }
