@@ -75,37 +75,40 @@ struct FileHandleSafeReadTests {
     /// owning-handle design guards) must degrade to empty rather than
     /// crashing — raw `read(2)` surfaces EBADF as -1, never an NSException.
     ///
-    /// Deterministic-guard (#2318): the bad descriptor is a private HIGH fd
-    /// number (via `F_DUPFD`, first free fd >= 1024) that is ALREADY CLOSED at
-    /// drainer-construction time. `drain()` then returns empty through the
-    /// `ready == false` guard (`fcntl(F_GETFL)` on a closed fd → EBADF → -1)
-    /// and NEVER issues a `read(2)`. Because no read is performed on a number
-    /// the OS may recycle into a concurrent test's `Pipe()`, the bad drain can
-    /// never consume or detach another test's descriptor — the suite-wide
-    /// fd-reuse cross-talk in #2318 becomes impossible. (The prior form
-    /// constructed the drainer over the live LOW read fd, closed that same
-    /// number, then drained it — the OS immediately recycled it into a
-    /// concurrent test's pipe, so the bad drain read that test's bytes while
-    /// the buffered drain read nothing — the #2318 paired failure.)
+    /// The drainer is constructed while its descriptor is LIVE (so `ready` is
+    /// true and `drain()` really issues a `read(2)` on the now-bad fd — a
+    /// regression that crashes on `EBADF` or reads a recycled descriptor is
+    /// caught). Deterministic-guard (#2318): that descriptor is a private HIGH
+    /// number (via `F_DUPFD`, first free fd >= 1024), closed only AFTER the
+    /// drainer initializes, and never handed back to the low-fd allocator a
+    /// concurrent test's `Pipe()` uses. So `read(high)` always hits a
+    /// genuinely-`EBADF` descriptor and can never consume another test's
+    /// bytes. The LOW fd is released via Foundation's `FileHandle.close()` so
+    /// its deinit cannot later re-`close(2)` a number already recycled. (The
+    /// pre-fix form drained the recycled LOW read fd directly — the OS handed
+    /// that number to a concurrent test's pipe, so the bad drain read that
+    /// test's buffered bytes while the buffered drain read nothing — the #2318
+    /// paired failure.)
     @Test("PipeDrainer returns empty on a bad descriptor instead of crashing")
     func drainOnBadDescriptorDoesNotCrash() throws {
         let pipe = Pipe()
         let low = pipe.fileHandleForReading.fileDescriptor
-        // Pin a private HIGH number via F_DUPFD; the original LOW fd is then
-        // released through Foundation's own `FileHandle.close()` so its
-        // deinit cannot later re-`close(2)` a number the OS already recycled
-        // to a concurrent test (#2318 double-close aliasing).
+        // Pin a private HIGH duplicate of the read end; concurrent test Pipes
+        // only ever take the lowest free fds, so high is never routed to them.
         let high = fcntl(low, F_DUPFD, 1_024)
         #expect(high >= 0, "fcntl(F_DUPFD) failed to pin a private bad fd")
+        // Construct while `high` is live → ready=true (fd captured, O_NONBLOCK).
+        let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
+        // Tear the pipe down from underneath the live drainer.
         try? pipe.fileHandleForWriting.close()
         try pipe.fileHandleForReading.close()    // release low via Foundation (no double-close)
         close(high)                              // free the pinned high — now bad, and private
-        // Construct on the already-closed HIGH fd: F_GETFL → EBADF → ready=false,
-        // so drain() returns empty via the guard with NO read(2) at all.
-        let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
+        // ready=true drain() reads `high` → EBADF → empty + EOF-signalled. `high`
+        // (>= 1024) is not recycled into a low-fd concurrent pipe, so the read
+        // is deterministic and can never consume a stranger's bytes.
         let result = drainer.drain()
         #expect(result.data.isEmpty)            // no crash, no bytes
-        #expect(!result.atEOF)                  // ready=false guard → not EOF-signalled
+        #expect(result.atEOF == true)           // EBADF is EOF, so a handler detaches
     }
 
     /// The codex r2 BLOCKING regression: two drains of the SAME pipe running
