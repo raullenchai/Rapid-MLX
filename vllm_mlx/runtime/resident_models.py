@@ -35,6 +35,99 @@ class ResidentModelBusyError(ResidentModelError):
 
 
 @dataclass(frozen=True)
+class RoleRef:
+    """Identity and charge of one runtime role in a capacity decision."""
+
+    role: str
+    model: str
+    bytes: int
+
+    def payload(self) -> dict[str, object]:
+        return {"role": self.role, "model": self.model, "bytes": self.bytes}
+
+
+@dataclass(frozen=True)
+class RoleConflict:
+    """One resident role standing between a request and its admission.
+
+    ``evictable`` is the actionable bit: a caller (and, in #2306, the desktop)
+    must be able to tell "stop speech output and retry" apart from "this is
+    your conversation model and this control plane will never take it away
+    behind your back".
+    """
+
+    role: str
+    model: str
+    bytes: int
+    evictable: bool
+    reason: str
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "model": self.model,
+            "bytes": self.bytes,
+            "evictable": self.evictable,
+            "reason": self.reason,
+        }
+
+
+class ResidentRoleConflictError(ResidentModelCapacityError):
+    """An auxiliary role cannot be admitted alongside the resident roles.
+
+    Subclasses :class:`ResidentModelCapacityError` so existing 507 handling
+    keeps working, but carries the structured detail #2305 requires: which
+    roles are in the way, how much each holds, and which of them a caller
+    could actually give up. Presentation of those choices is #2306's job;
+    this type only has to make the choice *representable*.
+    """
+
+    def __init__(
+        self,
+        *,
+        requested: RoleRef,
+        conflicts: list[RoleConflict],
+        limit_bytes: int,
+        usage_bytes: int,
+    ) -> None:
+        self.requested = requested
+        self.conflicts = conflicts
+        self.limit_bytes = limit_bytes
+        self.usage_bytes = usage_bytes
+        super().__init__(self.message)
+
+    @property
+    def message(self) -> str:
+        held = ", ".join(
+            f"{conflict.role} ({conflict.model}, {conflict.bytes / _GIB:.2f} GiB)"
+            for conflict in self.conflicts
+        )
+        return (
+            f"cannot load {self.requested.model!r} as {self.requested.role}: "
+            f"it needs {self.requested.bytes / _GIB:.2f} GiB and "
+            f"{self.usage_bytes / _GIB:.2f} GiB of the "
+            f"{self.limit_bytes / _GIB:.2f} GiB ceiling is already held by "
+            f"{held or 'the running process'}"
+        )
+
+    def envelope(self) -> dict[str, object]:
+        """Render the OpenAI-shaped error body served with HTTP 507."""
+
+        return {
+            "error": {
+                "message": self.message,
+                "type": "insufficient_capacity_error",
+                "code": "role_capacity_conflict",
+                "param": "model",
+                "requested": self.requested.payload(),
+                "limit_bytes": self.limit_bytes,
+                "usage_bytes": self.usage_bytes,
+                "conflicts": [conflict.payload() for conflict in self.conflicts],
+            }
+        }
+
+
+@dataclass(frozen=True)
 class ResidentPerformanceConfig:
     """Audited scheduler overrides attached to one resident text model.
 
@@ -162,6 +255,84 @@ Loader = Callable[..., Awaitable[ModelEntry]]
 PrimaryChanged = Callable[[ModelEntry], None]
 
 
+#: Lifecycle role of a resident model, as distinct from its request modality.
+#: ``_modality`` answers "what can this engine do"; a role answers "what is it
+#: doing for the user right now", which is what an admission decision and the
+#: conflict report are actually about.
+ROLE_CONVERSATION = "conversation"
+ROLE_VISION = "vision"
+ROLE_IMAGE_GEN = "image-gen"
+ROLE_VIDEO_GEN = "video-gen"
+ROLE_SPEECH_INPUT = "speech-input"
+ROLE_SPEECH_OUTPUT = "speech-output"
+ROLE_ALIGNMENT = "alignment"
+
+_MODALITY_ROLES = {
+    "text": ROLE_CONVERSATION,
+    "mllm": ROLE_VISION,
+    "image-gen": ROLE_IMAGE_GEN,
+    "video-gen": ROLE_VIDEO_GEN,
+}
+
+
+@dataclass
+class AuxiliaryRoleRecord:
+    """Budget and lifecycle state for one audio role held outside the registry.
+
+    Audio engines are deliberately NOT ``ModelEntry`` rows: putting them in the
+    :class:`ModelRegistry` would publish them through ``/v1/models`` and make
+    them routable for chat completions, which they cannot serve. They are
+    instead a parallel ledger inside the same manager, guarded by the same lock
+    and summed into the same :meth:`ResidentModelManager._accounted_usage`, so
+    "one budget for the process" stays literally true.
+
+    ``reserved_bytes`` comes from :mod:`vllm_mlx.runtime.audio_capacity` and is
+    superseded by ``measured_bytes`` once the load's process-footprint delta
+    exceeds it — same rule the model rows use, for the same reason (a lazily
+    constructed engine can fault its weights in well after ``load`` returns).
+    """
+
+    role: str
+    lane: str
+    model_id: str
+    reserved_bytes: int
+    capacity_source: str
+    weight_bytes: int | None = None
+    measured_bytes: int = 0
+    state: str = "admitting"
+    active_requests: int = 0
+    loaded_at: float = 0.0
+    last_used_at: float = 0.0
+    unload: Callable[[], object] | None = None
+    #: Owner-supplied veto on release, checked under the manager lock.
+    #:
+    #: ``active_requests`` alone is not sufficient. A request that finds its
+    #: engine already cached does not hold a lease yet when it re-enters the
+    #: manager, so between its cache check and ``lease_role`` an idle sweep
+    #: could unload the very weights it is about to use. The audio routes
+    #: report their lane lock here: a held lane lock means a request owns that
+    #: lane, whether or not it has reached its lease.
+    can_release: Callable[[], bool] | None = None
+
+    @property
+    def releasable(self) -> bool:
+        if self.active_requests:
+            return False
+        if self.can_release is None:
+            return True
+        try:
+            return bool(self.can_release())
+        except Exception:
+            # An owner that cannot answer is treated as busy: overcharging the
+            # budget for one TTL cycle is recoverable, unloading weights out
+            # from under a live request is not.
+            return False
+
+    @property
+    def charged_bytes(self) -> int:
+        return max(self.reserved_bytes, self.measured_bytes)
+
+
 class PrimaryHandoffLease(Protocol):
     """Serving-layer transaction coupled to a primary residency change."""
 
@@ -189,6 +360,12 @@ def _replacement_group(entry: ModelEntry) -> str:
 
     modality = _modality(entry)
     return "assistant" if modality in {"text", "mllm"} else modality
+
+
+def _entry_role(entry: ModelEntry) -> str:
+    """Lifecycle role of a registry-backed model."""
+
+    return _MODALITY_ROLES.get(_modality(entry), ROLE_CONVERSATION)
 
 
 # Generative-media lanes hold multi-GB checkpoints and are driven one model at
@@ -325,6 +502,7 @@ class ResidentModelManager:
         *,
         memory_limit_bytes: int = 0,
         idle_ttl_seconds: float = 0,
+        audio_role_idle_ttl_seconds: float = 0,
         clock: Callable[[], float] = time.monotonic,
         memory_reader: Callable[[], int] = get_phys_footprint,
         on_primary_handoff: PrimaryHandoff | None = None,
@@ -334,12 +512,14 @@ class ResidentModelManager:
         self.loader = loader
         self.memory_limit_bytes = max(0, int(memory_limit_bytes))
         self.idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
+        self.audio_role_idle_ttl_seconds = max(0.0, float(audio_role_idle_ttl_seconds))
         self._clock = clock
         self._memory_reader = memory_reader
         self._on_primary_handoff = on_primary_handoff
         self._on_primary_changed = on_primary_changed
         self._records: dict[str, ResidencyRecord] = {}
         self._index: dict[str, str] = {}
+        self._roles: dict[str, AuxiliaryRoleRecord] = {}
         self._lock = asyncio.Lock()
         self._ttl_task: asyncio.Task | None = None
         self.evictions_total = 0
@@ -403,6 +583,16 @@ class ResidentModelManager:
             for record in self._records.values()
             if record.state == "resident"
         )
+        # Auxiliary audio roles hold weights in the same unified memory as the
+        # model rows, so they belong in the same reservation total (#2305).
+        # ``admitting`` is included on purpose: a role that has passed
+        # admission but is still loading has already been promised its bytes,
+        # and a concurrent request must not be told they are available.
+        reserved += sum(
+            role.charged_bytes
+            for role in self._roles.values()
+            if role.state in {"admitting", "loading", "resident"}
+        )
         # Some engines (notably mflux) construct lazy MLX arrays without
         # faulting all weight pages into the process. The footprint delta at
         # load time can therefore be much smaller than the memory the first
@@ -419,7 +609,12 @@ class ResidentModelManager:
             self._records[canonical].last_used_at = self._clock()
 
     async def start(self) -> None:
-        if self.idle_ttl_seconds <= 0 or self._ttl_task is not None:
+        if self._ttl_task is not None:
+            return
+        # Either ledger having a TTL is reason enough to run the sweeper.
+        # Gating only on ``idle_ttl_seconds`` would silently disable the
+        # audio-role TTL on a server started without a model idle TTL.
+        if self.idle_ttl_seconds <= 0 and self.audio_role_idle_ttl_seconds <= 0:
             return
         self._ttl_task = asyncio.create_task(self._ttl_loop())
 
@@ -434,6 +629,8 @@ class ResidentModelManager:
                 pass
 
         async with self._lock:
+            for role in list(self._roles.values()):
+                await self._release_role_locked(role, reason="shutdown")
             dynamic = [
                 record for record in self._records.values() if not record.primary
             ]
@@ -441,33 +638,70 @@ class ResidentModelManager:
                 await self._evict_locked(record, reason="shutdown", count=False)
 
     async def _ttl_loop(self) -> None:
-        interval = min(60.0, max(1.0, self.idle_ttl_seconds / 4.0))
+        ttls = [
+            value
+            for value in (self.idle_ttl_seconds, self.audio_role_idle_ttl_seconds)
+            if value > 0
+        ]
+        interval = min(60.0, max(1.0, min(ttls) / 4.0))
         while True:
             await asyncio.sleep(interval)
             await self.evict_expired()
 
     async def evict_expired(self) -> list[str]:
-        if self.idle_ttl_seconds <= 0:
-            return []
+        evicted: list[str] = []
         async with self._lock:
             now = self._clock()
-            expired = sorted(
-                (
-                    record
-                    for record in self._records.values()
-                    if not record.pinned
-                    and not record.primary
-                    and record.active_requests == 0
-                    and now - record.last_used_at >= self.idle_ttl_seconds
-                    and _engine_is_idle(record.entry.engine)
-                ),
-                key=lambda record: record.last_used_at,
-            )
-            evicted = []
-            for record in expired:
-                evicted.append(record.model_id)
-                await self._evict_locked(record, reason="idle_ttl")
-            return evicted
+            if self.idle_ttl_seconds > 0:
+                expired = sorted(
+                    (
+                        record
+                        for record in self._records.values()
+                        if not record.pinned
+                        and not record.primary
+                        and record.active_requests == 0
+                        and now - record.last_used_at >= self.idle_ttl_seconds
+                        and _engine_is_idle(record.entry.engine)
+                    ),
+                    key=lambda record: record.last_used_at,
+                )
+                for record in expired:
+                    evicted.append(record.model_id)
+                    await self._evict_locked(record, reason="idle_ttl")
+            if self.audio_role_idle_ttl_seconds > 0:
+                # Speech engines are transient by nature: a dictation burst is
+                # followed by minutes of typing. Their TTL is separate from the
+                # model TTL (and much shorter by default) so a role that will
+                # not be used again stops holding budget away from the
+                # conversation model.
+                stale = sorted(
+                    (
+                        role
+                        for role in self._roles.values()
+                        if role.state == "resident"
+                        and role.releasable
+                        and now - role.last_used_at >= self.audio_role_idle_ttl_seconds
+                    ),
+                    key=lambda role: role.last_used_at,
+                )
+                for role in stale:
+                    if await self._release_role_locked(
+                        role, reason="idle_ttl", require_idle=True
+                    ):
+                        evicted.append(role.role)
+        return evicted
+
+    def _idle_auxiliary_roles(self) -> list[AuxiliaryRoleRecord]:
+        """Auxiliary roles that can be released to reclaim budget, LRU first."""
+
+        return sorted(
+            (
+                role
+                for role in self._roles.values()
+                if role.state == "resident" and role.releasable
+            ),
+            key=lambda role: role.last_used_at,
+        )
 
     async def _evict_for_locked(self, incoming_bytes: int, exclude: set[str]) -> None:
         if self.memory_limit_bytes <= 0:
@@ -486,16 +720,32 @@ class ResidentModelManager:
                 ),
                 key=lambda record: record.last_used_at,
             )
-            if not candidates:
-                usage = self._accounted_usage()
-                raise ResidentModelCapacityError(
-                    "resident model memory ceiling exceeded: "
-                    f"usage={usage / _GIB:.2f} GiB, "
-                    f"incoming={incoming_bytes / _GIB:.2f} GiB, "
-                    f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
-                    "no idle unpinned model is eligible for eviction"
-                )
-            await self._evict_locked(candidates[0], reason="memory_pressure")
+            if candidates:
+                await self._evict_locked(candidates[0], reason="memory_pressure")
+                continue
+            # A transient speech engine must never outrank a model the user
+            # explicitly asked for. Reclaim idle audio roles before declaring
+            # the ceiling unreachable — they reload lazily on the next request.
+            # ``require_idle`` re-checks after the await; a role that a request
+            # claimed in the meantime is skipped rather than retried, so this
+            # loop always makes progress toward the capacity error.
+            reclaimed = False
+            for role in self._idle_auxiliary_roles():
+                if await self._release_role_locked(
+                    role, reason="memory_pressure", require_idle=True
+                ):
+                    reclaimed = True
+                    break
+            if reclaimed:
+                continue
+            usage = self._accounted_usage()
+            raise ResidentModelCapacityError(
+                "resident model memory ceiling exceeded: "
+                f"usage={usage / _GIB:.2f} GiB, "
+                f"incoming={incoming_bytes / _GIB:.2f} GiB, "
+                f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
+                "no idle unpinned model is eligible for eviction"
+            )
 
     async def load(
         self,
@@ -835,6 +1085,269 @@ class ResidentModelManager:
                     current.active_requests = max(0, current.active_requests - 1)
                     current.last_used_at = self._clock()
 
+    # ------------------------------------------------------------------
+    # Auxiliary audio roles (#2305)
+    # ------------------------------------------------------------------
+
+    def _role_conflicts(self, exclude_role: str) -> list[RoleConflict]:
+        """Describe everything holding budget, and whether it can be given up.
+
+        Ordered conversation-first because that is the role a caller is most
+        likely to be surprised by, and because #2306 renders this list
+        verbatim. ``reason`` is a stable machine token, not prose.
+        """
+
+        conflicts: list[RoleConflict] = []
+        for record in sorted(self._records.values(), key=lambda item: item.loaded_at):
+            if record.state != "resident":
+                continue
+            busy = record.active_requests > 0 or not _engine_is_idle(
+                record.entry.engine
+            )
+            if record.primary:
+                reason = "active_conversation_model"
+            elif busy:
+                reason = "serving_active_request"
+            elif record.pinned:
+                reason = "pinned"
+            else:
+                reason = "resident"
+            conflicts.append(
+                RoleConflict(
+                    role=_entry_role(record.entry),
+                    model=record.model_id,
+                    bytes=max(record.estimated_bytes, record.measured_bytes),
+                    # Auxiliary admission never evicts registry-backed models:
+                    # pressing the microphone button is not consent to unload
+                    # the model answering the conversation (#2300 / #2305).
+                    evictable=False,
+                    reason=reason,
+                )
+            )
+        for role in sorted(self._roles.values(), key=lambda item: item.last_used_at):
+            if role.role == exclude_role or role.state not in {
+                "admitting",
+                "loading",
+                "resident",
+            }:
+                continue
+            busy = role.active_requests > 0 or not role.releasable
+            conflicts.append(
+                RoleConflict(
+                    role=role.role,
+                    model=role.model_id,
+                    bytes=role.charged_bytes,
+                    evictable=not busy,
+                    reason="serving_active_request" if busy else "idle",
+                )
+            )
+        return conflicts
+
+    async def _admit_role_locked(self, requested: RoleRef, exclude_role: str) -> None:
+        """Make room for ``requested`` or raise a conflict naming the blockers.
+
+        Only other auxiliary roles are eligible for reclamation. Model rows are
+        reported as conflicts rather than evicted: #2305's non-goals forbid
+        silent eviction of the active conversation model, and #2306 owns the
+        decision of what to offer the user instead.
+        """
+
+        if self.memory_limit_bytes <= 0 or requested.bytes <= 0:
+            return
+        while self._accounted_usage() + requested.bytes > self.memory_limit_bytes:
+            # ``require_idle`` re-checks after the await, and a role a request
+            # claimed meanwhile drops out of the next ``_idle_auxiliary_roles``
+            # call, so the loop always converges on either room or a conflict.
+            reclaimed = False
+            for candidate in self._idle_auxiliary_roles():
+                if candidate.role == exclude_role:
+                    continue
+                if await self._release_role_locked(
+                    candidate, reason="role_admission", require_idle=True
+                ):
+                    reclaimed = True
+                    break
+            if not reclaimed:
+                raise ResidentRoleConflictError(
+                    requested=requested,
+                    conflicts=self._role_conflicts(exclude_role),
+                    limit_bytes=self.memory_limit_bytes,
+                    usage_bytes=self._accounted_usage(),
+                )
+
+    @asynccontextmanager
+    async def admitting_role(
+        self,
+        *,
+        role: str,
+        lane: str,
+        model_id: str,
+        reserved_bytes: int,
+        capacity_source: str,
+        weight_bytes: int | None = None,
+    ):
+        """Reserve budget for an audio role for the duration of its load.
+
+        The admission decision completes BEFORE the body runs, so a rejected
+        combination never reaches the weight loader — the caller's loading code
+        simply does not execute. The lock is released across the body because
+        loading is slow and must not block ``/v1/models/residency`` or a
+        concurrent chat load; the reservation stays visible in
+        ``_accounted_usage`` throughout, so releasing the lock does not release
+        the budget.
+
+        The yielded record must have ``unload`` set by the caller once it owns
+        a real engine. Any exception (including cancellation) rolls the ledger
+        back and invokes that callback, so an abandoned half-load can never
+        leave weights resident but unaccounted.
+
+        Re-admitting a role that is already resident with a different model
+        releases the incumbent FIRST. The audio routes drop the previous engine
+        when the requested model changes, so charging both at once would reject
+        an admission that is really a swap.
+        """
+
+        async with self._lock:
+            existing = self._roles.get(role)
+            if existing is not None:
+                if existing.state in {"admitting", "loading"}:
+                    raise ResidentModelBusyError(f"{role} is already being admitted")
+                await self._release_role_locked(existing, reason="role_replaced")
+            requested = RoleRef(role=role, model=model_id, bytes=reserved_bytes)
+            await self._admit_role_locked(requested, exclude_role=role)
+            now = self._clock()
+            record = AuxiliaryRoleRecord(
+                role=role,
+                lane=lane,
+                model_id=model_id,
+                reserved_bytes=max(0, int(reserved_bytes)),
+                capacity_source=capacity_source,
+                weight_bytes=weight_bytes,
+                state="loading",
+                loaded_at=now,
+                last_used_at=now,
+            )
+            self._roles[role] = record
+            before = self._read_memory()
+
+        try:
+            yield record
+        except BaseException:
+            async with self._lock:
+                if self._roles.get(role) is record:
+                    await self._release_role_locked(record, reason="load_rollback")
+            raise
+
+        async with self._lock:
+            if self._roles.get(role) is not record:
+                # A shutdown or eviction won the race while the load ran. The
+                # winner already released the engine; do not resurrect it.
+                return
+            after = self._read_memory()
+            record.measured_bytes = max(0, after - before) if before and after else 0
+            record.state = "resident"
+            record.loaded_at = self._clock()
+            record.last_used_at = record.loaded_at
+            self.loads_total += 1
+
+    async def _release_role_locked(
+        self, record: AuxiliaryRoleRecord, *, reason: str, require_idle: bool = False
+    ) -> bool:
+        """Retire an auxiliary role and stop charging for its bytes.
+
+        Returns whether the release happened.
+
+        ``require_idle`` re-checks ownership immediately before the release for
+        callers that did not initiate it (the TTL sweeper, memory-pressure
+        reclamation). Those callers select candidates and then ``await``, and an
+        await is a scheduling point at which a request can claim the lane. The
+        re-check and the cache clear inside ``unload`` are separated by no
+        await, so nothing can slip between them.
+
+        Callers that DO own the lane (an explicit swap, lane eviction,
+        shutdown) leave it ``False``: they hold the lane lock themselves, so an
+        ownership check would always refuse.
+        """
+
+        if require_idle and not record.releasable:
+            return False
+        if record.active_requests:
+            raise ResidentModelBusyError(f"{record.role} is serving an active request")
+        record.state = "evicting"
+        if self._roles.get(record.role) is record:
+            del self._roles[record.role]
+        unload = record.unload
+        if callable(unload):
+            try:
+                result = unload()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                # A damaged backend must not wedge the ledger: the bytes are
+                # released either way, and leaving the record behind would
+                # permanently overcharge every later admission.
+                logger.exception(
+                    "Failed to unload %s role %r", record.role, record.model_id
+                )
+        _release_allocator_cache()
+        self.evictions_total += 1
+        logger.info("Released %s role %r (%s)", record.role, record.model_id, reason)
+        return True
+
+    async def release_role(self, role: str) -> None:
+        """Explicitly drop an auxiliary role, e.g. during lane shutdown."""
+
+        async with self._lock:
+            record = self._roles.get(role)
+            if record is None:
+                return
+            await self._release_role_locked(record, reason="explicit")
+
+    @asynccontextmanager
+    async def lease_role(self, role: str):
+        """Hold an auxiliary role against eviction while a request uses it."""
+
+        async with self._lock:
+            record = self._roles.get(role)
+            if record is None:
+                raise KeyError(role)
+            if record.state != "resident":
+                raise ResidentModelBusyError(f"{role} is not resident")
+            record.active_requests += 1
+            record.last_used_at = self._clock()
+        try:
+            yield record
+        finally:
+            async with self._lock:
+                current = self._roles.get(role)
+                if current is record:
+                    current.active_requests = max(0, current.active_requests - 1)
+                    current.last_used_at = self._clock()
+
+    def role_snapshot(self) -> list[dict[str, object]]:
+        """Budget-bearing view of the auxiliary roles, for the residency API."""
+
+        now = self._clock()
+        return [
+            {
+                "role": role.role,
+                "lane": role.lane,
+                "model": role.model_id,
+                "state": role.state,
+                "active_requests": role.active_requests,
+                "reserved_bytes": role.reserved_bytes,
+                "measured_bytes": role.measured_bytes or None,
+                "weight_bytes": role.weight_bytes,
+                "capacity_source": role.capacity_source,
+                "idle_seconds": (
+                    max(0.0, now - role.last_used_at)
+                    if role.active_requests == 0
+                    else 0.0
+                ),
+            }
+            for role in sorted(self._roles.values(), key=lambda item: item.loaded_at)
+        ]
+
     def snapshot(self) -> dict:
         now = self._clock()
         models = []
@@ -847,6 +1360,7 @@ class ResidentModelManager:
                     "model_path": record.entry.model_path,
                     "aliases": sorted(record.entry.aliases),
                     "modality": (_modality(record.entry)),
+                    "role": _entry_role(record.entry),
                     "state": record.state if resident else "registered",
                     "pinned": record.pinned,
                     "primary": record.primary,
@@ -869,7 +1383,9 @@ class ResidentModelManager:
                 else None
             ),
             "idle_ttl_seconds": self.idle_ttl_seconds,
+            "audio_role_idle_ttl_seconds": self.audio_role_idle_ttl_seconds,
             "loads_total": self.loads_total,
             "evictions_total": self.evictions_total,
             "models": models,
+            "roles": self.role_snapshot(),
         }

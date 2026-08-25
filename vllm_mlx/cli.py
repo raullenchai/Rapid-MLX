@@ -3179,6 +3179,9 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
+    if getattr(args, "audio_role_idle_ttl", 0.0) < 0:
+        print("Error: --audio-role-idle-ttl must be >= 0")
+        sys.exit(1)
     idle_cache_clear_seconds = getattr(args, "idle_cache_clear_seconds", None)
     if idle_cache_clear_seconds is not None:
         import math
@@ -4276,6 +4279,7 @@ def serve_command(args):
     server.configure_model_residency(
         memory_limit_gb=getattr(args, "resident_memory_limit_gb", 0.0),
         idle_ttl_seconds=getattr(args, "resident_model_idle_ttl", 0.0),
+        audio_role_idle_ttl_seconds=getattr(args, "audio_role_idle_ttl", 300.0),
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
     try:
@@ -9893,6 +9897,18 @@ Examples:
         help=(
             "Evict idle unpinned secondary models after this many seconds. "
             "0 disables idle eviction (default: 0)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--audio-role-idle-ttl",
+        type=float,
+        default=300.0,
+        help=(
+            "Release idle speech-input/speech-output engines after this many "
+            "seconds. Much shorter than the model TTL because speech is a "
+            "transient workload: a dictation burst is followed by minutes of "
+            "typing, and holding those weights takes budget away from the "
+            "conversation model. 0 disables (default: 300)."
         ),
     )
     # Paged cache options (experimental)

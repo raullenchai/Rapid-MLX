@@ -15,6 +15,7 @@ from ..runtime.resident_models import (
     ResidentModelCapacityError,
     ResidentModelError,
     ResidentPerformanceConfig,
+    ResidentRoleConflictError,
     resolve_resident_performance,
 )
 
@@ -78,6 +79,10 @@ async def model_residency():
     from ..runtime.audio_worker import audio_worker
 
     snapshot = _manager().snapshot()
+    # Two views of the audio lanes, deliberately both present: ``roles`` (from
+    # the snapshot) is the budget ledger, ``audio_lanes`` is the dispatcher's
+    # execution state including lanes that hold no weights (music) and the
+    # last error. Merging them would lose one or the other.
     snapshot["audio_lanes"] = audio_worker.snapshot()
     return snapshot
 
@@ -131,6 +136,10 @@ async def load_resident_model(request: ModelLoadRequest):
         )
     except HTTPException:
         raise
+    except ResidentRoleConflictError as exc:
+        # Structured before generic: #2306 reads the conflicting roles out of
+        # this body, and ``str(exc)`` would flatten them back into prose.
+        raise HTTPException(status_code=507, detail=exc.envelope()) from exc
     except ResidentModelCapacityError as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
     except ResidentModelError as exc:

@@ -200,6 +200,7 @@ _model_registry = ModelRegistry()
 _residency_manager: ResidentModelManager | None = None
 _resident_memory_limit_bytes: int = 0
 _resident_idle_ttl_seconds: float = 0.0
+_resident_audio_role_idle_ttl_seconds: float = 300.0
 _resident_gpu_memory_utilization: float = 0.90
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
@@ -722,6 +723,7 @@ async def lifespan(app: FastAPI):
         _residency_manager = configure_model_residency(
             memory_limit_gb=_resident_memory_limit_bytes / 1024**3,
             idle_ttl_seconds=_resident_idle_ttl_seconds,
+            audio_role_idle_ttl_seconds=_resident_audio_role_idle_ttl_seconds,
             gpu_memory_utilization=_resident_gpu_memory_utilization,
         )
     if _engine is not None:
@@ -2325,6 +2327,7 @@ def configure_model_residency(
     *,
     memory_limit_gb: float = 0,
     idle_ttl_seconds: float = 0,
+    audio_role_idle_ttl_seconds: float = 300.0,
     gpu_memory_utilization: float = 0.90,
 ) -> ResidentModelManager:
     """Configure the process-wide resident-model manager before startup."""
@@ -2332,16 +2335,21 @@ def configure_model_residency(
     global _residency_manager
     global _resident_memory_limit_bytes
     global _resident_idle_ttl_seconds
+    global _resident_audio_role_idle_ttl_seconds
     global _resident_gpu_memory_utilization
 
     _resident_memory_limit_bytes = max(0, int(float(memory_limit_gb) * 1024**3))
     _resident_idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
+    _resident_audio_role_idle_ttl_seconds = max(
+        0.0, float(audio_role_idle_ttl_seconds)
+    )
     _resident_gpu_memory_utilization = float(gpu_memory_utilization)
     _residency_manager = ResidentModelManager(
         _model_registry,
         _load_dynamic_resident_model,
         memory_limit_bytes=_resident_memory_limit_bytes,
         idle_ttl_seconds=_resident_idle_ttl_seconds,
+        audio_role_idle_ttl_seconds=_resident_audio_role_idle_ttl_seconds,
         on_primary_handoff=_handoff_resident_primary_audio_worker,
         on_primary_changed=_set_resident_primary,
     )

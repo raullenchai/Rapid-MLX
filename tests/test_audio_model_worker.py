@@ -315,6 +315,7 @@ async def test_lane_snapshot_reports_resident_model_after_successful_load():
     assert dispatcher.snapshot() == [
         {
             "lane": "stt",
+            "role": "speech-input",
             "model": "whisper-small",
             "state": "resident",
             "active_requests": 0,
@@ -525,7 +526,7 @@ async def test_empty_stt_lanes_do_not_dispatch_eviction(monkeypatch):
     monkeypatch.setattr(audio_route, "_aligner_engine", None)
 
     await audio_route._evict_other_lane("asr")
-    audio_route._evict_other_lane_sync("aligner")
+    await audio_route._evict_other_lane("aligner")
 
 
 @pytest.mark.asyncio
@@ -590,7 +591,8 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
     assert len(worker.async_calls) == 3
 
 
-def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
+@pytest.mark.asyncio
+async def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
     from vllm_mlx.audio import stt as stt_module
     from vllm_mlx.routes import audio as audio_route
     from vllm_mlx.runtime.audio_worker import bind_audio_worker
@@ -619,6 +621,10 @@ def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
     monkeypatch.setattr(audio_route, "_stt_engine", None)
     bind_audio_worker(worker)
     try:
+        # #2305 split the aligner load onto the event loop so it can take the
+        # residency manager's asyncio lock; alignment itself still runs on the
+        # worker thread. Both halves still dispatch through the model worker.
+        await audio_route._ensure_aligner_engine("aligner-model")
         result = audio_route._align_blocking(
             "aligner-model", "speech.wav", "known text", "en"
         )
@@ -627,10 +633,12 @@ def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
 
     assert result == "aligned"
     assert operations == ["load-aligner", "infer-aligner"]
-    assert len(worker.sync_calls) == 2
+    assert len(worker.async_calls) == 1
+    assert len(worker.sync_calls) == 1
 
 
-def test_sync_stt_eviction_uses_sync_model_worker(monkeypatch):
+@pytest.mark.asyncio
+async def test_stt_lane_eviction_uses_model_worker(monkeypatch):
     from vllm_mlx.routes import audio as audio_route
 
     class _CachedSTT:
@@ -645,13 +653,14 @@ def test_sync_stt_eviction_uses_sync_model_worker(monkeypatch):
     stt = _CachedSTT()
     monkeypatch.setattr(audio_route, "_stt_engine", stt)
 
-    audio_route._evict_other_lane_sync("aligner")
+    await audio_route._evict_other_lane("aligner")
 
     assert stt.unloaded
     assert audio_route._stt_engine is None
 
 
-def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
+@pytest.mark.asyncio
+async def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
     from vllm_mlx.audio import output_format
     from vllm_mlx.audio import tts as tts_module
     from vllm_mlx.routes import audio as audio_route
@@ -690,6 +699,10 @@ def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
         lambda audio, source_rate, **kwargs: (b"encoded", 24_000, 1),
     )
 
+    # #2305 moved the replacement/load half onto the event loop so the
+    # speech-output role can be admitted against the shared budget before its
+    # weights are read. Synthesis stays on the worker thread.
+    await audio_route._ensure_tts_engine("new-tts")
     payload, rate, channels = audio_route._generate_speech_blocking(
         model_name="new-tts",
         input_text="hello",
@@ -704,6 +717,7 @@ def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
     assert (payload, rate, channels) == (b"encoded", 24_000, 1)
     assert operations == ["unload", "load", "infer"]
 
+    await audio_route._ensure_tts_engine("new-tts")
     payload, rate, channels = audio_route._generate_speech_blocking(
         model_name="new-tts",
         input_text="hello",
@@ -716,6 +730,7 @@ def test_tts_replacement_and_reference_inference_use_audio_worker(monkeypatch):
     )
 
     assert (payload, rate, channels) == (b"encoded", 24_000, 1)
+    # The second ``_ensure_tts_engine`` is a cache hit: no reload, no unload.
     assert operations == ["unload", "load", "infer", "infer"]
 
 

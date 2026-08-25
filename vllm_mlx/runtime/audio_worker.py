@@ -12,6 +12,17 @@ from typing import Any, Protocol, TypeVar
 
 _T = TypeVar("_T")
 
+#: Dispatch lane -> residency role (#2305). The dispatcher's lanes predate the
+#: role vocabulary and are keyed on the engine that runs the work; the residency
+#: budget is keyed on what that engine does for the user. ``music`` is absent
+#: because :class:`MusicEngine` runs a subprocess per generation and holds no
+#: persistent weights in this process, so it has nothing to charge.
+LANE_ROLES: dict[str, str] = {
+    "stt": "speech-input",
+    "tts": "speech-output",
+    "alignment": "alignment",
+}
+
 
 class ModelWorker(Protocol):
     """Minimal execution surface exported by an inference engine."""
@@ -68,6 +79,9 @@ class AudioLaneState:
     loaded_at: float | None = None
     last_used_at: float | None = None
     last_error: str | None = None
+    #: Lifecycle role this lane's engine occupies in the shared residency
+    #: budget (#2305). ``None`` for lanes that hold no weights of their own.
+    role: str | None = None
 
 
 class AudioWorkerDispatcher:
@@ -192,6 +206,7 @@ class AudioWorkerDispatcher:
             return [
                 {
                     "lane": lane,
+                    "role": state.role or LANE_ROLES.get(lane),
                     "model": state.model,
                     "state": state.state,
                     "active_requests": state.active_requests,

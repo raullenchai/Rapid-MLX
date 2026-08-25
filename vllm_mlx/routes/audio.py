@@ -13,6 +13,7 @@ import tempfile
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
@@ -1312,11 +1313,18 @@ async def _run_stt_request(
                 # Symmetric with the alignment path: one STT model resident.
                 await _evict_other_lane("asr")
                 _stt_engine = None
-                stt_engine = STTEngine(model_name)
                 from ..runtime.audio_worker import run_audio_mlx
 
-                await run_audio_mlx("stt", model_name, "load", stt_engine.load)
-                _stt_engine = stt_engine
+                # #2305: budget the speech-input role against the shared
+                # ceiling BEFORE the weights are read. A conflict raises out
+                # of the context manager's entry, so ``STTEngine.load`` never
+                # runs and the conversation model is untouched.
+                async with admitting_audio_role("stt", model_name) as admission:
+                    stt_engine = STTEngine(model_name)
+                    await run_audio_mlx("stt", model_name, "load", stt_engine.load)
+                    if admission is not None:
+                        admission.unload = _lane_unloader("stt", stt_engine)
+                    _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
             # Keeping the default call shape unchanged preserves compatibility
@@ -1331,14 +1339,15 @@ async def _run_stt_request(
                 transcribe_kwargs["context"] = context.strip()
             from ..runtime.audio_worker import run_audio_mlx
 
-            result = await run_audio_mlx(
-                "stt",
-                model_name,
-                "infer",
-                _stt_engine.transcribe,
-                tmp_path,
-                **transcribe_kwargs,
-            )
+            async with leasing_audio_role("stt"):
+                result = await run_audio_mlx(
+                    "stt",
+                    model_name,
+                    "infer",
+                    _stt_engine.transcribe,
+                    tmp_path,
+                    **transcribe_kwargs,
+                )
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1495,10 +1504,32 @@ class _CrossLoopAsyncLock:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._lock.release()
 
+    @property
+    def held(self) -> bool:
+        """True while some request owns this lane.
+
+        Used by the residency ledger (#2305) to decide whether a lane's engine
+        may be released. ``threading.Lock.locked()`` is the right probe even
+        though waiters queue on the event loop: the lock itself is a real
+        thread lock, and a request that reached an already-cached engine holds
+        it without ever taking a residency lease.
+        """
+
+        return self._lock.locked()
+
 
 _stt_lane_lock = _CrossLoopAsyncLock("rapid-mlx-stt-lock")
 _tts_lane_lock = _CrossLoopAsyncLock("rapid-mlx-tts-lock")
 _music_lock = _CrossLoopAsyncLock("rapid-mlx-music-lock")
+
+#: Lane -> the lock a request holds while it owns that lane. The residency
+#: ledger consults these before releasing an idle role, closing the window
+#: between a request finding its engine already cached and taking its lease.
+_LANE_LOCKS: dict[str, _CrossLoopAsyncLock] = {
+    "stt": _stt_lane_lock,
+    "alignment": _stt_lane_lock,
+    "tts": _tts_lane_lock,
+}
 
 
 def _get_stt_lane_lock() -> _CrossLoopAsyncLock:
@@ -1514,6 +1545,181 @@ def _get_tts_lane_lock() -> _CrossLoopAsyncLock:
 def _get_music_lock() -> _CrossLoopAsyncLock:
     """Return the process-wide music-lane lock."""
     return _music_lock
+
+
+# ---------------------------------------------------------------------------
+# Shared residency admission for audio roles (#2305).
+#
+# Every audio engine load in this module goes through
+# :func:`admitting_audio_role` so speech input and speech output are budgeted
+# against the same process-wide ceiling as the conversation model, instead of
+# silently adding gigabytes to a process already at its limit.
+#
+# The manager may be absent — audio-only servers started without the residency
+# control plane, and most of this module's unit tests. Admission then degrades
+# to a no-op rather than failing the request: this is a budget, and a server
+# with no configured budget has nothing to enforce.
+# ---------------------------------------------------------------------------
+
+
+def _residency_manager():
+    """Return the process residency manager, or ``None`` when unconfigured."""
+
+    try:
+        from ..config import get_config
+
+        return get_config().residency_manager
+    except Exception:
+        return None
+
+
+def audio_role_capacity_error(exc) -> HTTPException:
+    """Convert a typed residency conflict into the audio 507 envelope.
+
+    The body is the manager's own structured payload so every surface — the
+    ``/v1/models/load`` control plane and all three audio routes — reports a
+    conflict with identical shape. #2306 renders these fields directly; the UI
+    must never re-derive capacity numbers of its own.
+    """
+
+    return HTTPException(status_code=507, detail=exc.envelope())
+
+
+@asynccontextmanager
+async def admitting_audio_role(lane: str, model_name: str):
+    """Budget an audio engine load before its weights are read.
+
+    Callers MUST perform the load inside the body and assign the yielded
+    record's ``unload`` callback once they own an engine, so a rollback or an
+    idle-TTL eviction can actually release it.
+    """
+
+    manager = _residency_manager()
+    if manager is None:
+        yield None
+        return
+
+    from ..runtime.audio_capacity import resolve_audio_role_capacity
+    from ..runtime.audio_worker import LANE_ROLES
+    from ..runtime.resident_models import ResidentRoleConflictError
+
+    capacity = resolve_audio_role_capacity(model_name)
+    try:
+        async with manager.admitting_role(
+            role=LANE_ROLES[lane],
+            lane=lane,
+            model_id=model_name,
+            reserved_bytes=capacity.reserved_bytes,
+            capacity_source=capacity.capacity_source,
+            weight_bytes=capacity.weight_bytes,
+        ) as record:
+            # A request that finds this engine already cached never re-enters
+            # ``admitting_role``, so it owns the lane while holding no
+            # residency lease. Let the ledger see that ownership, or an idle
+            # sweep can unload weights out from under a live request.
+            record.can_release = lambda: not _LANE_LOCKS[lane].held
+            yield record
+    except ResidentRoleConflictError as exc:
+        # Rejected BEFORE the body ran, so no weights were loaded. Surface the
+        # conflicting roles verbatim instead of a bare "out of memory".
+        raise audio_role_capacity_error(exc) from exc
+
+
+async def release_audio_role(lane: str) -> None:
+    """Drop a lane's residency reservation without unloading through it.
+
+    Used where this module retires an engine itself (lane eviction, shutdown):
+    the caller has already run the engine's own ``unload`` on the MLX worker,
+    so the ledger only has to stop charging for it.
+    """
+
+    manager = _residency_manager()
+    if manager is None:
+        return
+    from ..runtime.audio_worker import LANE_ROLES
+
+    role = LANE_ROLES.get(lane)
+    if role is None:
+        return
+    try:
+        await manager.release_role(role)
+    except Exception:
+        logger.exception("Failed to release residency role for %s lane", lane)
+
+
+@asynccontextmanager
+async def leasing_audio_role(lane: str):
+    """Hold a lane's role against idle eviction while a request runs.
+
+    Complements the ``can_release`` veto: the veto covers the window before a
+    request reaches its lease, this covers the inference itself, and both are
+    checked under the manager lock.
+
+    Degrades to a no-op whenever the role is not tracked (no residency
+    manager, or the engine was cached before this budget existed) — a missing
+    lease must not fail a request that would otherwise succeed.
+    """
+
+    manager = _residency_manager()
+    if manager is None:
+        yield
+        return
+    from ..runtime.audio_worker import LANE_ROLES
+
+    role = LANE_ROLES.get(lane)
+    if role is None:
+        yield
+        return
+    async with AsyncExitStack() as stack:
+        try:
+            await stack.enter_async_context(manager.lease_role(role))
+        except KeyError:
+            # Untracked lane. The ``except`` deliberately wraps only the
+            # acquisition: wrapping the ``yield`` too would swallow a KeyError
+            # raised by the request body itself.
+            pass
+        yield
+
+
+def _lane_unloader(lane: str, engine):
+    """Build the callback the residency ledger uses to retire ``engine``.
+
+    Two responsibilities, both required for the budget to stay honest: unload
+    the weights on the MLX worker that owns them, and clear this module's cache
+    so the next request rebuilds rather than being handed an unloaded engine.
+
+    The cache is cleared only when it still holds THIS engine. An idle-TTL
+    eviction races a request that already replaced the lane; identity-checking
+    keeps the loser from clearing the winner's engine.
+    """
+
+    async def unload() -> None:
+        from ..runtime.audio_worker import run_audio_mlx
+
+        _clear_lane_engine(lane, engine)
+        engine_unload = getattr(engine, "unload", None)
+        if callable(engine_unload):
+            await run_audio_mlx(
+                lane,
+                getattr(engine, "model_name", "unknown"),
+                "unload",
+                engine_unload,
+            )
+
+    return unload
+
+
+def _clear_lane_engine(lane: str, engine) -> None:
+    """Drop ``engine`` from its lane cache if it is still the current one."""
+
+    global _stt_engine, _aligner_engine, _tts_engine
+
+    if lane == "stt" and _stt_engine is engine:
+        _stt_engine = None
+    elif lane == "alignment" and _aligner_engine is engine:
+        _aligner_engine = None
+    elif lane == "tts" and _tts_engine is engine:
+        _tts_engine = None
 
 
 async def shutdown_audio_lanes() -> None:
@@ -1555,12 +1761,15 @@ async def shutdown_audio_lanes() -> None:
         finally:
             _stt_engine = None
             _aligner_engine = None
+            await release_audio_role("stt")
+            await release_audio_role("alignment")
 
     async with _get_tts_lane_lock():
         try:
             unload_cached("tts", _tts_engine)
         finally:
             _tts_engine = None
+            await release_audio_role("tts")
 
     async with _get_music_lock():
         # MusicEngine owns a subprocess per generation rather than persistent
@@ -1629,9 +1838,15 @@ async def _evict_other_lane(keep: str) -> None:
     can no longer swap the engine under an in-flight alignment) but not the
     footprint — alternating requests would leave both models resident. MLX
     frees on refcount, so clearing the global is the release.
+
+    #2305: the residency ledger must be told too. This path unloads the engine
+    itself rather than going through the role's own ``unload`` callback, so
+    without :func:`release_audio_role` the freed bytes would stay charged and
+    permanently shrink the budget available to every later admission.
     """
     lane, cached = _other_stt_lane(keep)
     if cached is None:
+        await release_audio_role(lane)
         return
     logger.info(
         "Releasing %s model %s to load the other STT lane "
@@ -1647,75 +1862,50 @@ async def _evict_other_lane(keep: str) -> None:
             lane, getattr(cached, "model_name", "unknown"), "unload", unload
         )
     _clear_other_stt_lane(keep)
+    await release_audio_role(lane)
 
 
-def _evict_other_lane_sync(keep: str) -> None:
-    """Blocking counterpart for alignment's existing worker-thread pipeline."""
+async def _ensure_aligner_engine(model_name: str) -> None:
+    """Admit and load the forced-aligner engine for ``model_name``.
 
-    lane, cached = _other_stt_lane(keep)
-    if cached is None:
-        return
-    logger.info(
-        "Releasing %s model %s to load the other STT lane "
-        "(one STT model resident at a time)",
-        lane,
-        getattr(cached, "model_name", "?"),
-    )
-    unload = getattr(cached, "unload", None)
-    if callable(unload):
-        from ..runtime.audio_worker import run_audio_mlx_sync
+    Split out of :func:`_align_blocking` for #2305: residency admission is
+    ``async`` (it shares the manager's asyncio lock with chat model loads),
+    and the alignment pipeline ran entirely on a worker thread. Loading here
+    and aligning there keeps one budget for the process without giving the
+    worker thread a second, unsynchronised view of it.
 
-        run_audio_mlx_sync(
-            lane, getattr(cached, "model_name", "unknown"), "unload", unload
-        )
-    _clear_other_stt_lane(keep)
-
-
-def _align_blocking(
-    model_name: str,
-    audio_path: str,
-    text: str,
-    language: str | None,
-):
-    """Blocking half of the forced-alignment request — runs on a thread.
-
-    Loads (or reuses) the aligner engine and runs
-    :meth:`STTEngine.align`. Split out of :func:`_run_alignment_request`
-    so the async handler can hand the seconds-long weight load + align
-    to a worker thread instead of stalling the event loop.
-
-    The caller holds :data:`_stt_lane_lock` for the whole call, so this
-    body is already serialised — no thread-level locking here (see the
-    lock's own comment for why it lives on the event loop).
+    The caller holds :data:`_stt_lane_lock` across both halves, so no request
+    can slip in between the load and the align that consumes it.
     """
+
     global _aligner_engine
 
     from ..audio.stt import STTEngine
 
-    # STTEngine.align defaults language to "Chinese"; only forward an
-    # explicit caller value so the engine default stands otherwise.
-    align_kwargs = {}
-    if language:
-        align_kwargs["language"] = language
+    if _aligner_engine is not None and _aligner_engine.model_name == model_name:
+        return
 
-    if _aligner_engine is None or _aligner_engine.model_name != model_name:
-        # Drop the ASR lane's model before loading ours. The lock already
-        # stops the two lanes RUNNING at once, but without this they both
-        # stay resident after alternating requests — two multi-GB models in
-        # unified memory for a server that can only use one at a time. The
-        # caller holds the lane lock, so no ASR request is mid-flight and
-        # this cannot pull weights out from under one.
-        _evict_other_lane_sync("aligner")
-        # Also drop any PREVIOUS aligner (a different aligner alias) before
-        # loading the replacement, so two multi-GB aligner models never sit
-        # resident together during ``load()``. Inert under the current
-        # single-aligner registry — the branch only re-enters when the cache
-        # was already emptied (an ASR request evicted us), so there is nothing
-        # to drop — but it keeps the "one STT model resident" invariant true if
-        # a second aligner alias is ever registered. On a failed reload the
-        # cache stays ``None`` and the next request reloads from disk, strictly
-        # better than pinning a stale model.
-        _aligner_engine = None
+    # Drop the ASR lane's model before loading ours. The lock already stops
+    # the two lanes RUNNING at once, but without this they both stay resident
+    # after alternating requests — two multi-GB models in unified memory for a
+    # server that can only use one at a time. The caller holds the lane lock,
+    # so no ASR request is mid-flight and this cannot pull weights out from
+    # under one.
+    await _evict_other_lane("aligner")
+    # Also drop any PREVIOUS aligner (a different aligner alias) before
+    # loading the replacement, so two multi-GB aligner models never sit
+    # resident together during ``load()``. Inert under the current
+    # single-aligner registry — the branch only re-enters when the cache was
+    # already emptied (an ASR request evicted us), so there is nothing to
+    # drop — but it keeps the "one STT model resident" invariant true if a
+    # second aligner alias is ever registered. On a failed reload the cache
+    # stays ``None`` and the next request reloads from disk, strictly better
+    # than pinning a stale model.
+    _aligner_engine = None
+
+    from ..runtime.audio_worker import run_audio_mlx
+
+    async with admitting_audio_role("alignment", model_name) as admission:
         # Load into a local first and publish only on success. Caching a
         # half-constructed engine would leave later requests matching on
         # ``model_name`` against an object whose weights never loaded.
@@ -1726,10 +1916,36 @@ def _align_blocking(
         # is a different hierarchy entirely, so the name would trip that
         # gate with a false positive.
         aligner = STTEngine(model_name)
-        from ..runtime.audio_worker import run_audio_mlx_sync
-
-        run_audio_mlx_sync("alignment", model_name, "load", aligner.load)
+        await run_audio_mlx("alignment", model_name, "load", aligner.load)
+        if admission is not None:
+            admission.unload = _lane_unloader("alignment", aligner)
         _aligner_engine = aligner
+
+
+def _align_blocking(
+    model_name: str,
+    audio_path: str,
+    text: str,
+    language: str | None,
+):
+    """Blocking half of the forced-alignment request — runs on a thread.
+
+    Runs :meth:`STTEngine.align` against the engine
+    :func:`_ensure_aligner_engine` already admitted and loaded. Split out of
+    :func:`_run_alignment_request` so the async handler can hand the
+    seconds-long align to a worker thread instead of stalling the event loop.
+
+    The caller holds :data:`_stt_lane_lock` for the whole call, so this
+    body is already serialised — no thread-level locking here (see the
+    lock's own comment for why it lives on the event loop).
+    """
+
+    # STTEngine.align defaults language to "Chinese"; only forward an
+    # explicit caller value so the engine default stands otherwise.
+    align_kwargs = {}
+    if language:
+        align_kwargs["language"] = language
+
     from ..runtime.audio_worker import run_audio_mlx_sync
 
     return run_audio_mlx_sync(
@@ -1810,9 +2026,11 @@ async def _run_alignment_request(
         # for exactly as long as the worker runs, even if the client
         # disconnects and cancels us mid-align.
         async with _get_stt_lane_lock():
-            result = await run_to_completion(
-                _align_blocking, model_name, tmp_path, text, language
-            )
+            await _ensure_aligner_engine(model_name)
+            async with leasing_audio_role("alignment"):
+                result = await run_to_completion(
+                    _align_blocking, model_name, tmp_path, text, language
+                )
 
         return _format_stt_response(result, response_format, task="transcribe")
 
@@ -2598,6 +2816,42 @@ def _is_clone_capable_model(model_name: str) -> bool:
     return is_qwen3 and "base" in tokens and "customvoice" not in tokens
 
 
+async def _ensure_tts_engine(model_name: str) -> None:
+    """Admit and load the speech-output engine for ``model_name``.
+
+    Split out of :func:`_generate_speech_blocking` for #2305. That function is
+    synchronous and runs on a worker thread, so it cannot await the residency
+    manager's lock; leaving the load there would mean speech output allocated
+    multi-GB weights with no admission decision at all. Synthesis stays on the
+    worker thread — only the lifecycle decision moves onto the loop.
+
+    The caller holds :data:`_tts_lane_lock` across both halves, so no request
+    can replace the engine between this load and the synthesis using it.
+    """
+
+    global _tts_engine
+
+    from ..audio.tts import TTSEngine
+    from ..runtime.audio_worker import run_audio_mlx
+
+    if _tts_engine is not None and _tts_engine.model_name == model_name:
+        return
+
+    if _tts_engine is not None:
+        old_model = getattr(_tts_engine, "model_name", "unknown")
+        unload = getattr(_tts_engine, "unload", None)
+        if callable(unload):
+            await run_audio_mlx("tts", old_model, "unload", unload)
+        _tts_engine = None
+
+    async with admitting_audio_role("tts", model_name) as admission:
+        tts_candidate = TTSEngine(model_name)
+        await run_audio_mlx("tts", model_name, "load", tts_candidate.load)
+        if admission is not None:
+            admission.unload = _lane_unloader("tts", tts_candidate)
+        _tts_engine = tts_candidate
+
+
 def _generate_speech_blocking(
     model_name: str,
     input_text: str,
@@ -2608,22 +2862,13 @@ def _generate_speech_blocking(
     sample_rate: int | None,
     channels: int | None,
 ) -> tuple[bytes, int, int]:
-    """Load, synthesize, and encode speech without blocking the event loop."""
-    global _tts_engine
+    """Synthesize and encode speech without blocking the event loop.
 
-    from ..audio.tts import TTSEngine
+    The engine is loaded by :func:`_ensure_tts_engine` before this runs; see
+    that function for why the lifecycle half lives on the event loop.
+    """
+
     from ..runtime.audio_worker import run_audio_mlx_sync
-
-    if _tts_engine is None or _tts_engine.model_name != model_name:
-        if _tts_engine is not None:
-            old_model = getattr(_tts_engine, "model_name", "unknown")
-            unload = getattr(_tts_engine, "unload", None)
-            if callable(unload):
-                run_audio_mlx_sync("tts", old_model, "unload", unload)
-            _tts_engine = None
-        tts_candidate = TTSEngine(model_name)
-        run_audio_mlx_sync("tts", model_name, "load", tts_candidate.load)
-        _tts_engine = tts_candidate
 
     kwargs = dict(gen_kwargs)
     if ref_bytes is not None:
@@ -2998,17 +3243,19 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 ) from exc
         try:
             async with _get_tts_lane_lock():
-                audio_bytes, output_rate, output_channels = await run_to_completion(
-                    _generate_speech_blocking,
-                    model_name,
-                    input_text,
-                    response_format,
-                    gen_kwargs,
-                    ref_bytes,
-                    ref_text,
-                    sample_rate,
-                    channels,
-                )
+                await _ensure_tts_engine(model_name)
+                async with leasing_audio_role("tts"):
+                    audio_bytes, output_rate, output_channels = await run_to_completion(
+                        _generate_speech_blocking,
+                        model_name,
+                        input_text,
+                        response_format,
+                        gen_kwargs,
+                        ref_bytes,
+                        ref_text,
+                        sample_rate,
+                        channels,
+                    )
         except UnsupportedAudioFormatError as e:
             # R8-H5 (Bo 0.8.9 dogfood): the encoder couldn't produce the
             # requested format (no codec / unknown name). Surface a 400
