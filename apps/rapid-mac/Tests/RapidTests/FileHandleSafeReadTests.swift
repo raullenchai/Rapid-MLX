@@ -106,9 +106,12 @@ struct FileHandleSafeReadTests {
         // environment can't give us a private high descriptor.
         try #require(high >= 0, "F_DUPFD failed to pin a private high bad fd")
         // Guarantee the raw `high` fd is closed on EVERY exit path (incl. a throw
-        // from FileHandle.close() below); close() on an already-closed fd is a no-op,
-        // so this is idempotent with the explicit close later.
-        defer { close(high) }
+        // from FileHandle.close() below). `highClosed` tracks whether the explicit
+        // `close(high)` below has already run — the deferred close must NOT fire on a
+        // number the OS may have reallocated in between, or it would close an unrelated
+        // live descriptor (the exact corruption class this test pins against).
+        var highClosed = false
+        defer { if !highClosed { close(high) } }
         // Construct while `high` is live → ready=true (fd captured, O_NONBLOCK).
         let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
         // Tear the READ side down from underneath the live drainer, but leave the
@@ -117,6 +120,7 @@ struct FileHandleSafeReadTests {
         // the EBADF path was actually exercised (not ordinary EOF).
         try pipe.fileHandleForReading.close()    // release low via Foundation (no double-close)
         close(high)                              // free the pinned high — now bad, and private
+        highClosed = true                        // suppress the deferred close: fd already freed
         // Prove the descriptor really is EBADF at this instant (fcntl F_GETFD on a
         // closed fd → -1/EBADF) in the same synchronous sequence as the drain, so a
         // regression like an ineffective close() is caught. Snapshot BOTH the return
