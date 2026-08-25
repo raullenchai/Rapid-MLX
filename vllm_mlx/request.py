@@ -169,6 +169,7 @@ class Request:
     # Routing hints used by PFlash to decide whether to compress (#287).
     has_tools: bool = False
     requires_prompt_integrity: bool = False
+    lifecycle_admission_token: str | None = None
 
     # Grammar-constrained tool calling (#558). Optional per-request logits
     # processor that masks decoding to a tool-call grammar. Set by the chat

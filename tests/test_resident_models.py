@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -54,6 +56,39 @@ class FakeEngine:
 
 class FakeImageEngine(FakeEngine):
     is_image_gen = True
+
+
+class FakeLifecycleEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.pauses: list[tuple[str, float | None]] = []
+        self.paused = False
+
+    async def pause_generation(self, mode="wait", *, timeout=None):
+        self.pauses.append((mode, timeout))
+        self.paused = True
+        if self.running and timeout == 0:
+            raise TimeoutError
+        self.running = 0
+        return self.lifecycle_status()
+
+    async def resume_generation(self):
+        self.paused = False
+        return self.lifecycle_status()
+
+    def lifecycle_status(self):
+        return {
+            "paused": self.paused,
+            "pause_mode": self.pauses[-1][0] if self.pauses else None,
+            "admitted_requests": self.running,
+            "running_requests": self.running,
+            "queued_requests": 0,
+        }
+
+
+class FailingResumeLifecycleEngine(FakeLifecycleEngine):
+    async def resume_generation(self):
+        raise RuntimeError("resume failed")
 
 
 class Clock:
@@ -316,6 +351,204 @@ async def test_failed_assistant_replacement_rolls_back_newly_loaded_model():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replace_mode", ["wait", "abort"])
+async def test_assistant_replacement_quiesces_before_primary_handoff(replace_mode):
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+    events: list[str] = []
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    class Handoff:
+        def commit(self, _entry):
+            events.append("handoff-commit")
+
+        def rollback(self):
+            events.append("handoff-rollback")
+
+    def handoff(_entry):
+        events.append("handoff-start")
+        assert old_engine.paused is True
+        return Handoff()
+
+    manager = ResidentModelManager(
+        registry,
+        loader,
+        memory_reader=lambda: 0,
+        on_primary_handoff=handoff,
+    )
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    replacement = await manager.load(
+        "chat-new", replace_group="assistant", replace_mode=replace_mode
+    )
+
+    assert old_engine.pauses == [(replace_mode, None)]
+    assert old_engine.stopped is True
+    assert replacement.primary is True
+    assert registry.default_name == "chat-new"
+    assert events == ["handoff-start", "handoff-commit"]
+
+
+@pytest.mark.asyncio
+async def test_replacement_does_not_publish_target_until_old_engine_drains():
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    old_engine.running = 1
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+    allow_drain = asyncio.Event()
+
+    async def pause_generation(mode="wait", *, timeout=None):
+        old_engine.pauses.append((mode, timeout))
+        old_engine.paused = True
+        await allow_drain.wait()
+        old_engine.running = 0
+        return old_engine.lifecycle_status()
+
+    old_engine.pause_generation = pause_generation
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    await asyncio.sleep(0)
+
+    assert "chat-new" not in registry
+    assert registry.default_name == "chat-old"
+
+    allow_drain.set()
+    await replacement
+    assert registry.default_name == "chat-new"
+
+
+@pytest.mark.asyncio
+async def test_wait_replacement_retires_drained_engine_with_http_lease_finalizing():
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    old_engine.running = 1
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    async with manager.lease("chat-old"):
+        await manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+
+    assert old_engine.pauses == [("wait", None)]
+    assert old_engine.stopped is True
+    assert registry.default_name == "chat-new"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_replacement_resumes_old_engine_and_discards_target():
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    old_engine.running = 1
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+    draining = asyncio.Event()
+
+    async def pause_generation(mode="wait", *, timeout=None):
+        old_engine.paused = True
+        draining.set()
+        await asyncio.Event().wait()
+
+    old_engine.pause_generation = pause_generation
+    loaded = None
+
+    async def loader(name: str, path: str | None, performance=None):
+        nonlocal loaded
+        loaded = entry(name)
+        return loaded
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    await draining.wait()
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+
+    assert old_engine.paused is False
+    assert old_engine.stopped is False
+    assert "chat-new" not in registry
+    assert loaded is not None and loaded.engine.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_rejected_busy_replacement_reopens_engine_admission():
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    old_engine.running = 1
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    with pytest.raises(ResidentModelBusyError, match="active request"):
+        await manager.load("chat-new", replace_group="assistant")
+
+    assert old_engine.pauses == [("wait", 0)]
+    assert old_engine.paused is False
+    assert old_engine.stopped is False
+    assert registry.default_name == "chat-old"
+
+
+def test_residency_status_uses_engine_owned_request_counts():
+    registry = ModelRegistry()
+    engine = FakeLifecycleEngine()
+    engine.running = 2
+    primary = entry("chat", engine)
+    registry.add(primary, is_default=True)
+    manager = ResidentModelManager(
+        registry, lambda *_args: None, memory_reader=lambda: 0
+    )
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    model = manager.snapshot()["models"][0]
+
+    assert model["active_requests"] == 2
+    assert model["lifecycle"]["running_requests"] == 2
+
+
+@pytest.mark.asyncio
+async def test_resume_attempts_every_engine_after_one_resume_fails():
+    manager, _, _, _ = manager_fixture()
+    engines = [
+        FakeLifecycleEngine(),
+        FailingResumeLifecycleEngine(),
+        FakeLifecycleEngine(),
+    ]
+    for engine in engines:
+        engine.paused = True
+
+    await manager._resume_engines(engines)  # noqa: SLF001
+
+    assert engines[0].paused is False
+    assert engines[2].paused is False
+
+
+@pytest.mark.asyncio
 async def test_per_model_performance_reload_replaces_only_the_target_engine():
     manager, registry, loaded, _ = manager_fixture(limit_gib=20)
     await manager.load("image", estimated_bytes=3 * GIB)
@@ -454,6 +687,43 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         )
         assert client.delete("/v1/models/image").status_code == 204
         assert "image" not in registry
+
+
+def test_residency_control_plane_forwards_abort_replacement_policy(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes.residency import router
+
+    registry = ModelRegistry()
+    old_engine = FakeLifecycleEngine()
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    monkeypatch.setattr(
+        "vllm_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/models/load",
+            json={
+                "model": "chat-new",
+                "replace_group": "assistant",
+                "replace_mode": "abort",
+            },
+        )
+
+    assert response.status_code == 200
+    assert old_engine.pauses == [("abort", None)]
+    assert registry.default_name == "chat-new"
 
 
 def test_residency_control_plane_validates_and_forwards_performance(monkeypatch):

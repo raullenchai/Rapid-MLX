@@ -1090,6 +1090,7 @@ class EngineCore:
         grammar_logits_processor: Any | None = None,
         reasoning_budget_logits_processor: Any | None = None,
         suppressed_tokens_logits_processor: Any | None = None,
+        lifecycle_admission_token: str | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -1135,6 +1136,7 @@ class EngineCore:
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
             suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+            lifecycle_admission_token=lifecycle_admission_token,
         )
 
         # Throttle requests for hybrid models (GatedDeltaNet + Transformer).
@@ -1303,9 +1305,26 @@ class EngineCore:
         return request_id
 
     async def abort_request(self, request_id: str) -> bool:
-        """Abort a request."""
+        """Abort scheduler work and wake its streaming or aggregate consumer."""
+
         result = self.scheduler.abort_request(request_id)
-        self._cleanup_request(request_id)
+        if result:
+            event = self._finished_events.get(request_id)
+            if event is not None and not event.is_set():
+                collector = self._output_collectors.get(request_id)
+                if collector is not None:
+                    collector.put(
+                        RequestOutput(
+                            request_id=request_id,
+                            finished=True,
+                            finish_reason="length",
+                            error="Inference aborted by a cancellation request",
+                            error_kind="lifecycle",
+                        )
+                    )
+                event.set()
+            if self._idle_event is not None:
+                self._idle_event.set()
         return result
 
     def _cleanup_request(self, request_id: str) -> None:

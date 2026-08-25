@@ -47,6 +47,7 @@ class ModelLoadRequest(BaseModel):
     image_mode: Literal["generation", "editing"] | None = None
     performance: ModelPerformanceRequest | None = None
     reload_if_changed: bool = False
+    replace_mode: Literal["reject", "wait", "abort"] = "reject"
 
 
 class ModelPinRequest(BaseModel):
@@ -128,6 +129,7 @@ async def load_resident_model(request: ModelLoadRequest):
             image_mode=request.image_mode,
             performance=performance,
             reload_if_changed=request.reload_if_changed,
+            replace_mode=request.replace_mode,
         )
     except HTTPException:
         raise

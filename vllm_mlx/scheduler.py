@@ -3036,6 +3036,9 @@ class Scheduler:
         self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
+        self._generation_paused = False
+        self._paused_add_allowance = 0
+        self._paused_admission_tokens: set[str] = set()
         self.finished_req_ids: set[str] = set()  # Recently finished
         # Debug aid (#1878): resolved ONCE — an os.environ lookup per
         # step would put dict access on the decode hot path advertised
@@ -5856,6 +5859,14 @@ class Scheduler:
                 above ``config.max_concurrent_requests``. Routes catch
                 this and return 503 with Retry-After.
         """
+        with self._request_state_lock():
+            if getattr(self, "_generation_paused", False):
+                allowed = getattr(self, "_paused_admission_tokens", set())
+                token = getattr(request, "lifecycle_admission_token", None)
+                if token not in allowed:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
         if request.request_id in self.requests:
             raise ValueError(f"Request {request.request_id} already exists")
 
@@ -6070,6 +6081,14 @@ class Scheduler:
         # the ledger intact and the prior lifetime's dedupe
         # stays effective.
         with self._cancel_counter_lock:
+            if getattr(self, "_generation_paused", False):
+                allowed = getattr(self, "_paused_admission_tokens", set())
+                token = getattr(request, "lifecycle_admission_token", None)
+                if token not in allowed:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
+                allowed.remove(token)
             self._cancelled_request_ids.discard(request.request_id)
             self._disconnect_abort_ids.discard(request.request_id)
             self._orphaned_running_candidates.pop(request.request_id, None)
@@ -6079,6 +6098,43 @@ class Scheduler:
         logger.debug(
             f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
         )
+
+    def set_generation_paused(self, paused: bool, *, add_allowance: int = 0) -> None:
+        """Close or reopen scheduler admission for model replacement."""
+
+        with self._request_state_lock():
+            self._generation_paused = bool(paused)
+            self._paused_add_allowance = max(0, int(add_allowance)) if paused else 0
+            self._paused_admission_tokens = set()
+
+    def pause_generation_admission(self, admission_tokens: set[str], mode: str) -> None:
+        """Close admission and preserve only pre-pause route reservations."""
+
+        del mode  # Both policies close admission; mode controls draining above.
+        with self._request_state_lock():
+            self._generation_paused = True
+            owned = {
+                getattr(request, "lifecycle_admission_token", None)
+                for request in self.requests.values()
+                if getattr(request, "lifecycle_admission_token", None) is not None
+            }
+            self._paused_admission_tokens = set(admission_tokens) - owned
+            self._paused_add_allowance = len(self._paused_admission_tokens)
+
+    def request_ids_snapshot(self) -> tuple[str, ...]:
+        """Return a lock-protected snapshot of queued and running IDs."""
+
+        with self._cancel_counter_lock:
+            return tuple(self.requests)
+
+    def _request_state_lock(self):
+        """Return the request lock, including for minimal test doubles."""
+
+        lock = getattr(self, "_cancel_counter_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._cancel_counter_lock = lock
+        return lock
 
     def abort_request(self, request_id: str) -> bool:
         """
@@ -8331,7 +8387,8 @@ class Scheduler:
 
         self.waiting.clear()
         self.running.clear()
-        self.requests.clear()
+        with self._cancel_counter_lock:
+            self.requests.clear()
         self.finished_req_ids.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()

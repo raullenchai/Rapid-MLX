@@ -413,12 +413,19 @@ class TestRequestManagement:
 
             # Get a few tokens
             token_count = 0
-            async for output in engine.stream_outputs(rid, timeout=30):
+            stream = engine.stream_outputs(rid, timeout=30)
+            async for output in stream:
                 token_count += len(output.new_token_ids)
                 if token_count >= 5:
                     # Abort after 5 tokens
                     await engine.abort_request(rid)
                     break
+
+            from vllm_mlx.request import InferenceAbortedError
+
+            with pytest.raises(InferenceAbortedError, match="cancellation"):
+                await anext(stream)
+            await stream.aclose()
 
             # Request should be aborted
             stats = engine.get_stats()
