@@ -24,6 +24,18 @@ import Testing
 @Suite("Accessibility identifier inventory")
 struct AccessibilityIdentifierInventoryTests {
 
+    @Test("Model switch guard names its destructive and cancel controls")
+    func modelSwitchGuardIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""ModelSwitchGuard.Confirm""#,
+                #""ModelSwitchGuard.Cancel""#,
+            ],
+            in: "Sources/Rapid/UI/ContentView.swift",
+            surface: "Active-request model switch confirmation"
+        )
+    }
+
     @Test("Settings → App names the re-onboarding confirmation controls")
     func settingsAppReonboardingIdentifiers() throws {
         try assertDeclared(
