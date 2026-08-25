@@ -67,6 +67,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | False |
 | `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; budget via `--disk-stream-cache-gb`) | False |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB (multi-model serving); LRU idle unpinned models are evicted first; 0 disables (companion: `--resident-model-idle-ttl`) | 0 |
+| `--audio-role-idle-ttl` | Release idle speech-input/speech-output engines after this many seconds. Speech engines are budgeted against the same ceiling as the conversation model, and this TTL keeps a finished dictation from holding that budget; the next audio request reloads. 0 disables. | 300 |
 | `--pflash` | PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `always` for verified aliases, `off` otherwise |
 
 ## API Endpoints

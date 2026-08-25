@@ -64,22 +64,41 @@ CapacitySource = Literal["manifest", "local_cache", "unknown"]
 
 #: Working-set allowance added on top of the weight footprint.
 #:
-#: Two components, kept as one constant because they are charged together:
+#: This covers ENGINE ACTIVATIONS only — encoder/decoder intermediates for the
+#: largest checkpoints in the registry. It deliberately does NOT try to cover
+#: the decoded request payload.
 #:
-#: * **Decoded audio buffer.** This one is an arithmetic bound, not a guess.
-#:   ``routes.audio.MAX_AUDIO_UPLOAD_SIZE`` caps an upload at 25 MB, which is
-#:   ~25 minutes of 16 kHz mono speech; decoded to float32 at the 16 kHz the
-#:   STT lane resamples to, that is 25*60*16000*4 B ≈ 92 MiB. Whisper's mel
-#:   spectrogram and the windowed copies the decoder holds roughly double it.
-#: * **Engine activations.** Encoder/decoder activation memory for the
-#:   largest audio checkpoints in the registry.
+#: An earlier revision claimed 512 MiB was an arithmetic bound on the decoded
+#: audio buffer, reasoning from ``routes.audio.MAX_AUDIO_UPLOAD_SIZE`` (25 MB).
+#: That reasoning was wrong: the upload cap bounds COMPRESSED bytes, not
+#: duration. 25 MB of 6 kbps Opus decodes to ~9.7 hours of audio, which is
+#: ~2.1 GiB as float32 at 16 kHz — four times this allowance. Speech output has
+#: no bound at all, since ``AudioSpeechRequest.input`` carries only
+#: ``min_length``.
 #:
-#: 512 MiB covers both with margin. It is intentionally a fixed allowance
-#: rather than a per-model number: the request-side buffer is bounded by the
-#: upload cap for *every* model, and the activation side is corrected by the
-#: post-load ``phys_footprint`` measurement in the residency manager, which
-#: supersedes this reservation once it is larger.
+#: Request-sized buffers are therefore bounded at the REQUEST, by
+#: :data:`MAX_TRANSCRIPTION_SECONDS` and :data:`MAX_SPEECH_INPUT_CHARACTERS`,
+#: rather than folded into this per-role reservation. A per-role constant
+#: cannot cover them correctly anyway: the role is admitted once, at load time,
+#: while the buffers are allocated per request and vary by three orders of
+#: magnitude between them.
 AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES: int = 512 * _MIB
+
+#: Longest audio a single transcription/alignment request may decode.
+#:
+#: The upload cap cannot express this: it limits compressed bytes, so a
+#: low-bitrate stream slips hours of audio under it. Two hours at float32
+#: 16 kHz is ~440 MiB of waveform, which the allowance above comfortably
+#: covers, and it is far beyond any interactive dictation use.
+MAX_TRANSCRIPTION_SECONDS: float = 2 * 60 * 60.0
+
+#: Longest text a single speech-synthesis request may vocalize.
+#:
+#: TTS allocates output waveform proportional to the input length, so an
+#: unbounded ``input`` is an unbounded allocation. 20k characters is roughly
+#: three hours of speech — well past any real request, while still leaving the
+#: endpoint usable for long-form narration.
+MAX_SPEECH_INPUT_CHARACTERS: int = 20_000
 
 
 @dataclass(frozen=True)
@@ -123,76 +142,107 @@ def _canonical_hf_id(model_id: str) -> str | None:
 
 
 def _snapshot_bytes(hf_id: str) -> int | None:
-    """Sum the real on-disk bytes of the cached snapshot for ``hf_id``.
+    """Sum the on-disk bytes of the COMPLETE cached snapshot for ``hf_id``.
 
-    Prefers the snapshot pinned by ``refs/main`` — that is the one the loader
-    will actually open, and sizing an unrelated stale snapshot would charge the
-    wrong number for the weights about to be read.
+    Only the revision the loader will actually open counts, and only when it is
+    verified complete. Both halves matter for admission:
 
-    Unlike ``_download_gate.is_repo_cached`` this falls back to the LARGEST
-    snapshot when no ``refs/main`` exists. The gate is deciding "may we skip a
-    download", where guessing wrong silently re-downloads; here the question is
-    "how much memory should we reserve", where refusing to answer now rejects
-    the request outright. Taking the largest candidate keeps the reservation
-    conservative, and any snapshot on disk is a far better estimate than none.
+    * **Revision.** ``snapshot_download`` resolves through ``refs/main``, so an
+      unrelated stale snapshot would describe weights that are not the ones
+      about to be read.
+    * **Completeness.** A partial cache is the dangerous case. An interrupted
+      pull can leave ``config.json`` and one shard of five — a few hundred KiB
+      that this function would happily report as the model's footprint, after
+      which the loader downloads the missing multi-GiB weights against a
+      reservation sized for almost nothing. Delegating to the download gate's
+      audio-aware completeness probes keeps one definition of "cached" in the
+      repo rather than inventing a second, weaker one here.
+
+    Returns ``None`` when nothing complete is cached, which the caller turns
+    into a rejection rather than an unbudgeted load.
 
     HF snapshots are trees of symlinks into a sibling ``blobs/`` store, and one
     blob can back several snapshot entries. ``os.stat`` follows the symlink so
     the blob's true size is counted, and ``(st_dev, st_ino)`` de-duplicates
-    shared blobs. Returns ``None`` when nothing is cached.
+    shared blobs.
     """
 
     try:
+        if not _cache_is_complete(hf_id):
+            return None
+
         from huggingface_hub.constants import HF_HUB_CACHE
 
         repo_root = os.path.join(HF_HUB_CACHE, f"models--{hf_id.replace('/', '--')}")
-        snapshots_root = os.path.join(repo_root, "snapshots")
-        if not os.path.isdir(snapshots_root):
+        sha = _resolved_revision(repo_root)
+        if sha is None:
+            return None
+        snapshot_dir = os.path.join(repo_root, "snapshots", sha)
+        if not os.path.isdir(snapshot_dir):
             return None
 
-        candidates: list[str] = []
-        main_ref = os.path.join(repo_root, "refs", "main")
-        if os.path.isfile(main_ref):
-            try:
-                with open(main_ref) as handle:
-                    sha = handle.read().strip()
-            except OSError:
-                sha = ""
-            if sha and os.path.isdir(os.path.join(snapshots_root, sha)):
-                candidates.append(os.path.join(snapshots_root, sha))
-        if not candidates:
-            candidates = [
-                os.path.join(snapshots_root, name)
-                for name in os.listdir(snapshots_root)
-                if os.path.isdir(os.path.join(snapshots_root, name))
-            ]
-        if not candidates:
-            return None
-
-        best = 0
-        for snapshot_dir in candidates:
-            total = 0
-            seen: set[tuple[int, int]] = set()
-            for root, _dirs, files in os.walk(snapshot_dir):
-                for name in files:
-                    try:
-                        stat = os.stat(os.path.join(root, name))
-                    except OSError:
-                        # A dangling symlink means the blob was reaped; it
-                        # contributes no resident bytes.
-                        continue
-                    key = (stat.st_dev, stat.st_ino)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    total += stat.st_size
-            best = max(best, total)
-        return best or None
+        total = 0
+        seen: set[tuple[int, int]] = set()
+        for root, _dirs, files in os.walk(snapshot_dir):
+            for name in files:
+                try:
+                    stat = os.stat(os.path.join(root, name))
+                except OSError:
+                    # A dangling symlink means the blob was reaped; it
+                    # contributes no resident bytes.
+                    continue
+                key = (stat.st_dev, stat.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
+                total += stat.st_size
+        return total or None
     except Exception:
         # Capacity resolution is advisory input to an admission decision; a
         # broken cache directory must degrade to "unknown", never take the
         # audio lane down.
         logger.debug("Failed to measure cached snapshot for %r", hf_id, exc_info=True)
+        return None
+
+
+def _cache_is_complete(hf_id: str) -> bool:
+    """True when ``hf_id`` has a fully-downloaded snapshot the loader can open.
+
+    Whisper repositories ship ``weights.npz`` + ``config.json`` and contain no
+    ``model*.safetensors``, so the generic text probe rejects a perfectly
+    complete Whisper cache. The download gate already carries a family-aware
+    probe for exactly that; dispatch the same way ``rapid-mlx models`` does
+    rather than growing a third notion of completeness in this module.
+    """
+
+    from .._download_gate import (
+        _snapshot_is_complete_split_model,
+        _snapshot_is_complete_whisper_model,
+        is_repo_cached,
+    )
+    from ..audio.registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(hf_id)
+    if entry is not None and entry.family == "whisper":
+        return _snapshot_is_complete_whisper_model(hf_id)
+    return is_repo_cached(hf_id) or _snapshot_is_complete_split_model(hf_id)
+
+
+def _resolved_revision(repo_root: str) -> str | None:
+    """Return the sha ``snapshot_download`` would resolve for this repo.
+
+    Mirrors ``_download_gate._resolved_snapshot_sha``: only ``refs/main``, so a
+    legacy ``refs/master`` or a bare snapshot directory cannot shadow what the
+    loader will really open.
+    """
+
+    main_ref = os.path.join(repo_root, "refs", "main")
+    try:
+        if not os.path.isfile(main_ref):
+            return None
+        with open(main_ref) as handle:
+            return handle.read().strip() or None
+    except OSError:
         return None
 
 

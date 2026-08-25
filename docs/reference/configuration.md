@@ -112,6 +112,7 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache | `1.0` |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; LRU idle unpinned models are evicted first. `0` disables. | `0` |
 | `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. `0` disables. | `0` |
+| `--audio-role-idle-ttl` | Release idle speech-input/speech-output engines after this many seconds. On by default: speech is a transient workload, so its weights should not hold budget away from the conversation model through minutes of typing. The next audio request reloads (cold start). `0` disables. | `300` |
 | `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |
 | `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | `false` |
 

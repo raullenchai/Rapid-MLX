@@ -1222,6 +1222,74 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
+def _reject_overlong_audio(tmp_path: str) -> None:
+    """Reject audio whose DURATION exceeds what one request may decode.
+
+    ``MAX_AUDIO_UPLOAD_SIZE`` bounds compressed bytes, which says nothing about
+    the decoded waveform — a 25 MB 6 kbps Opus stream is ~9.7 hours of audio,
+    ~2.1 GiB as float32 at 16 kHz. The residency reservation is per role and
+    made at load time, so it cannot absorb a per-request buffer that varies by
+    orders of magnitude; bound the request instead.
+
+    Duration comes from container metadata (``wave`` / ``soundfile.info``),
+    which does not decode the stream, so this costs nothing on the happy path.
+    A file whose duration cannot be read cheaply is allowed through: refusing
+    it would reject formats the engine handles fine, and the upload cap still
+    applies.
+
+    The probe is implemented here rather than imported from ``..audio.stt``
+    because that module is the mlx-audio-backed engine: importing it makes an
+    ``ImportError`` on installs without mlx-audio, which the caller maps to a
+    503 "mlx-audio not installed" — turning a working request into a failure.
+    Reading a WAV header needs no audio backend at all.
+    """
+
+    from ..runtime.audio_capacity import MAX_TRANSCRIPTION_SECONDS
+
+    duration = _probe_audio_duration_seconds(tmp_path)
+    if duration is None or duration <= MAX_TRANSCRIPTION_SECONDS:
+        return
+    raise HTTPException(
+        status_code=413,
+        detail={
+            "error": {
+                "message": (
+                    f"Audio is {duration / 3600:.1f} hours long, which exceeds "
+                    f"the {MAX_TRANSCRIPTION_SECONDS / 3600:.0f}-hour limit for "
+                    "a single request. Split the recording into shorter "
+                    "segments."
+                ),
+                "type": "invalid_request_error",
+                "code": "audio_too_long",
+                "param": "file",
+            }
+        },
+    )
+
+
+def _probe_audio_duration_seconds(tmp_path: str) -> float | None:
+    """Read duration from container metadata, or ``None`` if unavailable.
+
+    Metadata only — never decodes. ``None`` means "could not tell cheaply",
+    which the caller treats as acceptable rather than as a rejection.
+    """
+
+    try:
+        with wave.open(tmp_path, "rb") as handle:
+            rate = handle.getframerate()
+            if rate > 0:
+                return float(handle.getnframes()) / rate
+    except Exception:
+        pass
+    try:
+        import soundfile as sf
+
+        duration = float(sf.info(tmp_path).duration)
+        return duration if duration >= 0.0 else None
+    except Exception:
+        return None
+
+
 async def _run_stt_request(
     file: UploadFile,
     model: str,
@@ -1302,6 +1370,12 @@ async def _run_stt_request(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
+
+        # The upload cap bounds COMPRESSED bytes, so it cannot bound the
+        # decoded waveform: 25 MB of low-bitrate Opus is hours of audio and
+        # gigabytes of float32. Reject over-long input from cheap metadata,
+        # before the engine allocates anything (#2305 follow-up).
+        _reject_overlong_audio(tmp_path)
 
         from ..audio.stt import STTEngine
 
@@ -2078,6 +2152,10 @@ async def _run_alignment_request(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
+
+        # Same duration bound as the ASR lane: alignment decodes the whole
+        # waveform too, and the upload cap only limits compressed bytes.
+        _reject_overlong_audio(tmp_path)
 
         # Weight load + alignment are seconds of blocking compute, so run
         # them on a worker thread — an ``async def`` handler that calls

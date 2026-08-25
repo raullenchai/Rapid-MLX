@@ -136,6 +136,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache; only used with `--disk-stream` | 1.0 |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; loading another model evicts the least-recently-used idle unpinned model first. 0 disables. | 0 (disabled) |
 | `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. 0 disables. | 0 (disabled) |
+| `--audio-role-idle-ttl` | Release idle speech-input/speech-output engines after this many seconds. Enabled by default and much shorter than the model TTL because speech is a transient workload: a dictation burst is followed by minutes of typing, and holding those weights takes budget away from the conversation model. The next audio request pays a cold start to reload. 0 disables. | 300 |
 | `--mllm` | Force-load as multimodal (vision) even if the name doesn't match auto-detection, and hard-fail instead of silently auto-degrading to text-only when the checkpoint ships no usable vision tower | off |
 | `--no-mllm` / `--text-only` | Force-load as text-only even when auto-detection would route to the multimodal path (escape hatch for incomplete vision-tower checkpoints) | off |
 | `--vision-min-pixels` | Minimum pixels for dynamic-resolution VLM image processors; 0 keeps the model default | 0 |

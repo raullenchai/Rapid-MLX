@@ -27,6 +27,8 @@ from pydantic import (
     model_validator,
 )
 
+from ..runtime.audio_capacity import MAX_SPEECH_INPUT_CHARACTERS
+
 # =============================================================================
 # Shared sampling-parameter validators (F-011)
 # =============================================================================
@@ -2690,7 +2692,13 @@ class AudioSpeechRequest(BaseModel):
     # ``model_validator`` below catches the whitespace-only shape that
     # slips past Pydantic's length check (``" "`` is one char) — both
     # produce empty phoneme lists downstream so both must 400.
-    input: str = Field(..., min_length=1)
+    #
+    # max_length bounds the OUTPUT allocation (#2305): synthesized waveform
+    # grows with the input text, so an unbounded ``input`` is an unbounded
+    # buffer that the per-role residency reservation cannot cover — that
+    # reservation is made once at load time, while this is per request. The
+    # limit is ~3 hours of speech, past any real request.
+    input: str = Field(..., min_length=1, max_length=MAX_SPEECH_INPUT_CHARACTERS)
     voice: str = "af_heart"
     # OpenAI bounds: 0.25..4.0. Out-of-range values silently no-op
     # inside mlx_audio in some lanes; reject up front so the envelope
