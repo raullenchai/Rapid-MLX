@@ -575,11 +575,18 @@ def client():
 
 
 def test_route_409_when_no_image_model(client, monkeypatch):
+    from vllm_mlx.model_aliases import resolve_profile
+
+    recovery_alias = "flux2-klein-4b"
     _patch_engine(monkeypatch, None)
     resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "image_model_not_loaded"
-    assert "rapid-mlx serve flux2-klein-4b" in resp.json()["error"]["message"]
+    assert f"rapid-mlx serve {recovery_alias}" in resp.json()["error"]["message"]
+
+    profile = resolve_profile(recovery_alias)
+    assert profile is not None, f"{recovery_alias} missing from aliases.json"
+    assert profile.modality == "image-gen"
 
 
 def test_route_409_when_edit_model_loaded(client, monkeypatch):
