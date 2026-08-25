@@ -93,22 +93,30 @@ struct FileHandleSafeReadTests {
     func drainOnBadDescriptorDoesNotCrash() throws {
         let pipe = Pipe()
         let low = pipe.fileHandleForReading.fileDescriptor
-        // Pin a private HIGH duplicate of the read end; concurrent test Pipes
-        // only ever take the lowest free fds, so high is never routed to them.
-        let high = fcntl(low, F_DUPFD, 1_024)
-        #expect(high >= 0, "fcntl(F_DUPFD) failed to pin a private bad fd")
+        // Pin a private HIGH duplicate of the read end. Concurrent test Pipes
+        // only ever take the lowest free fds, so `high` is never routed to them
+        // once freed. Derive the minimum from the real soft RLIMIT_NOFILE so the
+        // F_DUPFD target is always in-range (avoid assuming 1024).
+        var rl = rlimit()
+        getrlimit(RLIMIT_NOFILE, &rl)
+        let soft = rl.rlim_cur
+        let highMin: Int32 = soft > 1024 ? 1024 : max(8, Int32(soft) - 8)
+        let high = fcntl(low, F_DUPFD, highMin)
+        // Abort cleanly (skip) rather than building a FileHandle over -1 if the
+        // environment can't give us a private high descriptor.
+        try #require(high >= 0, "F_DUPFD failed to pin a private high bad fd")
         // Construct while `high` is live → ready=true (fd captured, O_NONBLOCK).
         let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
-        // Tear the pipe down from underneath the live drainer.
-        try? pipe.fileHandleForWriting.close()
+        // Tear the READ side down from underneath the live drainer, but leave the
+        // WRITE end open for the duration of the drain: a still-valid descriptor
+        // would then read EAGAIN → atEOF == false, so `atEOF == true` below proves
+        // the EBADF path was actually exercised (not ordinary EOF).
         try pipe.fileHandleForReading.close()    // release low via Foundation (no double-close)
         close(high)                              // free the pinned high — now bad, and private
-        // ready=true drain() reads `high` → EBADF → empty + EOF-signalled. `high`
-        // (>= 1024) is not recycled into a low-fd concurrent pipe, so the read
-        // is deterministic and can never consume a stranger's bytes.
         let result = drainer.drain()
+        try? pipe.fileHandleForWriting.close()   // writer held open through the drain
         #expect(result.data.isEmpty)            // no crash, no bytes
-        #expect(result.atEOF == true)           // EBADF is EOF, so a handler detaches
+        #expect(result.atEOF == true)           // only EBADF (writer still open) yields EOF
     }
 
     /// The codex r2 BLOCKING regression: two drains of the SAME pipe running
