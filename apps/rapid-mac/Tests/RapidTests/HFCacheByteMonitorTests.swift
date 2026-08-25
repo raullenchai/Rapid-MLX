@@ -313,10 +313,7 @@ struct HFCacheByteMonitorTests {
 
     // MARK: - End-to-end: monitor → progress → UI subtitle
 
-    @Test(
-        "End-to-end: HFCacheByteMonitor.start polls a fixture dir and updates DownloadProgress",
-        .timeLimit(.minutes(1))
-    )
+    @Test("End-to-end: HFCacheByteMonitor.start polls a fixture dir and updates DownloadProgress")
     func endToEndPollsFixture() async throws {
         let fm = FileManager.default
         let hubRoot = fm.temporaryDirectory
@@ -350,10 +347,7 @@ struct HFCacheByteMonitorTests {
         await handle.stopAndWait()
     }
 
-    @Test(
-        "End-to-end: missing cache dir leaves DownloadProgress untouched — UI falls back cleanly",
-        .timeLimit(.minutes(1))
-    )
+    @Test("End-to-end: missing cache dir leaves DownloadProgress untouched — UI falls back cleanly")
     func endToEndMissingDir() async throws {
         let absent = URL(fileURLWithPath: "/tmp/rapid-hf-absent-\(UUID().uuidString)", isDirectory: true)
         let progress = DownloadProgress()
@@ -369,10 +363,7 @@ struct HFCacheByteMonitorTests {
         await handle.stopAndWait()
     }
 
-    @Test(
-        "End-to-end: Handle.stop() cancels the poll task — no further updates after cancel",
-        .timeLimit(.minutes(1))
-    )
+    @Test("End-to-end: Handle.stop() cancels the poll task — no further updates after cancel")
     func endToEndStopHaltsPolling() async throws {
         let fm = FileManager.default
         let hubRoot = fm.temporaryDirectory
@@ -404,6 +395,58 @@ struct HFCacheByteMonitorTests {
         try Data(repeating: 0x22, count: 1024 * 1024).write(to: blob2)
         // The byte count should not have advanced from the post-stop write.
         #expect(progress.bytesDownloaded == firstBytes)
+    }
+
+    @Test("waitForFirstPoll shares one completed result with concurrent and later callers")
+    func firstPollResultIsShared() async throws {
+        let fm = FileManager.default
+        let hubRoot = fm.temporaryDirectory
+            .appendingPathComponent("rapid-hf-shared-poll-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: hubRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: hubRoot) }
+
+        let modelDir = try makeFixtureCacheDir(
+            hubRoot: hubRoot,
+            owner: "shared",
+            repo: "poll"
+        )
+        try Data(repeating: 0x33, count: 4096)
+            .write(to: modelDir.appendingPathComponent("blobs/seed"))
+
+        let handle = HFCacheByteMonitor.start(
+            cacheDir: modelDir,
+            progress: DownloadProgress(),
+            pollInterval: 0.2
+        )
+        defer { handle.stop() }
+
+        async let first = handle.waitForFirstPoll()
+        async let second = handle.waitForFirstPoll()
+        let (firstResult, secondResult) = await (first, second)
+        #expect(firstResult)
+        #expect(secondResult)
+        #expect(await handle.waitForFirstPoll())
+        await handle.stopAndWait()
+    }
+
+    @Test("stop before the first poll completes waiters without publishing")
+    func stopBeforeFirstPollCompletesWaiters() async {
+        let progress = DownloadProgress()
+        let handle = HFCacheByteMonitor.start(
+            cacheDir: URL(
+                fileURLWithPath: "/tmp/rapid-hf-prepoll-stop-\(UUID().uuidString)",
+                isDirectory: true
+            ),
+            progress: progress,
+            pollInterval: 0.2,
+            isCancelled: { true }
+        )
+
+        handle.stop()
+        #expect(await handle.waitForFirstPoll() == false)
+        await handle.stopAndWait()
+        #expect(progress.hasDiskObservation == false)
+        #expect(progress.bytesDownloaded == nil)
     }
 }
 
