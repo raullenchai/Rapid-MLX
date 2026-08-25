@@ -1222,56 +1222,68 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-def _reject_overlong_audio(tmp_path: str) -> None:
-    """Reject audio whose DURATION exceeds what one request may decode.
+def _audio_request_bytes(tmp_path: str) -> int:
+    """Peak decode memory to charge this request, rejecting what exceeds limits.
 
-    ``MAX_AUDIO_UPLOAD_SIZE`` bounds compressed bytes, which says nothing about
-    the decoded waveform — a 25 MB 6 kbps Opus stream is ~9.7 hours of audio,
-    ~2.1 GiB as float32 at 16 kHz. The residency reservation is per role and
-    made at load time, so it cannot absorb a per-request buffer that varies by
-    orders of magnitude; bound the request instead.
+    Fails closed on MEMORY without failing closed on FORMAT — the distinction
+    matters, because those are different risks with different costs.
 
-    Duration comes from container metadata (``wave`` / ``soundfile.info``),
-    which does not decode the stream, so this costs nothing on the happy path.
-    A file whose duration cannot be read cheaply is allowed through: refusing
-    it would reject formats the engine handles fine, and the upload cap still
-    applies.
+    * **Duration readable** (WAV/FLAC/OGG/Opus/... headers): enforce the
+      absolute :data:`MAX_TRANSCRIPTION_SECONDS` limit and charge the real
+      decoded size.
+    * **Duration unreadable**: charge the WORST CASE the file size permits,
+      assuming the lowest bitrate any real codec produces. A 25 MB container we
+      cannot parse cannot decode to more than that, whatever it turns out to
+      be, so the budget check is still sound. Simply refusing here would reject
+      containers the mlx-audio backend decodes perfectly well (it accepts more
+      formats than libsndfile), turning a memory guard into a compatibility
+      regression.
 
-    The probe is implemented here rather than imported from ``..audio.stt``
-    because that module is the mlx-audio-backed engine: importing it makes an
-    ``ImportError`` on installs without mlx-audio, which the caller maps to a
-    503 "mlx-audio not installed" — turning a working request into a failure.
-    Reading a WAV header needs no audio backend at all.
+    Either way the returned charge is held against the ceiling for the life of
+    the request, so an unreadable-but-huge file is rejected by the budget
+    rather than silently decoded.
     """
 
-    from ..runtime.audio_capacity import MAX_TRANSCRIPTION_SECONDS
+    from ..runtime.audio_capacity import (
+        MAX_TRANSCRIPTION_SECONDS,
+        transcription_buffer_bytes,
+        worst_case_duration_seconds,
+    )
 
     duration = _probe_audio_duration_seconds(tmp_path)
-    if duration is None or duration <= MAX_TRANSCRIPTION_SECONDS:
-        return
-    raise HTTPException(
-        status_code=413,
-        detail={
-            "error": {
-                "message": (
-                    f"Audio is {duration / 3600:.1f} hours long, which exceeds "
-                    f"the {MAX_TRANSCRIPTION_SECONDS / 3600:.0f}-hour limit for "
-                    "a single request. Split the recording into shorter "
-                    "segments."
-                ),
-                "type": "invalid_request_error",
-                "code": "audio_too_long",
-                "param": "file",
-            }
-        },
-    )
+    if duration is None:
+        try:
+            size = os.path.getsize(tmp_path)
+        except OSError:
+            size = MAX_AUDIO_UPLOAD_SIZE
+        return transcription_buffer_bytes(worst_case_duration_seconds(size))
+
+    if duration > MAX_TRANSCRIPTION_SECONDS:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": {
+                    "message": (
+                        f"Audio is {duration / 3600:.1f} hours long, which "
+                        f"exceeds the {MAX_TRANSCRIPTION_SECONDS / 3600:.0f}-hour "
+                        "limit for a single request. Split the recording into "
+                        "shorter segments."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "audio_too_long",
+                    "param": "file",
+                }
+            },
+        )
+    return transcription_buffer_bytes(duration)
 
 
 def _probe_audio_duration_seconds(tmp_path: str) -> float | None:
     """Read duration from container metadata, or ``None`` if unavailable.
 
-    Metadata only — never decodes. ``None`` means "could not tell cheaply",
-    which the caller treats as acceptable rather than as a rejection.
+    Metadata only — never decodes. ``soundfile`` covers WAV/FLAC/OGG/Opus and
+    everything else libsndfile knows; ``wave`` is tried first because it is
+    stdlib and needs no optional dependency for the common case.
     """
 
     try:
@@ -1373,9 +1385,9 @@ async def _run_stt_request(
 
         # The upload cap bounds COMPRESSED bytes, so it cannot bound the
         # decoded waveform: 25 MB of low-bitrate Opus is hours of audio and
-        # gigabytes of float32. Reject over-long input from cheap metadata,
-        # before the engine allocates anything (#2305 follow-up).
-        _reject_overlong_audio(tmp_path)
+        # gigabytes of float32. Size the decode from cheap metadata before the
+        # engine allocates anything, and charge it for the request (#2305).
+        request_bytes = _audio_request_bytes(tmp_path)
 
         from ..audio.stt import STTEngine
 
@@ -1412,7 +1424,7 @@ async def _run_stt_request(
                 transcribe_kwargs["context"] = context.strip()
             from ..runtime.audio_worker import run_audio_mlx
 
-            async with leasing_audio_role("stt"):
+            async with leasing_audio_role("stt", request_bytes=request_bytes):
                 result = await run_audio_mlx(
                     "stt",
                     model_name,
@@ -1727,12 +1739,17 @@ async def release_audio_role(lane: str) -> None:
 
 
 @asynccontextmanager
-async def leasing_audio_role(lane: str):
+async def leasing_audio_role(lane: str, *, request_bytes: int = 0):
     """Hold a lane's role against idle eviction while a request runs.
 
     Complements the ``can_release`` veto: the veto covers the window before a
     request reaches its lease, this covers the inference itself, and both are
     checked under the manager lock.
+
+    ``request_bytes`` charges this request's peak working set against the same
+    ceiling for as long as it runs, so a role sitting near the limit cannot
+    still allocate gigabytes of waveform on top of its reservation. A request
+    that does not fit is rejected here, before the buffers are allocated.
 
     Degrades to a no-op whenever the role is not tracked (no residency
     manager, or the engine was cached before this budget existed) — a missing
@@ -1744,6 +1761,7 @@ async def leasing_audio_role(lane: str):
         yield
         return
     from ..runtime.audio_worker import LANE_ROLES
+    from ..runtime.resident_models import ResidentRoleConflictError
 
     role = LANE_ROLES.get(lane)
     if role is None:
@@ -1751,12 +1769,16 @@ async def leasing_audio_role(lane: str):
         return
     async with AsyncExitStack() as stack:
         try:
-            await stack.enter_async_context(manager.lease_role(role))
+            await stack.enter_async_context(
+                manager.lease_role(role, request_bytes=request_bytes)
+            )
         except KeyError:
             # Untracked lane. The ``except`` deliberately wraps only the
             # acquisition: wrapping the ``yield`` too would swallow a KeyError
             # raised by the request body itself.
             pass
+        except ResidentRoleConflictError as exc:
+            raise audio_role_capacity_error(exc) from exc
         yield
 
 
@@ -2155,7 +2177,7 @@ async def _run_alignment_request(
 
         # Same duration bound as the ASR lane: alignment decodes the whole
         # waveform too, and the upload cap only limits compressed bytes.
-        _reject_overlong_audio(tmp_path)
+        request_bytes = _audio_request_bytes(tmp_path)
 
         # Weight load + alignment are seconds of blocking compute, so run
         # them on a worker thread — an ``async def`` handler that calls
@@ -2170,7 +2192,7 @@ async def _run_alignment_request(
         # disconnects and cancels us mid-align.
         async with _get_stt_lane_lock():
             await _ensure_aligner_engine(model_name)
-            async with leasing_audio_role("alignment"):
+            async with leasing_audio_role("alignment", request_bytes=request_bytes):
                 result = await run_to_completion(
                     _align_blocking, model_name, tmp_path, text, language
                 )
@@ -3393,7 +3415,18 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         try:
             async with _get_tts_lane_lock():
                 await _ensure_tts_engine(model_name)
-                async with leasing_audio_role("tts"):
+                from ..runtime.audio_capacity import speech_buffer_bytes
+
+                # Charge the synthesized output, sized from SAMPLES rather
+                # than characters: ``speed`` down to 0.25 quadruples the
+                # duration of identical text, and the pipeline holds several
+                # copies of the waveform at once.
+                async with leasing_audio_role(
+                    "tts",
+                    request_bytes=speech_buffer_bytes(
+                        len(input_text), speed=gen_kwargs.get("speed", 1.0)
+                    ),
+                ):
                     audio_bytes, output_rate, output_channels = await run_to_completion(
                         _generate_speech_blocking,
                         model_name,

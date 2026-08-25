@@ -91,6 +91,7 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         usage_bytes: int,
         capacity_unknown: bool = False,
         measured_overshoot: bool = False,
+        request_buffer: bool = False,
     ) -> None:
         self.requested = requested
         self.conflicts = conflicts
@@ -98,12 +99,15 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         self.usage_bytes = usage_bytes
         self.capacity_unknown = capacity_unknown
         self.measured_overshoot = measured_overshoot
+        self.request_buffer = request_buffer
         super().__init__(self.message)
 
     @property
     def code(self) -> str:
         if self.capacity_unknown:
             return "role_capacity_unknown"
+        if self.request_buffer:
+            return "role_request_too_large"
         return "role_capacity_conflict"
 
     @property
@@ -120,6 +124,14 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
             f"{conflict.role} ({conflict.model}, {conflict.bytes / _GIB:.2f} GiB)"
             for conflict in self.conflicts
         )
+        if self.request_buffer:
+            return (
+                f"this {self.requested.role} request needs "
+                f"{self.requested.bytes / _GIB:.2f} GiB of working memory, which "
+                f"does not fit under the {self.limit_bytes / _GIB:.2f} GiB "
+                f"ceiling already holding {held or 'the running process'}. Send "
+                "a shorter request."
+            )
         if self.measured_overshoot:
             return (
                 f"unloaded {self.requested.model!r} ({self.requested.role}): it "
@@ -329,6 +341,10 @@ class AuxiliaryRoleRecord:
     loaded_at: float = 0.0
     last_used_at: float = 0.0
     unload: Callable[[], object] | None = None
+    #: Peak working-set bytes charged by the requests currently in flight on
+    #: this role. Separate from ``reserved_bytes`` because it is transient: it
+    #: rises and falls per request while the weight reservation stays put.
+    request_bytes: int = 0
     #: Owner-supplied veto on release, checked under the manager lock.
     #:
     #: ``active_requests`` alone is not sufficient. A request that finds its
@@ -355,7 +371,9 @@ class AuxiliaryRoleRecord:
 
     @property
     def charged_bytes(self) -> int:
-        return max(self.reserved_bytes, self.measured_bytes)
+        # In-flight request buffers are additive to the weights: both are
+        # resident at the same time.
+        return max(self.reserved_bytes, self.measured_bytes) + self.request_bytes
 
 
 class PrimaryHandoffLease(Protocol):
@@ -1368,8 +1386,20 @@ class ResidentModelManager:
             await self._release_role_locked(record, reason="explicit")
 
     @asynccontextmanager
-    async def lease_role(self, role: str):
-        """Hold an auxiliary role against eviction while a request uses it."""
+    async def lease_role(self, role: str, *, request_bytes: int = 0):
+        """Hold an auxiliary role against eviction while a request uses it.
+
+        ``request_bytes`` charges this request's peak working set — decoded
+        input waveform, generated output, and the pipeline's copies of them —
+        for as long as the request runs. Those buffers are per REQUEST, not per
+        role: the role reservation is made once at load time, so without this a
+        role admitted right up against the ceiling could still allocate
+        gigabytes of waveform on top of it (#2305 follow-up).
+
+        Raises :class:`ResidentRoleConflictError` when the request does not
+        fit. Rejecting is the whole point — the allocation has not happened
+        yet, and the caller turns this into a 507 naming what holds the memory.
+        """
 
         async with self._lock:
             record = self._roles.get(role)
@@ -1377,7 +1407,20 @@ class ResidentModelManager:
                 raise KeyError(role)
             if record.state != "resident":
                 raise ResidentModelBusyError(f"{role} is not resident")
+            charge = max(0, int(request_bytes))
+            if charge and self.memory_limit_bytes > 0:
+                if self._accounted_usage() + charge > self.memory_limit_bytes:
+                    raise ResidentRoleConflictError(
+                        requested=RoleRef(
+                            role=role, model=record.model_id, bytes=charge
+                        ),
+                        conflicts=self._role_conflicts(exclude_role=""),
+                        limit_bytes=self.memory_limit_bytes,
+                        usage_bytes=self._accounted_usage(),
+                        request_buffer=True,
+                    )
             record.active_requests += 1
+            record.request_bytes += charge
             record.last_used_at = self._clock()
         try:
             yield record
@@ -1386,6 +1429,7 @@ class ResidentModelManager:
                 current = self._roles.get(role)
                 if current is record:
                     current.active_requests = max(0, current.active_requests - 1)
+                    current.request_bytes = max(0, current.request_bytes - charge)
                     current.last_used_at = self._clock()
 
     def role_snapshot(self) -> list[dict[str, object]]:

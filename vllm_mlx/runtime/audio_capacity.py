@@ -65,40 +65,59 @@ CapacitySource = Literal["manifest", "local_cache", "unknown"]
 #: Working-set allowance added on top of the weight footprint.
 #:
 #: This covers ENGINE ACTIVATIONS only — encoder/decoder intermediates for the
-#: largest checkpoints in the registry. It deliberately does NOT try to cover
-#: the decoded request payload.
+#: largest checkpoints in the registry. Request payloads are charged separately
+#: and per request; see :func:`transcription_buffer_bytes` and
+#: :func:`speech_buffer_bytes`.
 #:
 #: An earlier revision claimed 512 MiB was an arithmetic bound on the decoded
 #: audio buffer, reasoning from ``routes.audio.MAX_AUDIO_UPLOAD_SIZE`` (25 MB).
-#: That reasoning was wrong: the upload cap bounds COMPRESSED bytes, not
-#: duration. 25 MB of 6 kbps Opus decodes to ~9.7 hours of audio, which is
-#: ~2.1 GiB as float32 at 16 kHz — four times this allowance. Speech output has
-#: no bound at all, since ``AudioSpeechRequest.input`` carries only
-#: ``min_length``.
-#:
-#: Request-sized buffers are therefore bounded at the REQUEST, by
-#: :data:`MAX_TRANSCRIPTION_SECONDS` and :data:`MAX_SPEECH_INPUT_CHARACTERS`,
-#: rather than folded into this per-role reservation. A per-role constant
-#: cannot cover them correctly anyway: the role is admitted once, at load time,
-#: while the buffers are allocated per request and vary by three orders of
-#: magnitude between them.
+#: That reasoning was wrong twice over: the upload cap bounds COMPRESSED bytes
+#: (25 MB of 6 kbps Opus is ~9.7 hours, ~2.1 GiB of float32 at 16 kHz), and a
+#: fixed per-role constant cannot cover a per-request allocation at all. The
+#: role is admitted once at load time; buffers are allocated per request, vary
+#: by orders of magnitude, and several can be live at once.
 AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES: int = 512 * _MIB
 
 #: Longest audio a single transcription/alignment request may decode.
 #:
 #: The upload cap cannot express this: it limits compressed bytes, so a
-#: low-bitrate stream slips hours of audio under it. Two hours at float32
-#: 16 kHz is ~440 MiB of waveform, which the allowance above comfortably
-#: covers, and it is far beyond any interactive dictation use.
+#: low-bitrate stream slips hours of audio under it. This is an absolute
+#: ceiling on request size; whether a given request actually fits is a separate
+#: question answered against the live budget by :func:`transcription_buffer_bytes`.
 MAX_TRANSCRIPTION_SECONDS: float = 2 * 60 * 60.0
+
+#: Sample rate the STT lane resamples input to before inference.
+STT_SAMPLE_RATE: int = 16_000
 
 #: Longest text a single speech-synthesis request may vocalize.
 #:
-#: TTS allocates output waveform proportional to the input length, so an
-#: unbounded ``input`` is an unbounded allocation. 20k characters is roughly
-#: three hours of speech — well past any real request, while still leaving the
-#: endpoint usable for long-form narration.
+#: A character count alone does NOT bound memory — see
+#: :func:`speech_buffer_bytes` for what actually does. This limit exists so the
+#: request is rejected on a cheap check before any sizing work, and so the
+#: error names the field the caller controls.
 MAX_SPEECH_INPUT_CHARACTERS: int = 20_000
+
+#: Speech produced per input character, at ``speed=1.0``.
+#:
+#: Deliberately conservative (slow speech = more samples = more memory). Real
+#: narration runs 12-16 characters/second; 2.0 chars/second is well below that,
+#: so the derived reservation over-estimates rather than under-estimates.
+_SPEECH_CHARACTERS_PER_SECOND: float = 2.0
+
+#: Highest output sample rate across the TTS registry, and channel count.
+#: VibeVoice/Qwen3 emit 24 kHz mono; using the maximum keeps the estimate an
+#: upper bound for every engine rather than a per-model guess.
+_TTS_SAMPLE_RATE: int = 24_000
+_TTS_CHANNELS: int = 1
+
+#: Peak-to-result multiplier for the synthesis pipeline.
+#:
+#: The generated waveform is not the peak. ``TTSEngine.generate`` retains every
+#: chunk in ``audio_chunks`` and then allocates the concatenated result
+#: (2x live), and ``to_bytes`` builds an int16 copy plus the encoded byte
+#: buffer (another 1x of float32-equivalent between them). 3.5x covers the
+#: overlap with margin.
+_TTS_PEAK_MULTIPLIER: float = 3.5
 
 
 @dataclass(frozen=True)
@@ -208,11 +227,18 @@ def _snapshot_bytes(hf_id: str) -> int | None:
 def _cache_is_complete(hf_id: str) -> bool:
     """True when ``hf_id`` has a fully-downloaded snapshot the loader can open.
 
-    Whisper repositories ship ``weights.npz`` + ``config.json`` and contain no
-    ``model*.safetensors``, so the generic text probe rejects a perfectly
-    complete Whisper cache. The download gate already carries a family-aware
-    probe for exactly that; dispatch the same way ``rapid-mlx models`` does
-    rather than growing a third notion of completeness in this module.
+    Dispatches on the LAYOUT ON DISK, not on registry membership. mlx-audio
+    checkpoints ship ``config.json`` + ``weights.npz`` and carry no
+    ``model*.safetensors``, so the generic text probe rejects them — and the
+    routes accept any ``<org>/<repo>``, so gating the NPZ probe on "resolves to
+    a registered Whisper alias" made a complete custom NPZ repo resolve to
+    ``unknown`` and 507 under a ceiling.
+
+    Applying the NPZ probe by layout is safe here in a way it is not in the
+    download gate: this module is only ever asked about models that are about
+    to be loaded into an AUDIO role, so an NPZ checkpoint is exactly what we
+    expect. The gate keeps its family restriction because it also answers for
+    text repositories, where a stray NPZ must not look runnable.
     """
 
     from .._download_gate import (
@@ -220,12 +246,15 @@ def _cache_is_complete(hf_id: str) -> bool:
         _snapshot_is_complete_whisper_model,
         is_repo_cached,
     )
-    from ..audio.registry import resolve_audio_alias
 
-    entry = resolve_audio_alias(hf_id)
-    if entry is not None and entry.family == "whisper":
-        return _snapshot_is_complete_whisper_model(hf_id)
-    return is_repo_cached(hf_id) or _snapshot_is_complete_split_model(hf_id)
+    # ``_snapshot_is_complete_whisper_model`` is a pure layout check
+    # (config.json + weights.npz, resolved revision, symlink-escape guarded)
+    # despite its name; it never consults the registry.
+    return (
+        is_repo_cached(hf_id)
+        or _snapshot_is_complete_whisper_model(hf_id)
+        or _snapshot_is_complete_split_model(hf_id)
+    )
 
 
 def _resolved_revision(repo_root: str) -> str | None:
@@ -278,3 +307,62 @@ def resolve_audio_role_capacity(model_id: str) -> AudioRoleCapacity:
         capacity_source=source,
         hf_id=hf_id,
     )
+
+
+def transcription_buffer_bytes(duration_seconds: float) -> int:
+    """Peak bytes one transcription/alignment request needs for its waveform.
+
+    The decoded waveform is float32 at :data:`STT_SAMPLE_RATE`. Whisper also
+    builds a mel spectrogram and the decoder holds windowed copies, so the peak
+    is a small multiple of the raw waveform rather than the waveform alone;
+    3x covers the observed overlap.
+    """
+
+    waveform = max(0.0, duration_seconds) * STT_SAMPLE_RATE * 4
+    return int(waveform * 3)
+
+
+def speech_buffer_bytes(characters: int, *, speed: float = 1.0) -> int:
+    """Peak bytes one synthesis request needs for its output buffers.
+
+    Character count alone is NOT a memory bound, which is why this exists.
+    Three factors multiply it:
+
+    * **Speed.** ``speed`` scales duration inversely, and the API permits
+      0.25 — four times the samples of the same text at 1.0.
+    * **Sample rate and channels.** Samples, not characters, are what get
+      allocated.
+    * **Pipeline copies.** The generator retains per-chunk arrays and then
+      allocates the concatenation; the encoder adds an int16 copy and the
+      output byte buffer. See :data:`_TTS_PEAK_MULTIPLIER`.
+
+    20k characters at ``speed=0.25`` is ~3.6 GiB of float32 output before
+    those copies — which is precisely why the limit cannot be a character
+    count checked in isolation.
+    """
+
+    seconds = max(0, characters) / _SPEECH_CHARACTERS_PER_SECOND
+    seconds /= max(0.25, float(speed))
+    samples = seconds * _TTS_SAMPLE_RATE * _TTS_CHANNELS
+    return int(samples * 4 * _TTS_PEAK_MULTIPLIER)
+
+
+#: Lowest bitrate any real speech codec produces, in bytes per second.
+#:
+#: Opus tops out at roughly 6 kbps for intelligible speech; nothing in
+#: practical use encodes lower. Used to bound the decode of a container whose
+#: duration we cannot read, so the bound holds whatever the format turns out
+#: to be.
+_MIN_CODEC_BYTES_PER_SECOND: float = 6_000 / 8
+
+
+def worst_case_duration_seconds(compressed_bytes: int) -> float:
+    """Longest audio ``compressed_bytes`` could possibly decode to.
+
+    Used when container metadata is unreadable. Charging this instead of
+    refusing the request keeps the memory bound sound — the file cannot contain
+    more audio than this — without rejecting containers the decoding backend
+    handles but the metadata probe does not recognise.
+    """
+
+    return max(0, compressed_bytes) / _MIN_CODEC_BYTES_PER_SECOND

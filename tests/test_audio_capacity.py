@@ -226,7 +226,7 @@ def test_overlong_audio_is_rejected_before_the_engine_allocates(tmp_path):
 
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.audio import _reject_overlong_audio
+    from vllm_mlx.routes.audio import _audio_request_bytes
     from vllm_mlx.runtime.audio_capacity import MAX_TRANSCRIPTION_SECONDS
 
     def write_short_wav(path, rate=8000):
@@ -238,7 +238,8 @@ def test_overlong_audio_is_rejected_before_the_engine_allocates(tmp_path):
         return path
 
     short = write_short_wav(tmp_path / "short.wav")
-    _reject_overlong_audio(str(short))  # must not raise
+    # A tiny file charges a tiny amount rather than raising.
+    assert _audio_request_bytes(str(short)) < 1024 * 1024
 
     long_path = tmp_path / "long.wav"
     rate = 8000
@@ -259,9 +260,34 @@ def test_overlong_audio_is_rejected_before_the_engine_allocates(tmp_path):
         handle.write((size - 8).to_bytes(4, "little"))
 
     with pytest.raises(HTTPException) as excinfo:
-        _reject_overlong_audio(str(long_path))
+        _audio_request_bytes(str(long_path))
     assert excinfo.value.status_code == 413
     assert excinfo.value.detail["error"]["code"] == "audio_too_long"
+
+
+def test_unreadable_container_is_charged_worst_case_not_refused(tmp_path):
+    """A format the metadata probe cannot parse must still be bounded.
+
+    Refusing outright would reject containers the mlx-audio backend decodes
+    fine (it accepts more formats than libsndfile), turning a memory guard into
+    a compatibility regression. Charging the worst case the file size permits
+    keeps the bound sound without that cost.
+    """
+
+    from vllm_mlx.routes.audio import _audio_request_bytes
+    from vllm_mlx.runtime.audio_capacity import (
+        transcription_buffer_bytes,
+        worst_case_duration_seconds,
+    )
+
+    opaque = tmp_path / "mystery.bin"
+    opaque.write_bytes(b"\x00" * 4096)
+
+    charged = _audio_request_bytes(str(opaque))
+
+    assert charged == transcription_buffer_bytes(worst_case_duration_seconds(4096))
+    # Non-zero: an unmeasurable file must not be free.
+    assert charged > 0
 
 
 def test_speech_input_is_length_bounded():
@@ -275,3 +301,49 @@ def test_speech_input_is_length_bounded():
     assert AudioSpeechRequest(input="x" * MAX_SPEECH_INPUT_CHARACTERS)
     with pytest.raises(ValidationError):
         AudioSpeechRequest(input="x" * (MAX_SPEECH_INPUT_CHARACTERS + 1))
+
+
+def test_speech_buffer_scales_with_speed_not_just_characters():
+    """20k chars is not a memory bound on its own — speed multiplies it."""
+
+    from vllm_mlx.runtime.audio_capacity import (
+        MAX_SPEECH_INPUT_CHARACTERS,
+        speech_buffer_bytes,
+    )
+
+    at_normal = speech_buffer_bytes(MAX_SPEECH_INPUT_CHARACTERS, speed=1.0)
+    at_slowest = speech_buffer_bytes(MAX_SPEECH_INPUT_CHARACTERS, speed=0.25)
+
+    # speed=0.25 quadruples the duration of identical text.
+    assert at_slowest == pytest.approx(at_normal * 4, rel=0.01)
+    # And the worst case is multi-GiB, which is why it must be charged rather
+    # than assumed to fit inside a fixed per-role allowance.
+    assert at_slowest > 4 * 1024**3
+    assert at_slowest > AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES
+
+
+def test_custom_npz_repo_is_measured_without_registry_membership(tmp_path, monkeypatch):
+    """The routes accept any org/repo, so completeness must follow the layout.
+
+    An unregistered but complete config.json + weights.npz repo previously fell
+    through to the text/split probes, resolved to "unknown", and 507'd under a
+    ceiling even though it was fully downloaded.
+    """
+
+    repo_id = "someone/custom-asr-npz"
+    repo_root = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / "sha-a"
+    snapshot.mkdir(parents=True)
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text("sha-a")
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "weights.npz").write_bytes(b"x" * 8192)
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path), raising=False
+    )
+
+    capacity = resolve_audio_role_capacity(repo_id)
+
+    assert capacity.capacity_source == "local_cache"
+    assert capacity.weight_bytes == 8192 + 2

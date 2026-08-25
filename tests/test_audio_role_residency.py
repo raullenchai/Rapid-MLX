@@ -833,3 +833,46 @@ async def test_engine_process_exit_releases_the_role_and_frees_its_budget():
     # Budget fully reclaimed: a role that needs the freed bytes now fits.
     await admit(manager, role="speech-input", lane="stt", model="whisper", gib=5)
     assert [role["role"] for role in manager.snapshot()["roles"]] == ["speech-input"]
+
+
+@pytest.mark.asyncio
+async def test_request_buffer_is_charged_against_the_shared_ceiling():
+    """A role admitted near the ceiling must not still allocate GiB of buffer.
+
+    The role reservation is made once at load time; request buffers are
+    per request and vary by orders of magnitude. Without charging them, a
+    speech role sitting just under the limit could decode a two-hour waveform
+    on top of its reservation and blow through the ceiling.
+    """
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    await admit(manager, role="speech-input", lane="stt", model="whisper", gib=5)
+
+    # 4 + 5 = 9 GiB held; a 3 GiB request does not fit under 10.
+    with pytest.raises(ResidentRoleConflictError) as excinfo:
+        async with manager.lease_role("speech-input", request_bytes=3 * GIB):
+            pass
+
+    assert excinfo.value.request_buffer is True
+    assert excinfo.value.envelope()["error"]["code"] == "role_request_too_large"
+
+    # A request that does fit is admitted and charged for its duration.
+    async with manager.lease_role("speech-input", request_bytes=512 * 1024 * 1024):
+        assert manager.snapshot()["memory_used_bytes"] > 9 * GIB
+
+    # ...and released afterwards.
+    assert manager.snapshot()["memory_used_bytes"] == 9 * GIB
+
+
+@pytest.mark.asyncio
+async def test_in_flight_request_buffer_blocks_a_second_concurrent_request():
+    """Concurrent requests must not each assume the whole headroom."""
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    await admit(manager, role="speech-input", lane="stt", model="whisper", gib=3)
+
+    async with manager.lease_role("speech-input", request_bytes=2 * GIB):
+        # 4 + 3 + 2 = 9 GiB; another 2 GiB request cannot also fit.
+        with pytest.raises(ResidentRoleConflictError):
+            async with manager.lease_role("speech-input", request_bytes=2 * GIB):
+                pass
