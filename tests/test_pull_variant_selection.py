@@ -99,7 +99,9 @@ def test_empty_selector_errors_cleanly(capsys):
     """pull --format \"\" exits with a clear message, not an unrestricted pull."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="")
     with (
-        patch("huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()),
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
+        ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch.object(cli.sys, "exit", side_effect=SystemExit(1)),
         pytest.raises(SystemExit),
