@@ -115,12 +115,15 @@ struct FileHandleSafeReadTests {
         close(high)                              // free the pinned high — now bad, and private
         // Prove the descriptor really is EBADF at this instant (fcntl F_GETFD on a
         // closed fd → -1/EBADF) in the same synchronous sequence as the drain, so a
-        // regression like an ineffective close() is caught. This test is the ONLY
-        // one that ever dup()s into the >= highMin range, so `high` cannot have
-        // been re-issued to a concurrent test's low-numbered Pipe().
-        errno = 0
-        #expect(fcntl(high, F_GETFD) == -1)
-        #expect(errno == EBADF)
+        // regression like an ineffective close() is caught. Snapshot BOTH the return
+        // value and errno immediately after fcntl — Swift Testing's #expect machinery
+        // may itself clobber the thread-local errno before we can read it. This test is
+        // the ONLY one that ever dup()s into the >= highMin range, so `high` cannot
+        // have been re-issued to a concurrent test's low-numbered Pipe().
+        let fdState = fcntl(high, F_GETFD)
+        let fdErrno = errno
+        #expect(fdState == -1)
+        #expect(fdErrno == EBADF)
         let result = drainer.drain()
         try? pipe.fileHandleForWriting.close()   // writer held open through the drain
         #expect(result.data.isEmpty)            // no crash, no bytes
