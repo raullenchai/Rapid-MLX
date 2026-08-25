@@ -74,15 +74,38 @@ struct FileHandleSafeReadTests {
     /// A descriptor closed UNDERNEATH the drainer (the fd-reuse race the
     /// owning-handle design guards) must degrade to empty rather than
     /// crashing — raw `read(2)` surfaces EBADF as -1, never an NSException.
+    ///
+    /// Deterministic-guard (#2318): the bad descriptor is a private HIGH fd
+    /// number (via `F_DUPFD`, first free fd >= 1024) that is ALREADY CLOSED at
+    /// drainer-construction time. `drain()` then returns empty through the
+    /// `ready == false` guard (`fcntl(F_GETFL)` on a closed fd → EBADF → -1)
+    /// and NEVER issues a `read(2)`. Because no read is performed on a number
+    /// the OS may recycle into a concurrent test's `Pipe()`, the bad drain can
+    /// never consume or detach another test's descriptor — the suite-wide
+    /// fd-reuse cross-talk in #2318 becomes impossible. (The prior form
+    /// constructed the drainer over the live LOW read fd, closed that same
+    /// number, then drained it — the OS immediately recycled it into a
+    /// concurrent test's pipe, so the bad drain read that test's bytes while
+    /// the buffered drain read nothing — the #2318 paired failure.)
     @Test("PipeDrainer returns empty on a bad descriptor instead of crashing")
     func drainOnBadDescriptorDoesNotCrash() throws {
         let pipe = Pipe()
-        let drainer = PipeDrainer(pipe.fileHandleForReading)  // constructed live
-        // Close the read handle out from under the drainer, then drain.
-        try pipe.fileHandleForReading.close()
+        let low = pipe.fileHandleForReading.fileDescriptor
+        // Pin a private HIGH number via F_DUPFD; the original LOW fd is then
+        // released through Foundation's own `FileHandle.close()` so its
+        // deinit cannot later re-`close(2)` a number the OS already recycled
+        // to a concurrent test (#2318 double-close aliasing).
+        let high = fcntl(low, F_DUPFD, 1_024)
+        #expect(high >= 0, "fcntl(F_DUPFD) failed to pin a private bad fd")
         try? pipe.fileHandleForWriting.close()
+        try pipe.fileHandleForReading.close()    // release low via Foundation (no double-close)
+        close(high)                              // free the pinned high — now bad, and private
+        // Construct on the already-closed HIGH fd: F_GETFL → EBADF → ready=false,
+        // so drain() returns empty via the guard with NO read(2) at all.
+        let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
         let result = drainer.drain()
         #expect(result.data.isEmpty)            // no crash, no bytes
+        #expect(!result.atEOF)                  // ready=false guard → not EOF-signalled
     }
 
     /// The codex r2 BLOCKING regression: two drains of the SAME pipe running
