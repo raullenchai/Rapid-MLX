@@ -1241,6 +1241,7 @@ class ResidentModelManager:
         reserved_bytes: int,
         capacity_source: str,
         weight_bytes: int | None = None,
+        pending_request_bytes: int = 0,
     ):
         """Reserve budget for an audio role for the duration of its load.
 
@@ -1251,6 +1252,14 @@ class ResidentModelManager:
         concurrent chat load; the reservation stays visible in
         ``_accounted_usage`` throughout, so releasing the lock does not release
         the budget.
+
+        ``pending_request_bytes`` folds the work the caller is about to do into
+        that same decision. Without it the check answers the wrong question:
+        "do the weights fit", when the caller will immediately also need its
+        request buffer. A combination where the model fits but model+request
+        does not would then load and retain gigabytes of weights only to be
+        rejected afterwards — still a load before an admission failure, which
+        is exactly what #2305 forbids.
 
         The yielded record must have ``unload`` set by the caller BEFORE it
         starts loading, not after. Cancellation is delivered once the in-flight
@@ -1272,7 +1281,11 @@ class ResidentModelManager:
                 if existing.state in {"admitting", "loading"}:
                     raise ResidentModelBusyError(f"{role} is already being admitted")
                 await self._release_role_locked(existing, reason="role_replaced")
-            requested = RoleRef(role=role, model=model_id, bytes=reserved_bytes)
+            requested = RoleRef(
+                role=role,
+                model=model_id,
+                bytes=reserved_bytes + max(0, int(pending_request_bytes)),
+            )
             await self._admit_role_locked(requested, exclude_role=role)
             now = self._clock()
             record = AuxiliaryRoleRecord(
@@ -1445,6 +1458,9 @@ class ResidentModelManager:
                 "active_requests": role.active_requests,
                 "reserved_bytes": role.reserved_bytes,
                 "measured_bytes": role.measured_bytes or None,
+                # Without this the total moves during a request and no role
+                # field explains why (#2305 telemetry consistency).
+                "request_bytes": role.request_bytes,
                 "weight_bytes": role.weight_bytes,
                 "capacity_source": role.capacity_source,
                 "idle_seconds": (

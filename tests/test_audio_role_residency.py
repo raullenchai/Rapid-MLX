@@ -876,3 +876,78 @@ async def test_in_flight_request_buffer_blocks_a_second_concurrent_request():
         with pytest.raises(ResidentRoleConflictError):
             async with manager.lease_role("speech-input", request_bytes=2 * GIB):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_loader_never_runs_when_model_plus_request_does_not_fit(
+    monkeypatch, route_manager
+):
+    """#2305 requires rejection BEFORE weight loading, not after.
+
+    The dangerous case is "the model fits, but the model plus this request
+    does not". Admitting on weights alone loads and retains gigabytes, then
+    fails the lease — a load that precedes an admission failure. The pending
+    request charge must therefore be part of the pre-load decision.
+
+    Existing coverage seeded a resident role first, so it never observed
+    whether the loader ran.
+    """
+
+    from fastapi import HTTPException
+
+    from vllm_mlx.audio import tts as tts_module
+    from vllm_mlx.routes import audio as audio_route
+
+    manager, _clock = route_manager
+    loads: list[str] = []
+
+    class _TTS:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            loads.append(self.model_name)
+
+        def unload(self) -> None:
+            pass
+
+    monkeypatch.setattr(tts_module, "TTSEngine", _TTS)
+    monkeypatch.setattr(audio_route, "_tts_engine", None)
+
+    # 10 GiB ceiling, 4 GiB conversation model, kokoro's weights ~0.83 GiB —
+    # comfortably resident on their own. A 6 GiB request buffer on top of them
+    # is what does not fit.
+    with pytest.raises(HTTPException) as excinfo:
+        await audio_route._ensure_tts_engine("kokoro", request_bytes=6 * GIB)
+
+    assert excinfo.value.status_code == 507
+    # The whole point of this test.
+    assert loads == []
+    assert audio_route._tts_engine is None
+    assert manager.snapshot()["roles"] == []
+
+    # The same model without the oversized request loads normally.
+    await audio_route._ensure_tts_engine("kokoro", request_bytes=64 * 1024 * 1024)
+    assert loads == ["kokoro"]
+
+
+@pytest.mark.asyncio
+async def test_in_flight_request_bytes_are_visible_in_role_telemetry():
+    """memory_used_bytes must never move without a role field explaining it."""
+
+    manager, _clock = manager_fixture(limit_gib=20, primary_gib=4)
+    await admit(manager, role="speech-input", lane="stt", model="whisper", gib=3)
+
+    before = manager.snapshot()
+    assert before["roles"][0]["request_bytes"] == 0
+
+    async with manager.lease_role("speech-input", request_bytes=512 * 1024 * 1024):
+        during = manager.snapshot()
+        assert during["roles"][0]["request_bytes"] == 512 * 1024 * 1024
+        # The delta in the total is fully accounted for by the role field.
+        assert (
+            during["memory_used_bytes"] - before["memory_used_bytes"]
+            == during["roles"][0]["request_bytes"]
+        )
+
+    assert manager.snapshot()["roles"][0]["request_bytes"] == 0

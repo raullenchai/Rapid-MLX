@@ -104,11 +104,17 @@ MAX_SPEECH_INPUT_CHARACTERS: int = 20_000
 #: so the derived reservation over-estimates rather than under-estimates.
 _SPEECH_CHARACTERS_PER_SECOND: float = 2.0
 
-#: Highest output sample rate across the TTS registry, and channel count.
-#: VibeVoice/Qwen3 emit 24 kHz mono; using the maximum keeps the estimate an
-#: upper bound for every engine rather than a per-model guess.
-_TTS_SAMPLE_RATE: int = 24_000
-_TTS_CHANNELS: int = 1
+#: Highest NATIVE output sample rate across the TTS registry.
+#:
+#: Kokoro and Qwen3 emit 24 kHz, but Dia and VoxCPM emit 44.1 kHz. Assuming the
+#: maximum keeps the estimate an upper bound for every registered engine rather
+#: than a per-model guess that is wrong for half of them.
+_TTS_NATIVE_SAMPLE_RATE: int = 44_100
+
+#: Source layout assumed when a request's container metadata is unreadable.
+#: 48 kHz stereo is the highest layout consumer recorders produce in practice,
+#: so sizing against it bounds the decode rather than under-charging it.
+_ASSUMED_SOURCE_RATE: int = 48_000
 
 #: Peak-to-result multiplier for the synthesis pipeline.
 #:
@@ -309,60 +315,99 @@ def resolve_audio_role_capacity(model_id: str) -> AudioRoleCapacity:
     )
 
 
-def transcription_buffer_bytes(duration_seconds: float) -> int:
-    """Peak bytes one transcription/alignment request needs for its waveform.
+def transcription_buffer_bytes(
+    duration_seconds: float,
+    *,
+    source_rate: int = 0,
+    source_channels: int = 0,
+) -> int:
+    """Peak bytes one transcription/alignment request needs.
 
-    The decoded waveform is float32 at :data:`STT_SAMPLE_RATE`. Whisper also
-    builds a mel spectrogram and the decoder holds windowed copies, so the peak
-    is a small multiple of the raw waveform rather than the waveform alone;
-    3x covers the observed overlap.
+    Sized from the SOURCE layout, not the resampled result. mlx-audio decodes
+    the file at its own rate and channel count — and libsndfile's default dtype
+    is float64 — before resampling to :data:`STT_SAMPLE_RATE` mono. A two-hour
+    48 kHz stereo file is ~5.2 GiB as source float64 on its own, four times
+    what the final 16 kHz mono float32 waveform would suggest.
+
+    Peak holds the source array, the resampled copy, and the decoder's windowed
+    views at once, so the source term carries a multiplier too.
+
+    ``source_rate``/``source_channels`` default to the worst layout the request
+    could plausibly carry when the caller could not read them
+    (:data:`_ASSUMED_SOURCE_RATE` / stereo), keeping this an upper bound rather
+    than an optimistic guess.
     """
 
-    waveform = max(0.0, duration_seconds) * STT_SAMPLE_RATE * 4
-    return int(waveform * 3)
+    duration = max(0.0, duration_seconds)
+    rate = source_rate if source_rate > 0 else _ASSUMED_SOURCE_RATE
+    channels = source_channels if source_channels > 0 else 2
+
+    # Decoded source: float64 is libsndfile's default read dtype.
+    source = duration * rate * channels * 8
+    # Resampled mono float32 handed to the model, plus mel/window copies.
+    resampled = duration * STT_SAMPLE_RATE * 4 * 3
+    return int(source * 2 + resampled)
 
 
-def speech_buffer_bytes(characters: int, *, speed: float = 1.0) -> int:
+def speech_buffer_bytes(
+    characters: int,
+    *,
+    speed: float = 1.0,
+    sample_rate: int | None = None,
+    channels: int | None = None,
+) -> int:
     """Peak bytes one synthesis request needs for its output buffers.
 
     Character count alone is NOT a memory bound, which is why this exists.
-    Three factors multiply it:
+    Four factors multiply it:
 
     * **Speed.** ``speed`` scales duration inversely, and the API permits
       0.25 — four times the samples of the same text at 1.0.
-    * **Sample rate and channels.** Samples, not characters, are what get
-      allocated.
+    * **Native output rate.** Engines differ; the registry spans 24 kHz
+      (Kokoro/Qwen3) to 44.1 kHz (Dia/VoxCPM). The maximum is assumed so the
+      figure bounds every engine.
+    * **Requested conversion.** ``sample_rate``/``channels`` resample AFTER
+      synthesis, up to 96 kHz stereo. Conversion is not in place: the source
+      waveform and the converted array are both live, so the peak is their sum.
     * **Pipeline copies.** The generator retains per-chunk arrays and then
       allocates the concatenation; the encoder adds an int16 copy and the
       output byte buffer. See :data:`_TTS_PEAK_MULTIPLIER`.
-
-    20k characters at ``speed=0.25`` is ~3.6 GiB of float32 output before
-    those copies — which is precisely why the limit cannot be a character
-    count checked in isolation.
     """
 
     seconds = max(0, characters) / _SPEECH_CHARACTERS_PER_SECOND
     seconds /= max(0.25, float(speed))
-    samples = seconds * _TTS_SAMPLE_RATE * _TTS_CHANNELS
-    return int(samples * 4 * _TTS_PEAK_MULTIPLIER)
+
+    native = seconds * _TTS_NATIVE_SAMPLE_RATE * 4 * _TTS_PEAK_MULTIPLIER
+    if sample_rate is None and channels is None:
+        return int(native)
+
+    out_rate = sample_rate if sample_rate else _TTS_NATIVE_SAMPLE_RATE
+    out_channels = channels if channels else 1
+    # float32 converted array + its int16 copy + the encoded byte buffer.
+    converted = seconds * out_rate * out_channels * 4 * 2
+    return int(native + converted)
 
 
-#: Lowest bitrate any real speech codec produces, in bytes per second.
+#: Longest audio an unreadable container is assumed to hold.
 #:
-#: Opus tops out at roughly 6 kbps for intelligible speech; nothing in
-#: practical use encodes lower. Used to bound the decode of a container whose
-#: duration we cannot read, so the bound holds whatever the format turns out
-#: to be.
-_MIN_CODEC_BYTES_PER_SECOND: float = 6_000 / 8
-
-
+#: Deriving this from a bitrate floor does NOT work. An earlier revision divided
+#: the file size by "6 kbps, the lowest any practical codec produces", but that
+#: is an assumption about encoders, not a bound: a lower-bitrate or highly
+#: compressible stream decodes to more audio than the division predicts, and the
+#: charge comes out too small — precisely the case the guard exists for.
+#:
+#: Since no sound upper bound is derivable from opaque bytes, an unreadable
+#: container is charged the maximum a request may hold at all
+#: (:data:`MAX_TRANSCRIPTION_SECONDS`). That is by construction an upper bound
+#: for anything the route would accept, and it keeps the guard closed on memory
+#: without rejecting formats the backend can decode but the probe cannot parse.
 def worst_case_duration_seconds(compressed_bytes: int) -> float:
-    """Longest audio ``compressed_bytes`` could possibly decode to.
+    """Longest audio ``compressed_bytes`` may be assumed to decode to.
 
-    Used when container metadata is unreadable. Charging this instead of
-    refusing the request keeps the memory bound sound — the file cannot contain
-    more audio than this — without rejecting containers the decoding backend
-    handles but the metadata probe does not recognise.
+    ``compressed_bytes`` is accepted so callers need not special-case an
+    unreadable file, but it is deliberately NOT used to scale the result: see
+    the note above on why a bitrate floor is not a bound.
     """
 
-    return max(0, compressed_bytes) / _MIN_CODEC_BYTES_PER_SECOND
+    del compressed_bytes
+    return MAX_TRANSCRIPTION_SECONDS

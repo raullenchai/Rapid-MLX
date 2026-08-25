@@ -1228,16 +1228,14 @@ def _audio_request_bytes(tmp_path: str) -> int:
     Fails closed on MEMORY without failing closed on FORMAT — the distinction
     matters, because those are different risks with different costs.
 
-    * **Duration readable** (WAV/FLAC/OGG/Opus/... headers): enforce the
-      absolute :data:`MAX_TRANSCRIPTION_SECONDS` limit and charge the real
-      decoded size.
-    * **Duration unreadable**: charge the WORST CASE the file size permits,
-      assuming the lowest bitrate any real codec produces. A 25 MB container we
-      cannot parse cannot decode to more than that, whatever it turns out to
-      be, so the budget check is still sound. Simply refusing here would reject
-      containers the mlx-audio backend decodes perfectly well (it accepts more
-      formats than libsndfile), turning a memory guard into a compatibility
-      regression.
+    * **Metadata readable** (WAV/FLAC/OGG/Opus/... headers): enforce the
+      absolute :data:`MAX_TRANSCRIPTION_SECONDS` limit and charge the decode
+      sized from the file's OWN rate and channel count, which is what the
+      backend actually materializes before resampling.
+    * **Metadata unreadable**: charge the maximum a request may hold at all.
+      Simply refusing would reject containers the mlx-audio backend decodes
+      perfectly well (it accepts more formats than libsndfile), turning a
+      memory guard into a compatibility regression.
 
     Either way the returned charge is held against the ceiling for the life of
     the request, so an unreadable-but-huge file is rejected by the budget
@@ -1250,14 +1248,16 @@ def _audio_request_bytes(tmp_path: str) -> int:
         worst_case_duration_seconds,
     )
 
-    duration = _probe_audio_duration_seconds(tmp_path)
-    if duration is None:
+    info = _probe_audio_source(tmp_path)
+    if info is None:
         try:
             size = os.path.getsize(tmp_path)
         except OSError:
             size = MAX_AUDIO_UPLOAD_SIZE
+        # Unknown layout: the sizing helper assumes the worst source layout.
         return transcription_buffer_bytes(worst_case_duration_seconds(size))
 
+    duration, rate, channels = info
     if duration > MAX_TRANSCRIPTION_SECONDS:
         raise HTTPException(
             status_code=413,
@@ -1275,29 +1275,43 @@ def _audio_request_bytes(tmp_path: str) -> int:
                 }
             },
         )
-    return transcription_buffer_bytes(duration)
+    return transcription_buffer_bytes(
+        duration, source_rate=rate, source_channels=channels
+    )
 
 
-def _probe_audio_duration_seconds(tmp_path: str) -> float | None:
-    """Read duration from container metadata, or ``None`` if unavailable.
+def _probe_audio_source(tmp_path: str) -> tuple[float, int, int] | None:
+    """Return ``(duration, sample_rate, channels)`` from container metadata.
 
-    Metadata only — never decodes. ``soundfile`` covers WAV/FLAC/OGG/Opus and
-    everything else libsndfile knows; ``wave`` is tried first because it is
-    stdlib and needs no optional dependency for the common case.
+    Metadata only — never decodes. The rate and channel count matter as much as
+    the duration: the backend materializes the file at its OWN layout before
+    resampling, so a 48 kHz stereo source costs several times what its
+    eventual 16 kHz mono form would suggest.
+
+    ``soundfile`` covers WAV/FLAC/OGG/Opus and everything else libsndfile
+    knows; ``wave`` is tried first because it is stdlib and needs no optional
+    dependency for the common case.
     """
 
     try:
         with wave.open(tmp_path, "rb") as handle:
             rate = handle.getframerate()
             if rate > 0:
-                return float(handle.getnframes()) / rate
+                return (
+                    float(handle.getnframes()) / rate,
+                    int(rate),
+                    int(handle.getnchannels() or 1),
+                )
     except Exception:
         pass
     try:
         import soundfile as sf
 
-        duration = float(sf.info(tmp_path).duration)
-        return duration if duration >= 0.0 else None
+        info = sf.info(tmp_path)
+        duration = float(info.duration)
+        if duration < 0.0:
+            return None
+        return duration, int(info.samplerate or 0), int(info.channels or 1)
     except Exception:
         return None
 
@@ -1405,7 +1419,9 @@ async def _run_stt_request(
                 # ceiling BEFORE the weights are read. A conflict raises out
                 # of the context manager's entry, so ``STTEngine.load`` never
                 # runs and the conversation model is untouched.
-                async with admitting_audio_role("stt", model_name) as admission:
+                async with admitting_audio_role(
+                    "stt", model_name, pending_request_bytes=request_bytes
+                ) as admission:
                     stt_engine = STTEngine(model_name)
                     admission.publish(stt_engine)
                     await run_audio_mlx("stt", model_name, "load", stt_engine.load)
@@ -1671,13 +1687,21 @@ def audio_role_capacity_error(exc) -> HTTPException:
 
 
 @asynccontextmanager
-async def admitting_audio_role(lane: str, model_name: str):
+async def admitting_audio_role(
+    lane: str, model_name: str, *, pending_request_bytes: int = 0
+):
     """Budget an audio engine load before its weights are read.
 
     Yields a :class:`_LaneEngineHandle`. The caller loads inside the body and
     calls ``publish(engine)`` as soon as it has one; the releaser is already
     registered with the ledger by then, so a cancellation delivered after the
     load completes still retires the engine instead of leaking it.
+
+    ``pending_request_bytes`` is the work the caller is about to do once the
+    engine is up. Including it here is what makes "before weight loading"
+    literally true: otherwise a request whose model fits but whose
+    model+buffer does not would load gigabytes of weights and only then be
+    rejected.
     """
 
     handle = _LaneEngineHandle(lane)
@@ -1699,6 +1723,7 @@ async def admitting_audio_role(lane: str, model_name: str):
             reserved_bytes=capacity.reserved_bytes,
             capacity_source=capacity.capacity_source,
             weight_bytes=capacity.weight_bytes,
+            pending_request_bytes=pending_request_bytes,
         ) as record:
             # Registered BEFORE the load so rollback can always reach the
             # engine; see _LaneEngineHandle for why "after await load()" is
@@ -2027,7 +2052,7 @@ async def _evict_other_lane(keep: str) -> None:
     _clear_other_stt_lane(keep)
 
 
-async def _ensure_aligner_engine(model_name: str) -> None:
+async def _ensure_aligner_engine(model_name: str, *, request_bytes: int = 0) -> None:
     """Admit and load the forced-aligner engine for ``model_name``.
 
     Split out of :func:`_align_blocking` for #2305: residency admission is
@@ -2067,7 +2092,9 @@ async def _ensure_aligner_engine(model_name: str) -> None:
 
     from ..runtime.audio_worker import run_audio_mlx
 
-    async with admitting_audio_role("alignment", model_name) as admission:
+    async with admitting_audio_role(
+        "alignment", model_name, pending_request_bytes=request_bytes
+    ) as admission:
         # Load into a local first and publish only on success. Caching a
         # half-constructed engine would leave later requests matching on
         # ``model_name`` against an object whose weights never loaded.
@@ -2191,7 +2218,7 @@ async def _run_alignment_request(
         # for exactly as long as the worker runs, even if the client
         # disconnects and cancels us mid-align.
         async with _get_stt_lane_lock():
-            await _ensure_aligner_engine(model_name)
+            await _ensure_aligner_engine(model_name, request_bytes=request_bytes)
             async with leasing_audio_role("alignment", request_bytes=request_bytes):
                 result = await run_to_completion(
                     _align_blocking, model_name, tmp_path, text, language
@@ -2981,7 +3008,7 @@ def _is_clone_capable_model(model_name: str) -> bool:
     return is_qwen3 and "base" in tokens and "customvoice" not in tokens
 
 
-async def _ensure_tts_engine(model_name: str) -> None:
+async def _ensure_tts_engine(model_name: str, *, request_bytes: int = 0) -> None:
     """Admit and load the speech-output engine for ``model_name``.
 
     Split out of :func:`_generate_speech_blocking` for #2305. That function is
@@ -3011,7 +3038,9 @@ async def _ensure_tts_engine(model_name: str) -> None:
     previous = _tts_engine
     _tts_engine = None
 
-    async with admitting_audio_role("tts", model_name) as admission:
+    async with admitting_audio_role(
+        "tts", model_name, pending_request_bytes=request_bytes
+    ) as admission:
         if previous is not None and _residency_manager() is None:
             old_model = getattr(previous, "model_name", "unknown")
             unload = getattr(previous, "unload", None)
@@ -3413,20 +3442,27 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                     },
                 ) from exc
         try:
-            async with _get_tts_lane_lock():
-                await _ensure_tts_engine(model_name)
-                from ..runtime.audio_capacity import speech_buffer_bytes
+            from ..runtime.audio_capacity import speech_buffer_bytes
 
-                # Charge the synthesized output, sized from SAMPLES rather
-                # than characters: ``speed`` down to 0.25 quadruples the
-                # duration of identical text, and the pipeline holds several
-                # copies of the waveform at once.
-                async with leasing_audio_role(
-                    "tts",
-                    request_bytes=speech_buffer_bytes(
-                        len(input_text), speed=gen_kwargs.get("speed", 1.0)
-                    ),
-                ):
+            # Charge the synthesized output, sized from SAMPLES rather than
+            # characters: ``speed`` down to 0.25 quadruples the duration of
+            # identical text, the registry's engines differ in native rate, and
+            # an explicit sample_rate/channels resamples afterwards (up to
+            # 96 kHz stereo) with source and converted arrays both live.
+            #
+            # Computed BEFORE the engine is ensured so the weights and this
+            # buffer are admitted as one decision — otherwise a request whose
+            # model fits but whose model+buffer does not would load gigabytes
+            # of weights and only then be rejected.
+            request_bytes = speech_buffer_bytes(
+                len(input_text),
+                speed=gen_kwargs.get("speed", 1.0),
+                sample_rate=sample_rate,
+                channels=channels,
+            )
+            async with _get_tts_lane_lock():
+                await _ensure_tts_engine(model_name, request_bytes=request_bytes)
+                async with leasing_audio_role("tts", request_bytes=request_bytes):
                     audio_bytes, output_rate, output_channels = await run_to_completion(
                         _generate_speech_blocking,
                         model_name,
