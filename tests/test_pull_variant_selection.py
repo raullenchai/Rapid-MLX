@@ -89,6 +89,25 @@ def test_resolve_rejects_both_selectors():
         cli._resolve_variant_allow_patterns("X/Y", bits="4", fmt="gguf")
 
 
+def test_resolve_rejects_empty_selector():
+    """An explicit-but-empty selector is a user error, not 'no selector'."""
+    with pytest.raises(ValueError, match="empty"):
+        cli._resolve_variant_allow_patterns("X/Y", bits=None, fmt="")
+
+
+def test_empty_selector_errors_cleanly(capsys):
+    """pull --format \"\" exits with a clear message, not an unrestricted pull."""
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="")
+    with (
+        patch("huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()),
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch.object(cli.sys, "exit", side_effect=SystemExit(1)),
+        pytest.raises(SystemExit),
+    ):
+        cli.pull_command(args)
+    assert "empty" in capsys.readouterr().out
+
+
 def test_no_selector_still_consults_mirror():
     """Without --bits/--format the mirror-first behavior is unchanged."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)

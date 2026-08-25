@@ -6466,14 +6466,20 @@ def _resolve_variant_allow_patterns(
     folder), so the CLI exposes them as a mutually exclusive group; this helper
     rejects both being set as a defensive guard for programmatic callers.
     """
-    if not bits and not fmt:
+    if bits is None and fmt is None:
         return None
     if bits and fmt:
         raise ValueError("--bits and --format are mutually exclusive; pick one")
+    # An explicit-but-empty selector (e.g. ``--format ""``) is a user error, not
+    # "no selector" — reject it instead of silently doing an unrestricted pull.
+    if bits == "" or fmt == "":
+        raise ValueError(
+            "--bits/--format was supplied but is empty; pass a value or drop the flag"
+        )
     from huggingface_hub import HfApi, RepoFolder
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    requested = f"{bits}bit" if bits else (fmt or "")
+    requested = f"{bits}bit" if bits else fmt
     try:
         tree = list(HfApi().list_repo_tree(repo_id, recursive=False))
     except RepositoryNotFoundError:
@@ -6513,6 +6519,9 @@ def pull_command(args):
     _fmt = getattr(args, "format", None)
     try:
         variant_allow = _resolve_variant_allow_patterns(repo_id, _bits, _fmt)
+    except ValueError as e:
+        print(f"\n  Error: {e}")
+        sys.exit(1)
     except VariantNotFoundError as e:
         shown = getattr(args, "_original_alias", repo_id)
         print(f"\n  Error: '{shown}' has no '{e.requested}' variant.")
