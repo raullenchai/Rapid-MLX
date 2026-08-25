@@ -102,7 +102,7 @@ def test_escape_glob_literal_metachars():
     assert cli._escape_glob_literal("a*b?") == "a[*]b[?]"
 
 
-def test_variant_with_glob_metachars_escaped_in_allow_patterns():
+def test_variant_with_glob_metachars_escaped_in_allow_patterns(capsys):
     """--format on a folder named with glob metachars pins to that folder."""
     tricky_tree = [
         RepoFolder(path="[48]bit", oid="a"),
@@ -118,6 +118,10 @@ def test_variant_with_glob_metachars_escaped_in_allow_patterns():
         cli.pull_command(args)
     # The pattern must not glob-broaden: the literal folder with brackets.
     assert snap.call_args.kwargs["allow_patterns"] == ["[[]48[]]bit/*"]
+    # The user-facing message must show the real folder name, not the escaping.
+    out = capsys.readouterr().out
+    assert "[48]bit" in out
+    assert "[[]48[]]bit" not in out
 
 
 def test_parser_accepts_single_selector():

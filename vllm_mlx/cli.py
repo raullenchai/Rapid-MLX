@@ -6646,7 +6646,11 @@ def pull_command(args):
         # catalog subfolder (one checkpoint per quantization).
         if variant_allow is not None:
             _allow = variant_allow
-            _variant_name = _allow[0][:-2]  # "4bit" from "4bit/*"
+            # Literal folder name the user asked for (e.g. "4bit"). Derived
+            # from the raw selectors, NOT from the (glob-escaped) pattern, so
+            # user-facing messages and catalog comparison show the real name
+            # even when it contains glob metacharacters.
+            _variant_name = f"{_bits}bit" if _bits else (_fmt or "")
             # The explicit --bits/--format selection wins over any catalog
             # alias narrowing (resolve_subfolder); say so so the override is
             # visible rather than silent.
