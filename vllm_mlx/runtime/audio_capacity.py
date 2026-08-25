@@ -32,18 +32,21 @@ Resolution order, all three tiers metadata or measurement:
    repo added to the registry before the size manifest was regenerated), sum
    the actual bytes of the snapshot that ``snapshot_download`` would resolve.
    This is a filesystem measurement, not an estimate.
-3. **Unknown.** Charge nothing up front and record ``capacity_source
-   == "unknown"``. See :data:`AudioRoleCapacity.is_known` for why this does
-   not simply reject.
+3. **Unknown.** No trustworthy number exists. The role is REJECTED with a typed
+   conflict rather than admitted with a zero charge — see below.
 
-The third tier is a deliberate product decision. Failing closed here would
-reject any audio model that is neither registered nor yet on disk — a behaviour
-regression against a path that works today — and #2305 forbids *guessing* a
-number, not *proceeding without one*. The safety net is that admission is only
-the first of two accounting points: ``ResidentModelManager`` re-measures the
-process footprint across the load and keeps the larger of the reservation and
-the measured delta, so an unknown-capacity role is fully accounted for against
-every *subsequent* admission decision even though it was unbudgeted for its own.
+Tier 3 fails closed. An earlier revision charged nothing and relied on the
+post-load footprint measurement to correct the books, but that inverts #2305's
+central requirement: admission has to happen *before* weight loading, and a
+zero charge makes ``_admit_role_locked`` skip the ceiling check entirely, so an
+arbitrary ``org/repo`` typed into the ``model`` field could load several GiB
+into a process already at its limit. The post-load measurement only fixes the
+accounting for the *next* decision; the unsafe load has already happened.
+
+Rejecting is also the better product behaviour here, because tier 3 is almost
+always "these weights are not on disk yet". Loading them would trigger a
+multi-GB download inside a request anyway, so the conflict tells the caller to
+pull the model first — after which tier 2 answers and the load is budgeted.
 """
 
 from __future__ import annotations
@@ -85,8 +88,8 @@ class AudioRoleCapacity:
 
     #: Total bytes to reserve: weights plus
     #: :data:`AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES`. Zero when the source is
-    #: ``"unknown"`` — an unknown weight footprint must not be papered over
-    #: with a plausible-looking overhead-only charge.
+    #: ``"unknown"``, in which case the role must be REJECTED rather than
+    #: admitted — a zero charge would bypass the ceiling check entirely.
     reserved_bytes: int
     #: Weight footprint alone, before the runtime allowance. ``None`` when
     #: unknown. Reported in telemetry so an operator can tell a small model
@@ -122,10 +125,16 @@ def _canonical_hf_id(model_id: str) -> str | None:
 def _snapshot_bytes(hf_id: str) -> int | None:
     """Sum the real on-disk bytes of the cached snapshot for ``hf_id``.
 
-    Mirrors the resolution rule in ``_download_gate.is_repo_cached``: only the
-    snapshot pinned by ``refs/main`` counts, because that is the one the loader
-    will actually open. Sizing an unrelated stale snapshot would charge the
+    Prefers the snapshot pinned by ``refs/main`` — that is the one the loader
+    will actually open, and sizing an unrelated stale snapshot would charge the
     wrong number for the weights about to be read.
+
+    Unlike ``_download_gate.is_repo_cached`` this falls back to the LARGEST
+    snapshot when no ``refs/main`` exists. The gate is deciding "may we skip a
+    download", where guessing wrong silently re-downloads; here the question is
+    "how much memory should we reserve", where refusing to answer now rejects
+    the request outright. Taking the largest candidate keeps the reservation
+    conservative, and any snapshot on disk is a far better estimate than none.
 
     HF snapshots are trees of symlinks into a sibling ``blobs/`` store, and one
     blob can back several snapshot entries. ``os.stat`` follows the symlink so
@@ -137,33 +146,48 @@ def _snapshot_bytes(hf_id: str) -> int | None:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         repo_root = os.path.join(HF_HUB_CACHE, f"models--{hf_id.replace('/', '--')}")
-        main_ref = os.path.join(repo_root, "refs", "main")
-        if not os.path.isfile(main_ref):
-            return None
-        with open(main_ref) as handle:
-            sha = handle.read().strip()
-        if not sha:
-            return None
-        snapshot_dir = os.path.join(repo_root, "snapshots", sha)
-        if not os.path.isdir(snapshot_dir):
+        snapshots_root = os.path.join(repo_root, "snapshots")
+        if not os.path.isdir(snapshots_root):
             return None
 
-        total = 0
-        seen: set[tuple[int, int]] = set()
-        for root, _dirs, files in os.walk(snapshot_dir):
-            for name in files:
-                try:
-                    stat = os.stat(os.path.join(root, name))
-                except OSError:
-                    # A dangling symlink means the blob was reaped; it
-                    # contributes no resident bytes.
-                    continue
-                key = (stat.st_dev, stat.st_ino)
-                if key in seen:
-                    continue
-                seen.add(key)
-                total += stat.st_size
-        return total or None
+        candidates: list[str] = []
+        main_ref = os.path.join(repo_root, "refs", "main")
+        if os.path.isfile(main_ref):
+            try:
+                with open(main_ref) as handle:
+                    sha = handle.read().strip()
+            except OSError:
+                sha = ""
+            if sha and os.path.isdir(os.path.join(snapshots_root, sha)):
+                candidates.append(os.path.join(snapshots_root, sha))
+        if not candidates:
+            candidates = [
+                os.path.join(snapshots_root, name)
+                for name in os.listdir(snapshots_root)
+                if os.path.isdir(os.path.join(snapshots_root, name))
+            ]
+        if not candidates:
+            return None
+
+        best = 0
+        for snapshot_dir in candidates:
+            total = 0
+            seen: set[tuple[int, int]] = set()
+            for root, _dirs, files in os.walk(snapshot_dir):
+                for name in files:
+                    try:
+                        stat = os.stat(os.path.join(root, name))
+                    except OSError:
+                        # A dangling symlink means the blob was reaped; it
+                        # contributes no resident bytes.
+                        continue
+                    key = (stat.st_dev, stat.st_ino)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    total += stat.st_size
+            best = max(best, total)
+        return best or None
     except Exception:
         # Capacity resolution is advisory input to an admission decision; a
         # broken cache directory must degrade to "unknown", never take the

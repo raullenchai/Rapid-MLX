@@ -10,6 +10,7 @@ model.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -339,28 +340,36 @@ async def test_concurrent_admission_of_one_role_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_unknown_capacity_is_charged_by_measurement_after_the_load():
-    # Tier 3 of the capacity resolver: nothing to reserve up front, but the
-    # process-footprint delta must still be charged so the NEXT admission
-    # sees the memory this role really took.
-    registry = ModelRegistry()
-    primary = entry("chat")
-    registry.add(primary, is_default=True)
-    # A live process always reports a non-zero footprint; zero means the
-    # reader is unavailable, in which case there is nothing to measure.
-    process_usage = [1 * GIB]
+async def test_unknown_capacity_is_rejected_before_the_loader_runs():
+    # Tier 3 of the capacity resolver. A zero charge would make
+    # _admit_role_locked skip the ceiling check entirely, so an arbitrary repo
+    # typed into the `model` field could load unknown-sized weights into a
+    # process already at its limit. Fail closed instead.
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    loaded: list[str] = []
 
-    async def loader(name: str, path: str | None, performance=None):
-        return entry(name)
+    with pytest.raises(ResidentRoleConflictError) as excinfo:
+        async with manager.admitting_role(
+            role="speech-input",
+            lane="stt",
+            model_id="someone/unlisted-asr",
+            reserved_bytes=0,
+            capacity_source="unknown",
+        ):
+            loaded.append("weights")
 
-    manager = ResidentModelManager(
-        registry,
-        loader,
-        memory_limit_bytes=10 * GIB,
-        clock=Clock(),
-        memory_reader=lambda: process_usage[0],
-    )
-    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    assert loaded == []
+    assert manager.snapshot()["roles"] == []
+    assert excinfo.value.capacity_unknown is True
+    assert excinfo.value.envelope()["error"]["code"] == "role_capacity_unknown"
+
+
+@pytest.mark.asyncio
+async def test_unknown_capacity_is_allowed_when_no_ceiling_is_configured():
+    # Without a budget there is nothing to enforce, so an unmeasurable model
+    # must not be blocked — that would be a pure regression for operators who
+    # never opted into a ceiling.
+    manager, _clock = manager_fixture(limit_gib=0, primary_gib=4)
 
     async with manager.admitting_role(
         role="speech-input",
@@ -369,17 +378,48 @@ async def test_unknown_capacity_is_charged_by_measurement_after_the_load():
         reserved_bytes=0,
         capacity_source="unknown",
     ) as record:
-        process_usage[0] = 4 * GIB
         record.unload = lambda: None
 
-    role = manager.snapshot()["roles"][0]
-    assert role["capacity_source"] == "unknown"
-    assert role["reserved_bytes"] == 0
-    assert role["measured_bytes"] == 3 * GIB
-    # 4 GiB primary + 3 GiB measured audio role, even once the live footprint
-    # reading drops below the reservation total.
-    process_usage[0] = 0
-    assert manager.snapshot()["memory_used_bytes"] == 7 * GIB
+    assert [role["role"] for role in manager.snapshot()["roles"]] == ["speech-input"]
+
+
+@pytest.mark.asyncio
+async def test_a_role_that_measures_over_the_ceiling_is_rolled_back():
+    # The reservation is a prediction; the footprint is the measurement. A
+    # model larger than the catalog claimed must not be left resident, or the
+    # budget silently failed to hold.
+    registry = ModelRegistry()
+    primary = entry("chat")
+    registry.add(primary, is_default=True)
+    process_usage = [4 * GIB]
+    unloaded: list[str] = []
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(
+        registry,
+        loader,
+        memory_limit_bytes=8 * GIB,
+        clock=Clock(),
+        memory_reader=lambda: process_usage[0],
+    )
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    with pytest.raises(ResidentRoleConflictError) as excinfo:
+        async with manager.admitting_role(
+            role="speech-input",
+            lane="stt",
+            model_id="understated-asr",
+            reserved_bytes=1 * GIB,
+            capacity_source="manifest",
+        ) as record:
+            record.unload = lambda: unloaded.append("understated-asr")
+            process_usage[0] = 9 * GIB
+
+    assert excinfo.value.measured_overshoot is True
+    assert unloaded == ["understated-asr"]
+    assert manager.snapshot()["roles"] == []
 
 
 @pytest.mark.asyncio
@@ -644,3 +684,152 @@ async def test_a_lane_owned_by_a_request_is_reported_as_a_busy_conflict(
     conflicts = {conflict.role: conflict for conflict in excinfo.value.conflicts}
     assert conflicts["speech-output"].evictable is False
     assert conflicts["speech-output"].reason == "serving_active_request"
+
+
+@pytest.mark.asyncio
+async def test_route_cold_load_cancellation_leaves_no_resident_lane(
+    monkeypatch, route_manager
+):
+    """#2305: cancellation during a cold load must not strand the engine.
+
+    Cancellation is delivered only after the in-flight load returns, so an
+    unload callback registered on the line AFTER ``await load()`` is never
+    reached: the ledger rolled back while the lane still reported ``resident``
+    and the engine was never unloaded. Ownership now starts at construction.
+    """
+
+    from vllm_mlx.audio import tts as tts_module
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import audio_worker
+
+    manager, _clock = route_manager
+    unloaded: list[str] = []
+    started = asyncio.Event()
+
+    class _SlowTTS:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            started.set()
+            time.sleep(0.2)
+
+        def unload(self) -> None:
+            unloaded.append(self.model_name)
+
+    monkeypatch.setattr(tts_module, "TTSEngine", _SlowTTS)
+    monkeypatch.setattr(audio_route, "_tts_engine", None)
+
+    task = asyncio.create_task(audio_route._ensure_tts_engine("kokoro"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert manager.snapshot()["roles"] == []
+    assert unloaded == ["kokoro"]
+    assert audio_route._tts_engine is None
+    lanes = {lane["lane"]: lane["state"] for lane in audio_worker.snapshot()}
+    assert lanes.get("tts") != "resident"
+
+
+@pytest.mark.asyncio
+async def test_replacement_and_shutdown_unload_each_engine_exactly_once(
+    monkeypatch, route_manager
+):
+    """One engine, one unload — the ledger owns the retirement.
+
+    The routes used to unload an engine directly and then drop its ledger
+    entry, which ran the backend's ``unload`` twice. Today's backends are
+    idempotent so nothing broke, but the lane telemetry recorded two unload
+    operations for one engine and a non-idempotent backend would misbehave.
+    """
+
+    from vllm_mlx.audio import tts as tts_module
+    from vllm_mlx.routes import audio as audio_route
+
+    unloaded: list[str] = []
+
+    class _TTS:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            pass
+
+        def unload(self) -> None:
+            unloaded.append(self.model_name)
+
+    monkeypatch.setattr(tts_module, "TTSEngine", _TTS)
+    monkeypatch.setattr(audio_route, "_tts_engine", None)
+
+    # Both are registered aliases with catalog sizes, so admission resolves a
+    # real charge rather than rejecting them as unmeasurable.
+    await audio_route._ensure_tts_engine("kokoro")
+    unloaded.clear()
+
+    await audio_route._ensure_tts_engine("chatterbox-4bit")
+    assert unloaded == ["kokoro"]
+
+    unloaded.clear()
+    await audio_route.shutdown_audio_lanes()
+    assert unloaded == ["chatterbox-4bit"]
+
+
+@pytest.mark.asyncio
+async def test_relaunch_starts_from_an_empty_ledger():
+    """#2305 relaunch coverage.
+
+    A restarted server process owns no audio weights, so a fresh manager must
+    charge nothing and admit a role the previous process could not have fitted
+    alongside its own. Residency is process state, never persisted.
+    """
+
+    first, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    await admit(first, role="speech-input", lane="stt", model="whisper", gib=5)
+    assert first.snapshot()["memory_used_bytes"] == 9 * GIB
+    await first.shutdown()
+
+    second, _clock2 = manager_fixture(limit_gib=10, primary_gib=4)
+    assert second.snapshot()["roles"] == []
+    assert second.snapshot()["memory_used_bytes"] == 4 * GIB
+
+    # The same admission that would have conflicted pre-restart now fits.
+    await admit(second, role="speech-input", lane="stt", model="whisper", gib=5)
+    assert [role["role"] for role in second.snapshot()["roles"]] == ["speech-input"]
+
+
+@pytest.mark.asyncio
+async def test_engine_process_exit_releases_the_role_and_frees_its_budget():
+    """#2305 process-exit coverage.
+
+    When an audio backend dies its weights are gone, but the ledger keeps
+    charging for them until told. A release whose unload raises (the engine is
+    already dead) must still free the bytes, or the budget shrinks permanently
+    and every later admission is rejected against memory nobody holds.
+    """
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+
+    async with manager.admitting_role(
+        role="speech-output",
+        lane="tts",
+        model_id="kokoro",
+        reserved_bytes=5 * GIB,
+        capacity_source="manifest",
+    ) as record:
+
+        def _dead_process_unload():
+            raise RuntimeError("worker process has exited")
+
+        record.unload = _dead_process_unload
+
+    assert manager.snapshot()["memory_used_bytes"] == 9 * GIB
+
+    await manager.release_role("speech-output")
+
+    assert manager.snapshot()["roles"] == []
+    assert manager.snapshot()["memory_used_bytes"] == 4 * GIB
+    # Budget fully reclaimed: a role that needs the freed bytes now fits.
+    await admit(manager, role="speech-input", lane="stt", model="whisper", gib=5)
+    assert [role["role"] for role in manager.snapshot()["roles"]] == ["speech-input"]

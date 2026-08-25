@@ -96,10 +96,30 @@ def test_uncached_unlisted_repo_reports_unknown_rather_than_guessing(
 
     assert capacity.capacity_source == "unknown"
     assert capacity.is_known is False
-    # Zero, not a plausible-looking overhead-only charge: an unmeasured model
-    # must be visibly unmeasured, and the post-load footprint delta corrects it.
+    # Zero, and the manager turns that into a rejection: a zero charge would
+    # otherwise skip the ceiling check entirely.
     assert capacity.reserved_bytes == 0
     assert capacity.weight_bytes is None
+
+
+def test_snapshot_without_refs_main_still_measures_the_cache(tmp_path, monkeypatch):
+    # A manually populated or partially repaired cache can lack refs/main.
+    # Refusing to size it would reject the load outright, so fall back to the
+    # largest snapshot on disk rather than reporting "unknown".
+    repo_id = "someone/no-refs"
+    repo_root = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / "sha-a"
+    snapshot.mkdir(parents=True)
+    (snapshot / "weights.npz").write_bytes(b"x" * 2048)
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path), raising=False
+    )
+
+    capacity = resolve_audio_role_capacity(repo_id)
+
+    assert capacity.capacity_source == "local_cache"
+    assert capacity.weight_bytes == 2048
 
 
 def test_capacity_is_never_inferred_from_a_parameter_count_in_the_name(

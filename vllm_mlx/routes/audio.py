@@ -1321,9 +1321,8 @@ async def _run_stt_request(
                 # runs and the conversation model is untouched.
                 async with admitting_audio_role("stt", model_name) as admission:
                     stt_engine = STTEngine(model_name)
+                    admission.publish(stt_engine)
                     await run_audio_mlx("stt", model_name, "load", stt_engine.load)
-                    if admission is not None:
-                        admission.unload = _lane_unloader("stt", stt_engine)
                     _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
@@ -1589,14 +1588,16 @@ def audio_role_capacity_error(exc) -> HTTPException:
 async def admitting_audio_role(lane: str, model_name: str):
     """Budget an audio engine load before its weights are read.
 
-    Callers MUST perform the load inside the body and assign the yielded
-    record's ``unload`` callback once they own an engine, so a rollback or an
-    idle-TTL eviction can actually release it.
+    Yields a :class:`_LaneEngineHandle`. The caller loads inside the body and
+    calls ``publish(engine)`` as soon as it has one; the releaser is already
+    registered with the ledger by then, so a cancellation delivered after the
+    load completes still retires the engine instead of leaking it.
     """
 
+    handle = _LaneEngineHandle(lane)
     manager = _residency_manager()
     if manager is None:
-        yield None
+        yield handle
         return
 
     from ..runtime.audio_capacity import resolve_audio_role_capacity
@@ -1613,12 +1614,16 @@ async def admitting_audio_role(lane: str, model_name: str):
             capacity_source=capacity.capacity_source,
             weight_bytes=capacity.weight_bytes,
         ) as record:
+            # Registered BEFORE the load so rollback can always reach the
+            # engine; see _LaneEngineHandle for why "after await load()" is
+            # too late.
+            record.unload = handle.release
             # A request that finds this engine already cached never re-enters
             # ``admitting_role``, so it owns the lane while holding no
             # residency lease. Let the ledger see that ownership, or an idle
             # sweep can unload weights out from under a live request.
             record.can_release = lambda: not _LANE_LOCKS[lane].held
-            yield record
+            yield handle
     except ResidentRoleConflictError as exc:
         # Rejected BEFORE the body ran, so no weights were loaded. Surface the
         # conflicting roles verbatim instead of a bare "out of memory".
@@ -1681,36 +1686,72 @@ async def leasing_audio_role(lane: str):
         yield
 
 
-def _lane_unloader(lane: str, engine):
-    """Build the callback the residency ledger uses to retire ``engine``.
+class _LaneEngineHandle:
+    """The single owner of one audio lane's engine, for the residency ledger.
 
-    Two responsibilities, both required for the budget to stay honest: unload
-    the weights on the MLX worker that owns them, and clear this module's cache
-    so the next request rebuilds rather than being handed an unloaded engine.
+    Registered with :meth:`ResidentModelManager.admitting_role` BEFORE the load
+    begins, because cancellation is delivered only after the in-flight load
+    completes — a releaser assigned after ``await load()`` is never reached, and
+    the ledger would roll back while the engine stayed loaded (#2305 follow-up).
+    ``publish`` therefore runs once the engine exists, and until it does the
+    releaser is a safe no-op.
 
-    The cache is cleared only when it still holds THIS engine. An idle-TTL
-    eviction races a request that already replaced the lane; identity-checking
-    keeps the loser from clearing the winner's engine.
+    It is also the ONLY place a lane's engine is retired. Callers that used to
+    unload an engine and then drop its ledger entry ran the backend's
+    ``unload`` twice; the current backends happen to be idempotent, but the
+    lane telemetry recorded two unload operations for one engine and a
+    non-idempotent backend would misbehave. Everything now goes through
+    :meth:`release`, which unloads at most once.
     """
 
-    async def unload() -> None:
-        from ..runtime.audio_worker import run_audio_mlx
+    def __init__(self, lane: str) -> None:
+        self.lane = lane
+        self.engine: object | None = None
+        self._released = False
 
-        _clear_lane_engine(lane, engine)
-        engine_unload = getattr(engine, "unload", None)
-        if callable(engine_unload):
+    def publish(self, engine: object) -> None:
+        """Take ownership of ``engine``, BEFORE its weights are loaded.
+
+        Ownership must start at construction, not at load completion. An
+        interrupted load still allocated weights, and cancellation is delivered
+        only once that load returns — so publishing afterwards leaves the
+        engine owned by nobody and the lane stuck reporting ``resident``.
+        Releasing an engine whose load never finished is safe: ``unload`` is
+        best-effort and the ledger logs rather than propagates its failure.
+        """
+
+        self.engine = engine
+
+    async def release(self) -> None:
+        """Unload the engine at most once and clear the lane cache."""
+
+        if self._released:
+            return
+        self._released = True
+        engine = self.engine
+        if engine is None:
+            # Cancelled or failed before the engine was published; the ledger
+            # rollback has nothing to unload.
+            return
+        _clear_lane_engine(self.lane, engine)
+        unload = getattr(engine, "unload", None)
+        if callable(unload):
+            from ..runtime.audio_worker import run_audio_mlx
+
             await run_audio_mlx(
-                lane,
+                self.lane,
                 getattr(engine, "model_name", "unknown"),
                 "unload",
-                engine_unload,
+                unload,
             )
-
-    return unload
 
 
 def _clear_lane_engine(lane: str, engine) -> None:
-    """Drop ``engine`` from its lane cache if it is still the current one."""
+    """Drop ``engine`` from its lane cache if it is still the current one.
+
+    Identity-checked because an idle-TTL eviction races a request that already
+    replaced the lane; the loser must not clear the winner's engine.
+    """
 
     global _stt_engine, _aligner_engine, _tts_engine
 
@@ -1722,12 +1763,29 @@ def _clear_lane_engine(lane: str, engine) -> None:
         _tts_engine = None
 
 
+def _current_lane_engine(lane: str):
+    """Return the engine currently cached for ``lane``, if any."""
+
+    if lane == "stt":
+        return _stt_engine
+    if lane == "alignment":
+        return _aligner_engine
+    if lane == "tts":
+        return _tts_engine
+    return None
+
+
 async def shutdown_audio_lanes() -> None:
     """Unload cached audio models on their owning MLX worker.
 
     The ASGI lifespan calls this before stopping the primary engine. Acquiring
     the same lane locks as request handlers provides a terminal barrier: no
     cached model is released while an audio request still owns it.
+
+    Each lane is retired exactly once. When a residency ledger owns the lane it
+    performs the unload through the lane's handle; this function then only has
+    to drop anything the ledger never saw (an engine cached by an audio-only
+    server, or one loaded before the budget existed).
     """
 
     global _stt_engine, _aligner_engine, _tts_engine, _music_engine
@@ -1754,22 +1812,28 @@ async def shutdown_audio_lanes() -> None:
             # server log while continuing terminal cleanup.
             logger.exception("Failed to unload %s audio lane during shutdown", lane)
 
+    async def retire(lane: str, cached: object | None) -> None:
+        # ``release_audio_role`` runs the lane handle's releaser, which unloads
+        # and clears the module cache. Only fall back to unloading directly
+        # when the ledger did not own this engine, so a non-idempotent backend
+        # never sees two ``unload`` calls for one engine.
+        await release_audio_role(lane)
+        if _current_lane_engine(lane) is not None:
+            unload_cached(lane, cached)
+
     async with _get_stt_lane_lock():
         try:
-            unload_cached("stt", _stt_engine)
-            unload_cached("alignment", _aligner_engine)
+            await retire("stt", _stt_engine)
+            await retire("alignment", _aligner_engine)
         finally:
             _stt_engine = None
             _aligner_engine = None
-            await release_audio_role("stt")
-            await release_audio_role("alignment")
 
     async with _get_tts_lane_lock():
         try:
-            unload_cached("tts", _tts_engine)
+            await retire("tts", _tts_engine)
         finally:
             _tts_engine = None
-            await release_audio_role("tts")
 
     async with _get_music_lock():
         # MusicEngine owns a subprocess per generation rather than persistent
@@ -1839,10 +1903,10 @@ async def _evict_other_lane(keep: str) -> None:
     footprint — alternating requests would leave both models resident. MLX
     frees on refcount, so clearing the global is the release.
 
-    #2305: the residency ledger must be told too. This path unloads the engine
-    itself rather than going through the role's own ``unload`` callback, so
-    without :func:`release_audio_role` the freed bytes would stay charged and
-    permanently shrink the budget available to every later admission.
+    #2305: the residency ledger owns the retirement when it knows this lane.
+    ``release_audio_role`` runs the lane handle's releaser, which unloads and
+    clears the cache; we only unload directly for an engine the ledger never
+    saw, so one engine is never unloaded twice.
     """
     lane, cached = _other_stt_lane(keep)
     if cached is None:
@@ -1854,6 +1918,9 @@ async def _evict_other_lane(keep: str) -> None:
         lane,
         getattr(cached, "model_name", "?"),
     )
+    await release_audio_role(lane)
+    if _current_lane_engine(lane) is None:
+        return
     unload = getattr(cached, "unload", None)
     if callable(unload):
         from ..runtime.audio_worker import run_audio_mlx
@@ -1862,7 +1929,6 @@ async def _evict_other_lane(keep: str) -> None:
             lane, getattr(cached, "model_name", "unknown"), "unload", unload
         )
     _clear_other_stt_lane(keep)
-    await release_audio_role(lane)
 
 
 async def _ensure_aligner_engine(model_name: str) -> None:
@@ -1916,9 +1982,8 @@ async def _ensure_aligner_engine(model_name: str) -> None:
         # is a different hierarchy entirely, so the name would trip that
         # gate with a false positive.
         aligner = STTEngine(model_name)
+        admission.publish(aligner)
         await run_audio_mlx("alignment", model_name, "load", aligner.load)
-        if admission is not None:
-            admission.unload = _lane_unloader("alignment", aligner)
         _aligner_engine = aligner
 
 
@@ -2837,18 +2902,24 @@ async def _ensure_tts_engine(model_name: str) -> None:
     if _tts_engine is not None and _tts_engine.model_name == model_name:
         return
 
-    if _tts_engine is not None:
-        old_model = getattr(_tts_engine, "model_name", "unknown")
-        unload = getattr(_tts_engine, "unload", None)
-        if callable(unload):
-            await run_audio_mlx("tts", old_model, "unload", unload)
-        _tts_engine = None
+    # The incumbent is NOT unloaded here. ``admitting_role`` releases the
+    # previous speech-output role through its registered handle before
+    # charging the replacement, so unloading first ran the backend's
+    # ``unload`` twice for one engine (#2305 follow-up). Let the ledger own
+    # the retirement; when no ledger is configured, release the handle
+    # ourselves so an audio-only server still frees the weights.
+    previous = _tts_engine
+    _tts_engine = None
 
     async with admitting_audio_role("tts", model_name) as admission:
+        if previous is not None and _residency_manager() is None:
+            old_model = getattr(previous, "model_name", "unknown")
+            unload = getattr(previous, "unload", None)
+            if callable(unload):
+                await run_audio_mlx("tts", old_model, "unload", unload)
         tts_candidate = TTSEngine(model_name)
+        admission.publish(tts_candidate)
         await run_audio_mlx("tts", model_name, "load", tts_candidate.load)
-        if admission is not None:
-            admission.unload = _lane_unloader("tts", tts_candidate)
         _tts_engine = tts_candidate
 
 

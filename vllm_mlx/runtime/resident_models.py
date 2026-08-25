@@ -89,19 +89,44 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         conflicts: list[RoleConflict],
         limit_bytes: int,
         usage_bytes: int,
+        capacity_unknown: bool = False,
+        measured_overshoot: bool = False,
     ) -> None:
         self.requested = requested
         self.conflicts = conflicts
         self.limit_bytes = limit_bytes
         self.usage_bytes = usage_bytes
+        self.capacity_unknown = capacity_unknown
+        self.measured_overshoot = measured_overshoot
         super().__init__(self.message)
 
     @property
+    def code(self) -> str:
+        if self.capacity_unknown:
+            return "role_capacity_unknown"
+        return "role_capacity_conflict"
+
+    @property
     def message(self) -> str:
+        if self.capacity_unknown:
+            return (
+                f"cannot load {self.requested.model!r} as {self.requested.role}: "
+                "its memory footprint could not be determined from the model "
+                "catalog or the local cache, so it cannot be admitted against "
+                f"the {self.limit_bytes / _GIB:.2f} GiB ceiling. Download the "
+                "model first, then retry."
+            )
         held = ", ".join(
             f"{conflict.role} ({conflict.model}, {conflict.bytes / _GIB:.2f} GiB)"
             for conflict in self.conflicts
         )
+        if self.measured_overshoot:
+            return (
+                f"unloaded {self.requested.model!r} ({self.requested.role}): it "
+                f"measured {self.requested.bytes / _GIB:.2f} GiB once loaded, "
+                f"which exceeds the {self.limit_bytes / _GIB:.2f} GiB ceiling "
+                f"already holding {held or 'the running process'}"
+            )
         return (
             f"cannot load {self.requested.model!r} as {self.requested.role}: "
             f"it needs {self.requested.bytes / _GIB:.2f} GiB and "
@@ -117,7 +142,7 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
             "error": {
                 "message": self.message,
                 "type": "insufficient_capacity_error",
-                "code": "role_capacity_conflict",
+                "code": self.code,
                 "param": "model",
                 "requested": self.requested.payload(),
                 "limit_bytes": self.limit_bytes,
@@ -1152,8 +1177,21 @@ class ResidentModelManager:
         decision of what to offer the user instead.
         """
 
-        if self.memory_limit_bytes <= 0 or requested.bytes <= 0:
+        if self.memory_limit_bytes <= 0:
             return
+        if requested.bytes <= 0:
+            # An unmeasurable role under an enforced ceiling. Admitting it
+            # would skip the loop below entirely and load unknown-sized weights
+            # into a process that may already be full, which is exactly what
+            # #2305 forbids. Reject with the same typed conflict so the caller
+            # (and #2306) can explain it — usually "pull the model first".
+            raise ResidentRoleConflictError(
+                requested=requested,
+                conflicts=self._role_conflicts(exclude_role),
+                limit_bytes=self.memory_limit_bytes,
+                usage_bytes=self._accounted_usage(),
+                capacity_unknown=True,
+            )
         while self._accounted_usage() + requested.bytes > self.memory_limit_bytes:
             # ``require_idle`` re-checks after the await, and a role a request
             # claimed meanwhile drops out of the next ``_idle_auxiliary_roles``
@@ -1196,10 +1234,13 @@ class ResidentModelManager:
         ``_accounted_usage`` throughout, so releasing the lock does not release
         the budget.
 
-        The yielded record must have ``unload`` set by the caller once it owns
-        a real engine. Any exception (including cancellation) rolls the ledger
-        back and invokes that callback, so an abandoned half-load can never
-        leave weights resident but unaccounted.
+        The yielded record must have ``unload`` set by the caller BEFORE it
+        starts loading, not after. Cancellation is delivered once the in-flight
+        load finishes, so a callback assigned on the line after ``await
+        load()`` is never reached: the ledger would roll back while the engine
+        stayed loaded and unreleased. Assigning it up front means rollback can
+        always reach the engine, and a callback that runs before the engine
+        exists must simply tolerate that (see ``_lane_unloader``).
 
         Re-admitting a role that is already resident with a different model
         releases the incumbent FIRST. The audio routes drop the previous engine
@@ -1249,6 +1290,29 @@ class ResidentModelManager:
             record.loaded_at = self._clock()
             record.last_used_at = record.loaded_at
             self.loads_total += 1
+
+            # The reservation was a prediction; this is the measurement. A
+            # model that turns out larger than the catalog claimed can push the
+            # process past its ceiling, and leaving it resident would mean the
+            # budget silently failed to hold. Roll it back and report the
+            # overshoot, mirroring the load-time rollback that ``load`` does
+            # for registry-backed models.
+            if (
+                self.memory_limit_bytes > 0
+                and self._accounted_usage() > self.memory_limit_bytes
+            ):
+                overshoot = RoleRef(
+                    role=role, model=model_id, bytes=record.charged_bytes
+                )
+                usage = self._accounted_usage()
+                await self._release_role_locked(record, reason="measured_overshoot")
+                raise ResidentRoleConflictError(
+                    requested=overshoot,
+                    conflicts=self._role_conflicts(role),
+                    limit_bytes=self.memory_limit_bytes,
+                    usage_bytes=usage,
+                    measured_overshoot=True,
+                )
 
     async def _release_role_locked(
         self, record: AuxiliaryRoleRecord, *, reason: str, require_idle: bool = False
