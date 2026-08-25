@@ -360,6 +360,7 @@ jobs:
             tests/test_alias_subfolder.py \
             tests/test_ram_tier_recommendations_agree.py \
             tests/test_version_sync.py \
+            tests/test_pull_variant_selection.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
