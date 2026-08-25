@@ -11,9 +11,11 @@ Supports:
 """
 
 import importlib
+import inspect
 import io
 import json
 import logging
+import os
 import threading
 import wave
 from collections.abc import Iterator
@@ -497,6 +499,46 @@ class UnsupportedAudioFormatError(Exception):
         super().__init__(msg)
 
 
+class AudioGenerationUnboundedError(RuntimeError):
+    """This request's synthesis cannot be bounded before it allocates (#2305).
+
+    Raised for a backend that completes its whole decode before yielding — so
+    the post-hoc waveform clamp cannot help — when the request's memory
+    reservation cannot be translated into a generation limit the backend will
+    honour. Three ways that happens: no known samples-per-token ratio for the
+    family, a backend build that will not accept ``max_tokens``, or a
+    reservation too small to buy even one decoder step.
+
+    Failing closed here is the point. The alternatives were tried and are not
+    bounds: forwarding the backend's own default is a fixed token count with no
+    relation to what this request reserved (Chatterbox's 1000 tokens is ~40 s
+    of audio, against a 0.156 s reservation for one character at ``speed=4``),
+    and logging a warning before calling anyway just narrates the overrun. The
+    route turns this into a 507.
+
+    ``param`` names the field the caller could actually change, and is
+    deliberately NOT always ``input``. A stride that cannot be read or a build
+    without ``max_tokens`` is a property of the MODEL or the installed
+    mlx-audio — no edit to the text fixes it, so pointing at ``input`` sends
+    the caller in circles. Only the too-small-reservation case is theirs to
+    fix, and there the lever is ``speed`` (or a longer input).
+    """
+
+    def __init__(
+        self, model_name: str, family: str, reason: str, *, param: str | None = None
+    ):
+        self.model_name = model_name
+        self.family = family
+        self.reason = reason
+        self.param = param
+        super().__init__(
+            f"cannot bound speech synthesis for {model_name!r} ({family}): "
+            f"{reason}. This backend generates its entire waveform before "
+            "returning, so the request is refused rather than allowed to "
+            "allocate past the shared memory ceiling."
+        )
+
+
 @dataclass
 class AudioOutput:
     """Output from TTS generation."""
@@ -504,6 +546,362 @@ class AudioOutput:
     audio: np.ndarray
     sample_rate: int
     duration: float
+
+
+def _audio_length(audio_data) -> int:
+    """Sample count of a backend result, without materializing it.
+
+    Every backend on this path emits a 1-D waveform, so the leading axis is the
+    sample count and slicing it is the same axis this measures. Returns ``-1``
+    when the length cannot be read cheaply — the caller then skips the pre-copy
+    clamp rather than paying a conversion just to measure, and the post-copy
+    check still bounds the run.
+    """
+
+    shape = getattr(audio_data, "shape", None)
+    if shape:
+        return int(shape[0])
+    try:
+        return len(audio_data)
+    except TypeError:
+        return -1
+
+
+def _to_float32(audio_data, mx) -> np.ndarray:
+    """Convert a backend waveform to float32 numpy without a Python list.
+
+    ``np.array(x.tolist())`` was costing ~8x the array's own bytes: a
+    ``list[float]`` boxes every sample as a PyFloat plus a pointer, and the
+    source array, the list and the result are all live at once. Measured at
+    32 MB peak for a 4 MB float32 waveform. That transient is invisible to the
+    residency reservation, which counts waveform copies (see
+    ``_TTS_PEAK_MULTIPLIER``) and not interpreter object overhead — so a
+    request that generated exactly to its ceiling could still blow past what
+    it reserved.
+
+    ``mx.array`` implements the buffer protocol, so numpy can read it directly
+    at 1x. bfloat16 is the one dtype numpy cannot describe (it raises on the
+    PEP 3118 format string); cast that on the MLX side first, which is still
+    one array-sized copy rather than a list.
+    """
+
+    if isinstance(audio_data, mx.array):
+        if audio_data.dtype == mx.bfloat16:
+            audio_data = audio_data.astype(mx.float32)
+        return np.array(audio_data, dtype=np.float32, copy=True)
+    return np.array(audio_data, dtype=np.float32)
+
+
+def _accepts_kwarg(func, name: str) -> bool:
+    """True when ``func`` would accept ``name=`` as a keyword argument.
+
+    A ``**kwargs`` catch-all counts: every mlx-audio ``generate`` declares one
+    and threads unknown keys through to the sampler.
+    """
+
+    if func is None:
+        return False
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    for parameter in parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == name and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+def _default_kwarg(func, *names: str) -> int | None:
+    """The positive int default ``func`` declares for the first of ``names``.
+
+    Used to floor a computed token budget against the backend's own safety
+    limit. Several names because that limit is not always on the parameter we
+    pass: Chatterbox declares ``max_tokens: int = None`` as an alias for
+    ``max_new_tokens: int = 1000``, so the real bound is on the alias and
+    reading only ``max_tokens`` would conclude there is no limit to respect.
+
+    ``None`` when no candidate declares a positive int default — a
+    ``**kwargs`` catch-all declares none at all.
+    """
+
+    if func is None:
+        return None
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return None
+    for name in names:
+        parameter = parameters.get(name)
+        if parameter is None:
+            continue
+        default = parameter.default
+        if isinstance(default, int) and not isinstance(default, bool) and default > 0:
+            return default
+    return None
+
+
+def _product(values) -> int | None:
+    """Product of a NON-EMPTY iterable of positive ints, else ``None``.
+
+    Emptiness must not collapse to the multiplicative identity: these values
+    are strides read out of a checkpoint, and a missing config would otherwise
+    report a stride of 1 — the smallest possible, hence the largest possible
+    token budget — exactly where the code is supposed to refuse.
+    """
+
+    try:
+        items = [int(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if not items or any(item <= 0 for item in items):
+        return None
+    product = 1
+    for item in items:
+        product *= item
+    return product
+
+
+def _positive_int(value) -> int | None:
+    """``value`` as a positive int, or ``None``."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = int(value)
+    return number if number > 0 else None
+
+
+def _measured_samples_per_token(model, family: str) -> int | None:
+    """Audio samples one decoder step produces, read off the LOADED model.
+
+    Measured per checkpoint, never tabulated. Every one of these strides is a
+    CONFIG value with a library default, and the routes accept any cached
+    ``<org>/<repo>`` — a checkpoint that overrides the default would be sized
+    against a constant that no longer describes it. Too small a constant yields
+    too large a token budget, and for these single-yield families the whole
+    waveform is allocated before anything comes back, so the reservation is
+    exceeded with nothing left to clamp.
+
+    Each expression mirrors what the backend itself computes:
+
+    * ``voxcpm`` — ``patch_size * AudioVAE.hop_length``, exactly the
+      ``patch_len`` its own ``_encode_prompt_audio`` derives.
+    * ``qwen3_tts`` — the speech tokenizer's ``decode_upsample_rate``, which it
+      multiplies token counts by to get sample counts.
+    * ``chatterbox`` — ``sample_rate / 25``: its ``S3TokenizerV2`` is the
+      ``speech_tokenizer_v2_25hz`` variant, i.e. 25 speech tokens per second.
+    * ``vibevoice`` — the acoustic tokenizer's ``decoder_ratios`` when the
+      checkpoint sets them, else its ``encoder_ratios`` (the decoder mirrors
+      the encoder when unset, which is that field's documented default).
+    * ``indextts`` — its BigVGAN ``upsample_rates``, the hop length each GPT
+      latent expands to.
+
+    ``None`` when the value cannot be read, which for a single-yield family
+    means the request is refused rather than bounded by a guess.
+    """
+
+    args = getattr(model, "args", None)
+    config = getattr(model, "config", None)
+
+    if family == "voxcpm":
+        patch = _positive_int(getattr(model, "patch_size", None))
+        hop = _positive_int(
+            getattr(getattr(model, "audio_vae", None), "hop_length", None)
+        )
+        return patch * hop if patch and hop else None
+
+    if family == "qwen3_tts":
+        tokenizer = getattr(model, "speech_tokenizer", None)
+        return _positive_int(getattr(tokenizer, "decode_upsample_rate", None))
+
+    if family == "chatterbox":
+        # 25 Hz speech tokenizer; the vocoder rate is the model's own.
+        rate = _positive_int(getattr(model, "sr", None)) or _positive_int(
+            getattr(model, "sample_rate", None)
+        )
+        return rate // _CHATTERBOX_TOKEN_HZ if rate else None
+
+    if family == "vibevoice":
+        acoustic = getattr(config, "acoustic_tokenizer_config", None)
+        return _product(
+            getattr(acoustic, "decoder_ratios", None)
+            or getattr(acoustic, "encoder_ratios", None)
+            or ()
+        )
+
+    if family == "indextts":
+        return _product(
+            getattr(getattr(args, "bigvgan", None), "upsample_rates", None) or ()
+        )
+
+    return None
+
+
+#: Speech tokens per second for Chatterbox's ``speech_tokenizer_v2_25hz``.
+#:
+#: Named in the tokenizer variant string the model hardcodes, so unlike the
+#: other families' strides this one is not a config field to read back.
+_CHATTERBOX_TOKEN_HZ = 25
+
+#: Chatterbox's vocoder rate (``S3GEN_SR``), used only when a cached config
+#: omits ``sample_rate``; a loaded model always reports its own.
+_CHATTERBOX_VOCODER_RATE = 24_000
+
+
+#: Families whose ``generate`` decodes everything before its single ``yield``.
+#:
+#: For these the per-chunk clamp is not a memory bound at all — it runs after
+#: the allocation it is meant to prevent. Every one of them must therefore
+#: reach the backend with a ``max_tokens`` budget, and is refused when one
+#: cannot be derived.
+_SINGLE_YIELD_FAMILIES: frozenset[str] = frozenset(
+    {"voxcpm", "qwen3_tts", "chatterbox", "indextts", "vibevoice"}
+)
+
+
+def _cached_samples_per_token(model_name: str, family: str) -> int | None:
+    """Samples per decoder step read from the CACHED config, before loading.
+
+    Same strides as :func:`_measured_samples_per_token`, sourced from the
+    checkpoint's ``config.json`` on disk instead of a materialised model. This
+    is what lets the boundability decision happen before the weights are read
+    (#2305): otherwise a one-character ``speed=4`` request would pull several
+    GiB, then 507, and leave a model that cannot serve it resident until its
+    TTL expires.
+
+    ``None`` means "could not be determined from the cache" — including when
+    nothing is cached yet. Callers must treat that as *unknown*, not as a
+    refusal: the load path re-checks against the real model, which is
+    authoritative. A pre-check that rejected on a cache miss would refuse every
+    cold request.
+    """
+
+    config = _cached_config(
+        model_name,
+        "speech_tokenizer/config.json" if family == "qwen3_tts" else "config.json",
+    )
+    if config is None:
+        return None
+
+    if family == "voxcpm":
+        patch = _positive_int(config.get("patch_size"))
+        vae = config.get("audio_vae_config") or {}
+        hop = _product(vae.get("encoder_rates") or ())
+        return patch * hop if patch and hop else None
+
+    if family == "qwen3_tts":
+        return _positive_int(config.get("decode_upsample_rate"))
+
+    if family == "chatterbox":
+        rate = _positive_int(config.get("sample_rate")) or _CHATTERBOX_VOCODER_RATE
+        return rate // _CHATTERBOX_TOKEN_HZ
+
+    if family == "vibevoice":
+        acoustic = config.get("acoustic_tokenizer_config") or {}
+        return _product(
+            acoustic.get("decoder_ratios") or acoustic.get("encoder_ratios") or ()
+        )
+
+    if family == "indextts":
+        bigvgan = config.get("bigvgan") or {}
+        return _product(bigvgan.get("upsample_rates") or ())
+
+    return None
+
+
+def _cached_config(
+    model_name: str, relative_path: str = "config.json"
+) -> dict | None:
+    """A JSON config from the snapshot the loader would open, or ``None``.
+
+    Resolves through ``refs/main`` exactly as ``snapshot_download`` does, so a
+    stale sibling snapshot cannot describe weights other than the ones about to
+    be read. Never raises: this feeds a pre-check whose failure mode is
+    "unknown", and the authoritative check still runs after the load.
+    """
+
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        from ..runtime.audio_capacity import _resolved_revision
+
+        repo_root = os.path.join(
+            HF_HUB_CACHE, f"models--{model_name.replace('/', '--')}"
+        )
+        sha = _resolved_revision(repo_root)
+        if sha is None:
+            return None
+        path = os.path.join(repo_root, "snapshots", sha, relative_path)
+        with open(path) as handle:
+            config = json.load(handle)
+        return config if isinstance(config, dict) else None
+    except Exception:
+        logger.debug("No cached config for %r", model_name, exc_info=True)
+        return None
+
+
+def _cached_sample_rate(model_name: str, family: str) -> int | None:
+    """Output sample rate from each family's real cached config layout."""
+
+    if family == "qwen3_tts":
+        tokenizer = _cached_config(model_name, "speech_tokenizer/config.json") or {}
+        return _positive_int(tokenizer.get("output_sample_rate"))
+
+    config = _cached_config(model_name) or {}
+    if family == "voxcpm":
+        vae = config.get("audio_vae_config") or {}
+        return _positive_int(vae.get("sample_rate"))
+    rate = _positive_int(config.get("sample_rate"))
+    if family == "chatterbox":
+        return rate or _CHATTERBOX_VOCODER_RATE
+    return rate
+
+
+def precheck_generation_bounds(
+    model_name: str, text: str, *, speed: float = 1.0
+) -> None:
+    """Refuse an unboundable synthesis request BEFORE its weights are loaded.
+
+    #2305 requires the unsafe combination to be rejected ahead of the load, not
+    after it. Without this a one-character ``speed=4`` VoxCPM request pulls
+    several GiB, discovers its reservation buys less than one decoder step,
+    507s — and leaves the model it cannot serve resident until the idle TTL.
+
+    Deliberately conservative: it raises ONLY when the cached config proves the
+    request cannot be served. A model that is not cached, or whose stride is
+    unreadable here, passes — :meth:`TTSEngine._token_budget_for` re-checks
+    against the loaded model and is authoritative. Rejecting on a cache miss
+    would refuse every cold start.
+    """
+
+    from ..runtime.audio_capacity import max_output_seconds_for
+
+    family = detect_tts_family(model_name)
+    if family not in _SINGLE_YIELD_FAMILIES:
+        return
+
+    per_token = _cached_samples_per_token(model_name, family)
+    if not per_token:
+        return
+
+    rate = _cached_sample_rate(model_name, family)
+    if not rate:
+        return
+
+    seconds = max_output_seconds_for(text, speed=speed)
+    if int(seconds * rate // per_token) < 1:
+        raise AudioGenerationUnboundedError(
+            model_name,
+            family,
+            f"the reserved {seconds:.3f}s is shorter than one decoder step "
+            f"({per_token / rate:.3f}s) for this backend; send a longer input "
+            "or a lower speed",
+            param="speed",
+        )
 
 
 def detect_tts_family(model_name: str) -> str:
@@ -646,6 +1044,88 @@ class TTSEngine:
                 "mlx-audio is required for TTS. Install with: pip install mlx-audio"
             ) from e
 
+    def _token_budget_for(self, max_output_seconds: float) -> int | None:
+        """``max_tokens`` that keeps generation inside the duration ceiling.
+
+        Returns ``None`` only for families that stream their output — those are
+        bounded by the per-chunk clamp in :meth:`generate`. Every single-yield
+        family MUST get a number here, because for them the clamp runs after
+        the allocation it is meant to prevent.
+
+        Never LOOSER than the backend's own default. That default is an
+        existing safety limit, and a budget derived from the request can be far
+        larger: 20k characters at ``speed=0.25`` works out to ~312k VoxCPM
+        tokens against a default of 4096. Raising it would turn a bound the
+        backend already enforced into a two-orders-of-magnitude larger one, and
+        the extra is not free — VoxCPM accumulates ``pred_feat_seq`` and KV
+        cache across the loop, neither of which the waveform's 3.5x reservation
+        covers. So this only ever tightens: ``min(computed, default)``.
+
+        Rounds DOWN. The reservation covers exactly ``max_output_seconds``, so
+        rounding up would let generation overshoot the ledger by up to one
+        token even though the returned waveform is sliced back.
+
+        Raises :class:`AudioGenerationUnboundedError` when a single-yield
+        backend cannot be held to the request's budget. That used to degrade to
+        something weaker: the backend's bare default (a fixed token count with
+        no relation to what this request reserved — Chatterbox's 1000 tokens is
+        ~40 s of audio against a 0.156 s reservation), or a warning followed by
+        the unsafe call. Neither is a bound, and the whole point of #2305 is
+        that the decision precedes the allocation. The error carries a
+        ``param`` naming what the caller could actually change, which is not
+        always the input — see :class:`AudioGenerationUnboundedError`.
+        """
+
+        generate = getattr(self.model, "generate", None)
+        single_yield = self._model_family in _SINGLE_YIELD_FAMILIES
+        per_token = _measured_samples_per_token(self.model, self._model_family)
+        rate = _positive_int(getattr(self.model, "sample_rate", None)) or _positive_int(
+            getattr(self.model, "sr", None)
+        )
+
+        if not per_token or not rate:
+            if single_yield:
+                raise AudioGenerationUnboundedError(
+                    self.model_name,
+                    self._model_family,
+                    "its samples-per-token stride could not be read from the "
+                    "loaded checkpoint, so generation cannot be bounded before "
+                    "it allocates",
+                    param="model",
+                )
+            return None
+
+        if not _accepts_kwarg(generate, "max_tokens"):
+            if single_yield:
+                raise AudioGenerationUnboundedError(
+                    self.model_name,
+                    self._model_family,
+                    "this backend build does not accept max_tokens, so its "
+                    "generation cannot be bounded before it allocates",
+                    param="model",
+                )
+            return None
+
+        budget = int(max_output_seconds * rate // per_token)
+        if budget < 1:
+            # The request did not reserve enough memory for even one decoder
+            # step. Clamping up to 1 would generate more than the ledger sold,
+            # so refuse instead. Unlike the two cases above this IS the
+            # caller's to fix: a longer input or a slower speed reserves more.
+            raise AudioGenerationUnboundedError(
+                self.model_name,
+                self._model_family,
+                f"the reserved {max_output_seconds:.3f}s is shorter than one "
+                f"decoder step ({per_token / rate:.3f}s) for this backend; "
+                "send a longer input or a lower speed",
+                param="speed",
+            )
+
+        default = _default_kwarg(generate, "max_tokens", "max_new_tokens")
+        if default is not None:
+            budget = min(budget, default)
+        return budget
+
     def generate(
         self,
         text: str,
@@ -715,12 +1195,16 @@ class TTSEngine:
         try:
             import mlx.core as mx
 
-            from ..runtime.audio_capacity import max_output_samples_for
+            from ..runtime.audio_capacity import max_output_seconds_for
 
             audio_chunks = []
             sample_rate = 24000  # Default for most models
             generated_samples = 0
-            max_output_samples = max_output_samples_for(text, speed=speed)
+            # Denominated in seconds, not samples: the ceiling has to mean the
+            # same amount of audio on a 24 kHz backend as on a 44.1 kHz one,
+            # and only the backend knows its rate. Converted to samples below
+            # against the rate each result actually reports.
+            max_output_seconds = max_output_seconds_for(text, speed=speed)
 
             # Family-aware generate kwargs. Qwen3-TTS auto-detects the
             # language (``lang_code="auto"``) and accepts an ``instruct``
@@ -798,21 +1282,46 @@ class TTSEngine:
                     raise ValueError(
                         "voice_seed is supported only by Qwen3-TTS VoiceDesign"
                     )
+
+            # Bound the generation itself, not just what we keep from it.
+            # Chatterbox, IndexTTS, VibeVoice, Qwen3 and VoxCPM all complete
+            # their entire decode — waveform, KV cache and decoder
+            # intermediates all live — before their single ``yield``, so the
+            # per-chunk clamp below runs after the peak it is meant to prevent.
+            # ``max_tokens`` moves the bound in front of the work. It never
+            # loosens the backend's own default, and a single-yield backend
+            # that cannot be bounded RAISES rather than proceeding; see
+            # :meth:`_token_budget_for`.
+            token_budget = self._token_budget_for(max_output_seconds)
+            if token_budget is not None:
+                gen_kwargs["max_tokens"] = token_budget
+
             with _qwen_seeded_sampling(self.model, voice_seed):
                 for result in self.model.generate(**gen_kwargs):
                     audio_data = result.audio
                     if hasattr(result, "sample_rate"):
                         sample_rate = result.sample_rate
 
-                    # Convert mlx array to numpy
-                    if isinstance(audio_data, mx.array) or hasattr(
-                        audio_data, "tolist"
-                    ):
-                        audio_np = np.array(audio_data.tolist(), dtype=np.float32)
-                    else:
-                        audio_np = np.array(audio_data, dtype=np.float32)
-                    audio_chunks.append(audio_np)
-                    generated_samples += int(audio_np.size)
+                    # Resolve the ceiling against the rate this backend
+                    # actually emits. Holding a 24 kHz engine to a sample count
+                    # derived from 44.1 kHz would grant it 1.8x the intended
+                    # duration, and the reservation was sized from duration.
+                    max_output_samples = int(max_output_seconds * sample_rate)
+                    remaining = max_output_samples - generated_samples
+
+                    # Clamp the chunk BEFORE converting it. Checking after the
+                    # append bounds the next chunk, not this one, and the
+                    # conversion is where the memory is actually spent.
+                    truncated = False
+                    length = _audio_length(audio_data)
+                    if length > remaining:
+                        audio_data = audio_data[:remaining]
+                        truncated = True
+
+                    audio_np = _to_float32(audio_data, mx)
+                    if audio_np.size:
+                        audio_chunks.append(audio_np)
+                        generated_samples += int(audio_np.size)
 
                     # Hard stop on the accumulated waveform (#2305). The
                     # residency budget reserves memory for this request from an
@@ -821,14 +1330,14 @@ class TTSEngine:
                     # away and emit far more audio than the input suggests
                     # (voxcpm's registry entry documents exactly that). Without
                     # a ceiling on the WORK, the reservation is a guess rather
-                    # than a bound, so stop consuming chunks once the request
-                    # has produced everything it was budgeted for.
-                    if generated_samples >= max_output_samples:
+                    # than a bound, so stop once the request has produced
+                    # everything it was budgeted for.
+                    if truncated or generated_samples >= max_output_samples:
                         logger.warning(
-                            "TTS generation for %s hit the %d-sample output "
+                            "TTS generation for %s hit the %.1fs output "
                             "ceiling; truncating.",
                             self.model_name,
-                            max_output_samples,
+                            max_output_seconds,
                         )
                         break
 
@@ -946,6 +1455,37 @@ class TTSEngine:
             aud = aud * TARGET_RMS / rms
         # explicit duration estimate — F5's auto heuristic can collapse to ~0s
         dur = int(estimated_duration(aud, rtext, text, speed) * FRAMES_PER_SEC)
+
+        # Clamp that estimate to the same ceiling the residency budget reserved
+        # against (#2305). ``estimated_duration`` scales the reference clip's
+        # length by the ref_text-to-text character ratio, and both of its inputs
+        # are caller-controlled: a 30-second reference (the maximum this route
+        # accepts) with a one-character ``ref_text`` yields a ratio large enough
+        # to turn a short ``text`` into minutes of audio. F5 then samples that
+        # whole duration in ONE call, so nothing downstream can intervene — the
+        # bound has to land on ``dur``, before ``sample()``.
+        #
+        # The ceiling covers the GENERATED speech; the reference prefix is
+        # sampled alongside it and trimmed afterwards, so it is added back here
+        # rather than eaten out of the caller's budget.
+        from ..runtime.audio_capacity import max_output_seconds_for
+
+        ref_frames = aud.shape[0] / SAMPLE_RATE * FRAMES_PER_SEC
+        max_frames = int(
+            ref_frames + max_output_seconds_for(text, speed=speed) * FRAMES_PER_SEC
+        )
+        if dur > max_frames:
+            logger.warning(
+                "F5 duration estimate for %s (%d frames) exceeds the output "
+                "ceiling; clamping to %d frames.",
+                self.model_name,
+                dur,
+                max_frames,
+            )
+            dur = max_frames
+        # ``sample()`` needs at least the reference prefix plus a frame to
+        # generate into; a degenerate estimate would otherwise ask for nothing.
+        dur = max(dur, int(ref_frames) + 1)
         ptext = convert_char_to_pinyin([rtext + " " + text])
         # F5TTS.from_pretrained injects Vocos.decode as ``_vocoder``.
         # sample() therefore returns the decoded 1-D waveform (Vocos'

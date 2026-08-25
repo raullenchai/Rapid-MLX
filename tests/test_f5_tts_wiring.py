@@ -239,3 +239,73 @@ def test_f5_rejects_near_silent_reference_below_rms_floor(
     engine = TTSEngine("lucasnewman/f5-tts-mlx")
     with pytest.raises(ValueError, match="non-silent"):
         engine._generate_f5("hello", "ref.wav", "reference", 1.0)
+
+
+def test_f5_clamps_a_runaway_duration_estimate_to_the_output_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F5 samples its whole duration in ONE call, so the bound must land on the
+    estimate (#2305).
+
+    ``estimated_duration`` scales the reference clip's length by the
+    ref_text-to-text character ratio, and both inputs are caller-controlled: a
+    30-second reference (the maximum this route accepts) with a one-character
+    ``ref_text`` produces a ratio large enough to turn a short ``text`` into
+    minutes of audio. The request reservation is sized from the input text
+    only, so an unclamped estimate is an unbudgeted allocation — and no
+    per-chunk check downstream can intervene, because there are no chunks.
+    """
+    _install_fake_f5_env(monkeypatch)
+
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    # 30 s of reference at 24 kHz — the longest the guards permit.
+    ref_frames = 24_000 * 30
+    reference = np.full(ref_frames, 0.5, dtype=np.float32)
+    _install_fake_soundfile(monkeypatch, channels=1, frames=ref_frames, data=reference)
+
+    # A one-character ref_text against short text: the real heuristic's ratio
+    # blows up here. Simulate the runaway directly.
+    sys.modules["f5_tts_mlx.generate"].estimated_duration = lambda *_: 3600.0
+
+    model = MagicMock()
+    model.sample.return_value = (np.ones(ref_frames + 480, dtype=np.float32), None)
+    engine = TTSEngine("lucasnewman/f5-tts-mlx")
+    engine.model = model
+
+    text = "hello"
+    engine._generate_f5(text, "ref.wav", "x", 1.0)
+
+    # FRAMES_PER_SEC is 100 in the fake env.
+    permitted = max_output_seconds_for(text, speed=1.0) * 100
+    ref_prefix = ref_frames / 24_000 * 100
+    requested = model.sample.call_args.kwargs["duration"]
+
+    # The unclamped estimate was 3600 s * 100 = 360_000 frames.
+    assert requested < 360_000
+    assert requested <= ref_prefix + permitted + 1
+
+
+def test_f5_never_asks_for_less_than_the_reference_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clamp adds the reference prefix back rather than eating it out of
+    the caller's budget: ``sample()`` decodes the prefix alongside the speech
+    and ``_generate_f5`` trims it afterwards, so a ceiling applied to the total
+    would leave no frames to generate into."""
+    _install_fake_f5_env(monkeypatch)
+
+    _install_fake_soundfile(
+        monkeypatch, channels=1, frames=240, data=np.full(240, 0.5, dtype=np.float32)
+    )
+    sys.modules["f5_tts_mlx.generate"].estimated_duration = lambda *_: 0.0
+
+    model = MagicMock()
+    model.sample.return_value = (np.ones(480, dtype=np.float32), None)
+    engine = TTSEngine("lucasnewman/f5-tts-mlx")
+    engine.model = model
+
+    engine._generate_f5("a", "ref.wav", "reference", 1.0)
+
+    # 240 frames at 24 kHz = 0.01 s = 1 frame at FRAMES_PER_SEC=100.
+    assert model.sample.call_args.kwargs["duration"] >= 2

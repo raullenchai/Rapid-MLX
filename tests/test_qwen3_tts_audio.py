@@ -93,14 +93,36 @@ class _CapturingModel:
     passing a keyword the real model doesn't accept raises ``TypeError``
     here instead of silently passing the test. ``instruct`` uses a sentinel
     default so a call is recorded as carrying it ONLY when actually passed,
-    letting the tests assert conditional forwarding."""
+    letting the tests assert conditional forwarding.
+
+    ``max_tokens`` mirrors the real ``qwen3_tts.Model.generate``
+    (``max_tokens: int = 4096``). Qwen3 decodes its whole waveform before
+    yielding, so #2305 requires the engine to bound it with a token budget; a
+    double that rejected the kwarg would misrepresent the contract and make
+    every request fail closed. It is recorded separately from ``rec`` so the
+    forwarding assertions stay about the family's own kwargs."""
 
     def __init__(self):
         self.calls: list[dict] = []
+        self.token_budgets: list[int] = []
+        # The engine measures the samples-per-token stride off the loaded
+        # model; without it a single-yield family is refused as unboundable.
+        self.sample_rate = 24000
+        self.speech_tokenizer = types.SimpleNamespace(decode_upsample_rate=1920)
 
-    def generate(self, *, text, voice=None, speed=1.0, lang_code=None, instruct=_UNSET):
+    def generate(
+        self,
+        *,
+        text,
+        voice=None,
+        speed=1.0,
+        lang_code=None,
+        instruct=_UNSET,
+        max_tokens=4096,
+    ):
         import numpy as np
 
+        self.token_budgets.append(max_tokens)
         rec = {"text": text, "voice": voice, "speed": speed, "lang_code": lang_code}
         if instruct is not _UNSET:
             rec["instruct"] = instruct

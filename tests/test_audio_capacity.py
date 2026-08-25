@@ -344,6 +344,855 @@ def test_speech_buffer_scales_with_speed_not_just_characters():
     assert at_slowest > AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES
 
 
+def test_generation_ceiling_never_exceeds_what_the_reservation_bought():
+    """The ledger must reserve for every second the engine is allowed to emit.
+
+    An earlier revision let the ceiling run 2x the duration the reservation was
+    sized from, reasoning that the 3.5x peak multiplier absorbed it. It does
+    not: that multiplier counts concurrent COPIES of one waveform, not extra
+    duration, so a request that generated up to its permitted ceiling peaked at
+    ~2x its reservation. Both now derive from one bounded duration.
+    """
+
+    from vllm_mlx.runtime.audio_capacity import (
+        _TTS_PEAK_MULTIPLIER,
+        MAX_SPEECH_INPUT_CHARACTERS,
+        max_output_seconds_for,
+        speech_buffer_bytes,
+    )
+
+    for characters in (1, 500, MAX_SPEECH_INPUT_CHARACTERS):
+        for speed in (0.25, 1.0, 2.0):
+            text = "x" * characters
+            allowed = max_output_seconds_for(text, speed=speed)
+            reserved = speech_buffer_bytes(characters, speed=speed)
+
+            # What the engine may actually produce, at the highest native rate
+            # any registered engine emits, times the pipeline's live copies.
+            worst_case = allowed * 44_100 * 4 * _TTS_PEAK_MULTIPLIER
+            assert reserved >= worst_case * 0.999, (
+                f"{characters} chars at speed={speed}: permitted "
+                f"{allowed:.1f}s needs {worst_case:.0f}B but only "
+                f"{reserved}B was reserved"
+            )
+
+
+def test_conversion_headroom_is_charged_for_the_permitted_duration():
+    """The 96 kHz stereo conversion is sized from duration, so it must use the
+    same bounded duration the engine is allowed to reach — not the raw
+    prediction. Charging the prediction under-charged exactly the requests that
+    resample the most."""
+
+    from vllm_mlx.runtime.audio_capacity import (
+        max_output_seconds_for,
+        speech_buffer_bytes,
+    )
+
+    characters = 5_000
+    allowed = max_output_seconds_for("x" * characters, speed=0.25)
+    reserved = speech_buffer_bytes(
+        characters, speed=0.25, sample_rate=96_000, channels=2
+    )
+    native = speech_buffer_bytes(characters, speed=0.25)
+
+    # float32 converted array + int16 copy + encoded bytes, over the duration
+    # the engine may actually reach.
+    converted = allowed * 96_000 * 2 * 4 * 2
+    assert reserved - native >= converted * 0.999
+
+
+def test_tts_reference_charge_includes_encoded_decode_and_resample_buffers():
+    from vllm_mlx.runtime.audio_capacity import tts_reference_buffer_bytes
+
+    duration = 30.0
+    encoded = 1_400_000
+    compressed = 1_000_000
+    reserved = tts_reference_buffer_bytes(
+        duration,
+        source_rate=48_000,
+        source_channels=2,
+        encoded_bytes=encoded,
+        compressed_bytes=compressed,
+    )
+
+    source_float64 = duration * 48_000 * 2 * 8
+    native_float32 = duration * 44_100 * 4
+    assert reserved == int(
+        source_float64 * 2 + native_float32 * 3 + encoded + compressed
+    )
+
+
+# ---------------------------------------------------------------------------
+# The ceiling has to bound the ALLOCATION, not merely observe it afterwards.
+# ---------------------------------------------------------------------------
+
+
+#: The stride each single-yield family exposes on a LOADED model, as the
+#: attribute path the engine reads. Mirrors the real checkpoints' defaults;
+#: ``samples`` is what those values multiply out to.
+_STRIDE_FIXTURES = {
+    "voxcpm": {
+        "samples": 4 * 1764,
+        "rate": 44_100,
+        "attrs": lambda: {
+            "patch_size": 4,
+            "audio_vae": type("V", (), {"hop_length": 1764})(),
+        },
+    },
+    "qwen3_tts": {
+        "samples": 1920,
+        "rate": 24_000,
+        "attrs": lambda: {
+            "speech_tokenizer": type("S", (), {"decode_upsample_rate": 1920})()
+        },
+    },
+    "chatterbox": {
+        "samples": 960,  # 24 kHz / 25 Hz speech tokens
+        "rate": 24_000,
+        "attrs": lambda: {"sr": 24_000},
+    },
+    "vibevoice": {
+        "samples": 8 * 5 * 5 * 4 * 2 * 2,
+        "rate": 24_000,
+        "attrs": lambda: {
+            "config": type(
+                "C",
+                (),
+                {
+                    "acoustic_tokenizer_config": type(
+                        "A",
+                        (),
+                        {
+                            "decoder_ratios": None,
+                            "encoder_ratios": [8, 5, 5, 4, 2, 2],
+                        },
+                    )()
+                },
+            )()
+        },
+    },
+    "indextts": {
+        "samples": 8 * 8 * 2 * 2,
+        "rate": 24_000,
+        "attrs": lambda: {
+            "args": type(
+                "A", (), {"bigvgan": type("B", (), {"upsample_rates": [8, 8, 2, 2]})()}
+            )()
+        },
+    },
+}
+
+
+def _stride_engine(family, model_cls, **extra):
+    """A ``TTSEngine`` whose model exposes ``family``'s real stride attributes.
+
+    The engine measures every stride off the loaded checkpoint, so a double
+    without them is refused — correctly, but it would test the refusal rather
+    than the thing under test.
+    """
+
+    from vllm_mlx.audio.tts import TTSEngine
+
+    fixture = _STRIDE_FIXTURES[family]
+    attrs = {
+        "generate": model_cls.generate,
+        "sample_rate": fixture["rate"],
+        **fixture["attrs"](),
+        **extra,
+    }
+    engine = TTSEngine.__new__(TTSEngine)
+    engine._model_family = family
+    engine.model_name = f"test/{family}"
+    engine._loaded = True
+    engine.model = type("Fake", (), attrs)()
+    return engine
+
+
+class _RunawayModel:
+    """Backend that ignores the implied characters-per-second ratio.
+
+    ``chunks`` are yielded in order; ``sample_rate`` is reported per result the
+    way every mlx-audio backend does. Records the kwargs it was called with so
+    tests can assert on the pre-generation token budget.
+
+    ``signature_of`` borrows a real backend's ``generate`` signature, so the
+    engine reads that backend's declared ``max_tokens`` default. Without it the
+    fake's bare ``**kwargs`` declares no default and no floor applies.
+
+    ``stride_attrs`` supplies the config the engine measures the
+    samples-per-token stride from; a model without it is refused outright.
+    """
+
+    def __init__(
+        self, chunks, sample_rate=24_000, signature_of=None, stride_attrs=None
+    ):
+        import inspect
+
+        import numpy as np
+
+        self._chunks = [np.asarray(chunk, dtype=np.float32) for chunk in chunks]
+        self.sample_rate = sample_rate
+        self.calls: list[dict] = []
+        self.chunks_consumed = 0
+        for name, value in (stride_attrs or {}).items():
+            setattr(self, name, value)
+        if signature_of is not None:
+            # Per-instance, so borrowing never mutates the shared fake class.
+            def generate(**kwargs):
+                return self._generate(**kwargs)
+
+            generate.__signature__ = inspect.signature(signature_of)
+            self.generate = generate
+        else:
+            self.generate = self._generate
+
+    def _generate(self, **kwargs):
+        self.calls.append(kwargs)
+        for chunk in self._chunks:
+            self.chunks_consumed += 1
+            yield type(
+                "Result", (), {"audio": chunk, "sample_rate": self.sample_rate}
+            )()
+
+
+def _ceiling_samples(text, *, speed=1.0, sample_rate=24_000):
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    return int(max_output_seconds_for(text, speed=speed) * sample_rate)
+
+
+def test_an_oversized_chunk_is_truncated_not_merely_stopped_after():
+    """A single runaway chunk must be cut to the remaining budget.
+
+    The previous check ran AFTER the chunk was appended, so ``break`` only
+    prevented the NEXT chunk: a backend that emitted its whole runaway waveform
+    in one result was copied in full and returned in full. The ceiling has to
+    bound this chunk, not the one after it.
+    """
+
+    import numpy as np
+
+    from vllm_mlx.audio.tts import TTSEngine
+
+    text = "hello"
+    ceiling = _ceiling_samples(text)
+
+    engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
+    engine._loaded = True
+    engine.model = _RunawayModel([np.ones(ceiling * 50, dtype=np.float32)])
+
+    output = engine.generate(text)
+
+    assert output.audio.size == ceiling
+    assert engine.model.chunks_consumed == 1
+
+
+def test_the_ceiling_is_denominated_in_seconds_not_a_fixed_rate_sample_count():
+    """A 24 kHz backend must not be granted a 44.1 kHz sample count.
+
+    The reservation is sized from DURATION; a sample count is only a duration
+    once a rate is fixed, and the rate belongs to the engine. Holding a 24 kHz
+    engine to 44.1 kHz samples would let it emit 1.8x the intended duration
+    against a reservation that bought none of it.
+    """
+
+    import numpy as np
+
+    from vllm_mlx.audio.tts import TTSEngine
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    text = "hello"
+    seconds = max_output_seconds_for(text)
+
+    for rate in (24_000, 44_100):
+        engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
+        engine._loaded = True
+        engine.model = _RunawayModel(
+            [np.ones(int(seconds * rate * 20), dtype=np.float32)], sample_rate=rate
+        )
+        output = engine.generate(text)
+
+        # Same DURATION at either rate, which is what the budget paid for.
+        assert output.duration == pytest.approx(seconds, rel=0.01)
+        assert output.audio.size == int(seconds * rate)
+
+
+def test_accumulated_chunks_stop_at_the_ceiling():
+    """A backend that streams past its budget stops being consumed."""
+
+    import numpy as np
+
+    from vllm_mlx.audio.tts import TTSEngine
+
+    text = "hello"
+    ceiling = _ceiling_samples(text)
+    chunk = max(1, ceiling // 4)
+
+    engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
+    engine._loaded = True
+    engine.model = _RunawayModel([np.ones(chunk, dtype=np.float32)] * 1000)
+
+    output = engine.generate(text)
+
+    assert output.audio.size <= ceiling
+    # It stopped consuming rather than draining all 1000 chunks.
+    assert engine.model.chunks_consumed < 1000
+
+
+def test_single_yield_backends_are_bounded_before_they_generate():
+    """VoxCPM decodes its whole ``max_tokens`` run before its ONE yield.
+
+    A per-chunk check cannot reach it: by the time a chunk exists the peak has
+    already been allocated. The bound must therefore travel into the backend as
+    a token budget, ahead of the work.
+    """
+
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+    import numpy as np
+
+    from vllm_mlx.audio.tts import TTSEngine
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    text = "hello"
+    fixture = _STRIDE_FIXTURES["voxcpm"]
+
+    engine = TTSEngine("mlx-community/VoxCPM1.5")
+    assert engine._model_family == "voxcpm"
+    engine._loaded = True
+    # Borrow the real backend's signature so the budget is floored against the
+    # default VoxCPM actually declares, not the fake's ``**kwargs``.
+    engine.model = _RunawayModel(
+        [np.ones(64, dtype=np.float32)],
+        sample_rate=fixture["rate"],
+        signature_of=voxcpm.Model.generate,
+        stride_attrs=fixture["attrs"](),
+    )
+
+    engine.generate(text)
+
+    (call,) = engine.model.calls
+    budget = call["max_tokens"]
+    # The default is 4096 tokens; a five-character request must be given far
+    # less than that.
+    assert budget < 4096
+    # And the budget must be close to (never above) what the ledger reserved —
+    # see the rounding test below for the direction that matters.
+    permitted = budget * fixture["samples"] / fixture["rate"]
+    reserved = max_output_seconds_for(text)
+    assert permitted <= reserved
+    assert permitted > reserved / 2
+
+
+def test_every_single_yield_backend_is_bounded_before_it_generates():
+    """Not just the two families with a published samples-per-token ratio.
+
+    Chatterbox, IndexTTS and VibeVoice also complete their entire decode before
+    their one ``yield``, so the per-chunk clamp runs after the peak it is meant
+    to prevent. Missing them left three of five single-yield backends bounded
+    only in hindsight.
+
+    Crucially the budget must fall inside what the REQUEST reserved. An earlier
+    revision handed these three the backend's own default, which is a fixed
+    token count unrelated to the request: Chatterbox's 1000 tokens is ~40 s of
+    audio, VibeVoice's 512 is ~68 s, and a one-character ``speed=4`` request
+    reserves 0.156 s. That is not a bound, it is a different number.
+    """
+
+    import inspect as _inspect
+
+    import mlx_audio.tts.models.chatterbox.chatterbox as chatterbox
+    import mlx_audio.tts.models.indextts.indextts as indextts
+    import mlx_audio.tts.models.qwen3_tts.qwen3_tts as qwen3_tts
+    import mlx_audio.tts.models.vibevoice.vibevoice as vibevoice
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+
+    from vllm_mlx.audio.tts import _SINGLE_YIELD_FAMILIES, _measured_samples_per_token
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    backends = {
+        "chatterbox": chatterbox.Model,
+        "indextts": indextts.Model,
+        "vibevoice": vibevoice.Model,
+        "voxcpm": voxcpm.Model,
+        "qwen3_tts": qwen3_tts.Model,
+    }
+    assert set(backends) == set(_SINGLE_YIELD_FAMILIES)
+    assert set(backends) == set(_STRIDE_FIXTURES)
+
+    for family, model_cls in backends.items():
+        # Each really does yield exactly once per generate() body.
+        source = _inspect.getsource(model_cls.generate)
+        assert source.count("yield") >= 1
+
+        engine = _stride_engine(family, model_cls)
+        fixture = _STRIDE_FIXTURES[family]
+
+        # The stride is measured off the model, never tabulated.
+        per_token = _measured_samples_per_token(engine.model, family)
+        assert per_token == fixture["samples"], family
+
+        # A short request: the reservation, not the backend default, must bind.
+        seconds = max_output_seconds_for("hello")
+        budget = engine._token_budget_for(seconds)
+        assert budget is not None, f"{family} generates unbounded"
+        assert budget > 0
+        permitted = budget * per_token / fixture["rate"]
+        assert permitted <= seconds, (
+            f"{family}: budget buys {permitted:.4f}s but only {seconds:.4f}s "
+            "was reserved"
+        )
+
+
+def test_a_checkpoint_that_overrides_its_stride_is_sized_from_its_own_config():
+    """Strides are CONFIG values, so a constant table silently mis-sizes.
+
+    The routes accept any cached ``<org>/<repo>``. A checkpoint whose stride is
+    larger than the library default would be granted a proportionally larger
+    token budget — and for these single-yield families the whole waveform lands
+    before anything comes back, so the overshoot cannot be clamped.
+    """
+
+    import mlx_audio.tts.models.vibevoice.vibevoice as vibevoice
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+
+    from vllm_mlx.audio.tts import _measured_samples_per_token
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    # VoxCPM with double the default patch_size.
+    engine = _stride_engine("voxcpm", voxcpm.Model, patch_size=8)
+    assert _measured_samples_per_token(engine.model, "voxcpm") == 8 * 1764
+
+    # VibeVoice's decoder_ratios override its encoder_ratios when set.
+    engine_vv = _stride_engine(
+        "vibevoice",
+        vibevoice.Model,
+        config=type(
+            "C",
+            (),
+            {
+                "acoustic_tokenizer_config": type(
+                    "A",
+                    (),
+                    {
+                        "decoder_ratios": [8, 8, 4, 4],
+                        "encoder_ratios": [8, 5, 5, 4, 2, 2],
+                    },
+                )()
+            },
+        )(),
+    )
+    assert _measured_samples_per_token(engine_vv.model, "vibevoice") == 8 * 8 * 4 * 4
+
+    # And the budget shrinks accordingly, so the reservation still holds.
+    seconds = max_output_seconds_for("hello" * 20)
+    for engine_, per_token, rate in (
+        (engine, 8 * 1764, 44_100),
+        (engine_vv, 8 * 8 * 4 * 4, 24_000),
+    ):
+        budget = engine_._token_budget_for(seconds)
+        assert budget * per_token / rate <= seconds
+
+
+def test_a_single_yield_backend_that_cannot_be_bounded_is_refused():
+    """Fail closed, do not degrade to after-the-fact truncation.
+
+    If a single-yield backend's stride cannot be read off the loaded
+    checkpoint, or a build of it will not accept ``max_tokens``, there is no
+    way to keep its allocation inside the request's reservation. Warning and
+    generating anyway just narrates the overrun — the whole point of #2305 is
+    that the decision precedes the allocation.
+
+    ``param`` must NOT blame ``input`` here: both causes are properties of the
+    model or the installed mlx-audio, and no edit to the text fixes either.
+    """
+
+    import mlx_audio.tts.models.indextts.indextts as indextts
+
+    from vllm_mlx.audio.tts import AudioGenerationUnboundedError, TTSEngine
+
+    # (a) single-yield family whose stride cannot be measured off the model.
+    engine = TTSEngine.__new__(TTSEngine)
+    engine._model_family = "indextts"
+    engine.model_name = "test/indextts"
+    engine.model = type(
+        "Fake", (), {"generate": indextts.Model.generate, "sample_rate": 24_000}
+    )()
+    with pytest.raises(AudioGenerationUnboundedError, match="stride") as excinfo:
+        engine._token_budget_for(1.0)
+    assert excinfo.value.param == "model"
+
+    # (b) single-yield family that will not accept max_tokens. The waveform
+    # must never be allocated, so the fake asserts if generate() is reached.
+    class _NoMaxTokens:
+        sample_rate = 24_000
+        sr = 24_000
+
+        def generate(self, *, text, voice=None, speed=1.0, lang_code=None):
+            raise AssertionError("generation must be refused before it starts")
+            yield  # pragma: no cover - generator marker
+
+    engine = TTSEngine("mlx-community/chatterbox-turbo-fp16")
+    assert engine._model_family == "chatterbox"
+    engine._loaded = True
+    engine.model = _NoMaxTokens()
+    with pytest.raises(AudioGenerationUnboundedError, match="max_tokens") as excinfo:
+        engine.generate("hello")
+    assert excinfo.value.param == "model"
+
+
+def test_a_reservation_too_small_for_one_decoder_step_is_refused():
+    """``max(1, ...)`` was a hole: one token can exceed the whole reservation.
+
+    A one-character VoxCPM request at ``speed=4`` reserves 0.15625 s, but a
+    single decoder step is 7056/44100 = 0.16 s. Clamping the budget up to 1
+    would generate more than the ledger sold. Unlike the model-side refusals
+    this one IS the caller's to fix, so ``param`` points at ``speed``.
+    """
+
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+
+    from vllm_mlx.audio.tts import AudioGenerationUnboundedError
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    engine = _stride_engine("voxcpm", voxcpm.Model)
+
+    too_small = max_output_seconds_for("x", speed=4.0)
+    assert too_small < 7056 / 44_100
+    with pytest.raises(AudioGenerationUnboundedError, match="one decoder step") as exc:
+        engine._token_budget_for(too_small)
+    assert exc.value.param == "speed"
+
+    # The same request at the default speed reserves enough and is allowed.
+    assert engine._token_budget_for(max_output_seconds_for("x")) >= 1
+
+
+def test_a_token_budget_never_loosens_the_backends_own_limit():
+    """The budget is a ceiling, not a grant.
+
+    A request-derived budget can dwarf the backend's own safety default —
+    20k characters at speed=0.25 works out to ~312k VoxCPM tokens against a
+    default of 4096. Raising it would convert a bound the backend already
+    enforced into one two orders of magnitude larger, and the extra is not
+    covered by the waveform reservation: VoxCPM accumulates ``pred_feat_seq``
+    and KV cache across the loop.
+    """
+
+    import mlx_audio.tts.models.qwen3_tts.qwen3_tts as qwen3_tts
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+
+    from vllm_mlx.runtime.audio_capacity import (
+        MAX_SPEECH_INPUT_CHARACTERS,
+        max_output_seconds_for,
+    )
+
+    # The largest request the API accepts, at the slowest permitted speed.
+    seconds = max_output_seconds_for("x" * MAX_SPEECH_INPUT_CHARACTERS, speed=0.25)
+
+    for family, model_cls, default in (
+        ("voxcpm", voxcpm.Model, 4096),
+        ("qwen3_tts", qwen3_tts.Model, 4096),
+    ):
+        engine = _stride_engine(family, model_cls)
+        assert engine._token_budget_for(seconds) == default
+
+
+def test_the_token_budget_stays_inside_the_reservation():
+    """Rounding must go DOWN.
+
+    The reservation covers exactly ``max_output_seconds``. Rounding the token
+    count up let generation overshoot the ledger by up to one token — a
+    one-character request bought 0.625 s but was permitted 0.64 s. The returned
+    waveform is sliced back, but the generation peak is what the budget exists
+    to bound.
+    """
+
+    import mlx_audio.tts.models.qwen3_tts.qwen3_tts as qwen3_tts
+    import mlx_audio.tts.models.voxcpm.voxcpm as voxcpm
+
+    from vllm_mlx.runtime.audio_capacity import max_output_seconds_for
+
+    for family, model_cls in (
+        ("voxcpm", voxcpm.Model),
+        ("qwen3_tts", qwen3_tts.Model),
+    ):
+        fixture = _STRIDE_FIXTURES[family]
+        per_token, rate = fixture["samples"], fixture["rate"]
+        engine = _stride_engine(family, model_cls)
+
+        for characters in (1, 7, 100, 3_000):
+            seconds = max_output_seconds_for("x" * characters)
+            budget = engine._token_budget_for(seconds)
+            permitted = budget * per_token / rate
+            assert permitted <= seconds, (
+                f"{family} at {characters} chars: budget buys {permitted:.4f}s "
+                f"but only {seconds:.4f}s was reserved"
+            )
+
+
+def _seed_cached_checkpoint(
+    tmp_path, monkeypatch, repo_id, config, *, extra_json=None
+):
+    """Write a HF-cache snapshot for ``repo_id`` containing ``config.json``."""
+
+    repo_root = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / "sha-a"
+    snapshot.mkdir(parents=True)
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text("sha-a")
+    (snapshot / "config.json").write_text(json.dumps(config))
+    for relative_path, payload in (extra_json or {}).items():
+        target = snapshot / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path), raising=False
+    )
+    return snapshot
+
+
+def test_an_unservable_request_is_refused_before_the_weights_load(
+    tmp_path, monkeypatch
+):
+    """#2305 requires the unsafe combination to be rejected BEFORE loading.
+
+    Checking only inside the engine means a one-character ``speed=4`` VoxCPM
+    request pulls several GiB, discovers its reservation buys less than one
+    decoder step, 507s — and leaves a model that cannot serve it resident until
+    the idle TTL. The stride is readable from the cached config, so the refusal
+    can happen with no weights materialised at all.
+    """
+
+    from vllm_mlx.audio.tts import (
+        AudioGenerationUnboundedError,
+        precheck_generation_bounds,
+    )
+
+    repo = "mlx-community/VoxCPM1.5"
+    _seed_cached_checkpoint(
+        tmp_path,
+        monkeypatch,
+        repo,
+        {
+            "patch_size": 4,
+            "audio_vae_config": {
+                "sample_rate": 44_100,
+                "encoder_rates": [2, 3, 6, 7, 7],
+            },
+        },
+    )
+
+    with pytest.raises(AudioGenerationUnboundedError, match="one decoder step") as exc:
+        precheck_generation_bounds(repo, "x", speed=4.0)
+    assert exc.value.param == "speed"
+
+    # A request that DOES fit passes the gate and reaches the loader.
+    precheck_generation_bounds(repo, "x", speed=1.0)
+
+
+def test_the_preload_check_stays_silent_when_the_cache_cannot_answer(
+    tmp_path, monkeypatch
+):
+    """It must never refuse a cold start.
+
+    The pre-check is an optimisation over the authoritative post-load check, so
+    "not cached" and "stride unreadable" both mean *unknown*, not *refuse*.
+    Rejecting on a cache miss would break every first request for a model.
+    """
+
+    from vllm_mlx.audio.tts import precheck_generation_bounds
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path), raising=False
+    )
+
+    # Nothing cached at all.
+    precheck_generation_bounds("mlx-community/VoxCPM1.5", "x", speed=4.0)
+
+    # Cached, but the config carries no stride.
+    _seed_cached_checkpoint(
+        tmp_path, monkeypatch, "someone/mystery-tts", {"model_type": "voxcpm"}
+    )
+    precheck_generation_bounds("someone/mystery-tts", "x", speed=4.0)
+
+    # A streaming family is never pre-checked: the per-chunk clamp bounds it.
+    precheck_generation_bounds("mlx-community/Kokoro-82M-bf16", "x", speed=4.0)
+
+
+def test_the_preload_check_reads_the_same_strides_as_the_loaded_model(
+    tmp_path, monkeypatch
+):
+    """The cached-config probe and the loaded-model probe must agree.
+
+    They are two readings of one number. If they drift, the pre-check either
+    refuses requests the engine would serve or waves through ones it will
+    refuse after a multi-GiB load — both worse than having no pre-check.
+    """
+
+    from vllm_mlx.audio.tts import _cached_sample_rate, _cached_samples_per_token
+
+    cases = {
+        "mlx-community/VoxCPM1.5": (
+            "voxcpm",
+            {
+                "patch_size": 4,
+                "audio_vae_config": {
+                    "sample_rate": 44_100,
+                    "encoder_rates": [2, 3, 6, 7, 7],
+                },
+            },
+            {},
+        ),
+        "mlx-community/Qwen3-TTS-Flash": (
+            "qwen3_tts",
+            {"model_type": "qwen3_tts"},
+            {
+                "speech_tokenizer/config.json": {
+                    "output_sample_rate": 24_000,
+                    "decode_upsample_rate": 1920,
+                }
+            },
+        ),
+        "mlx-community/chatterbox-fp16": (
+            "chatterbox",
+            {"sample_rate": 24_000},
+            {},
+        ),
+        "mlx-community/VibeVoice-Realtime-0.5B-4bit": (
+            "vibevoice",
+            {
+                "sample_rate": 24_000,
+                "acoustic_tokenizer_config": {"encoder_ratios": [8, 5, 5, 4, 2, 2]},
+            },
+            {},
+        ),
+        "mlx-community/IndexTTS-2-mlx": (
+            "indextts",
+            {"sample_rate": 24_000, "bigvgan": {"upsample_rates": [8, 8, 2, 2]}},
+            {},
+        ),
+    }
+
+    for repo, (family, config, extra_json) in cases.items():
+        _seed_cached_checkpoint(
+            tmp_path, monkeypatch, repo, config, extra_json=extra_json
+        )
+        assert (
+            _cached_samples_per_token(repo, family)
+            == _STRIDE_FIXTURES[family]["samples"]
+        ), family
+        assert _cached_sample_rate(repo, family) == _STRIDE_FIXTURES[family]["rate"]
+
+
+def test_no_token_budget_is_sent_to_backends_that_reject_it():
+    """A memory bound that 500s on a backend revision is worse than none.
+
+    mlx-audio's ``generate`` signatures differ across releases, so the budget is
+    forwarded only when the loaded model actually accepts it.
+
+    This is safe ONLY for families that stream their output, where the
+    per-chunk clamp is a real bound. A single-yield family in the same position
+    is refused instead — see
+    ``test_a_single_yield_backend_that_cannot_be_bounded_is_refused``.
+    """
+
+    import numpy as np
+
+    from vllm_mlx.audio.tts import _SINGLE_YIELD_FAMILIES, TTSEngine
+
+    class _StrictModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def generate(self, *, text, voice=None, speed=1.0, lang_code=None):
+            self.calls.append(
+                {
+                    "text": text,
+                    "voice": voice,
+                    "speed": speed,
+                    "lang_code": lang_code,
+                }
+            )
+            # Streamed in pieces, so the clamp bounds it as each arrives.
+            for _ in range(1000):
+                yield type(
+                    "Result",
+                    (),
+                    {
+                        "audio": np.ones(100_000, dtype=np.float32),
+                        "sample_rate": 24_000,
+                    },
+                )()
+
+    engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
+    assert engine._model_family not in _SINGLE_YIELD_FAMILIES
+    engine._loaded = True
+    engine.model = _StrictModel()
+
+    text = "hello"
+    output = engine.generate(text)
+
+    (call,) = engine.model.calls
+    assert "max_tokens" not in call
+    # The clamp is the bound for a streaming backend.
+    assert output.audio.size == _ceiling_samples(text, sample_rate=24_000)
+
+
+def test_waveform_conversion_does_not_allocate_a_python_list():
+    """``tolist()`` cost ~8x the array's own bytes, invisible to the ledger.
+
+    A ``list[float]`` boxes every sample as a PyFloat plus a pointer, and the
+    source array, the list and the result are all live at once — 32 MB peak for
+    a 4 MB float32 waveform, measured. The reservation counts waveform COPIES
+    (``_TTS_PEAK_MULTIPLIER``), not interpreter object overhead, so a request
+    that generated exactly to its ceiling could still exceed what it reserved.
+    ``mx.array`` supports the buffer protocol, so numpy reads it at 1x.
+    """
+
+    import tracemalloc
+
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.audio.tts import _to_float32
+
+    samples = 1_000_000
+    waveform = mx.ones((samples,), dtype=mx.float32)
+    mx.eval(waveform)
+    float32_bytes = samples * 4
+
+    tracemalloc.start()
+    converted = _to_float32(waveform, mx)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert converted.dtype.name == "float32"
+    assert converted.shape == (samples,)
+    # One array-sized copy, with slack for numpy bookkeeping. The list-based
+    # conversion measured >8x here.
+    assert peak < float32_bytes * 2, (
+        f"conversion peaked at {peak} bytes for a {float32_bytes}-byte waveform"
+    )
+
+
+def test_bfloat16_waveforms_convert_without_a_python_list():
+    """numpy cannot describe bfloat16 (it raises on the PEP 3118 format), so
+    that dtype must be cast on the MLX side — still one array-sized copy, not a
+    fallback to ``tolist()``."""
+
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.audio.tts import _to_float32
+
+    waveform = mx.ones((512,), dtype=mx.bfloat16)
+    mx.eval(waveform)
+
+    converted = _to_float32(waveform, mx)
+
+    assert converted.dtype.name == "float32"
+    assert converted.shape == (512,)
+
+
 def test_custom_npz_repo_is_measured_without_registry_membership(tmp_path, monkeypatch):
     """The routes accept any org/repo, so completeness must follow the layout.
 

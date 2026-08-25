@@ -86,6 +86,12 @@ AUDIO_ROLE_RUNTIME_OVERHEAD_BYTES: int = 512 * _MIB
 #: question answered against the live budget by :func:`transcription_buffer_bytes`.
 MAX_TRANSCRIPTION_SECONDS: float = 2 * 60 * 60.0
 
+#: Longest inline reference accepted for TTS voice cloning.
+#:
+#: Compressed size does not bound decoded duration: a low-bitrate clip can be
+#: small on the wire and expand to gigabytes of waveform and resampling buffers.
+MAX_TTS_REFERENCE_SECONDS: float = 30.0
+
 #: Sample rate the STT lane resamples input to before inference.
 STT_SAMPLE_RATE: int = 16_000
 
@@ -120,13 +126,19 @@ _TTS_NATIVE_SAMPLE_RATE: int = 44_100
 #: overlap with margin.
 _TTS_PEAK_MULTIPLIER: float = 3.5
 
-#: Slack between the predicted duration and the hard generation ceiling.
+#: Slack between the characters-per-second prediction and the hard ceiling.
 #:
-#: The prediction is deliberately conservative already; this makes truncation
-#: of legitimate speech effectively impossible while still bounding a runaway
-#: decoder. The reservation covers it because ``speech_buffer_bytes`` applies
-#: :data:`_TTS_PEAK_MULTIPLIER` (3.5x) on top of the same duration.
-_TTS_GENERATION_HEADROOM: float = 2.0
+#: Applied by :func:`_speech_seconds`, so it lands in the reservation and in
+#: the generation ceiling *by construction*. An earlier revision applied it
+#: only to the ceiling and reasoned that :data:`_TTS_PEAK_MULTIPLIER` absorbed
+#: it; it does not. That multiplier counts concurrent COPIES of one waveform,
+#: not extra duration, so allowing 2x the predicted seconds put the real peak
+#: at 2x the reservation.
+#:
+#: Small because the duration model is already ~6x conservative (see
+#: :data:`_SPEECH_CHARACTERS_PER_SECOND`); the slack only has to cover
+#: per-engine variation in pacing, not a wrong ratio.
+_TTS_GENERATION_HEADROOM: float = 1.25
 
 
 @dataclass(frozen=True)
@@ -352,6 +364,21 @@ def transcription_buffer_bytes(
     return int(source * 2 + resampled)
 
 
+def _speech_seconds(characters: int, speed: float) -> float:
+    """Bounded duration one synthesis request may produce, in seconds.
+
+    Single source of truth for BOTH the reservation
+    (:func:`speech_buffer_bytes`) and the hard generation ceiling
+    (:func:`max_output_seconds_for`). They must not drift: a ceiling looser
+    than the reservation means the ledger under-charges exactly the requests
+    that use the most memory.
+    """
+
+    seconds = max(0, characters) / _SPEECH_CHARACTERS_PER_SECOND
+    seconds /= max(0.25, float(speed))
+    return seconds * _TTS_GENERATION_HEADROOM
+
+
 def speech_buffer_bytes(
     characters: int,
     *,
@@ -375,10 +402,13 @@ def speech_buffer_bytes(
     * **Pipeline copies.** The generator retains per-chunk arrays and then
       allocates the concatenation; the encoder adds an int16 copy and the
       output byte buffer. See :data:`_TTS_PEAK_MULTIPLIER`.
+
+    Sized from :func:`_speech_seconds`, the same bounded duration
+    :func:`max_output_seconds_for` enforces — so what the engine is permitted
+    to generate is what this reserved, at any native rate.
     """
 
-    seconds = max(0, characters) / _SPEECH_CHARACTERS_PER_SECOND
-    seconds /= max(0.25, float(speed))
+    seconds = _speech_seconds(characters, speed)
 
     native = seconds * _TTS_NATIVE_SAMPLE_RATE * 4 * _TTS_PEAK_MULTIPLIER
     if sample_rate is None and channels is None:
@@ -391,23 +421,53 @@ def speech_buffer_bytes(
     return int(native + converted)
 
 
-def max_output_samples_for(text: str, *, speed: float = 1.0) -> int:
-    """Hard ceiling on samples one synthesis request may accumulate.
+def tts_reference_buffer_bytes(
+    duration_seconds: float,
+    *,
+    source_rate: int,
+    source_channels: int,
+    encoded_bytes: int = 0,
+    compressed_bytes: int = 0,
+) -> int:
+    """Peak bytes held while decoding a TTS cloning reference.
+
+    The JSON/base64 payload and decoded compressed bytes remain live while the
+    backend materializes a float64 source waveform, copies it during channel
+    normalization, and resamples it to the highest native TTS rate as float32.
+    Metadata is therefore required; callers must fail closed when it cannot be
+    read instead of deriving a bound from compressed size.
+    """
+
+    duration = max(0.0, duration_seconds)
+    rate = max(1, source_rate)
+    channels = max(1, source_channels)
+    source = duration * rate * channels * 8
+    resampled = duration * _TTS_NATIVE_SAMPLE_RATE * 4 * 3
+    return int(
+        source * 2
+        + resampled
+        + max(0, int(encoded_bytes))
+        + max(0, int(compressed_bytes))
+    )
+
+
+def max_output_seconds_for(text: str, *, speed: float = 1.0) -> float:
+    """Hard ceiling on the DURATION one synthesis request may accumulate.
 
     :func:`speech_buffer_bytes` predicts how much speech ``text`` implies, but
     a prediction only bounds memory if the work is bounded too. Nothing in the
     backends enforces the characters-per-second ratio: a decoder loop can run
     away and emit far more audio than the input suggests (``voxcpm``'s registry
     entry documents exactly that failure). ``TTSEngine.generate`` stops
-    consuming chunks at this ceiling, which turns the reservation into a real
-    bound.
+    generating at this ceiling, which turns the reservation into a real bound.
 
-    Derived from the same duration model as the reservation, with headroom so
-    legitimate generation is never truncated: engines vary, and clipping real
-    speech is far worse than briefly holding a little more memory than
-    predicted.
+    Denominated in SECONDS, not samples, because a sample count is only a
+    duration once you fix a rate — and the rate is the engine's, not ours. A
+    24 kHz backend held to a 44.1 kHz sample count would be allowed 1.8x the
+    intended duration, and the post-synthesis conversion to (up to) 96 kHz
+    stereo is sized from duration, so that slack would be under-charged twice
+    over. Comparing seconds against the backend's own ``sample_rate`` is
+    rate-independent.
     """
 
-    seconds = max(0, len(text)) / _SPEECH_CHARACTERS_PER_SECOND
-    seconds /= max(0.25, float(speed))
-    return int(seconds * _TTS_NATIVE_SAMPLE_RATE * _TTS_GENERATION_HEADROOM)
+    return _speech_seconds(len(text), speed)

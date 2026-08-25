@@ -108,14 +108,27 @@ class _VoiceDesignModel:
     ``generate_voice_design`` contract where ``instruct`` is MANDATORY (no
     default): if the engine fails to forward it the call raises ``TypeError``
     here — exactly the failure the fix guards against — instead of silently
-    passing. ``voice`` is accepted but ignored (VoiceDesign drops it)."""
+    passing. ``voice`` is accepted but ignored (VoiceDesign drops it).
+
+    ``max_tokens`` mirrors the real backend (``max_tokens: int = 4096``): Qwen3
+    decodes its whole waveform before yielding, so #2305 bounds it with a token
+    budget and a double that rejected the kwarg would fail every request
+    closed."""
 
     def __init__(self):
         self.calls: list[dict] = []
+        self.token_budgets: list[int] = []
+        # The engine measures the samples-per-token stride off the loaded
+        # model; without it a single-yield family is refused as unboundable.
+        self.sample_rate = 24000
+        self.speech_tokenizer = types.SimpleNamespace(decode_upsample_rate=1920)
 
-    def generate(self, *, text, instruct, voice=None, speed=1.0, lang_code=None):
+    def generate(
+        self, *, text, instruct, voice=None, speed=1.0, lang_code=None, max_tokens=4096
+    ):
         import numpy as np
 
+        self.token_budgets.append(max_tokens)
         self.calls.append(
             {
                 "text": text,
@@ -329,10 +342,21 @@ class TestVoiceDesignEngine:
         )
 
         class _RandomVoiceDesignModel:
+            # Stride the engine measures before it will generate.
+            sample_rate = 24000
+            speech_tokenizer = types.SimpleNamespace(decode_upsample_rate=1920)
+
             def generate(
-                self, *, text, instruct, voice=None, speed=1.0, lang_code=None
+                self,
+                *,
+                text,
+                instruct,
+                voice=None,
+                speed=1.0,
+                lang_code=None,
+                max_tokens=4096,
             ):
-                del text, instruct, voice, speed, lang_code
+                del text, instruct, voice, speed, lang_code, max_tokens
                 logits = mx.zeros((32, 16))
                 yield types.SimpleNamespace(
                     audio=globals()["categorical_sampling"](logits, 1.0).astype(
@@ -467,6 +491,45 @@ class TestVoiceDesignRoute:
         resp = client.get("/v1/audio/voices", params={"model": "qwen3-tts-voicedesign"})
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"voices": ["describe"]}
+
+    def test_unboundable_generation_is_refused_with_507(self, monkeypatch):
+        """#2305: a backend that cannot be held to the request's reservation
+        must be refused BEFORE it allocates, and the refusal must surface as a
+        capacity error rather than the catch-all 500.
+
+        Qwen3 decodes its whole waveform before returning, so there is no
+        after-the-fact truncation that could save this.
+
+        ``param`` must NOT be ``input``: a build without ``max_tokens`` is a
+        property of the installed mlx-audio, and no edit to the text fixes it.
+        """
+        from vllm_mlx.audio.tts import AudioGenerationUnboundedError
+
+        client = _mount(monkeypatch)
+
+        def _refuse(self, text, **kwargs):
+            raise AudioGenerationUnboundedError(
+                self.model_name,
+                "qwen3_tts",
+                "this backend build does not accept max_tokens",
+                param="model",
+            )
+
+        monkeypatch.setattr(_RecordingEngine, "generate", _refuse)
+
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "qwen3-tts-voicedesign",
+                "input": "他被诸葛亮压了一辈子。",
+                "voice": "describe",
+            },
+        )
+
+        assert resp.status_code == 507, resp.text
+        error = resp.json()["error"]
+        assert error["code"] == "tts_generation_unbounded"
+        assert error["param"] == "model"
 
     def test_speech_forwards_instructions_as_instruct(self, monkeypatch):
         client = _mount(monkeypatch)

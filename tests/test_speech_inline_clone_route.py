@@ -28,16 +28,18 @@ from __future__ import annotations
 
 import base64
 import importlib.machinery
+import io
 import sys
 import types
+import wave
 
 import pytest
 
 CLONE_BASE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
 CUSTOMVOICE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
 
-# A tiny non-empty payload — the route only base64-decodes and size-bounds
-# it (see ``_decode_tts_ref_audio``); the stubbed engine never opens it.
+# A tiny non-empty payload. Servers without a configured residency ceiling keep
+# accepting it for backward compatibility; the stubbed engine never opens it.
 _REF_WAV_B64 = base64.b64encode(b"RIFF----WAVEfake-reference-clip").decode()
 _UNSET = object()
 
@@ -131,6 +133,113 @@ def _mount(monkeypatch):
     cfg = get_config()
     monkeypatch.setattr(cfg, "api_key", None)
     return TestClient(app)
+
+
+def _reference_wav(*, seconds: int = 1, rate: int = 16_000) -> tuple[str, bytes]:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(b"\0\0" * rate * seconds)
+    raw = output.getvalue()
+    return base64.b64encode(raw).decode(), raw
+
+
+def test_reference_buffers_are_admitted_before_tts_weights_load(monkeypatch):
+    """A clone reference that tips the budget must stop before engine load."""
+
+    from vllm_mlx.config import get_config
+    from vllm_mlx.runtime.audio_capacity import (
+        AudioRoleCapacity,
+        speech_buffer_bytes,
+        tts_reference_buffer_bytes,
+    )
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.runtime.resident_models import ResidentModelManager
+
+    client = _mount(monkeypatch)
+    encoded, raw = _reference_wav()
+    output_bytes = speech_buffer_bytes(1)
+    reference_bytes = tts_reference_buffer_bytes(
+        1.0,
+        source_rate=16_000,
+        source_channels=1,
+        encoded_bytes=len(encoded),
+        compressed_bytes=len(raw),
+    )
+    primary_bytes = 4 * 1024**2
+    role_bytes = 1 * 1024**2
+
+    registry = ModelRegistry()
+    primary = ModelEntry(engine=object(), model_name="chat", model_path="repo/chat")
+    registry.add(primary, is_default=True)
+
+    async def unused_loader(*args, **kwargs):
+        raise AssertionError("registry loader must not run")
+
+    manager = ResidentModelManager(
+        registry,
+        unused_loader,
+        memory_limit_bytes=(
+            primary_bytes + role_bytes + output_bytes + reference_bytes - 1
+        ),
+        memory_reader=lambda: 0,
+    )
+    manager.register_primary(primary, estimated_bytes=primary_bytes)
+    monkeypatch.setattr(get_config(), "residency_manager", manager)
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.audio_capacity.resolve_audio_role_capacity",
+        lambda _name: AudioRoleCapacity(
+            reserved_bytes=role_bytes,
+            weight_bytes=role_bytes,
+            capacity_source="manifest",
+            hf_id=CLONE_BASE_BF16,
+        ),
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "qwen3-tts-clone",
+            "input": "x",
+            "ref_audio": encoded,
+            "ref_text": "x",
+        },
+    )
+
+    assert response.status_code == 507, response.text
+    assert response.json()["error"]["code"] == "role_request_too_large"
+    assert response.json()["error"]["param"] == "input"
+    assert _CloneRecordingEngine.instances == []
+
+
+def test_reference_over_thirty_seconds_is_rejected_before_tts_load(monkeypatch):
+    from vllm_mlx.config import get_config
+
+    client = _mount(monkeypatch)
+    encoded, _raw = _reference_wav(seconds=31)
+    monkeypatch.setattr(
+        get_config(),
+        "residency_manager",
+        type("Budget", (), {"memory_limit_bytes": 1})(),
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "qwen3-tts-clone",
+            "input": "x",
+            "ref_audio": encoded,
+            "ref_text": "x",
+        },
+    )
+
+    assert response.status_code == 413, response.text
+    error = response.json()["error"]
+    assert error["code"] == "reference_audio_too_long"
+    assert error["param"] == "ref_audio"
+    assert _CloneRecordingEngine.instances == []
 
 
 class TestInlineCloneRoute:

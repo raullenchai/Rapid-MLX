@@ -985,6 +985,86 @@ async def test_pending_request_charge_is_held_across_the_load():
 
 
 @pytest.mark.asyncio
+async def test_measured_process_usage_keeps_future_role_bytes_reserved():
+    """Measured baseline must not swallow lazy weights or pending buffers."""
+
+    registry = ModelRegistry()
+    primary = entry("chat")
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(
+        registry,
+        loader,
+        memory_limit_bytes=12 * GIB,
+        memory_reader=lambda: 8 * GIB,
+    )
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    async with manager.admitting_role(
+        role="speech-input",
+        lane="stt",
+        model_id="whisper",
+        reserved_bytes=1 * GIB,
+        capacity_source="manifest",
+        pending_request_bytes=2 * GIB,
+    ) as record:
+        record.unload = lambda: None
+        assert manager.snapshot()["memory_used_bytes"] == 11 * GIB
+        with pytest.raises(ResidentRoleConflictError):
+            await admit(
+                manager,
+                role="speech-output",
+                lane="tts",
+                model="kokoro",
+                gib=3,
+            )
+
+
+@pytest.mark.asyncio
+async def test_role_telemetry_explains_the_charge_during_the_load():
+    """Every byte in ``memory_used_bytes`` must be attributable to a role field.
+
+    A role in ``loading`` carries the request charge its joint admission
+    verified, so an operator watching the residency API sees the total rise.
+    Reporting only the LEASED ``request_bytes`` left that role looking idle
+    (active_requests=0, request_bytes=0) while it was in fact holding
+    gigabytes — the total moved and nothing explained why.
+    """
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+
+    async with manager.admitting_role(
+        role="speech-input",
+        lane="stt",
+        model_id="whisper",
+        reserved_bytes=2 * GIB,
+        capacity_source="manifest",
+        pending_request_bytes=3 * GIB,
+    ) as record:
+        record.unload = lambda: None
+
+        snapshot = manager.snapshot()
+        role = snapshot["roles"][0]
+        assert role["state"] == "loading"
+        assert role["pending_request_bytes"] == 3 * GIB
+        # The row reconciles against the total: 4 GiB primary + this role.
+        assert role["charged_bytes"] == 5 * GIB
+        assert snapshot["memory_used_bytes"] == 4 * GIB + role["charged_bytes"]
+        # And it is not advertised as idle, because it cannot be evicted.
+        assert role["idle_seconds"] == 0.0
+
+    async with manager.lease_role("speech-input", request_bytes=3 * GIB):
+        role = manager.snapshot()["roles"][0]
+        # The charge moved from pending to leased; the total did not move.
+        assert role["pending_request_bytes"] == 0
+        assert role["request_bytes"] == 3 * GIB
+        assert role["charged_bytes"] == 5 * GIB
+
+
+@pytest.mark.asyncio
 async def test_lease_consumes_the_pending_charge_instead_of_re_requesting():
     """The transfer must be atomic, or the approved request fails at the lease."""
 
@@ -1064,6 +1144,49 @@ async def test_cold_and_warm_paths_report_the_same_code_for_an_oversized_request
             pass
 
     assert cold_exc.value.code == warm_exc.value.code == "role_request_too_large"
+    cold_error = cold_exc.value.envelope()["error"]
+    warm_error = warm_exc.value.envelope()["error"]
+    assert cold_error["requested"]["bytes"] == warm_error["requested"]["bytes"]
+    assert cold_error["request_bytes"] == warm_error["request_bytes"] == 8 * GIB
+    assert cold_error["param"] == warm_error["param"] == "file"
+
+
+@pytest.mark.asyncio
+async def test_speech_output_request_capacity_error_points_at_input():
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    await admit(manager, role="speech-output", lane="tts", model="kokoro", gib=5)
+
+    with pytest.raises(ResidentRoleConflictError) as excinfo:
+        async with manager.lease_role("speech-output", request_bytes=3 * GIB):
+            pass
+
+    assert excinfo.value.envelope()["error"]["param"] == "input"
+
+
+@pytest.mark.asyncio
+async def test_role_remains_charged_and_visible_while_async_unload_runs():
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def unload():
+        started.set()
+        await finish.wait()
+
+    record = await admit(
+        manager, role="speech-output", lane="tts", model="kokoro", gib=3
+    )
+    record.unload = unload
+
+    release = asyncio.create_task(manager.release_role("speech-output"))
+    await started.wait()
+    during = manager.snapshot()
+    assert during["roles"][0]["state"] == "evicting"
+    assert during["memory_used_bytes"] == 7 * GIB
+
+    finish.set()
+    await release
+    assert manager.snapshot()["roles"] == []
 
 
 @pytest.mark.asyncio

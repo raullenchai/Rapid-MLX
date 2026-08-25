@@ -97,15 +97,26 @@ class _CapturingChatterbox:
     chatterbox branch is permitted to forward (``exaggeration``,
     ``ref_audio``), each behind a sentinel default. If the engine leaks
     Kokoro-oriented ``voice``/``speed``/``lang_code`` into the call it
-    raises ``TypeError`` here instead of silently passing the test."""
+    raises ``TypeError`` here instead of silently passing the test.
+
+    ``max_tokens`` IS accepted, mirroring the real backend
+    (``max_new_tokens: int = 1000``, aliased). Chatterbox decodes its whole
+    waveform before yielding, so #2305 requires the engine to bound it with a
+    token budget; a double that rejected the kwarg would misrepresent the
+    contract and make the request fail closed."""
 
     def __init__(self):
         self.calls: list[dict] = []
+        # The engine measures the samples-per-token stride off the loaded
+        # model (24 kHz vocoder / 25 Hz speech tokens); without it a
+        # single-yield family is refused as unboundable.
+        self.sr = 24000
+        self.sample_rate = 24000
 
-    def generate(self, *, text, exaggeration=_UNSET, ref_audio=_UNSET):
+    def generate(self, *, text, exaggeration=_UNSET, ref_audio=_UNSET, max_tokens=1000):
         import numpy as np
 
-        rec: dict = {"text": text}
+        rec: dict = {"text": text, "max_tokens": max_tokens}
         if exaggeration is not _UNSET:
             rec["exaggeration"] = exaggeration
         if ref_audio is not _UNSET:
@@ -174,11 +185,14 @@ class TestChatterboxEngine:
     def test_does_not_forward_voice_speed_lang_code(self):
         """The route always hands the engine Kokoro's ``voice``/``speed``
         defaults; the chatterbox branch must NOT relay them (the strict
-        fake would raise ``TypeError`` if it did)."""
+        fake would raise ``TypeError`` if it did).
+
+        ``max_tokens`` is expected: it is the #2305 generation bound, not a
+        leaked Kokoro kwarg."""
         engine = _chatterbox_engine()
         engine.generate("hi", voice="af_heart", speed=1.5, lang_code="a")
         (call,) = engine.model.calls
-        assert set(call) == {"text"}
+        assert set(call) == {"text", "max_tokens"}
 
     def test_forwards_ref_audio_for_cloning(self):
         engine = _chatterbox_engine()

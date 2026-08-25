@@ -1299,7 +1299,9 @@ def _audio_request_bytes(tmp_path: str) -> int:
     )
 
 
-def _probe_audio_source(tmp_path: str) -> tuple[float, int, int] | None:
+def _probe_audio_source(
+    source: str | os.PathLike[str] | io.BytesIO,
+) -> tuple[float, int, int] | None:
     """Return ``(duration, sample_rate, channels)`` from container metadata.
 
     Metadata only — never decodes. The rate and channel count matter as much as
@@ -1312,27 +1314,47 @@ def _probe_audio_source(tmp_path: str) -> tuple[float, int, int] | None:
     dependency for the common case.
     """
 
+    def rewind() -> None:
+        seek = getattr(source, "seek", None)
+        if callable(seek):
+            seek(0)
+
     try:
-        with wave.open(tmp_path, "rb") as handle:
+        rewind()
+        with wave.open(source, "rb") as handle:
             rate = handle.getframerate()
-            if rate > 0:
+            channels = handle.getnchannels()
+            if rate > 0 and channels > 0:
                 return (
                     float(handle.getnframes()) / rate,
                     int(rate),
-                    int(handle.getnchannels() or 1),
+                    int(channels),
                 )
     except Exception:
         pass
     try:
         import soundfile as sf
 
-        info = sf.info(tmp_path)
+        rewind()
+        info = sf.info(source)
         duration = float(info.duration)
-        if duration < 0.0:
+        rate = int(info.samplerate or 0)
+        channels = int(info.channels or 0)
+        if (
+            not math.isfinite(duration)
+            or duration < 0.0
+            or rate <= 0
+            or channels <= 0
+        ):
             return None
-        return duration, int(info.samplerate or 0), int(info.channels or 1)
+        return duration, rate, channels
     except Exception:
         return None
+    finally:
+        try:
+            rewind()
+        except Exception:
+            pass
 
 
 async def _run_stt_request(
@@ -3204,9 +3226,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 
     try:
         from ..audio.tts import (
+            AudioGenerationUnboundedError,
             UnsupportedAudioFormatError,
             is_indextts_model,
             is_kokoro_family_model,
+            precheck_generation_bounds,
         )
 
         # R7-H3 follow-up: alias resolution lives in a shared helper
@@ -3468,7 +3492,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                     },
                 ) from exc
         try:
-            from ..runtime.audio_capacity import speech_buffer_bytes
+            from ..runtime.audio_capacity import (
+                MAX_TTS_REFERENCE_SECONDS,
+                speech_buffer_bytes,
+                tts_reference_buffer_bytes,
+            )
 
             # Charge the synthesized output, sized from SAMPLES rather than
             # characters: ``speed`` down to 0.25 quadruples the duration of
@@ -3486,6 +3514,66 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 sample_rate=sample_rate,
                 channels=channels,
             )
+
+            manager = _residency_manager()
+            if (
+                ref_bytes is not None
+                and manager is not None
+                and getattr(manager, "memory_limit_bytes", 0) > 0
+            ):
+                ref_info = _probe_audio_source(io.BytesIO(ref_bytes))
+                if ref_info is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "Could not decode ref_audio properties needed "
+                                    "to bound its memory usage. Send a valid WAV, "
+                                    "FLAC, OGG/Opus, or another standard container."
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "invalid_ref_audio",
+                                "param": "ref_audio",
+                            }
+                        },
+                    )
+                ref_duration, ref_rate, ref_channels = ref_info
+                if ref_duration > MAX_TTS_REFERENCE_SECONDS:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "error": {
+                                "message": (
+                                    f"ref_audio is {ref_duration:.1f} seconds long, "
+                                    "which exceeds the "
+                                    f"{MAX_TTS_REFERENCE_SECONDS:.0f}-second limit."
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "reference_audio_too_long",
+                                "param": "ref_audio",
+                            }
+                        },
+                    )
+                request_bytes += tts_reference_buffer_bytes(
+                    ref_duration,
+                    source_rate=ref_rate,
+                    source_channels=ref_channels,
+                    encoded_bytes=len(ref_audio.encode("utf-8")),
+                    compressed_bytes=len(ref_bytes),
+                )
+
+            # Reject a request this model cannot serve BEFORE its weights load
+            # (#2305). The engine re-checks against the loaded model and is
+            # authoritative, but by then the load has happened: a one-character
+            # speed=4 request would pull several GiB, 507, and leave a model
+            # that cannot serve it resident until the idle TTL. This reads the
+            # stride from the cached config instead, and stays silent whenever
+            # the cache cannot answer so a cold start is never refused.
+            precheck_generation_bounds(
+                model_name, input_text, speed=gen_kwargs.get("speed", 1.0)
+            )
+
             async with _get_tts_lane_lock():
                 await _ensure_tts_engine(model_name, request_bytes=request_bytes)
                 async with leasing_audio_role("tts", request_bytes=request_bytes):
@@ -3500,6 +3588,32 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                         sample_rate,
                         channels,
                     )
+        except AudioGenerationUnboundedError as e:
+            # #2305: this backend allocates its whole waveform before it
+            # returns anything, and the request could not be translated into a
+            # generation limit it will honour. Refusing is the contract — the
+            # shared ceiling only holds if the decision precedes the
+            # allocation, and a warning-then-generate would just narrate the
+            # overrun. 507 matches the other capacity refusals on this lane so
+            # clients handle one shape.
+            #
+            # ``param`` comes from the error, not from here: an unreadable
+            # stride or a build without ``max_tokens`` is a property of the
+            # model, so blaming ``input`` would send the caller editing text
+            # that cannot fix it. Only a reservation too small for one decoder
+            # step is theirs to change.
+            logger.warning("Refusing unbounded TTS request: %s", e)
+            raise HTTPException(
+                status_code=507,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "insufficient_capacity",
+                        "code": "tts_generation_unbounded",
+                        "param": e.param,
+                    }
+                },
+            ) from e
         except UnsupportedAudioFormatError as e:
             # R8-H5 (Bo 0.8.9 dogfood): the encoder couldn't produce the
             # requested format (no codec / unknown name). Surface a 400

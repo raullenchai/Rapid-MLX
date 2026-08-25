@@ -92,6 +92,8 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         capacity_unknown: bool = False,
         measured_overshoot: bool = False,
         request_buffer: bool = False,
+        request_bytes: int = 0,
+        param: str | None = None,
     ) -> None:
         self.requested = requested
         self.conflicts = conflicts
@@ -100,6 +102,16 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         self.capacity_unknown = capacity_unknown
         self.measured_overshoot = measured_overshoot
         self.request_buffer = request_buffer
+        self.request_bytes = max(0, int(request_bytes))
+        if request_buffer and not self.request_bytes:
+            self.request_bytes = max(0, requested.bytes)
+        if param is None and request_buffer:
+            param = {
+                ROLE_SPEECH_INPUT: "file",
+                ROLE_ALIGNMENT: "file",
+                ROLE_SPEECH_OUTPUT: "input",
+            }.get(requested.role, "model")
+        self.param = param or "model"
         super().__init__(self.message)
 
     @property
@@ -127,7 +139,7 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
         if self.request_buffer:
             return (
                 f"this {self.requested.role} request needs "
-                f"{self.requested.bytes / _GIB:.2f} GiB of working memory, which "
+                f"{self.request_bytes / _GIB:.2f} GiB of working memory, which "
                 f"does not fit under the {self.limit_bytes / _GIB:.2f} GiB "
                 f"ceiling already holding {held or 'the running process'}. Send "
                 "a shorter request."
@@ -155,8 +167,9 @@ class ResidentRoleConflictError(ResidentModelCapacityError):
                 "message": self.message,
                 "type": "insufficient_capacity_error",
                 "code": self.code,
-                "param": "model",
+                "param": self.param,
                 "requested": self.requested.payload(),
+                "request_bytes": self.request_bytes,
                 "limit_bytes": self.limit_bytes,
                 "usage_bytes": self.usage_bytes,
                 "conflicts": [conflict.payload() for conflict in self.conflicts],
@@ -643,7 +656,8 @@ class ResidentModelManager:
 
     def _accounted_usage(self) -> int:
         measured = self._read_memory()
-        reserved = sum(
+        active_states = {"admitting", "loading", "resident", "evicting"}
+        pure_reservations = sum(
             max(record.estimated_bytes, record.measured_bytes)
             for record in self._records.values()
             if record.state == "resident"
@@ -653,17 +667,32 @@ class ResidentModelManager:
         # ``admitting`` is included on purpose: a role that has passed
         # admission but is still loading has already been promised its bytes,
         # and a concurrent request must not be told they are available.
-        reserved += sum(
+        pure_reservations += sum(
             role.charged_bytes
             for role in self._roles.values()
-            if role.state in {"admitting", "loading", "resident"}
+            if role.state in active_states
         )
-        # Some engines (notably mflux) construct lazy MLX arrays without
-        # faulting all weight pages into the process. The footprint delta at
-        # load time can therefore be much smaller than the memory the first
-        # request will materialize. Keep the catalog/heuristic reservation in
-        # force until the actual process footprint grows past it.
-        return max(measured, reserved)
+
+        # The process footprint already contains every materialized allocation,
+        # but it cannot cover bytes promised for a future allocation. Add only
+        # each reservation's unmaterialized remainder, plus request buffers
+        # which are always additive. The primary estimate is intentionally not
+        # added here because it is already part of the process baseline; the
+        # pure-reservation fallback above still covers an unavailable reader.
+        measured_projection = measured
+        measured_projection += sum(
+            max(record.estimated_bytes - record.measured_bytes, 0)
+            for record in self._records.values()
+            if record.state == "resident" and not record.primary
+        )
+        measured_projection += sum(
+            max(role.reserved_bytes - role.measured_bytes, 0)
+            + role.request_bytes
+            + role.pending_request_bytes
+            for role in self._roles.values()
+            if role.state in active_states
+        )
+        return max(pure_reservations, measured_projection)
 
     def contains(self, model_name: str) -> bool:
         return self._canonical(model_name) is not None
@@ -1194,6 +1223,7 @@ class ResidentModelManager:
                 "admitting",
                 "loading",
                 "resident",
+                "evicting",
             }:
                 continue
             busy = role.active_requests > 0 or not role.releasable
@@ -1270,12 +1300,20 @@ class ResidentModelManager:
                     request_bytes > 0
                     and usage + weights_only <= self.memory_limit_bytes
                 )
+                reported = requested
+                if blamed_on_request:
+                    reported = RoleRef(
+                        role=requested.role,
+                        model=requested.model,
+                        bytes=max(0, int(request_bytes)),
+                    )
                 raise ResidentRoleConflictError(
-                    requested=requested,
+                    requested=reported,
                     conflicts=self._role_conflicts(exclude_role),
                     limit_bytes=self.memory_limit_bytes,
                     usage_bytes=usage,
                     request_buffer=blamed_on_request,
+                    request_bytes=request_bytes if blamed_on_request else 0,
                 )
 
     @asynccontextmanager
@@ -1422,8 +1460,6 @@ class ResidentModelManager:
         if record.active_requests:
             raise ResidentModelBusyError(f"{record.role} is serving an active request")
         record.state = "evicting"
-        if self._roles.get(record.role) is record:
-            del self._roles[record.role]
         unload = record.unload
         if callable(unload):
             try:
@@ -1438,6 +1474,8 @@ class ResidentModelManager:
                     "Failed to unload %s role %r", record.role, record.model_id
                 )
         _release_allocator_cache()
+        if self._roles.get(record.role) is record:
+            del self._roles[record.role]
         self.evictions_total += 1
         logger.info("Released %s role %r (%s)", record.role, record.model_id, reason)
         return True
@@ -1522,6 +1560,7 @@ class ResidentModelManager:
                         limit_bytes=self.memory_limit_bytes,
                         usage_bytes=self._accounted_usage(),
                         request_buffer=True,
+                        request_bytes=charge,
                     )
             record.active_requests += 1
             record.request_bytes += charge
@@ -1549,14 +1588,30 @@ class ResidentModelManager:
                 "active_requests": role.active_requests,
                 "reserved_bytes": role.reserved_bytes,
                 "measured_bytes": role.measured_bytes or None,
-                # Without this the total moves during a request and no role
+                # Without these the total moves during a request and no role
                 # field explains why (#2305 telemetry consistency).
+                #
+                # Both are needed, not just the leased one. A role in
+                # ``loading`` is charged for the request that triggered it —
+                # admission verified weights+request together and holds the
+                # request charge for the whole load — so reporting only
+                # ``request_bytes`` shows an idle-looking role
+                # (active_requests=0, request_bytes=0) while
+                # ``memory_used_bytes`` visibly includes its buffer.
+                # ``charged_bytes`` is what the ledger actually counts, so it
+                # reconciles against the total in every state.
                 "request_bytes": role.request_bytes,
+                "pending_request_bytes": role.pending_request_bytes,
+                "charged_bytes": role.charged_bytes,
                 "weight_bytes": role.weight_bytes,
                 "capacity_source": role.capacity_source,
                 "idle_seconds": (
                     max(0.0, now - role.last_used_at)
-                    if role.active_requests == 0
+                    if role.active_requests == 0 and not role.pending_request_bytes
+                    # A pending charge means an admitted request owns this role
+                    # and the TTL sweeper cannot evict it (``releasable``).
+                    # Reporting a rising idle age for a role that is not
+                    # evictable contradicts the ledger it is describing.
                     else 0.0
                 ),
             }

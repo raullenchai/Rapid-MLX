@@ -47,6 +47,16 @@ def test_engine_forwards_only_text_and_reference(monkeypatch):
         sample_rate = 24000
 
     class _Model:
+        # IndexTTS is a single-yield backend, so #2305 bounds it with a
+        # ``max_tokens`` budget measured off the checkpoint's own BigVGAN
+        # ``upsample_rates``. A model without that config is refused outright,
+        # so the double has to carry it.
+        sample_rate = 24000
+
+        class args:
+            class bigvgan:
+                upsample_rates = [8, 8, 2, 2]
+
         def generate(self, **kwargs):
             calls.append(kwargs)
             yield _Result()
@@ -71,7 +81,10 @@ def test_engine_forwards_only_text_and_reference(monkeypatch):
         ref_text="not needed by IndexTTS",
     )
 
-    assert calls == [{"text": "Clone this voice", "ref_audio": decoded_reference}]
+    (call,) = calls
+    budget = call.pop("max_tokens")
+    assert budget > 0
+    assert call == {"text": "Clone this voice", "ref_audio": decoded_reference}
     assert output.sample_rate == 24000
 
 

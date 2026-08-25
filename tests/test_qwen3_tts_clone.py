@@ -21,10 +21,21 @@ _UNSET = object()
 class _CloneCapturingModel:
     """Fake Qwen3-TTS Base whose ``generate`` accepts the cloning surface.
     Explicit signature (no ``**kwargs``) so an unexpected keyword raises here;
-    sentinel defaults record ref_audio/ref_text ONLY when actually passed."""
+    sentinel defaults record ref_audio/ref_text ONLY when actually passed.
+
+    ``max_tokens`` mirrors the real backend (``max_tokens: int = 4096``). Qwen3
+    decodes its whole waveform before yielding, so #2305 bounds it with a token
+    budget; a double that rejected the kwarg would make the request fail
+    closed. Recorded apart from ``rec`` so the cloning assertions stay about
+    the cloning kwargs."""
 
     def __init__(self):
         self.calls: list[dict] = []
+        self.token_budgets: list[int] = []
+        # See _CapturingModel in test_qwen3_tts_audio: the engine measures the
+        # stride off the loaded model before it will generate.
+        self.sample_rate = 24000
+        self.speech_tokenizer = types.SimpleNamespace(decode_upsample_rate=1920)
 
     def generate(
         self,
@@ -36,7 +47,9 @@ class _CloneCapturingModel:
         instruct=_UNSET,
         ref_audio=_UNSET,
         ref_text=_UNSET,
+        max_tokens=4096,
     ):
+        self.token_budgets.append(max_tokens)
         rec = {"text": text, "voice": voice, "lang_code": lang_code}
         if instruct is not _UNSET:
             rec["instruct"] = instruct
