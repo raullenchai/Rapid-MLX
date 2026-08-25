@@ -6479,7 +6479,10 @@ def _resolve_variant_allow_patterns(
     from huggingface_hub import HfApi, RepoFolder
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    requested = f"{bits}bit" if bits else fmt
+    # At this point exactly one of bits/fmt is a truthy non-empty value (the
+    # None/empty/both cases all returned or raised above), so ``requested`` is
+    # a real folder name string.
+    requested = f"{bits}bit" if bits else (fmt or "")
     try:
         tree = list(HfApi().list_repo_tree(repo_id, recursive=False))
     except RepositoryNotFoundError:
