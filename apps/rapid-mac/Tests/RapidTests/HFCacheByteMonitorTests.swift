@@ -313,7 +313,10 @@ struct HFCacheByteMonitorTests {
 
     // MARK: - End-to-end: monitor → progress → UI subtitle
 
-    @Test("End-to-end: HFCacheByteMonitor.start polls a fixture dir and updates DownloadProgress")
+    @Test(
+        "End-to-end: HFCacheByteMonitor.start polls a fixture dir and updates DownloadProgress",
+        .timeLimit(.minutes(1))
+    )
     func endToEndPollsFixture() async throws {
         let fm = FileManager.default
         let hubRoot = fm.temporaryDirectory
@@ -337,23 +340,20 @@ struct HFCacheByteMonitorTests {
             pollInterval: 0.2
         )
         defer { handle.stop() }
-
-        // Allow one poll cycle to land. We use a bounded wait rather
-        // than a hard sleep so a slow CI host still passes.
-        let deadline = Date().addingTimeInterval(3.0)
-        while Date() < deadline {
-            if progress.hasDiskObservation { break }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        #expect(await handle.waitForFirstPoll())
 
         #expect(progress.hasDiskObservation == true)
         #expect((progress.bytesDownloaded ?? 0) >= 8192)
         let subtitle = progress.progressSubtitle ?? ""
         // 8 KiB / 64 KiB = 12.5% → either 12 or 13 after rounding.
         #expect(subtitle.contains("KB"))
+        await handle.stopAndWait()
     }
 
-    @Test("End-to-end: missing cache dir leaves DownloadProgress untouched — UI falls back cleanly")
+    @Test(
+        "End-to-end: missing cache dir leaves DownloadProgress untouched — UI falls back cleanly",
+        .timeLimit(.minutes(1))
+    )
     func endToEndMissingDir() async throws {
         let absent = URL(fileURLWithPath: "/tmp/rapid-hf-absent-\(UUID().uuidString)", isDirectory: true)
         let progress = DownloadProgress()
@@ -363,12 +363,16 @@ struct HFCacheByteMonitorTests {
             pollInterval: 0.2
         )
         defer { handle.stop() }
-        try? await Task.sleep(nanoseconds: 500_000_000)  // 2-3 polls worth
+        #expect(await handle.waitForFirstPoll() == false)
         #expect(progress.hasDiskObservation == false)
         #expect(progress.bytesDownloaded == nil)
+        await handle.stopAndWait()
     }
 
-    @Test("End-to-end: Handle.stop() cancels the poll task — no further updates after cancel")
+    @Test(
+        "End-to-end: Handle.stop() cancels the poll task — no further updates after cancel",
+        .timeLimit(.minutes(1))
+    )
     func endToEndStopHaltsPolling() async throws {
         let fm = FileManager.default
         let hubRoot = fm.temporaryDirectory
@@ -390,19 +394,14 @@ struct HFCacheByteMonitorTests {
             progress: progress,
             pollInterval: 0.1
         )
-        // Wait for the first observation.
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-            if progress.hasDiskObservation { break }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        defer { handle.stop() }
+        #expect(await handle.waitForFirstPoll())
         #expect(progress.hasDiskObservation == true)
         let firstBytes = progress.bytesDownloaded
-        handle.stop()
+        await handle.stopAndWait()
         // Grow the dir AFTER stop — the monitor must NOT re-observe.
         let blob2 = modelDir.appendingPathComponent("blobs/b")
         try Data(repeating: 0x22, count: 1024 * 1024).write(to: blob2)
-        try? await Task.sleep(nanoseconds: 400_000_000)
         // The byte count should not have advanced from the post-stop write.
         #expect(progress.bytesDownloaded == firstBytes)
     }
