@@ -235,6 +235,46 @@ struct LaunchAutoStartMemoryTests {
         snapshots.releaseActivationSample()
         _ = await load.value
     }
+
+    @MainActor
+    @Test("a live memory refresh invalidates the view-bound pendingMemoryWarning (observation fires)")
+    func liveRefreshInvalidatesPendingMemoryWarningObservation() async throws {
+        // ONBOARD-MEM-LIVE regression pin. The queue used to be a plain value type
+        // stored in the @Observable ServerManager, so refreshCurrentWarning's in-place
+        // `pending[0].warning` replacement never fired withMutation — the "Before
+        // loading" verdict stayed frozen on its original snapshot even as free memory
+        // changed. With MemoryLoadConfirmationQueue now an @Observable reference type,
+        // replacing the head warning MUST invalidate the exact property the card binds:
+        // server.pendingMemoryWarning. That is what makes red-to-green (and green-to-red)
+        // actually re-render rather than update an invisible value.
+        let gib = UInt64(1_073_741_824)
+        let snapshots = LockedMemorySnapshots(
+            .init(totalBytes: 32 * gib, usedBytes: 30 * gib)
+        )
+        let server = ServerManager(
+            testingState: .idle,
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+        )
+        server.memorySnapshotProvider = { snapshots.current }
+
+        await server.start(alias: "qwen3.5-9b-4bit")
+        #expect(server.pendingMemoryWarning?.severity == .unsafe)
+
+        let changed = LockedCompletionFlag()
+        withObservationTracking {
+            _ = server.pendingMemoryWarning
+        } onChange: {
+            changed.markComplete()
+        }
+
+        snapshots.current = .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+        _ = await server.refreshPendingMemoryWarning()
+        #expect(server.pendingMemoryWarning?.severity == .safe)
+        #expect(
+            changed.isComplete,
+            "replacing the parked warning must invalidate server.pendingMemoryWarning so the onboarding verdict re-renders live"
+        )
+    }
 }
 
 private final class LockedMemorySnapshots: @unchecked Sendable {

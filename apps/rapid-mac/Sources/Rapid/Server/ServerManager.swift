@@ -5,7 +5,18 @@ import Observation
 /// FIFO state machine for memory-risk confirmations. A request token is
 /// present for ``ensureServing`` callers that must await their own answer;
 /// direct ``start`` calls still queue a prompt but retain no result.
-struct MemoryLoadConfirmationQueue {
+///
+/// Referenced type (``@Observable`` class, not a struct) so that replacing the
+/// head warning's measured facts — e.g. the 3s live memory refresh in
+/// ``ServerManager/refreshPendingMemoryWarning()`` — fires SwiftUI observation
+/// and the "Before loading" verdict re-renders live. With a plain value type,
+/// an in-place mutation of `pending[0].warning` inside a stored, value-typed
+/// property does NOT invalidate the ``@Observable`` owner, so the card kept
+/// showing the original parked snapshot even as free memory changed
+/// (ONBOARD-MEM-LIVE). Mirrors how ``DownloadManager``/``Job`` stay
+/// ``@Observable`` so nested `status`/`progress` mutations re-render.
+@Observable
+final class MemoryLoadConfirmationQueue {
     enum Decision: Equatable {
         case confirmed(sequence: Int)
         case cancelled
@@ -32,13 +43,13 @@ struct MemoryLoadConfirmationQueue {
         return pending.first?.warning
     }
 
-    mutating func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
+    func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
         pending.append(Pending(warning: warning, requestID: requestID))
     }
 
     /// Replace the measured facts for the visible decision without changing
     /// its identity, waiter ownership, or queue position.
-    mutating func refreshCurrentWarning(
+    func refreshCurrentWarning(
         snapshot: MemoryProbe.Snapshot
     ) -> (old: ModelSizing.MemoryWarning, new: ModelSizing.MemoryWarning)? {
         guard pending.first?.phase == .awaitingDecision,
@@ -54,7 +65,7 @@ struct MemoryLoadConfirmationQueue {
         }
     }
 
-    mutating func resolveCurrent(
+    func resolveCurrent(
         warningID: UUID,
         decision: Decision
     ) -> ModelSizing.MemoryWarning? {
@@ -73,14 +84,14 @@ struct MemoryLoadConfirmationQueue {
         return currentWarning
     }
 
-    mutating func beginChecking(warningID: UUID) -> Bool {
+    func beginChecking(warningID: UUID) -> Bool {
         guard pending.first?.warning.id == warningID,
               pending.first?.phase == .awaitingDecision else { return false }
         pending[0].phase = .checkingDecision
         return true
     }
 
-    mutating func checkingWarning(
+    func checkingWarning(
         warningID: UUID,
         snapshot: MemoryProbe.Snapshot?
     ) -> ModelSizing.MemoryWarning? {
@@ -92,13 +103,13 @@ struct MemoryLoadConfirmationQueue {
         return pending[0].warning
     }
 
-    mutating func restoreAwaiting(warningID: UUID) {
+    func restoreAwaiting(warningID: UUID) {
         guard pending.first?.warning.id == warningID,
               pending.first?.phase == .checkingDecision else { return }
         pending[0].phase = .awaitingDecision
     }
 
-    mutating func confirmChecking(
+    func confirmChecking(
         warningID: UUID,
         sequence: Int
     ) -> ModelSizing.MemoryWarning? {
@@ -112,14 +123,14 @@ struct MemoryLoadConfirmationQueue {
         return warning
     }
 
-    mutating func resolveCurrent(
+    func resolveCurrent(
         warning: ModelSizing.MemoryWarning,
         decision: Decision
     ) -> Bool {
         resolveCurrent(warningID: warning.id, decision: decision) != nil
     }
 
-    mutating func completeConfirmedLaunch(warningID: UUID) {
+    func completeConfirmedLaunch(warningID: UUID) {
         guard pending.first?.warning.id == warningID,
               pending.first?.phase == .launching else { return }
         pending[0].launchComplete = true
@@ -130,7 +141,7 @@ struct MemoryLoadConfirmationQueue {
         pending.removeFirst()
     }
 
-    mutating func takeDecision(for requestID: UUID) -> Decision? {
+    func takeDecision(for requestID: UUID) -> Decision? {
         let decision = decisions.removeValue(forKey: requestID)
         if pending.first?.requestID == requestID,
            pending.first?.launchComplete == true {
@@ -139,7 +150,7 @@ struct MemoryLoadConfirmationQueue {
         return decision
     }
 
-    mutating func abandonWaiter(_ requestID: UUID) {
+    func abandonWaiter(_ requestID: UUID) {
         decisions.removeValue(forKey: requestID)
         guard let index = pending.firstIndex(where: { $0.requestID == requestID }) else {
             return
