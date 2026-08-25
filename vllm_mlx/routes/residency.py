@@ -75,7 +75,11 @@ def _record_payload(record) -> dict:
 async def model_residency():
     """Return resident models and actual process usage against the ceiling."""
 
-    return _manager().snapshot()
+    from ..runtime.audio_worker import audio_worker
+
+    snapshot = _manager().snapshot()
+    snapshot["audio_lanes"] = audio_worker.snapshot()
+    return snapshot
 
 
 @router.post("/v1/models/load")

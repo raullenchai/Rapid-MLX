@@ -259,7 +259,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov "diff-cover==8.0.3" pydantic fastapi jsonschema httpx psutil transformers requests pyyaml
+          pip install pytest pytest-asyncio pytest-cov "diff-cover==8.0.3" pydantic fastapi jsonschema httpx psutil transformers requests pyyaml python-multipart
 
       - name: Run unit tests (no MLX required)
         # NOTE: tests in this list MUST not import mlx / mlx_lm at module
@@ -310,6 +310,7 @@ jobs:
             tests/test_telemetry_consent.py \
             tests/test_community_bench_upload.py \
             tests/test_music_engine.py \
+            tests/test_audio_model_worker.py \
             tests/test_aliases_contract.py \
             tests/test_chat_template_registry.py \
             tests/test_alias_subfolder.py \

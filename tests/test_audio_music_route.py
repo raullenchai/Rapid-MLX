@@ -401,6 +401,32 @@ class TestMusicEmptyOutputDetection:
 
 
 class TestMusicConcurrencyShape:
+    def test_generation_does_not_occupy_primary_model_worker(self, _stub_music_engine):
+        """Subprocess waiting stays on the route's blocking executor."""
+        import asyncio
+
+        from vllm_mlx.api.models import AudioMusicRequest
+        from vllm_mlx.routes import audio as audio_route
+        from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+        class _RejectingModelWorker:
+            async def execute_on_model_worker(self, func, *args, **kwargs):
+                raise AssertionError("music occupied the primary model worker")
+
+            def execute_on_model_worker_sync(self, func, *args, **kwargs):
+                raise AssertionError("music occupied the primary model worker")
+
+        bind_audio_worker(_RejectingModelWorker())
+        try:
+            response = asyncio.run(
+                audio_route.create_music(AudioMusicRequest(input="a march", seconds=5))
+            )
+        finally:
+            bind_audio_worker(None)
+
+        assert response.body[:4] == b"RIFF", response.body[:16]
+        assert _FakeMusicEngine.last_call is not None
+
     def test_generation_does_not_block_the_event_loop(self, _stub_music_engine):
         """The blocking render must run off the event loop.
 

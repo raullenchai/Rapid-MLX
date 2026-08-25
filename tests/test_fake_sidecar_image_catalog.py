@@ -15,7 +15,10 @@ Stdlib + bash only, so it runs on the Linux CI lane that never sees a Mac.
 
 import json
 import os
+import socket
 import subprocess
+import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -241,6 +244,64 @@ def test_flow_and_fixture_agree_on_the_alias(models_output):
         f"gui-golden-flows.sh does not declare FAKE_IMAGE_ALIAS={alias!r}; "
         "the flow would assert against a model the fixture never prints"
     )
+
+
+def test_image_cancel_route_accepts_the_clients_model_query(tmp_path):
+    """The fake must match HTTP paths independently from their query string.
+
+    ``ImageClient.cancel`` identifies the active model with ``?model=...``.
+    Production routing parses that query separately; treating the entire
+    request target as a literal path makes the native cancellation journey get
+    a false 404 even though its wire request is valid.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    events = tmp_path / "events.jsonl"
+    env = os.environ.copy()
+    env["FAKE_EVENT_LOG"] = str(events)
+    process = subprocess.Popen(
+        [
+            str(FAKE),
+            "serve",
+            "fake-image-alias",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("fake sidecar did not start")
+                time.sleep(0.05)
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/images/cancel?model=fake-image-alias",
+            data=b"",
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.status == 200
+            assert json.load(response) == {"cancelled": True}
+        logged = [json.loads(line) for line in events.read_text().splitlines()]
+        assert [entry["event"] for entry in logged].count("image_cancel") == 1
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_info_reports_each_aliass_own_repo(models_output):

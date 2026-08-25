@@ -13,10 +13,39 @@ AXApplication title="Rapid-MLX"
           AXHeading desc="Connect your agents, Connect any agent or editor that supports a local base URL. It's free and stays on your Mac." enabled=true
           AXScrollArea
             AXHeading desc="Start here, Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands." enabled=true
+            AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+            AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
             AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Start" enabled=true
+            AXStaticText value=text enabled=true
+            AXHeading desc="Endpoint" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.OpenAI base URL" desc="Copy OpenAI base URL" help="Copy OpenAI base URL" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.Anthropic base URL" desc="Copy Anthropic base URL" help="Copy Anthropic base URL" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.API key" desc="Copy API key" help="Start a model to generate a valid key and configuration." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ConnectTools.Copy.Model" desc="Copy Model" help="Copy Model" enabled=true
+            AXHeading desc="Editors and agents" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

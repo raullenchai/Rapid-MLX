@@ -1501,6 +1501,31 @@ class BatchedEngine(BaseEngine):
         await self._engine.engine.start(executor=self._model_load_executor)
         self._engine_started = True
 
+    async def execute_on_model_worker(self, func, *args, **kwargs):
+        """Execute auxiliary MLX work on this model's owning worker.
+
+        This is the public worker boundary used by server-side auxiliary
+        lanes.  Callers must not inspect ``_engine`` or its executor topology.
+        The same executor loads the model and performs every forward pass, so
+        arrays created here share the worker's thread-local MLX stream.
+        """
+
+        import asyncio
+
+        executor = self._model_load_executor
+        if executor is None:
+            raise RuntimeError("model worker is not running")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
+
+    def execute_on_model_worker_sync(self, func, *args, **kwargs):
+        """Blocking counterpart for handlers already running off-loop."""
+
+        executor = self._model_load_executor
+        if executor is None:
+            raise RuntimeError("model worker is not running")
+        return executor.submit(func, *args, **kwargs).result()
+
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
         if self._mllm_scheduler:

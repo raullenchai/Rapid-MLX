@@ -677,7 +677,8 @@ struct ContentView: View {
         case .launch:
             LaunchView(
                 server: server,
-                alias: alias,
+                downloads: downloads,
+                alias: $alias,
                 readiness: readiness,
                 onReadinessAction: performReadinessAction
             )

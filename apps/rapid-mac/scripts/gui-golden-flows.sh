@@ -3586,10 +3586,16 @@ flow_image_generation() {
     # AX baseline normalization itself takes several seconds on a busy mini;
     # keep the synthetic decode tail long enough to observe after it.
     start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300 \
+        FAKE_IMAGE_STEP_MS_SEQUENCE=5000,300,5000,300,300,300,300,300 \
         FAKE_IMAGE_FIRST_WARMUP_ACK="$OUT_ROOT/image-generation/ig-warmup-ack" \
+        FAKE_IMAGE_STEP_HOLD_ACK="$OUT_ROOT/image-generation/ig-eta-hold-ack" \
         FAKE_IMAGE_FINISH_MS=15000 \
         RAPID_GUI_GOLDEN_MODE=1 \
         RAPID_SIMULATED_IMPORT_PATH="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
+
+    # Existing renders pass step 2 immediately. Section 9 removes this file
+    # for one request so its two ETA reads are event-gated, not timing-gated.
+    : > "$OUT/ig-eta-hold-ack"
 
     dismiss_first_run
 
@@ -4068,6 +4074,98 @@ flow_image_generation() {
     [[ "$import_exited" == 1 ]] \
         || die "exiting edit mode after an import did not restore generation controls"
 
+    # 9. ETA evidence across unchanged samples, cancellation, and restart.
+    # The fixture holds one reported step start. Capture the same
+    # structured step twice during that hold: the numeric ETA must remain
+    # identical even though the HUD's elapsed clock keeps advancing.
+    local cancel_prompt="a cheetah render to cancel after ETA appears"
+    rm -f "$OUT/ig-eta-hold-ack"
+    type_prompt "$cancel_prompt" ig-eta-cancel-draft
+    press "$OUT/ig-eta-cancel-draft.json" Images.Generate "$OUT/ig-eta-cancel-submit.json" \
+        || die "Images.Generate is not pressable for ETA cancellation evidence"
+    wait_fake_event \
+        ".event == \"image_request\" and .prompt == \"$cancel_prompt\"" \
+        "the ETA cancellation request never reached the sidecar"
+
+    local eta_ready=0 eta_step_a eta_value_a eta_step_b eta_value_b
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/ig-eta-sample-a.json"
+        eta_step_a="$(element_field "$OUT/ig-eta-sample-a.json" Images.Progress.Step value)"
+        eta_value_a="$(element_field "$OUT/ig-eta-sample-a.json" Images.Progress.ETA value)"
+        if [[ "$eta_step_a" == "2 / 8" && "$eta_value_a" == *"s left" ]]; then
+            eta_ready=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$eta_ready" == 1 ]] \
+        || die "the held denoise step never exposed a numeric ETA at step 2 / 8"
+    see_main "$OUT/ig-eta-sample-b.json"
+    eta_step_b="$(element_field "$OUT/ig-eta-sample-b.json" Images.Progress.Step value)"
+    eta_value_b="$(element_field "$OUT/ig-eta-sample-b.json" Images.Progress.ETA value)"
+    [[ "$eta_step_b" == "$eta_step_a" ]] \
+        || die "the deterministic unchanged-step fixture advanced unexpectedly ($eta_step_a -> $eta_step_b)"
+    [[ "$eta_value_b" == "$eta_value_a" ]] \
+        || die "ETA changed while reported progress stayed at $eta_step_a ($eta_value_a -> $eta_value_b)"
+    press "$OUT/ig-eta-sample-b.json" Images.Generate "$OUT/ig-eta-cancel-press.json" \
+        || die "the primary Stop control is not pressable after numeric ETA appears"
+    local cancel_requested=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-eta-cancel-requested.json"
+        if jq -e 'any(.data.ui_elements[]?;
+                      .identifier == "Images.Generate" and .enabled == false)
+                  and any(.data.ui_elements[]?;
+                          .identifier == "Images.Cancel" and .enabled == false)' \
+               "$OUT/ig-eta-cancel-requested.json" >/dev/null; then
+            cancel_requested=1; break
+        fi
+        sleep 0.05
+    done
+    [[ "$cancel_requested" == 1 ]] \
+        || die "the primary Stop control did not enter the cancelling state"
+    wait_fake_event '.event == "image_cancel"' \
+        "the ETA-bearing render did not receive cancellation"
+    : > "$OUT/ig-eta-hold-ack"
+    local eta_cleared=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/ig-eta-cancelled.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and (([.data.ui_elements[]? | .identifier // ""]
+                        | index("Images.Progress.ETA")) == null)
+                  and (([.data.ui_elements[]? | .identifier // ""]
+                        | index("Images.Cancel")) == null)' \
+               "$OUT/ig-eta-cancelled.json" >/dev/null; then
+            eta_cleared=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$eta_cleared" == 1 ]] \
+        || die "numeric ETA remained visible after cancellation completed"
+
+    # A restarted request begins at a new evidence window. The old numeric ETA
+    # must not flash on the new card before two completed samples exist.
+    local restart_prompt="a fresh cheetah render after cancellation"
+    type_prompt "$restart_prompt" ig-eta-restart-draft
+    press "$OUT/ig-eta-restart-draft.json" Images.Generate "$OUT/ig-eta-restart-submit.json" \
+        || die "Images.Generate is not pressable after ETA cancellation"
+    wait_fake_event \
+        ".event == \"image_request\" and .prompt == \"$restart_prompt\"" \
+        "the post-cancellation restart never reached the sidecar"
+    local restart_estimating=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-eta-restart-estimating.json"
+        if [[ "$(element_field "$OUT/ig-eta-restart-estimating.json" Images.Progress.ETA value)" == "Estimating…" ]]; then
+            restart_estimating=1; break
+        fi
+        sleep 0.05
+    done
+    [[ "$restart_estimating" == 1 ]] \
+        || die "a restarted render reused stale numeric ETA instead of estimating from fresh progress"
+    press "$OUT/ig-eta-restart-estimating.json" Images.Cancel "$OUT/ig-eta-restart-cancel.json" \
+        || die "the restarted ETA fixture could not be cancelled for cleanup"
+    wait_fake_event \
+        ".event == \"image_response\" and .cancelled == true and .index == 6" \
+        "the restarted ETA fixture did not settle as cancelled"
+
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
@@ -4175,13 +4273,28 @@ flow_launch_integrations() {
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
     wait_tree_text "Connect your agents" "$OUT/launch.json" 40
 
-    # Cold Launch is a beginner path, not a wall of dead commands. It should
-    # offer the same actionable readiness banner as Chat and reveal no setup
-    # snippets until the endpoint/key actually exist.
+    # Cold Launch is a beginner path, not a wall of live (copyable) commands.
+    # The stopped state now stays a useful setup destination (#2297): the
+    # endpoint shape and integration rows are shown as documentation, the
+    # inline model picker lets a user choose a different downloaded model,
+    # and the readiness banner offers Start. What must NOT happen is a
+    # command the user can paste while it is still a placeholder — so every
+    # `Launch.Integration.Copy.*` button must be present but `.enabled == false`
+    # until the endpoint/key actually exist (Copy on a placeholder is the
+    # silent-failure defect the disabled-Copy gate exists to prevent).
     count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
-    [[ "$count" == 0 ]] || die "Cold Launch rendered $count dead integration commands"
+    [[ "$count" -gt 0 ]] || die "Cold Launch hid the integration setup rows entirely"
+    enabled_count="$(jq '[.data.ui_elements[]? | select(((.identifier // "") | startswith("Launch.Integration.Copy.")) and .enabled == true)] | length' "$OUT/launch.json")"
+    [[ "$enabled_count" == 0 ]] || die "Cold Launch offered $enabled_count copyable commands before the endpoint/key existed"
     jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' "$OUT/launch.json" >/dev/null \
         || die "Cold Launch offered no primary model-start action"
+    # The inline picker is addressable by its own menu popup
+    # (``ModelPickerBar.ModelMenu``) — NOT by a composite id stamped on the
+    # whole bar, which `ModelPickerBar` deliberately avoids (it propagates one
+    # id onto both the popup and the (i) info button and makes them
+    # indistinguishable). Assert the popup itself is present.
+    jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu")' "$OUT/launch.json" >/dev/null \
+        || die "Cold Launch offered no inline model picker"
     baseline launch-integrations.complete "$OUT/launch.json"
 
     press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
@@ -4510,25 +4623,39 @@ flow_audio_readiness() {
 
     # A media resident is process-wide state, not the Chat model selection.
     # Launch commands must neither advertise the TTS alias to coding agents
-    # nor remain copyable while their selected chat model is not serving.
+    # nor be copyable while their selected chat model is not serving. Since
+    # #2297 the stopped Launch page renders the integration rows as
+    # documentation with Copy deliberately disabled, so the guard is the
+    # rows being present-but-not-copyable: the `Launch.Integration.Copy.*`
+    # rows must EXIST (count > 0) and every one of them must be disabled
+    # (enabled_count == 0), plus the Readiness start action must be present.
+    # Counting the rows (not just checking nothing is enabled) is what
+    # distinguishes "documentation rows rendered with Copy disabled" from a
+    # regression where the whole Launch surface silently vanished. The
+    # launch-integrations journey asserts the same present-but-not-copyable
+    # contract.
     press "$OUT/speech-resident.json" Sidebar.Launch "$OUT/launch-from-audio.json" \
         || die "Sidebar.Launch is not pressable from an Audio residency"
-    local launch_copy_count=0 launch_ready=0
+    local launch_ready=0
     for ((i=0; i<40; i++)); do
         see_main "$OUT/launch-from-audio.json"
-        launch_copy_count="$(jq '[.data.ui_elements[]?
-                                  | (.identifier // "")
-                                  | select(startswith("Launch.Integration.Copy."))]
-                                 | unique | length' "$OUT/launch-from-audio.json")"
-        if [[ "$launch_copy_count" == 0 ]] &&
-           jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
-              "$OUT/launch-from-audio.json" >/dev/null; then
+        if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+              "$OUT/launch-from-audio.json" >/dev/null \
+           && [[ "$(jq '[.data.ui_elements[]?
+                          | select(((.identifier // "")
+                                    | startswith("Launch.Integration.Copy.")))] | length' \
+                       "$OUT/launch-from-audio.json")" -gt 0 ]] \
+           && [[ "$(jq '[.data.ui_elements[]?
+                          | select(((.identifier // "")
+                                    | startswith("Launch.Integration.Copy."))
+                                   and .enabled == true)] | length' \
+                       "$OUT/launch-from-audio.json")" == 0 ]]; then
             launch_ready=1; break
         fi
         sleep 0.25
     done
     [[ "$launch_ready" == 1 ]] \
-        || die "Launch exposed dead commands or no chat-model start action from Audio"
+        || die "Launch exposed copyable commands, hid the launch rows, or had no chat-model start action from Audio"
     if jq -e '[.data.ui_elements[]? | .value? | strings]
               | any(contains("fake-qwen3-tts")
                     and (contains("--model")

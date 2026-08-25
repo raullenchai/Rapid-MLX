@@ -441,6 +441,7 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         assert status.status_code == 200
         assert status.json()["memory_limit_bytes"] == 12 * GIB
         assert {item["id"] for item in status.json()["models"]} == {"chat", "image"}
+        assert isinstance(status.json()["audio_lanes"], list)
 
         pinned = client.put("/v1/models/image/pin", json={"pinned": True})
         assert pinned.status_code == 200

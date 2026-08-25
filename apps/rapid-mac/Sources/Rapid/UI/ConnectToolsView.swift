@@ -15,7 +15,23 @@ struct ConnectToolsView: View {
     let host: String
     let port: Int
     let bearer: String
-    let alias: String
+    /// The currently-chosen model. A binding so the inline model picker
+    /// (see ``stoppedSetup``) can change it directly and the shared
+    /// readiness value in ``ContentView`` re-derives from the new choice —
+    /// choosing a different downloaded model then Start both work without
+    /// leaving this page.
+    @Binding var alias: String
+    /// The live server, fed straight to the inline ``ModelPickerBar`` in
+    /// the stopped state so the user can pick any compatible downloaded
+    /// model before starting. Kept as a direct reference (not merely the
+    /// readiness value) because the picker is the app's single
+    /// model-selection source of truth and knows how to read the catalog
+    /// and cache itself — embedding it here beats building a second,
+    /// ad-hoc model list.
+    @Bindable var server: ServerManager
+    /// Side-channel downloader the inline picker's context menu uses
+    /// ("Download in background") and its cache-state glyphs.
+    @Bindable var downloads: DownloadManager
     /// The absolute path to the `rapid-mlx` sidecar binary this app owns
     /// (``ServerLocator`` resolution). The Desktop app deliberately does NOT
     /// install its sidecar onto the user's `PATH` (see ``ServerLocator`` —
@@ -99,11 +115,34 @@ struct ConnectToolsView: View {
     /// resolved. Anything less and the snippets below would be a
     /// half-filled template.
     private var configReady: Bool {
-        let selectedModelIsServing = readiness?.isReady ?? true
-        return port > 0
-            && !bearer.isEmpty
-            && resolvedModel != nil
-            && selectedModelIsServing
+        Self.configIsReady(
+            hasPort: port > 0,
+            hasBearer: !bearer.isEmpty,
+            modelResolved: resolvedModel != nil,
+            modelServing: readiness?.isReady
+        )
+    }
+
+    /// The single decision behind the page's disabled-Copy gate, factored
+    /// out so the whole truth table is behaviorally testable without a view
+    /// host (the readiness boundary itself is pinned in ``ModelReadiness``).
+    ///
+    /// A snippet is only paste-worthy once the server has a real port, has
+    /// minted a bearer, and a model name is resolved — and, when a readiness
+    /// value is supplied (the live page), that model is actually serving.
+    /// Passing ``modelServing == false`` (the #2297 stopped state) forces the
+    /// config NOT ready even when every static value is present: copying a
+    /// half-filled template is the silent-failure defect the disabled-Copy
+    /// gate exists to prevent. ``nil`` (the dev snapshot harness, which has
+    /// no live server to resolve against) keeps the legacy behavior of
+    /// trusting the static values alone.
+    static func configIsReady(
+        hasPort: Bool,
+        hasBearer: Bool,
+        modelResolved: Bool,
+        modelServing: Bool?
+    ) -> Bool {
+        hasPort && hasBearer && modelResolved && (modelServing ?? true)
     }
 
     /// One concise sentence naming what is missing.
@@ -161,14 +200,23 @@ struct ConnectToolsView: View {
             // the composer renders, so the two surfaces cannot disagree,
             // and unlike the old local sentence it carries the action
             // that resolves the problem.
+            //
+            // #2297: the stopped state used to return here — ONLY the
+            // "Start here" banner — and hide the endpoint shape and the
+            // integration rows entirely. That is the exact moment a new
+            // user needs guidance, and they got a mostly-blank page.
+            // The endpoint base URLs are real information even before a
+            // model runs (the loopback address and port are known), and
+            // the setup rows are usable as documentation with Copy gated
+            // on readiness (``configReady`` already disables Copy on
+            // runtime-only values). So the stopped branch now leads with
+            // the pick-and-start flow and STILL renders that static
+            // content below it, marked pending via the existing
+            // ``CopyableRow`` placeholder machinery.
             if let readiness, !readiness.isReady {
-                VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
-                    SectionHeader(
-                        "Start here",
-                        subtitle: "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands."
-                    )
-                    ReadinessBanner(readiness: readiness, onAction: onReadinessAction)
-                }
+                stoppedSetup(readiness: readiness)
+                endpointSection
+                toolsSection(tools)
             } else if !configReady {
                 // Either no readiness was supplied (dev snapshot), or the
                 // model is up but a value is still missing — a narrow
@@ -217,6 +265,57 @@ struct ConnectToolsView: View {
         .frame(maxWidth: RapidTheme.Layout.pageMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(RapidTheme.Space.xl)
+    }
+
+    /// The pick-and-start block shown in the stopped state (#2297).
+    ///
+    /// Answers the four questions a first-time user lands with — what a
+    /// connection enables, why a text model must run, what Start will do,
+    /// and how the resulting details are used — as one short flow:
+    ///
+    ///   1. Name the model to start and let the user swap it for any other
+    ///      compatible downloaded model (inline ``ModelPickerBar`` — the
+    ///      app's single model-selection source of truth, reused rather
+    ///      than reinvented).
+    ///   2. Run the shared readiness banner, whose Start action already
+    ///      routes through ``ContentView`` → ``ReadinessModelStart`` and
+    ///      owns its own starting/progress/failed states.
+    ///   3. Point at the endpoint rows right below ("the details here fill
+    ///      in the moment the model is running").
+    @ViewBuilder
+    private func stoppedSetup(readiness: ModelReadiness) -> some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+            SectionHeader(
+                "Start here",
+                subtitle: "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands."
+            )
+            // The inline picker lets the user choose a different compatible
+            // downloaded model before starting, without leaving the page.
+            // Composer style renders only the compact chip (no duplicate
+            // Start/Stop — the readiness banner below owns the action).
+            //
+            // Deliberately no identifier stamped on the composite. The picker
+            // already names its own controls — the menu popup is
+            // ``ModelPickerBar.ModelMenu`` and the (i) info button is
+            // ``ModelPickerBar.ModelInfo`` — so the golden flow addresses the
+            // picker by ``ModelPickerBar.ModelMenu`` directly. Stamping the
+            // whole bar would propagate one identifier onto both descendants
+            // and make them indistinguishable to AX (and to the harness).
+            ModelPickerBar(
+                server: server,
+                downloads: downloads,
+                alias: $alias,
+                composerStyle: true
+            )
+            ReadinessBanner(readiness: readiness, onAction: onReadinessAction)
+            // The base-URL and (already-resolved) Model rows are real values
+            // and stay copyable while stopped; it is the API key row and the
+            // per-tool integration commands that are gated until the model
+            // serves. Say exactly that, not "the Copy buttons" broadly.
+            Text("When the model is running, the API key and integration commands below fill in and their Copy buttons wake up.")
+                .font(RapidFont.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var header: some View {
@@ -293,6 +392,14 @@ struct ConnectToolsView: View {
             VStack(spacing: 0) {
                 ForEach(Array(displayedTools.enumerated()), id: \.element.id) { index, tool in
                     if index > 0 { rowDivider }
+                    // The per-tool Copy/Launch is gated on ``configReady``,
+                    // which delegates to the pure ``configIsReady`` decision
+                    // that ``ConnectToolsConfigGateTests`` pins — so the unit
+                    // test of the gate is the test of this row's enabled state.
+                    // In the #2297 stopped state the model is not serving, so
+                    // ``isReady`` is false and every integration Copy button is
+                    // disabled; a future change that stops threading this gate
+                    // into the rows is a change to the tested decision itself.
                     ConnectToolRow(tool: tool, isReady: configReady)
                 }
             }

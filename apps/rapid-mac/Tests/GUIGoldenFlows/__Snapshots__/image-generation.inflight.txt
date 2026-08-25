@@ -21,7 +21,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXButton id="Images.Cancel" desc="Close" help="Cancel" enabled=true
           AXStaticText value=text enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText id="Images.Progress.ETA" value=text enabled=true
           AXScrollArea id="Images.Prompt"
             AXTextArea id="rapid.images.compose" desc="Image prompt field" value=text
           AXButton id="Images.Aspect.square" desc="1:1" enabled=true

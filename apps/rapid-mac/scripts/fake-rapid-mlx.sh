@@ -45,6 +45,7 @@ import time
 import wave
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 
 if sys.argv[1:] == ["launch", "list", "--json"]:
@@ -700,7 +701,13 @@ class Handler(BaseHTTPRequestHandler):
         count = raw_count if isinstance(raw_count, int) and raw_count > 0 else 1
         total = max(1, int(_setting("FAKE_IMAGE_STEPS", 8)))
         step_ms = max(0, int(_setting("FAKE_IMAGE_STEP_MS", 300)))
+        step_ms_sequence = []
+        for raw_delay in _setting("FAKE_IMAGE_STEP_MS_SEQUENCE", "").split(","):
+            raw_delay = raw_delay.strip()
+            if raw_delay:
+                step_ms_sequence.append(max(0, int(raw_delay)))
         first_warmup_ack = _setting("FAKE_IMAGE_FIRST_WARMUP_ACK")
+        step_hold_ack = _setting("FAKE_IMAGE_STEP_HOLD_ACK")
         index = RENDERS.begin(total, bool(first_warmup_ack))
         if index is None:
             # A render is already in flight. The real server runs one model in
@@ -740,16 +747,35 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(0.05)
             RENDERS.finish_warmup()
         cancelled = False
-        for _ in range(total):
-            time.sleep(step_ms / 1000)
+        for step_index in range(total):
+            # Production publishes `step = t + 1` when a denoise step starts.
+            # Advance before sleeping so the fixture has the same wire meaning.
             if RENDERS.advance():
                 cancelled = True
                 break
+            if step_hold_ack and step_index + 1 == 2:
+                deadline = time.monotonic() + 300
+                while not os.path.exists(step_hold_ack):
+                    if time.monotonic() >= deadline:
+                        RENDERS.end()
+                        _event("image_step_hold_timeout", step=2)
+                        self._json(500, {"error": {"code": "fixture_step_hold_timeout"}})
+                        return
+                    time.sleep(0.05)
+            delay_ms = (step_ms_sequence[step_index]
+                        if step_index < len(step_ms_sequence) else step_ms)
+            time.sleep(delay_ms / 1000)
         # Real image engines still perform VAE decode / PNG encoding after the
         # last denoise step. Keep that tail observable for GUI phase coverage.
         finish_ms = max(0, int(_setting("FAKE_IMAGE_FINISH_MS", 0)))
-        time.sleep(finish_ms / 1000)
+        # Production clears `running` when denoising returns, before PNG
+        # encoding. Publish that same finalizing boundary ahead of the tail.
         RENDERS.end()
+        # Cancellation exits denoising without entering the successful
+        # decode/encode tail. Keeping that tail after RENDERS.cancel() would
+        # make the fixture report a stopped render as if it were finalizing.
+        if not cancelled:
+            time.sleep(finish_ms / 1000)
         png = _one_pixel_png(((index * 70) % 256, (index * 130) % 256, (index * 190) % 256))
         encoded = base64.b64encode(png).decode("ascii")
         # The digest is of the BYTES that go on the wire, so a fixture (or an
@@ -769,18 +795,19 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
-        if self.path == "/v1/models/load":
+        path = urlsplit(self.path).path
+        if path == "/v1/models/load":
             self._models_load()
             return
-        if self.path == "/v1/images/generations":
+        if path == "/v1/images/generations":
             self._images_generate()
             return
-        if self.path == "/v1/images/cancel":
+        if path == "/v1/images/cancel":
             RENDERS.cancel()
             _event("image_cancel")
             self._json(200, {"cancelled": True})
             return
-        if self.path == "/v1/images/edits":
+        if path == "/v1/images/edits":
             self._images_generate(editing=True)
             return
         if self.path == "/v1/audio/speech":

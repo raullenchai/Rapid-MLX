@@ -544,6 +544,21 @@ struct AccessibilityIdentifierInventoryTests {
         )
     }
 
+    /// The stopped-state inline model picker (#2297) is addressed by its own
+    /// menu popup identifier inside ``ModelPickerBar``, not by a composite id
+    /// stamped on the whole bar (a composite id would propagate onto both the
+    /// popup and the (i) info button and make them indistinguishable to AX).
+    /// The `launch-integrations` golden journey now asserts this id to reach
+    /// the picker directly.
+    @Test("Stopped-state model picker is reachable by its menu popup identifier")
+    func stoppedStatePickerMenuIdentifier() throws {
+        try assertDeclared(
+            [#""ModelPickerBar.ModelMenu""#],
+            in: "Sources/Rapid/UI/ModelPickerBar.swift",
+            surface: "Stopped-state inline model picker"
+        )
+    }
+
     /// The positive test above would still pass if someone re-added the
     /// container identifier, bringing the propagation bug back with it. Naming
     /// the wrapper is the mistake, so the absence has to be asserted directly.

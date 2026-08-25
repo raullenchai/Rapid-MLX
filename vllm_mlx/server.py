@@ -40,10 +40,14 @@ import gc
 import logging
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+if TYPE_CHECKING:
+    from .runtime.audio_worker import AudioWorkerHandoff, ModelWorker
 
 # Single source of truth for the OpenAI-shaped 400 / 422 / 500 envelopes
 # (F-161 / F-162 / F-163 / F-094-class). Defined in ``middleware`` so
@@ -125,7 +129,11 @@ from .engine import (
     BatchedEngine,
 )
 from .runtime.model_registry import ModelEntry, ModelRegistry
-from .runtime.resident_models import ResidentModelManager, estimate_model_bytes
+from .runtime.resident_models import (
+    ResidentModelBusyError,
+    ResidentModelManager,
+    estimate_model_bytes,
+)
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
     _FALLBACK_TEMPERATURE,
     _FALLBACK_TOP_P,
@@ -226,6 +234,30 @@ _default_min_p: float | None = None  # Set via --default-min-p
 _default_repetition_penalty: float | None = None  # Set via --default-repetition-penalty
 _default_presence_penalty: float | None = None  # Set via --default-presence-penalty
 _default_frequency_penalty: float | None = None  # Set via --default-frequency-penalty
+
+
+def _bind_audio_worker_for_engine(engine: object | None) -> bool:
+    """Bind a compatible primary engine or select the isolated fallback."""
+
+    from .runtime.audio_worker import bind_audio_worker
+
+    worker = _audio_worker_for_engine(engine)
+    bind_audio_worker(worker)
+    return worker is not None
+
+
+def _audio_worker_for_engine(engine: object | None) -> "ModelWorker | None":
+    """Return an engine only when it implements the audio worker contract."""
+
+    compatible = engine is not None and all(
+        callable(getattr(engine, method, None))
+        for method in (
+            "execute_on_model_worker",
+            "execute_on_model_worker_sync",
+        )
+    )
+    return cast("ModelWorker", engine) if compatible else None
+
 
 # Sampling overlays populated from the model's AliasProfile +
 # generation_config.json once the path is known (load_model). Both stay
@@ -693,6 +725,14 @@ async def lifespan(app: FastAPI):
             gpu_memory_utilization=_resident_gpu_memory_utilization,
         )
     if _engine is not None:
+        from .routes.audio import audio_routes_should_register
+
+        if audio_routes_should_register(
+            model_name=_model_name,
+            model_alias=_model_alias,
+            enable_audio_lane=_enable_audio_lane,
+        ):
+            _bind_audio_worker_for_engine(_engine)
         _primary_entry = next(
             (
                 entry
@@ -873,8 +913,14 @@ async def lifespan(app: FastAPI):
         if _mcp_manager is not None:
             await _mcp_manager.stop()
             logger.info("MCP manager stopped")
+        from .routes.audio import shutdown_audio_lanes
+
+        await shutdown_audio_lanes()
         if _residency_manager is not None:
             await _residency_manager.shutdown()
+        from .runtime.audio_worker import bind_audio_worker
+
+        bind_audio_worker(None)
         if _engine is not None:
             await _engine.stop()
             logger.info("Engine stopped")
@@ -2296,10 +2342,44 @@ def configure_model_residency(
         _load_dynamic_resident_model,
         memory_limit_bytes=_resident_memory_limit_bytes,
         idle_ttl_seconds=_resident_idle_ttl_seconds,
+        on_primary_handoff=_handoff_resident_primary_audio_worker,
         on_primary_changed=_set_resident_primary,
     )
     get_config().residency_manager = _residency_manager
     return _residency_manager
+
+
+class _ResidentPrimaryAudioHandoff:
+    """Adapt the audio dispatcher's lease to residency model entries."""
+
+    def __init__(self, handoff: "AudioWorkerHandoff") -> None:
+        self._handoff = handoff
+
+    def commit(self, entry: ModelEntry | None) -> None:
+        engine = entry.engine if entry is not None else None
+        self._handoff.commit(_audio_worker_for_engine(engine))
+
+    def rollback(self) -> None:
+        self._handoff.rollback()
+
+
+def _handoff_resident_primary_audio_worker(
+    entry: ModelEntry,
+) -> _ResidentPrimaryAudioHandoff:
+    """Reserve audio ownership for a transactional primary replacement."""
+
+    # The entry identifies the primary whose residency transaction owns the
+    # lease. The dispatcher is the worker-ownership SSOT and preserves that
+    # worker until commit or rollback.
+    del entry
+    from .runtime.audio_worker import AudioWorkerBusyError, audio_worker
+
+    try:
+        return _ResidentPrimaryAudioHandoff(audio_worker.begin_handoff())
+    except AudioWorkerBusyError as exc:
+        raise ResidentModelBusyError(
+            "primary model is serving active audio work"
+        ) from exc
 
 
 def _set_resident_primary(entry: ModelEntry) -> None:

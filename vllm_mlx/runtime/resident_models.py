@@ -10,6 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Protocol
 
 from .model_registry import ModelEntry, ModelRegistry
 from .process_memory import get_phys_footprint
@@ -159,6 +160,17 @@ class ResidencyRecord:
 
 Loader = Callable[..., Awaitable[ModelEntry]]
 PrimaryChanged = Callable[[ModelEntry], None]
+
+
+class PrimaryHandoffLease(Protocol):
+    """Serving-layer transaction coupled to a primary residency change."""
+
+    def commit(self, entry: ModelEntry | None) -> None: ...
+
+    def rollback(self) -> None: ...
+
+
+PrimaryHandoff = Callable[[ModelEntry], PrimaryHandoffLease]
 
 
 def _modality(entry: ModelEntry) -> str:
@@ -315,6 +327,7 @@ class ResidentModelManager:
         idle_ttl_seconds: float = 0,
         clock: Callable[[], float] = time.monotonic,
         memory_reader: Callable[[], int] = get_phys_footprint,
+        on_primary_handoff: PrimaryHandoff | None = None,
         on_primary_changed: PrimaryChanged | None = None,
     ) -> None:
         self.registry = registry
@@ -323,6 +336,7 @@ class ResidentModelManager:
         self.idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
         self._clock = clock
         self._memory_reader = memory_reader
+        self._on_primary_handoff = on_primary_handoff
         self._on_primary_changed = on_primary_changed
         self._records: dict[str, ResidencyRecord] = {}
         self._index: dict[str, str] = {}
@@ -566,6 +580,11 @@ class ResidentModelManager:
         estimate = record.estimated_bytes
         pinned = record.pinned
         primary = record.primary
+        handoff = (
+            self._on_primary_handoff(record.entry)
+            if primary and self._on_primary_handoff is not None
+            else None
+        )
 
         self.registry.remove(model_name)
         self._drop_record(model_name)
@@ -580,6 +599,8 @@ class ResidentModelManager:
             # disappear from routing and residency accounting.
             self.registry.add(record.entry, is_default=primary)
             self._index_record(record)
+            if handoff is not None:
+                handoff.rollback()
             raise
         _release_allocator_cache()
 
@@ -591,28 +612,7 @@ class ResidentModelManager:
             # replacement can fit under the same budget. Best-effort restore
             # the last known-good config; never let a rejected Settings change
             # silently take every route for the primary model down.
-            try:
-                restored_entry = await self.loader(
-                    model_name, model_path, record.performance
-                )
-                restored = ResidencyRecord(
-                    entry=restored_entry,
-                    estimated_bytes=estimate,
-                    loaded_at=self._clock(),
-                    last_used_at=self._clock(),
-                    pinned=pinned,
-                    primary=primary,
-                    performance=record.performance,
-                )
-                self.registry.add(restored_entry, is_default=primary)
-                self._index_record(restored)
-                if primary and self._on_primary_changed is not None:
-                    self._on_primary_changed(restored_entry)
-            except BaseException:
-                logger.exception(
-                    "Failed to restore resident model %r after reload failure",
-                    model_name,
-                )
+            await self._restore_reload_locked(record, handoff)
             raise reload_error
         after = self._read_memory()
         now = self._clock()
@@ -626,12 +626,71 @@ class ResidentModelManager:
             primary=primary,
             performance=performance,
         )
-        self.registry.add(entry, is_default=primary)
-        self._index_record(replacement)
-        self.loads_total += 1
-        if primary and self._on_primary_changed is not None:
-            self._on_primary_changed(entry)
+        try:
+            self.registry.add(entry, is_default=primary)
+            self._index_record(replacement)
+            self.loads_total += 1
+            if primary and self._on_primary_changed is not None:
+                self._on_primary_changed(entry)
+        except BaseException as publish_error:
+            # The replacement is not committed until every serving-layer
+            # publisher accepts it. Remove and stop it while the audio lease
+            # still gates requests, then restore the last known-good config.
+            self.registry.remove(model_name)
+            self._drop_record(model_name)
+            try:
+                stop = getattr(entry.engine, "stop", None)
+                if callable(stop):
+                    result = stop()
+                    if asyncio.iscoroutine(result):
+                        await result
+            except BaseException:
+                logger.exception(
+                    "Failed to stop rejected resident model %r",
+                    model_name,
+                )
+            _release_allocator_cache()
+            await self._restore_reload_locked(record, handoff)
+            raise publish_error
+        if handoff is not None:
+            handoff.commit(entry)
         return replacement
+
+    async def _restore_reload_locked(
+        self,
+        record: ResidencyRecord,
+        handoff: PrimaryHandoffLease | None,
+    ) -> None:
+        """Restore the prior reload config and always finalize its handoff."""
+
+        restored_entry = None
+        try:
+            restored_entry = await self.loader(
+                record.model_id,
+                record.entry.model_path,
+                record.performance,
+            )
+            restored = ResidencyRecord(
+                entry=restored_entry,
+                estimated_bytes=record.estimated_bytes,
+                loaded_at=self._clock(),
+                last_used_at=self._clock(),
+                pinned=record.pinned,
+                primary=record.primary,
+                performance=record.performance,
+            )
+            self.registry.add(restored_entry, is_default=record.primary)
+            self._index_record(restored)
+            if record.primary and self._on_primary_changed is not None:
+                self._on_primary_changed(restored_entry)
+        except BaseException:
+            logger.exception(
+                "Failed to restore resident model %r after reload failure",
+                record.model_id,
+            )
+        finally:
+            if handoff is not None:
+                handoff.commit(restored_entry)
 
     async def _replace_group_locked(self, target: ResidencyRecord, group: str) -> None:
         """Make ``target`` the sole unpinned model in a lifecycle group.
@@ -663,17 +722,55 @@ class ResidentModelManager:
                 )
 
         old_primary = next((record for record in candidates if record.primary), None)
+        handoff = None
         if old_primary is not None:
-            old_primary.primary = False
-            old_primary.pinned = False
-            target.primary = True
-            target.pinned = True
-            self.registry.set_default(target.model_id)
-            if self._on_primary_changed is not None:
-                self._on_primary_changed(target.entry)
+            # Reserve serving-layer ownership before changing any primary
+            # truth. The lease rejects active auxiliary work and prevents a
+            # new request from entering until commit or rollback.
+            if self._on_primary_handoff is not None:
+                handoff = self._on_primary_handoff(old_primary.entry)
+            old_pinned = old_primary.pinned
+            target_primary = target.primary
+            target_pinned = target.pinned
 
-        for record in candidates:
-            await self._evict_locked(record, reason=f"replace_{group}")
+        # Stop the old primary last. Until it returns successfully, rollback
+        # can restore a live worker and coherent routing if any eviction fails.
+        ordered_candidates = [
+            record for record in candidates if record is not old_primary
+        ]
+        if old_primary is not None:
+            ordered_candidates.append(old_primary)
+
+        try:
+            if old_primary is not None:
+                old_primary.primary = False
+                old_primary.pinned = False
+                target.primary = True
+                target.pinned = True
+                self.registry.set_default(target.model_id)
+                if self._on_primary_changed is not None:
+                    self._on_primary_changed(target.entry)
+            for record in ordered_candidates:
+                await self._evict_locked(record, reason=f"replace_{group}")
+        except BaseException:
+            if old_primary is not None:
+                try:
+                    old_primary.state = "resident"
+                    old_primary.primary = True
+                    old_primary.pinned = old_pinned
+                    target.primary = target_primary
+                    target.pinned = target_pinned
+                    self.registry.add(old_primary.entry, is_default=True)
+                    self._index_record(old_primary)
+                    if self._on_primary_changed is not None:
+                        self._on_primary_changed(old_primary.entry)
+                finally:
+                    if handoff is not None:
+                        handoff.rollback()
+            raise
+        else:
+            if handoff is not None:
+                handoff.commit(target.entry)
 
     async def set_pinned(self, model_name: str, pinned: bool) -> ResidencyRecord:
         async with self._lock:

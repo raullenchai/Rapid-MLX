@@ -13,6 +13,7 @@ import tempfile
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
@@ -155,7 +156,7 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
 _tts_engine = None
-_music_engine = None
+_music_engine: Any = None
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
 # the route can validate the model BEFORE streaming the upload (F-165):
@@ -1303,20 +1304,18 @@ async def _run_stt_request(
 
         from ..audio.stt import STTEngine
 
-        # Same lock the alignment lane takes. ASR still runs INLINE on the
-        # event loop, so this does not change how it executes — it makes
-        # explicit the serialisation it already had implicitly, and closes
-        # the window that offloading alignment would otherwise open: an ASR
-        # request on the loop concurrent with an alignment render in the
-        # executor means two multi-GB models resident and two callers
-        # driving the accelerator. See _stt_lane_lock.
+        # Same lock the alignment lane takes. The lock serialises lifecycle
+        # changes while ``run_audio_mlx`` sends load/inference to the server's
+        # model-owning worker; no route-level executor topology is involved.
         async with _get_stt_lane_lock():
             if _stt_engine is None or _stt_engine.model_name != model_name:
                 # Symmetric with the alignment path: one STT model resident.
-                _evict_other_lane("asr")
+                await _evict_other_lane("asr")
                 _stt_engine = None
                 stt_engine = STTEngine(model_name)
-                stt_engine.load()
+                from ..runtime.audio_worker import run_audio_mlx
+
+                await run_audio_mlx("stt", model_name, "load", stt_engine.load)
                 _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
@@ -1330,7 +1329,16 @@ async def _run_stt_request(
             # with STTEngine-shaped stubs and third-party engines.
             if context and context.strip():
                 transcribe_kwargs["context"] = context.strip()
-            result = _stt_engine.transcribe(tmp_path, **transcribe_kwargs)
+            from ..runtime.audio_worker import run_audio_mlx
+
+            result = await run_audio_mlx(
+                "stt",
+                model_name,
+                "infer",
+                _stt_engine.transcribe,
+                tmp_path,
+                **transcribe_kwargs,
+            )
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1424,10 +1432,9 @@ async def _run_stt_request(
 # ---------------------------------------------------------------------------
 # Forced-alignment lane for ``/v1/audio/transcriptions`` + ``text``.
 #
-# Kept separate from ``_run_stt_request`` because the two lanes have
-# different concurrency models: ASR still runs its engine call inline on
-# the event loop, while alignment offloads to a worker thread (see the
-# lock and engine-cache comments below).
+# Kept separate from ``_run_stt_request`` because ASR and forced alignment
+# have separate model caches and request contracts. Their MLX operations share
+# the same server-owned worker and the lock below protects replacement.
 # ---------------------------------------------------------------------------
 
 
@@ -1437,17 +1444,9 @@ async def _run_stt_request(
 #: The two lanes share no Python state (``_stt_engine`` and
 #: ``_aligner_engine`` are separate caches on purpose), but they share the
 #: accelerator: each loads its own multi-GB model into unified memory and
-#: runs MLX work against it. Before this change every audio lane executed
-#: inline on the event loop, so they were mutually exclusive by accident.
-#: Offloading alignment to a worker thread removes that accident — an ASR
-#: request could then run on the loop while an alignment render is live in
-#: the executor, with two models resident and two callers driving the GPU.
-#: The lock restores the invariant deliberately instead of relying on the
-#: event loop to provide it.
-#:
-#: Note this does not change how ASR EXECUTES: it still runs inline, so
-#: taking the lock around it only makes explicit the serialisation it
-#: already had. TTS, alignment, and music run in workers.
+#: runs MLX work against it. The lock keeps replacement and inference a single
+#: lifecycle lease; actual MLX calls are dispatched to the server-owned model
+#: worker so thread-local streams remain valid.
 #:
 #: An ``asyncio.Lock`` acquired ON THE EVENT LOOP, deliberately not a
 #: ``threading.Lock`` held inside the worker. ``asyncio.to_thread`` uses
@@ -1517,6 +1516,58 @@ def _get_music_lock() -> _CrossLoopAsyncLock:
     return _music_lock
 
 
+async def shutdown_audio_lanes() -> None:
+    """Unload cached audio models on their owning MLX worker.
+
+    The ASGI lifespan calls this before stopping the primary engine. Acquiring
+    the same lane locks as request handlers provides a terminal barrier: no
+    cached model is released while an audio request still owns it.
+    """
+
+    global _stt_engine, _aligner_engine, _tts_engine, _music_engine
+
+    from ..runtime.audio_worker import run_audio_mlx_sync
+
+    def unload_cached(lane: str, cached: object | None) -> None:
+        if cached is None:
+            return
+        unload = getattr(cached, "unload", None)
+        if not callable(unload):
+            return
+        try:
+            run_audio_mlx_sync(
+                lane,
+                getattr(cached, "model_name", "unknown"),
+                "unload",
+                unload,
+            )
+        except Exception:
+            # Shutdown is best effort: one damaged auxiliary backend must not
+            # strand the remaining lanes or prevent the primary engine from
+            # stopping. Preserve the original exception and traceback in the
+            # server log while continuing terminal cleanup.
+            logger.exception("Failed to unload %s audio lane during shutdown", lane)
+
+    async with _get_stt_lane_lock():
+        try:
+            unload_cached("stt", _stt_engine)
+            unload_cached("alignment", _aligner_engine)
+        finally:
+            _stt_engine = None
+            _aligner_engine = None
+
+    async with _get_tts_lane_lock():
+        try:
+            unload_cached("tts", _tts_engine)
+        finally:
+            _tts_engine = None
+
+    async with _get_music_lock():
+        # MusicEngine owns a subprocess per generation rather than persistent
+        # MLX weights; the request barrier is sufficient before dropping it.
+        _music_engine = None
+
+
 #: Signatures of the two ``ValueError``s :meth:`STTEngine.align` raises
 #: for caller mistakes (see its body): a model that isn't a forced
 #: aligner, and empty/blank known text. Matched on message because the
@@ -1543,11 +1594,9 @@ def _is_client_alignment_error(exc: Exception) -> bool:
 #: Cached forced-aligner engine — DELIBERATELY separate from
 #: ``_stt_engine``.
 #:
-#: Sharing one global across both lanes is unsafe now that alignment runs
-#: on a worker thread while ASR still runs on the event loop: an ASR
-#: request can replace the engine in between the alignment path's cache
-#: check and its ``align()`` call, and no lock held on only one side can
-#: prevent that. A dedicated cache removes the shared mutable state
+#: Sharing one global across both lanes is unsafe: an ASR request could
+#: replace the engine in between the alignment path's cache check and its
+#: ``align()`` call. A dedicated cache removes the shared mutable state
 #: instead of trying to synchronise two lanes with different concurrency
 #: models. It also stops the two lanes evicting each other's weights on
 #: every alternating request, since an aligner and an ASR model are never
@@ -1555,7 +1604,22 @@ def _is_client_alignment_error(exc: Exception) -> bool:
 _aligner_engine = None
 
 
-def _evict_other_lane(keep: str) -> None:
+def _other_stt_lane(keep: str) -> tuple[str, object | None]:
+    if keep == "aligner":
+        return "stt", _stt_engine
+    return "alignment", _aligner_engine
+
+
+def _clear_other_stt_lane(keep: str) -> None:
+    global _stt_engine, _aligner_engine
+
+    if keep == "aligner":
+        _stt_engine = None
+    else:
+        _aligner_engine = None
+
+
+async def _evict_other_lane(keep: str) -> None:
     """Release the STT lane's *other* cached engine before loading one.
 
     ``keep`` is ``"asr"`` or ``"aligner"``. Only ever called with the lane
@@ -1566,22 +1630,45 @@ def _evict_other_lane(keep: str) -> None:
     footprint — alternating requests would leave both models resident. MLX
     frees on refcount, so clearing the global is the release.
     """
-    global _stt_engine, _aligner_engine
+    lane, cached = _other_stt_lane(keep)
+    if cached is None:
+        return
+    logger.info(
+        "Releasing %s model %s to load the other STT lane "
+        "(one STT model resident at a time)",
+        lane,
+        getattr(cached, "model_name", "?"),
+    )
+    unload = getattr(cached, "unload", None)
+    if callable(unload):
+        from ..runtime.audio_worker import run_audio_mlx
 
-    if keep == "aligner" and _stt_engine is not None:
-        logger.info(
-            "Releasing ASR model %s to load the forced aligner "
-            "(one STT model resident at a time)",
-            getattr(_stt_engine, "model_name", "?"),
+        await run_audio_mlx(
+            lane, getattr(cached, "model_name", "unknown"), "unload", unload
         )
-        _stt_engine = None
-    elif keep == "asr" and _aligner_engine is not None:
-        logger.info(
-            "Releasing forced aligner %s to load the ASR model "
-            "(one STT model resident at a time)",
-            getattr(_aligner_engine, "model_name", "?"),
+    _clear_other_stt_lane(keep)
+
+
+def _evict_other_lane_sync(keep: str) -> None:
+    """Blocking counterpart for alignment's existing worker-thread pipeline."""
+
+    lane, cached = _other_stt_lane(keep)
+    if cached is None:
+        return
+    logger.info(
+        "Releasing %s model %s to load the other STT lane "
+        "(one STT model resident at a time)",
+        lane,
+        getattr(cached, "model_name", "?"),
+    )
+    unload = getattr(cached, "unload", None)
+    if callable(unload):
+        from ..runtime.audio_worker import run_audio_mlx_sync
+
+        run_audio_mlx_sync(
+            lane, getattr(cached, "model_name", "unknown"), "unload", unload
         )
-        _aligner_engine = None
+    _clear_other_stt_lane(keep)
 
 
 def _align_blocking(
@@ -1618,7 +1705,7 @@ def _align_blocking(
         # unified memory for a server that can only use one at a time. The
         # caller holds the lane lock, so no ASR request is mid-flight and
         # this cannot pull weights out from under one.
-        _evict_other_lane("aligner")
+        _evict_other_lane_sync("aligner")
         # Also drop any PREVIOUS aligner (a different aligner alias) before
         # loading the replacement, so two multi-GB aligner models never sit
         # resident together during ``load()``. Inert under the current
@@ -1639,9 +1726,21 @@ def _align_blocking(
         # is a different hierarchy entirely, so the name would trip that
         # gate with a false positive.
         aligner = STTEngine(model_name)
-        aligner.load()
+        from ..runtime.audio_worker import run_audio_mlx_sync
+
+        run_audio_mlx_sync("alignment", model_name, "load", aligner.load)
         _aligner_engine = aligner
-    return _aligner_engine.align(audio_path, text, **align_kwargs)
+    from ..runtime.audio_worker import run_audio_mlx_sync
+
+    return run_audio_mlx_sync(
+        "alignment",
+        model_name,
+        "infer",
+        _aligner_engine.align,
+        audio_path,
+        text,
+        **align_kwargs,
+    )
 
 
 async def _run_alignment_request(
@@ -2513,10 +2612,17 @@ def _generate_speech_blocking(
     global _tts_engine
 
     from ..audio.tts import TTSEngine
+    from ..runtime.audio_worker import run_audio_mlx_sync
 
     if _tts_engine is None or _tts_engine.model_name != model_name:
+        if _tts_engine is not None:
+            old_model = getattr(_tts_engine, "model_name", "unknown")
+            unload = getattr(_tts_engine, "unload", None)
+            if callable(unload):
+                run_audio_mlx_sync("tts", old_model, "unload", unload)
+            _tts_engine = None
         tts_candidate = TTSEngine(model_name)
-        tts_candidate.load()
+        run_audio_mlx_sync("tts", model_name, "load", tts_candidate.load)
         _tts_engine = tts_candidate
 
     kwargs = dict(gen_kwargs)
@@ -2529,9 +2635,13 @@ def _generate_speech_blocking(
             kwargs["ref_audio"] = ref_path.path
             if ref_text is not None:
                 kwargs["ref_text"] = ref_text
-            audio = _tts_engine.generate(input_text, **kwargs)
+            audio = run_audio_mlx_sync(
+                "tts", model_name, "infer", _tts_engine.generate, input_text, **kwargs
+            )
     else:
-        audio = _tts_engine.generate(input_text, **kwargs)
+        audio = run_audio_mlx_sync(
+            "tts", model_name, "infer", _tts_engine.generate, input_text, **kwargs
+        )
     from ..audio.output_format import convert_audio_output
 
     converted, output_rate, output_channels = convert_audio_output(

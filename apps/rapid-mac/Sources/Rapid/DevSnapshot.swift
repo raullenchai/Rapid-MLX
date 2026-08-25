@@ -201,11 +201,10 @@ enum DevSnapshot {
                         .fill(RapidTheme.hairline)
                         .frame(width: 1)
 
-                    LaunchView(
+                    LaunchPreviewHost(
                         server: server,
-                        alias: "bonsai-1.7b-2bit",
-                        readiness: readiness,
-                        onReadinessAction: { _ in }
+                        downloads: downloads,
+                        readiness: readiness
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(RapidTheme.surfaceCanvas)
@@ -850,14 +849,13 @@ enum DevSnapshot {
         // renders faithfully — unlike the NSViewRepresentable composer).
         render(
             AnyView(
-                ConnectToolsView(
-                    host: "127.0.0.1", port: 8000,
-                    bearer: "rapid-sk-demo1234567890abcdef",
-                    alias: "bonsai-1.7b-2bit", onClose: {}
-                ).cardContent
-                    .frame(width: 460)
-                    .background(RapidTheme.canvas)
-                    .tint(RapidTheme.brand)
+                ConnectToolsCardHost(
+                    server: server,
+                    downloads: downloads
+                )
+                .frame(width: 460)
+                .background(RapidTheme.canvas)
+                .tint(RapidTheme.brand)
             ),
             to: "\(dir)/connect-tools.png"
         )
@@ -1464,5 +1462,56 @@ private struct SettingsControlProofSheet: View {
         .frame(width: 560, alignment: .leading)
         .background(RapidTheme.surfaceCanvas)
         .tint(RapidTheme.brandAmber)
+    }
+}
+
+/// Dev-snapshot host for the Launch page. Owns the model-alias `@State`
+/// so ``ConnectToolsView`` can take a `@Binding` to it (its stopped state
+/// embeds the reusable model picker), then renders the real ``LaunchView``
+/// exactly as ``ContentView`` would.
+private struct LaunchPreviewHost: View {
+    @Bindable var server: ServerManager
+    @Bindable var downloads: DownloadManager
+    var readiness: ModelReadiness? = nil
+    @State private var alias: String = "bonsai-1.7b-2bit"
+
+    var body: some View {
+        LaunchView(
+            server: server,
+            downloads: downloads,
+            alias: $alias,
+            readiness: readiness,
+            onReadinessAction: { _ in }
+        )
+    }
+}
+
+/// Dev-snapshot host for the standalone "Connect your agents" card (the
+/// pure-SwiftUI sheet scene). Renders ``ConnectToolsView.cardContent`` on a
+/// fixed frame, owning the same model-alias state the page now binds.
+///
+/// ``readiness`` defaults to the stopped state (model chosen, not serving)
+/// so ``connect-tools.png`` exercises the picker + readiness banner that
+/// #2297 always renders — the same non-`nil` value the real ``ContentView``
+/// supplies. Without it the scene would fall back to
+/// ``ConnectToolsView``'s `nil` path and never capture the stopped-state UI
+/// this DevSnapshot exists to document.
+private struct ConnectToolsCardHost: View {
+    @Bindable var server: ServerManager
+    @Bindable var downloads: DownloadManager
+    var readiness: ModelReadiness? = .needsStart(alias: "bonsai-1.7b-2bit")
+    @State private var alias: String = "bonsai-1.7b-2bit"
+
+    var body: some View {
+        ConnectToolsView(
+            host: "127.0.0.1",
+            port: 8000,
+            bearer: "rapid-sk-demo1234567890abcdef",
+            alias: $alias,
+            server: server,
+            downloads: downloads,
+            onClose: {},
+            readiness: readiness
+        ).cardContent
     }
 }
