@@ -6443,6 +6443,51 @@ def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
     )
 
 
+def _resolve_variant_allow_patterns(
+    repo_id: str, bits: str | None, fmt: str | None
+) -> list[str] | None:
+    """Map ``--bits``/``--format`` to ``snapshot_download`` patterns.
+
+    A multi-variant repo ships every quantization side by side as TOP-LEVEL
+    folders (``LiquidAI/LFM2.5-2.6B-MLX`` holds ``4bit/ 5bit/ 6bit/ 8bit/
+    bf16/ mxfp4/ mxfp8/ nvfp4/``). ``--bits N`` or ``--format F`` selects the
+    ``<N>bit`` / ``<F>`` folder so a constrained Mac fetches only that
+    variant instead of all of them (~20 GB in the LFM case).
+
+    Returns ``[f"{folder}/*"]`` for the requested variant, or ``None`` when no
+    selector was given (caller keeps the existing catalog-driven narrowing).
+    Raises ``VariantNotFoundError`` with the available folders when the
+    requested variant does not exist — so we fail clearly and cheaply (a file
+    listing, not a download) before touching any weights. The enumeration uses
+    the same top-level ``list_repo_tree`` read the mirror/catalog already rely
+    on; only folder names are inspected, never file bytes.
+    """
+    if not bits and not fmt:
+        return None
+    from huggingface_hub import HfApi, RepoFolder
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    requested = f"{bits}bit" if bits else (fmt or "")
+    try:
+        tree = list(HfApi().list_repo_tree(repo_id, recursive=False))
+    except RepositoryNotFoundError:
+        raise
+    folders = sorted(e.path for e in tree if isinstance(e, RepoFolder))
+    if requested not in folders:
+        raise VariantNotFoundError(repo_id, requested, available=folders)
+    return [f"{requested}/*"]
+
+
+class VariantNotFoundError(Exception):
+    """The user asked for a variant a multi-variant repo does not ship."""
+
+    def __init__(self, repo_id: str, requested: str, available: list[str]):
+        self.repo_id = repo_id
+        self.requested = requested
+        self.available = available
+        super().__init__(f"no '{requested}' variant in {repo_id}")
+
+
 def pull_command(args):
     """Download a model to the HuggingFace cache without serving."""
     import time
@@ -6453,6 +6498,28 @@ def pull_command(args):
 
     repo_id = args.model  # already alias-resolved by main()
     t0 = time.monotonic()
+
+    # #2145: resolve an explicit ``--bits``/``--format`` variant up front via a
+    # cheap file listing (no weight download). A requested variant that the
+    # repo does not ship fails here with the available folders listed, before
+    # any weights are touched.
+    _bits = getattr(args, "bits", None)
+    _fmt = getattr(args, "format", None)
+    try:
+        variant_allow = _resolve_variant_allow_patterns(repo_id, _bits, _fmt)
+    except VariantNotFoundError as e:
+        shown = getattr(args, "_original_alias", repo_id)
+        print(f"\n  Error: '{shown}' has no '{e.requested}' variant.")
+        if e.available:
+            print(
+                "  Available variant folder(s): "
+                + ", ".join(e.available)
+                + "."
+            )
+        else:
+            print("  The repo exposes no variant folders — it is a single-variant repo.")
+        print("  Pick one with --bits <N> or --format <name>, or pull the repo without a selector.")
+        sys.exit(1)
 
     # Reclaim scratch files stranded by earlier interrupted pulls of THIS repo
     # before adding more. huggingface_hub gives each attempt a uniquely-named
@@ -6475,7 +6542,18 @@ def pull_command(args):
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
-    if _try_mirror_prefetch(repo_id):
+    # #2145: when the user explicitly selected a variant (--bits/--format), the
+    # mirror prefetch has no narrow-to-variant mode yet (Vector's #2279 adds
+    # allow_patterns there, unlanded) — it would pull the WHOLE (or catalog
+    # subfolder) repo and defeat the selection. So a requested variant bypasses
+    # the mirror and goes straight to the narrowed HF snapshot_download below.
+    # Revisit once #2279 lands allow_patterns in the mirror path.
+    if variant_allow is not None:
+        print(
+            "  R2 mirror skipped: a --bits/--format variant was requested "
+            "(the mirror cannot narrow to one variant yet)."
+        )
+    if variant_allow is None and _try_mirror_prefetch(repo_id):
         from pathlib import Path
 
         try:
@@ -6526,13 +6604,33 @@ def pull_command(args):
         # checkpoints on disk that nothing can serve. It is announced
         # rather than silent so ``pull <repo-id>`` never quietly does
         # something narrower than it was asked.
-        _subfolder = resolve_subfolder(repo_id)
-        if _subfolder:
+        # An explicit --bits/--format selection (variant_allow) always wins over
+        # the catalog-driven subfolder narrowing; otherwise fall back to the
+        # catalog subfolder (one checkpoint per quantization).
+        if variant_allow is not None:
+            _allow = variant_allow
+            _variant_name = _allow[0][:-2]  # "4bit" from "4bit/*"
+            # The explicit --bits/--format selection wins over any catalog
+            # alias narrowing (resolve_subfolder); say so so the override is
+            # visible rather than silent.
+            _alias_subfolder = resolve_subfolder(repo_id)
+            if _alias_subfolder and _alias_subfolder != _variant_name:
+                print(
+                    f"  User --bits/--format '{_variant_name}' overrides the "
+                    f"catalog's '{_alias_subfolder}/' alias narrowing."
+                )
             print(
-                f"  This repo ships one checkpoint per quantization; "
-                f"fetching only {_subfolder}/ (the folder rapid-mlx serves)."
+                f"  Fetching only the {_variant_name}/ variant "
+                f"(selected with --bits/--format)."
             )
-        _allow = [f"{_subfolder}/*"] if _subfolder else None
+        else:
+            _subfolder = resolve_subfolder(repo_id)
+            if _subfolder:
+                print(
+                    f"  This repo ships one checkpoint per quantization; "
+                    f"fetching only {_subfolder}/ (the folder rapid-mlx serves)."
+                )
+            _allow = [f"{_subfolder}/*"] if _subfolder else None
         path = (
             snapshot_download(repo_id, allow_patterns=_allow)
             if _allow
@@ -10726,6 +10824,26 @@ Examples:
     pull_parser.add_argument(
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
+    # #2145: a multi-variant repo ships every quantization side by side as
+    # top-level folders (e.g. LiquidAI/LFM2.5-2.6B-MLX holds 4bit/ 5bit/ 6bit/
+    # 8bit/ mxfp4/...). Without selection, `pull <repo>` fetches ALL of them.
+    # These flags let a constrained Mac fetch only the variant it can serve.
+    pull_parser.add_argument(
+        "--bits",
+        metavar="2|4|6|8",
+        help=(
+            "Pull only the <N>bit variant of a multi-variant repo "
+            "(e.g. --bits 4 fetches only 4bit/)."
+        ),
+    )
+    pull_parser.add_argument(
+        "--format",
+        metavar="mlx|gguf|safetensors",
+        help=(
+            "Pull only the named format variant of a multi-variant repo "
+            "(e.g. --format mxfp4 or --format gguf, when the repo ships one)."
+        ),
+    )
     rm_parser = subparsers.add_parser(
         "rm", help="Remove a cached model from the HuggingFace cache"
     )
