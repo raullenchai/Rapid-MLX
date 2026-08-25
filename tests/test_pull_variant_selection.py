@@ -95,6 +95,31 @@ def test_resolve_returns_none_without_selector():
     assert cli._resolve_variant_allow_patterns("X/Y", None, None) is None
 
 
+def test_escape_glob_literal_metachars():
+    """A folder name with glob metachars must match literally, not broaden."""
+    assert cli._escape_glob_literal("4bit") == "4bit"
+    assert cli._escape_glob_literal("[48]bit") == "[[]48[]]bit"
+    assert cli._escape_glob_literal("a*b?") == "a[*]b[?]"
+
+
+def test_variant_with_glob_metachars_escaped_in_allow_patterns():
+    """--format on a folder named with glob metachars pins to that folder."""
+    tricky_tree = [
+        RepoFolder(path="[48]bit", oid="a"),
+        RepoFolder(path="8bit", oid="b"),
+        RepoFile(path="README.md", size=100, oid="c"),
+    ]
+    args = argparse.Namespace(model="X/Y", bits=None, format="[48]bit")
+    with (
+        patch("huggingface_hub.HfApi.list_repo_tree", return_value=tricky_tree),
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+    ):
+        cli.pull_command(args)
+    # The pattern must not glob-broaden: the literal folder with brackets.
+    assert snap.call_args.kwargs["allow_patterns"] == ["[[]48[]]bit/*"]
+
+
 def test_parser_accepts_single_selector():
     """The pull parser exposes --bits/--format and parses a single one."""
     parser = cli.build_parser()
@@ -224,6 +249,26 @@ def test_no_selector_still_consults_mirror():
     ):
         cli.pull_command(args)
     assert mirror.call_count == 1
+
+
+def test_orphan_reap_announces_cleaned_files(capsys):
+    """Pull announces when it reclaims abandoned download scratch files."""
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
+    with (
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch(
+            "vllm_mlx._download_gate.reap_orphan_incomplete_blobs",
+            return_value=(2, 512),
+        ),
+        patch(
+            "vllm_mlx._download_gate._format_size",
+            return_value="512 B",
+        ),
+        patch("huggingface_hub.snapshot_download", return_value="/cache/x"),
+    ):
+        cli.pull_command(args)
+    out = capsys.readouterr().out
+    assert "Cleaned up 2 abandoned download file(s)" in out
 
 
 def test_catalog_subfolder_narrowing_when_no_selector(capsys):

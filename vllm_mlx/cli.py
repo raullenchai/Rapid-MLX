@@ -6443,6 +6443,23 @@ def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
     )
 
 
+def _escape_glob_literal(name: str) -> str:
+    """Make ``name`` match literally in a fnmatch ``allow_patterns`` string.
+
+    ``snapshot_download``'s ``allow_patterns`` are fnmatch-style globs, so a
+    folder whose name happens to contain a glob metacharacter (``[``, ``]``,
+    ``*``, ``?``) would otherwise broaden the match to other folders. Wrapping
+    each metacharacter in a one-character character class (``[[]`` matches a
+    literal ``[``) pins the pattern to exactly that folder. Real quant names
+    (``4bit``, ``mxfp4``) never hit this, but the selector claims to handle
+    arbitrary multi-variant repos, so it must not corrupt their folder names.
+    """
+    out: list[str] = []
+    for ch in name:
+        out.append(f"[{ch}]" if ch in "[]*?" else ch)
+    return "".join(out)
+
+
 def _resolve_variant_allow_patterns(
     repo_id: str, bits: str | None, fmt: str | None
 ) -> list[str] | None:
@@ -6490,7 +6507,9 @@ def _resolve_variant_allow_patterns(
     folders = sorted(e.path for e in tree if isinstance(e, RepoFolder))
     if requested not in folders:
         raise VariantNotFoundError(repo_id, requested, available=folders)
-    return [f"{requested}/*"]
+    # The folder is validated to exist literally; escape glob metacharacters so
+    # a weird folder name can't broaden the match to other siblings.
+    return [f"{_escape_glob_literal(requested)}/*"]
 
 
 class VariantNotFoundError(Exception):
