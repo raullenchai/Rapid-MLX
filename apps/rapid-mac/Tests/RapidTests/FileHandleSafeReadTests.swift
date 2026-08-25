@@ -105,6 +105,10 @@ struct FileHandleSafeReadTests {
         // Abort cleanly (skip) rather than building a FileHandle over -1 if the
         // environment can't give us a private high descriptor.
         try #require(high >= 0, "F_DUPFD failed to pin a private high bad fd")
+        // Guarantee the raw `high` fd is closed on EVERY exit path (incl. a throw
+        // from FileHandle.close() below); close() on an already-closed fd is a no-op,
+        // so this is idempotent with the explicit close later.
+        defer { close(high) }
         // Construct while `high` is live → ready=true (fd captured, O_NONBLOCK).
         let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
         // Tear the READ side down from underneath the live drainer, but leave the
