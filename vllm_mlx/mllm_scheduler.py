@@ -531,7 +531,7 @@ class MLLMScheduler:
             if getattr(self, "_generation_paused", False):
                 from .scheduler import BackpressureError
 
-                allowed = getattr(self, "_paused_admission_tokens", set())
+                allowed: set[str] = getattr(self, "_paused_admission_tokens", set())
                 token = kwargs.get("lifecycle_admission_token")
                 if token not in allowed:
                     raise BackpressureError(
@@ -608,12 +608,15 @@ class MLLMScheduler:
             if getattr(self, "_generation_paused", False):
                 from .scheduler import BackpressureError
 
-                allowed = getattr(self, "_paused_admission_tokens", set())
-                if request.lifecycle_admission_token not in allowed:
+                commit_tokens: set[str] = getattr(
+                    self, "_paused_admission_tokens", set()
+                )
+                token = request.lifecycle_admission_token
+                if token is None or token not in commit_tokens:
                     raise BackpressureError(
                         "generation is paused for a model lifecycle operation"
                     )
-                allowed.remove(request.lifecycle_admission_token)
+                commit_tokens.remove(token)
             self._cancelled_request_ids.discard(request_id)
             self._disconnect_abort_ids.discard(request_id)
             self.requests[request_id] = request

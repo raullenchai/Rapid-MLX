@@ -944,11 +944,8 @@ class ResidentModelManager:
         for record in sorted(self._records.values(), key=lambda item: item.loaded_at):
             engine = record.entry.engine
             resident = not hasattr(engine, "is_resident") or bool(engine.is_resident)
-            lifecycle = (
-                engine.lifecycle_status()
-                if callable(getattr(engine, "lifecycle_status", None))
-                else None
-            )
+            lifecycle_status = getattr(engine, "lifecycle_status", None)
+            lifecycle = lifecycle_status() if callable(lifecycle_status) else None
             active_requests = record.active_requests
             if lifecycle is not None:
                 active_requests = max(

@@ -993,7 +993,7 @@ class BatchedEngine(BaseEngine):
                     f"(currently {self._admission_reservations} in-flight)"
                 )
             self._admission_reservations += 1
-            tokens = getattr(self, "_admission_tokens", None)
+            tokens: set[str] | None = getattr(self, "_admission_tokens", None)
             if tokens is None:
                 tokens = set()
                 self._admission_tokens = tokens
@@ -1021,7 +1021,7 @@ class BatchedEngine(BaseEngine):
     ) -> None:
         """Release one route reservation while holding ``_admission_lock``."""
 
-        tokens = getattr(self, "_admission_tokens", set())
+        tokens: set[str] = getattr(self, "_admission_tokens", set())
         if token is not None and token in tokens:
             tokens.remove(token)
             self._admission_reservations -= 1

@@ -5861,7 +5861,7 @@ class Scheduler:
         """
         with self._request_state_lock():
             if getattr(self, "_generation_paused", False):
-                allowed = getattr(self, "_paused_admission_tokens", set())
+                allowed: set[str] = getattr(self, "_paused_admission_tokens", set())
                 token = getattr(request, "lifecycle_admission_token", None)
                 if token not in allowed:
                     raise BackpressureError(
@@ -6082,13 +6082,15 @@ class Scheduler:
         # stays effective.
         with self._cancel_counter_lock:
             if getattr(self, "_generation_paused", False):
-                allowed = getattr(self, "_paused_admission_tokens", set())
+                commit_tokens: set[str] = getattr(
+                    self, "_paused_admission_tokens", set()
+                )
                 token = getattr(request, "lifecycle_admission_token", None)
-                if token not in allowed:
+                if not isinstance(token, str) or token not in commit_tokens:
                     raise BackpressureError(
                         "generation is paused for a model lifecycle operation"
                     )
-                allowed.remove(token)
+                commit_tokens.remove(token)
             self._cancelled_request_ids.discard(request.request_id)
             self._disconnect_abort_ids.discard(request.request_id)
             self._orphaned_running_candidates.pop(request.request_id, None)
