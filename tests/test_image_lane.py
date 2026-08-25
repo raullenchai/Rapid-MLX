@@ -579,6 +579,7 @@ def test_route_409_when_no_image_model(client, monkeypatch):
     resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "image_model_not_loaded"
+    assert "rapid-mlx serve flux2-klein-4b" in resp.json()["error"]["message"]
 
 
 def test_route_409_when_edit_model_loaded(client, monkeypatch):

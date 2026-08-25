@@ -193,7 +193,7 @@ def _image_engine(model_name: str = ""):
                 "error": {
                     "message": (
                         "This server is not running an image model. Start it with "
-                        "`rapid-mlx serve flux-schnell` (or another image alias)."
+                        "`rapid-mlx serve flux2-klein-4b` (or another image alias)."
                     ),
                     "type": "invalid_request_error",
                     "code": "image_model_not_loaded",
