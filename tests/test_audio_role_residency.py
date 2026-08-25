@@ -951,3 +951,137 @@ async def test_in_flight_request_bytes_are_visible_in_role_telemetry():
         )
 
     assert manager.snapshot()["roles"][0]["request_bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_request_charge_is_held_across_the_load():
+    """A joint admission must RESERVE the headroom, not merely check it.
+
+    Loading is slow. If the request's share is only validated at admission and
+    not held, another role can take that headroom while the weights load, and
+    the post-load overshoot check does not see it either — so the request that
+    was approved can no longer fit when it finally asks.
+    """
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    observed: list[int] = []
+
+    async with manager.admitting_role(
+        role="speech-input",
+        lane="stt",
+        model_id="whisper",
+        reserved_bytes=2 * GIB,
+        capacity_source="manifest",
+        pending_request_bytes=3 * GIB,
+    ) as record:
+        record.unload = lambda: None
+        # Mid-load: 4 (primary) + 2 (weights) + 3 (held for the request).
+        observed.append(manager.snapshot()["memory_used_bytes"])
+
+    assert observed == [9 * GIB]
+    # A competing role cannot take the headroom that is spoken for.
+    with pytest.raises(ResidentRoleConflictError):
+        await admit(manager, role="speech-output", lane="tts", model="kokoro", gib=2)
+
+
+@pytest.mark.asyncio
+async def test_lease_consumes_the_pending_charge_instead_of_re_requesting():
+    """The transfer must be atomic, or the approved request fails at the lease."""
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+
+    async with manager.admitting_role(
+        role="speech-input",
+        lane="stt",
+        model_id="whisper",
+        reserved_bytes=2 * GIB,
+        capacity_source="manifest",
+        pending_request_bytes=3 * GIB,
+    ) as record:
+        record.unload = lambda: None
+
+    # Re-requesting 3 GiB against a 9-of-10 GiB ledger would fail; claiming
+    # the charge admission already holds must succeed.
+    async with manager.lease_role("speech-input", request_bytes=3 * GIB):
+        snapshot = manager.snapshot()
+        assert snapshot["memory_used_bytes"] == 9 * GIB
+        assert snapshot["roles"][0]["request_bytes"] == 3 * GIB
+
+    assert manager.snapshot()["memory_used_bytes"] == 6 * GIB
+
+
+@pytest.mark.asyncio
+async def test_abandoned_pending_charge_is_released():
+    """A request that never reaches its lease must not charge the role forever."""
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+
+    async with manager.admitting_role(
+        role="speech-input",
+        lane="stt",
+        model_id="whisper",
+        reserved_bytes=2 * GIB,
+        capacity_source="manifest",
+        pending_request_bytes=3 * GIB,
+    ) as record:
+        record.unload = lambda: None
+
+    assert manager.snapshot()["memory_used_bytes"] == 9 * GIB
+
+    # The client disconnects; the lease context runs but the body never does.
+    async with manager.claiming_request_bytes("speech-input", 3 * GIB):
+        pass
+
+    assert manager.snapshot()["memory_used_bytes"] == 6 * GIB
+
+
+@pytest.mark.asyncio
+async def test_cold_and_warm_paths_report_the_same_code_for_an_oversized_request():
+    """An identical request must not be diagnosed differently by luck of timing.
+
+    Cold, the joint admission rejects; warm, the lease rejects. Both are "your
+    request is too big", so both must say ``role_request_too_large`` — telling
+    a user the MODEL will not fit, when the model fits and their input does
+    not, sends them to change the wrong thing.
+    """
+
+    cold, _c1 = manager_fixture(limit_gib=10, primary_gib=4)
+    with pytest.raises(ResidentRoleConflictError) as cold_exc:
+        async with cold.admitting_role(
+            role="speech-input",
+            lane="stt",
+            model_id="whisper",
+            reserved_bytes=1 * GIB,
+            capacity_source="manifest",
+            pending_request_bytes=8 * GIB,
+        ):
+            pass
+
+    warm, _c2 = manager_fixture(limit_gib=10, primary_gib=4)
+    await admit(warm, role="speech-input", lane="stt", model="whisper", gib=1)
+    with pytest.raises(ResidentRoleConflictError) as warm_exc:
+        async with warm.lease_role("speech-input", request_bytes=8 * GIB):
+            pass
+
+    assert cold_exc.value.code == warm_exc.value.code == "role_request_too_large"
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_cannot_fit_at_all_still_blames_the_model():
+    """The request-blame heuristic must not mask a genuinely oversized model."""
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+
+    with pytest.raises(ResidentRoleConflictError) as excinfo:
+        async with manager.admitting_role(
+            role="speech-input",
+            lane="stt",
+            model_id="enormous-asr",
+            reserved_bytes=9 * GIB,
+            capacity_source="manifest",
+            pending_request_bytes=1 * GIB,
+        ):
+            pass
+
+    # Weights alone do not fit, so this is not the request's fault.
+    assert excinfo.value.code == "role_capacity_conflict"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import sys
 import types
+import wave
 from dataclasses import dataclass
 
 import pytest
@@ -565,9 +566,18 @@ def test_normal_audio_upload_succeeds(audio_client, monkeypatch):
 
     from vllm_mlx.routes import audio as audio_route
 
-    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
+    monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 4096, raising=True)
 
-    small = io.BytesIO(b"RIFFsmall-wav-bytes")  # 19 bytes, well under the cap
+    # A real (tiny) WAV rather than a "RIFF..." stub: the route now sizes the
+    # decode from container metadata before admitting the request, so a file
+    # whose header cannot be parsed is refused as unusable audio.
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8_000)
+        handle.writeframes(b"\0\0" * 400)
+    small = io.BytesIO(buffer.getvalue())  # ~850 bytes, well under the cap
     resp = audio_client.post(
         "/v1/audio/transcriptions",
         files={"file": ("ok.wav", small, "audio/wav")},

@@ -2340,9 +2340,7 @@ def configure_model_residency(
 
     _resident_memory_limit_bytes = max(0, int(float(memory_limit_gb) * 1024**3))
     _resident_idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
-    _resident_audio_role_idle_ttl_seconds = max(
-        0.0, float(audio_role_idle_ttl_seconds)
-    )
+    _resident_audio_role_idle_ttl_seconds = max(0.0, float(audio_role_idle_ttl_seconds))
     _resident_gpu_memory_utilization = float(gpu_memory_utilization)
     _residency_manager = ResidentModelManager(
         _model_registry,

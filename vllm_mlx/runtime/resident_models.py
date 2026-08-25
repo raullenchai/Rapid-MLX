@@ -345,6 +345,16 @@ class AuxiliaryRoleRecord:
     #: this role. Separate from ``reserved_bytes`` because it is transient: it
     #: rises and falls per request while the weight reservation stays put.
     request_bytes: int = 0
+    #: Charge held on behalf of the request that triggered this load, from
+    #: admission until that request takes its lease.
+    #:
+    #: Without it the joint admission check would be advisory only: the
+    #: headroom it verified is not held during the (slow) load, so another
+    #: role can take it, and the post-load overshoot check would not see it
+    #: either. The pending charge is transferred into ``request_bytes`` by the
+    #: matching lease rather than re-requested, so the memory is continuously
+    #: reserved from the decision to the work.
+    pending_request_bytes: int = 0
     #: Owner-supplied veto on release, checked under the manager lock.
     #:
     #: ``active_requests`` alone is not sufficient. A request that finds its
@@ -359,6 +369,12 @@ class AuxiliaryRoleRecord:
     def releasable(self) -> bool:
         if self.active_requests:
             return False
+        if self.pending_request_bytes:
+            # A request has been admitted against this role and is about to use
+            # it; it just has not reached its lease yet. Treating that as idle
+            # would let a competing role evict the engine out from under a
+            # request the ledger already approved.
+            return False
         if self.can_release is None:
             return True
         try:
@@ -372,8 +388,14 @@ class AuxiliaryRoleRecord:
     @property
     def charged_bytes(self) -> int:
         # In-flight request buffers are additive to the weights: both are
-        # resident at the same time.
-        return max(self.reserved_bytes, self.measured_bytes) + self.request_bytes
+        # resident at the same time. ``pending_request_bytes`` covers the
+        # window between a joint admission and the lease that consumes it, so
+        # the verified headroom is actually held rather than merely checked.
+        return (
+            max(self.reserved_bytes, self.measured_bytes)
+            + self.request_bytes
+            + self.pending_request_bytes
+        )
 
 
 class PrimaryHandoffLease(Protocol):
@@ -1186,13 +1208,26 @@ class ResidentModelManager:
             )
         return conflicts
 
-    async def _admit_role_locked(self, requested: RoleRef, exclude_role: str) -> None:
+    async def _admit_role_locked(
+        self,
+        requested: RoleRef,
+        exclude_role: str,
+        *,
+        request_bytes: int = 0,
+    ) -> None:
         """Make room for ``requested`` or raise a conflict naming the blockers.
 
         Only other auxiliary roles are eligible for reclamation. Model rows are
         reported as conflicts rather than evicted: #2305's non-goals forbid
         silent eviction of the active conversation model, and #2306 owns the
         decision of what to offer the user instead.
+
+        ``request_bytes`` is the portion of ``requested`` that is this
+        request's working set rather than the model's weights. It only affects
+        how a rejection is REPORTED: when the weights alone would have fitted,
+        the actionable advice is "send a shorter request", not "this model does
+        not fit" — and the caller must get the same answer whether the engine
+        happened to be cold or already resident.
         """
 
         if self.memory_limit_bytes <= 0:
@@ -1210,6 +1245,7 @@ class ResidentModelManager:
                 usage_bytes=self._accounted_usage(),
                 capacity_unknown=True,
             )
+        weights_only = max(0, requested.bytes - max(0, int(request_bytes)))
         while self._accounted_usage() + requested.bytes > self.memory_limit_bytes:
             # ``require_idle`` re-checks after the await, and a role a request
             # claimed meanwhile drops out of the next ``_idle_auxiliary_roles``
@@ -1224,11 +1260,22 @@ class ResidentModelManager:
                     reclaimed = True
                     break
             if not reclaimed:
+                usage = self._accounted_usage()
+                # If the weights alone would have fitted, the request buffer is
+                # what tipped it over — report the same code the warm path
+                # returns for that condition, so identical requests do not get
+                # different diagnoses depending on whether the engine happened
+                # to be loaded already.
+                blamed_on_request = (
+                    request_bytes > 0
+                    and usage + weights_only <= self.memory_limit_bytes
+                )
                 raise ResidentRoleConflictError(
                     requested=requested,
                     conflicts=self._role_conflicts(exclude_role),
                     limit_bytes=self.memory_limit_bytes,
-                    usage_bytes=self._accounted_usage(),
+                    usage_bytes=usage,
+                    request_buffer=blamed_on_request,
                 )
 
     @asynccontextmanager
@@ -1286,7 +1333,11 @@ class ResidentModelManager:
                 model=model_id,
                 bytes=reserved_bytes + max(0, int(pending_request_bytes)),
             )
-            await self._admit_role_locked(requested, exclude_role=role)
+            await self._admit_role_locked(
+                requested,
+                exclude_role=role,
+                request_bytes=max(0, int(pending_request_bytes)),
+            )
             now = self._clock()
             record = AuxiliaryRoleRecord(
                 role=role,
@@ -1298,6 +1349,8 @@ class ResidentModelManager:
                 state="loading",
                 loaded_at=now,
                 last_used_at=now,
+                # Hold what admission just verified, for the whole load.
+                pending_request_bytes=max(0, int(pending_request_bytes)),
             )
             self._roles[role] = record
             before = self._read_memory()
@@ -1399,6 +1452,34 @@ class ResidentModelManager:
             await self._release_role_locked(record, reason="explicit")
 
     @asynccontextmanager
+    async def claiming_request_bytes(self, role: str, request_bytes: int):
+        """Hold an admission's request charge until its lease consumes it.
+
+        ``admitting_role`` verifies weights + request together, but the load
+        that follows is slow, and a charge that is only *checked* is not
+        *held*: another role can take the headroom while the weights load, and
+        the post-load overshoot check would not see it either.
+
+        The charge therefore lives on the record from admission onward. This
+        context manager owns the window: whatever the matching lease does not
+        claim is released on exit, so an abandoned request (a failed load, a
+        client that disconnects between admission and inference) can never
+        leave the role charged forever.
+        """
+
+        charge = max(0, int(request_bytes))
+        try:
+            yield
+        finally:
+            if charge:
+                async with self._lock:
+                    record = self._roles.get(role)
+                    if record is not None:
+                        record.pending_request_bytes = max(
+                            0, record.pending_request_bytes - charge
+                        )
+
+    @asynccontextmanager
     async def lease_role(self, role: str, *, request_bytes: int = 0):
         """Hold an auxiliary role against eviction while a request uses it.
 
@@ -1421,8 +1502,18 @@ class ResidentModelManager:
             if record.state != "resident":
                 raise ResidentModelBusyError(f"{role} is not resident")
             charge = max(0, int(request_bytes))
-            if charge and self.memory_limit_bytes > 0:
-                if self._accounted_usage() + charge > self.memory_limit_bytes:
+            # Consume any charge this role's own admission is already holding
+            # for us. Transferring is not the same as re-requesting: the
+            # headroom was verified and held at admission, so asking for it
+            # again could fail against memory that is ours by construction.
+            claimed = min(charge, record.pending_request_bytes)
+            record.pending_request_bytes -= claimed
+            outstanding = charge - claimed
+            if outstanding and self.memory_limit_bytes > 0:
+                if self._accounted_usage() + outstanding > self.memory_limit_bytes:
+                    # Put the claim back before rejecting; this request never
+                    # took ownership of it.
+                    record.pending_request_bytes += claimed
                     raise ResidentRoleConflictError(
                         requested=RoleRef(
                             role=role, model=record.model_id, bytes=charge

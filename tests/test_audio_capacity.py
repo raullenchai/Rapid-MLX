@@ -265,29 +265,51 @@ def test_overlong_audio_is_rejected_before_the_engine_allocates(tmp_path):
     assert excinfo.value.detail["error"]["code"] == "audio_too_long"
 
 
-def test_unreadable_container_is_charged_worst_case_not_refused(tmp_path):
-    """A format the metadata probe cannot parse must still be bounded.
+def test_unreadable_container_is_refused_not_charged_a_guess(tmp_path):
+    """No sound upper bound exists for bytes we cannot identify.
 
-    Refusing outright would reject containers the mlx-audio backend decodes
-    fine (it accepts more formats than libsndfile), turning a memory guard into
-    a compatibility regression. Charging the worst case the file size permits
-    keeps the bound sound without that cost.
+    A bitrate floor is an assumption about encoders; a fixed "worst plausible
+    layout" simultaneously under-charges anything longer or higher-rate than
+    assumed and grossly over-charges a one-second file. Both were tried; both
+    were wrong. Refusing is the only honest answer.
     """
 
+    from fastapi import HTTPException
+
     from vllm_mlx.routes.audio import _audio_request_bytes
-    from vllm_mlx.runtime.audio_capacity import (
-        transcription_buffer_bytes,
-        worst_case_duration_seconds,
-    )
 
     opaque = tmp_path / "mystery.bin"
     opaque.write_bytes(b"\x00" * 4096)
 
-    charged = _audio_request_bytes(str(opaque))
+    with pytest.raises(HTTPException) as excinfo:
+        _audio_request_bytes(str(opaque))
 
-    assert charged == transcription_buffer_bytes(worst_case_duration_seconds(4096))
-    # Non-zero: an unmeasurable file must not be free.
-    assert charged > 0
+    assert excinfo.value.status_code == 400
+    # Reuses the lane's established "not usable audio" code — corrupted and
+    # unidentifiable are the same failure from the caller's side.
+    assert excinfo.value.detail["error"]["code"] == "invalid_audio_file"
+
+
+def test_transcription_charge_scales_with_source_layout(tmp_path):
+    """A 48 kHz stereo source costs far more than its 16 kHz mono result."""
+
+    import wave
+
+    from vllm_mlx.routes.audio import _audio_request_bytes
+
+    def write_wav(path, rate, channels, seconds=2):
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(channels)
+            handle.setsampwidth(2)
+            handle.setframerate(rate)
+            handle.writeframes(b"\0\0" * rate * channels * seconds)
+        return str(path)
+
+    mono16 = write_wav(tmp_path / "mono16.wav", 16_000, 1)
+    stereo48 = write_wav(tmp_path / "stereo48.wav", 48_000, 2)
+
+    # Same duration, six times the source samples.
+    assert _audio_request_bytes(stereo48) > _audio_request_bytes(mono16) * 3
 
 
 def test_speech_input_is_length_bounded():

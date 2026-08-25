@@ -715,8 +715,12 @@ class TTSEngine:
         try:
             import mlx.core as mx
 
+            from ..runtime.audio_capacity import max_output_samples_for
+
             audio_chunks = []
             sample_rate = 24000  # Default for most models
+            generated_samples = 0
+            max_output_samples = max_output_samples_for(text, speed=speed)
 
             # Family-aware generate kwargs. Qwen3-TTS auto-detects the
             # language (``lang_code="auto"``) and accepts an ``instruct``
@@ -808,6 +812,25 @@ class TTSEngine:
                     else:
                         audio_np = np.array(audio_data, dtype=np.float32)
                     audio_chunks.append(audio_np)
+                    generated_samples += int(audio_np.size)
+
+                    # Hard stop on the accumulated waveform (#2305). The
+                    # residency budget reserves memory for this request from an
+                    # estimate of how much speech the text implies, but nothing
+                    # in the backend enforces that ratio: a decoder loop can run
+                    # away and emit far more audio than the input suggests
+                    # (voxcpm's registry entry documents exactly that). Without
+                    # a ceiling on the WORK, the reservation is a guess rather
+                    # than a bound, so stop consuming chunks once the request
+                    # has produced everything it was budgeted for.
+                    if generated_samples >= max_output_samples:
+                        logger.warning(
+                            "TTS generation for %s hit the %d-sample output "
+                            "ceiling; truncating.",
+                            self.model_name,
+                            max_output_samples,
+                        )
+                        break
 
             if not audio_chunks:
                 raise RuntimeError("No audio generated")

@@ -1225,37 +1225,56 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 def _audio_request_bytes(tmp_path: str) -> int:
     """Peak decode memory to charge this request, rejecting what exceeds limits.
 
-    Fails closed on MEMORY without failing closed on FORMAT — the distinction
-    matters, because those are different risks with different costs.
+    Fails closed. A memory guard that waves through what it cannot measure
+    does not guard anything, and there is no way to bound the decode of a
+    container we cannot identify.
 
     * **Metadata readable** (WAV/FLAC/OGG/Opus/... headers): enforce the
       absolute :data:`MAX_TRANSCRIPTION_SECONDS` limit and charge the decode
       sized from the file's OWN rate and channel count, which is what the
       backend actually materializes before resampling.
-    * **Metadata unreadable**: charge the maximum a request may hold at all.
-      Simply refusing would reject containers the mlx-audio backend decodes
-      perfectly well (it accepts more formats than libsndfile), turning a
-      memory guard into a compatibility regression.
+    * **Metadata unreadable**: refuse. There is no sound upper bound to derive
+      from opaque bytes — a bitrate floor is an assumption about encoders, and
+      a fixed "worst plausible layout" is simultaneously an under-estimate for
+      anything longer or higher-rate than assumed AND a gross over-charge for a
+      one-second file, which would reject valid requests under any normal
+      ceiling. The honest answer is that we cannot bound it, so we do not
+      pretend to.
 
-    Either way the returned charge is held against the ceiling for the life of
-    the request, so an unreadable-but-huge file is rejected by the budget
-    rather than silently decoded.
+    The refusal is narrow: ``soundfile`` reads every container libsndfile
+    supports, which covers WAV/FLAC/OGG/Opus/AIFF and more. What reaches this
+    branch is genuinely unidentifiable, and the error tells the caller which
+    formats to send.
     """
 
     from ..runtime.audio_capacity import (
         MAX_TRANSCRIPTION_SECONDS,
         transcription_buffer_bytes,
-        worst_case_duration_seconds,
     )
 
     info = _probe_audio_source(tmp_path)
     if info is None:
-        try:
-            size = os.path.getsize(tmp_path)
-        except OSError:
-            size = MAX_AUDIO_UPLOAD_SIZE
-        # Unknown layout: the sizing helper assumes the worst source layout.
-        return transcription_buffer_bytes(worst_case_duration_seconds(size))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        "Could not decode this file's audio properties. Either "
+                        "it is corrupted, or its container does not carry the "
+                        "duration, sample rate, and channel count needed to "
+                        "bound the memory the request would use. Send WAV, "
+                        "FLAC, OGG/Opus, or another standard container."
+                    ),
+                    "type": "invalid_request_error",
+                    # Reuse the established code for "this file is not usable
+                    # audio" rather than minting a second one: to a caller the
+                    # two are the same failure, and the alignment lane's error
+                    # classification already contracts on it.
+                    "code": "invalid_audio_file",
+                    "param": "file",
+                }
+            },
+        )
 
     duration, rate, channels = info
     if duration > MAX_TRANSCRIPTION_SECONDS:
@@ -1714,10 +1733,11 @@ async def admitting_audio_role(
     from ..runtime.audio_worker import LANE_ROLES
     from ..runtime.resident_models import ResidentRoleConflictError
 
+    role = LANE_ROLES[lane]
     capacity = resolve_audio_role_capacity(model_name)
     try:
         async with manager.admitting_role(
-            role=LANE_ROLES[lane],
+            role=role,
             lane=lane,
             model_id=model_name,
             reserved_bytes=capacity.reserved_bytes,
@@ -1793,6 +1813,12 @@ async def leasing_audio_role(lane: str, *, request_bytes: int = 0):
         yield
         return
     async with AsyncExitStack() as stack:
+        # Releases whatever this request's admission is still holding, however
+        # this block exits — including the paths that never reach the lease at
+        # all, so an abandoned request cannot leave the role charged forever.
+        await stack.enter_async_context(
+            manager.claiming_request_bytes(role, request_bytes)
+        )
         try:
             await stack.enter_async_context(
                 manager.lease_role(role, request_bytes=request_bytes)

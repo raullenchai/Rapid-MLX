@@ -537,18 +537,37 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
 
     operations: list[str] = []
 
+    # A real (if tiny) WAV, not a 4-byte "RIFF" stub: the route now sizes the
+    # decode from container metadata before admitting the request, so a file
+    # whose header cannot be parsed is refused rather than charged a guess.
+    def _tiny_wav() -> bytes:
+        import io as _io
+        import wave as _wave
+
+        buffer = _io.BytesIO()
+        with _wave.open(buffer, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16_000)
+            handle.writeframes(b"\0\0" * 16_000)
+        return buffer.getvalue()
+
     class _Upload:
         filename = "speech.wav"
-        size = 4
 
         def __init__(self) -> None:
+            self._payload = _tiny_wav()
             self._read = False
+
+        @property
+        def size(self) -> int:
+            return len(self._payload)
 
         async def read(self, _size: int = -1) -> bytes:
             if self._read:
                 return b""
             self._read = True
-            return b"RIFF"
+            return self._payload
 
     class _OldAligner:
         model_name = "old-aligner"

@@ -111,11 +111,6 @@ _SPEECH_CHARACTERS_PER_SECOND: float = 2.0
 #: than a per-model guess that is wrong for half of them.
 _TTS_NATIVE_SAMPLE_RATE: int = 44_100
 
-#: Source layout assumed when a request's container metadata is unreadable.
-#: 48 kHz stereo is the highest layout consumer recorders produce in practice,
-#: so sizing against it bounds the decode rather than under-charging it.
-_ASSUMED_SOURCE_RATE: int = 48_000
-
 #: Peak-to-result multiplier for the synthesis pipeline.
 #:
 #: The generated waveform is not the peak. ``TTSEngine.generate`` retains every
@@ -124,6 +119,14 @@ _ASSUMED_SOURCE_RATE: int = 48_000
 #: buffer (another 1x of float32-equivalent between them). 3.5x covers the
 #: overlap with margin.
 _TTS_PEAK_MULTIPLIER: float = 3.5
+
+#: Slack between the predicted duration and the hard generation ceiling.
+#:
+#: The prediction is deliberately conservative already; this makes truncation
+#: of legitimate speech effectively impossible while still bounding a runaway
+#: decoder. The reservation covers it because ``speech_buffer_bytes`` applies
+#: :data:`_TTS_PEAK_MULTIPLIER` (3.5x) on top of the same duration.
+_TTS_GENERATION_HEADROOM: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -318,8 +321,8 @@ def resolve_audio_role_capacity(model_id: str) -> AudioRoleCapacity:
 def transcription_buffer_bytes(
     duration_seconds: float,
     *,
-    source_rate: int = 0,
-    source_channels: int = 0,
+    source_rate: int,
+    source_channels: int,
 ) -> int:
     """Peak bytes one transcription/alignment request needs.
 
@@ -332,15 +335,15 @@ def transcription_buffer_bytes(
     Peak holds the source array, the resampled copy, and the decoder's windowed
     views at once, so the source term carries a multiplier too.
 
-    ``source_rate``/``source_channels`` default to the worst layout the request
-    could plausibly carry when the caller could not read them
-    (:data:`_ASSUMED_SOURCE_RATE` / stereo), keeping this an upper bound rather
-    than an optimistic guess.
+    ``source_rate`` and ``source_channels`` are REQUIRED rather than defaulted.
+    A default would silently substitute an assumed layout for a measured one,
+    and an assumption is not a bound: the caller must refuse a file it cannot
+    measure instead of charging it a plausible-looking number.
     """
 
     duration = max(0.0, duration_seconds)
-    rate = source_rate if source_rate > 0 else _ASSUMED_SOURCE_RATE
-    channels = source_channels if source_channels > 0 else 2
+    rate = max(1, source_rate)
+    channels = max(1, source_channels)
 
     # Decoded source: float64 is libsndfile's default read dtype.
     source = duration * rate * channels * 8
@@ -388,26 +391,23 @@ def speech_buffer_bytes(
     return int(native + converted)
 
 
-#: Longest audio an unreadable container is assumed to hold.
-#:
-#: Deriving this from a bitrate floor does NOT work. An earlier revision divided
-#: the file size by "6 kbps, the lowest any practical codec produces", but that
-#: is an assumption about encoders, not a bound: a lower-bitrate or highly
-#: compressible stream decodes to more audio than the division predicts, and the
-#: charge comes out too small — precisely the case the guard exists for.
-#:
-#: Since no sound upper bound is derivable from opaque bytes, an unreadable
-#: container is charged the maximum a request may hold at all
-#: (:data:`MAX_TRANSCRIPTION_SECONDS`). That is by construction an upper bound
-#: for anything the route would accept, and it keeps the guard closed on memory
-#: without rejecting formats the backend can decode but the probe cannot parse.
-def worst_case_duration_seconds(compressed_bytes: int) -> float:
-    """Longest audio ``compressed_bytes`` may be assumed to decode to.
+def max_output_samples_for(text: str, *, speed: float = 1.0) -> int:
+    """Hard ceiling on samples one synthesis request may accumulate.
 
-    ``compressed_bytes`` is accepted so callers need not special-case an
-    unreadable file, but it is deliberately NOT used to scale the result: see
-    the note above on why a bitrate floor is not a bound.
+    :func:`speech_buffer_bytes` predicts how much speech ``text`` implies, but
+    a prediction only bounds memory if the work is bounded too. Nothing in the
+    backends enforces the characters-per-second ratio: a decoder loop can run
+    away and emit far more audio than the input suggests (``voxcpm``'s registry
+    entry documents exactly that failure). ``TTSEngine.generate`` stops
+    consuming chunks at this ceiling, which turns the reservation into a real
+    bound.
+
+    Derived from the same duration model as the reservation, with headroom so
+    legitimate generation is never truncated: engines vary, and clipping real
+    speech is far worse than briefly holding a little more memory than
+    predicted.
     """
 
-    del compressed_bytes
-    return MAX_TRANSCRIPTION_SECONDS
+    seconds = max(0, len(text)) / _SPEECH_CHARACTERS_PER_SECOND
+    seconds /= max(0.25, float(speed))
+    return int(seconds * _TTS_NATIVE_SAMPLE_RATE * _TTS_GENERATION_HEADROOM)
