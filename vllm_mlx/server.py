@@ -1856,6 +1856,7 @@ def load_model(
 
     global \
         _engine, \
+        _model_alias, \
         _model_name, \
         _model_path, \
         _default_max_tokens, \
@@ -1864,23 +1865,49 @@ def load_model(
         _alias_recommended_sampling, \
         _generation_config_sampling
 
+    # ``load_model`` is also the engine-owned residency entry point; callers
+    # outside the CLI (including Desktop model replacement) can pass an alias
+    # that has not gone through ``cli.main``. Resolve that alias once, before
+    # config materialization, lane selection, and the loader consume it. This
+    # keeps those three decisions on the same checkpoint source instead of
+    # probing the alias spelling as though it were a Hub repository.
+    from .model_aliases import resolve_model, resolve_profile
+
+    requested_model_name = model_name
+    model_name = resolve_model(model_name)
+
+    # A direct alias in this request is authoritative. CLI startup reaches
+    # here with an already-canonical path, so only in that case may its saved
+    # alias be reused—and only when it still resolves to this same checkpoint.
+    # A prior resident model's alias must never lend its profile or registry
+    # identity to a replacement model.
+    effective_model_alias = (
+        requested_model_name if requested_model_name != model_name else None
+    )
+    if effective_model_alias is None and _model_alias is not None:
+        try:
+            if resolve_model(_model_alias) == model_name:
+                effective_model_alias = _model_alias
+        except Exception:  # stale prior identity; current request still owns load
+            pass
+
     _default_max_tokens = max_tokens
     _default_max_tokens_is_explicit = max_tokens_is_explicit
+    _model_alias = effective_model_alias
     _model_path = model_name
-    _model_name = served_model_name or model_name
+    _model_name = served_model_name or requested_model_name
     _tool_parser_instance = None
 
     # Populate the sampling overlays now that we know which model we're
     # serving. Both are best-effort — an alias without curated sampling
     # or a model missing generation_config.json simply contributes an
     # empty layer to the cascade in service/helpers.py.
-    from .model_aliases import resolve_profile
     from .utils.generation_config import load_generation_config_sampling
 
     _alias_recommended_sampling = None
     # resolve_profile handles both alias-name and HF-path lookups, so a
     # single call suffices regardless of which form load_model was passed.
-    _profile = resolve_profile(_model_alias or model_name)
+    _profile = resolve_profile(effective_model_alias or requested_model_name)
     if _profile is not None and _profile.recommended_sampling:
         _alias_recommended_sampling = dict(_profile.recommended_sampling)
 
@@ -2004,7 +2031,7 @@ def load_model(
         check_from_profile(
             model_name=model_name,
             profile=_profile,
-            alias=_model_alias,
+            alias=effective_model_alias,
         )
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
         logger.debug(f"mxfp4/moe guardrail probe failed (non-fatal): {_e}")
@@ -2213,8 +2240,8 @@ def load_model(
 
     # Register in multi-model registry
     aliases = set()
-    if _model_alias and _model_alias != _model_name:
-        aliases.add(_model_alias)
+    if effective_model_alias and effective_model_alias != _model_name:
+        aliases.add(effective_model_alias)
     entry = ModelEntry(
         engine=_engine,
         model_name=_model_name,
