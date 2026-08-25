@@ -27,7 +27,6 @@ import argparse
 from unittest.mock import patch
 
 import pytest
-
 from huggingface_hub import RepoFile, RepoFolder
 
 from vllm_mlx import cli
@@ -53,7 +52,9 @@ def _pull_capturing(**flags):
         return "/cache/snapshot"
 
     with (
-        patch("huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()),
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
+        ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False) as mirror,
         patch("huggingface_hub.snapshot_download", fake_snapshot),
     ):
@@ -82,6 +83,12 @@ def test_resolve_returns_none_without_selector():
     assert cli._resolve_variant_allow_patterns("X/Y", None, None) is None
 
 
+def test_resolve_rejects_both_selectors():
+    """--bits and --format pick the same single variant; both is ambiguous."""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        cli._resolve_variant_allow_patterns("X/Y", bits="4", fmt="gguf")
+
+
 def test_no_selector_still_consults_mirror():
     """Without --bits/--format the mirror-first behavior is unchanged."""
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
@@ -95,14 +102,18 @@ def test_no_selector_still_consults_mirror():
 
 def test_missing_variant_errors_with_available_folders(capsys):
     """--format gguf when the repo has no gguf/ fails loudly, listing folders."""
-    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="gguf")
+    args = argparse.Namespace(
+        model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format="gguf"
+    )
     with (
-        patch("huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()),
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
+        ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch.object(cli.sys, "exit", side_effect=SystemExit(1)),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            cli.pull_command(args)
+        cli.pull_command(args)
     out = capsys.readouterr().out
     assert "no 'gguf' variant" in out
     assert "4bit" in out  # lists an available folder

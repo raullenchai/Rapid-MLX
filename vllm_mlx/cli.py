@@ -6461,9 +6461,15 @@ def _resolve_variant_allow_patterns(
     listing, not a download) before touching any weights. The enumeration uses
     the same top-level ``list_repo_tree`` read the mirror/catalog already rely
     on; only folder names are inspected, never file bytes.
+
+    ``--bits`` and ``--format`` select the SAME dimension (a single variant
+    folder), so the CLI exposes them as a mutually exclusive group; this helper
+    rejects both being set as a defensive guard for programmatic callers.
     """
     if not bits and not fmt:
         return None
+    if bits and fmt:
+        raise ValueError("--bits and --format are mutually exclusive; pick one")
     from huggingface_hub import HfApi, RepoFolder
     from huggingface_hub.errors import RepositoryNotFoundError
 
@@ -6511,14 +6517,14 @@ def pull_command(args):
         shown = getattr(args, "_original_alias", repo_id)
         print(f"\n  Error: '{shown}' has no '{e.requested}' variant.")
         if e.available:
-            print(
-                "  Available variant folder(s): "
-                + ", ".join(e.available)
-                + "."
-            )
+            print("  Available variant folder(s): " + ", ".join(e.available) + ".")
         else:
-            print("  The repo exposes no variant folders — it is a single-variant repo.")
-        print("  Pick one with --bits <N> or --format <name>, or pull the repo without a selector.")
+            print(
+                "  The repo exposes no variant folders — it is a single-variant repo."
+            )
+        print(
+            "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector."
+        )
         sys.exit(1)
 
     # Reclaim scratch files stranded by earlier interrupted pulls of THIS repo
@@ -10828,17 +10834,21 @@ Examples:
     # top-level folders (e.g. LiquidAI/LFM2.5-2.6B-MLX holds 4bit/ 5bit/ 6bit/
     # 8bit/ mxfp4/...). Without selection, `pull <repo>` fetches ALL of them.
     # These flags let a constrained Mac fetch only the variant it can serve.
-    pull_parser.add_argument(
+    # They select the SAME dimension (one variant folder), so --bits and
+    # --format are mutually exclusive — passing both would be ambiguous about
+    # which single variant the caller wants.
+    _variant_group = pull_parser.add_mutually_exclusive_group()
+    _variant_group.add_argument(
         "--bits",
-        metavar="2|4|6|8",
+        metavar="N",
         help=(
             "Pull only the <N>bit variant of a multi-variant repo "
-            "(e.g. --bits 4 fetches only 4bit/)."
+            "(e.g. --bits 4 fetches only 4bit/; any N the repo ships works)."
         ),
     )
-    pull_parser.add_argument(
+    _variant_group.add_argument(
         "--format",
-        metavar="mlx|gguf|safetensors",
+        metavar="name",
         help=(
             "Pull only the named format variant of a multi-variant repo "
             "(e.g. --format mxfp4 or --format gguf, when the repo ships one)."
