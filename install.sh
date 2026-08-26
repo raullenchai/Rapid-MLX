@@ -202,6 +202,25 @@ installed_cached_aliases() {
         "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
 }
 
+refresh_starter_from_installed_cache() {
+    local cached_aliases
+    cached_aliases="$(installed_cached_aliases || true)"
+    RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "$cached_aliases")"
+}
+
+print_quick_start_commands() {
+    info "Quick start:"
+    echo ""
+    echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}"
+    echo ""
+    dim "Then open a second terminal:"
+    echo ""
+    echo "    rapid-mlx chat ${RECOMMENDED_MODEL} --port 8000    # built-in chat (terminal)"
+    echo "    rapid-mlx-chat                                    # web chat UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
+    echo "    ANTHROPIC_BASE_URL=http://localhost:8000 claude    # Claude Code (or: rapid-mlx launch claude-code)"
+    echo "    OPENAI_API_BASE=http://localhost:8000/v1 aider     # Aider"
+}
+
 # When sourced by the test harness we only want the definitions above, not the
 # installer itself. `return` succeeds only in a sourced context; the `|| exit 0`
 # keeps an accidental `RAPID_INSTALL_LIB=1 bash install.sh` from erroring out.
@@ -392,8 +411,7 @@ esac
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and
 # falls back to the RAM baseline; never scrape the human table or cache paths.
-CACHED_ALIASES="$(installed_cached_aliases || true)"
-RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "$CACHED_ALIASES")"
+refresh_starter_from_installed_cache
 
 # ── 6. Create symlinks ──────────────────────────────────────────────────────
 
@@ -443,16 +461,7 @@ printf "  │  Version: %-25s│\n" "$VERSION"
 printf "  │  RAM: %-29s│\n" "${RAM_GB} GB ($RAM_TIER)"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
-info "Quick start:"
-echo ""
-echo "    rapid-mlx serve ${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}"
-echo ""
-dim "Then open a second terminal:"
-echo ""
-echo "    rapid-mlx chat ${RECOMMENDED_MODEL} --port 8000    # built-in chat (terminal)"
-echo "    rapid-mlx-chat                                    # web chat UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
-echo "    ANTHROPIC_BASE_URL=http://localhost:8000 claude    # Claude Code (or: rapid-mlx launch claude-code)"
-echo "    OPENAI_API_BASE=http://localhost:8000/v1 aider     # Aider"
+print_quick_start_commands
 echo ""
 dim "Upgrade:    curl -fsSL https://rapidmlx.com/install.sh | bash"
 dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"

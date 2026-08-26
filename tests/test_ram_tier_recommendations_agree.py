@@ -46,6 +46,24 @@ def _select_installer_starter(ram_gb: int, cached: tuple[str, ...] = ()) -> str:
     return result.stdout.strip()
 
 
+def _installer_cached_order(ram_gb: int) -> list[str]:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'RAPID_INSTALL_LIB=1 source "$1"; starter_cached_order_for_ram "$2"',
+            "order",
+            str(INSTALL_SH),
+            str(ram_gb),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.splitlines()
+
+
 def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
     """``[(floor_gb, primary_alias, flags)]`` from the shared SSOT."""
     payload = json.loads(RECOMMENDATIONS.read_text())
@@ -94,12 +112,14 @@ def test_every_recommended_alias_exists():
 
     known = list_aliases()
     installer_aliases = set()
-    cached_candidates = {alias for _, alias, _ in _parse_app_tiers()}
     for ram in (8, 16, 18, 24, 32, 48, 64, 96):
         installer_aliases.add(_select_installer_starter(ram))
-        for cached in cached_candidates:
+        for cached in _installer_cached_order(ram):
             selected = _select_installer_starter(ram, (cached,))
             installer_aliases.add(selected)
+            assert cached in known, (
+                f"install.sh cached order for {ram} GB contains unknown alias {cached!r}"
+            )
     for alias in installer_aliases:
         assert alias in known, f"install.sh recommends unknown alias {alias!r}"
     for _, alias, _ in _parse_app_tiers():

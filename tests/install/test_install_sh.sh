@@ -226,13 +226,17 @@ check "structured cache reader returns only runnable mapped aliases" \
 check "multiple structured cached aliases feed the selector independently" \
     "$(select_starter_model 32 "$(installed_cached_aliases)")" \
     "qwen3.8-27b-4bit"
+RAM_GB=32 RECOMMENDED_MODEL="qwen3.5-4b-4bit" RECOMMENDED_FLAGS=""
+refresh_starter_from_installed_cache
+BANNER="$(print_quick_start_commands)"
+case "$BANNER" in
+    *"rapid-mlx serve qwen3.8-27b-4bit"*"rapid-mlx chat qwen3.8-27b-4bit --port 8000"*)
+        ok "post-install structured cache choice reaches both quick-start commands" ;;
+    *)
+        bad "post-install structured cache choice reaches both quick-start commands"
+        printf '        banner: %s\n' "$BANNER" ;;
+esac
 INSTALL_DIR="$OLD_INSTALL_DIR"
-
-if grep -Fq 'CACHED_ALIASES="$(installed_cached_aliases || true)"' "$INSTALL_SH"; then
-    ok "post-install banner selection consumes the structured cache query"
-else
-    bad "post-install banner selection consumes the structured cache query"
-fi
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
