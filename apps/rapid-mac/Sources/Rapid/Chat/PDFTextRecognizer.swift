@@ -203,11 +203,27 @@ enum PDFTextRecognizer {
     /// recognition would return nothing.
     private static func render(_ page: PDFPage) -> CGImage? {
         let bounds = page.bounds(for: .mediaBox)
-        let width = Int(bounds.width * renderScale)
-        let height = Int(bounds.height * renderScale)
+        let scaledWidth = bounds.width * renderScale
+        let scaledHeight = bounds.height * renderScale
+        let maxPixelCount = 64_000_000
+
         // A malformed page can report a degenerate or absurd box; CGContext
-        // would either fail or try to allocate it.
-        guard width > 0, height > 0, width * height <= 64_000_000 else { return nil }
+        // would either fail, trap during CGFloat-to-Int conversion, overflow
+        // the area calculation, or try to allocate it. Requiring each scaled
+        // dimension to fit within the total pixel budget makes the conversion
+        // representable before it happens.
+        guard scaledWidth.isFinite,
+              scaledHeight.isFinite,
+              scaledWidth >= 1,
+              scaledHeight >= 1,
+              scaledWidth <= CGFloat(maxPixelCount),
+              scaledHeight <= CGFloat(maxPixelCount) else {
+            return nil
+        }
+        let width = Int(scaledWidth)
+        let height = Int(scaledHeight)
+        let (pixelCount, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow, pixelCount <= maxPixelCount else { return nil }
 
         guard let context = CGContext(
             data: nil,

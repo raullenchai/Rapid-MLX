@@ -481,6 +481,25 @@ struct ChatFileAttachmentTests {
         #expect(whole.text.hasPrefix(String(bounded.text.prefix(100))))
     }
 
+    @Test("An extreme PDF media box is rejected without trapping")
+    func extremeMediaBoxIsRejected() {
+        let page = PDFPage()
+        page.setBounds(
+            CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            ),
+            for: .mediaBox
+        )
+
+        // The old renderer converted these PDF-controlled dimensions to Int
+        // before validating them, which trapped the process instead of
+        // treating the malformed page as unreadable.
+        #expect(PDFTextRecognizer.recognize(page: page).isEmpty)
+    }
+
     @Test("A budget of zero stops before any page is read")
     func zeroBudgetReadsNothing() throws {
         let url = try textPDF(pages: 3, charactersPerPage: 200)

@@ -215,6 +215,9 @@ final class DocumentContentCache: @unchecked Sendable {
     private var store: [String: Entry] = [:]
     private var order: [String] = []          // LRU: front = oldest
     private var totalBytes = 0
+    /// Last successful access for each hot entry, guarded by ``memoryLock``.
+    /// Disk modification dates carry the same timestamp for persisted entries.
+    private var lastAccessedAt: [String: Date] = [:]
     /// How many times each document has been removed, guarded by
     /// ``memoryLock``. A publish presents the generation it started with, so a
     /// removal that lands mid-extraction invalidates the result instead of
@@ -233,6 +236,7 @@ final class DocumentContentCache: @unchecked Sendable {
     private let diskDirectory: URL?
     private let maxDiskEntries: Int
     private let maxDiskBytes: Int
+    private let now: () -> Date
     /// How long an untouched extract is retained, in days.
     ///
     /// A USER-VISIBLE policy, not an implementation bound: past this window a
@@ -271,6 +275,7 @@ final class DocumentContentCache: @unchecked Sendable {
         self.maxDiskEntries = 64
         self.maxDiskBytes = 512 * 1024 * 1024
         self.diskTTL = TimeInterval(Self.retentionDays) * 24 * 60 * 60
+        self.now = { Date() }
         sweepDiskOnInitialization()
     }
 
@@ -283,7 +288,8 @@ final class DocumentContentCache: @unchecked Sendable {
         diskDirectory: URL?,
         maxDiskEntries: Int = 64,
         maxDiskBytes: Int = 512 * 1024 * 1024,
-        diskTTL: TimeInterval = TimeInterval(DocumentContentCache.retentionDays) * 24 * 60 * 60
+        diskTTL: TimeInterval = TimeInterval(DocumentContentCache.retentionDays) * 24 * 60 * 60,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.maxEntries = maxEntries
         self.maxBytes = maxBytes
@@ -291,6 +297,7 @@ final class DocumentContentCache: @unchecked Sendable {
         self.maxDiskEntries = maxDiskEntries
         self.maxDiskBytes = maxDiskBytes
         self.diskTTL = diskTTL
+        self.now = now
         sweepDiskOnInitialization()
     }
 
@@ -487,10 +494,21 @@ final class DocumentContentCache: @unchecked Sendable {
 
     func get(_ id: UUID) -> Entry? {
         let k = Self.key(for: id)
+        let accessDate = now()
+        let expiry = accessDate.addingTimeInterval(-diskTTL)
         memoryLock.lock()
         if let e = store[k] {
+            guard (lastAccessedAt[k] ?? .distantPast) >= expiry else {
+                memoryLock.unlock()
+                // Expiry is authoritative just like explicit deletion: cancel
+                // any producer and remove both plaintext tiers.
+                remove(id)
+                return nil
+            }
+            lastAccessedAt[k] = accessDate
             touch(k)
             memoryLock.unlock()
+            touchDiskEntry(k, at: accessDate)
             return e
         }
         // Taken before the disk read for the same reason a publish takes it
@@ -504,7 +522,7 @@ final class DocumentContentCache: @unchecked Sendable {
         // document attached in a PREVIOUS launch (or evicted from the hot
         // tier). Disk I/O deliberately happens without the memory lock so a
         // slow miss cannot block unrelated hot entries.
-        guard let e = loadFromDisk(k) else { return nil }
+        guard let e = loadFromDisk(k, at: accessDate) else { return nil }
 
         memoryLock.lock(); defer { memoryLock.unlock() }
         // A concurrent put may have installed a value while the disk read was
@@ -517,7 +535,7 @@ final class DocumentContentCache: @unchecked Sendable {
         // document the user has since deleted. Returning it is a stale read;
         // caching it would be a resurrection.
         guard (removalGeneration[k] ?? 0) == generationBefore else { return nil }
-        insertLocked(k, entry: e)
+        insertLocked(k, entry: e, accessedAt: accessDate)
         return e
     }
 
@@ -561,6 +579,7 @@ final class DocumentContentCache: @unchecked Sendable {
     @discardableResult
     func publish(_ id: UUID, entry: Entry, ifGenerationIs expected: UInt64) -> Bool {
         let k = Self.key(for: id)
+        let accessDate = now()
         memoryLock.lock()
         guard (removalGeneration[k] ?? 0) == expected else {
             // Removed while this extraction was running. Dropping the result is
@@ -568,7 +587,7 @@ final class DocumentContentCache: @unchecked Sendable {
             memoryLock.unlock()
             return false
         }
-        insertLocked(k, entry: entry)
+        insertLocked(k, entry: entry, accessedAt: accessDate)
         let shouldPersist = diskDirectory != nil
         memoryLock.unlock()
         guard shouldPersist else { return true }
@@ -587,7 +606,7 @@ final class DocumentContentCache: @unchecked Sendable {
         let stillValid = (removalGeneration[k] ?? 0) == expected
         memoryLock.unlock()
         guard stillValid else { return false }
-        writeToDiskLocked(k, entry: entry)
+        writeToDiskLocked(k, entry: entry, accessedAt: accessDate)
         return true
     }
 
@@ -623,6 +642,7 @@ final class DocumentContentCache: @unchecked Sendable {
             totalBytes -= old.text.utf8.count
             order.removeAll { $0 == k }
         }
+        lastAccessedAt.removeValue(forKey: k)
         memoryLock.unlock()
 
         cancelExtraction(id)
@@ -641,13 +661,14 @@ final class DocumentContentCache: @unchecked Sendable {
     }
 
     // MARK: - Memory tier (lock held by callers)
-    private func insertLocked(_ k: String, entry: Entry) {
+    private func insertLocked(_ k: String, entry: Entry, accessedAt: Date) {
         let cost = entry.text.utf8.count
         if let old = store[k] {
             totalBytes -= old.text.utf8.count
             order.removeAll { $0 == k }
         }
         store[k] = entry
+        lastAccessedAt[k] = accessedAt
         order.append(k)
         totalBytes += cost
         evictIfNeeded()
@@ -664,6 +685,7 @@ final class DocumentContentCache: @unchecked Sendable {
             if let e = store.removeValue(forKey: oldest) {
                 totalBytes -= e.text.utf8.count
             }
+            lastAccessedAt.removeValue(forKey: oldest)
         }
     }
 
@@ -681,7 +703,7 @@ final class DocumentContentCache: @unchecked Sendable {
         sweepDiskLocked(dir)
     }
 
-    private func loadFromDisk(_ key: String) -> Entry? {
+    private func loadFromDisk(_ key: String, at accessDate: Date) -> Entry? {
         guard let dir = diskDirectory else { return nil }
         diskLock.lock(); defer { diskLock.unlock() }
         let url = dir.appendingPathComponent(Self.diskFileName(for: key), isDirectory: false)
@@ -689,8 +711,12 @@ final class DocumentContentCache: @unchecked Sendable {
         // locally-modified entry can be arbitrarily large, and a loaded entry is
         // promoted into the memory tier. Anything over the disk cap is treated
         // as a miss and deleted so it isn't re-checked forever.
-        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-        guard let fileSize, fileSize <= maxDiskBytes else {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let expiry = accessDate.addingTimeInterval(-diskTTL)
+        guard let modified = values?.contentModificationDate,
+              modified >= expiry,
+              let fileSize = values?.fileSize,
+              fileSize <= maxDiskBytes else {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
@@ -703,16 +729,29 @@ final class DocumentContentCache: @unchecked Sendable {
         }
         // A successful disk hit is an access for disk-tier LRU purposes.
         try? FileManager.default.setAttributes(
-            [.modificationDate: Date(), .posixPermissions: 0o600],
+            [.modificationDate: accessDate, .posixPermissions: 0o600],
             ofItemAtPath: url.path
         )
         return entry
     }
 
+    /// Keep the persistent tier's sliding TTL aligned with a hot memory hit.
+    /// Failure is harmless: the memory entry remains usable for this launch,
+    /// while the next disk read will apply the persisted timestamp strictly.
+    private func touchDiskEntry(_ key: String, at accessDate: Date) {
+        guard let dir = diskDirectory else { return }
+        diskLock.lock(); defer { diskLock.unlock() }
+        let url = dir.appendingPathComponent(Self.diskFileName(for: key), isDirectory: false)
+        try? FileManager.default.setAttributes(
+            [.modificationDate: accessDate, .posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
     /// Write an entry to the persistent tier. ``diskLock`` MUST already be
     /// held — ``publish`` holds it across its final generation recheck so that
     /// a concurrent ``remove`` cannot slip between the check and this write.
-    private func writeToDiskLocked(_ key: String, entry: Entry) {
+    private func writeToDiskLocked(_ key: String, entry: Entry, accessedAt: Date) {
         guard let dir = diskDirectory else { return }
 
         let fm = FileManager.default
@@ -730,7 +769,10 @@ final class DocumentContentCache: @unchecked Sendable {
             return
         }
         do {
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try fm.setAttributes(
+                [.modificationDate: accessedAt, .posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
         } catch {
             // The write landed but could not be restricted. Discard it rather
             // than leave the user's document world-readable.
@@ -781,7 +823,7 @@ final class DocumentContentCache: @unchecked Sendable {
         }
         var files: [DiskFile] = []
         var totalDiskBytes = 0
-        let expiry = Date().addingTimeInterval(-diskTTL)
+        let expiry = now().addingTimeInterval(-diskTTL)
         for entry in entries {
             guard Self.isDiskCacheFileName(entry.lastPathComponent) else { continue }
             let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])

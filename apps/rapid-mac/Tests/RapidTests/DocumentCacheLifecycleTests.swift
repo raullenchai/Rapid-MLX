@@ -23,6 +23,14 @@ import Testing
 @MainActor
 @Suite("Document cache lifecycle")
 struct DocumentCacheLifecycleTests {
+    private final class TestClock: @unchecked Sendable {
+        var value: Date
+
+        init(_ value: Date) {
+            self.value = value
+        }
+    }
+
     /// A cache with its own temp directory, so the disk tier is genuinely
     /// exercised without touching the user's real Application Support tree.
     private func diskCache(
@@ -483,6 +491,48 @@ struct DocumentCacheLifecycleTests {
 
         let cache = diskCache(in: dir)
         #expect(cache.get(id)?.text == "this quarter's report")
+    }
+
+    @Test("A hot entry expires during a long-running cache session")
+    func hotEntryExpiresAfterInitialization() throws {
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = TestClock(Date(timeIntervalSince1970: 1_000_000))
+        let cache = DocumentContentCache(
+            diskDirectory: dir,
+            diskTTL: 60,
+            now: { clock.value }
+        )
+        let id = UUID()
+        cache.put(id, entry: .init(filename: "private.pdf", text: "sensitive text"))
+
+        clock.value.addTimeInterval(61)
+
+        #expect(cache.get(id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, id).path))
+    }
+
+    @Test("A disk entry that expires after initialization is deleted on read")
+    func diskEntryExpiresAfterInitialization() throws {
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = DocumentContentCache(
+            maxEntries: 1,
+            diskDirectory: dir,
+            diskTTL: 60
+        )
+        let expired = UUID()
+        cache.put(expired, entry: .init(filename: "old.pdf", text: "expired plaintext"))
+        // Force the target out of the hot tier without constructing a new
+        // cache, matching the long-running-app regression from review.
+        cache.put(UUID(), entry: .init(filename: "new.pdf", text: "new text"))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-61)],
+            ofItemAtPath: diskFile(dir, expired).path
+        )
+
+        #expect(cache.get(expired) == nil)
+        #expect(!FileManager.default.fileExists(atPath: diskFile(dir, expired).path))
     }
 
     // MARK: - Deletion vs. a publish already in flight
