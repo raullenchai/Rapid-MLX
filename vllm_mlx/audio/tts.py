@@ -15,7 +15,6 @@ import inspect
 import io
 import json
 import logging
-import os
 import threading
 import wave
 from collections.abc import Iterator
@@ -500,29 +499,7 @@ class UnsupportedAudioFormatError(Exception):
 
 
 class AudioGenerationUnboundedError(RuntimeError):
-    """This request's synthesis cannot be bounded before it allocates (#2305).
-
-    Raised for a backend that completes its whole decode before yielding — so
-    the post-hoc waveform clamp cannot help — when the request's memory
-    reservation cannot be translated into a generation limit the backend will
-    honour. Three ways that happens: no known samples-per-token ratio for the
-    family, a backend build that will not accept ``max_tokens``, or a
-    reservation too small to buy even one decoder step.
-
-    Failing closed here is the point. The alternatives were tried and are not
-    bounds: forwarding the backend's own default is a fixed token count with no
-    relation to what this request reserved (Chatterbox's 1000 tokens is ~40 s
-    of audio, against a 0.156 s reservation for one character at ``speed=4``),
-    and logging a warning before calling anyway just narrates the overrun. The
-    route turns this into a 507.
-
-    ``param`` names the field the caller could actually change, and is
-    deliberately NOT always ``input``. A stride that cannot be read or a build
-    without ``max_tokens`` is a property of the MODEL or the installed
-    mlx-audio — no edit to the text fixes it, so pointing at ``input`` sends
-    the caller in circles. Only the too-small-reservation case is theirs to
-    fix, and there the lever is ``speed`` (or a longer input).
-    """
+    """Synthesis cannot be bounded before a single-yield backend allocates."""
 
     def __init__(
         self, model_name: str, family: str, reason: str, *, param: str | None = None
@@ -549,14 +526,7 @@ class AudioOutput:
 
 
 def _audio_length(audio_data) -> int:
-    """Sample count of a backend result, without materializing it.
-
-    Every backend on this path emits a 1-D waveform, so the leading axis is the
-    sample count and slicing it is the same axis this measures. Returns ``-1``
-    when the length cannot be read cheaply — the caller then skips the pre-copy
-    clamp rather than paying a conversion just to measure, and the post-copy
-    check still bounds the run.
-    """
+    """Return a waveform's sample count without materializing it."""
 
     shape = getattr(audio_data, "shape", None)
     if shape:
@@ -568,22 +538,7 @@ def _audio_length(audio_data) -> int:
 
 
 def _to_float32(audio_data, mx) -> np.ndarray:
-    """Convert a backend waveform to float32 numpy without a Python list.
-
-    ``np.array(x.tolist())`` was costing ~8x the array's own bytes: a
-    ``list[float]`` boxes every sample as a PyFloat plus a pointer, and the
-    source array, the list and the result are all live at once. Measured at
-    32 MB peak for a 4 MB float32 waveform. That transient is invisible to the
-    residency reservation, which counts waveform copies (see
-    ``_TTS_PEAK_MULTIPLIER``) and not interpreter object overhead — so a
-    request that generated exactly to its ceiling could still blow past what
-    it reserved.
-
-    ``mx.array`` implements the buffer protocol, so numpy can read it directly
-    at 1x. bfloat16 is the one dtype numpy cannot describe (it raises on the
-    PEP 3118 format string); cast that on the MLX side first, which is still
-    one array-sized copy rather than a list.
-    """
+    """Convert directly to float32, casting MLX bfloat16 before numpy."""
 
     if isinstance(audio_data, mx.array):
         if audio_data.dtype == mx.bfloat16:
@@ -593,11 +548,7 @@ def _to_float32(audio_data, mx) -> np.ndarray:
 
 
 def _accepts_kwarg(func, name: str) -> bool:
-    """True when ``func`` would accept ``name=`` as a keyword argument.
-
-    A ``**kwargs`` catch-all counts: every mlx-audio ``generate`` declares one
-    and threads unknown keys through to the sampler.
-    """
+    """Return whether ``func`` accepts a named keyword or ``**kwargs``."""
 
     if func is None:
         return False
@@ -617,17 +568,7 @@ def _accepts_kwarg(func, name: str) -> bool:
 
 
 def _default_kwarg(func, *names: str) -> int | None:
-    """The positive int default ``func`` declares for the first of ``names``.
-
-    Used to floor a computed token budget against the backend's own safety
-    limit. Several names because that limit is not always on the parameter we
-    pass: Chatterbox declares ``max_tokens: int = None`` as an alias for
-    ``max_new_tokens: int = 1000``, so the real bound is on the alias and
-    reading only ``max_tokens`` would conclude there is no limit to respect.
-
-    ``None`` when no candidate declares a positive int default — a
-    ``**kwargs`` catch-all declares none at all.
-    """
+    """Return the first positive integer default among ``names``."""
 
     if func is None:
         return None
@@ -646,13 +587,7 @@ def _default_kwarg(func, *names: str) -> int | None:
 
 
 def _product(values) -> int | None:
-    """Product of a NON-EMPTY iterable of positive ints, else ``None``.
-
-    Emptiness must not collapse to the multiplicative identity: these values
-    are strides read out of a checkpoint, and a missing config would otherwise
-    report a stride of 1 — the smallest possible, hence the largest possible
-    token budget — exactly where the code is supposed to refuse.
-    """
+    """Return the product of non-empty positive values, otherwise ``None``."""
 
     try:
         items = [int(value) for value in values]
@@ -676,33 +611,7 @@ def _positive_int(value) -> int | None:
 
 
 def _measured_samples_per_token(model, family: str) -> int | None:
-    """Audio samples one decoder step produces, read off the LOADED model.
-
-    Measured per checkpoint, never tabulated. Every one of these strides is a
-    CONFIG value with a library default, and the routes accept any cached
-    ``<org>/<repo>`` — a checkpoint that overrides the default would be sized
-    against a constant that no longer describes it. Too small a constant yields
-    too large a token budget, and for these single-yield families the whole
-    waveform is allocated before anything comes back, so the reservation is
-    exceeded with nothing left to clamp.
-
-    Each expression mirrors what the backend itself computes:
-
-    * ``voxcpm`` — ``patch_size * AudioVAE.hop_length``, exactly the
-      ``patch_len`` its own ``_encode_prompt_audio`` derives.
-    * ``qwen3_tts`` — the speech tokenizer's ``decode_upsample_rate``, which it
-      multiplies token counts by to get sample counts.
-    * ``chatterbox`` — ``sample_rate / 25``: its ``S3TokenizerV2`` is the
-      ``speech_tokenizer_v2_25hz`` variant, i.e. 25 speech tokens per second.
-    * ``vibevoice`` — the acoustic tokenizer's ``decoder_ratios`` when the
-      checkpoint sets them, else its ``encoder_ratios`` (the decoder mirrors
-      the encoder when unset, which is that field's documented default).
-    * ``indextts`` — its BigVGAN ``upsample_rates``, the hop length each GPT
-      latent expands to.
-
-    ``None`` when the value cannot be read, which for a single-yield family
-    means the request is refused rather than bounded by a guess.
-    """
+    """Read samples per decoder step from a loaded checkpoint."""
 
     args = getattr(model, "args", None)
     config = getattr(model, "config", None)
@@ -741,44 +650,20 @@ def _measured_samples_per_token(model, family: str) -> int | None:
     return None
 
 
-#: Speech tokens per second for Chatterbox's ``speech_tokenizer_v2_25hz``.
-#:
-#: Named in the tokenizer variant string the model hardcodes, so unlike the
-#: other families' strides this one is not a config field to read back.
+# Chatterbox hardcodes the speech_tokenizer_v2_25hz tokenizer.
 _CHATTERBOX_TOKEN_HZ = 25
 
-#: Chatterbox's vocoder rate (``S3GEN_SR``), used only when a cached config
-#: omits ``sample_rate``; a loaded model always reports its own.
 _CHATTERBOX_VOCODER_RATE = 24_000
 
 
-#: Families whose ``generate`` decodes everything before its single ``yield``.
-#:
-#: For these the per-chunk clamp is not a memory bound at all — it runs after
-#: the allocation it is meant to prevent. Every one of them must therefore
-#: reach the backend with a ``max_tokens`` budget, and is refused when one
-#: cannot be derived.
+# These families allocate the complete decode before their single yield.
 _SINGLE_YIELD_FAMILIES: frozenset[str] = frozenset(
     {"voxcpm", "qwen3_tts", "chatterbox", "indextts", "vibevoice"}
 )
 
 
 def _cached_samples_per_token(model_name: str, family: str) -> int | None:
-    """Samples per decoder step read from the CACHED config, before loading.
-
-    Same strides as :func:`_measured_samples_per_token`, sourced from the
-    checkpoint's ``config.json`` on disk instead of a materialised model. This
-    is what lets the boundability decision happen before the weights are read
-    (#2305): otherwise a one-character ``speed=4`` request would pull several
-    GiB, then 507, and leave a model that cannot serve it resident until its
-    TTL expires.
-
-    ``None`` means "could not be determined from the cache" — including when
-    nothing is cached yet. Callers must treat that as *unknown*, not as a
-    refusal: the load path re-checks against the real model, which is
-    authoritative. A pre-check that rejected on a cache miss would refuse every
-    cold request.
-    """
+    """Read samples per decoder step from cached checkpoint config."""
 
     config = _cached_config(
         model_name,
@@ -814,27 +699,15 @@ def _cached_samples_per_token(model_name: str, family: str) -> int | None:
 
 
 def _cached_config(model_name: str, relative_path: str = "config.json") -> dict | None:
-    """A JSON config from the snapshot the loader would open, or ``None``.
-
-    Resolves through ``refs/main`` exactly as ``snapshot_download`` does, so a
-    stale sibling snapshot cannot describe weights other than the ones about to
-    be read. Never raises: this feeds a pre-check whose failure mode is
-    "unknown", and the authoritative check still runs after the load.
-    """
+    """Read JSON from the cached snapshot selected by ``refs/main``."""
 
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
+        from ..runtime.audio_capacity import _cached_snapshot_path
 
-        from ..runtime.audio_capacity import _resolved_revision
-
-        repo_root = os.path.join(
-            HF_HUB_CACHE, f"models--{model_name.replace('/', '--')}"
-        )
-        sha = _resolved_revision(repo_root)
-        if sha is None:
+        snapshot = _cached_snapshot_path(model_name)
+        if snapshot is None:
             return None
-        path = os.path.join(repo_root, "snapshots", sha, relative_path)
-        with open(path) as handle:
+        with open(Path(snapshot, relative_path)) as handle:
             config = json.load(handle)
         return config if isinstance(config, dict) else None
     except Exception:
@@ -862,19 +735,7 @@ def _cached_sample_rate(model_name: str, family: str) -> int | None:
 def precheck_generation_bounds(
     model_name: str, text: str, *, speed: float = 1.0
 ) -> None:
-    """Refuse an unboundable synthesis request BEFORE its weights are loaded.
-
-    #2305 requires the unsafe combination to be rejected ahead of the load, not
-    after it. Without this a one-character ``speed=4`` VoxCPM request pulls
-    several GiB, discovers its reservation buys less than one decoder step,
-    507s — and leaves the model it cannot serve resident until the idle TTL.
-
-    Deliberately conservative: it raises ONLY when the cached config proves the
-    request cannot be served. A model that is not cached, or whose stride is
-    unreadable here, passes — :meth:`TTSEngine._token_budget_for` re-checks
-    against the loaded model and is authoritative. Rejecting on a cache miss
-    would refuse every cold start.
-    """
+    """Reject a provably unboundable request before loading its weights."""
 
     from ..runtime.audio_capacity import max_output_seconds_for
 
@@ -1043,36 +904,7 @@ class TTSEngine:
             ) from e
 
     def _token_budget_for(self, max_output_seconds: float) -> int | None:
-        """``max_tokens`` that keeps generation inside the duration ceiling.
-
-        Returns ``None`` only for families that stream their output — those are
-        bounded by the per-chunk clamp in :meth:`generate`. Every single-yield
-        family MUST get a number here, because for them the clamp runs after
-        the allocation it is meant to prevent.
-
-        Never LOOSER than the backend's own default. That default is an
-        existing safety limit, and a budget derived from the request can be far
-        larger: 20k characters at ``speed=0.25`` works out to ~312k VoxCPM
-        tokens against a default of 4096. Raising it would turn a bound the
-        backend already enforced into a two-orders-of-magnitude larger one, and
-        the extra is not free — VoxCPM accumulates ``pred_feat_seq`` and KV
-        cache across the loop, neither of which the waveform's 3.5x reservation
-        covers. So this only ever tightens: ``min(computed, default)``.
-
-        Rounds DOWN. The reservation covers exactly ``max_output_seconds``, so
-        rounding up would let generation overshoot the ledger by up to one
-        token even though the returned waveform is sliced back.
-
-        Raises :class:`AudioGenerationUnboundedError` when a single-yield
-        backend cannot be held to the request's budget. That used to degrade to
-        something weaker: the backend's bare default (a fixed token count with
-        no relation to what this request reserved — Chatterbox's 1000 tokens is
-        ~40 s of audio against a 0.156 s reservation), or a warning followed by
-        the unsafe call. Neither is a bound, and the whole point of #2305 is
-        that the decision precedes the allocation. The error carries a
-        ``param`` naming what the caller could actually change, which is not
-        always the input — see :class:`AudioGenerationUnboundedError`.
-        """
+        """Return a non-loosening token ceiling for backend generation."""
 
         generate = getattr(self.model, "generate", None)
         single_yield = self._model_family in _SINGLE_YIELD_FAMILIES

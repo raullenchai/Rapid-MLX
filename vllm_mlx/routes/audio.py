@@ -1223,29 +1223,7 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 
 
 def _audio_request_bytes(tmp_path: str) -> int:
-    """Peak decode memory to charge this request, rejecting what exceeds limits.
-
-    Fails closed. A memory guard that waves through what it cannot measure
-    does not guard anything, and there is no way to bound the decode of a
-    container we cannot identify.
-
-    * **Metadata readable** (WAV/FLAC/OGG/Opus/... headers): enforce the
-      absolute :data:`MAX_TRANSCRIPTION_SECONDS` limit and charge the decode
-      sized from the file's OWN rate and channel count, which is what the
-      backend actually materializes before resampling.
-    * **Metadata unreadable**: refuse. There is no sound upper bound to derive
-      from opaque bytes — a bitrate floor is an assumption about encoders, and
-      a fixed "worst plausible layout" is simultaneously an under-estimate for
-      anything longer or higher-rate than assumed AND a gross over-charge for a
-      one-second file, which would reject valid requests under any normal
-      ceiling. The honest answer is that we cannot bound it, so we do not
-      pretend to.
-
-    The refusal is narrow: ``soundfile`` reads every container libsndfile
-    supports, which covers WAV/FLAC/OGG/Opus/AIFF and more. What reaches this
-    branch is genuinely unidentifiable, and the error tells the caller which
-    formats to send.
-    """
+    """Return the measured peak decode charge or reject unbounded input."""
 
     from ..runtime.audio_capacity import (
         MAX_TRANSCRIPTION_SECONDS,
@@ -1302,17 +1280,7 @@ def _audio_request_bytes(tmp_path: str) -> int:
 def _probe_audio_source(
     source: str | os.PathLike[str] | io.BytesIO,
 ) -> tuple[float, int, int] | None:
-    """Return ``(duration, sample_rate, channels)`` from container metadata.
-
-    Metadata only — never decodes. The rate and channel count matter as much as
-    the duration: the backend materializes the file at its OWN layout before
-    resampling, so a 48 kHz stereo source costs several times what its
-    eventual 16 kHz mono form would suggest.
-
-    ``soundfile`` covers WAV/FLAC/OGG/Opus and everything else libsndfile
-    knows; ``wave`` is tried first because it is stdlib and needs no optional
-    dependency for the common case.
-    """
+    """Probe ``(duration, sample_rate, channels)`` without decoding samples."""
 
     def rewind() -> None:
         seek = getattr(source, "seek", None)
@@ -1686,17 +1654,6 @@ def _get_music_lock() -> _CrossLoopAsyncLock:
 
 # ---------------------------------------------------------------------------
 # Shared residency admission for audio roles (#2305).
-#
-# Every audio engine load in this module goes through
-# :func:`admitting_audio_role` so speech input and speech output are budgeted
-# against the same process-wide ceiling as the conversation model, instead of
-# silently adding gigabytes to a process already at its limit.
-#
-# The manager may be absent — audio-only servers started without the residency
-# control plane, and most of this module's unit tests. Admission then degrades
-# to a no-op rather than failing the request: this is a budget, and a server
-# with no configured budget has nothing to enforce.
-# ---------------------------------------------------------------------------
 
 
 def _residency_manager():
@@ -1711,13 +1668,7 @@ def _residency_manager():
 
 
 def audio_role_capacity_error(exc) -> HTTPException:
-    """Convert a typed residency conflict into the audio 507 envelope.
-
-    The body is the manager's own structured payload so every surface — the
-    ``/v1/models/load`` control plane and all three audio routes — reports a
-    conflict with identical shape. #2306 renders these fields directly; the UI
-    must never re-derive capacity numbers of its own.
-    """
+    """Convert a typed residency conflict into the shared 507 envelope."""
 
     return HTTPException(status_code=507, detail=exc.envelope())
 
@@ -1726,19 +1677,7 @@ def audio_role_capacity_error(exc) -> HTTPException:
 async def admitting_audio_role(
     lane: str, model_name: str, *, pending_request_bytes: int = 0
 ):
-    """Budget an audio engine load before its weights are read.
-
-    Yields a :class:`_LaneEngineHandle`. The caller loads inside the body and
-    calls ``publish(engine)`` as soon as it has one; the releaser is already
-    registered with the ledger by then, so a cancellation delivered after the
-    load completes still retires the engine instead of leaking it.
-
-    ``pending_request_bytes`` is the work the caller is about to do once the
-    engine is up. Including it here is what makes "before weight loading"
-    literally true: otherwise a request whose model fits but whose
-    model+buffer does not would load gigabytes of weights and only then be
-    rejected.
-    """
+    """Reserve a model and its first request before loading weights."""
 
     handle = _LaneEngineHandle(lane)
     manager = _residency_manager()
@@ -1762,14 +1701,7 @@ async def admitting_audio_role(
             weight_bytes=capacity.weight_bytes,
             pending_request_bytes=pending_request_bytes,
         ) as record:
-            # Registered BEFORE the load so rollback can always reach the
-            # engine; see _LaneEngineHandle for why "after await load()" is
-            # too late.
             record.unload = handle.release
-            # A request that finds this engine already cached never re-enters
-            # ``admitting_role``, so it owns the lane while holding no
-            # residency lease. Let the ledger see that ownership, or an idle
-            # sweep can unload weights out from under a live request.
             record.can_release = lambda: not _LANE_LOCKS[lane].held
             yield handle
     except ResidentRoleConflictError as exc:
@@ -1779,12 +1711,7 @@ async def admitting_audio_role(
 
 
 async def release_audio_role(lane: str) -> None:
-    """Drop a lane's residency reservation without unloading through it.
-
-    Used where this module retires an engine itself (lane eviction, shutdown):
-    the caller has already run the engine's own ``unload`` on the MLX worker,
-    so the ledger only has to stop charging for it.
-    """
+    """Drop a lane's reservation after its engine was retired elsewhere."""
 
     manager = _residency_manager()
     if manager is None:
@@ -1802,21 +1729,7 @@ async def release_audio_role(lane: str) -> None:
 
 @asynccontextmanager
 async def leasing_audio_role(lane: str, *, request_bytes: int = 0):
-    """Hold a lane's role against idle eviction while a request runs.
-
-    Complements the ``can_release`` veto: the veto covers the window before a
-    request reaches its lease, this covers the inference itself, and both are
-    checked under the manager lock.
-
-    ``request_bytes`` charges this request's peak working set against the same
-    ceiling for as long as it runs, so a role sitting near the limit cannot
-    still allocate gigabytes of waveform on top of its reservation. A request
-    that does not fit is rejected here, before the buffers are allocated.
-
-    Degrades to a no-op whenever the role is not tracked (no residency
-    manager, or the engine was cached before this budget existed) — a missing
-    lease must not fail a request that would otherwise succeed.
-    """
+    """Lease a lane and charge its request buffers while work runs."""
 
     manager = _residency_manager()
     if manager is None:
@@ -1830,9 +1743,6 @@ async def leasing_audio_role(lane: str, *, request_bytes: int = 0):
         yield
         return
     async with AsyncExitStack() as stack:
-        # Releases whatever this request's admission is still holding, however
-        # this block exits — including the paths that never reach the lease at
-        # all, so an abandoned request cannot leave the role charged forever.
         await stack.enter_async_context(
             manager.claiming_request_bytes(role, request_bytes)
         )
@@ -1851,22 +1761,7 @@ async def leasing_audio_role(lane: str, *, request_bytes: int = 0):
 
 
 class _LaneEngineHandle:
-    """The single owner of one audio lane's engine, for the residency ledger.
-
-    Registered with :meth:`ResidentModelManager.admitting_role` BEFORE the load
-    begins, because cancellation is delivered only after the in-flight load
-    completes — a releaser assigned after ``await load()`` is never reached, and
-    the ledger would roll back while the engine stayed loaded (#2305 follow-up).
-    ``publish`` therefore runs once the engine exists, and until it does the
-    releaser is a safe no-op.
-
-    It is also the ONLY place a lane's engine is retired. Callers that used to
-    unload an engine and then drop its ledger entry ran the backend's
-    ``unload`` twice; the current backends happen to be idempotent, but the
-    lane telemetry recorded two unload operations for one engine and a
-    non-idempotent backend would misbehave. Everything now goes through
-    :meth:`release`, which unloads at most once.
-    """
+    """Own and release one lane engine at most once."""
 
     def __init__(self, lane: str) -> None:
         self.lane = lane
@@ -1874,15 +1769,7 @@ class _LaneEngineHandle:
         self._released = False
 
     def publish(self, engine: object) -> None:
-        """Take ownership of ``engine``, BEFORE its weights are loaded.
-
-        Ownership must start at construction, not at load completion. An
-        interrupted load still allocated weights, and cancellation is delivered
-        only once that load returns — so publishing afterwards leaves the
-        engine owned by nobody and the lane stuck reporting ``resident``.
-        Releasing an engine whose load never finished is safe: ``unload`` is
-        best-effort and the ledger logs rather than propagates its failure.
-        """
+        """Take ownership before starting the engine's load."""
 
         self.engine = engine
 
@@ -1911,11 +1798,7 @@ class _LaneEngineHandle:
 
 
 def _clear_lane_engine(lane: str, engine) -> None:
-    """Drop ``engine`` from its lane cache if it is still the current one.
-
-    Identity-checked because an idle-TTL eviction races a request that already
-    replaced the lane; the loser must not clear the winner's engine.
-    """
+    """Identity-check and remove an engine from its lane cache."""
 
     global _stt_engine, _aligner_engine, _tts_engine
 
@@ -2096,17 +1979,7 @@ async def _evict_other_lane(keep: str) -> None:
 
 
 async def _ensure_aligner_engine(model_name: str, *, request_bytes: int = 0) -> None:
-    """Admit and load the forced-aligner engine for ``model_name``.
-
-    Split out of :func:`_align_blocking` for #2305: residency admission is
-    ``async`` (it shares the manager's asyncio lock with chat model loads),
-    and the alignment pipeline ran entirely on a worker thread. Loading here
-    and aligning there keeps one budget for the process without giving the
-    worker thread a second, unsynchronised view of it.
-
-    The caller holds :data:`_stt_lane_lock` across both halves, so no request
-    can slip in between the load and the align that consumes it.
-    """
+    """Admit and load a forced aligner while the caller owns the STT lane."""
 
     global _aligner_engine
 
@@ -3052,17 +2925,7 @@ def _is_clone_capable_model(model_name: str) -> bool:
 
 
 async def _ensure_tts_engine(model_name: str, *, request_bytes: int = 0) -> None:
-    """Admit and load the speech-output engine for ``model_name``.
-
-    Split out of :func:`_generate_speech_blocking` for #2305. That function is
-    synchronous and runs on a worker thread, so it cannot await the residency
-    manager's lock; leaving the load there would mean speech output allocated
-    multi-GB weights with no admission decision at all. Synthesis stays on the
-    worker thread — only the lifecycle decision moves onto the loop.
-
-    The caller holds :data:`_tts_lane_lock` across both halves, so no request
-    can replace the engine between this load and the synthesis using it.
-    """
+    """Admit and load TTS while the caller owns the TTS lane."""
 
     global _tts_engine
 

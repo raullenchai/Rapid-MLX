@@ -48,13 +48,7 @@ class RoleRef:
 
 @dataclass(frozen=True)
 class RoleConflict:
-    """One resident role standing between a request and its admission.
-
-    ``evictable`` is the actionable bit: a caller (and, in #2306, the desktop)
-    must be able to tell "stop speech output and retry" apart from "this is
-    your conversation model and this control plane will never take it away
-    behind your back".
-    """
+    """A budget holder blocking admission of another role."""
 
     role: str
     model: str
@@ -73,14 +67,7 @@ class RoleConflict:
 
 
 class ResidentRoleConflictError(ResidentModelCapacityError):
-    """An auxiliary role cannot be admitted alongside the resident roles.
-
-    Subclasses :class:`ResidentModelCapacityError` so existing 507 handling
-    keeps working, but carries the structured detail #2305 requires: which
-    roles are in the way, how much each holds, and which of them a caller
-    could actually give up. Presentation of those choices is #2306's job;
-    this type only has to make the choice *representable*.
-    """
+    """Typed auxiliary-role conflict rendered as an HTTP 507 by callers."""
 
     def __init__(
         self,
@@ -305,10 +292,7 @@ Loader = Callable[..., Awaitable[ModelEntry]]
 PrimaryChanged = Callable[[ModelEntry], None]
 
 
-#: Lifecycle role of a resident model, as distinct from its request modality.
-#: ``_modality`` answers "what can this engine do"; a role answers "what is it
-#: doing for the user right now", which is what an admission decision and the
-#: conflict report are actually about.
+# Lifecycle roles used by admission and telemetry.
 ROLE_CONVERSATION = "conversation"
 ROLE_VISION = "vision"
 ROLE_IMAGE_GEN = "image-gen"
@@ -327,20 +311,7 @@ _MODALITY_ROLES = {
 
 @dataclass
 class AuxiliaryRoleRecord:
-    """Budget and lifecycle state for one audio role held outside the registry.
-
-    Audio engines are deliberately NOT ``ModelEntry`` rows: putting them in the
-    :class:`ModelRegistry` would publish them through ``/v1/models`` and make
-    them routable for chat completions, which they cannot serve. They are
-    instead a parallel ledger inside the same manager, guarded by the same lock
-    and summed into the same :meth:`ResidentModelManager._accounted_usage`, so
-    "one budget for the process" stays literally true.
-
-    ``reserved_bytes`` comes from :mod:`vllm_mlx.runtime.audio_capacity` and is
-    superseded by ``measured_bytes`` once the load's process-footprint delta
-    exceeds it — same rule the model rows use, for the same reason (a lazily
-    constructed engine can fault its weights in well after ``load`` returns).
-    """
+    """Budget and lifecycle state for an audio role outside ModelRegistry."""
 
     role: str
     lane: str
@@ -354,28 +325,8 @@ class AuxiliaryRoleRecord:
     loaded_at: float = 0.0
     last_used_at: float = 0.0
     unload: Callable[[], object] | None = None
-    #: Peak working-set bytes charged by the requests currently in flight on
-    #: this role. Separate from ``reserved_bytes`` because it is transient: it
-    #: rises and falls per request while the weight reservation stays put.
     request_bytes: int = 0
-    #: Charge held on behalf of the request that triggered this load, from
-    #: admission until that request takes its lease.
-    #:
-    #: Without it the joint admission check would be advisory only: the
-    #: headroom it verified is not held during the (slow) load, so another
-    #: role can take it, and the post-load overshoot check would not see it
-    #: either. The pending charge is transferred into ``request_bytes`` by the
-    #: matching lease rather than re-requested, so the memory is continuously
-    #: reserved from the decision to the work.
     pending_request_bytes: int = 0
-    #: Owner-supplied veto on release, checked under the manager lock.
-    #:
-    #: ``active_requests`` alone is not sufficient. A request that finds its
-    #: engine already cached does not hold a lease yet when it re-enters the
-    #: manager, so between its cache check and ``lease_role`` an idle sweep
-    #: could unload the very weights it is about to use. The audio routes
-    #: report their lane lock here: a held lane lock means a request owns that
-    #: lane, whether or not it has reached its lease.
     can_release: Callable[[], bool] | None = None
 
     @property
@@ -383,27 +334,16 @@ class AuxiliaryRoleRecord:
         if self.active_requests:
             return False
         if self.pending_request_bytes:
-            # A request has been admitted against this role and is about to use
-            # it; it just has not reached its lease yet. Treating that as idle
-            # would let a competing role evict the engine out from under a
-            # request the ledger already approved.
             return False
         if self.can_release is None:
             return True
         try:
             return bool(self.can_release())
         except Exception:
-            # An owner that cannot answer is treated as busy: overcharging the
-            # budget for one TTL cycle is recoverable, unloading weights out
-            # from under a live request is not.
             return False
 
     @property
     def charged_bytes(self) -> int:
-        # In-flight request buffers are additive to the weights: both are
-        # resident at the same time. ``pending_request_bytes`` covers the
-        # window between a joint admission and the lease that consumes it, so
-        # the verified headroom is actually held rather than merely checked.
         return (
             max(self.reserved_bytes, self.measured_bytes)
             + self.request_bytes
@@ -1180,12 +1120,7 @@ class ResidentModelManager:
     # ------------------------------------------------------------------
 
     def _role_conflicts(self, exclude_role: str) -> list[RoleConflict]:
-        """Describe everything holding budget, and whether it can be given up.
-
-        Ordered conversation-first because that is the role a caller is most
-        likely to be surprised by, and because #2306 renders this list
-        verbatim. ``reason`` is a stable machine token, not prose.
-        """
+        """Describe budget holders in stable conversation-first order."""
 
         conflicts: list[RoleConflict] = []
         for record in sorted(self._records.values(), key=lambda item: item.loaded_at):
@@ -1207,9 +1142,6 @@ class ResidentModelManager:
                     role=_entry_role(record.entry),
                     model=record.model_id,
                     bytes=max(record.estimated_bytes, record.measured_bytes),
-                    # Auxiliary admission never evicts registry-backed models:
-                    # pressing the microphone button is not consent to unload
-                    # the model answering the conversation (#2300 / #2305).
                     evictable=False,
                     reason=reason,
                 )
@@ -1241,29 +1173,11 @@ class ResidentModelManager:
         *,
         request_bytes: int = 0,
     ) -> None:
-        """Make room for ``requested`` or raise a conflict naming the blockers.
-
-        Only other auxiliary roles are eligible for reclamation. Model rows are
-        reported as conflicts rather than evicted: #2305's non-goals forbid
-        silent eviction of the active conversation model, and #2306 owns the
-        decision of what to offer the user instead.
-
-        ``request_bytes`` is the portion of ``requested`` that is this
-        request's working set rather than the model's weights. It only affects
-        how a rejection is REPORTED: when the weights alone would have fitted,
-        the actionable advice is "send a shorter request", not "this model does
-        not fit" — and the caller must get the same answer whether the engine
-        happened to be cold or already resident.
-        """
+        """Reclaim idle auxiliary roles or raise a typed conflict."""
 
         if self.memory_limit_bytes <= 0:
             return
         if requested.bytes <= 0:
-            # An unmeasurable role under an enforced ceiling. Admitting it
-            # would skip the loop below entirely and load unknown-sized weights
-            # into a process that may already be full, which is exactly what
-            # #2305 forbids. Reject with the same typed conflict so the caller
-            # (and #2306) can explain it — usually "pull the model first".
             raise ResidentRoleConflictError(
                 requested=requested,
                 conflicts=self._role_conflicts(exclude_role),
@@ -1273,9 +1187,6 @@ class ResidentModelManager:
             )
         weights_only = max(0, requested.bytes - max(0, int(request_bytes)))
         while self._accounted_usage() + requested.bytes > self.memory_limit_bytes:
-            # ``require_idle`` re-checks after the await, and a role a request
-            # claimed meanwhile drops out of the next ``_idle_auxiliary_roles``
-            # call, so the loop always converges on either room or a conflict.
             reclaimed = False
             for candidate in self._idle_auxiliary_roles():
                 if candidate.role == exclude_role:
@@ -1287,11 +1198,6 @@ class ResidentModelManager:
                     break
             if not reclaimed:
                 usage = self._accounted_usage()
-                # If the weights alone would have fitted, the request buffer is
-                # what tipped it over — report the same code the warm path
-                # returns for that condition, so identical requests do not get
-                # different diagnoses depending on whether the engine happened
-                # to be loaded already.
                 blamed_on_request = (
                     request_bytes > 0
                     and usage + weights_only <= self.memory_limit_bytes
@@ -1324,37 +1230,7 @@ class ResidentModelManager:
         weight_bytes: int | None = None,
         pending_request_bytes: int = 0,
     ):
-        """Reserve budget for an audio role for the duration of its load.
-
-        The admission decision completes BEFORE the body runs, so a rejected
-        combination never reaches the weight loader — the caller's loading code
-        simply does not execute. The lock is released across the body because
-        loading is slow and must not block ``/v1/models/residency`` or a
-        concurrent chat load; the reservation stays visible in
-        ``_accounted_usage`` throughout, so releasing the lock does not release
-        the budget.
-
-        ``pending_request_bytes`` folds the work the caller is about to do into
-        that same decision. Without it the check answers the wrong question:
-        "do the weights fit", when the caller will immediately also need its
-        request buffer. A combination where the model fits but model+request
-        does not would then load and retain gigabytes of weights only to be
-        rejected afterwards — still a load before an admission failure, which
-        is exactly what #2305 forbids.
-
-        The yielded record must have ``unload`` set by the caller BEFORE it
-        starts loading, not after. Cancellation is delivered once the in-flight
-        load finishes, so a callback assigned on the line after ``await
-        load()`` is never reached: the ledger would roll back while the engine
-        stayed loaded and unreleased. Assigning it up front means rollback can
-        always reach the engine, and a callback that runs before the engine
-        exists must simply tolerate that (see ``_lane_unloader``).
-
-        Re-admitting a role that is already resident with a different model
-        releases the incumbent FIRST. The audio routes drop the previous engine
-        when the requested model changes, so charging both at once would reject
-        an admission that is really a swap.
-        """
+        """Reserve weights and pending request bytes around an async load."""
 
         async with self._lock:
             existing = self._roles.get(role)
@@ -1383,7 +1259,6 @@ class ResidentModelManager:
                 state="loading",
                 loaded_at=now,
                 last_used_at=now,
-                # Hold what admission just verified, for the whole load.
                 pending_request_bytes=max(0, int(pending_request_bytes)),
             )
             self._roles[role] = record
@@ -1399,8 +1274,6 @@ class ResidentModelManager:
 
         async with self._lock:
             if self._roles.get(role) is not record:
-                # A shutdown or eviction won the race while the load ran. The
-                # winner already released the engine; do not resurrect it.
                 return
             after = self._read_memory()
             record.measured_bytes = max(0, after - before) if before and after else 0
@@ -1409,12 +1282,6 @@ class ResidentModelManager:
             record.last_used_at = record.loaded_at
             self.loads_total += 1
 
-            # The reservation was a prediction; this is the measurement. A
-            # model that turns out larger than the catalog claimed can push the
-            # process past its ceiling, and leaving it resident would mean the
-            # budget silently failed to hold. Roll it back and report the
-            # overshoot, mirroring the load-time rollback that ``load`` does
-            # for registry-backed models.
             if (
                 self.memory_limit_bytes > 0
                 and self._accounted_usage() > self.memory_limit_bytes
@@ -1435,21 +1302,7 @@ class ResidentModelManager:
     async def _release_role_locked(
         self, record: AuxiliaryRoleRecord, *, reason: str, require_idle: bool = False
     ) -> bool:
-        """Retire an auxiliary role and stop charging for its bytes.
-
-        Returns whether the release happened.
-
-        ``require_idle`` re-checks ownership immediately before the release for
-        callers that did not initiate it (the TTL sweeper, memory-pressure
-        reclamation). Those callers select candidates and then ``await``, and an
-        await is a scheduling point at which a request can claim the lane. The
-        re-check and the cache clear inside ``unload`` are separated by no
-        await, so nothing can slip between them.
-
-        Callers that DO own the lane (an explicit swap, lane eviction,
-        shutdown) leave it ``False``: they hold the lane lock themselves, so an
-        ownership check would always refuse.
-        """
+        """Retire a role, optionally rechecking that it is still idle."""
 
         if require_idle and not record.releasable:
             return False
@@ -1464,15 +1317,8 @@ class ResidentModelManager:
                 if asyncio.iscoroutine(result):
                     await result
             except asyncio.CancelledError as exc:
-                # Production lane unloads shield their worker and only surface
-                # cancellation once it is terminal. Finalize the ledger before
-                # preserving that caller-visible cancellation; otherwise the
-                # role remains charged and stuck in ``evicting`` forever.
                 cancelled = exc
             except Exception:
-                # A damaged backend must not wedge the ledger: the bytes are
-                # released either way, and leaving the record behind would
-                # permanently overcharge every later admission.
                 logger.exception(
                     "Failed to unload %s role %r", record.role, record.model_id
                 )
@@ -1496,19 +1342,7 @@ class ResidentModelManager:
 
     @asynccontextmanager
     async def claiming_request_bytes(self, role: str, request_bytes: int):
-        """Hold an admission's request charge until its lease consumes it.
-
-        ``admitting_role`` verifies weights + request together, but the load
-        that follows is slow, and a charge that is only *checked* is not
-        *held*: another role can take the headroom while the weights load, and
-        the post-load overshoot check would not see it either.
-
-        The charge therefore lives on the record from admission onward. This
-        context manager owns the window: whatever the matching lease does not
-        claim is released on exit, so an abandoned request (a failed load, a
-        client that disconnects between admission and inference) can never
-        leave the role charged forever.
-        """
+        """Release any admission charge not consumed by the matching lease."""
 
         charge = max(0, int(request_bytes))
         try:
@@ -1524,19 +1358,7 @@ class ResidentModelManager:
 
     @asynccontextmanager
     async def lease_role(self, role: str, *, request_bytes: int = 0):
-        """Hold an auxiliary role against eviction while a request uses it.
-
-        ``request_bytes`` charges this request's peak working set — decoded
-        input waveform, generated output, and the pipeline's copies of them —
-        for as long as the request runs. Those buffers are per REQUEST, not per
-        role: the role reservation is made once at load time, so without this a
-        role admitted right up against the ceiling could still allocate
-        gigabytes of waveform on top of it (#2305 follow-up).
-
-        Raises :class:`ResidentRoleConflictError` when the request does not
-        fit. Rejecting is the whole point — the allocation has not happened
-        yet, and the caller turns this into a 507 naming what holds the memory.
-        """
+        """Hold a role and its request working set against eviction."""
 
         async with self._lock:
             record = self._roles.get(role)
@@ -1545,17 +1367,11 @@ class ResidentModelManager:
             if record.state != "resident":
                 raise ResidentModelBusyError(f"{role} is not resident")
             charge = max(0, int(request_bytes))
-            # Consume any charge this role's own admission is already holding
-            # for us. Transferring is not the same as re-requesting: the
-            # headroom was verified and held at admission, so asking for it
-            # again could fail against memory that is ours by construction.
             claimed = min(charge, record.pending_request_bytes)
             record.pending_request_bytes -= claimed
             outstanding = charge - claimed
             if outstanding and self.memory_limit_bytes > 0:
                 if self._accounted_usage() + outstanding > self.memory_limit_bytes:
-                    # Put the claim back before rejecting; this request never
-                    # took ownership of it.
                     record.pending_request_bytes += claimed
                     raise ResidentRoleConflictError(
                         requested=RoleRef(
@@ -1593,18 +1409,6 @@ class ResidentModelManager:
                 "active_requests": role.active_requests,
                 "reserved_bytes": role.reserved_bytes,
                 "measured_bytes": role.measured_bytes or None,
-                # Without these the total moves during a request and no role
-                # field explains why (#2305 telemetry consistency).
-                #
-                # Both are needed, not just the leased one. A role in
-                # ``loading`` is charged for the request that triggered it —
-                # admission verified weights+request together and holds the
-                # request charge for the whole load — so reporting only
-                # ``request_bytes`` shows an idle-looking role
-                # (active_requests=0, request_bytes=0) while
-                # ``memory_used_bytes`` visibly includes its buffer.
-                # ``charged_bytes`` is what the ledger actually counts, so it
-                # reconciles against the total in every state.
                 "request_bytes": role.request_bytes,
                 "pending_request_bytes": role.pending_request_bytes,
                 "charged_bytes": role.charged_bytes,
@@ -1613,10 +1417,6 @@ class ResidentModelManager:
                 "idle_seconds": (
                     max(0.0, now - role.last_used_at)
                     if role.active_requests == 0 and not role.pending_request_bytes
-                    # A pending charge means an admitted request owns this role
-                    # and the TTL sweeper cannot evict it (``releasable``).
-                    # Reporting a rising idle age for a role that is not
-                    # evictable contradicts the ledger it is describing.
                     else 0.0
                 ),
             }

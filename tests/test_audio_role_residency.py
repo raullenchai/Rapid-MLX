@@ -204,12 +204,19 @@ async def test_busy_speech_role_is_not_reclaimed_and_is_reported_as_such():
     assert [role["role"] for role in manager.snapshot()["roles"]] == ["speech-output"]
 
 
+@pytest.mark.parametrize(
+    ("failure", "match"),
+    [
+        (RuntimeError("weights are corrupt"), "weights are corrupt"),
+        (asyncio.CancelledError(), None),
+    ],
+)
 @pytest.mark.asyncio
-async def test_failed_load_rolls_the_ledger_back_and_unloads():
+async def test_failed_load_rolls_the_ledger_back_and_unloads(failure, match):
     manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
     unloaded: list[str] = []
 
-    with pytest.raises(RuntimeError, match="weights are corrupt"):
+    with pytest.raises(type(failure), match=match):
         async with manager.admitting_role(
             role="speech-input",
             lane="stt",
@@ -218,31 +225,11 @@ async def test_failed_load_rolls_the_ledger_back_and_unloads():
             capacity_source="manifest",
         ) as record:
             record.unload = lambda: unloaded.append("whisper")
-            raise RuntimeError("weights are corrupt")
+            raise failure
 
     assert unloaded == ["whisper"]
     assert manager.snapshot()["roles"] == []
     assert manager.snapshot()["memory_used_bytes"] == 4 * GIB
-
-
-@pytest.mark.asyncio
-async def test_cancelled_load_rolls_the_ledger_back_and_unloads():
-    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
-    unloaded: list[str] = []
-
-    with pytest.raises(asyncio.CancelledError):
-        async with manager.admitting_role(
-            role="speech-input",
-            lane="stt",
-            model_id="whisper",
-            reserved_bytes=3 * GIB,
-            capacity_source="manifest",
-        ) as record:
-            record.unload = lambda: unloaded.append("whisper")
-            raise asyncio.CancelledError
-
-    assert unloaded == ["whisper"]
-    assert manager.snapshot()["roles"] == []
 
 
 @pytest.mark.asyncio
@@ -955,13 +942,7 @@ async def test_in_flight_request_bytes_are_visible_in_role_telemetry():
 
 @pytest.mark.asyncio
 async def test_pending_request_charge_is_held_across_the_load():
-    """A joint admission must RESERVE the headroom, not merely check it.
-
-    Loading is slow. If the request's share is only validated at admission and
-    not held, another role can take that headroom while the weights load, and
-    the post-load overshoot check does not see it either — so the request that
-    was approved can no longer fit when it finally asks.
-    """
+    """Joint admission holds request headroom throughout model loading."""
 
     manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
     observed: list[int] = []
@@ -986,7 +967,7 @@ async def test_pending_request_charge_is_held_across_the_load():
 
 @pytest.mark.asyncio
 async def test_measured_process_usage_keeps_future_role_bytes_reserved():
-    """Measured baseline must not swallow lazy weights or pending buffers."""
+    """Measured usage does not swallow lazy weights or pending buffers."""
 
     registry = ModelRegistry()
     primary = entry("chat")
@@ -1025,14 +1006,7 @@ async def test_measured_process_usage_keeps_future_role_bytes_reserved():
 
 @pytest.mark.asyncio
 async def test_role_telemetry_explains_the_charge_during_the_load():
-    """Every byte in ``memory_used_bytes`` must be attributable to a role field.
-
-    A role in ``loading`` carries the request charge its joint admission
-    verified, so an operator watching the residency API sees the total rise.
-    Reporting only the LEASED ``request_bytes`` left that role looking idle
-    (active_requests=0, request_bytes=0) while it was in fact holding
-    gigabytes — the total moved and nothing explained why.
-    """
+    """Loading telemetry attributes pending bytes to the owning role."""
 
     manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
 
@@ -1066,7 +1040,7 @@ async def test_role_telemetry_explains_the_charge_during_the_load():
 
 @pytest.mark.asyncio
 async def test_lease_consumes_the_pending_charge_instead_of_re_requesting():
-    """The transfer must be atomic, or the approved request fails at the lease."""
+    """A lease atomically consumes its admission's pending charge."""
 
     manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
 
@@ -1092,7 +1066,7 @@ async def test_lease_consumes_the_pending_charge_instead_of_re_requesting():
 
 @pytest.mark.asyncio
 async def test_abandoned_pending_charge_is_released():
-    """A request that never reaches its lease must not charge the role forever."""
+    """An abandoned request does not leave a pending charge."""
 
     manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
 
@@ -1117,13 +1091,7 @@ async def test_abandoned_pending_charge_is_released():
 
 @pytest.mark.asyncio
 async def test_cold_and_warm_paths_report_the_same_code_for_an_oversized_request():
-    """An identical request must not be diagnosed differently by luck of timing.
-
-    Cold, the joint admission rejects; warm, the lease rejects. Both are "your
-    request is too big", so both must say ``role_request_too_large`` — telling
-    a user the MODEL will not fit, when the model fits and their input does
-    not, sends them to change the wrong thing.
-    """
+    """Cold and warm oversized requests share one actionable error code."""
 
     cold, _c1 = manager_fixture(limit_gib=10, primary_gib=4)
     with pytest.raises(ResidentRoleConflictError) as cold_exc:
