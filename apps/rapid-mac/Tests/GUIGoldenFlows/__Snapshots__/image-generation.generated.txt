@@ -19,6 +19,7 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXButton id="Images.Result.Edit" desc="Edit" help="Edit image" enabled=true
           AXButton id="Images.Result.Save" desc="Download" help="Save image" enabled=true
+          AXButton id="Images.Result.Delete" desc="Delete image" help="Delete image" enabled=true
           AXImage id="Images.Stage" enabled=true
           AXScrollArea id="Images.Gallery"
             AXButton id="Images.Gallery.Thumb.1" desc="Image 1, replace the couch with a blue armchair, selected" enabled=true

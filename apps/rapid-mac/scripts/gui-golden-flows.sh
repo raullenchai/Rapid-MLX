@@ -4373,6 +4373,63 @@ flow_image_generation() {
         ".event == \"image_response\" and .cancelled == true and .index == 6" \
         "the restarted ETA fixture did not settle as cancelled"
 
+    # 10. Deletion is destructive and session-local, so exercise both doors
+    #     through the native confirmation dialog before proving the last
+    #     result restores the real empty state.  A source-only contract cannot
+    #     tell whether SwiftUI actually hosts either dialog action in AX.
+    see_main "$OUT/ig-delete-before.json"
+    local gallery_before
+    gallery_before="$(jq '[.data.ui_elements[]?
+                           | select((.identifier // "")
+                                    | startswith("Images.Gallery.Thumb."))]
+                          | length' "$OUT/ig-delete-before.json")"
+    [[ "$gallery_before" -gt 0 ]] \
+        || die "the deletion journey has no generated results to remove"
+
+    press "$OUT/ig-delete-before.json" Images.Result.Delete "$OUT/ig-delete-open.json" \
+        || die "the active image has no pressable Delete action"
+    wait_identifier Images.Result.Delete.Keep "$OUT/ig-delete-dialog-cancel.json"
+    press "$OUT/ig-delete-dialog-cancel.json" Images.Result.Delete.Keep \
+        "$OUT/ig-delete-keep.json" \
+        || die "the native deletion dialog has no pressable Keep action"
+    wait_identifier Images.Result.Delete "$OUT/ig-delete-kept.json"
+    local gallery_after_keep
+    gallery_after_keep="$(jq '[.data.ui_elements[]?
+                              | select((.identifier // "")
+                                       | startswith("Images.Gallery.Thumb."))]
+                             | length' "$OUT/ig-delete-kept.json")"
+    [[ "$gallery_after_keep" == "$gallery_before" ]] \
+        || die "Keep removed a generated result ($gallery_before -> $gallery_after_keep)"
+
+    # Remove every result through the same user-visible contract.  The button
+    # always targets the active result; ImageGenViewModel chooses the adjacent
+    # remaining image until the final confirmation restores Images.EmptyState.
+    local remaining="$gallery_after_keep"
+    while [[ "$remaining" -gt 0 ]]; do
+        see_main "$OUT/ig-delete-${remaining}-before.json"
+        press "$OUT/ig-delete-${remaining}-before.json" Images.Result.Delete \
+            "$OUT/ig-delete-${remaining}-open.json" \
+            || die "Delete stopped being pressable with $remaining result(s) left"
+        wait_identifier Images.Result.Delete.Confirm \
+            "$OUT/ig-delete-${remaining}-dialog.json"
+        press "$OUT/ig-delete-${remaining}-dialog.json" Images.Result.Delete.Confirm \
+            "$OUT/ig-delete-${remaining}-confirm.json" \
+            || die "the native deletion dialog has no pressable Delete Image action"
+        remaining=$((remaining - 1))
+        if [[ "$remaining" -gt 0 ]]; then
+            wait_identifier Images.Result.Delete "$OUT/ig-delete-${remaining}-settled.json"
+        else
+            wait_identifier Images.EmptyState "$OUT/ig-delete-empty.json"
+        fi
+    done
+    jq -e '.success == true and .data.walk.complete == true
+           and any(.data.ui_elements[]?; .identifier == "Images.EmptyState")
+           and ([.data.ui_elements[]?
+                 | select((.identifier // "")
+                          | startswith("Images.Gallery.Thumb."))]
+                | length == 0)' "$OUT/ig-delete-empty.json" >/dev/null \
+        || die "deleting the final image did not restore a gallery-free empty state"
+
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
