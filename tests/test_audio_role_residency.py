@@ -1190,6 +1190,51 @@ async def test_role_remains_charged_and_visible_while_async_unload_runs():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_async_unload_finishes_release_and_reuses_capacity():
+    """Cancellation must not strand a terminal lane in ``evicting``."""
+
+    manager, _clock = manager_fixture(limit_gib=10, primary_gib=4)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    unload_calls = 0
+
+    async def unload():
+        nonlocal unload_calls
+        unload_calls += 1
+        started.set()
+        try:
+            await finish.wait()
+        except asyncio.CancelledError:
+            # Mirrors the production worker barrier: finish the engine unload,
+            # then preserve cancellation for the release caller.
+            await finish.wait()
+            raise
+
+    record = await admit(
+        manager, role="speech-output", lane="tts", model="kokoro", gib=5
+    )
+    record.unload = unload
+
+    release = asyncio.create_task(manager.release_role("speech-output"))
+    await started.wait()
+    release.cancel()
+    assert manager.snapshot()["roles"][0]["state"] == "evicting"
+
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+
+    assert manager.snapshot()["roles"] == []
+    assert manager.snapshot()["memory_used_bytes"] == 4 * GIB
+
+    # A second release is a no-op, and the reclaimed 5 GiB can be reused.
+    await manager.release_role("speech-output")
+    await admit(manager, role="speech-input", lane="stt", model="whisper", gib=5)
+    assert unload_calls == 1
+    assert [role["role"] for role in manager.snapshot()["roles"]] == ["speech-input"]
+
+
+@pytest.mark.asyncio
 async def test_a_model_that_cannot_fit_at_all_still_blames_the_model():
     """The request-blame heuristic must not mask a genuinely oversized model."""
 

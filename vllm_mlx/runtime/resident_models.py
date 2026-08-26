@@ -656,43 +656,39 @@ class ResidentModelManager:
 
     def _accounted_usage(self) -> int:
         measured = self._read_memory()
-        active_states = {"admitting", "loading", "resident", "evicting"}
-        pure_reservations = sum(
+        resident_reservations = sum(
             max(record.estimated_bytes, record.measured_bytes)
             for record in self._records.values()
             if record.state == "resident"
         )
-        # Auxiliary audio roles hold weights in the same unified memory as the
-        # model rows, so they belong in the same reservation total (#2305).
-        # ``admitting`` is included on purpose: a role that has passed
-        # admission but is still loading has already been promised its bytes,
-        # and a concurrent request must not be told they are available.
-        pure_reservations += sum(
-            role.charged_bytes
+        resident_reservations += sum(
+            max(role.reserved_bytes, role.measured_bytes)
             for role in self._roles.values()
-            if role.state in active_states
+            if role.state in {"resident", "evicting"}
         )
 
-        # The process footprint already contains every materialized allocation,
-        # but it cannot cover bytes promised for a future allocation. Add only
-        # each reservation's unmaterialized remainder, plus request buffers
-        # which are always additive. The primary estimate is intentionally not
-        # added here because it is already part of the process baseline; the
-        # pure-reservation fallback above still covers an unavailable reader.
-        measured_projection = measured
-        measured_projection += sum(
-            max(record.estimated_bytes - record.measured_bytes, 0)
-            for record in self._records.values()
-            if record.state == "resident" and not record.primary
-        )
-        measured_projection += sum(
-            max(role.reserved_bytes - role.measured_bytes, 0)
-            + role.request_bytes
-            + role.pending_request_bytes
+        # The footprint and resident reservations are two views of the same
+        # aggregate allocation. Taking their maximum preserves lazy model
+        # estimates without adding a secondary estimate again after the
+        # process footprint has already grown to cover the complete resident
+        # set. Audio weights still loading are different: their promised bytes
+        # are not part of the settled aggregate yet, so concurrent admissions
+        # must continue to treat them as pending.
+        pending_weight_reservations = sum(
+            max(role.reserved_bytes, role.measured_bytes)
             for role in self._roles.values()
-            if role.state in active_states
+            if role.state in {"admitting", "loading"}
         )
-        return max(pure_reservations, measured_projection)
+        request_reservations = sum(
+            role.request_bytes + role.pending_request_bytes
+            for role in self._roles.values()
+            if role.state in {"admitting", "loading", "resident", "evicting"}
+        )
+        return (
+            max(measured, resident_reservations)
+            + pending_weight_reservations
+            + request_reservations
+        )
 
     def contains(self, model_name: str) -> bool:
         return self._canonical(model_name) is not None
@@ -1461,11 +1457,18 @@ class ResidentModelManager:
             raise ResidentModelBusyError(f"{record.role} is serving an active request")
         record.state = "evicting"
         unload = record.unload
+        cancelled: asyncio.CancelledError | None = None
         if callable(unload):
             try:
                 result = unload()
                 if asyncio.iscoroutine(result):
                     await result
+            except asyncio.CancelledError as exc:
+                # Production lane unloads shield their worker and only surface
+                # cancellation once it is terminal. Finalize the ledger before
+                # preserving that caller-visible cancellation; otherwise the
+                # role remains charged and stuck in ``evicting`` forever.
+                cancelled = exc
             except Exception:
                 # A damaged backend must not wedge the ledger: the bytes are
                 # released either way, and leaving the record behind would
@@ -1478,6 +1481,8 @@ class ResidentModelManager:
             del self._roles[record.role]
         self.evictions_total += 1
         logger.info("Released %s role %r (%s)", record.role, record.model_id, reason)
+        if cancelled is not None:
+            raise cancelled
         return True
 
     async def release_role(self, role: str) -> None:
