@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Image result deletion")
 struct ImageResultDeletionTests {
+    @Test("The native Keep action remains pressable through AppKit re-hosting")
+    func keepActionUsesAnOrdinaryDefaultButton() throws {
+        let source = try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/Rapid/UI/ImagesView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(source.contains("Button(\"Keep\")"))
+        #expect(source.contains(".keyboardShortcut(.defaultAction)"))
+        #expect(source.contains(".accessibilityIdentifier(\"Images.Result.Delete.Keep\")"))
+        #expect(!source.contains("Button(\"Keep\", role: .cancel)"))
+    }
+
     @Test("Deleting the active result selects the adjacent older image")
     @MainActor
     func deletingActiveResultSelectsAdjacentImage() {
@@ -77,5 +90,12 @@ struct ImageResultDeletionTests {
 
     private func image(_ prompt: String) -> GeneratedImage {
         GeneratedImage(pngData: Data(prompt.utf8), prompt: prompt, isEdit: false)
+    }
+
+    private var packageRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

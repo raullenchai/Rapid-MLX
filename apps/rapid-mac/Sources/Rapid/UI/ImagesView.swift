@@ -55,9 +55,15 @@ struct ImagesView: View {
                 pendingDeletion = nil
             }
             .accessibilityIdentifier("Images.Result.Delete.Confirm")
-            Button("Keep", role: .cancel) {
+            // SwiftUI re-hosts confirmation actions in an AppKit alert. On a
+            // headless Mac the cancel-role proxy can publish an enabled
+            // AXButton while rejecting AXPress. Keep this as an ordinary
+            // button and assign the safe default explicitly so Return keeps
+            // the image and automation receives a real press action.
+            Button("Keep") {
                 pendingDeletion = nil
             }
+            .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("Images.Result.Delete.Keep")
         } message: { _ in
             Text("This removes it from this session. Copies you've saved stay on disk.")
