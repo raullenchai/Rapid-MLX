@@ -966,6 +966,81 @@ def split_model_local_snapshot(repo_id: str) -> str | None:
     return snap_dir if os.path.isdir(snap_dir) else None
 
 
+def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
+    """True when a ``WAN_REVISIONS``-pinned Wan checkpoint is cached & loadable.
+
+    Wan video repos (``video/wan.py``'s ``WAN_REVISIONS``) are pinned to an
+    exact commit sha, so ``snapshot_download(repo, revision=<sha>)`` caches
+    under ``snapshots/<sha>`` WITHOUT advancing ``refs/main`` (exactly the
+    ``IMAGE_MODEL_REVISIONS`` mflux case). The generic probes miss this warm
+    cache: ``is_repo_cached`` resolves via ``refs/main``;
+    :func:`_snapshot_is_complete_split_model` requires a ``split_model.json``
+    manifest (Wan checkpoints ship none); :func:`_snapshot_is_complete_mflux_model`
+    is image-gen-only. Without this, a warm-cached Wan snapshot reads as
+    *weightless* / non-runnable and would re-download on every start.
+
+    Deterministic, verified-filename-only completeness mirroring what
+    ``mlx_video.models.wan_2.generate`` loads from ``model_dir`` (all four
+    pinned checkpoints share the set): ``config.json`` at the snapshot root;
+    the mlx-video T5 encoder ``t5_encoder.safetensors``; the VAE
+    ``vae.safetensors``; and the diffusion transformer — ``model.safetensors``
+    (5B single-file) OR both ``high_noise_model.safetensors`` and
+    ``low_noise_model.safetensors`` (A14B dual). No speculative generic
+    ``*.safetensors``: an unrelated stray weight must not make the snapshot
+    look runnable. Every file must be present, non-empty, and resolve inside
+    the repo's own ``blobs`` directory (symlink guard).
+
+    Returns ``False`` for an unpinned / non-``WAN_REVISIONS`` repo or on any
+    internal error, so the caller falls through to the generic probes.
+    """
+    try:
+        from vllm_mlx.video.wan import WAN_REVISIONS
+
+        pinned_revision = WAN_REVISIONS.get(repo_id)
+        if pinned_revision is None or not isinstance(pinned_revision, str):
+            # Not a registered pinned Wan checkpoint — not our lane.
+            return False
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        repo_root = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+        )
+        snap_dir = os.path.join(repo_root, "snapshots", pinned_revision)
+        if not os.path.isdir(snap_dir):
+            return False
+
+        repo_root_real = os.path.realpath(repo_root)
+
+        def _on_repo(name: str) -> bool:
+            path = os.path.join(snap_dir, name)
+            if not os.path.isfile(path):
+                return False
+            if os.path.getsize(path) <= 0:
+                return False
+            real = os.path.realpath(path)
+            # HF snapshot files normally symlink into this repo's own ``blobs``
+            # directory. Reject a fabricated snapshot whose weight or config
+            # links escape the repository cache root.
+            return real == repo_root_real or real.startswith(repo_root_real + os.sep)
+
+        # The diffusion transformer: single-file (5B) or dual noise (A14B).
+        if _on_repo("model.safetensors"):
+            transformer_ok = True
+        else:
+            transformer_ok = _on_repo("high_noise_model.safetensors") and _on_repo(
+                "low_noise_model.safetensors"
+            )
+        return (
+            transformer_ok
+            and _on_repo("config.json")
+            and _on_repo("t5_encoder.safetensors")
+            and _on_repo("vae.safetensors")
+        )
+    except Exception:
+        return False
+
+
 #: Repos whose weights must resolve to an exact, previously-verified commit,
 #: mirroring ``video/wan.py``'s ``WAN_REVISIONS``. Without this, an alias
 #: only ever resolves whatever ``refs/main`` currently points to (see

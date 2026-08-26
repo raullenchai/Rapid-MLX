@@ -5757,10 +5757,12 @@ def _cache_runnability(repo: str) -> bool | None:
             _snapshot_is_complete_audio_model,
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
+            _snapshot_is_complete_wan_model,
             is_repo_cached,
         )
         from vllm_mlx.audio.registry import resolve_audio_alias
         from vllm_mlx.model_metadata import resolve_unreferenced_cached_snapshot
+        from vllm_mlx.video.wan import WAN_REVISIONS
 
         audio_entry = resolve_audio_alias(repo)
         if audio_entry is not None and audio_entry.family in ("whisper", "kokoro"):
@@ -5771,10 +5773,18 @@ def _cache_runnability(repo: str) -> bool | None:
             # families fall through to the generic cache probes below — their
             # layout is not pinned here, so never claim them non-runnable.
             return _snapshot_is_complete_audio_model(repo, audio_entry.family)
+        if repo in WAN_REVISIONS:
+            # Wan snapshots are authoritative: they are pinned to an exact
+            # commit with a strict verified-filename contract (config +
+            # t5_encoder + vae + transformer), so the generic text probe (which
+            # matches a lone ``model.safetensors``) must NOT mark an incomplete
+            # Wan snapshot runnable. Complete -> runnable; incomplete -> not.
+            return _snapshot_is_complete_wan_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
             or _snapshot_is_complete_mflux_model(repo)
+            or _snapshot_is_complete_wan_model(repo)
             or resolve_unreferenced_cached_snapshot(repo) is not None
         )
     except (OSError, KeyError, ValueError) as exc:

@@ -486,6 +486,32 @@ def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
     assert cli._cache_entry_is_runnable(repo) is True
 
 
+def test_runnable_recognizes_complete_pinned_wan_repo(tmp_path, monkeypatch):
+    """A cached Wan checkpoint pinned by WAN_REVISIONS commit counts as runnable.
+
+    ``snapshot_download(repo, revision=<sha>)`` caches under ``snapshots/<sha>``
+    without advancing ``refs/main`` and Wan ships no ``split_model.json``, so
+    only the Wan-specific probe sees this warm cache; ``_cache_entry_is_runnable``
+    must report it ready (not re-download on every start).
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
+    pinned_sha = WAN_REVISIONS[repo]
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / pinned_sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"w" * 1024)
+    (snapshot / "t5_encoder.safetensors").write_bytes(b"t" * 1024)
+    (snapshot / "vae.safetensors").write_bytes(b"v" * 1024)
+    # No refs/main — pinned-by-commit download, exactly the live-serving shape.
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert cli._cache_entry_is_runnable(repo) is True
+
+
 def test_cache_entry_runnable_for_cached_whisper_turbo(tmp_path, monkeypatch):
     """A cached whisper-large-v3-turbo (``weights.safetensors``, not NPZ) is
     runnable via the audio-family branch."""
@@ -518,6 +544,25 @@ def test_cache_entry_not_runnable_for_metadata_only_kokoro(tmp_path, monkeypatch
     refs = repo_root / "refs"
     refs.mkdir()
     (refs / "main").write_text(sha)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert cli._cache_entry_is_runnable(repo) is False
+
+
+def test_runnable_rejects_incomplete_pinned_wan_repo(tmp_path, monkeypatch):
+    """A cached Wan repo missing a verified weight is NOT runnable."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
+    pinned_sha = WAN_REVISIONS[repo]
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / pinned_sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"w" * 1024)
+    (snapshot / "t5_encoder.safetensors").write_bytes(b"t" * 1024)
+    # vae.safetensors absent.
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert cli._cache_entry_is_runnable(repo) is False

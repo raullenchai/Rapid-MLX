@@ -712,6 +712,249 @@ def test_audio_family_exception_is_not_runnable(monkeypatch):
     monkeypatch.setattr(gate, "_resolved_snapshot_sha", _boom)
     assert gate._snapshot_is_complete_audio_model("a/b", "whisper") is False
 
+def _wan_pinned_pair() -> tuple[str, str]:
+    """A real WAN_REVISIONS-pinned checkpoint (repo_id, pinned commit sha)."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
+    return repo_id, WAN_REVISIONS[repo_id]
+
+
+def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> None:
+    """Write ``snapshots/<pinned_sha>`` under an HF-cache-shaped repo root."""
+    snap = repo_root / "snapshots" / pinned_sha
+    snap.mkdir(parents=True)
+    for name, payload in files.items():
+        (snap / name).write_bytes(payload)
+
+
+def test_wan_cache_accepts_5b_single_transformer_layout(tmp_path, monkeypatch):
+    """A pinned Wan 5B checkpoint (config + model + t5_encoder + vae) is runnable.
+
+    The generic probes miss Wan's pinned-by-commit layout: it ships no
+    ``split_model.json`` and no ``refs/main`` for the commit download, so only
+    the Wan-specific helper sees it as complete.
+    """
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is True
+
+
+def test_wan_cache_accepts_a14b_dual_noise_layout(tmp_path, monkeypatch):
+    """A pinned Wan A14B checkpoint (high+low_noise + t5_encoder + vae) is runnable."""
+    # A real pinned A14B repo exercises the dual-noise transformer contract.
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
+    pinned_sha = WAN_REVISIONS[repo_id]
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "high_noise_model.safetensors": b"h" * 1024,
+            "low_noise_model.safetensors": b"l" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is True
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["config.json", "model.safetensors", "t5_encoder.safetensors", "vae.safetensors"],
+)
+def test_wan_cache_rejects_incomplete_5b_layout(tmp_path, monkeypatch, missing):
+    """A pinned Wan checkpoint with ANY verified file missing is NOT runnable."""
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"w" * 1024,
+        "t5_encoder.safetensors": b"t" * 1024,
+        "vae.safetensors": b"v" * 1024,
+    }
+    files.pop(missing)
+    _seed_wan_snapshot(repo_root, pinned_sha, files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_dual_layout_missing_one_noise_model(tmp_path, monkeypatch):
+    """Dual-noise A14B needs BOTH high and low noise models (no partial credit)."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
+    pinned_sha = WAN_REVISIONS[repo_id]
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "high_noise_model.safetensors": b"h" * 1024,
+            # low_noise_model.safetensors absent; no model.safetensors either.
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_stray_unrelated_safetensors(tmp_path, monkeypatch):
+    """Verified-filename-only: a stray *.safetensors must not imply runnable.
+
+    The 5B contract requires model.safetensors + t5_encoder + vae together; a
+    repo with only an unrelated weight file (and no VAE) is NOT runnable.
+    """
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            # vae.safetensors missing; a stray unrelated file is NOT a substitute.
+            "unrelated.safetensors": b"x" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_unpinned_repo(tmp_path, monkeypatch):
+    """A repo not in WAN_REVISIONS is not our lane — the helper falls through."""
+    repo_id = "some-other/wan2-not-pinned"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--some-other--wan2-not-pinned"
+    # Even a perfectly-shaped snapshot must NOT be admitted via the Wan helper
+    # if the repo is not a registered pinned Wan checkpoint.
+    _seed_wan_snapshot(
+        repo_root,
+        "0123456789abcdef",
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize("escaped_name", ["config.json", "vae.safetensors"])
+def test_wan_cache_rejects_files_symlinked_outside_repo(
+    tmp_path, monkeypatch, escaped_name
+):
+    """A crafted cache symlink must not borrow proof from an unrelated file."""
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_root / "snapshots" / pinned_sha
+    snap.mkdir(parents=True)
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"w" * 1024,
+        "t5_encoder.safetensors": b"t" * 1024,
+        "vae.safetensors": b"v" * 1024,
+    }
+    outside = tmp_path / f"outside-{escaped_name}"
+    outside.write_bytes(files[escaped_name])
+    for name, payload in files.items():
+        path = snap / name
+        if name == escaped_name:
+            path.symlink_to(outside)
+        else:
+            path.write_bytes(payload)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_when_pinned_snapshot_dir_missing(tmp_path, monkeypatch):
+    """No cached snapshot under the pinned revision -> not runnable."""
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    # No snapshots/ dir at all — repo only reached the metadata stage.
+    repo_root.mkdir(parents=True)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize("empty_name", ["config.json", "vae.safetensors"])
+def test_wan_cache_rejects_empty_verified_file(tmp_path, monkeypatch, empty_name):
+    """A zero-byte verified file must not count as a present weight."""
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / pinned_sha
+    snapshot.mkdir(parents=True)
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"w" * 1024,
+        "t5_encoder.safetensors": b"t" * 1024,
+        "vae.safetensors": b"v" * 1024,
+    }
+    files[empty_name] = b""
+    for name, payload in files.items():
+        (snapshot / name).write_bytes(payload)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_returns_false_on_internal_error(tmp_path, monkeypatch):
+    """Any internal probe error fails closed (False), never crash / assume runnable."""
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / pinned_sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"w" * 1024)
+    (snapshot / "t5_encoder.safetensors").write_bytes(b"t" * 1024)
+    (snapshot / "vae.safetensors").write_bytes(b"v" * 1024)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    # Induce an OSError inside the probe (e.g. a permission fault on stat).
+    def boom(path, *a):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(gate.os.path, "isfile", boom)
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
 
 def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
     """Empty HF cache directory → False."""
