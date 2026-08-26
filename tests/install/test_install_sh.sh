@@ -236,6 +236,19 @@ case "$BANNER" in
         bad "post-install structured cache choice reaches both quick-start commands"
         printf '        banner: %s\n' "$BANNER" ;;
 esac
+
+# A subprocess can print a syntactically valid partial result and still fail.
+# install.sh's top-level pipefail must make that entire cache query fail so the
+# banner uses the RAM baseline rather than trusting output from a failed scan.
+cat > "$CACHE_FIXTURE/bin/rapid-mlx" <<'EOF'
+#!/bin/bash
+printf '%s\n' '{"cached":[{"alias":"qwen3.8-27b-4bit","state":"ok"}]}'
+exit 7
+EOF
+RECOMMENDED_MODEL="stale"
+refresh_starter_from_installed_cache
+check "failed cache scan with valid partial JSON falls back to RAM baseline" \
+    "$RECOMMENDED_MODEL" "qwen3.5-4b-4bit"
 INSTALL_DIR="$OLD_INSTALL_DIR"
 
 echo
