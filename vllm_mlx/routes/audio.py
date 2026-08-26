@@ -1340,12 +1340,7 @@ def _probe_audio_source(
         duration = float(info.duration)
         rate = int(info.samplerate or 0)
         channels = int(info.channels or 0)
-        if (
-            not math.isfinite(duration)
-            or duration < 0.0
-            or rate <= 0
-            or channels <= 0
-        ):
+        if not math.isfinite(duration) or duration < 0.0 or rate <= 0 or channels <= 0:
             return None
         return duration, rate, channels
     except Exception:

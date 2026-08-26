@@ -813,9 +813,7 @@ def _cached_samples_per_token(model_name: str, family: str) -> int | None:
     return None
 
 
-def _cached_config(
-    model_name: str, relative_path: str = "config.json"
-) -> dict | None:
+def _cached_config(model_name: str, relative_path: str = "config.json") -> dict | None:
     """A JSON config from the snapshot the loader would open, or ``None``.
 
     Resolves through ``refs/main`` exactly as ``snapshot_download`` does, so a

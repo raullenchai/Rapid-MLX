@@ -929,9 +929,7 @@ def test_the_token_budget_stays_inside_the_reservation():
             )
 
 
-def _seed_cached_checkpoint(
-    tmp_path, monkeypatch, repo_id, config, *, extra_json=None
-):
+def _seed_cached_checkpoint(tmp_path, monkeypatch, repo_id, config, *, extra_json=None):
     """Write a HF-cache snapshot for ``repo_id`` containing ``config.json``."""
 
     repo_root = tmp_path / f"models--{repo_id.replace('/', '--')}"
