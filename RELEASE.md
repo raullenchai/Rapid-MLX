@@ -2,8 +2,9 @@
 
 How a release actually happens, what gates it, and what to do when things go
 wrong. If you only read one thing: **you cut a release by merging a
-`chore: bump version to X.Y.Z` commit to `main`** — everything else is
-automated.
+`chore: bump version to X.Y.Z` commit to `main`** — automation then does the
+work and presents one **reviewer approval** (the only manual transaction step)
+before anything is tagged or published.
 
 This file is the **canonical** release-flow reference (as
 `scripts/pr_validate/README.md` is for the PR-validation pipeline). The
@@ -16,10 +17,59 @@ extended operational guide, `docs/development/releasing.md`, defers to it.
    docs/release-notes/vX.Y.Z.md` (optional — see "Release notes" below).
 3. Open a PR whose commit subject is exactly `chore: bump version to X.Y.Z`
    (GitHub's `(#N)` squash suffix is fine), and merge it to `main`.
-4. That's it. The pipeline below tags `vX.Y.Z`, publishes a GitHub Release,
-   PyPI, and Homebrew — **after** the Tier-1 agent gate passes.
+4. Merging starts the pipeline. After the Desktop candidate validates the
+   exact commit, the live main head and release-blocker evidence are gathered,
+   and the protected `rapid-mac-tag` deployment requests approval, a **reviewer
+   inspects the exact SHA / main-head / blocker evidence** shown there and
+   approves it. Automation then tags `vX.Y.Z`, publishes a GitHub Release,
+   PyPI, Homebrew, and the Desktop DMG/updater feeds.
 
-Nothing else is manual. There is no separate "publish" button.
+There is **no separate manual tag or publish command** — no button, no
+hand-run script. The reviewer's approval at the protected environment gate is
+the **only manual transaction step** a release requires; everything else is
+automated.
+
+## Desktop (Rapid-MLX Desktop) RC tags — validated before claimed
+
+The engine release also drives the Desktop app: a `rapid-mac-vX.Y.Z[-rcN]` tag
+is created so `rapid-mac-release.yml` builds/signs/notarises the DMG. Per
+[#2301](https://github.com/raullenchai/Rapid-MLX/issues/2301), that immutable
+tag is claimed **only at the exact commit whose desktop candidate passed the
+signed/notarised/DMG-validated lane, and which is still the live `main` head**:
+
+- `auto-release.yml` runs a `desktop-candidate-gate` (macos-15) that builds and
+  validates the exact release commit **before** the tag claim, producing a
+  Desktop manifest bound to the source SHA, embedded app versions and DMG digest.
+- The tag claim runs inside the **`rapid-mac-tag`** environment (required
+  reviewer, `prevent_self_review=false`, deployment-branch policy exactly
+  `main`), after the pre-approval `release-prep` job has printed the exact
+  validated SHA + live main head + live release-blocker evidence.
+- Release-blocker evidence and the live main-head identity are re-queried
+  **immediately before** the immutable claim. This is a **freshness/cutoff
+  guard, not a transaction** — GitHub exposes no single atomic op across Issues,
+  `refs/heads/main`, and the tag POST (the POST is atomic only for tag
+  identity). It establishes the release cutoff right before the claim. Changes
+  **observed at the cutoff** abort the claim; changes *after* the cutoff are not
+  observable before the POST — they are post-cut, handled as a follow-up/next
+  RC once detected, and cannot retroactively invalidate the exact validated
+  artifact SHA the tag is bound to.
+- **Operational freeze:** once `release-prep` evidence is ready, **hold `main`
+  merges through environment approval and the tag claim** (sole owning reviewer
+  coordinates this). If a blocker change is **detected before** the claim,
+  abort and use the normal retry route at the new head; a change after the
+  cutoff may be unobservable until post-claim, at which point it is handled as
+  a next-RC/release incident.
+- An RC needing correction is **superseded by the next RC** on its own validated
+  commit; an existing RC tag is never moved, force-pushed, or deleted.
+
+On the bump PR only PF-3 runs — a fail-closed read-back that the
+`rapid-mac-tag` environment exists and is protected (required reviewer,
+`prevent_self_review=false`, deployment policy exactly `main`), so an
+unprotected/drifted environment is a NO-GO before any release rather than a
+surprise on the day. The **live** blocker evidence and live main-head identity
+gates (PF-4) run *after merge*: in `release-prep` before approval and again
+immediately pre-tag. Full ordering and the break-glass path:
+`docs/development/releasing.md` and `apps/rapid-mac/RELEASING.md`.
 
 ## Release notes
 
@@ -51,41 +101,62 @@ Run the offline tests with `./tests/release/test_build_release_notes.sh`.
 
 ## The pipeline
 
-`.github/workflows/auto-release.yml` runs on every push to `main` and is three
-jobs:
+`.github/workflows/auto-release.yml` runs on every push to `main`. On a version
+bump it fans out, waits for two independent gates, gathers pre-approval
+evidence, asks a human to approve the exact SHA, then claims the desktop tag and
+creates the engine release:
 
 ```
-push to main
+push to main (subject "chore: bump version to X.Y.Z")
    │
    ▼
-┌─ detect (GitHub-hosted, ~2s) ─────────────────────────────────┐
-│  Is the commit subject "chore: bump version to X.Y.Z"?        │
-│  pyproject matches? tag not already present?                  │
-│  → outputs should_release / version. Non-bump pushes stop here.│
-└───────────────────────────────────────────────────────────────┘
+detect (GitHub-hosted, ~2s): is it a bump? does pyproject agree?
+   is the release missing? → outputs should_release / version.
+   Non-bump pushes stop here.
    │ should_release == true
-   ▼
-┌─ tier1-agent-gate (SELF-HOSTED, Apple Silicon "Studio", ~10m) ┐
-│  Build the exact release source into a fresh venv, then run   │
-│  tests/integrations/agent_smoke.sh: boot rapid-mlx serve and  │
-│  drive Claude Code / Codex / Hermes / Aider / DeepSeek Harness│
-│  through a real end-to-end edit. Exit non-zero if any of the 5│
-│  regresses.                                                   │
-└───────────────────────────────────────────────────────────────┘
-   │ gate passed
-   ▼
-┌─ release (GitHub-hosted) ─────────────────────────────────────┐
-│  Create tag vX.Y.Z + GitHub Release (changelog + contributors)│
-│  using RELEASE_PAT → fires the `release: published` event.     │
-└───────────────────────────────────────────────────────────────┘
+   ├───────────────────────────────►  (PARALLEL — independent, both need only detect)
+   ▼                                    │
+tier1-agent-gate (self-hosted "Studio") │    desktop-candidate-gate (macos-15)
+Build exact source; run agent_smoke.sh  │    Build + sign + notarise + DMG-validate
+driving Claude Code / Codex / Hermes /  │    the app at the EXACT release commit;
+Aider / DeepSeek Harness.  Exit non-zero│    emit a Desktop manifest binding source
+if any of the 5 regresses.              │    SHA + embedded versions + DMG digest
+                                        │    (no tag, no release, no updater pointer)
+   │  BOTH must pass (tier1 force-bypassable)        │
+   ▼                                                    ▼
+release-prep (pre-approval evidence, no env): resolve the exact release SHA,
+verify it equals the accepted desktop-candidate SHA, verify the LIVE main head
+still equals it, gather LIVE release-blocker evidence vs the waiver file, and
+print all of it — this exact SHA is what a reviewer approves.
    │
    ▼
-publish.yml → PyPI    →    Homebrew core autobump → `brew` users
+release (environment: rapid-mac-tag — HUMAN APPROVAL on the printed SHA):
+   re-verify live rapid-mac-tag protection, re-query live blockers + main head
+   (TOCTOU), then tag the desktop app at the exact validated SHA.
+   │
+   ▼
+rapid-mac-v* tag fires rapid-mac-release.yml: re-runs the SAME shared
+desktop-releasable validation on the tagged commit and re-verifies the tag
+binding before upload. It mirrors the immutable DMG/Sparkle assets (as a
+GitHub prerelease for an RC); ONLY a non-RC stable release publishes the
+mutable appcast/latest.json updater pointers.
+   │ exact tagged run succeeded + published non-empty DMG + tag recheck
+   ▼
+release creates the engine tag vX.Y.Z + GitHub Release (RELEASE_PAT)
+→ publish.yml to PyPI.
 ```
 
-`release` `needs: [detect, tier1-agent-gate]`, so **a version bump cannot tag
-or publish unless the gate passes.** This mirrors how Apple's own MLX gates its
-PyPI publish on a self-hosted-Metal `test_wheel` job.
+The two gates run **in parallel** (they share nothing — different runners,
+different checks) and `release-prep` `needs` BOTH, so **a canonical normal
+release cannot tag or publish unless *both* pass**: the Tier-1 engine gate and
+the signed Desktop candidate at the exact commit.
+
+Exact invariant: canonical normal releases require the Tier-1 gate; the audited
+**emergency dispatch may bypass only the Tier-1 gate** (see below); the signed
+Desktop candidate, the exact-SHA binding, the live release-blocker / main-head
+gates, and the protected `rapid-mac-tag` environment approval are **never
+bypassed by either supported auto-release route** (normal or emergency). (Manual
+`rapid-mac-v*` tag creation is separately unsupported — `apps/rapid-mac/RELEASING.md` D2.)
 
 ## Why a self-hosted runner
 
@@ -129,7 +200,10 @@ the failed `tier1-agent-gate` job log you'll see which agent (`claude-code` /
 2. Localize with a wire replay: proxy the real client once, diff our SSE stream
    against what it expects, and pin the offending event/field.
 3. Fix the integration (engine PR), then re-run: `gh run rerun <run-id>` or push
-   again. Once green, the release proceeds automatically.
+   again. Once green, the release proceeds through the signed Desktop candidate
+   and `release-prep` (live main head + blocker evidence), then waits at the
+   protected `rapid-mac-tag` gate for the reviewer's approval before anything is
+   tagged or published.
 
 ## Studio down / emergency release (break-glass)
 
@@ -151,10 +225,48 @@ gh workflow run auto-release.yml -R raullenchai/Rapid-MLX \
   -f reason="Studio offline, security fix must ship"
 ```
 
-This skips the gate and releases `vX.Y.Z` (it still checks pyproject matches and
-the tag is new). The bypass is **audited**: the actor + reason are logged and
-stamped into the GitHub Release notes as an "⚠️ Emergency release" banner. Use
-it sparingly — it ships a version whose agent integrations were *not* verified.
+The force bypasses **only the Tier-1 agent gate** (the Studio is what's down).
+Every release-safety gate still applies and is mandatory: the Desktop candidate
+must still pass the **signed/notarised/DMG-validated lane** at the exact
+candidate SHA, the **live `main` head** must still equal the validated
+candidate, the **live release-blocker set** must still be zero or explicitly
+waived for this version, the **protected `rapid-mac-tag` environment approval**
+is still required (and **admin bypass remains forbidden** for it). So a forced
+release ships a version whose *agent integrations* were not re-verified at gate
+time — the packaging and identity gates are unchanged. The bypass is
+**audited**: the actor + reason are logged and stamped into the GitHub Release
+notes as an "⚠️ Emergency release" banner. Use it sparingly.
+
+## Normal retry after main drift (no bypass)
+
+A different, everyday stall: the release aborted because `main` advanced past
+the validated candidate just before the tag claim (the pre-tag TOCTOU check —
+the candidate is no longer the live head). Nothing is broken; the ordering guard
+is doing its job. To proceed you want a **normal** re-run of the full chain at
+the *current* head — not the emergency bypass.
+
+```bash
+gh workflow run auto-release.yml -R raullenchai/Rapid-MLX \
+  -f retry_version=X.Y.Z \
+  -f reason="main advanced past the validated candidate; re-validating at new head"
+```
+
+`retry_version` runs on `main`, must equal `pyproject.toml`, and is **mutually
+exclusive with `force_version`**. Unlike the emergency path it bypasses
+**nothing**: `should_release=true` with `force=false`, so the Tier-1 gate, the
+signed Desktop candidate at the new head, the live blocker/main-head evidence,
+and the protected `rapid-mac-tag` approval are all re-required at the current
+`main` head.
+
+If the Desktop tag already exists at the accepted SHA, the tag claim is an
+idempotent no-op, not publication evidence. The release job waits (bounded) for
+an exact successful `rapid-mac-release.yml` run on that tag and a published,
+non-empty canonical DMG, then re-resolves the immutable tag before it creates
+the engine Release. A missing/failed tagged run, missing artifact, API/auth
+failure, timeout, or SHA mismatch stops the engine half. Recover by rerunning
+the failed exact tagged workflow (or explicitly dispatching it at
+`--ref rapid-mac-vX.Y.Z[-rcN]`) and then rerunning auto-release; never move or
+delete the tag.
 
 ## Related docs
 

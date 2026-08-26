@@ -373,7 +373,7 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
 
 @pytest.mark.asyncio
 async def test_dynamic_residency_preserves_profile_contract_for_local_path(
-    monkeypatch,
+    monkeypatch, scheduler_config_stub
 ) -> None:
     pytest.importorskip("uvicorn")
     from vllm_mlx import server

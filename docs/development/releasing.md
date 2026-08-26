@@ -16,7 +16,7 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 
 | Trigger | What happens automatically |
 |---|---|
-| Merge a bump PR (squash subject `chore: bump version to X.Y.Z`) to `main` | `auto-release.yml` runs `detect` → **`tier1-agent-gate`** (self-hosted Studio: the five Tier-1 agents re-verified end-to-end against a real model) → `release`, which creates tag `vX.Y.Z` + GitHub Release, crediting every merged PR author other than the repository owner. The gate blocks the tag: no green gate, no release. |
+| Merge a bump PR (squash subject `chore: bump version to X.Y.Z`) to `main` | `auto-release.yml` runs `detect` → **`tier1-agent-gate`** (self-hosted Studio: the five Tier-1 agents re-verified end-to-end against a real model) → **signed Desktop candidate gate** (validates the exact commit, produces a manifest) → **`release-prep`** (prints the exact SHA, live `main` head, and release-blocker evidence) → a **visible approval wait** at the protected `rapid-mac-tag` environment → after a reviewer approves, it tags `vX.Y.Z` + the Desktop tag and creates the GitHub Release, crediting every merged PR author other than the repository owner. No green gate, no release; no reviewer approval, no tag. |
 | GitHub Release published | `publish.yml` builds sdist + wheel → PyPI publish (Homebrew follows via homebrew-core autobump — see step 5 below; `publish.yml` itself has no Homebrew step) |
 | PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a PR titled `chore: bump version to X.Y.Z` (the `version-bump` label authorizes the change but still requires that release-shaped title; the `skip-version-bump` label is the escape hatch for corrections) |
 
@@ -56,32 +56,36 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    git push raullenchai chore/bump-0.6.16
    gh pr create --repo raullenchai/Rapid-MLX --base main \
      --title "chore: bump version to 0.6.16" --body "Release 0.6.16."
-   # after CI (incl. release-preflight.yml) is green, merge with the EXACT subject —
-   # GitHub's default squash appends "(#NN)", which breaks auto-release.yml's regex:
+   # after CI (incl. release-preflight.yml) is green, merge with the exact canonical
+   # subject. PF-1 requires the bump-PR title to be exactly "chore: bump version to
+   # X.Y.Z" (no suffix); passing --subject keeps the merged commit subject equally
+   # clean. Even without it, the post-merge detect step deliberately tolerates
+   # GitHub's default "(#NN)" squash suffix (see "Squash suffix" below), so a
+   # default squash merge no longer strands the release:
    gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash \
      --subject "chore: bump version to 0.6.16" --delete-branch
    ```
-
-   The squash-commit subject on `main` **must** match `chore: bump version to X.Y.Z` exactly — `auto-release.yml` parses it (see the squash-suffix trap below).
 
    While you're in this PR, also roll the release notes:
    `git mv docs/release-notes/unreleased.md docs/release-notes/vX.Y.Z.md`,
    tidy the prose, and recreate an empty `unreleased.md`. Optional — skipping
    it just gives you a plain commit list. See `docs/release-notes/README.md`.
 
-3. **`auto-release.yml` fires** — three jobs, in sequence:
+3. **`auto-release.yml` fires** — the jobs run in this order; automation proceeds automatically up to a visible **approval wait** at the protected `rapid-mac-tag` gate, then resumes after a human approves:
 
    1. **`detect`** (GitHub-hosted, ~2s) — verifies the commit subject matches the bump regex, `pyproject.toml` agrees, and the tag doesn't already exist. Non-bump pushes stop here.
-   2. **`tier1-agent-gate`** (self-hosted Apple-Silicon "Studio", ~10min) — builds the exact release source into a fresh venv and runs `tests/integrations/agent_smoke.sh`: boots `rapid-mlx serve` and drives the five Tier-1 agents (Claude Code, Codex, Hermes, Aider, DeepSeek Harness) through a real end-to-end edit, plus the output-coherence golden and a decode-throughput check on the same warm serve. The `release` job `needs` this gate — **the release cannot tag or publish until it passes.** See [`RELEASE.md`](../../RELEASE.md) for gate failure triage and the Studio-down break-glass path.
-   3. **`release`** (GitHub-hosted) — builds the release notes via `scripts/build_release_notes.sh` (curated `docs/release-notes/vX.Y.Z.md` if present, plus the commit list for `<nearest ancestor tag>..<release commit>`), adds a linked **Community contributors** entry for every merged PR author other than the repository owner, and creates tag + GitHub Release **at that same commit**.
+   2. **`tier1-agent-gate`** (self-hosted Apple-Silicon "Studio", ~10min) — builds the exact release source into a fresh venv and runs `tests/integrations/agent_smoke.sh`: boots `rapid-mlx serve` and drives the five Tier-1 agents through a real end-to-end edit, plus the output-coherence golden and a decode-throughput check on the same warm serve. The `release` jobs `needs` this gate — **the release cannot tag or publish until it passes.** See [`RELEASE.md`](../../RELEASE.md) for gate failure triage and the Studio-down break-glass path.
+   3. **`desktop-candidate-gate`** (macos-15, runs in parallel with the Tier-1 gate) — builds/signs/notarises/DMG-validates the desktop app at the **exact release commit** and produces a Desktop manifest. **A desktop RC tag may only be claimed at this validated candidate SHA** (#2301); it cannot precede the validated artifact commit.
+   4. **`release-prep`** (pre-approval evidence, no environment) — resolves the release commit, verifies the accepted candidate SHA, verifies the **live `main` head** still equals it, gathers **live release-blocker evidence** against the per-version waiver file, prints all of it, and uploads the evidence. This is the exact identity a reviewer approves.
+   5. **`release`** (environment-gated **`rapid-mac-tag`**) — a human approves the exact printed SHA, then it re-queries the live blocker set and live `main` head (TOCTOU) and claims the desktop tag at that validated commit. `tag_desktop_app.sh` refuses `RELEASE_SHA != ACCEPTED_SHA`.
+   6. **Tagged Desktop publish** — the `rapid-mac-v*` tag triggers `rapid-mac-release.yml`, which re-runs the SAME shared `desktop-releasable` validation contract on the tagged commit, re-verifies the tag binding BEFORE uploading, then publishes the DMG + Sparkle appcast/latest.json. The environment-gated release job waits for the exact tagged run to succeed, the canonical non-empty DMG to exist, and the tag to re-resolve to the accepted SHA. A same-SHA tag no-op alone is not publication evidence.
+   7. **Engine release** — only after that Desktop publication evidence passes, tags `vX.Y.Z`, builds the release notes via `scripts/build_release_notes.sh` (curated `docs/release-notes/vX.Y.Z.md` if present, plus the commit list for `<nearest ancestor tag>..<release commit>`), adds a linked **Community contributors** entry for every merged PR author other than the repository owner, and creates tag + GitHub Release **at that same commit**. Missing/failed Desktop evidence, timeout, API/auth failure or SHA mismatch fails closed; recover by rerunning/dispatching the exact immutable Desktop tag workflow and rerunning auto-release, never by moving the tag.
 
 4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment).
 
 5. **Homebrew (homebrew/core)** — no action needed. `rapid-mlx` is in homebrew/core, which tracks new PyPI releases via Homebrew's autobump/livecheck (BrewTestBot opens the bump PR and builds bottles). If autobump ever lags, a maintainer can run `brew bump-formula-pr --version=X.Y.Z rapid-mlx`.
 
 6. **Verify**: once the core bump merges, `brew update && brew upgrade rapid-mlx` pulls in the new version.
-
-The sequence is hands-off after step 2.
 
 ## Safety nets
 
@@ -95,7 +99,7 @@ Runs on PRs that modify `pyproject.toml` (so any version-line edit is always che
 - **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` (no leading-zero components) and strictly greater than base.
 - **A PR that does not touch the `version` line** → **PASS** (nothing to guard).
 
-A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. The `version-bump` label authorizes the change but is **not sufficient on its own for an increasing bump**: the title must *also* be a release subject, otherwise the merged squash commit wouldn't match `auto-release.yml`'s regex and the version would advance without ever publishing (the exact incident this guard prevents). (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; note `auto-release.yml` itself rejects that suffix, so bump PRs must be merged with an explicit `--subject` — see the squash-suffix trap below.)
+A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. The `version-bump` label authorizes the change but is **not sufficient on its own for an increasing bump**: the title must *also* be a release subject, otherwise the merged squash commit wouldn't match `auto-release.yml`'s regex and the version would advance without ever publishing (the exact incident this guard prevents). (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; PF-1 keeps the bump-PR title canonical and strict, while the post-merge detect step deliberately tolerates the suffix — see "Squash suffix" below.)
 
 The `skip-version-bump` escape hatch is validated differently: because it's meant for deliberate corrections (which may be a **rollback**), it only checks that the version is well-formed and actually changed — it does **not** enforce strictly-increasing.
 
@@ -148,7 +152,7 @@ Sometimes the auto pipeline isn't right. Escape hatches:
 
 ## Release commit message format
 
-`auto-release.yml` is intentionally strict. Only this exact form triggers a release:
+`auto-release.yml` is intentionally strict about the **canonical** subject — the same shape the bump PR is created with:
 
 ```
 chore: bump version to X.Y.Z
@@ -156,14 +160,14 @@ chore: bump version to X.Y.Z
 
 — where `X.Y.Z` is three numeric components matching the new `pyproject.toml` version. Anything else (extra words, different prefix, dev suffixes) is silently ignored.
 
-> **Squash-suffix trap.** GitHub's default squash-merge appends `(#NN)` to the subject. That suffix breaks the regex match and strands the version between commit-on-main and PyPI/Homebrew publish (recurring footgun — see `release_squash_subject` memory). Always pass `--subject` to `gh pr merge`:
+> **Two checks, two strictness levels.** The bump-PR **title** is checked strictly pre-merge by **PF-1** (`release-preflight.yml`, via `scripts/validate_release_subject.py`): it must be exactly `chore: bump version to X.Y.Z[-rcN]`, no `(#NN)` suffix — the canonical subject is kept clean. The **post-merge** detect step in `auto-release.yml` is deliberately **tolerant**: it runs the subject through `release_version.py subject --allow-pr-suffix`, so GitHub's default squash-merge appending `(#NN)` no longer strands a release between commit-on-main and publish. In short: title stays canonical (PF-1), merged subject tolerates the squash suffix (detect). Neither treats the suffix as a blocker anymore — PF-1 keeps it strict for hygiene, detect tolerates it so an un-`--subject` merge can't break shipping.
+>
+> To keep the merged subject canonical too, pass `--subject`:
 >
 > ```bash
 > gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash \
 >   --subject "chore: bump version to X.Y.Z" --delete-branch
 > ```
->
-> The `release-preflight.yml` workflow checks bump-PR titles against the same regex up-front; `scripts/validate_release_subject.py` is the structural belt-and-suspenders.
 
 ## Pre-release validation gauntlet
 
@@ -194,8 +198,10 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
 | G10 | MLX upstream cross-chip-family audit | CI | `release-preflight.yml` advisory (macOS-14) | M5-style #404 landmines |
 | G11 | Auto-routing escape-hatch registry | CI | `release-preflight.yml` (macOS-14) + ci.yml test-apple-silicon | silent auto-detection failures (#393/#400/#404) |
-| PF-1 | Auto-release subject regex pre-check | CI | `release-preflight.yml` (ubuntu) | `(#NN)` squash suffix trap |
+| PF-1 | Auto-release bump-PR title regex pre-check (canonical subject, no suffix) | CI | `release-preflight.yml` (ubuntu) | a bump PR whose title isn't the clean release subject (the post-merge detect step separately tolerates the `(#NN)` squash suffix) |
 | PF-2 | Release workflow secret + var presence | CI | `release-preflight.yml` (ubuntu) | a credential the tag run needs but nobody configured (#1851) |
+| PF-3 | `rapid-mac-tag` environment read-back | CI | `release-preflight.yml` (ubuntu) | the production tag approval environment is missing or no longer protected (a workflow reference auto-creates an *unprotected* one — not an approval gate) |
+| PF-4 | Live main-head + blocker evidence at candidate time | CI | `auto-release.yml::release-prep` | an RC tag claimed at a validated candidate that is no longer the live `main` head, or with an unresolved/recently-changed release blocker (#2301) |
 
 ### CI coverage — what runs without you lifting a finger
 
@@ -257,7 +263,7 @@ For PRs that are explicitly about perf changes (a kernel rewrite, a new fast pat
 
 | Pitfall | Memory ref | Mitigation |
 |---|---|---|
-| `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 |
+| non-canonical bump-PR title (e.g. a stray `(#NN)` suffix) | `release_squash_subject` | PF-1 keeps the title canonical; post-merge detect tolerates the suffix via `--allow-pr-suffix` |
 | `skip-version-bump` escape-hatch label refire | `gotcha_skip_version_bump_label` | Auto-refires — `version-check.yml` subscribes to `labeled`/`unlabeled`/`edited`, so adding/removing the label or re-titling reruns the guard (no close+reopen needed) |
 | Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (mandatory: every `uses:` is a 40-character SHA) |
 | MLX upstream new module-scope calls (M5 #404) | G10 in this release guide | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |

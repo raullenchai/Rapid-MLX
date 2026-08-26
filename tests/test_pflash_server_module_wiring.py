@@ -28,6 +28,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from contextlib import nullcontext
 from unittest import mock
 
 import pytest
@@ -132,6 +133,58 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
     return captured
 
 
+def _run_server_main_capturing_scheduler(
+    argv: list[str],
+    *,
+    detected_config,
+    expected_exception=_StopError,
+    block_auto_config_import=False,
+):
+    """Drive ``server.main()`` through scheduler construction, offline."""
+    captured: dict = {}
+    detect = (
+        mock.Mock(side_effect=detected_config)
+        if isinstance(detected_config, BaseException)
+        else mock.Mock(return_value=detected_config)
+    )
+
+    def _capture_load_model(_model, *, scheduler_config, **_kwargs):
+        captured["scheduler_config"] = scheduler_config
+        raise _StopError
+
+    server = _server_module()
+    real_import = __import__
+
+    def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level == 1 and name == "model_auto_config":
+            raise ImportError("model auto-config unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    import_guard = (
+        mock.patch("builtins.__import__", blocked_import)
+        if block_auto_config_import
+        else nullcontext()
+    )
+    with (
+        import_guard,
+        mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch(
+            "vllm_mlx.server.resolve_serving_lane", lambda _name, **_kw: (False, False)
+        ),
+        mock.patch(
+            "vllm_mlx.model_auto_config.detect_model_config",
+            detect,
+        ),
+        mock.patch("vllm_mlx.pflash.validate_model_support", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server.load_model", _capture_load_model),
+        mock.patch.object(sys, "argv", ["vllm_mlx.server", *argv]),
+        pytest.raises(expected_exception),
+    ):
+        server.main()
+    return captured.get("scheduler_config"), detect.call_count
+
+
 def test_server_module_applies_per_alias_keep_ratio_override():
     # bonsai-27b-2bit pins pflash_tier=verified + pflash_keep_ratio=0.50.
     # Text lane (is_mllm False) → verified tier auto-enables PFlash "always".
@@ -165,3 +218,127 @@ def test_server_module_forwards_multimodal_lane_verdict():
     assert cfg is not None
     assert captured["is_mllm"] is True
     assert cfg.mode == "off"
+
+
+def test_server_module_applies_detected_hybrid_cache_default(scheduler_config_stub):
+    from vllm_mlx.model_profile import ModelProfile
+
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        ["--model", "/models/linear-checkpoint"],
+        detected_config=ModelProfile(
+            hf_path="/models/linear-checkpoint",
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+        ),
+    )
+
+    assert scheduler.enable_prefix_cache is True
+    assert scheduler.hybrid_cache_entries == 8
+    assert scheduler.non_trimmable_exact_prefix_reuse is True
+    assert detect_calls == 1
+
+
+def test_server_module_keeps_dense_cache_default_zero(scheduler_config_stub):
+    from vllm_mlx.model_profile import ModelProfile
+
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        ["--model", "/models/dense-checkpoint"],
+        detected_config=ModelProfile(
+            hf_path="/models/dense-checkpoint",
+            is_hybrid=False,
+        ),
+    )
+
+    assert scheduler.enable_prefix_cache is True
+    assert scheduler.hybrid_cache_entries == 0
+    assert scheduler.non_trimmable_exact_prefix_reuse is False
+    assert detect_calls == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--tool-call-parser", "hermes", "--reasoning-parser", "qwen3"],
+        [
+            "--tool-call-parser",
+            "hermes",
+            "--reasoning-parser",
+            "qwen3",
+            "--pflash",
+            "off",
+            "--pflash-keep-ratio",
+            "0.2",
+        ],
+        [
+            "--tool-call-parser",
+            "hermes",
+            "--reasoning-parser",
+            "qwen3",
+            "--pflash",
+            "off",
+            "--pflash-keep-ratio",
+            "0.2",
+            "--kv-cache-turboquant",
+            "none",
+        ],
+    ],
+)
+def test_server_module_lazy_metadata_consumers_share_one_result(
+    scheduler_config_stub, argv
+):
+    from vllm_mlx.model_profile import ModelProfile
+
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        ["--model", "/models/linear-checkpoint", *argv],
+        detected_config=ModelProfile(is_hybrid=True, is_hybrid_explicit=True),
+    )
+
+    assert scheduler.hybrid_cache_entries == 8
+    assert detect_calls == 1
+
+
+def test_server_module_strict_metadata_failure_propagates(scheduler_config_stub):
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        ["--model", "/models/broken-checkpoint"],
+        detected_config=RuntimeError("broken metadata"),
+        expected_exception=RuntimeError,
+    )
+
+    assert scheduler is None
+    assert detect_calls == 1
+
+
+def test_server_module_cache_metadata_failure_is_nonfatal(scheduler_config_stub):
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        [
+            "--model",
+            "/models/broken-checkpoint",
+            "--tool-call-parser",
+            "hermes",
+            "--reasoning-parser",
+            "qwen3",
+            "--pflash",
+            "off",
+            "--pflash-keep-ratio",
+            "0.2",
+            "--kv-cache-turboquant",
+            "none",
+        ],
+        detected_config=RuntimeError("broken metadata"),
+    )
+
+    assert scheduler.hybrid_cache_entries == 0
+    assert detect_calls == 1
+
+
+def test_server_module_missing_auto_config_module_degrades_to_no_default(
+    scheduler_config_stub,
+):
+    scheduler, detect_calls = _run_server_main_capturing_scheduler(
+        ["--model", "/models/opaque-checkpoint"],
+        detected_config=None,
+        block_auto_config_import=True,
+    )
+
+    assert scheduler.hybrid_cache_entries == 0
+    assert detect_calls == 0

@@ -69,30 +69,23 @@ permissions:
 jobs:
   build:
     runs-on: macos-15   # default Xcode 16 → Swift 6.0 (Package.swift tools 6.0)
+    timeout-minutes: 120
     outputs:
       # Published so the release-creating job can decide "--prerelease" without
       # restating the secret expression below. Two copies of the same predicate
       # would silently disagree the first time the signing secret set changes.
       signed: ${{ steps.signing_state.outputs.signed }}
-    defaults:
-      run:
-        # All script/shell steps run from the app directory so the
-        # in-repo scripts (which resolve $ROOT relative to themselves) and
-        # their ``build/...`` outputs line up. ``uses:`` steps ignore this
-        # and take repo-root-relative paths (see the explicit
-        # ``apps/rapid-mac/`` prefixes below).
-        working-directory: apps/rapid-mac
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
       AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
-      # Signing is OPTIONAL. When the Developer ID + notary secrets are all
-      # present we Developer-ID sign + notarise (a clean, double-clickable
-      # release). When they are absent (e.g. an early internal-testing build
-      # before the Apple account is wired up) the job still runs: it produces
-      # an AD-HOC signed, un-notarised DMG and publishes it as a PRE-RELEASE
-      # with a "right-click → Open" note. Re-running the same tag once the
-      # secrets land upgrades it to a proper signed release.
+      # A REAL rapid-mac-v* tag run MUST be signed + notarised: it ships to
+      # users and must satisfy the approved signed evidence, so `require_signed`
+      # (bound to appmeta.is_tag) hard-fails the lane if the Apple secrets drift
+      # since the pre-tag candidate — it can never degrade to an ad-hoc build and
+      # publish (#2301). Signing is optional ONLY for a branch workflow_dispatch
+      # dry-run (is_tag=false), which may build an ad-hoc DMG but publishes
+      # nothing. `SIGNED` reflects whether the secrets are present now.
       SIGNED: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
       # Absolute .app size ceiling — enforced by the "Bundle size gate"
       # step. The bundled sidecar (Contents/Resources/rapid-mlx) dominates.
@@ -113,74 +106,6 @@ jobs:
           # repository (apps/rapid-mac is a subdirectory of it).
           fetch-depth: 0
 
-      - name: Show toolchain
-        run: |
-          swift --version
-          xcodebuild -version
-
-      # Host python3 is used by scripts/build-sidecar-tarball.sh (only when
-      # the optional bootstrapper tarball is built) and by the optional
-      # BUNDLE_MODEL snapshot path in scripts/build.sh (off by default). The
-      # sidecar's OWN interpreter is a pinned python-build-standalone that
-      # scripts/build-sidecar.sh downloads — this setup-python does not
-      # affect the shipped bundle or its Mach-O signing baseline.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Import Developer ID certificate into a temp keychain
-        if: env.SIGNED == 'true'
-        env:
-          CERT_P12_BASE64: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_DEVID_CERT_PASSWORD }}
-        run: |
-          set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          KEYCHAIN_PW="$(openssl rand -base64 24)"
-          CERT_PATH="$RUNNER_TEMP/devid.p12"
-
-          # Decode the cert (openssl avoids BSD-vs-GNU base64 flag drift).
-          printf %s "$CERT_P12_BASE64" | openssl base64 -d -A -out "$CERT_PATH"
-
-          # Fresh, isolated keychain — torn down in the always() step.
-          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-
-          security import "$CERT_PATH" -P "$CERT_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-
-          # Let codesign use the key non-interactively.
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-
-          # Put the temp keychain on the search list (keep user keychains).
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | sed 's/"//g')
-
-          # Resolve the Developer ID Application identity's SHA-1 and hand it
-          # to build.sh / dmg.sh via CODESIGN_IDENTITY.
-          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | grep 'Developer ID Application' | head -1 | awk '{print $2}')"
-          if [[ -z "$IDENTITY" ]]; then
-            echo "::error::No 'Developer ID Application' identity found in the imported cert"
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
-            exit 1
-          fi
-          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          echo "Imported identity: $IDENTITY"
-
-      - name: Decode notarisation API key
-        if: env.SIGNED == 'true'
-        env:
-          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
-        run: |
-          set -euo pipefail
-          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
-          printf %s "$AC_API_KEY_P8_BASE64" | openssl base64 -d -A -out "$KEY_PATH"
-          echo "AC_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
-
       - name: Extract CHANGELOG section for this tag
         # Slice the ``## [X.Y.Z]`` block out of CHANGELOG.md so the GitHub
         # release body is the hand-curated narrative rather than an
@@ -196,14 +121,15 @@ jobs:
           # is a branch, so VERSION is empty and the placeholder branch runs.
           VERSION="${TAG#rapid-mac-v}"
           [[ "$VERSION" == "$TAG" ]] && VERSION=""   # ref wasn't a rapid-mac-v tag
-          if [[ -f CHANGELOG.md && -n "$VERSION" ]]; then
+          APP_CL="apps/rapid-mac/CHANGELOG.md"
+          if [[ -f "$APP_CL" && -n "$VERSION" ]]; then
             awk -v needle="## [${VERSION}]" '
               {
                 if (index($0, needle) == 1) { in_section = 1; print; next }
                 if (in_section && /^## /) { exit }
                 if (in_section) { print }
               }
-            ' CHANGELOG.md > "$OUT"
+            ' "$APP_CL" > "$OUT"
           fi
           if [[ ! -s "$OUT" ]]; then
             echo "Release ${TAG:-<dispatch>} (no CHANGELOG.md section found)." > "$OUT"
@@ -252,160 +178,137 @@ jobs:
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
 
-      - name: Build + sign Rapid-MLX Desktop.app
-        # build.sh assembles the .app, builds + signs the bundled sidecar
-        # from the engine at the repo root (RAPID_MLX_SOURCE defaults to
-        # apps/rapid-mac/../.. — the monorepo root), and Developer-ID signs
-        # the bundle with CODESIGN_IDENTITY (exported above).
-        env:
-          # Only signed builds enable Sparkle. An ad-hoc build cannot update a
-          # Developer-ID-signed installation because code-signing continuity
-          # validation correctly rejects it.
-          SPARKLE_PUBLIC_ED_KEY: ${{ env.SIGNED == 'true' && vars.SPARKLE_PUBLIC_ED_KEY || '' }}
+      - name: Compute app version and previous rapid-mac release tag
+        id: appmeta
         run: |
           set -euo pipefail
-          if [[ "${SIGNED}" == "true" && -z "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
-            echo "::error::signed releases require the SPARKLE_PUBLIC_ED_KEY Actions variable"
-            exit 1
-          fi
-          bash scripts/build.sh
-
-      - name: Bundle size gate (block if .app exceeds BUNDLE_SIZE_CAP_MB)
-        # Runs BEFORE notarisation so an oversize bundle fails fast without
-        # burning an Apple notary submission.
-        run: |
-          set -euo pipefail
-          APP="build/Rapid-MLX Desktop.app"
-          SIDECAR="$APP/Contents/Resources/rapid-mlx"
-          CAP_MB="${BUNDLE_SIZE_CAP_MB:-550}"
-
-          if [[ ! -d "$APP" ]]; then
-            echo "::error::Expected $APP to exist after build step but it does not."
-            exit 1
-          fi
-
-          APP_MB=$(du -sm "$APP" | awk '{print $1}')
-          if [[ -d "$SIDECAR" ]]; then
-            SIDECAR_MB=$(du -sm "$SIDECAR" | awk '{print $1}')
+          # Tagged lane (ref rapid-mac-vX.Y.Z[-rcN]): the bare version derives
+          # from the immutable tag identity the run is bound to.
+          REF_VERSION="${GITHUB_REF_NAME#rapid-mac-v}"
+          if [[ "$GITHUB_REF_NAME" == rapid-mac-v* ]] \
+             && [[ "$REF_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]; then
+            APP_VERSION="$REF_VERSION"
+            IS_TAG="true"
           else
-            SIDECAR_MB="0 (sidecar dir missing — investigate)"
+            # Manual workflow_dispatch dry-run on a branch: there is no tag to
+            # derive the version from, so read the version the build will
+            # actually embed from the SOURCE plist (build.sh copies
+            # Resources/Info.plist verbatim into the built app). This keeps the
+            # manifest's embedded-version==version invariant truthful for the
+            # dry-run and validates the real tree under development. Nothing is
+            # published or tagged (#2301).
+            IS_TAG="false"
+            SOURCE_PLIST="apps/rapid-mac/Resources/Info.plist"
+            APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SOURCE_PLIST")"
+            [[ "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]] || {
+              echo "::error::cannot derive a version for the dispatch dry-run: resources/Info.plist CFBundleShortVersionString '$APP_VERSION' is not X.Y.Z[-rcN]" >&2
+              exit 1
+            }
+            echo "::notice::workflow_dispatch dry-run (no tag): building + validating version $APP_VERSION from the source plist; nothing will be published or tagged."
           fi
-          echo "::notice::Rapid-MLX Desktop.app = ${APP_MB} MB (cap ${CAP_MB} MB); sidecar = ${SIDECAR_MB} MB"
+          # Two distinct predecessors (portable ordering via release_version.py,
+          # never GNU sort -V on macOS; the intended tag may not exist yet, so
+          # both select STRICTLY below the intended version):
+          #   (1) DMG size-delta baseline   = greatest prior STABLE tag (an RC
+          #       has no published DMG asset; rc2 compares vs the last stable);
+          #   (2) Sparkle build monotonicity = greatest prior release tag
+          #       INCLUDING RCs (rc2 must beat rc1, a stable must beat its rc).
+          PREV_STABLE="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
+            | python3 scripts/release_version.py preceding "${APP_VERSION}")"
+          PREV_RELEASE="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
+            | python3 scripts/release_version.py preceding-release "${APP_VERSION}")"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+          echo "app_tag=rapid-mac-v$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "previous_stable_tag=${PREV_STABLE:-}" >> "$GITHUB_OUTPUT"
+          echo "previous_release_tag=${PREV_RELEASE:-}" >> "$GITHUB_OUTPUT"
 
-          echo "::group::Bundle size breakdown"
-          SITE_PACKAGES="$SIDECAR/site-packages"
-          if [[ -d "$SITE_PACKAGES" ]]; then
-            echo "Top 10 largest dirs under site-packages/:"
-            du -sm "$SITE_PACKAGES"/* 2>/dev/null | sort -rn | head -10 || true
-          fi
-          echo "::endgroup::"
-
-          if [[ "$APP_MB" -gt "$CAP_MB" ]]; then
-            echo "::error::Rapid-MLX Desktop.app is ${APP_MB} MB which exceeds the ${CAP_MB} MB cap (bump BUNDLE_SIZE_CAP_MB if intentional)."
-            exit 1
-          fi
-
-      - name: Notarise + staple Rapid-MLX Desktop.app
-        if: env.SIGNED == 'true'
-        run: |
-          set -euo pipefail
-          ditto -c -k --keepParent "build/Rapid-MLX Desktop.app" "build/Rapid-MLX-Desktop.zip"
-          bash scripts/notarize.sh "build/Rapid-MLX-Desktop.zip" "build/Rapid-MLX Desktop.app"
-
-      - name: Build signed Sparkle archive and appcast
-        if: startsWith(github.ref, 'refs/tags/') && env.SIGNED == 'true'
-        env:
+      - name: Build + sign + notarise + DMG-validate (shared contract)
+        id: releasable
+        # #2301: the tag-triggered lane runs the EXACT same signed/notarised/
+        # DMG-validated gate as the pre-tag candidate lane, via the single
+        # desktop-releasable composite action, so the two can never drift. It
+        # produces + verifies the Desktop manifest and creates no pointer.
+        uses: ./.github/actions/desktop-releasable
+        with:
+          checkout_path: ${{ github.workspace }}
+          candidate_sha: ${{ github.sha }}
+          release_version: ${{ steps.appmeta.outputs.app_version }}
+          # The intended immutable tag. On a real tag run this IS the ref; on a
+          # branch workflow_dispatch dry-run it is a SYNTHETIC rapid-mac-v<version>
+          # used only to bind the manifest — never claimed/tagged.
+          app_tag: ${{ steps.appmeta.outputs.app_tag }}
+          signed: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
+          # A REAL rapid-mac-v* tag run must be SIGNED (this is a user-facing
+          # release satisfying the approved evidence): use require_signed=true so
+          # any Apple secret/config drift since the pre-tag candidate fails this
+          # lane closed rather than degrading to ad-hoc and publishing. Only a
+          # branch workflow_dispatch dry-run (is_tag=false) stays ad-hoc-capable.
+          require_signed: ${{ steps.appmeta.outputs.is_tag == 'true' }}
+          # Sparkle (zip + appcast) is built ONLY on real tag runs. A branch
+          # workflow_dispatch dry-run derives the version from the source plist,
+          # builds/uploads the (possibly ad-hoc) DMG + manifest, and skips
+          # Sparkle/release/mirror publication exactly as the old workflow did.
+          publish_sparkle: ${{ steps.appmeta.outputs.is_tag == 'true' }}
+          release_notes_file: ${{ runner.temp }}/release-notes.md
+          sparkle_cdn_base: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
+          previous_stable_tag: ${{ steps.appmeta.outputs.previous_stable_tag }}
+          previous_release_tag: ${{ steps.appmeta.outputs.previous_release_tag }}
+          MACOS_DEVID_CERT_P12_BASE64: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 }}
+          MACOS_DEVID_CERT_PASSWORD: ${{ secrets.MACOS_DEVID_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-          CDN_BASE: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+
+      - name: Verify tag binding before any publication
+        # #2301: the published artifact must be built from the exact commit the
+        # tag identifies. Re-resolve refs/tags/<TAG> (peeling annotated tags),
+        # and require it to match the built SHA, the manifest source SHA and the
+        # checked-out commit. Fail BEFORE uploading anything.
+        # Real tag runs only — a branch workflow_dispatch dry-run has no tag to
+        # bind and never publishes, so there is nothing to verify against.
+        if: steps.appmeta.outputs.is_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          BUILT_SHA: ${{ steps.releasable.outputs.built_sha }}
+          CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]] || {
-            echo "::error::signed releases require SPARKLE_ED_PRIVATE_KEY"
+          MANIFEST="${{ steps.releasable.outputs.manifest }}"
+          M_SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source_sha"])' "$MANIFEST")"
+          source scripts/resolve_github_tag.sh
+          TAG_SHA=$(resolve_github_tag_commit "$TAG")
+          echo "::notice::tag=$TAG sha=$TAG_SHA checkout=$CHECKOUT_SHA built=$BUILT_SHA manifest_source=$M_SRC"
+          for ID in "$TAG_SHA" "$CHECKOUT_SHA" "$BUILT_SHA" "$M_SRC"; do
+            [[ "$ID" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid SHA '$ID' in tag binding"; exit 1; }
+          done
+          if [ "$TAG_SHA" != "$M_SRC" ] || [ "$CHECKOUT_SHA" != "$M_SRC" ] || [ "$BUILT_SHA" != "$M_SRC" ]; then
+            echo "::error::tag/checkout/built/manifest source SHAs disagree; refusing to publish before upload." >&2
             exit 1
-          }
-          [[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]] || {
-            echo "::error::RAPID_MAC_DIST_CDN_BASE must be https://dl.rapidmlx.com"
-            exit 1
-          }
-          VERSION="${TAG#rapid-mac-v}"
-          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
-            'build/Rapid-MLX Desktop.app/Contents/Info.plist')"
-          [[ "$APP_BUILD" =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::CFBundleVersion must be a positive integer for Sparkle"
-            exit 1
-          }
-          PREVIOUS_TAG="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
-            | awk -v current="$TAG" \
-                '$0 ~ /^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$/ { \
-                  if ($0 == current) { print previous; exit } \
-                  previous=$0 \
-                }')"
-          if [[ -n "$PREVIOUS_TAG" ]]; then
-            PREVIOUS_BUILD="$(git show \
-              "${PREVIOUS_TAG}:apps/rapid-mac/Resources/Info.plist" \
-              | plutil -extract CFBundleVersion raw -o - - 2>/dev/null || true)"
-            [[ "$PREVIOUS_BUILD" =~ ^[1-9][0-9]*$ ]] || {
-              echo "::error::cannot read CFBundleVersion from ${PREVIOUS_TAG}"
-              exit 1
-            }
-            (( APP_BUILD > PREVIOUS_BUILD )) || {
-              echo "::error::CFBundleVersion ${APP_BUILD} must exceed ${PREVIOUS_TAG} build ${PREVIOUS_BUILD} for Sparkle"
-              exit 1
-            }
           fi
-          OUT="build/sparkle"
-          rm -rf "$OUT"
-          mkdir -p "$OUT"
 
-          TEMP_ZIP="$OUT/Rapid-MLX-Desktop-${VERSION}.zip"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "build/Rapid-MLX Desktop.app" "$TEMP_ZIP"
-          ZIP_SHA256="$(shasum -a 256 "$TEMP_ZIP" | awk '{print $1}')"
-          ZIP_NAME="Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"
-          mv "$TEMP_ZIP" "$OUT/$ZIP_NAME"
-          cp "$RELEASE_NOTES_FILE" "$OUT/${ZIP_NAME%.zip}.md"
-
-          GENERATE_APPCAST=".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
-          [[ -x "$GENERATE_APPCAST" ]] || {
-            echo "::error::Sparkle generate_appcast tool missing"
-            exit 1
-          }
-          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
-            | "$GENERATE_APPCAST" --ed-key-file - \
-                --download-url-prefix "${CDN_BASE}/rapid-mac/${VERSION}/" \
-                --embed-release-notes --maximum-versions 1 --maximum-deltas 0 \
-                -o "$OUT/appcast.xml" "$OUT"
-          [[ -s "$OUT/appcast.xml" ]] || { echo "::error::appcast not generated"; exit 1; }
-          grep -Fq "sparkle:edSignature=" "$OUT/appcast.xml" || {
-            echo "::error::appcast enclosure has no EdDSA signature"
-            exit 1
-          }
-          EXPECTED_URL="${CDN_BASE}/rapid-mac/${VERSION}/${ZIP_NAME}"
-          APPCAST_VERSION="$(xmllint --xpath \
-            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="version"])' \
-            "$OUT/appcast.xml")"
-          APPCAST_SHORT_VERSION="$(xmllint --xpath \
-            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="shortVersionString"])' \
-            "$OUT/appcast.xml")"
-          APPCAST_URL="$(xmllint --xpath \
-            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="enclosure"]/@url)' \
-            "$OUT/appcast.xml")"
-          [[ "$APPCAST_VERSION" == "$APP_BUILD" ]] || {
-            echo "::error::appcast build version does not match the signed app"
-            exit 1
-          }
-          [[ "$APPCAST_SHORT_VERSION" == "$VERSION" ]] || {
-            echo "::error::appcast release version does not match the tag"
-            exit 1
-          }
-          [[ "$APPCAST_URL" == "$EXPECTED_URL" ]] || {
-            echo "::error::appcast URL does not match the mirrored Sparkle ZIP"
-            exit 1
-          }
+      - name: Upload workflow artifact (DMG + manifest)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mlx-desktop-dmg
+          path: |
+            apps/rapid-mac/build/rapid-mlx-desktop.dmg
+            apps/rapid-mac/build/rapid-mlx-desktop.manifest.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload Sparkle update artifact
-        if: startsWith(github.ref, 'refs/tags/') && env.SIGNED == 'true'
+        # Sparkle (zip + appcast) is only GENERATED on a real tag run
+        # (publish_sparkle=true inside desktop-releasable). A signed branch
+        # workflow_dispatch dry-run sets SIGNED=true but correctly skips Sparkle
+        # generation, so upload must ALSO be tag-only or it would fail on
+        # if-no-files-found with nothing to upload. This keeps the manual
+        # dispatch dry-run working as before.
+        if: steps.appmeta.outputs.is_tag == 'true' && env.SIGNED == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: rapid-mac-sparkle-update
@@ -414,77 +317,6 @@ jobs:
             apps/rapid-mac/build/sparkle/appcast.xml
           if-no-files-found: error
           retention-days: 7
-
-      - name: Build + sign rapid-mlx-desktop.dmg (from the stapled app)
-        run: bash scripts/dmg.sh
-
-      - name: Bundle size delta gate (block if DMG grew > cap vs previous rapid-mac release)
-        # Second-line bloat defence — diffs this DMG against the previous
-        # ``rapid-mac-v*`` release's DMG. Skips cleanly on the first release.
-        # Runs before notarisation so a regression doesn't burn a submission.
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          DMG="build/rapid-mlx-desktop.dmg"
-          DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-50}"
-          [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
-          CURRENT_DMG_MB=$(du -sm "$DMG" | awk '{print $1}')
-          CURRENT_TAG="${GITHUB_REF_NAME}"
-
-          # Only compare against OTHER rapid-mac releases (filter out the
-          # engine's own releases in this monorepo, and the current tag).
-          PREV_TAG=$(gh release list --limit 40 --exclude-drafts \
-            --json tagName -q '.[].tagName' \
-            | grep '^rapid-mac-v' \
-            | grep -vxF "$CURRENT_TAG" \
-            | head -1 || true)
-          if [[ -z "$PREV_TAG" ]]; then
-            echo "::notice::no previous rapid-mac release to diff — skipping delta gate (current DMG = ${CURRENT_DMG_MB} MB)"
-            exit 0
-          fi
-
-          CANONICAL_DMG_NAME="rapid-mlx-desktop.dmg"
-          PREV_DMG_BYTES=$(gh release view "$PREV_TAG" --json assets \
-            -q ".assets[] | select(.name == \"${CANONICAL_DMG_NAME}\") | .size" | head -1 || true)
-          if [[ -z "$PREV_DMG_BYTES" ]]; then
-            echo "::notice::previous release ${PREV_TAG} has no '${CANONICAL_DMG_NAME}' asset — skipping delta gate."
-            exit 0
-          fi
-
-          PREV_DMG_MB=$(awk -v b="$PREV_DMG_BYTES" 'BEGIN { printf "%d", (b/1000000) + 0.5 }')
-          DELTA_MB=$(( CURRENT_DMG_MB - PREV_DMG_MB ))
-          echo "::notice::DMG delta vs ${PREV_TAG}: ${CURRENT_DMG_MB} - ${PREV_DMG_MB} = ${DELTA_MB} MB (cap +${DELTA_CAP_MB} MB)"
-          if [[ "$DELTA_MB" -gt "$DELTA_CAP_MB" ]]; then
-            echo "::error::DMG grew by ${DELTA_MB} MB vs ${PREV_TAG}, exceeding +${DELTA_CAP_MB} MB (bump BUNDLE_SIZE_DELTA_CAP_MB if intentional)."
-            exit 1
-          fi
-
-      - name: Validate DMG contents (app bundle + Applications symlink)
-        run: bash scripts/validate-dmg.sh build/rapid-mlx-desktop.dmg
-
-      - name: Notarise + staple rapid-mlx-desktop.dmg
-        if: env.SIGNED == 'true'
-        run: bash scripts/notarize.sh build/rapid-mlx-desktop.dmg build/rapid-mlx-desktop.dmg
-
-      - name: Validate final stapled DMG presentation
-        if: env.SIGNED == 'true'
-        run: bash scripts/validate-dmg.sh build/rapid-mlx-desktop.dmg
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
-        with:
-          name: rapid-mlx-desktop-dmg
-          # uses: step — path is repo-root-relative (working-directory does
-          # not apply to actions).
-          path: apps/rapid-mac/build/rapid-mlx-desktop.dmg
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Clean up temp keychain
-        if: always()
-        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
   # REQUIRED FOR TAGS: mirror the notarised DMG and update the static fallback.
@@ -504,6 +336,7 @@ jobs:
   mirror-dist:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download the notarised DMG artifact
@@ -637,8 +470,15 @@ jobs:
   publish-updater-fallback:
     needs: [build, mirror-dist]
     runs-on: ubuntu-latest
+    # Includes the turnstyle queue plus final updater/Release publication.
+    timeout-minutes: 120
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Queue behind earlier updater publications
         uses: softprops/turnstyle@afaccda0f3c0136fb7cb4a734b9b96be03599948  # v3.3.2
         with:
@@ -671,6 +511,28 @@ jobs:
           name: rapid-mac-sparkle-appcast
           path: sparkle
 
+      - name: Re-resolve the tag immediately before publication (TOCTOU)
+        # #2301: the matrix can run long enough for a tag to be force-moved after
+        # the artifact was validated. Re-resolve refs/tags/<TAG> (peeling
+        # annotated tags) right before any mutable updater/GitHub Release
+        # publication and require it to still equal the manifest's bound source
+        # SHA. A tag re-pointed after validation must NOT publish.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          MANIFEST="dist-dmg/rapid-mlx-desktop.manifest.json"
+          [[ -f "$MANIFEST" ]] || { echo "::error::missing $MANIFEST"; exit 1; }
+          M_SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source_sha"])' "$MANIFEST")"
+          source scripts/resolve_github_tag.sh
+          TAG_SHA=$(resolve_github_tag_commit "$TAG")
+          echo "::notice::pre-publication tag ${TAG} resolves to ${TAG_SHA}; manifest source ${M_SRC}"
+          if [ "$TAG_SHA" != "$M_SRC" ]; then
+            echo "::error::tag ${TAG} now points at ${TAG_SHA}, not the validated ${M_SRC}; refusing to publish the updater pointer or GitHub Release." >&2
+            exit 1
+          fi
+
       - name: Publish updater fallback monotonically
         # RC artifacts are mirrored under immutable versioned keys and exposed
         # through a GitHub prerelease, but must never replace the stable feed.
@@ -681,6 +543,8 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           R2_BUCKET: ${{ vars.RAPID_MAC_DIST_R2_BUCKET }}
           CDN_BASE: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]] || {
@@ -697,15 +561,46 @@ jobs:
           }
           TARGET_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/latest.json)"
 
+          # The tag-level Release is immutable evidence independent of pointer
+          # state. Verify it and this exact-run DMG before fetching/branching on
+          # latest.json, so missing/older/malformed pointers cannot reach any
+          # mutable write with mismatched canonical bytes.
+          RELEASE_ARGS=()
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              > dist/current-release.json 2> dist/current-release.err; then
+            RELEASE_ARGS=(--release-json dist/current-release.json)
+          elif grep -Fq '(HTTP 404)' dist/current-release.err; then
+            echo "::notice::GitHub Release ${TAG} is absent; first publication/recovery remains available"
+          else
+            cat dist/current-release.err >&2
+            exit 1
+          fi
+          python3 scripts/check_equal_version_republish.py \
+            --candidate dist/latest.json \
+            --dmg dist-dmg/rapid-mlx-desktop.dmg \
+            "${RELEASE_ARGS[@]}"
+
           # Treat only a genuinely absent pointer as first publication. Auth,
           # network, and parse failures remain fatal rather than bypassing the
           # rollback guard.
           if GET_OUTPUT="$(npx --yes wrangler@4.120.0 r2 object get "${R2_BUCKET}/latest.json" \
               --file dist/current-latest.json --remote 2>&1)"; then
-            CURRENT_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/current-latest.json)"
-            if dpkg --compare-versions "$CURRENT_VERSION" gt "$TARGET_VERSION"; then
-              echo "::notice::Skipping stale updater manifest ${TARGET_VERSION}; current is ${CURRENT_VERSION}"
-              exit 0
+            if CURRENT_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/current-latest.json)"; then
+              if dpkg --compare-versions "$CURRENT_VERSION" gt "$TARGET_VERSION"; then
+                echo "::notice::Skipping stale updater manifest ${TARGET_VERSION}; current is ${CURRENT_VERSION}"
+                exit 0
+              fi
+              if [[ "$CURRENT_VERSION" == "$TARGET_VERSION" ]]; then
+                python3 scripts/check_equal_version_republish.py \
+                  --current dist/current-latest.json \
+                  --candidate dist/latest.json \
+                  --dmg dist-dmg/rapid-mlx-desktop.dmg
+                echo "::notice::Equal-version updater transaction is already byte-identical; no mutable object will be rewritten"
+                exit 0
+              fi
+            else
+              echo "::error::Current latest.json is malformed; monotonic ordering is unprovable, refusing every mutable write" >&2
+              exit 1
             fi
           elif grep -Fq "The specified key does not exist." <<<"$GET_OUTPUT"; then
             echo "::notice::No current latest.json; publishing the initial pointer"
@@ -791,8 +686,39 @@ jobs:
           fi
           # A re-run of an already-published tag must stay idempotent.
           if gh release view "$TAG" >/dev/null 2>&1; then
+            ASSETS=$(gh release view "$TAG" --json assets --jq '.assets')
+            python3 - dist-dmg/rapid-mlx-desktop.dmg "$ASSETS" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          assets = json.loads(sys.argv[2])
+          name = "rapid-mlx-desktop.dmg"
+          matches = [
+              asset
+              for asset in assets
+              if isinstance(asset, dict) and asset.get("name") == name
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one published {name}; found {len(matches)}"
+              )
+          asset = matches[0]
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          if (
+              asset.get("state") != "uploaded"
+              or type(asset.get("size")) is not int
+              or asset["size"] != path.stat().st_size
+              or asset.get("digest") != f"sha256:{digest}"
+          ):
+              raise SystemExit(
+                  f"published {name} does not match this exact run artifact"
+              )
+          print(f"{name} already published with identical sha256:{digest}")
+          PY
             gh release edit "$TAG" --notes-file "$NOTES_FILE" $PRERELEASE
-            gh release upload "$TAG" dist-dmg/rapid-mlx-desktop.dmg --clobber
           else
             gh release create "$TAG" dist-dmg/rapid-mlx-desktop.dmg \
               --title "$TAG" --notes-file "$NOTES_FILE" $PRERELEASE

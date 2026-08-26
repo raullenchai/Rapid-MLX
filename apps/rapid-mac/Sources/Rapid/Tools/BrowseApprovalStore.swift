@@ -57,6 +57,7 @@ final class BrowseApprovalStore {
 
     private(set) var pendingRequest: PendingApproval?
     private var pendingContinuation: CheckedContinuation<Decision, Never>?
+    private var pendingRequestWaiters: [UUID: PendingRequestWaiter] = [:]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -88,6 +89,9 @@ final class BrowseApprovalStore {
                     fullURL: url,
                     host: host
                 )
+                let waiters = Array(self.pendingRequestWaiters.values)
+                self.pendingRequestWaiters.removeAll()
+                waiters.forEach { $0.resolve(true) }
             }
         } onCancel: { [weak self] in
             Task { @MainActor [weak self] in
@@ -101,6 +105,40 @@ final class BrowseApprovalStore {
                 }
             }
         }
+    }
+
+    /// Suspend until an approval prompt has been published.
+    ///
+    /// This is a lifecycle observation seam for deterministic callers such as
+    /// tests: it observes the same ``pendingRequest`` state the UI renders,
+    /// without guessing when publication happened from sleeps or deadlines.
+    /// Returns `false` when the observer itself is cancelled first.
+    func waitUntilPendingRequest(onWaiting: (() -> Void)? = nil) async -> Bool {
+        if pendingRequest != nil { return true }
+        let waiterID = UUID()
+        let waiter = PendingRequestWaiter()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                pendingRequestWaiters[waiterID] = waiter
+                if waiter.attach(continuation) {
+                    onWaiting?()
+                } else {
+                    pendingRequestWaiters.removeValue(forKey: waiterID)
+                }
+            }
+        } onCancel: { [weak self, waiter] in
+            // Settle immediately on the cancelling thread. The actor hop below
+            // is only dictionary cleanup, so a later publication cannot beat a
+            // cancellation that has already won the once-only waiter state.
+            waiter.resolve(false)
+            Task { @MainActor [weak self] in
+                self?.cancelPendingRequestWaiter(waiterID)
+            }
+        }
+    }
+
+    private func cancelPendingRequestWaiter(_ waiterID: UUID) {
+        pendingRequestWaiters.removeValue(forKey: waiterID)
     }
 
     /// Called by the SwiftUI dialog with the user's choice; resumes the tool.
@@ -167,5 +205,40 @@ final class BrowseApprovalStore {
             }
         }
         return out
+    }
+}
+
+/// Once-only bridge between an approval publication and observer cancellation.
+/// Either side may arrive before the continuation is attached, and either may
+/// run off the main actor; the lock preserves the first outcome in both cases.
+private final class PendingRequestWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var result: Bool?
+
+    /// Returns whether the continuation remains suspended after attachment.
+    func attach(_ continuation: CheckedContinuation<Bool, Never>) -> Bool {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(returning: result)
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    func resolve(_ result: Bool) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
     }
 }

@@ -247,16 +247,19 @@ def stub_heavy_serve_deps(monkeypatch):
     so the test stays faithful to the real execution path.
     """
     from vllm_mlx import _version_check
-    from vllm_mlx import cli as cli_mod
     from vllm_mlx import server as server_mod
 
     monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
     monkeypatch.setattr(
         _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
     )
-    monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", lambda model: None)
-    monkeypatch.setattr(cli_mod, "_check_memory_capacity", lambda *a, **kw: None)
-    monkeypatch.setattr(cli_mod, "_check_disk_space", lambda *a, **kw: None)
+    # Patch the exact module object this test file calls. Earlier suites may
+    # deliberately reload ``vllm_mlx.cli`` and replace the package attribute;
+    # re-importing it here would patch that new object while the file-level
+    # ``cli`` reference below still invokes the old one.
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
     monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
     # ``serve_command`` calls ``server.configure_cors`` which does an
@@ -346,6 +349,225 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     assert cfg.bind_listen_fd == 7
     assert cfg.bind_host is None
     assert cfg.bind_port is None
+
+
+def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """The unified serve entrypoint must consume its one resolved profile."""
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+    detected_models = []
+
+    def capture_load_model(*_args, scheduler_config, **_kwargs):
+        captured["scheduler_config"] = scheduler_config
+
+    monkeypatch.setattr(server_mod, "load_model", capture_load_model)
+
+    def detect_model_config(model_name):
+        detected_models.append(model_name)
+        return ModelProfile(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        )
+
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config", detect_model_config
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/opaque-hybrid-checkpoint"
+    ns._original_alias = None
+
+    cli.serve_command(ns)
+
+    scheduler = captured["scheduler_config"]
+    assert detected_models == ["publisher/opaque-hybrid-checkpoint"]
+    assert scheduler.enable_prefix_cache is True
+    assert scheduler.hybrid_cache_entries == 8
+    assert scheduler.non_trimmable_exact_prefix_reuse is True
+
+
+def test_serve_command_cache_is_first_metadata_consumer(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """Fully pinned adjacent defaults leave cache admission as first reader."""
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+    monkeypatch.setattr(
+        server_mod,
+        "load_model",
+        lambda *_args, scheduler_config, **_kwargs: captured.update(
+            scheduler_config=scheduler_config
+        ),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(is_hybrid=True, is_hybrid_explicit=True),
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/cache-only-metadata"
+    ns._original_alias = None
+    ns.pflash = "off"
+    ns.pflash_keep_ratio = 0.2
+    ns.tool_call_parser = "hermes"
+    ns.reasoning_parser = "qwen3"
+    ns.kv_cache_turboquant = "none"
+
+    cli.serve_command(ns)
+
+    assert captured["scheduler_config"].hybrid_cache_entries == 8
+
+
+def test_serve_command_missing_auto_config_module_degrades_to_no_default(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """A partial install keeps the pre-existing optional-default fallback."""
+    import builtins
+
+    from vllm_mlx import server as server_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        server_mod,
+        "load_model",
+        lambda *_args, scheduler_config, **_kwargs: captured.update(
+            scheduler_config=scheduler_config
+        ),
+    )
+    real_import = builtins.__import__
+
+    def block_auto_config(name, globals=None, locals=None, fromlist=(), level=0):
+        if level == 1 and name == "model_auto_config":
+            raise ImportError("model auto-config unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", block_auto_config)
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/opaque-checkpoint"
+    ns._original_alias = None
+
+    cli.serve_command(ns)
+
+    assert captured["scheduler_config"].hybrid_cache_entries == 0
+
+
+def test_serve_command_explicit_zero_wins_over_auto_detected_hybrid(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+
+    def capture_load_model(*_args, scheduler_config, **_kwargs):
+        captured["scheduler_config"] = scheduler_config
+
+    monkeypatch.setattr(server_mod, "load_model", capture_load_model)
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/opaque-hybrid-checkpoint"
+    ns._original_alias = None
+    ns.hybrid_cache_entries = 0
+
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "publisher/opaque-hybrid-checkpoint",
+            "--hybrid-cache-entries",
+            "0",
+        ],
+    ):
+        cli.serve_command(ns)
+
+    assert captured["scheduler_config"].hybrid_cache_entries == 0
+    assert captured["scheduler_config"].non_trimmable_exact_prefix_reuse is False
+
+
+def test_serve_command_all_explicit_defaults_skip_model_detection(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """Explicit operator choices must not make metadata availability fatal."""
+
+    def unexpected_detection(_model_name):
+        raise AssertionError("fully explicit serve must not detect model metadata")
+
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config", unexpected_detection
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/explicitly-configured-checkpoint"
+    ns._original_alias = None
+    ns.pflash = "off"
+    ns.pflash_keep_ratio = 0.2
+    ns.tool_call_parser = "hermes"
+    ns.reasoning_parser = "qwen3"
+    ns.kv_cache_turboquant = "none"
+    ns.hybrid_cache_entries = 0
+
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "publisher/explicitly-configured-checkpoint",
+            "--hybrid-cache-entries",
+            "0",
+        ],
+    ):
+        cli.serve_command(ns)
+
+
+def test_strict_auto_default_retries_failed_nonfatal_parser_detection(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """A parser probe failure must not suppress a later strict consumer."""
+    attempts = []
+
+    def broken_detection(model_name):
+        attempts.append(model_name)
+        raise RuntimeError("broken checkpoint metadata")
+
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config", broken_detection
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns()
+    ns.model = "publisher/broken-checkpoint"
+    ns._original_alias = None
+    ns.pflash = "off"
+    ns.pflash_keep_ratio = 0.2  # Make parser detection the first metadata probe.
+    ns.kv_cache_turboquant = None  # TurboQuant remains a strict consumer.
+
+    with pytest.raises(RuntimeError, match="broken checkpoint metadata"):
+        cli.serve_command(ns)
+
+    assert attempts == [
+        "publisher/broken-checkpoint",
+        "publisher/broken-checkpoint",
+    ]
 
 
 def test_serve_command_dispatches_uvicorn_with_host_port_when_listen_fd_unset(

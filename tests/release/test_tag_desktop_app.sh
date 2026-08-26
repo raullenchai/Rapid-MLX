@@ -84,15 +84,49 @@ make_mock_gh
 # ``:-`` would silently substitute the default for it. (No comments inside the
 # assignment chain below — a comment line ends the ``\`` continuation, which
 # silently drops every later assignment.)
-run() {  # run <MODE> <READ_SHA> [VERSION]
+run() {  # run <MODE> <READ_SHA> [VERSION] [ACCEPTED_SHA]
   : > "$TMP/calls"
   : > "$TMP/hops"
   MODE="$1" READ_SHA="$2" TAG_OBJ="$TAG_OBJ" CALLS="$TMP/calls" \
   TMP_HOPS="$TMP/hops" CHAIN_LEN="${CHAIN_LEN:-1}" HAVE_PAT="${HAVE_PAT-true}" \
   GH="$TMP/gh" GITHUB_REPOSITORY="raullenchai/Rapid-MLX" \
   VERSION="${3-0.12.8}" RELEASE_SHA="$SHA_GOOD" \
+  ACCEPTED_SHA="${4-$SHA_GOOD}" \
     bash "$SCRIPT" 2>&1
 }
+
+# ==========================================================================
+echo "== 0. accepted-candidate identity required before any claim =="
+# ==========================================================================
+# #2301: an RC tag may only be claimed at the SHA a candidate build validated.
+# These guards fail BEFORE any gh call, so a tag can never precede a validated
+# desktop artifact commit.
+
+# RELEASE_SHA differs from ACCEPTED_SHA → refuse on the identity boundary.
+OUT=$(run free "" "0.12.8" "$SHA_BAD") && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] && ok "non-zero when RELEASE_SHA != ACCEPTED_SHA" \
+                     || bad "non-zero when RELEASE_SHA != ACCEPTED_SHA"
+contains "$OUT" "$SHA_GOOD" "diagnostic names the release SHA"
+contains "$OUT" "$SHA_BAD"  "diagnostic names the validated candidate SHA"
+lacks "$(cat "$TMP/calls")" "git/refs" "creates NO tag when candidate SHA differs"
+
+# ACCEPTED_SHA unset → required-env failure before any call.
+OUT=$(run free "" "0.12.8" "") && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] && ok "non-zero when ACCEPTED_SHA is empty" || bad "non-zero when ACCEPTED_SHA is empty"
+lacks "$(cat "$TMP/calls")" "git/refs" "creates NO tag with empty ACCEPTED_SHA"
+
+# ACCEPTED_SHA not a 40-char SHA → refuse.
+OUT=$(run free "" "0.12.8" "short") && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] && ok "non-zero when ACCEPTED_SHA is not a full SHA" \
+                     || bad "non-zero when ACCEPTED_SHA is not a full SHA"
+
+# The diagnostic for an existing-tag-at-another-SHA never recommends deleting a
+# published RC — it says supersede with the next RC.
+OUT=$(run taken_annotated "$SHA_BAD") && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] && ok "non-zero when the tag points elsewhere (accepted-candidate case)" \
+                     || bad "non-zero when the tag points elsewhere (accepted-candidate case)"
+lacks "$OUT" "delete the stale tag" "does NOT recommend deleting a published tag"
+contains "$OUT" "NEXT rc"           "directs supersession to the next RC"
 
 # ==========================================================================
 echo "== 1. free tag: claimed with one atomic POST =="
@@ -116,7 +150,7 @@ echo "== 2. re-run over an ANNOTATED tag at the same commit is a no-op =="
 OUT=$(run taken_annotated "$SHA_GOOD") && RC=0 || RC=$?
 [ "${RC:-0}" -eq 0 ] && ok "exit 0 when an annotated tag already points at the release commit" \
                      || bad "exit 0 when an annotated tag already points at the release commit (got $RC)"
-contains "$OUT" "already points at $SHA_GOOD" "says it is a no-op"
+contains "$OUT" "already points at the validated candidate $SHA_GOOD" "says it is a no-op"
 contains "$(cat "$TMP/calls")" "git/tags/$TAG_OBJ" "peels the annotated tag object"
 
 # ==========================================================================
@@ -164,7 +198,7 @@ echo "== 6b. a deep annotated-tag chain still peels to its commit =="
 CHAIN_LEN=6 OUT=$(CHAIN_LEN=6 run taken_chain "$SHA_GOOD") && RC=0 || RC=$?
 [ "${RC:-0}" -eq 0 ] && ok "peels a 6-deep annotated chain to the release commit" \
                      || bad "peels a 6-deep annotated chain to the release commit (got $RC)"
-contains "$OUT" "already points at $SHA_GOOD" "6-deep chain reads as a no-op"
+contains "$OUT" "already points at the validated candidate $SHA_GOOD" "6-deep chain reads as a no-op"
 
 # ...and a chain past the bound is still refused rather than looping forever.
 OUT=$(CHAIN_LEN=99 run taken_chain "$SHA_GOOD") && RC=0 || RC=$?
@@ -199,15 +233,26 @@ echo "== 7. workflow wiring =="
 # uses the credential actions/checkout persisted (GITHUB_TOKEN), and GitHub
 # suppresses workflow runs caused by GITHUB_TOKEN pushes — the step would go
 # green with no app build, signing, notarisation or DMG.
-APP_STEP=$(sed -n '/Tag the desktop app at the same version/,/^      - name:/p' "$WORKFLOW")
+APP_STEP=$(sed -n '/Tag the desktop app at the exact validated SHA/,/^      - name:/p' "$WORKFLOW")
 contains "$APP_STEP" "secrets.RELEASE_PAT" "app tag step runs under the PAT"
 contains "$APP_STEP" "scripts/tag_desktop_app.sh" "app tag step calls the tested script"
+contains "$APP_STEP" "ACCEPTED_SHA: \${{ needs.release-prep.outputs.accepted_sha }}" \
+  "app tag step is bound to the pre-approval accepted SHA"
+# The human-approval gate is the protected 'rapid-mac-tag' environment on the
+# enclosing job (verified by repo config + PF-3 readback), the pre-approval
+# evidence summary, and step ordering — NOT a self-set boolean inside the step.
+# A self-asserted TAG_APPROVED value would prove nothing and mislead maintainers,
+# so we deliberately assert it is ABSENT.
+lacks "$APP_STEP" "TAG_APPROVED" \
+  "app tag step does not self-assert a meaningless approval boolean"
 lacks "$APP_STEP" "git push" "app tag step does not git push the tag"
 # Finding RELEASE_PAT in the env is not enough — the step falls back to
 # GITHUB_TOKEN, so it must also be TOLD whether the token it got can trigger a
 # workflow. Without this wiring the script's own guard defaults to "true" and
-# the fallback silently creates a dead tag.
-contains "$APP_STEP" "HAVE_PAT: \${{ steps.appcheck.outputs.have_pat }}" \
+# the fallback silently creates a dead tag. The pre-approval job derives it and
+# passes it to the environment-gated release job the same way the old in-job
+# appcheck did.
+contains "$APP_STEP" "HAVE_PAT: \${{ needs.release-prep.outputs.have_pat }}" \
   "app tag step is told whether the PAT is actually present"
 # Assert the EXACT expression and the EXACT guard. A bare "have_pat=" check
 # passed even when the published value was empty — which the script's
@@ -238,8 +283,34 @@ before_publish() {  # before_publish <step name> <label>
 }
 before_publish "Pre-check the desktop app CHANGELOG" \
   "app CHANGELOG is checked before the engine release is published"
-before_publish "name: Tag the desktop app at the same version" \
+before_publish "Tag the desktop app at the exact validated SHA" \
   "app tag is claimed before the engine release is published"
+
+# #2301 / release-safety review: the EXACT candidate SHA + blocker evidence
+# must be produced by the pre-approval release-prep job BEFORE the
+# environment-gated tag job asks for approval. Assert release-prep appears
+# earlier than the environment gate and that the tag step's job uses it.
+PREP_LINE=$(grep -n "^  release-prep:" "$WORKFLOW" | head -1 | cut -d: -f1)
+RELEASE_LINE=$(grep -n "^  release:" "$WORKFLOW" | head -1 | cut -d: -f1)
+ENV_LINE=$(grep -n "environment: rapid-mac-tag" "$WORKFLOW" | head -1 | cut -d: -f1)
+APP_STEP_LINE=$(grep -n "Tag the desktop app at the exact validated SHA" "$WORKFLOW" | head -1 | cut -d: -f1)
+if [ -n "$PREP_LINE" ] && [ -n "$RELEASE_LINE" ] && [ "$PREP_LINE" -lt "$RELEASE_LINE" ]; then
+  ok "release-prep (pre-approval evidence) precedes the environment-gated release job"
+else
+  bad "release-prep does not precede the environment-gated release job (prep=$PREP_LINE release=$RELEASE_LINE)"
+fi
+if [ -n "$ENV_LINE" ] && [ -n "$APP_STEP_LINE" ] && [ "$ENV_LINE" -lt "$APP_STEP_LINE" ]; then
+  ok "the environment approval gate precedes the tag claim step"
+else
+  bad "environment gate does not precede the tag claim step (env=$ENV_LINE tag=$APP_STEP_LINE)"
+fi
+# The pre-approval job must print the exact SHA to its summary (the reviewer
+# approves an already-printed SHA, not one that appears after approval).
+SUMMARY=$(sed -n '/Print release-transaction evidence summary/,/Upload release evidence/p' "$WORKFLOW")
+contains "$SUMMARY" "Exact candidate SHA to tag" \
+  "release-prep prints the exact candidate SHA pre-approval"
+contains "$SUMMARY" '$GITHUB_STEP_SUMMARY' \
+  "release-prep writes the evidence to the job summary"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

@@ -1,0 +1,495 @@
+name: Desktop releasable candidate
+description: >-
+  Build, sign, notarise and DMG-validate the rapid-mac desktop app at an exact
+  commit while producing and verifying a Desktop release manifest. This is the
+  SINGLE shared build+validate contract used by BOTH the pre-tag candidate gate
+  (auto-release.yml) and the tag-triggered publishing lane (rapid-mac-release.yml),
+  so the two lanes can never drift apart. It NEVER creates a tag, release, updater
+  pointer, or any public asset — publishing stays entirely with the caller.
+
+inputs:
+  checkout_path:
+    description: >-
+      Repo-root where the caller checked out the monorepo with fetch-depth 0
+      (apps/rapid-mac is a subdirectory of it).
+    required: true
+  candidate_sha:
+    description: >-
+      The exact 40-character commit this build must validate. The action fails
+      if HEAD after checkout is not this commit.
+    required: true
+  release_version:
+    description: X.Y.Z or X.Y.Z-rcN.
+    required: true
+  app_tag:
+    description: The intended immutable tag, rapid-mac-v<release_version>.
+    required: true
+  signed:
+    description: >-
+      'true' when the Developer ID + notary secrets are all present (the real
+      release lane), 'false' for an ad-hoc dry-run. For a candidate the caller
+      sets require_signed so an unsigned build is a hard failure.
+    required: true
+  require_signed:
+    description: >-
+      'true' when a signed, notarised build is mandatory (the candidate gate).
+      When true, signed != true is a hard failure — the evidence that authorises
+      a tag must come from the real signed lane, never an ad-hoc build.
+    required: false
+    default: 'false'
+  publish_sparkle:
+    description: >-
+      'true' only for the tagged publishing lane, which builds the Sparkle ZIP +
+      appcast (needs the SPARKLE_ED_PRIVATE_KEY and the previous rapid-mac tag).
+    required: false
+    default: 'false'
+  release_notes_file:
+    description: >-
+      Absolute path to the staged release-notes markdown (tagged lane only),
+      embedded into the Sparkle appcast so the release body and the updater
+      carry identical notes. Empty for the candidate lane.
+    required: false
+    default: ''
+  sparkle_cdn_base:
+    description: >-
+      CDN base URL (https://dl.rapidmlx.com) for the Signed Sparkle ZIP +
+      appcast download prefix. Tagged lane only.
+    required: false
+    default: ''
+  previous_stable_tag:
+    description: >-
+      The greatest prior STABLE rapid-mac-v* tag strictly below the intended
+      version (resolved via release_version.py preceding). Used as the DMG
+      size-delta baseline — an RC has no published DMG asset, so the comparison
+      baseline for an RC is the last stable release. Resolved by the caller.
+    required: false
+    default: ''
+  previous_release_tag:
+    description: >-
+      The greatest prior rapid-mac-v* release tag strictly below the intended
+      version INCLUDING RCs (resolved via release_version.py preceding-release).
+      Used for the Sparkle monotonic-CFBundleVersion check: rc2 must exceed
+      rc1's build (not just the last stable's), and a stable must exceed its
+      latest rc. Resolved by the caller.
+    required: false
+    default: ''
+  bundle_size_cap_mb:
+    description: Absolute .app size ceiling, enforced before notarisation.
+    required: false
+    default: '550'
+  bundle_size_delta_cap_mb:
+    description: Per-release DMG growth ceiling in MiB vs the previous rapid-mac release.
+    required: false
+    default: '50'
+  # Apple signing + notary secrets, passed through by the caller from secrets.*.
+  MACOS_DEVID_CERT_P12_BASE64:
+    required: false
+  MACOS_DEVID_CERT_PASSWORD:
+    required: false
+  APPLE_TEAM_ID:
+    required: false
+  AC_API_KEY_ID:
+    required: false
+  AC_API_ISSUER_ID:
+    required: false
+  AC_API_KEY_P8_BASE64:
+    required: false
+  SPARKLE_ED_PRIVATE_KEY:
+    required: false
+  SPARKLE_PUBLIC_ED_KEY:
+    required: false
+
+outputs:
+  built_sha:
+    description: The full commit the checkout resolved to (must equal candidate_sha).
+    value: ${{ steps.resolve_sha.outputs.built_sha }}
+  manifest:
+    description: Absolute path to the written + verified Desktop release manifest.
+    value: ${{ steps.manifest.outputs.manifest }}
+  signed:
+    description: Echoed back as stdout for the caller's job outputs.
+    value: ${{ inputs.signed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve and pin the exact candidate SHA
+      id: resolve_sha
+      shell: bash
+      env:
+        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}"
+        BUILT_SHA="$(git rev-parse 'HEAD^{commit}')"
+        echo "::notice::Desktop candidate build validated at $BUILT_SHA"
+        [[ "$BUILT_SHA" == "$CANDIDATE_SHA" ]] || {
+          echo "::error::checkout is at $BUILT_SHA but the candidate must be $CANDIDATE_SHA"
+          exit 1
+        }
+        echo "built_sha=$BUILT_SHA" >> "$GITHUB_OUTPUT"
+        echo "built_sha=$BUILT_SHA" >> "$GITHUB_ENV"
+
+    # A candidate that would authorise a tag must be the real signed, notarised
+    # lane. Refuse an unsigned candidate HERE, before any build cost.
+    - name: Require a signed build for the candidate lane
+      if: inputs.require_signed == 'true' && inputs.signed != 'true'
+      shell: bash
+      run: |
+        echo "::error::a desktop release candidate requires Developer ID signing + notarisation (signed=true); refusing to validate an ad-hoc/unsigned app. Configure the Apple secrets and re-run." >&2
+        exit 1
+
+    - name: Show toolchain
+      shell: bash
+      run: |
+        swift --version
+        xcodebuild -version
+
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: '3.12'
+
+    - name: Import Developer ID certificate into a temp keychain
+      if: inputs.signed == 'true'
+      env:
+        CERT_P12_BASE64: ${{ inputs.MACOS_DEVID_CERT_P12_BASE64 }}
+        CERT_PASSWORD: ${{ inputs.MACOS_DEVID_CERT_PASSWORD }}
+        AC_API_KEY_ID: ${{ inputs.AC_API_KEY_ID }}
+        AC_API_ISSUER_ID: ${{ inputs.AC_API_ISSUER_ID }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+        KEYCHAIN_PW="$(openssl rand -base64 24)"
+        CERT_PATH="$RUNNER_TEMP/devid.p12"
+        printf %s "$CERT_P12_BASE64" | openssl base64 -d -A -out "$CERT_PATH"
+        security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+        security import "$CERT_PATH" -P "$CERT_PASSWORD" \
+          -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+        security set-key-partition-list \
+          -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+        security list-keychains -d user -s "$KEYCHAIN_PATH" \
+          $(security list-keychains -d user | sed 's/"//g')
+        IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+          | grep 'Developer ID Application' | head -1 | awk '{print $2}')"
+        if [[ -z "$IDENTITY" ]]; then
+          echo "::error::No 'Developer ID Application' identity found in the imported cert"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          exit 1
+        fi
+        echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+        echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+        echo "Imported identity: $IDENTITY"
+
+    - name: Decode notarisation API key
+      if: inputs.signed == 'true'
+      env:
+        AC_API_KEY_P8_BASE64: ${{ inputs.AC_API_KEY_P8_BASE64 }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+        printf %s "$AC_API_KEY_P8_BASE64" | openssl base64 -d -A -out "$KEY_PATH"
+        echo "AC_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+    - name: Build + sign Rapid-MLX Desktop.app
+      env:
+        APPLE_TEAM_ID: ${{ inputs.APPLE_TEAM_ID }}
+        AC_API_KEY_ID: ${{ inputs.AC_API_KEY_ID }}
+        AC_API_ISSUER_ID: ${{ inputs.AC_API_ISSUER_ID }}
+        # Only signed builds enable Sparkle. An ad-hoc build cannot update a
+        # Developer-ID-signed installation because code-signing continuity
+        # validation correctly rejects it.
+        SPARKLE_PUBLIC_ED_KEY: ${{ inputs.signed == 'true' && inputs.SPARKLE_PUBLIC_ED_KEY || '' }}
+        SIGNED: ${{ inputs.signed }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        if [[ "${SIGNED}" == "true" && -z "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+          echo "::error::signed releases require the SPARKLE_PUBLIC_ED_KEY Actions variable"
+          exit 1
+        fi
+        bash scripts/build.sh
+
+    - name: Bundle size gate (block if .app exceeds cap)
+      env:
+        BUNDLE_SIZE_CAP_MB: ${{ inputs.bundle_size_cap_mb }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        APP="build/Rapid-MLX Desktop.app"
+        SIDECAR="$APP/Contents/Resources/rapid-mlx"
+        CAP_MB="${BUNDLE_SIZE_CAP_MB:-550}"
+        if [[ ! -d "$APP" ]]; then
+          echo "::error::Expected $APP to exist after build step but it does not."
+          exit 1
+        fi
+        APP_MB=$(du -sm "$APP" | awk '{print $1}')
+        if [[ -d "$SIDECAR" ]]; then
+          SIDECAR_MB=$(du -sm "$SIDECAR" | awk '{print $1}')
+        else
+          SIDECAR_MB="0 (sidecar dir missing — investigate)"
+        fi
+        echo "::notice::Rapid-MLX Desktop.app = ${APP_MB} MB (cap ${CAP_MB} MB); sidecar = ${SIDECAR_MB} MB"
+        echo "::group::Bundle size breakdown"
+        SITE_PACKAGES="$SIDECAR/site-packages"
+        if [[ -d "$SITE_PACKAGES" ]]; then
+          echo "Top 10 largest dirs under site-packages/:"
+          du -sm "$SITE_PACKAGES"/* 2>/dev/null | sort -rn | head -10 || true
+        fi
+        echo "::endgroup::"
+        if [[ "$APP_MB" -gt "$CAP_MB" ]]; then
+          echo "::error::Rapid-MLX Desktop.app is ${APP_MB} MB which exceeds the ${CAP_MB} MB cap (bump BUNDLE_SIZE_CAP_MB if intentional)."
+          exit 1
+        fi
+
+    - name: Notarise + staple Rapid-MLX Desktop.app
+      if: inputs.signed == 'true'
+      env:
+        AC_API_KEY_ID: ${{ inputs.AC_API_KEY_ID }}
+        AC_API_ISSUER_ID: ${{ inputs.AC_API_ISSUER_ID }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        ditto -c -k --keepParent "build/Rapid-MLX Desktop.app" "build/Rapid-MLX-Desktop.zip"
+        bash scripts/notarize.sh "build/Rapid-MLX-Desktop.zip" "build/Rapid-MLX Desktop.app"
+
+    - name: Enforce CFBundleVersion monotonicity vs prior release (RC-inclusive)
+      # #2301 non-publishing pre-tag safety: the app build of this release must
+      # strictly exceed the build of EVERY prior rapid-mac release INCLUDING RCs
+      # (rc2 must beat rc1; a stable must beat its latest rc), so an already-
+      # installed app never rejects the update. Runs in BOTH the candidate and
+      # tagged lanes whenever a prior release exists — INDEPENDENT of Sparkle
+      # publication — so the candidate validates it BEFORE the immutable tag,
+      # not only in the post-tag publishing run.
+      if: inputs.signed == 'true' && inputs.previous_release_tag != ''
+      env:
+        TAG: ${{ inputs.app_tag }}
+        PREVIOUS_TAG: ${{ inputs.previous_release_tag }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+          'build/Rapid-MLX Desktop.app/Contents/Info.plist')"
+        [[ "$APP_BUILD" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::CFBundleVersion must be a positive integer for Sparkle"
+          exit 1
+        }
+        PREVIOUS_BUILD="$(git show \
+          "${PREVIOUS_TAG}:apps/rapid-mac/Resources/Info.plist" \
+          | plutil -extract CFBundleVersion raw -o - - 2>/dev/null || true)"
+        [[ "$PREVIOUS_BUILD" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::cannot read CFBundleVersion from ${PREVIOUS_TAG}"
+          exit 1
+        }
+        (( APP_BUILD > PREVIOUS_BUILD )) || {
+          echo "::error::CFBundleVersion ${APP_BUILD} must exceed ${PREVIOUS_TAG} build ${PREVIOUS_BUILD} for Sparkle"
+          exit 1
+        }
+        echo "::notice::CFBundleVersion ${APP_BUILD} > ${PREVIOUS_TAG} build ${PREVIOUS_BUILD} (RC-inclusive monotonicity ✓)"
+
+    - name: Build signed Sparkle archive and appcast
+      if: inputs.publish_sparkle == 'true' && inputs.signed == 'true'
+      env:
+        SPARKLE_ED_PRIVATE_KEY: ${{ inputs.SPARKLE_ED_PRIVATE_KEY }}
+        CDN_BASE: ${{ inputs.sparkle_cdn_base }}
+        TAG: ${{ inputs.app_tag }}
+        RELEASE_NOTES_FILE: ${{ inputs.release_notes_file }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]] || {
+          echo "::error::signed releases require SPARKLE_ED_PRIVATE_KEY"
+          exit 1
+        }
+        VERSION="${TAG#rapid-mac-v}"
+        APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+          'build/Rapid-MLX Desktop.app/Contents/Info.plist')"
+        [[ "$APP_BUILD" =~ ^[1-9][0-9]*$ ]] || {
+          echo "::error::CFBundleVersion must be a positive integer for Sparkle"
+          exit 1
+        }
+        OUT="build/sparkle"
+        rm -rf "$OUT"
+        mkdir -p "$OUT"
+        TEMP_ZIP="$OUT/Rapid-MLX-Desktop-${VERSION}.zip"
+        ditto -c -k --sequesterRsrc --keepParent \
+          "build/Rapid-MLX Desktop.app" "$TEMP_ZIP"
+        ZIP_SHA256="$(shasum -a 256 "$TEMP_ZIP" | awk '{print $1}')"
+        ZIP_NAME="Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"
+        mv "$TEMP_ZIP" "$OUT/$ZIP_NAME"
+        [[ -n "${RELEASE_NOTES_FILE:-}" && -s "$RELEASE_NOTES_FILE" ]] || {
+          echo "::error::release notes file missing for Sparkle appcast embedding"
+          exit 1
+        }
+        cp "$RELEASE_NOTES_FILE" "$OUT/${ZIP_NAME%.zip}.md"
+        GENERATE_APPCAST=".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+        [[ -x "$GENERATE_APPCAST" ]] || {
+          echo "::error::Sparkle generate_appcast tool missing"
+          exit 1
+        }
+        printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+          | "$GENERATE_APPCAST" --ed-key-file - \
+              --download-url-prefix "${CDN_BASE}/rapid-mac/${VERSION}/" \
+              --embed-release-notes --maximum-versions 1 --maximum-deltas 0 \
+              -o "$OUT/appcast.xml" "$OUT"
+        [[ -s "$OUT/appcast.xml" ]] || { echo "::error::appcast not generated"; exit 1; }
+        grep -Fq "sparkle:edSignature=" "$OUT/appcast.xml" || {
+          echo "::error::appcast enclosure has no EdDSA signature"
+          exit 1
+        }
+        EXPECTED_URL="${CDN_BASE}/rapid-mac/${VERSION}/${ZIP_NAME}"
+        APPCAST_VERSION="$(xmllint --xpath \
+          'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="version"])' \
+          "$OUT/appcast.xml")"
+        APPCAST_SHORT_VERSION="$(xmllint --xpath \
+          'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="shortVersionString"])' \
+          "$OUT/appcast.xml")"
+        APPCAST_URL="$(xmllint --xpath \
+          'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="enclosure"]/@url)' \
+          "$OUT/appcast.xml")"
+        [[ "$APPCAST_VERSION" == "$APP_BUILD" ]] || {
+          echo "::error::appcast build version does not match the signed app"
+          exit 1
+        }
+        [[ "$APPCAST_SHORT_VERSION" == "$VERSION" ]] || {
+          echo "::error::appcast release version does not match the tag"
+          exit 1
+        }
+        [[ "$APPCAST_URL" == "$EXPECTED_URL" ]] || {
+          echo "::error::appcast URL does not match the mirrored Sparkle ZIP"
+          exit 1
+        }
+
+    - name: Build + sign rapid-mlx-desktop.dmg (from the stapled app)
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        bash scripts/dmg.sh
+
+    - name: Bundle size delta gate (block if DMG grew > cap vs previous rapid-mac release)
+      # Runs in BOTH the candidate and tagged lanes so the DMG size-delta is a
+      # real pre-tag gate, not just a publish-time check. Only skipped when there
+      # is no previous release baseline. DELTA_COMPARED tells the manifest whether
+      # a comparison actually happened so no lane claims dmg-size-delta it skipped.
+      if: inputs.previous_stable_tag != ''
+      env:
+        BUNDLE_SIZE_DELTA_CAP_MB: ${{ inputs.bundle_size_delta_cap_mb }}
+        # DMG size-delta baseline is the greatest prior STABLE release — an RC
+        # has no published DMG asset, so rc2 compares against the last stable.
+        PREVIOUS_TAG: ${{ inputs.previous_stable_tag }}
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        DMG="build/rapid-mlx-desktop.dmg"
+        DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-50}"
+        [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
+        PREV_TAG="${PREVIOUS_TAG:-}"
+        CANONICAL_DMG_NAME="rapid-mlx-desktop.dmg"
+        ASSET_STATE=$(bash "${{ inputs.checkout_path }}/scripts/release_asset_size.sh" \
+          "$PREV_TAG" "$CANONICAL_DMG_NAME")
+        if [[ "$ASSET_STATE" == "absent" ]]; then
+          echo "::notice::previous release ${PREV_TAG} has no '${CANONICAL_DMG_NAME}' asset — no DMG size baseline; skipping delta comparison."
+          echo "DELTA_COMPARED=false" >> "$GITHUB_ENV"
+          exit 0
+        fi
+        [[ "$ASSET_STATE" == $'present\t'* ]] || {
+          echo "::error::unexpected release asset state for ${PREV_TAG}: ${ASSET_STATE}" >&2
+          exit 1
+        }
+        PREV_DMG_BYTES="${ASSET_STATE#*$'\t'}"
+        if ! DELTA_EVIDENCE=$(bash "${{ inputs.checkout_path }}/scripts/check_dmg_size_delta.sh" \
+          "$DMG" "$PREV_DMG_BYTES" "$DELTA_CAP_MB"); then
+          echo "::error::DMG growth vs ${PREV_TAG} exceeds +${DELTA_CAP_MB} MiB (bump BUNDLE_SIZE_DELTA_CAP_MB if intentional)."
+          exit 1
+        fi
+        echo "::notice::DMG delta vs ${PREV_TAG}: ${DELTA_EVIDENCE} (cap +${DELTA_CAP_MB} MiB)"
+        echo "DELTA_COMPARED=true" >> "$GITHUB_ENV"
+        echo "::notice::DMG size-delta gate COMPARED against ${PREV_TAG} (manifest will claim dmg-size-delta)"
+
+    - name: Validate DMG contents (app bundle + Applications symlink)
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        bash scripts/validate-dmg.sh build/rapid-mlx-desktop.dmg
+
+    - name: Notarise + staple rapid-mlx-desktop.dmg
+      if: inputs.signed == 'true'
+      env:
+        AC_API_KEY_ID: ${{ inputs.AC_API_KEY_ID }}
+        AC_API_ISSUER_ID: ${{ inputs.AC_API_ISSUER_ID }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        bash scripts/notarize.sh build/rapid-mlx-desktop.dmg build/rapid-mlx-desktop.dmg
+
+    - name: Validate final stapled DMG presentation
+      if: inputs.signed == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        bash scripts/validate-dmg.sh build/rapid-mlx-desktop.dmg
+
+    - name: Create + verify the Desktop release manifest
+      id: manifest
+      env:
+        SOURCE_SHA: ${{ inputs.candidate_sha }}
+        RELEASE_VERSION: ${{ inputs.release_version }}
+        APP_TAG: ${{ inputs.app_tag }}
+        SIGNED: ${{ inputs.signed }}
+        # Truthful gate claims: the manifest records signing/notary gates only for
+        # a signed build, and dmg-size-delta only when a real comparison ran
+        # (DELTA_COMPARED set true by the delta gate above; false/unset when no
+        # baseline existed and it was skipped). It never claims a gate it did not
+        # run.
+        DELTA_COMPARED: ${{ env.DELTA_COMPARED }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "${{ inputs.checkout_path }}/apps/rapid-mac"
+        DMG="build/rapid-mlx-desktop.dmg"
+        [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
+        MANIFEST="${{ inputs.checkout_path }}/apps/rapid-mac/build/rapid-mlx-desktop.manifest.json"
+        SIG_FLAG="--no-signed"
+        [[ "$SIGNED" == "true" ]] && SIG_FLAG="--signed"
+        DELTA_FLAG="--no-delta-compared"
+        [[ "${DELTA_COMPARED:-false}" == "true" ]] && DELTA_FLAG="--delta-compared"
+        python3 "${{ inputs.checkout_path }}/scripts/desktop_manifest.py" create \
+          --app-dir "${{ inputs.checkout_path }}/apps/rapid-mac" \
+          --dmg "$DMG" \
+          --output "$MANIFEST" \
+          --source-sha "$SOURCE_SHA" \
+          --version "$RELEASE_VERSION" \
+          --app-tag "$APP_TAG" \
+          $SIG_FLAG \
+          $DELTA_FLAG
+        python3 "${{ inputs.checkout_path }}/scripts/desktop_manifest.py" verify \
+          --app-dir "${{ inputs.checkout_path }}/apps/rapid-mac" \
+          --dmg "$DMG" \
+          --manifest "$MANIFEST"
+        echo "::group::Desktop manifest"
+        cat "$MANIFEST"
+        echo "::endgroup::"
+        echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
+        echo "manifest=$MANIFEST" >> "$GITHUB_ENV"
+
+    - name: Clean up temp keychain
+      if: always()
+      shell: bash
+      run: |
+        security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true

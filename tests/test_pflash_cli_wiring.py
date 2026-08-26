@@ -16,6 +16,7 @@ error so nothing past it (engine boot, uvicorn, weight load) runs.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from unittest import mock
 
@@ -23,8 +24,10 @@ import pytest
 
 import vllm_mlx.cli as cli
 
-# Bind the real engine_core before any test patches scheduler internals.
-import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
+# Bind the real engine_core on MLX hosts before any test patches scheduler
+# internals. Linux contract lanes deliberately have no MLX runtime.
+if importlib.util.find_spec("mlx") is not None:
+    import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
 
 
 class _StopError(Exception):
@@ -39,9 +42,10 @@ def _run_serve_capturing_pflash(argv: list[str], *, lane=(False, False)) -> dict
     first element is what serve must forward as ``is_multimodal``."""
     seen: dict = {}
 
-    def _stub(args, *, model_name, is_multimodal=False):
+    def _stub(args, *, model_name, is_multimodal=False, _detected_config=None):
         seen["model_name"] = model_name
         seen["is_multimodal"] = is_multimodal
+        seen["detected_config"] = _detected_config
         seen["args_is"] = args
         raise _StopError
 
@@ -63,7 +67,9 @@ def _run_serve_capturing_pflash(argv: list[str], *, lane=(False, False)) -> dict
     return seen
 
 
-def test_serve_command_routes_pflash_through_resolve_pflash_config():
+def test_serve_command_routes_pflash_through_resolve_pflash_config(
+    scheduler_config_stub,
+):
     from vllm_mlx.model_aliases import resolve_model
 
     seen = _run_serve_capturing_pflash(["serve", "bonsai-27b-2bit"])
@@ -73,6 +79,7 @@ def test_serve_command_routes_pflash_through_resolve_pflash_config():
     assert seen.get("model_name") == resolve_model("bonsai-27b-2bit")
     # Text-lane model → serve forwards is_multimodal=False.
     assert seen.get("is_multimodal") is False
+    assert seen.get("detected_config") is not None
 
 
 def test_serve_command_forwards_multimodal_lane_verdict():

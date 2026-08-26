@@ -129,14 +129,29 @@ enum HFCacheByteMonitor {
     /// lifetime of the matching subprocess.
     final class Handle: @unchecked Sendable {
         private let task: Task<Void, Never>
+        private let firstPoll: Task<Bool, Never>
 
-        init(task: Task<Void, Never>) {
+        init(task: Task<Void, Never>, firstPoll: Task<Bool, Never>) {
             self.task = task
+            self.firstPoll = firstPoll
         }
 
         /// Cancel the polling loop. Idempotent — calling twice is a no-op.
         func stop() {
             task.cancel()
+        }
+
+        /// Wait for the first filesystem poll and report whether it published
+        /// a positive disk observation. Multiple callers share the same result.
+        func waitForFirstPoll() async -> Bool {
+            await firstPoll.value
+        }
+
+        /// Cancel the poll loop and wait until it has fully exited.
+        func stopAndWait() async {
+            task.cancel()
+            await task.value
+            _ = await firstPoll.value
         }
 
         deinit {
@@ -164,7 +179,16 @@ enum HFCacheByteMonitor {
         pollInterval: TimeInterval = defaultPollInterval,
         isCancelled: @Sendable @escaping () -> Bool = { false }
     ) -> Handle {
+        let (firstPollStream, firstPollContinuation) = AsyncStream<Bool>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        let firstPoll = Task {
+            var iterator = firstPollStream.makeAsyncIterator()
+            return await iterator.next() ?? false
+        }
         let task = Task.detached(priority: .utility) {
+            defer { firstPollContinuation.finish() }
+            var hasSignalledFirstPoll = false
             // Count what's ALREADY on disk before the first poll and
             // seed it as the growth baseline. Pre-existing bytes are a
             // cache hit (full weights) or a resumable partial — either
@@ -181,8 +205,9 @@ enum HFCacheByteMonitor {
             let intervalNanos = UInt64(max(pollInterval, 0.1) * 1_000_000_000)
             while !Task.isCancelled && !isCancelled() {
                 let bytes = directoryByteCount(at: cacheDir)
+                var didPublish = false
                 if bytes > 0 {
-                    await MainActor.run {
+                    didPublish = await MainActor.run {
                         // Re-check at the publish point, not just at the top
                         // of the loop. `directoryByteCount` is a filesystem
                         // walk and the MainActor hop is a suspension — a
@@ -191,13 +216,19 @@ enum HFCacheByteMonitor {
                         // which is exactly what "no further updates after
                         // cancel" promises will not happen. Surfaced on CI,
                         // where the wider window made the race reliable.
-                        guard !Task.isCancelled, !isCancelled() else { return }
+                        guard !Task.isCancelled, !isCancelled() else { return false }
                         progress.applyDiskObservation(bytes: bytes)
+                        return true
                     }
+                }
+                if !hasSignalledFirstPoll {
+                    hasSignalledFirstPoll = true
+                    firstPollContinuation.yield(didPublish)
+                    firstPollContinuation.finish()
                 }
                 try? await Task.sleep(nanoseconds: intervalNanos)
             }
         }
-        return Handle(task: task)
+        return Handle(task: task, firstPoll: firstPoll)
     }
 }

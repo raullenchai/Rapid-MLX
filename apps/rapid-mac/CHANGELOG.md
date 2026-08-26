@@ -17,6 +17,35 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.13.0-rc2] — 2026-08-25
+
+This second 0.13 release candidate focuses on the first-run and release-blocking
+issues found while testing rc1. It remains a prerelease and does not replace the
+stable updater feed.
+
+### Changed
+
+- **Memory guidance now follows the Mac in real time.** Onboarding and model
+  launch decisions refresh available-memory facts as apps open and close,
+  without letting stale or hidden probes overwrite the latest user decision.
+- **Voice input can coexist with the active conversation model.** Starting
+  dictation no longer evicts the LLM or vision model behind the current chat.
+- **Agent setup is useful before an engine is running.** The integration entry
+  point provides a clear setup path instead of depending on an already-loaded
+  model.
+
+### Fixed
+
+- Search-provider key failures preserve the actionable provider reason through
+  the Mac UI, and upgrades retain the selected dictation checkpoint.
+- Image generation shows a stable, evidence-based remaining-time estimate and
+  recovers stale aliases through the capability registry.
+- Release automation now validates the signed and notarized Desktop candidate
+  before claiming its immutable tag, binds publication to exact artifact bytes
+  and source SHA, and fails closed on stale, malformed, or mismatched reruns.
+- Parallel Desktop tests use deterministic lifecycle synchronization for cache
+  polling and declined-tool approval instead of timing assumptions.
+
 ## [0.13.0-rc1] — 2026-08-24
 
 This first 0.13 release candidate broadens model coverage, makes local tools

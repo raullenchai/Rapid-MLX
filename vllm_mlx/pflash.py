@@ -293,7 +293,11 @@ def resolve_pflash_keep_ratio_default(
 
 
 def resolve_pflash_config(
-    args: Any, *, model_name: str, is_multimodal: bool = False
+    args: Any,
+    *,
+    model_name: str,
+    is_multimodal: bool = False,
+    _detected_config: Any = _DETECT,
 ) -> PFlashConfig:
     """Resolve BOTH per-alias PFlash defaults (mode + keep_ratio) and build the
     validated :class:`PFlashConfig`. This is the single wiring shared by the
@@ -306,12 +310,16 @@ def resolve_pflash_config(
     the CLI None-sentinels until now) so any later reader sees the resolved
     values, then returns the built config. ``validate_model_support`` is left
     to the caller because its ``is_mllm`` verdict and error handling differ
-    between the two commands.
+    between the two commands. ``_detected_config`` lets the serve entrypoint
+    share its single resolved checkpoint profile with other startup defaults;
+    the private sentinel preserves lazy detection for existing callers.
     """
     # Detect the alias profile ONCE and share it with both resolvers (each
     # would otherwise re-detect on the no-flag path). Skip detection entirely
     # when the user pinned both flags — neither resolver would consult it.
-    if args.pflash is None or args.pflash_keep_ratio is None:
+    if _detected_config is not _DETECT:
+        detected = _detected_config
+    elif args.pflash is None or args.pflash_keep_ratio is None:
         detected = _detect_or(model_name, _DETECT)
     else:
         detected = _DETECT

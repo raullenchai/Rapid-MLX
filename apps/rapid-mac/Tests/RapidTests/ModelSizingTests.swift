@@ -188,6 +188,8 @@ struct ModelSizingTests {
         #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 13 * gib, totalBytes: 32 * gib) == .tight)
         // Just over the 85% panic line on the same Mac → blocked.
         #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 16 * gib, totalBytes: 32 * gib) == .unsafe)
+        #expect(!ModelSizing.requiresMemoryConfirmation(.tight))
+        #expect(ModelSizing.requiresMemoryConfirmation(.unsafe))
     }
 
     @Test("memorySafety: fails open on unknown params or unreadable probe")

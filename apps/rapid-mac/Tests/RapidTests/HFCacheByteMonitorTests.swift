@@ -337,20 +337,14 @@ struct HFCacheByteMonitorTests {
             pollInterval: 0.2
         )
         defer { handle.stop() }
-
-        // Allow one poll cycle to land. We use a bounded wait rather
-        // than a hard sleep so a slow CI host still passes.
-        let deadline = Date().addingTimeInterval(3.0)
-        while Date() < deadline {
-            if progress.hasDiskObservation { break }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        #expect(await handle.waitForFirstPoll())
 
         #expect(progress.hasDiskObservation == true)
         #expect((progress.bytesDownloaded ?? 0) >= 8192)
         let subtitle = progress.progressSubtitle ?? ""
         // 8 KiB / 64 KiB = 12.5% → either 12 or 13 after rounding.
         #expect(subtitle.contains("KB"))
+        await handle.stopAndWait()
     }
 
     @Test("End-to-end: missing cache dir leaves DownloadProgress untouched — UI falls back cleanly")
@@ -363,9 +357,10 @@ struct HFCacheByteMonitorTests {
             pollInterval: 0.2
         )
         defer { handle.stop() }
-        try? await Task.sleep(nanoseconds: 500_000_000)  // 2-3 polls worth
+        #expect(await handle.waitForFirstPoll() == false)
         #expect(progress.hasDiskObservation == false)
         #expect(progress.bytesDownloaded == nil)
+        await handle.stopAndWait()
     }
 
     @Test("End-to-end: Handle.stop() cancels the poll task — no further updates after cancel")
@@ -390,21 +385,68 @@ struct HFCacheByteMonitorTests {
             progress: progress,
             pollInterval: 0.1
         )
-        // Wait for the first observation.
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-            if progress.hasDiskObservation { break }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        defer { handle.stop() }
+        #expect(await handle.waitForFirstPoll())
         #expect(progress.hasDiskObservation == true)
         let firstBytes = progress.bytesDownloaded
-        handle.stop()
+        await handle.stopAndWait()
         // Grow the dir AFTER stop — the monitor must NOT re-observe.
         let blob2 = modelDir.appendingPathComponent("blobs/b")
         try Data(repeating: 0x22, count: 1024 * 1024).write(to: blob2)
-        try? await Task.sleep(nanoseconds: 400_000_000)
         // The byte count should not have advanced from the post-stop write.
         #expect(progress.bytesDownloaded == firstBytes)
+    }
+
+    @Test("waitForFirstPoll shares one completed result with concurrent and later callers")
+    func firstPollResultIsShared() async throws {
+        let fm = FileManager.default
+        let hubRoot = fm.temporaryDirectory
+            .appendingPathComponent("rapid-hf-shared-poll-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: hubRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: hubRoot) }
+
+        let modelDir = try makeFixtureCacheDir(
+            hubRoot: hubRoot,
+            owner: "shared",
+            repo: "poll"
+        )
+        try Data(repeating: 0x33, count: 4096)
+            .write(to: modelDir.appendingPathComponent("blobs/seed"))
+
+        let handle = HFCacheByteMonitor.start(
+            cacheDir: modelDir,
+            progress: DownloadProgress(),
+            pollInterval: 0.2
+        )
+        defer { handle.stop() }
+
+        async let first = handle.waitForFirstPoll()
+        async let second = handle.waitForFirstPoll()
+        let (firstResult, secondResult) = await (first, second)
+        #expect(firstResult)
+        #expect(secondResult)
+        #expect(await handle.waitForFirstPoll())
+        await handle.stopAndWait()
+    }
+
+    @Test("stop before the first poll completes waiters without publishing")
+    func stopBeforeFirstPollCompletesWaiters() async {
+        let progress = DownloadProgress()
+        let handle = HFCacheByteMonitor.start(
+            cacheDir: URL(
+                fileURLWithPath: "/tmp/rapid-hf-prepoll-stop-\(UUID().uuidString)",
+                isDirectory: true
+            ),
+            progress: progress,
+            pollInterval: 0.2,
+            isCancelled: { true }
+        )
+
+        handle.stop()
+        #expect(await handle.waitForFirstPoll() == false)
+        await handle.stopAndWait()
+        #expect(progress.hasDiskObservation == false)
+        #expect(progress.bytesDownloaded == nil)
     }
 }
 

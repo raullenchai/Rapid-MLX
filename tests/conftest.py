@@ -17,6 +17,50 @@ script modules themselves don't take a runtime ``import pytest``
 dependency (pytest is dev-only; codex R3 closure)."""
 
 
+@pytest.fixture
+def scheduler_config_stub(monkeypatch):
+    """Exercise scheduler wiring without importing the Apple-only runtime."""
+    import importlib.machinery
+    import importlib.util
+    import sys
+    import types
+
+    turboquant_was_loaded = "vllm_mlx.turboquant" in sys.modules
+    if importlib.util.find_spec("mlx") is None:
+        # Import the server/tool-parser surface before installing the narrow
+        # array shim, otherwise optional-dependency discovery could mistake
+        # the shim for a complete MLX runtime.
+        import numpy as np
+
+        import vllm_mlx.server  # noqa: F401
+
+        mlx = types.ModuleType("mlx")
+        mlx.__path__ = []
+        mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None)
+        mlx_core = types.ModuleType("mlx.core")
+        mlx_core.__spec__ = importlib.machinery.ModuleSpec("mlx.core", loader=None)
+        mlx_core.array = np.array
+        mlx_core.float16 = np.float16
+        mlx.core = mlx_core
+        monkeypatch.setitem(sys.modules, "mlx", mlx)
+        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    scheduler = types.ModuleType("vllm_mlx.scheduler")
+
+    class SchedulerConfig:
+        def __init__(self, **kwargs):
+            self.enable_prefix_cache = True
+            self.hybrid_cache_entries = 0
+            self.non_trimmable_exact_prefix_reuse = False
+            self.__dict__.update(kwargs)
+
+    scheduler.SchedulerConfig = SchedulerConfig
+    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+    yield SchedulerConfig
+    if not turboquant_was_loaded:
+        sys.modules.pop("vllm_mlx.turboquant", None)
+
+
 @pytest.fixture(autouse=True)
 def _reset_global_parser_state_after_each_test():
     """Keep the process-global parser state hermetic across tests.

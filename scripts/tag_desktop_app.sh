@@ -53,6 +53,13 @@
 # Required environment:
 #   VERSION            X.Y.Z — the version the engine just released
 #   RELEASE_SHA        the commit the engine release was cut from
+#   ACCEPTED_SHA       the full commit SHA that a candidate build VALIDATED for
+#                      this version (the desktop-releasable candidate gate's
+#                      accepted source SHA). The tag may only be claimed at this
+#                      exact SHA; a RELEASE_SHA that differs from it is refused,
+#                      because the tag would claim an app build that was never
+#                      validated. This is what stops an RC tag from preceding its
+#                      validated artifact commit (#2301).
 #   GITHUB_REPOSITORY  owner/repo
 #   GH_TOKEN           consumed by ``gh`` (RELEASE_PAT in the workflow)
 # Optional:
@@ -69,13 +76,36 @@ set -euo pipefail
 
 : "${VERSION:?tag_desktop_app.sh: VERSION is required}"
 : "${RELEASE_SHA:?tag_desktop_app.sh: RELEASE_SHA is required}"
+: "${ACCEPTED_SHA:?tag_desktop_app.sh: ACCEPTED_SHA is required — a desktop tag can only be claimed at the SHA a candidate build validated}"
 : "${GITHUB_REPOSITORY:?tag_desktop_app.sh: GITHUB_REPOSITORY is required}"
 GH_BIN="${GH:-gh}"
 HAVE_PAT="${HAVE_PAT-true}"
 
+# Both SHAs must be full 40-character commits. Comparing short SHAs would let a
+# collision or a truncation mistake read as the same commit, and a human must be
+# able to see the exact identity being claimed.
+for SHA in "$RELEASE_SHA" "$ACCEPTED_SHA"; do
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "::error::tag_desktop_app.sh: '$SHA' is not a full 40-character commit SHA" >&2
+    exit 1
+  }
+done
+
+# Fail closed at the identity boundary BEFORE any POST: this tag can only ever
+# be claimed at the SHA that the candidate lane validated. A RELEASE_SHA that
+# differs from ACCEPTED_SHA means the version's notes/tag would describe a tree
+# whose desktop app was never validated as a signed, notarised, DMG-validated
+# candidate — exactly the rc1/tag-before-validation defect (#2301).
+if [ "$RELEASE_SHA" != "$ACCEPTED_SHA" ]; then
+  echo "::error::refusing to claim a rapid-mac-v${VERSION} tag: this release is cut at $RELEASE_SHA but the validated desktop candidate is $ACCEPTED_SHA. An RC tag must identify the exact commit whose app passed signed build, notarisation and DMG validation; a tag at any other commit may ship a different, unvalidated artifact." >&2
+  exit 1
+fi
+
 # The tag is built from this string, so a value the tag namespace cannot
 # carry has to fail here rather than produce ``rapid-mac-v0.12.7\n``.
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/resolve_github_tag.sh
+source "$REPO_ROOT/scripts/resolve_github_tag.sh"
 if ! python3 "$REPO_ROOT/scripts/release_version.py" validate "$VERSION" >/dev/null; then
   echo "❌ VERSION is '$VERSION', which is not X.Y.Z or X.Y.Z-rcN" >&2
   exit 1
@@ -89,43 +119,11 @@ if [ "$HAVE_PAT" != "true" ]; then
   exit 1
 fi
 
-# Follows at most this many annotated tag objects before giving up. Ordinary
-# tags peel in one hop; the bound only exists so a malformed chain cannot spin.
-MAX_TAG_PEEL_DEPTH=10
-
-resolve_tag_commit() {
-  # Start from the explicit tag namespace so a same-named branch can never
-  # satisfy verification, then peel annotated tag objects to a commit.
-  #
-  # The loop checks the type BEFORE following, and the counter bounds the
-  # number of FOLLOWS. Bounding iterations instead would reject a chain whose
-  # last hop lands on a commit — the answer was in hand and thrown away.
-  local object_line object_type object_sha depth=0
-  object_line=$(
-    "$GH_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/tags/$APP_TAG" \
-      --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
-  ) || return 1
-  IFS=$'\t' read -r object_type object_sha <<<"$object_line"
-  while true; do
-    case "$object_type" in
-      commit)
-        [ -n "$object_sha" ] || return 1
-        printf '%s\n' "$object_sha"
-        return 0
-        ;;
-      tag)
-        depth=$((depth + 1))
-        [ "$depth" -le "$MAX_TAG_PEEL_DEPTH" ] || return 1
-        object_line=$(
-          "$GH_BIN" api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" \
-            --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
-        ) || return 1
-        IFS=$'\t' read -r object_type object_sha <<<"$object_line"
-        ;;
-      *) return 1 ;;
-    esac
-  done
-}
+# Print the exact identity being claimed BEFORE the irreversible POST, so the
+# run log and the environment-approval audit both carry the full commit that a
+# candidate build validated — never a branch name or short SHA.
+echo "::notice::Claiming $APP_TAG at validated candidate SHA $RELEASE_SHA (accepted: $ACCEPTED_SHA)"
+echo "Claiming $APP_TAG at validated candidate SHA $RELEASE_SHA"
 
 if "$GH_BIN" api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
     -f "ref=refs/tags/$APP_TAG" -f "sha=$RELEASE_SHA" >/dev/null 2>&1; then
@@ -133,17 +131,19 @@ if "$GH_BIN" api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
   exit 0
 fi
 
-EXISTING=$(resolve_tag_commit || true)
+EXISTING=$(resolve_github_tag_commit "$APP_TAG" 2>/dev/null || true)
 if [ -z "$EXISTING" ]; then
   echo "❌ could not create refs/tags/$APP_TAG and could not read it back — refusing to guess." >&2
   echo "   Check the token's contents:write scope, then re-run this workflow." >&2
   exit 1
 fi
 if [ "$EXISTING" != "$RELEASE_SHA" ]; then
-  echo "❌ $APP_TAG already exists at $EXISTING, but this release is $RELEASE_SHA." >&2
+  echo "❌ $APP_TAG already exists at $EXISTING, but the validated candidate (and this release) is $RELEASE_SHA." >&2
   echo "   Refusing to move a published tag: the DMG built from $EXISTING would" >&2
   echo "   ship under $RELEASE_SHA's release notes." >&2
-  echo "   Fix by hand: delete the stale tag, or bump to a fresh version." >&2
+  # A published RC is immutable. The user-visible fix is to supersede it with
+  # the next RC on its own validated commit — never to delete or move the tag.
+  echo "   To publish a corrected build, cut the NEXT rc (e.g. rapid-mac-v0.13.0-rc2) and validate that exact commit; this tag is not moved or deleted." >&2
   exit 1
 fi
-echo "$APP_TAG already points at $RELEASE_SHA — nothing to do."
+echo "$APP_TAG already points at the validated candidate $RELEASE_SHA — nothing to do."

@@ -29,11 +29,15 @@ on:
   workflow_dispatch:
     inputs:
       force_version:
-        description: "EMERGENCY only: release this exact version WITHOUT the Tier-1 gate (use when the Studio runner is down). Must equal pyproject.toml. Leave blank otherwise."
+        description: "EMERGENCY only: release this exact version WITHOUT the Tier-1 gate (use when the Studio runner is down). Must equal pyproject.toml. Leave blank otherwise. Mutually exclusive with retry_version."
+        required: false
+        default: ""
+      retry_version:
+        description: "NORMAL retry: re-run the full release at the CURRENT main head for this version (use when a release stalled because main advanced past the validated candidate). Must equal pyproject.toml, run on main, and bypass NOTHING (Tier-1 + signed candidate + evidence + approval all re-run). Mutually exclusive with force_version."
         required: false
         default: ""
       reason:
-        description: "Why the gate is being bypassed (recorded in the release notes for audit)."
+        description: "Optional note for force_version / retry_version dispatches (recorded for audit)."
         required: false
         default: ""
 
@@ -63,34 +67,65 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           FORCE_VERSION: ${{ github.event.inputs.force_version }}
+          RETRY_VERSION: ${{ github.event.inputs.retry_version }}
           REASON: ${{ github.event.inputs.reason }}
           ACTOR: ${{ github.actor }}
         run: |
-          # --- Emergency manual override (Studio down) ---------------------
+          # --- Manual workflow_dispatch (emergency force OR normal retry) --
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            if [ -z "$FORCE_VERSION" ]; then
-              echo "workflow_dispatch with no force_version — nothing to do."
+            # force_version and retry_version are mutually exclusive routes.
+            if [ -n "$FORCE_VERSION" ] && [ -n "$RETRY_VERSION" ]; then
+              echo "❌ force_version and retry_version are mutually exclusive; provide at most one." >&2
+              exit 1
+            fi
+            if [ -z "$FORCE_VERSION" ] && [ -z "$RETRY_VERSION" ]; then
+              echo "workflow_dispatch with neither force_version nor retry_version — nothing to do."
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               echo "force=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "⚠️  FORCED release requested by @$ACTOR → v$FORCE_VERSION"
-            echo "    reason: ${REASON:-<none given>}"
-            echo "⚠️  The Tier-1 agent gate will be BYPASSED for this release."
+
             # workflow_dispatch lets the operator pick any ref; a production
             # release must come from protected main, never a feature/stale
             # branch that happens to carry the same version in pyproject.toml.
             if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-              echo "❌ Forced release must be dispatched on main (got $GITHUB_REF)" >&2
+              echo "❌ Forced/retry release must be dispatched on main (got $GITHUB_REF)" >&2
               exit 1
             fi
-            VERSION="$FORCE_VERSION"
-            # Even a forced release must match pyproject and have a fresh tag.
+
+            # Both routes require the version to equal pyproject.toml.
             PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
-            if [ "$PROJECT_VER" != "$VERSION" ]; then
-              echo "❌ force_version $VERSION != pyproject.toml $PROJECT_VER" >&2
-              exit 1
+
+            if [ -n "$FORCE_VERSION" ]; then
+              # --- Emergency override: bypass ONLY the Tier-1 gate ---------
+              echo "⚠️  FORCED release requested by @$ACTOR → v$FORCE_VERSION"
+              echo "    reason: ${REASON:-<none given>}"
+              echo "⚠️  The Tier-1 agent gate will be BYPASSED for this release."
+              VERSION="$FORCE_VERSION"
+              if [ "$PROJECT_VER" != "$VERSION" ]; then
+                echo "❌ force_version $VERSION != pyproject.toml $PROJECT_VER" >&2
+                exit 1
+              fi
+            else
+              # --- Normal retry after main drift: bypass NOTHING ------------
+              # Used when a release stalled because main advanced past the
+              # validated candidate (the pre-tag TOCTOU gate aborted). Re-run
+              # the FULL chain — Tier-1, signed Desktop candidate, live
+              # blocker/main evidence, protected approval — at the CURRENT NEW
+              # main head, so a healthy release can proceed without waiting for
+              # another bump PR and WITHOUT the emergency Tier-1 bypass.
+              echo "♻️  RETRY release requested by @$ACTOR → v$RETRY_VERSION (full gates, no bypass)"
+              echo "    reason: ${REASON:-<none given>}"
+              VERSION="$RETRY_VERSION"
+              if [ "$PROJECT_VER" != "$VERSION" ]; then
+                echo "❌ retry_version $VERSION != pyproject.toml $PROJECT_VER" >&2
+                exit 1
+              fi
             fi
+            # force=true ONLY for the emergency override; a retry re-runs the
+            # full chain (force=false) so Tier-1 + candidate + evidence +
+            # approval all apply.
+            if [ -n "$FORCE_VERSION" ]; then FORCE_BOOL=true; else FORCE_BOOL=false; fi
             if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "v$VERSION"; then
               # The tag may already exist WITHOUT a Release (a prior run died
               # between tag and Release, or the Release was deleted). detect
@@ -107,12 +142,12 @@ jobs:
               echo "Tag v$VERSION exists without a published Release — will recover"
               echo "version=$VERSION" >> "$GITHUB_OUTPUT"
               echo "should_release=true" >> "$GITHUB_OUTPUT"
-              echo "force=true" >> "$GITHUB_OUTPUT"
+              echo "force=$FORCE_BOOL" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "force=true" >> "$GITHUB_OUTPUT"
+            echo "force=$FORCE_BOOL" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -230,20 +265,167 @@ jobs:
           RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
           rm -rf "$V"
 
+  # 2b) Desktop candidate gate (macos-15). Builds + signs + notarises + DMG-
+  #    validates the desktop app at the EXACT release commit and produces a
+  #    Desktop manifest binding source SHA, embedded versions and DMG digest,
+  #    WITHOUT creating any tag/release/updater pointer. Its accepted SHA is
+  #    what authorises the desktop tag claim below.
+  #
+  #    #2301: the desktop tag may only be created at the commit whose app passed
+  #    the signed/notarised/DMG-validated lane. Handing the tag claim this
+  #    accepted SHA — and making the claim refuse any other SHA — stops an RC tag
+  #    from preceding its validated artifact commit.
+  #
+  #    Runs in PARALLEL with tier1-agent-gate: the two share nothing (different
+  #    runners, different checks: Studio agent smoke vs macos-15 desktop build) and
+  #    both depend only on detect outputs. Serialising one behind the other would
+  #    add the full Studio latency (up to 125 min) to every RC just to reach a
+  #    check that does not consume its result. release-prep still ``needs`` BOTH
+  #    and fails the release unless BOTH passed (or tier1 was force-bypassed), so
+  #    this parallelism changes no safety property — only makes the two gates
+  #    start at the same time.
+  desktop-candidate-gate:
+    needs: detect
+    if: >-
+      !cancelled()
+      && needs.detect.result == 'success'
+      && needs.detect.outputs.should_release == 'true'
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      # The candidate must be the REAL signed, notarised lane. Derived identically
+      # to the tagged lane's SIGNED, so a candidate accepted here is the exact
+      # product the tag lane is expected to reproduce. auto-release.yml runs on
+      # push to main / workflow_dispatch (never pull_request), so these secrets
+      # are available here.
+      SIGNED: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
+    outputs:
+      accepted_sha: ${{ steps.accept.outputs.accepted_sha }}
+      version: ${{ steps.accept.outputs.version }}
+      signed: ${{ steps.accept.outputs.signed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history + tags so the sidecar version derivation and the
+          # Sparkle / DMG build can walk tag ancestry from the release commit.
+          fetch-depth: 0
+
+      - name: Resolve the previous rapid-mac release tag
+        id: prev
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The immediately-previous STABLE rapid-mac tag, used by the DMG
+          # size-delta gate. Runs in the candidate lane too so a regressed DMG
+          # growth is caught pre-tag, not at publish time. Portability: uses
+          # release_version.py ordering (RC < stable), never GNU sort -V (macOS).
+          # The intended pre-tag tag does not exist yet, so the predecessor is
+          # selected as the greatest stable tag STRICTLY BELOW the intended
+          # version rather than by bumping into an existing current tag.
+          # DMG size-delta baseline: greatest prior STABLE release (RCs have no
+          # published DMG asset, so rc2 compares against the last stable).
+          PREV_STABLE="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
+            | python3 scripts/release_version.py preceding "${VERSION}")"
+          # Sparkle build-monotonicity predecessor: greatest prior release tag
+          # INCLUDING RCs (rc2 must beat rc1). The candidate lane preflights the
+          # same contract the tag lane enforces.
+          PREV_RELEASE="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
+            | python3 scripts/release_version.py preceding-release "${VERSION}")"
+          echo "previous_stable_tag=${PREV_STABLE:-}" >> "$GITHUB_OUTPUT"
+          echo "previous_release_tag=${PREV_RELEASE:-}" >> "$GITHUB_OUTPUT"
+          echo "::notice::DMG size-delta baseline: ${PREV_STABLE:-<none>}; Sparkle monotonic predecessor: ${PREV_RELEASE:-<none>}"
+
+      - uses: ./.github/actions/desktop-releasable
+        id: releasable
+        with:
+          checkout_path: ${{ github.workspace }}
+          candidate_sha: ${{ github.sha }}
+          release_version: ${{ needs.detect.outputs.version }}
+          app_tag: rapid-mac-v${{ needs.detect.outputs.version }}
+          signed: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
+          require_signed: 'true'
+          publish_sparkle: 'false'
+          previous_stable_tag: ${{ steps.prev.outputs.previous_stable_tag }}
+          previous_release_tag: ${{ steps.prev.outputs.previous_release_tag }}
+          MACOS_DEVID_CERT_P12_BASE64: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 }}
+          MACOS_DEVID_CERT_PASSWORD: ${{ secrets.MACOS_DEVID_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+
+      - name: Accept the desktop candidate (bind evidence to the full SHA)
+        # This is the acceptance boundary that issues the SHA the tag claim is
+        # bound to. The run must have completed successfully at the same source
+        # SHA and the manifest must verify against the exact DMG bytes — branch
+        # names or "latest successful run" are never identities (#4).
+        id: accept
+        env:
+          BUILT_SHA: ${{ steps.releasable.outputs.built_sha }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          SIGNED: ${{ env.SIGNED }}
+        run: |
+          set -euo pipefail
+          MANIFEST="${{ steps.releasable.outputs.manifest }}"
+          PROJ="apps/rapid-mac"
+          python3 scripts/desktop_manifest.py verify \
+            --app-dir "$PROJ" \
+            --dmg "$PROJ/build/rapid-mlx-desktop.dmg" \
+            --manifest "$MANIFEST"
+          SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source_sha"])' "$MANIFEST")"
+          EXPECTED="${GITHUB_SHA}"  # the full commit that triggered this run
+          if [ "$SRC" != "$BUILT_SHA" ] || [ "$SRC" != "$EXPECTED" ]; then
+            echo "::error::desktop candidate manifest source ($SRC) does not match the built SHA ($BUILT_SHA) or the triggering commit ($EXPECTED); refusing to accept." >&2
+            exit 1
+          fi
+          echo "::notice::Desktop candidate ACCEPTED at $BUILT_SHA (version $VERSION, signed=${SIGNED})"
+          echo "accepted_sha=$BUILT_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "signed=${SIGNED}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload desktop candidate DMG + manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mlx-desktop-dmg
+          path: |
+            apps/rapid-mac/build/rapid-mlx-desktop.dmg
+            apps/rapid-mac/build/rapid-mlx-desktop.manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
   # 3) Tag + GitHub Release. Runs when the gate passed OR this is a forced
-  #    (gate-bypassed) release. ``!cancelled()`` lets the ``if`` evaluate even
-  #    though the gate job is skipped on a forced release. publish.yml fires on
-  #    the resulting ``release: published`` event.
-  release:
-    needs: [detect, tier1-agent-gate]
+  #    (gate-bypassed) release, AND the desktop candidate gate accepted the
+  #    exact commit. ``!cancelled()`` lets the ``if`` evaluate even though the
+  #    gate job is skipped on a forced release. publish.yml fires on the
+  #    resulting ``release: published`` event.
+  # 3a) Pre-approval evidence job (NO environment gate). Produces and prints the
+  #    EXACT validated candidate SHA and the release-blocker evidence BEFORE the
+  #    environment-gated tag job asks a human for approval — a reviewer approves
+  #    an exact SHA that is already printed, never one that only appears after
+  #    approval (#2301, release-safety review).
+  release-prep:
+    needs: [detect, tier1-agent-gate, desktop-candidate-gate]
     if: >-
       !cancelled()
       && needs.detect.result == 'success'
       && needs.detect.outputs.should_release == 'true'
       && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
+      && needs.desktop-candidate-gate.result == 'success'
     runs-on: ubuntu-latest
+    # The live release-blocker query reads the repo's open ``release-blocker``
+    # issues, so this job needs read access to issues (in addition to checkout).
     permissions:
-      contents: write
+      contents: read
+      issues: read
+    outputs:
+      release_sha: ${{ steps.changelog.outputs.release_sha }}
+      accepted_sha: ${{ steps.accepted.outputs.accepted_sha }}
+      main_sha: ${{ steps.mainhead.outputs.main_sha }}
+      open_ids: ${{ steps.blockers.outputs.open_ids }}
+      have_pat: ${{ steps.appcheck.outputs.have_pat }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -263,9 +445,9 @@ jobs:
           VERSION: ${{ needs.detect.outputs.version }}
           # Presence only — the value never enters the log. The app tag has to
           # be created by a real user or the DMG workflow never fires (see the
-          # tag step below), so whether we hold a PAT decides whether this run
-          # can cut the app half at all. Deciding it HERE, before anything is
-          # published, is what makes the skip recoverable.
+          # tag step in release-tag), so whether we hold a PAT decides whether
+          # this release can cut the app half at all. Deciding it HERE before
+          # anything is published is what makes the skip recoverable.
           HAVE_PAT: ${{ secrets.RELEASE_PAT != '' }}
         run: |
           set -euo pipefail
@@ -296,15 +478,19 @@ jobs:
           ACTOR: ${{ github.actor }}
           REASON: ${{ github.event.inputs.reason }}
           EVENT_SHA: ${{ github.sha }}
-          NOTES_FILE: ${{ runner.temp }}/release-notes.md
+          # Keep every file in the evidence artifact under one workspace root.
+          # upload-artifact preserves paths relative to the files' common
+          # ancestor; mixing runner.temp with workspace files nests the notes
+          # under _temp/ and makes the protected release job unable to find it.
+          NOTES_FILE: ${{ github.workspace }}/release-notes.md
         run: |
           set -euo pipefail
 
           # Resolve the commit being released ONCE, here. This SHA is what the
           # notes are generated from, what the ancestry assert checks against,
-          # and (via the step output below) what the tag is created at. Nothing
-          # downstream re-reads a bare ``HEAD``: two independent reads of "the
-          # current commit" is exactly how notes and tag drift apart.
+          # and what the tag is bound to. Nothing downstream re-reads a bare
+          # ``HEAD``: two independent reads of "the current commit" is exactly
+          # how notes and tag drift apart.
           RELEASE_SHA=$(git rev-parse --verify "${EVENT_SHA}^{commit}")
           HEAD_SHA=$(git rev-parse --verify 'HEAD^{commit}')
           if [ "$RELEASE_SHA" != "$HEAD_SHA" ]; then
@@ -313,79 +499,300 @@ jobs:
             exit 1
           fi
 
-          # The body goes to a file, not to $GITHUB_OUTPUT. The old heredoc
-          # (``body<<__EOF__``) could be escaped by any line equal to the
-          # delimiter — now reachable from human-authored highlights as well as
-          # commit subjects. A file has no delimiter to escape and never passes
-          # through GitHub Actions expression interpolation.
+          # The body goes to a file, not to $GITHUB_OUTPUT (historical escape:
+          # a ``body<<__EOF__`` heredoc could be escaped by a delimiter line).
           RELEASE_SHA="$RELEASE_SHA" bash scripts/build_release_notes.sh > "$NOTES_FILE"
 
           echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
-          echo "--- release notes ---"
-          cat "$NOTES_FILE"
 
-      # The engine and the desktop app are ONE version, enforced by
-      # scripts/check_version_sync.py — so a release is one event, not two.
-      # Cutting them separately is what produced the 0.12.5-vs-0.12.6 split that
-      # reached users: the engine shipped, the app tag was a manual step somebody
-      # had to remember, and for four releases nobody did.
-      #
-      # Creating ``refs/tags/rapid-mac-v$VERSION`` hands off to
-      # .github/workflows/rapid-mac-release.yml, which builds, signs, notarises
-      # and attaches the DMG from this same tree (its sidecar is built from repo
-      # source at the tag, so it does not wait on the engine Release or PyPI).
-      #
-      # BEFORE the engine Release, deliberately. Publishing the engine is the
-      # irreversible step: once it exists, ``detect`` sets should_release=false
-      # and no re-run can ever reach this step again. So anything that can refuse
-      # the app tag — it already exists at another commit, a ruleset rejects the
-      # namespace, a transient API failure — has to refuse while the release can
-      # still be re-run from the top. Claiming the tag first inverts the failure:
-      # the worst case is an app tag whose engine Release lands seconds later on
-      # the re-run, instead of a version that is engine-only forever.
-      #
-      # RELEASE_PAT because the tag is created through the API under a real user:
-      # a ref written with the default GITHUB_TOKEN fires no ``push`` event. Its
-      # absence is already fatal in the pre-flight step above; the script
-      # re-checks anyway, so a hand-run cannot walk into it either.
-      - name: Tag the desktop app at the same version
+      # #2301 identity boundary: the desktop tag may only be claimed at the SHA
+      # the candidate gate validated. This is the pre-approval evidence the
+      # reviewer sees.
+      - name: Verify the accepted desktop candidate SHA
+        id: accepted
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-          HAVE_PAT: ${{ steps.appcheck.outputs.have_pat }}
-          VERSION: ${{ needs.detect.outputs.version }}
-          # Resolved once by "Build release notes". The app is built from the
-          # same tree the engine releases, so the tag must land on that commit.
+          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
+          ACCEPTED_SHA: ${{ needs.desktop-candidate-gate.outputs.accepted_sha }}
+        run: |
+          set -euo pipefail
+          echo "::notice::release commit:     $RELEASE_SHA"
+          echo "::notice::validated candidate: $ACCEPTED_SHA"
+          if [ "$RELEASE_SHA" != "$ACCEPTED_SHA" ]; then
+            echo "::error::the desktop tag would be claimed at $RELEASE_SHA, but the validated desktop candidate is $ACCEPTED_SHA. Refusing: an RC tag must identify the exact commit whose app passed signed build, notarisation and DMG validation." >&2
+            exit 1
+          fi
+          echo "accepted_sha=$ACCEPTED_SHA" >> "$GITHUB_OUTPUT"
+
+      # #2301: the tag must be at the commit that is BOTH the validated candidate
+      # AND still the live main head. A packaging fix landing on main while the
+      # candidate validated would leave it behind the intended validated head —
+      # the same rc1/ordering regression. Resolve refs/heads/main NOW, require it
+      # to equal accepted == release, and print that exact main SHA for approval.
+      - name: Verify the live main head still equals the validated candidate
+        id: mainhead
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ACCEPTED_SHA: ${{ steps.accepted.outputs.accepted_sha }}
           RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
         run: |
           set -euo pipefail
-          # Atomic tag claim + annotated-tag-aware recovery, extracted so both
-          # paths are testable offline against a mock ``gh``.
+          MAIN_SHA="$(gh api "repos/${REPO}/git/ref/heads/main" --jq '.object.sha')" || {
+            echo "::error::cannot resolve refs/heads/main; refusing to tag without confirming the candidate is still head." >&2
+            exit 1
+          }
+          echo "::notice::live main head: $MAIN_SHA"
+          python3 scripts/check_main_head.py \
+            --main-sha "$MAIN_SHA" \
+            --accepted-sha "$ACCEPTED_SHA" \
+            --release-sha "$RELEASE_SHA" \
+            | tee main-head-evidence.txt
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+
+      # #2301 / release-safety review: blocker evidence is LIVE, exact-version/
+      # SHA-bound, never a timeless boolean. The live set of open
+      # ``release-blocker`` issues is queried from the GitHub API right here
+      # (candidate time) and compared exactly against the structured per-version
+      # waiver file docs/development/release-blockers/waivers-<version>.json.
+      # The open id set is emitted so the protected tag job can re-query the
+      # SAME set immediately before claiming the tag and refuse any drift
+      # (TOCTOU). The full evidence is printed here, pre-approval, for the
+      # reviewer. GH_TOKEN (with issues: read) drives the live query.
+      - name: Release-blocker evidence at candidate time (RC only)
+        id: blockers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          SHA: ${{ steps.accepted.outputs.accepted_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release_blockers.py \
+            --version "$VERSION" \
+            --source-sha "$SHA" \
+            --repo "$REPO" \
+            --waivers-dir docs/development/release-blockers \
+            | tee release-blocker-evidence.txt
+          OPEN_IDS="$(grep '^OPEN_IDS=' release-blocker-evidence.txt | cut -d= -f2-)"
+          echo "open_ids=$OPEN_IDS" >> "$GITHUB_OUTPUT"
+
+      - name: Print release-transaction evidence summary
+        env:
+          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
+          ACCEPTED_SHA: ${{ steps.accepted.outputs.accepted_sha }}
+          MAIN_SHA: ${{ steps.mainhead.outputs.main_sha }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release evidence — verify before approving"
+            echo ""
+            echo "Version: ${VERSION}"
+            echo "Exact candidate SHA to tag: ${ACCEPTED_SHA}"
+            echo "Release commit: ${RELEASE_SHA}"
+            echo "Live main head: ${MAIN_SHA}"
+            echo ""
+            echo "### Main-head identity"
+            cat main-head-evidence.txt
+            echo ""
+            echo "### Release blockers"
+            cat release-blocker-evidence.txt
+            echo ""
+            echo "These values are what release-tag will claim. If they do not "
+            echo "name the exact validated commit at the live main head, do not "
+            echo "approve."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release evidence + notes for the tag job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mac-release-evidence
+          path: |
+            release-blocker-evidence.txt
+            main-head-evidence.txt
+            release-notes.md
+          if-no-files-found: error
+
+  # 3b) Environment-gated production tag + engine release. The human approves
+  #    the EXACT SHA the completed release-prep job printed (its summary + the
+  #    evidence artifact show it), then tag_desktop_app.sh claims the tag at
+  #    that accepted SHA, waits for the exact tagged Desktop workflow and DMG
+  #    publication to succeed, and only then publishes the engine.
+  release:
+    needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-prep]
+    if: >-
+      !cancelled()
+      && needs.detect.result == 'success'
+      && needs.detect.outputs.should_release == 'true'
+      && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
+      && needs.desktop-candidate-gate.result == 'success'
+      && needs.release-prep.result == 'success'
+    runs-on: ubuntu-latest
+    # Human-authorization gate for the production desktop tag claim (contract #5).
+    # The completed release-prep job produced the exact full SHA + blocker
+    # evidence BEFORE this approval is requested. Config: create a
+    # 'rapid-mac-tag' Actions environment with required reviewers and protect
+    # main as its deployment branch.
+    environment: rapid-mac-tag
+    permissions:
+      contents: write
+      # read the live ``rapid-mac-tag`` environment protection below.
+      actions: read
+      # The pre-tag re-query re-reads the live open ``release-blocker`` issue set
+      # immediately before the immutable tag is claimed (TOCTOU guard).
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # #2301 TOCTOU: you approve on the exact SHA that release-prep printed, but
+      # the APPROVAL CONTRACT ITSELF must still hold at claim time. PF-3 read the
+      # environment back on the bump PR — days/weeks earlier. Between then and
+      # now the environment could be deleted or drifted to unprotected (a
+      # workflow ``environment:`` reference auto-creates an UNPROTECTED one, so a
+      # missing/drifted protection would otherwise let the job proceed as if the
+      # intended reviewer approval existed). Run the SAME fail-closed read-back
+      # here, LIVE, before any blocker/main query and before any immutable write.
+      - name: Verify live rapid-mac-tag environment protection
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ENV_NAME="rapid-mac-tag"
+          gh api "repos/${REPO}/environments/${ENV_NAME}" \
+            > "$RUNNER_TEMP/re-env.json" || {
+            echo "::error::production tag environment '${ENV_NAME}' is missing at claim time. A workflow reference would auto-create an UNPROTECTED environment, which is not the approved human gate. Recreate it with a required reviewer + main-only deployment policy before tagging." >&2
+            exit 1
+          }
+          gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
+            > "$RUNNER_TEMP/re-policy.json" || {
+            echo "::error::cannot read the deployment-branch policy for '${ENV_NAME}' at claim time; treating as NO-GO." >&2
+            exit 1
+          }
+          python3 scripts/check_release_environment.py \
+            --environment-json "$RUNNER_TEMP/re-env.json" \
+            --policy-json "$RUNNER_TEMP/re-policy.json" \
+            --expected-env-name "$ENV_NAME" \
+            | tee /tmp/release-env-evidence.txt
+          echo "::notice::live rapid-mac-tag environment protection verified immediately before the tag claim"
+
+      - name: Download the release evidence + notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: rapid-mac-release-evidence
+          path: evidence
+
+      # #2301 FRESHNESS/CUTOFF guard: re-query the live open release-blocker set
+      # IMMEDIATELY before the immutable tag is claimed and require it to equal the
+      # candidate-time set (``--expected-open-ids``); any
+      # opened/closed/waived-in-between fails closed. This is a freshness cutoff,
+      # NOT a cross-resource transaction: GitHub exposes no single atomic op across
+      # Issues + refs/heads/main + POST /git/refs. The tag POST is atomic only for
+      # tag identity; the accepted SHA is already bound as the only claimable
+      # commit. Events AFTER this cutoff are post-cut changes (a new blocker ⇒
+      # follow-up/next RC; a new main commit ⇒ not part of this candidate) and
+      # cannot retroactively invalidate the exact validated artifact SHA.
+      - name: Re-query release blockers immediately before tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+          REPO: ${{ github.repository }}
+          EXPECTED: ${{ needs.release-prep.outputs.open_ids }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release_blockers.py \
+            --version "$VERSION" \
+            --source-sha "$SHA" \
+            --repo "$REPO" \
+            --waivers-dir docs/development/release-blockers \
+            --expected-open-ids "$EXPECTED" \
+            | tee /tmp/release-blocker-requery.txt
+          echo "::notice::pre-tag release-blocker re-query matches candidate-time set (${EXPECTED:-none})"
+
+      # #2301 FRESHNESS cutoff: re-resolve refs/heads/main IMMEDIATELY before the
+      # immutable tag claim and require the candidate to equal live main AT THE
+      # CUTOFF — not a promise that main can't move after. Same structured helper
+      # the pre-approval job ran (shared offline tests). Residual race: this read
+      # and the tag POST are separate API calls; the ref race is covered by the
+      # operational main freeze during the interactive approval+claim window (sole
+      # owning reviewer). A commit landing on main after this cutoff is a post-cut
+      # change, not part of this candidate; a new blocker after the cutoff becomes
+      # an immediate next-RC/release incident once detected — never a retroactive
+      # invalidation of the exact validated SHA.
+      - name: Re-query live main head immediately before tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ACCEPTED_SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+          RELEASE_SHA: ${{ needs.release-prep.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/${REPO}/git/ref/heads/main" --jq '.object.sha')" || {
+            echo "::error::cannot resolve refs/heads/main immediately before tag; refusing to claim. #2301." >&2
+            exit 1
+          }
+          python3 scripts/check_main_head.py \
+            --main-sha "$MAIN_SHA" \
+            --accepted-sha "$ACCEPTED_SHA" \
+            --release-sha "$RELEASE_SHA"
+          echo "::notice::pre-tag main head $MAIN_SHA still equals the validated candidate ${ACCEPTED_SHA}"
+
+      # The desktop tag claim. tag_desktop_app.sh requires ACCEPTED_SHA (the
+      # exact candidate the pre-approval job printed) to equal RELEASE_SHA —
+      # the same binding the reviewer verified — and prints the full SHA before
+      # the atomic POST. The desktop tag is claimed BEFORE the engine Release,
+      # deliberately, so a failure here is recoverable by re-running the whole
+      # flow rather than stranding a version as engine-only forever.
+      - name: Tag the desktop app at the exact validated SHA
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ needs.release-prep.outputs.have_pat }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          RELEASE_SHA: ${{ needs.release-prep.outputs.release_sha }}
+          # The SHA the candidate gate validated and release-prep printed for
+          # approval — the ONLY commit this tag may claim.
+          ACCEPTED_SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+        run: |
+          set -euo pipefail
           bash scripts/tag_desktop_app.sh
+
+      # An existing same-SHA tag is an idempotent success for the tag claim, but
+      # it does not prove the Desktop workflow ever completed. Wait for the exact
+      # tagged workflow run and its published non-empty DMG before exposing the
+      # engine release. API/auth/malformed/mismatch/failure/timeout all fail
+      # closed. Recovery is an explicit rerun/dispatch at this immutable tag;
+      # this gate never moves/deletes a tag or starts a workflow itself.
+      - name: Wait for exact Desktop tagged publication
+        timeout-minutes: 360
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_TAG: rapid-mac-v${{ needs.detect.outputs.version }}
+          ACCEPTED_SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_desktop_publish.py \
+            --app-tag "$APP_TAG" \
+            --accepted-sha "$ACCEPTED_SHA" \
+            --repo "$REPO" \
+            --workflow rapid-mac-release.yml \
+            --deadline-min 350 \
+            --sleep-sec 20
 
       - name: Create tag and release
         env:
           # Use a user PAT (RELEASE_PAT) so the resulting ``release: published``
           # event fires downstream workflows. Releases created with the default
-          # ``GITHUB_TOKEN`` are suppressed by GitHub's anti-loop guard, leaving
-          # ``publish.yml`` un-triggered and the version stranded between tag and
-          # PyPI/Homebrew. The ``|| GITHUB_TOKEN`` fallback is now unreachable in
-          # practice: the pre-flight step fails the job when RELEASE_PAT is
-          # absent, because the app tag cannot be created without it and a
-          # half-released version is not recoverable. It stays as the expression
-          # default rather than as a working fork path.
+          # ``GITHUB_TOKEN`` are suppressed by GitHub's anti-loop guard.
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           TAG: v${{ needs.detect.outputs.version }}
-          # Resolved once by the step above. The notes describe exactly this
-          # commit, so the tag must be created at exactly this commit.
-          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
-          # The body lives in a file on disk; it is never interpolated into this
-          # ``run:`` block, so a commit subject containing ``$(...)`` cannot
-          # execute on a runner holding ``contents: write``.
-          NOTES_FILE: ${{ steps.changelog.outputs.notes_file }}
+          RELEASE_SHA: ${{ needs.release-prep.outputs.release_sha }}
+          NOTES_FILE: ${{ github.workspace }}/evidence/release-notes.md
         run: |
           set -euo pipefail
           # Atomic tag claim + tag-without-Release recovery (issue #1462).
-          # Extracted to scripts/create_release.sh so the TOCTOU and recovery
-          # paths are testable offline against a mock ``gh``.
           bash scripts/create_release.sh

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftUI
@@ -1465,6 +1466,11 @@ struct QuickstartView: View {
     /// the transfer is the job's own status.
     @State private var cancelRequestedAlias: String?
 
+    /// A foreground-triggered probe is async, so retain its task only for the
+    /// view lifetime. The parked warning remains owned by ServerManager; this
+    /// handle exists solely to propagate SwiftUI teardown cancellation.
+    @State private var foregroundMemoryRefreshTask: Task<Void, Never>?
+
     /// First-run setup should present a decision, not mirror every cached
     /// quantization of that decision.  Sibling variants stay reachable behind
     /// one explicit disclosure; Settings → Models and Browse all remain the
@@ -1538,6 +1544,46 @@ struct QuickstartView: View {
             // status enum changes — exactly the trigger shape we want.
             .task(id: downloadJobStatusKey) {
                 handleDownloadStatusChange()
+            }
+            // The warning asks the user to free memory, so keep observing the
+            // result of that action while this exact decision is visible.
+            // The view-bound task cancels when onboarding unmounts; three
+            // seconds matches the app's existing system-memory telemetry.
+            .task(id: visibleMemoryWarningID) {
+                guard let warningID = visibleMemoryWarningID else { return }
+                while !Task.isCancelled, visibleMemoryWarningID == warningID {
+                    await refreshPendingMemoryWarning(expectedID: warningID)
+                    do {
+                        try await Task.sleep(for: .seconds(3))
+                    } catch {
+                        return
+                    }
+                }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: NSApplication.didBecomeActiveNotification
+                )
+            ) { _ in
+                foregroundMemoryRefreshTask?.cancel()
+                guard let warningID = visibleMemoryWarningID else {
+                    foregroundMemoryRefreshTask = nil
+                    return
+                }
+                foregroundMemoryRefreshTask = Task { @MainActor in
+                    await refreshPendingMemoryWarning(expectedID: warningID)
+                }
+            }
+            .onChange(of: visibleMemoryWarningID) { _, _ in
+                // A foreground probe is not view-bound like `.task(id:)`.
+                // Cancel it when the rendered decision disappears or changes
+                // owner so it cannot update or announce a hidden warning.
+                foregroundMemoryRefreshTask?.cancel()
+                foregroundMemoryRefreshTask = nil
+            }
+            .onDisappear {
+                foregroundMemoryRefreshTask?.cancel()
+                foregroundMemoryRefreshTask = nil
             }
     }
 
@@ -3876,8 +3922,8 @@ struct QuickstartView: View {
     private func memoryWarningCard(_ warning: ModelSizing.MemoryWarning) -> some View {
         let fallback = Self.lowMemoryRecoveryChoice(for: warning)
         OnboardingOutcomeBlock(
-            glyph: "exclamationmark.triangle",
-            tone: .amber,
+            glyph: warning.severity == .safe ? "checkmark" : "exclamationmark.triangle",
+            tone: warning.severity == .safe ? .ready : .amber,
             kicker: "STEP \(QuickstartCoordinator.Step.start.displayNumber) "
                 + "OF \(QuickstartCoordinator.Step.total) · BEFORE LOADING",
             title: warning.title,
@@ -3889,7 +3935,9 @@ struct QuickstartView: View {
                 OnboardingStat(
                     label: "NEEDS",
                     value: Self.wholeGB(warning.footprintGB),
-                    tone: RapidTheme.statusError
+                    tone: warning.severity == .safe
+                        ? RapidTheme.statusReady
+                        : RapidTheme.statusError
                 )
                 OnboardingStat(
                     label: "FREE NOW",
@@ -3905,7 +3953,16 @@ struct QuickstartView: View {
             .padding(.top, 30)
         } actions: {
             OnboardingActionLane {
-                if let fallback {
+                if warning.severity != .unsafe {
+                    Button(warning.confirmTitle) {
+                        server.confirmPendingMemoryLoad(warning)
+                    }
+                    .buttonStyle(.onboardingPrimary)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("Quickstart.Memory.Load")
+                }
+
+                if let fallback, warning.severity == .unsafe {
                     Button("Switch to \(fallback.displayName)") {
                         server.cancelPendingMemoryLoad(warning)
                         coordinator.returnToChooser()
@@ -3918,15 +3975,17 @@ struct QuickstartView: View {
                     .accessibilityLabel("Switch to \(fallback.displayName), the lowest-memory option")
                 }
 
-                Button(warning.confirmTitle) {
-                    // Re-enters ``start`` with the guard bypassed. We stay in
-                    // ``.starting``; ``handleServerStateChange`` seeds the
-                    // welcome and dismisses the sheet once the child reaches
-                    // ``.ready``.
-                    server.confirmPendingMemoryLoad(warning)
+                if warning.severity == .unsafe {
+                    Button(warning.confirmTitle) {
+                        // Re-enters ``start`` with the guard bypassed. We stay in
+                        // ``.starting``; ``handleServerStateChange`` seeds the
+                        // welcome and dismisses the sheet once the child reaches
+                        // ``.ready``.
+                        server.confirmPendingMemoryLoad(warning)
+                    }
+                    .buttonStyle(.onboardingOutline)
+                    .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
                 }
-                .buttonStyle(.onboardingOutline)
-                .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
 
                 Button("Cancel") {
                     // Drop the parked load and leave ``.starting`` for the
@@ -3940,6 +3999,30 @@ struct QuickstartView: View {
                 .accessibilityIdentifier("Quickstart.Memory.Cancel")
             }
         }
+    }
+
+    /// Identity of the decision this onboarding surface actually renders.
+    /// A queued warning for another alias or another onboarding phase belongs
+    /// to a different surface and must not keep this view's sampler alive.
+    private var visibleMemoryWarningID: UUID? {
+        Self.memoryWarningToPresent(
+            phase: coordinator.phase,
+            pending: server.pendingMemoryWarning,
+            selectionAlias: coordinator.selection.alias
+        )?.id
+    }
+
+    @MainActor
+    private func refreshPendingMemoryWarning(expectedID: UUID) async {
+        guard visibleMemoryWarningID == expectedID,
+              let transition = await server.refreshPendingMemoryWarning(),
+              !Task.isCancelled,
+              visibleMemoryWarningID == expectedID,
+              NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let announcement = transition.new == .safe
+            ? "Memory is now safe. Load model is available."
+            : "Memory conditions changed to \(transition.new.rawValue)."
+        VoiceOverAnnouncer.announce(announcement)
     }
 
     /// Return the curated low-memory fallback only when the same snapshot

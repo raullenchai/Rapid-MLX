@@ -75,6 +75,7 @@ struct ContentView: View {
         // callback must not cancel a newer warning that has reached the queue
         // head in the meantime (#1463).
         let displayedMemoryWarning = server.pendingMemoryWarning
+        let displayedModelSwitch = server.pendingModelSwitch
         // Ollama-style layout: a left sidebar (New Chat / Launch / — later —
         // history) + a detail pane. No top model-control bar; the model
         // picker lives inline in the compose box (see ChatView) and the
@@ -196,6 +197,36 @@ struct ContentView: View {
             .accessibilityIdentifier("MemoryWarning.Confirm")
         } message: { warning in
             Text(warning.message)
+        }
+        .confirmationDialog(
+            displayedModelSwitch?.risk.title ?? "",
+            isPresented: Binding(
+                get: { server.pendingModelSwitch != nil },
+                set: {
+                    if !$0, let request = displayedModelSwitch {
+                        if alias == request.risk.targetAlias {
+                            alias = request.risk.currentAlias
+                        }
+                        server.cancelPendingModelSwitch(request)
+                    }
+                }
+            ),
+            titleVisibility: .visible,
+            presenting: displayedModelSwitch
+        ) { request in
+            Button("Switch", role: .destructive) {
+                server.confirmPendingModelSwitch(request)
+            }
+            .accessibilityIdentifier("ModelSwitchGuard.Confirm")
+            Button("Cancel", role: .cancel) {
+                if alias == request.risk.targetAlias {
+                    alias = request.risk.currentAlias
+                }
+                server.cancelPendingModelSwitch(request)
+            }
+            .accessibilityIdentifier("ModelSwitchGuard.Cancel")
+        } message: { request in
+            Text("Switching to \(request.risk.targetAlias) may interrupt those responses.")
         }
         .onChange(of: settingsRouter.quickstartReturnGeneration) { _, _ in
             quickstartDismissedThisSession = false

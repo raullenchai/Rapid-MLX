@@ -17,6 +17,27 @@ struct ReleaseManifestWorkflowTests {
         )
     }()
 
+    // The DMG/Sparkle build-up and its signing/version guards were extracted into
+    // the shared desktop-releasable composite (action.yml) when #2301 moved the
+    // build internals out of rapid-mac-release.yml. Those containment guards are
+    // asserted against the union of workflow + composite so they follow where the
+    // code actually lives; job-ordering assertions below stay on the workflow.
+    private static let compositeText: String = {
+        let here = URL(fileURLWithPath: #filePath)
+        let repo = here
+            .deletingLastPathComponent() // RapidTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // rapid-mac
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repo root
+        return try! String(
+            contentsOf: repo.appendingPathComponent(".github/actions/desktop-releasable/action.yml"),
+            encoding: .utf8
+        )
+    }()
+
+    private static let workflowAction: String = workflow + "\n" + compositeText
+
     private static let mirrorJob: Substring = {
         let start = workflow.range(of: "  mirror-dist:")!.lowerBound
         let end = workflow.range(of: "  publish-updater-fallback:")!.lowerBound
@@ -102,27 +123,29 @@ struct ReleaseManifestWorkflowTests {
 
     @Test("Sparkle archive is signed, mirrored, then advertised by the serialized appcast")
     func sparklePublicationOrderAndSigning() throws {
-        let workflow = Self.workflow
+        // Signing + version guards live in the shared composite since #2301
+        // extracted the build internals; assert them against workflow + composite.
+        let wfac = Self.workflowAction
         let mirrorJob = Self.mirrorJob
         let publishJob = Self.publishJob
 
-        #expect(workflow.contains("SPARKLE_PUBLIC_ED_KEY"))
-        #expect(workflow.contains("SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}"))
-        #expect(workflow.contains("printf '%s' \"$SPARKLE_ED_PRIVATE_KEY\""))
-        #expect(workflow.contains("--ed-key-file -"))
-        #expect(!workflow.contains("--ed-key-file $SPARKLE_ED_PRIVATE_KEY"))
-        #expect(workflow.contains("sparkle:edSignature="))
-        #expect(workflow.contains("Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"))
-        #expect(workflow.contains(#"-o "$OUT/appcast.xml" "$OUT""#))
-        #expect(workflow.contains("APPCAST_VERSION"))
-        #expect(workflow.contains("appcast build version does not match the signed app"))
-        #expect(workflow.contains("APPCAST_SHORT_VERSION"))
-        #expect(workflow.contains("appcast release version does not match the tag"))
-        #expect(workflow.contains("APPCAST_URL"))
-        #expect(workflow.contains("appcast URL does not match the mirrored Sparkle ZIP"))
-        #expect(workflow.contains("PREVIOUS_TAG"))
-        #expect(workflow.contains("(( APP_BUILD > PREVIOUS_BUILD ))"))
-        #expect(workflow.contains("must exceed ${PREVIOUS_TAG} build"))
+        #expect(wfac.contains("SPARKLE_PUBLIC_ED_KEY"))
+        #expect(wfac.contains("SPARKLE_ED_PRIVATE_KEY"))
+        #expect(wfac.contains("printf '%s' \"$SPARKLE_ED_PRIVATE_KEY\""))
+        #expect(wfac.contains("--ed-key-file -"))
+        #expect(!wfac.contains("--ed-key-file $SPARKLE_ED_PRIVATE_KEY"))
+        #expect(wfac.contains("sparkle:edSignature="))
+        #expect(wfac.contains("Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"))
+        #expect(wfac.contains(#"-o "$OUT/appcast.xml" "$OUT""#))
+        #expect(wfac.contains("APPCAST_VERSION"))
+        #expect(wfac.contains("appcast build version does not match the signed app"))
+        #expect(wfac.contains("APPCAST_SHORT_VERSION"))
+        #expect(wfac.contains("appcast release version does not match the tag"))
+        #expect(wfac.contains("APPCAST_URL"))
+        #expect(wfac.contains("appcast URL does not match the mirrored Sparkle ZIP"))
+        #expect(wfac.contains("PREVIOUS_TAG"))
+        #expect(wfac.contains("(( APP_BUILD > PREVIOUS_BUILD ))"))
+        #expect(wfac.contains("must exceed ${PREVIOUS_TAG} build"))
 
         let zipUpload = try #require(
             mirrorJob.range(of: #"r2 object put "${R2_BUCKET}/${SPARKLE_KEY}""#)

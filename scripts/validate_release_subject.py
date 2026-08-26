@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Validate a candidate commit subject would auto-release cleanly.
+"""Validate a bump-PR title is the CANONICAL auto-release subject.
 
-The ``auto-release.yml`` workflow watches for a strict subject:
-
-    chore: bump version to X.Y.Z[-rcN]
-
-GitHub's default squash-merge appends ``(#NN)`` to the subject unless
-the merger passes ``--subject``. That suffix breaks the regex match and
-strands the version between commit-to-main and PyPI/Homebrew publish.
-
-This script is the structural belt-and-suspenders: run it on the bump
-PR's title at PR-time, and the workflow refuses to merge until the
-title is auto-release-compatible.
+PF-1 enforces that the bump-PR **title** is exactly the canonical
+subject. The post-merge detect step in ``auto-release.yml`` is
+deliberately more tolerant: it runs the merged commit subject through
+``release_version.py subject --allow-pr-suffix``, so GitHub's default
+squash-merge appending ``(#NN)`` no longer strands a release. This
+script keeps the *title* strict for HYGIENE — a canonical PR title is
+clearer to review and keeps the merged subject clean when ``--subject``
+is passed — but a stray ``(#NN)`` suffix on an already-merged commit is
+no longer the release-killer it once was.
 
 Usage:
     python3 scripts/validate_release_subject.py --subject "<text>"
 
-Exit 0 = OK, exit 1 = would not auto-release (with reason on stderr).
+Exit 0 = OK (title is canonical), exit 1 = not canonical (with reason).
 """
 
 from __future__ import annotations
@@ -46,9 +44,11 @@ def diagnose(subject: str) -> list[str]:
 
     if re.search(r"\(#\d+\)\s*$", subject):
         problems.append(
-            "subject has a `(#NN)` PR-number suffix — GitHub's default "
-            'squash-merge added it. Pass `--subject "chore: bump version '
-            'to X.Y.Z[-rcN]"` to `gh pr merge` to strip it.'
+            "the BUMP-PR title must be the canonical subject WITHOUT a "
+            "`(#NN)` suffix. (The post-merge detect step tolerates the suffix "
+            "via --allow-pr-suffix, but PF-1 keeps the title clean. To keep the "
+            'merged subject canonical too, pass `--subject "chore: bump version '
+            'to X.Y.Z[-rcN]"` to `gh pr merge`.)'
         )
     if not subject.startswith("chore: bump version to "):
         problems.append(

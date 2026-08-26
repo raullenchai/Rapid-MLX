@@ -50,6 +50,26 @@ contains "$(cat "$WORKFLOW")" "Tag v\$VERSION exists without a published Release
 contains "$(cat "$WORKFLOW")" "bash scripts/create_release.sh" \
   "release job invokes the atomic helper"
 
+# The pre-approval artifact must download release-notes.md at the exact path
+# consumed by the protected release job. All uploaded files therefore share
+# the workspace root; an absolute runner.temp path would be preserved beneath
+# an _temp/ directory by upload-artifact and strand the engine release after
+# the Desktop DMG has already published.
+BUILD_NOTES=$(sed -n '/- name: Build release notes/,/- name: Verify the accepted desktop candidate SHA/p' "$WORKFLOW")
+UPLOAD_EVIDENCE=$(sed -n '/- name: Upload release evidence + notes/,/^  # 3b)/p' "$WORKFLOW")
+DOWNLOAD_EVIDENCE=$(sed -n '/- name: Download the release evidence + notes/,/- name: Re-query release blockers/p' "$WORKFLOW")
+CREATE_RELEASE=$(sed -n '/- name: Create tag and release/,$p' "$WORKFLOW")
+contains "$BUILD_NOTES" 'NOTES_FILE: ${{ github.workspace }}/release-notes.md' \
+  "release notes are staged under the workspace artifact root"
+lacks "$UPLOAD_EVIDENCE" '${{ runner.temp }}/release-notes.md' \
+  "release evidence upload does not mix runner.temp with workspace paths"
+contains "$UPLOAD_EVIDENCE" 'release-notes.md' \
+  "release evidence artifact includes the workspace-relative notes"
+contains "$DOWNLOAD_EVIDENCE" 'path: evidence' \
+  "protected release job downloads evidence into its expected directory"
+contains "$CREATE_RELEASE" 'NOTES_FILE: ${{ github.workspace }}/evidence/release-notes.md' \
+  "engine release consumes the downloaded workspace-relative notes"
+
 # Run the script with a stateful mock ``gh``. Env vars:
 #   MOCK_RELEASE_VIEW   "yes" -> release view succeeds (Release exists)
 #   MOCK_RELEASE_DRAFT  "yes" -> existing Release is an unpublished draft

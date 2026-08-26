@@ -58,7 +58,12 @@ TURBOQUANT_MODES: tuple[str, ...] = ("v4", "k8v4")
 DEFAULT_TURBOQUANT_MODE = "v4"
 
 
-def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None:
+_DETECT = object()
+
+
+def resolve_turboquant_mode_default(
+    args: Any, *, model_name: str, _detected_config: Any = _DETECT
+) -> str | None:
     """Resolve ``args.kv_cache_turboquant`` when the operator passed no flag.
 
     Returns ``args.kv_cache_turboquant`` unchanged when set; ``None``
@@ -71,6 +76,8 @@ def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None
     bypasses the ``k8v4_verified`` auto-resolution and returns
     ``None`` so the engine boots with the bare FP16 KV path. This
     is the A/B knob for the ``k8v4_verified`` decode-ratio gate.
+    ``_detected_config`` is private startup plumbing for callers that already
+    resolved the same checkpoint profile; omitting it retains lazy detection.
     """
     raw = getattr(args, "kv_cache_turboquant", None)
     if raw == "none":
@@ -84,11 +91,14 @@ def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None
         return raw
     if getattr(args, "kv_cache_quantization", False):
         return None
-    try:
-        from .model_auto_config import detect_model_config
-    except ImportError:
-        return None
-    cfg = detect_model_config(model_name)
+    if _detected_config is _DETECT:
+        try:
+            from .model_auto_config import detect_model_config
+        except ImportError:
+            return None
+        cfg = detect_model_config(model_name)
+    else:
+        cfg = _detected_config
     if cfg is not None and cfg.turboquant_tier == "k8v4_verified":
         logger.info(
             "TurboQuant default: alias %r is turboquant_tier=k8v4_verified "

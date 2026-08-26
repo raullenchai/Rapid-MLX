@@ -1,9 +1,12 @@
 name: Release pre-flight
 
 # Runs SOP gates that block a release if they fail. Triggered on PRs
-# whose title matches the strict bump subject ``chore: bump version to
-# X.Y.Z`` — the same regex the auto-release.yml workflow watches post-
-# merge.
+# whose title is the canonical bump subject ``chore: bump version to
+# X.Y.Z`` (strict, no ``(#NN)`` suffix). The post-merge detect step in
+# auto-release.yml is deliberately MORE tolerant — it accepts the
+# ``(#NN)`` squash suffix via ``release_version.py subject
+# --allow-pr-suffix`` — so pre-merge strictness here is title hygiene,
+# not the gate that decides whether a merged commit auto-releases.
 #
 # Gate coverage (see docs/development/releasing.md for the canonical list):
 #
@@ -12,7 +15,7 @@ name: Release pre-flight
 #   G3   CLI ↔ Config fidelity audit           covered by ci.yml lint
 #   G10  MLX upstream cross-chip-family scan   advisory
 #   G11  auto-routing escape-hatch registry    macOS-14 (needs MLX)
-#   PF-1 squash subject regex pre-check        ubuntu-latest
+#   PF-1 canonical bump-PR title pre-check     ubuntu-latest
 #   PF-2 release secret + var presence         ubuntu-latest
 #        + Cloudflare credential probe (expiry blocks; scope gaps advise)
 #
@@ -46,10 +49,12 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # Match the auto-release.yml regex EXACTLY. If the PR title
-          # doesn't match, every job below is skipped — non-bump PRs
-          # pay zero CI cost.
-          if VERSION=$(python3 scripts/release_version.py subject "$TITLE"); then
+          # Deliberately BROADER than PF-1: detect the optional ``(#NN)`` squash
+          # suffix so a suffixed bump title is still routed INTO the gates (PF-1
+          # then runs and fails it, keeping the title canonical). This mirrors
+          # the post-merge detect step in auto-release.yml, which also uses
+          # --allow-pr-suffix. Non-bump PRs pay zero CI cost.
+          if VERSION=$(python3 scripts/release_version.py subject --allow-pr-suffix "$TITLE"); then
             echo "is_bump=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"
             echo "Detected bump PR for v$VERSION"
@@ -59,9 +64,12 @@ jobs:
           fi
 
   pf1-subject-regex:
-    # PF-1 — verifies the PR title would auto-release cleanly. Catches
-    # the `(#NN)` squash-suffix trap upfront instead of after a botched
-    # merge to main. Pure structural; runs on every PR opened/edited.
+    # PF-1 — keeps the bump-PR title CANONICAL. detect-bump-pr already routed any
+    # (canonical or `(#NN)`-suffixed) bump title here; PF-1 now requires the strict
+    # canonical subject and FAILS a suffixed one. The post-merge detect step in
+    # auto-release.yml is separately suffix-TOLERANT (--allow-pr-suffix), so this
+    # strictness is title hygiene, not what decides whether a merged commit
+    # auto-releases. Pure structural; runs on every bump PR opened/edited.
     needs: detect-bump-pr
     if: needs.detect-bump-pr.outputs.is_bump == 'true'
     runs-on: ubuntu-latest
@@ -115,8 +123,12 @@ jobs:
           AVAILABLE_SECRETS_JSON: ${{ toJSON(secrets) }}
           AVAILABLE_VARS_JSON: ${{ toJSON(vars) }}
         run: |
+          # Scan the tagged publishing lane AND the shared desktop-releasable
+          # composite action, so a secret the pre-tag candidate gate needs is
+          # discovered on the bump PR, not after a notarised build (#2301).
           python scripts/check_release_secrets.py \
-            .github/workflows/rapid-mac-release.yml
+            .github/workflows/rapid-mac-release.yml \
+            .github/actions/desktop-releasable/action.yml
 
       - name: PF-2 — release credentials are usable, not just present
         env:
@@ -128,6 +140,63 @@ jobs:
           R2_BUCKET: ${{ vars.RAPID_MAC_DIST_R2_BUCKET }}
         run: |
           python scripts/probe_release_credentials.py --bucket "$R2_BUCKET"
+
+  pf3-tag-environment:
+    # PF-3 — reads back the ACTUAL production tag environment (rapid-mac-tag)
+    # and fails closed if it is missing or unprotected. A workflow reference to
+    # an environment auto-creates an UNPROTECTED one, so code comments are not
+    # an approval gate by themselves (#2301, release-setting finding): the
+    # environment must already exist with a required-reviewer rule, and its
+    # deployment-branch policy must be exactly ``main``, or nothing may tag.
+    # This read-back makes future deletion/drift a preflight NO-GO rather than a
+    # silent unprotected-approval path. can_admins_bypass must be exactly false
+    # (GitHub supports disabling it) so an RC claim can never ride an admin who
+    # could approve without a required reviewer; missing or true fails closed.
+    needs: detect-bump-pr
+    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: PF-3 — read back rapid-mac-tag environment protection
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          ENV_NAME="rapid-mac-tag"
+
+          # Fetch the RAW JSON responses into files. The environment MUST already
+          # exist explicitly — ``gh api`` exits non-zero when it does not, and a
+          # missing environment is a hard fail, never a chance to silently
+          # auto-create an unprotected one.
+          gh api "repos/${REPO}/environments/${ENV_NAME}" \
+            > "$RUNNER_TEMP/pf3-env.json" || {
+            echo "::error::production tag environment '${ENV_NAME}' is missing. The auto-release workflow references it and would auto-create an UNPROTECTED environment, which is not an approval gate. Create it with a required-reviewer rule (reviewer raullenchai) and a deployment-branch policy of exactly 'main' before any RC can be tagged." >&2
+            exit 1
+          }
+          # The deployment-branch-policies endpoint is PLURAL and its response is
+          # {"total_count": N, "branch_policies": [...]}.
+          gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
+            > "$RUNNER_TEMP/pf3-policy.json" || {
+            echo "::error::cannot read the deployment-branch policy for '${ENV_NAME}'; treating as NO-GO." >&2
+            exit 1
+          }
+
+          # Evaluate the structured JSON offline (no text/regex). check_release_
+          # environment.py is unit-tested with mocked responses so the contract
+          # is pinned: exactly one required_reviewers rule, reviewer login exactly
+          # raullenchai, prevent_self_review=false, exactly one branch policy
+          # {name: main, type: branch}, and can_admins_bypass exactly false
+          # (admin bypass must be disabled; true or missing fails closed).
+          python3 scripts/check_release_environment.py \
+            --environment-json "$RUNNER_TEMP/pf3-env.json" \
+            --policy-json "$RUNNER_TEMP/pf3-policy.json" \
+            --expected-env-name "$ENV_NAME" \
+            | tee "$GITHUB_STEP_SUMMARY"
+          echo "PF3_OK=1"
 
   g1-release-smoke:
     # G1 — clean-room install + import smoke on macOS-14. Catches the
@@ -205,6 +274,7 @@ jobs:
       - detect-bump-pr
       - pf1-subject-regex
       - pf2-release-secrets
+      - pf3-tag-environment
       - g1-release-smoke
       - g10-upstream-mlx-scan
       - g11-escape-hatch
@@ -215,12 +285,14 @@ jobs:
         env:
           PF1: ${{ needs.pf1-subject-regex.result }}
           PF2: ${{ needs.pf2-release-secrets.result }}
+          PF3: ${{ needs.pf3-tag-environment.result }}
           G1: ${{ needs.g1-release-smoke.result }}
           G10: ${{ needs.g10-upstream-mlx-scan.result }}
           G11: ${{ needs.g11-escape-hatch.result }}
         run: |
           echo "PF-1 subject regex:   $PF1"
           echo "PF-2 release secrets: $PF2  (skipped on fork PRs)"
+          echo "PF-3 tag environment: $PF3"
           echo "G1   release-smoke:   $G1"
           echo "G10  upstream MLX:    $G10  (advisory — never fails)"
           echo "G11  escape-hatch:    $G11"
@@ -229,6 +301,10 @@ jobs:
           # other skip path is already excluded by the is_bump guard above.
           if [ "$PF2" != "success" ] && [ "$PF2" != "skipped" ]; then
             echo "::error::PF-2 failed: the release workflow references a secret or var that is not configured. A release cut now would fail on the tag with the release already published (#1851)."
+            exit 1
+          fi
+          if [ "$PF3" != "success" ]; then
+            echo "::error::PF-3 failed: the rapid-mac-tag environment is missing or no longer protected. A tag claim would not be human-authorized (#2301). Recreate it with a required reviewer and a main-only deployment policy, then re-run."
             exit 1
           fi
           if [ "$PF1" != "success" ] || [ "$G1" != "success" ] || [ "$G11" != "success" ]; then

@@ -886,6 +886,125 @@ class TestMllmBackboneIsHybrid:
         )
         assert mllm_backbone_is_hybrid("any/qwen3.5-like") is True
 
+    def test_user_alias_load_resolves_exact_qwen35_checkpoint_before_routing(
+        self, monkeypatch, tmp_path
+    ):
+        """Issue #2329: residency callers bypass ``cli.main`` alias resolution.
+
+        The exact cached checkpoint selected by Desktop must be the common
+        source for config materialization, automatic lane selection, and the
+        loader. The immutable snapshot remains trusted through ``refs/main``;
+        the fix must not guess among unreferenced revisions.
+        """
+        import json
+
+        import huggingface_hub
+
+        from vllm_mlx import server
+
+        alias = "qwen3.5-2b-4bit"
+        repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
+        revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+        repo_root = tmp_path / "hub" / "models--mlx-community--Qwen3.5-2B-MLX-4bit"
+        snapshot = repo_root / "snapshots" / revision
+        snapshot.mkdir(parents=True)
+        (repo_root / "refs").mkdir()
+        (repo_root / "refs" / "main").write_text(revision)
+        (snapshot / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen3_5ForConditionalGeneration"],
+                    "model_type": "qwen3_5",
+                    "vision_config": {"model_type": "qwen3_5_vision"},
+                    "text_config": {
+                        "model_type": "qwen3_5_text",
+                        "layer_types": [
+                            "linear_attention",
+                            "linear_attention",
+                            "linear_attention",
+                            "full_attention",
+                        ],
+                    },
+                }
+            )
+        )
+        (snapshot / "model.safetensors").write_bytes(b"complete")
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        "language_model.layers.0.weight": "model.safetensors",
+                        "vision_tower.blocks.0.weight": "model.safetensors",
+                    }
+                }
+            )
+        )
+        alias_file = tmp_path / "user-aliases.json"
+        alias_file.write_text(
+            json.dumps({"version": 1, "aliases": {alias: repo}}) + "\n"
+        )
+        monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(alias_file))
+        monkeypatch.setattr(
+            huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path / "hub")
+        )
+
+        class StubEngine:
+            is_mllm = False
+            preserve_native_tool_format = False
+            _tokenizer = None
+            _tool_logits_processor_factory = None
+
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+        monkeypatch.setattr(server, "BatchedEngine", StubEngine)
+        monkeypatch.setattr(server, "_engine", None, raising=False)
+        monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+        monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+        monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+        monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+        monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+        monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+        monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+        # Simulate a Desktop residency replacement after an image model. The
+        # old process-global alias must not lend its image profile to Qwen.
+        monkeypatch.setattr(server, "_model_alias", "z-image-turbo", raising=False)
+
+        server.load_model(alias)
+
+        assert server._model_path == repo
+        assert server._model_name == alias
+        assert server._model_alias == alias
+        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["force_text"] is True
+
+        # CLI startup arrives with the canonical repo plus a matching saved
+        # alias. That same-source identity remains valid and keeps its profile.
+        server.load_model(repo)
+        assert server._model_alias == alias
+        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["force_text"] is True
+
+        # A removed/corrupt prior identity is stale process state, not a reason
+        # to reject a valid current canonical request.
+        from vllm_mlx import model_aliases
+        from vllm_mlx.user_aliases import UserAliasError
+
+        real_resolve_model = model_aliases.resolve_model
+
+        def resolve_with_stale_prior(name):
+            if name == "removed-prior-alias":
+                raise UserAliasError("prior alias no longer exists")
+            return real_resolve_model(name)
+
+        monkeypatch.setattr(model_aliases, "resolve_model", resolve_with_stale_prior)
+        server._model_alias = "removed-prior-alias"
+        server.load_model(repo)
+        assert server._model_alias is None
+        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["force_text"] is True
+
     def test_sliding_and_full_attention_is_not_hybrid(self, monkeypatch):
         from vllm_mlx.api.utils import mllm_backbone_is_hybrid
 

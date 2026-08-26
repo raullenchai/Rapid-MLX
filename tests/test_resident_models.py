@@ -38,6 +38,133 @@ def test_resident_performance_maps_to_the_scheduler_contract():
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_name", "model_path"),
+    [
+        ("publisher/opaque-hybrid", None),
+        ("opaque-local-hybrid", "/private/cache/opaque-hybrid/snapshot"),
+    ],
+)
+async def test_dynamic_resident_auto_detected_hybrid_gets_bounded_prefix_reuse(
+    monkeypatch, scheduler_config_stub, model_name, model_path
+):
+    """Runtime residency must consume the same architecture truth as serve."""
+    from vllm_mlx import server
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+
+    class FakeEngine:
+        is_mllm = False
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def start(self):
+            pass
+
+        def generate_warmup(self):
+            pass
+
+    monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    )
+
+    await server._load_dynamic_resident_model(model_name, model_path)
+
+    scheduler = captured["scheduler_config"]
+    assert scheduler.enable_prefix_cache is True
+    assert scheduler.hybrid_cache_entries == 8
+    assert scheduler.non_trimmable_exact_prefix_reuse is True
+
+
+@pytest.mark.asyncio
+async def test_dynamic_resident_prefix_disable_keeps_hybrid_entries_zero(
+    monkeypatch, scheduler_config_stub
+):
+    from vllm_mlx import server
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+
+    class FakeEngine:
+        is_mllm = False
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def start(self):
+            pass
+
+        def generate_warmup(self):
+            pass
+
+    monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        ),
+    )
+
+    await server._load_dynamic_resident_model(
+        "publisher/opaque-hybrid",
+        None,
+        ResidentPerformanceConfig(prefix_cache_enabled=False),
+    )
+
+    scheduler = captured["scheduler_config"]
+    assert scheduler.enable_prefix_cache is False
+    assert scheduler.hybrid_cache_entries == 0
+    assert scheduler.non_trimmable_exact_prefix_reuse is False
+
+
+@pytest.mark.asyncio
+async def test_dynamic_resident_full_attention_stays_unbounded(
+    monkeypatch, scheduler_config_stub
+):
+    from vllm_mlx import server
+    from vllm_mlx.model_profile import ModelProfile
+
+    captured = {}
+
+    class FakeEngine:
+        is_mllm = False
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def start(self):
+            pass
+
+        def generate_warmup(self):
+            pass
+
+    monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(is_hybrid=False),
+    )
+
+    await server._load_dynamic_resident_model("publisher/full-attention", None)
+
+    scheduler = captured["scheduler_config"]
+    assert scheduler.hybrid_cache_entries == 0
+    assert scheduler.non_trimmable_exact_prefix_reuse is False
+
+
 class FakeEngine:
     is_mllm = False
 

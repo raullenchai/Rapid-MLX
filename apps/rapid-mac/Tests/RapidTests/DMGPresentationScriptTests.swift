@@ -67,17 +67,30 @@ struct DMGPresentationScriptTests {
 
     @Test("Release validates the canonical DMG after stapling and before upload")
     func releasePostStapleValidationOrder() throws {
+        // The DMG notarise → final-validate contract moved into the shared
+        // desktop-releasable composite when the build internals were extracted
+        // from rapid-mac-release.yml (#2301), so the ordering must be asserted
+        // against the composite where the steps actually live.
+        let composite = try String(
+            contentsOf: Self.monorepoRoot
+                .appendingPathComponent(".github/actions/desktop-releasable/action.yml"),
+            encoding: .utf8
+        )
+        let notarize = try #require(composite.firstRange(of: "- name: Notarise + staple rapid-mlx-desktop.dmg"))
+        let finalValidation = try #require(composite.firstRange(of: "- name: Validate final stapled DMG presentation"))
+        #expect(notarize.lowerBound < finalValidation.lowerBound)
+
+        // In the workflow, the composite-use step must run BEFORE the workflow
+        // uploads the DMG artifact — nothing uploads a DMG that wasn't final-
+        // validated inside the composite.
         let workflow = try String(
             contentsOf: Self.monorepoRoot
                 .appendingPathComponent(".github/workflows/rapid-mac-release.yml"),
             encoding: .utf8
         )
-        let notarize = try #require(workflow.firstRange(of: "- name: Notarise + staple rapid-mlx-desktop.dmg"))
-        let finalValidation = try #require(workflow.firstRange(of: "- name: Validate final stapled DMG presentation"))
+        let compositeUse = try #require(workflow.firstRange(of: "uses: ./.github/actions/desktop-releasable"))
         let upload = try #require(workflow.firstRange(of: "- name: Upload workflow artifact"))
-
-        #expect(notarize.lowerBound < finalValidation.lowerBound)
-        #expect(finalValidation.lowerBound < upload.lowerBound)
+        #expect(compositeUse.lowerBound < upload.lowerBound)
     }
 
     @Test("Structural parser accepts the active icvp background alias")

@@ -78,6 +78,84 @@ struct ModelResidencyTests {
         #expect(status.displayName(preferredAlias: "qwen3.5-4b-4bit") == "qwen3.5-4b-4bit")
     }
 
+    @Test("Model switch guard prompts only for a different model with active requests")
+    func modelSwitchRiskUsesActiveRequestContract() {
+        func snapshot(activeRequests: Int) -> ModelResidencySnapshot {
+            let current = ResidentModelStatus(
+                id: "mlx-community/Qwen3.5-4B-MLX-4bit",
+                modelPath: "mlx-community/Qwen3.5-4B-MLX-4bit",
+                aliases: ["qwen3.5-4b-4bit"],
+                modality: "text",
+                state: "resident",
+                pinned: true,
+                primary: true,
+                activeRequests: activeRequests,
+                estimatedBytes: 1,
+                measuredBytes: nil,
+                idleSeconds: 0
+            )
+            return ModelResidencySnapshot(
+                memoryLimitBytes: 1,
+                memoryUsedBytes: 1,
+                memoryAvailableBytes: 0,
+                idleTTLSeconds: 1,
+                loadsTotal: 1,
+                evictionsTotal: 0,
+                models: [current]
+            )
+        }
+
+        let busy = ModelSwitchRisk.evaluate(
+            currentAlias: "qwen3.5-4b-4bit",
+            targetAlias: "gemma-4-12b-4bit",
+            residency: snapshot(activeRequests: 2)
+        )
+        #expect(busy?.activeRequests == 2)
+        #expect(
+            busy?.title
+                == "Model qwen3.5-4b-4bit is serving 2 active requests. Switch anyway?"
+        )
+
+        #expect(ModelSwitchRisk.evaluate(
+            currentAlias: "qwen3.5-4b-4bit",
+            targetAlias: "gemma-4-12b-4bit",
+            residency: snapshot(activeRequests: 0)
+        ) == nil)
+        #expect(ModelSwitchRisk.evaluate(
+            currentAlias: "qwen3.5-4b-4bit",
+            targetAlias: "gemma-4-12b-4bit",
+            residency: nil
+        ) == nil)
+        #expect(ModelSwitchRisk.evaluate(
+            currentAlias: "qwen3.5-4b-4bit",
+            targetAlias: "qwen3.5-4b-4bit",
+            residency: snapshot(activeRequests: 2)
+        ) == nil)
+        #expect(ModelSwitchDecision.approved.requiresProcessRestart)
+        #expect(!ModelSwitchDecision.notNeeded.requiresProcessRestart)
+        #expect(!ModelSwitchDecision.cancelled.requiresProcessRestart)
+        #expect(!ModelSwitchDecision.requiresRevalidation(
+            validatedAlias: "qwen3.5-4b-4bit",
+            liveAlias: "qwen3.5-4b-4bit"
+        ))
+        #expect(ModelSwitchDecision.requiresRevalidation(
+            validatedAlias: "qwen3.5-4b-4bit",
+            liveAlias: "gemma-4-12b-4bit"
+        ))
+        #expect(ModelSwitchDecision.requiresRevalidation(
+            validatedAlias: nil,
+            liveAlias: "qwen3.5-4b-4bit"
+        ))
+        #expect(!ModelSwitchDecision.requiresStop(
+            liveAlias: "gemma-4-12b-4bit",
+            targetAlias: "gemma-4-12b-4bit"
+        ))
+        #expect(ModelSwitchDecision.requiresStop(
+            liveAlias: "qwen3.5-4b-4bit",
+            targetAlias: "gemma-4-12b-4bit"
+        ))
+    }
+
     @Test("Connector restart prefers a resident text model over the process-owning audio alias")
     func connectorRestartTextAlias() {
         let text = ResidentModelStatus(

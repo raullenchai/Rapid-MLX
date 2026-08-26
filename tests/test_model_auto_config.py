@@ -1,6 +1,7 @@
 """Tests for model auto-config detection."""
 
 import logging
+from unittest import mock
 
 import pytest
 
@@ -2356,6 +2357,84 @@ class TestCheckpointMetadataFallback:
         assert config.is_moe is True
         assert config.supports_spec_decode is False
 
+    def test_unknown_linear_attention_checkpoint_is_hybrid(self, monkeypatch):
+        """Architecture metadata, not a family/name rule, owns hybrid truth."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "model_type": "publisher_novel_architecture",
+                    "text_config": {
+                        "model_type": "publisher_novel_text",
+                        "layer_types": ["linear_attention", "full_attention"],
+                    },
+                },
+                None,
+            ),
+        )
+
+        config = detect_model_config("publisher/opaque-checkpoint")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        assert config.is_hybrid_explicit is True
+        assert config.supports_spec_decode is False
+
+    def test_metadata_detection_logs_when_called_directly(self, monkeypatch):
+        log = mock.Mock()
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda _name: self._metadata({"model_type": "qwen3_next"}, None),
+        )
+        monkeypatch.setattr(auto_config_mod, "_log_resolution_once", log)
+
+        config = auto_config_mod._detect_metadata_config("publisher/opaque")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        log.assert_called_once()
+
+    def test_pattern_match_preserves_authoritative_hybrid_metadata(self, monkeypatch):
+        """A family parser fallback must not hide checkpoint architecture."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata({"model_type": "qwen3_5_moe"}, None),
+        )
+
+        config = detect_model_config("publisher/Qwen3.5-private-repack")
+
+        assert config is not None
+        assert config.tool_call_parser == "hermes"
+        assert config.reasoning_parser == "qwen3"
+        assert config.is_hybrid is True
+        assert config.is_hybrid_explicit is True
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+
+    def test_pattern_match_preserves_dense_nonhybrid_safety_pin(self, monkeypatch):
+        """Architecture enrichment must retain the dense recurrent routing pin."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "model_type": "qwen3_5",
+                    "layer_types": ["linear_attention", "full_attention"],
+                },
+                None,
+            ),
+        )
+
+        config = detect_model_config("publisher/Qwen3.5-private-dense-repack")
+
+        assert config is not None
+        assert config.is_hybrid is False
+        assert config.is_hybrid_explicit is True
+        assert config.supports_spec_decode is False
+
     def test_qwen38_local_snapshot_is_not_mislabeled_dense_qwen35(self, monkeypatch):
         """Qwen3.8 reuses qwen3_5 model_type but is a hybrid MTP target."""
         monkeypatch.setattr(
@@ -2723,14 +2802,13 @@ class TestCheckpointMetadataFallback:
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
 
-    def test_known_family_has_priority_over_generic_template_fallback(
-        self, monkeypatch
-    ):
-        def unexpected_metadata_read(name):
-            raise AssertionError("known-family detection must not read metadata")
-
+    def test_known_family_parser_has_priority_over_metadata_template(self, monkeypatch):
         monkeypatch.setattr(
-            auto_config_mod, "read_model_metadata", unexpected_metadata_read
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "publisher_full_attention"}, self._XML_TOOLS
+            ),
         )
 
         config = detect_model_config("Qwen/Qwen3-Coder-Next")

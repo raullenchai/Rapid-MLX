@@ -5,7 +5,18 @@ import Observation
 /// FIFO state machine for memory-risk confirmations. A request token is
 /// present for ``ensureServing`` callers that must await their own answer;
 /// direct ``start`` calls still queue a prompt but retain no result.
-struct MemoryLoadConfirmationQueue {
+///
+/// Referenced type (``@Observable`` class, not a struct) so that replacing the
+/// head warning's measured facts — e.g. the 3s live memory refresh in
+/// ``ServerManager/refreshPendingMemoryWarning()`` — fires SwiftUI observation
+/// and the "Before loading" verdict re-renders live. With a plain value type,
+/// an in-place mutation of `pending[0].warning` inside a stored, value-typed
+/// property does NOT invalidate the ``@Observable`` owner, so the card kept
+/// showing the original parked snapshot even as free memory changed
+/// (ONBOARD-MEM-LIVE). Mirrors how ``DownloadManager``/``Job`` stay
+/// ``@Observable`` so nested `status`/`progress` mutations re-render.
+@Observable
+final class MemoryLoadConfirmationQueue {
     enum Decision: Equatable {
         case confirmed(sequence: Int)
         case cancelled
@@ -14,10 +25,11 @@ struct MemoryLoadConfirmationQueue {
     private struct Pending: Equatable {
         enum Phase: Equatable {
             case awaitingDecision
+            case checkingDecision
             case launching
         }
 
-        let warning: ModelSizing.MemoryWarning
+        var warning: ModelSizing.MemoryWarning
         var requestID: UUID?
         var phase: Phase = .awaitingDecision
         var launchComplete = false
@@ -31,22 +43,35 @@ struct MemoryLoadConfirmationQueue {
         return pending.first?.warning
     }
 
-    mutating func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
+    func enqueue(warning: ModelSizing.MemoryWarning, requestID: UUID?) {
         pending.append(Pending(warning: warning, requestID: requestID))
+    }
+
+    /// Replace the measured facts for the visible decision without changing
+    /// its identity, waiter ownership, or queue position.
+    func refreshCurrentWarning(
+        snapshot: MemoryProbe.Snapshot
+    ) -> (old: ModelSizing.MemoryWarning, new: ModelSizing.MemoryWarning)? {
+        guard pending.first?.phase == .awaitingDecision,
+              let old = pending.first?.warning else { return nil }
+        let refreshed = refreshedWarning(old, snapshot: snapshot)
+        pending[0].warning = refreshed
+        return (old, refreshed)
     }
 
     func isPending(_ requestID: UUID) -> Bool {
         pending.contains {
-            $0.requestID == requestID && $0.phase == .awaitingDecision
+            $0.requestID == requestID && $0.phase != .launching
         }
     }
 
-    mutating func resolveCurrent(
-        warning: ModelSizing.MemoryWarning,
+    func resolveCurrent(
+        warningID: UUID,
         decision: Decision
-    ) -> Bool {
-        guard pending.first?.warning.id == warning.id,
-              pending.first?.phase == .awaitingDecision else { return false }
+    ) -> ModelSizing.MemoryWarning? {
+        guard pending.first?.warning.id == warningID,
+              pending.first?.phase == .awaitingDecision else { return nil }
+        let currentWarning = pending[0].warning
         if let requestID = pending[0].requestID {
             decisions[requestID] = decision
         }
@@ -56,10 +81,56 @@ struct MemoryLoadConfirmationQueue {
         case .confirmed:
             pending[0].phase = .launching
         }
+        return currentWarning
+    }
+
+    func beginChecking(warningID: UUID) -> Bool {
+        guard pending.first?.warning.id == warningID,
+              pending.first?.phase == .awaitingDecision else { return false }
+        pending[0].phase = .checkingDecision
         return true
     }
 
-    mutating func completeConfirmedLaunch(warningID: UUID) {
+    func checkingWarning(
+        warningID: UUID,
+        snapshot: MemoryProbe.Snapshot?
+    ) -> ModelSizing.MemoryWarning? {
+        guard pending.first?.warning.id == warningID,
+              pending.first?.phase == .checkingDecision else { return nil }
+        if let snapshot, let old = pending.first?.warning {
+            pending[0].warning = refreshedWarning(old, snapshot: snapshot)
+        }
+        return pending[0].warning
+    }
+
+    func restoreAwaiting(warningID: UUID) {
+        guard pending.first?.warning.id == warningID,
+              pending.first?.phase == .checkingDecision else { return }
+        pending[0].phase = .awaitingDecision
+    }
+
+    func confirmChecking(
+        warningID: UUID,
+        sequence: Int
+    ) -> ModelSizing.MemoryWarning? {
+        guard pending.first?.warning.id == warningID,
+              pending.first?.phase == .checkingDecision else { return nil }
+        let warning = pending[0].warning
+        if let requestID = pending[0].requestID {
+            decisions[requestID] = .confirmed(sequence: sequence)
+        }
+        pending[0].phase = .launching
+        return warning
+    }
+
+    func resolveCurrent(
+        warning: ModelSizing.MemoryWarning,
+        decision: Decision
+    ) -> Bool {
+        resolveCurrent(warningID: warning.id, decision: decision) != nil
+    }
+
+    func completeConfirmedLaunch(warningID: UUID) {
         guard pending.first?.warning.id == warningID,
               pending.first?.phase == .launching else { return }
         pending[0].launchComplete = true
@@ -70,7 +141,7 @@ struct MemoryLoadConfirmationQueue {
         pending.removeFirst()
     }
 
-    mutating func takeDecision(for requestID: UUID) -> Decision? {
+    func takeDecision(for requestID: UUID) -> Decision? {
         let decision = decisions.removeValue(forKey: requestID)
         if pending.first?.requestID == requestID,
            pending.first?.launchComplete == true {
@@ -79,12 +150,32 @@ struct MemoryLoadConfirmationQueue {
         return decision
     }
 
-    mutating func abandonWaiter(_ requestID: UUID) {
+    func abandonWaiter(_ requestID: UUID) {
         decisions.removeValue(forKey: requestID)
         guard let index = pending.firstIndex(where: { $0.requestID == requestID }) else {
             return
         }
         pending[index].requestID = nil
+    }
+
+    private func refreshedWarning(
+        _ old: ModelSizing.MemoryWarning,
+        snapshot: MemoryProbe.Snapshot
+    ) -> ModelSizing.MemoryWarning {
+        ModelSizing.MemoryWarning(
+            id: old.id,
+            alias: old.alias,
+            hfPath: old.hfPath,
+            isAutoRespawn: old.isAutoRespawn,
+            severity: ModelSizing.memorySafety(
+                footprintGB: old.footprintGB,
+                usedBytes: snapshot.usedBytes,
+                totalBytes: snapshot.totalBytes
+            ),
+            footprintGB: old.footprintGB,
+            freeGB: Double(snapshot.freeBytes) / Double(1 << 30),
+            totalGB: Double(snapshot.totalBytes) / Double(1 << 30)
+        )
     }
 }
 
@@ -130,6 +221,11 @@ enum ServerState: Equatable {
 @MainActor
 @Observable
 final class ServerManager {
+    struct PendingModelSwitch: Identifiable, Equatable, Sendable {
+        let id: UUID
+        let risk: ModelSwitchRisk
+    }
+
     // MARK: - Public state (read by SwiftUI)
 
     /// Current lifecycle phase. Drives all UI state controls.
@@ -138,6 +234,18 @@ final class ServerManager {
     /// Models currently held by the one sidecar process, plus total process
     /// memory against its configured ceiling.
     private(set) var residency: ModelResidencySnapshot = .empty
+
+    /// Alias replacements wait here only when the latest residency snapshot
+    /// reports in-flight requests for the current model. This is presentation
+    /// state for the existing lifecycle choke point, not another lifecycle
+    /// source of truth.
+    private(set) var pendingModelSwitch: PendingModelSwitch?
+
+    @ObservationIgnored
+    private var queuedModelSwitches: [PendingModelSwitch] = []
+
+    @ObservationIgnored
+    private var modelSwitchDecisions: [UUID: Bool] = [:]
 
     @ObservationIgnored
     private var residencyClient = ServerResidencyClient()
@@ -162,8 +270,37 @@ final class ServerManager {
     /// launch auto-start semantics can be verified without depending on the
     /// runner's current pressure.
     @ObservationIgnored
-    internal var memorySnapshotProvider: () -> MemoryProbe.Snapshot? = {
+    internal var memorySnapshotProvider: @Sendable () -> MemoryProbe.Snapshot? = {
         MemoryProbe.snapshot()
+    }
+
+    /// Orders overlapping timer and foreground refreshes. Sampling happens
+    /// off the main actor, so a slower older probe must not overwrite a newer
+    /// decision after actor re-entry.
+    @ObservationIgnored
+    private var memoryWarningRefreshGeneration = 0
+
+    /// Re-sample a parked memory decision while its owning UI is visible.
+    /// Returns a material safety-state transition for accessibility; metric
+    /// ticks within the same state deliberately return nil.
+    func refreshPendingMemoryWarning() async -> (
+        old: ModelSizing.MemorySafety,
+        new: ModelSizing.MemorySafety
+    )? {
+        guard let warningID = pendingMemoryWarning?.id else { return nil }
+        memoryWarningRefreshGeneration += 1
+        let generation = memoryWarningRefreshGeneration
+        let provider = memorySnapshotProvider
+        let snapshot = await Task.detached(priority: .utility) {
+            provider()
+        }.value
+        guard !Task.isCancelled,
+              generation == memoryWarningRefreshGeneration,
+              pendingMemoryWarning?.id == warningID,
+              let snapshot,
+              let transition = memoryConfirmations.refreshCurrentWarning(snapshot: snapshot),
+              transition.old.severity != transition.new.severity else { return nil }
+        return (transition.old.severity, transition.new.severity)
     }
 
     /// Confirmed launches still running, by sequence number. Polled by
@@ -258,6 +395,72 @@ final class ServerManager {
             bearer: activeBearer
         ) else { return }
         residency = snapshot
+    }
+
+    func confirmPendingModelSwitch(_ request: PendingModelSwitch) {
+        resolvePendingModelSwitch(request, approved: true)
+    }
+
+    func cancelPendingModelSwitch(_ request: PendingModelSwitch) {
+        resolvePendingModelSwitch(request, approved: false)
+    }
+
+    private func resolvePendingModelSwitch(
+        _ request: PendingModelSwitch,
+        approved: Bool
+    ) {
+        guard pendingModelSwitch?.id == request.id else { return }
+        modelSwitchDecisions[request.id] = approved
+        pendingModelSwitch = queuedModelSwitches.isEmpty
+            ? nil
+            : queuedModelSwitches.removeFirst()
+    }
+
+    private func abandonModelSwitchWaiter(_ requestID: UUID) {
+        modelSwitchDecisions.removeValue(forKey: requestID)
+        if pendingModelSwitch?.id == requestID {
+            pendingModelSwitch = queuedModelSwitches.isEmpty
+                ? nil
+                : queuedModelSwitches.removeFirst()
+        } else {
+            queuedModelSwitches.removeAll { $0.id == requestID }
+        }
+    }
+
+    /// Refreshing `/v1/models/residency` is a cheap local request and gives the
+    /// decision the freshest available active-request count. A failed refresh
+    /// preserves the latest successful snapshot. The server offers no atomic
+    /// check-and-switch operation, so this is an advisory guard, not a drain
+    /// policy.
+    private func approveModelSwitchIfNeeded(
+        from currentAlias: String,
+        to targetAlias: String
+    ) async -> ModelSwitchDecision {
+        await refreshResidency()
+        guard let risk = ModelSwitchRisk.evaluate(
+            currentAlias: currentAlias,
+            targetAlias: targetAlias,
+            residency: residency
+        ) else { return .notNeeded }
+
+        let request = PendingModelSwitch(id: UUID(), risk: risk)
+        if pendingModelSwitch == nil {
+            pendingModelSwitch = request
+        } else {
+            queuedModelSwitches.append(request)
+        }
+
+        while modelSwitchDecisions[request.id] == nil {
+            do {
+                try await Task.sleep(nanoseconds: 200_000_000)
+            } catch {
+                abandonModelSwitchWaiter(request.id)
+                return .cancelled
+            }
+        }
+        return modelSwitchDecisions.removeValue(forKey: request.id) == true
+            ? .approved
+            : .cancelled
     }
 
     /// Alias of the child that currently owns the runtime — for BOTH
@@ -1006,6 +1209,26 @@ final class ServerManager {
             return true
         }
 
+        // A replacement-group load can switch the assistant inside the live
+        // process without reaching the legacy stop/start fallback below. Ask
+        // before either destructive route so picker activation and every
+        // other `ensureServing` caller share one guard.
+        var validatedStopAlias: String?
+        var destructiveModelSwitchApproved = false
+        if replacementGroup != nil,
+           let currentAlias = launchedChildAlias,
+           currentAlias != trimmed {
+            let decision = await approveModelSwitchIfNeeded(
+                from: currentAlias,
+                to: trimmed
+            )
+            guard decision != .cancelled else { return false }
+            validatedStopAlias = currentAlias
+            if decision.requiresProcessRestart {
+                destructiveModelSwitchApproved = true
+            }
+        }
+
         // Any fresh load attempt — resident, cold start, or the legacy
         // stop/start fallback — supersedes a stale rejection for THIS alias so
         // the surface stops showing last round's result while this load is in
@@ -1031,9 +1254,15 @@ final class ServerManager {
         // surface as a hard failure instead of the process swap they actually
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
+        // The resident loader deliberately refuses to replace a busy model.
+        // Once the user approves the destructive action, bypass that route and
+        // use the existing process stop/start fallback so "Switch" performs
+        // the interruption it just disclosed instead of returning a busy
+        // rejection.
         if Self.residencyLoadApplies(
             residencyEligible: residencyEligible && !speculativeRequested
-                && !speculativeSettingChanged && !requiresImageLaneRestart,
+                && !speculativeSettingChanged && !requiresImageLaneRestart
+                && !destructiveModelSwitchApproved,
             readyWithChild: readyWithChild
         ) {
             // Publish before crossing the network await so SwiftUI replaces
@@ -1121,6 +1350,32 @@ final class ServerManager {
         // the idle/stopped/missing cases just fall through to
         // ``start(alias:)``.
         if child != nil {
+            // `ensureServing` can re-enter while a dialog or residency refresh
+            // is awaiting. Repeat until the alias we validated is still the
+            // live child; a stale A→C answer must never authorize stopping B.
+            while let currentAlias = launchedChildAlias,
+                  currentAlias != trimmed,
+                  ModelSwitchDecision.requiresRevalidation(
+                      validatedAlias: validatedStopAlias,
+                      liveAlias: currentAlias
+                  ) {
+                let decision = await approveModelSwitchIfNeeded(
+                    from: currentAlias,
+                    to: trimmed
+                )
+                guard decision != .cancelled else { return false }
+                validatedStopAlias = currentAlias
+            }
+            if let currentAlias = launchedChildAlias,
+               !ModelSwitchDecision.requiresStop(
+                   liveAlias: currentAlias,
+                   targetAlias: trimmed
+               ) {
+                if case .starting(let alias) = state, alias == trimmed {
+                    await awaitStartupSettled(alias: trimmed)
+                }
+                return isServing(trimmed)
+            }
             await stop(preservingLastServedAlias: true)
         }
         let memoryRequestID = UUID()
@@ -1375,37 +1630,67 @@ final class ServerManager {
     /// transition (the bug Bug A removed), which incidentally also
     /// covered manual restarts. The default is ``false`` to make the
     /// behavior obvious at every public call site.
-    /// The user acknowledged the memory warning and wants to load
-    /// anyway. Takes the ``warning`` by value (not off ``pendingMemory-
-    /// Warning``) because the alert's dismissal clears that property on
-    /// the same run-loop turn the button fires — reading it here would
-    /// race to nil and silently drop the load. Re-enters ``start`` with
-    /// the guard bypassed.
+    /// Resolve the rendered action by stable warning identity, then launch
+    /// from the queue's latest measured facts. The captured severity records
+    /// whether the user actually chose the unsafe override; a stale ordinary
+    /// Load action can therefore never become a bypass after pressure rises.
     func confirmPendingMemoryLoad(_ warning: ModelSizing.MemoryWarning) {
-        memoryConfirmSeq += 1
-        let seq = memoryConfirmSeq
-        memoryConfirmRunning.insert(seq)
-        guard memoryConfirmations.resolveCurrent(
-            warning: warning,
-            decision: .confirmed(sequence: seq)
-        ) else {
-            memoryConfirmRunning.remove(seq)
+        // Claim synchronously before SwiftUI dismisses its alert. The binding
+        // writes `false` on the same run-loop turn and treats an unclaimed
+        // warning as Cancel; `.checkingDecision` makes that dismissal a no-op
+        // while the activation probe runs off the main actor.
+        guard memoryConfirmations.beginChecking(warningID: warning.id) else { return }
+        // The activation probe now owns the warning's measured facts. Any
+        // periodic sample that began before this click must not apply after a
+        // newly-unsafe activation restores the warning to awaitingDecision.
+        memoryWarningRefreshGeneration += 1
+        Task { [weak self] in
+            await self?.activatePendingMemoryLoad(warning)
+        }
+    }
+
+    private func activatePendingMemoryLoad(
+        _ warning: ModelSizing.MemoryWarning
+    ) async {
+        let provider = memorySnapshotProvider
+        let snapshot = await Task.detached(priority: .utility) {
+            provider()
+        }.value
+        guard let latestWarning = memoryConfirmations.checkingWarning(
+            warningID: warning.id,
+            snapshot: snapshot
+        ) else { return }
+
+        // Only the explicit unsafe action is a waiver. An ordinary Load that
+        // became unsafe during this activation remains parked on the same
+        // queue entry, preserving its waiter and presenting the new facts.
+        let requestedUnsafeOverride = warning.severity == .unsafe
+        guard requestedUnsafeOverride || latestWarning.severity != .unsafe else {
+            memoryConfirmations.restoreAwaiting(warningID: warning.id)
             return
         }
-        Task { [weak self] in
-            guard let self else { return }
-            if self.child != nil {
-                await self.stop()
-            }
-            await self.start(
-                alias: warning.alias,
-                hfPath: warning.hfPath,
-                isAutoRespawn: warning.isAutoRespawn,
-                bypassMemoryGuard: true
-            )
-            self.memoryConfirmRunning.remove(seq)
-            self.memoryConfirmations.completeConfirmedLaunch(warningID: warning.id)
+
+        memoryConfirmSeq += 1
+        let seq = memoryConfirmSeq
+        guard let currentWarning = memoryConfirmations.confirmChecking(
+            warningID: warning.id,
+            sequence: seq
+        ) else { return }
+        memoryConfirmRunning.insert(seq)
+        if child != nil {
+            await stop()
         }
+        // The activation sample above is the guard for this exact click.
+        // Avoid a second sample after the queue has entered `.launching`,
+        // which could otherwise park a duplicate warning behind its owner.
+        await start(
+            alias: currentWarning.alias,
+            hfPath: currentWarning.hfPath,
+            isAutoRespawn: currentWarning.isAutoRespawn,
+            bypassMemoryGuard: true
+        )
+        memoryConfirmRunning.remove(seq)
+        memoryConfirmations.completeConfirmedLaunch(warningID: currentWarning.id)
     }
 
     /// The user backed out of a memory-risky load. Just drops the
@@ -1417,7 +1702,7 @@ final class ServerManager {
         // to an EARLIER confirmation and its waiter must not be told it
         // finished.
         _ = memoryConfirmations.resolveCurrent(
-            warning: warning,
+            warningID: warning.id,
             decision: .cancelled
         )
     }
@@ -1501,7 +1786,7 @@ final class ServerManager {
             // Every mature local-model app draws the same line: refuse
             // only what is genuinely dangerous, and surface "tight"
             // passively — the picker's static sizing bands already do.
-            if safety == .unsafe {
+            if ModelSizing.requiresMemoryConfirmation(safety) {
                 // A launch auto-start must never greet the user with a scary
                 // modal they did not ask for. Opening the app is not "I want to
                 // chat now" — they may be heading to Audio/Images, or just

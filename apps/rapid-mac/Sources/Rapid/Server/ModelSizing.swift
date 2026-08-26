@@ -203,6 +203,12 @@ enum ModelSizing {
         case unsafe
     }
 
+    /// Only the danger-line verdict parks a load for explicit confirmation.
+    /// Tight is advisory and must continue through the ordinary guarded path.
+    static func requiresMemoryConfirmation(_ safety: MemorySafety) -> Bool {
+        safety == .unsafe
+    }
+
     /// Project ``footprint`` onto ``usedBytes`` and bucket the result.
     /// Returns ``.safe`` when the numbers are unreadable or the param
     /// count is unknown — never block a load on missing data (the
@@ -213,8 +219,25 @@ enum ModelSizing {
         totalBytes: UInt64
     ) -> MemorySafety {
         guard totalBytes > 0, footprint.paramsBillions != nil else { return .safe }
+        return memorySafety(
+            footprintGB: footprint.totalGB,
+            usedBytes: usedBytes,
+            totalBytes: totalBytes
+        )
+    }
+
+    /// Re-evaluate a warning using the exact footprint captured when the
+    /// guarded load was first classified. A warning can outlive catalog or
+    /// custom-path resolution, so refreshes must not derive a second estimate
+    /// from its alias.
+    static func memorySafety(
+        footprintGB: Double,
+        usedBytes: UInt64,
+        totalBytes: UInt64
+    ) -> MemorySafety {
+        guard totalBytes > 0 else { return .safe }
         let gib = Double(1 << 30)
-        let footprintBytes = footprint.totalGB * gib
+        let footprintBytes = footprintGB * gib
         let projected = (Double(usedBytes) + footprintBytes) / Double(totalBytes)
         if projected >= 0.85 { return .unsafe }
         if projected >= 0.75 { return .tight }
@@ -228,7 +251,7 @@ enum ModelSizing {
     /// Copy lives here (not in a view) so ``ModelSizingTests`` can pin
     /// it without a SwiftUI host — same pattern as the tooBig alert.
     struct MemoryWarning: Equatable, Sendable, Identifiable {
-        let id = UUID()
+        let id: UUID
         let alias: String
         let hfPath: String?
         let isAutoRespawn: Bool
@@ -240,6 +263,26 @@ enum ModelSizing {
         /// Total unified memory. Needed because the guard is based on
         /// projected utilisation, not on footprint-versus-free alone.
         var totalGB: Double = 0
+
+        init(
+            id: UUID = UUID(),
+            alias: String,
+            hfPath: String?,
+            isAutoRespawn: Bool,
+            severity: MemorySafety,
+            footprintGB: Double,
+            freeGB: Double,
+            totalGB: Double = 0
+        ) {
+            self.id = id
+            self.alias = alias
+            self.hfPath = hfPath
+            self.isAutoRespawn = isAutoRespawn
+            self.severity = severity
+            self.footprintGB = footprintGB
+            self.freeGB = freeGB
+            self.totalGB = totalGB
+        }
 
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.alias == rhs.alias
@@ -255,8 +298,10 @@ enum ModelSizing {
             switch severity {
             case .unsafe:
                 return "\(alias) may crash your Mac right now"
-            case .tight, .safe:
+            case .tight:
                 return "\(alias) is a tight fit right now"
+            case .safe:
+                return "\(alias) is ready to load"
             }
         }
 
@@ -276,14 +321,19 @@ enum ModelSizing {
             switch severity {
             case .unsafe:
                 return facts + " Past about 85%, macOS may freeze or restart. Free about \(freeAction) GB by closing some apps, or pick a smaller model."
-            case .tight, .safe:
+            case .tight:
                 return facts + " It should load but may stall under longer chats. Consider closing some apps or picking a smaller model."
+            case .safe:
+                return facts + " There is now enough memory to load it normally."
             }
         }
 
         /// The confirm button title — worded to match the risk.
         var confirmTitle: String {
-            severity == .unsafe ? "Load anyway (risky)" : "Load anyway"
+            switch severity {
+            case .unsafe: "Load anyway (risky)"
+            case .tight, .safe: "Load model"
+            }
         }
     }
 

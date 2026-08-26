@@ -1850,6 +1850,7 @@ final class ChatViewModel {
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
                 ambientPreamble: ambientPreamble,
+                dateContext: ChatViewModel.currentDateTimeContext(),
                 global: globalInstruction,
                 conversation: conversationInstruction
             )
@@ -2251,18 +2252,24 @@ final class ChatViewModel {
         return [ChatMessage(role: .system, content: toolGuidancePreamble, status: .complete)]
     }
 
-    /// Merge app, pre-existing, global, and conversation instruction layers
-    /// into one leading system row. Local chat templates often reject a second
-    /// system message, so every caller must go through this transformation.
+    /// Merge current-date context, ambient, pre-existing, global, and
+    /// conversation layers into one leading system row. Local chat templates
+    /// often reject a second system message, so every caller must go through
+    /// this transformation.
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
         ambientPreamble: String?,
+        dateContext: String? = nil,
         global: String,
         conversation: String
     ) -> [ChatMessage] {
         var result = messages
         let existing = result.first?.role == .system ? result.removeFirst().content : nil
-        var parts = [ambientPreamble, existing]
+        // The ambient preamble stays the LEADING component (so
+        // ``removingLeadingSystemComponent`` can strip it when context
+        // trimming drops the tool result that armed it); the date context
+        // rides below it because it is valid regardless of tool presence.
+        var parts = [ambientPreamble, dateContext, existing]
             .compactMap { $0.flatMap(normalizedInstruction) }
         if let global = normalizedInstruction(global) {
             parts.append("""
@@ -2284,6 +2291,46 @@ final class ChatViewModel {
             at: 0
         )
         return result
+    }
+
+    /// Request-time current-date context for the leading system row, so a small
+    /// model does not guess "today" from training memory (issue #2330, where
+    /// `qwen3.5-4b-4bit` answered "Friday, May 24, 2024" and then insisted it
+    /// had no way to know the date). This supplies the Mac's authoritative
+    /// local date/time as a system-prompt template variable at request time —
+    /// the pattern peer desktop chat products use — rather than relying on the
+    /// model to infer it must search for the date, and without adding a
+    /// local-clock tool or touching tool routing.
+    ///
+    /// Injected per `send` (each request recomputes it against the live clock),
+    /// so it cannot go stale across midnight, a time-zone change, a restored
+    /// conversation, or a long-lived session. `now` and the calendar's
+    /// time zone are injectable so tests can pin the exact output and cover
+    /// rollover.
+    nonisolated static func currentDateTimeContext(
+        now: Date = Date(),
+        calendar inputCalendar: Calendar = .autoupdatingCurrent
+    ) -> String {
+        // Fixed gregorian calendar + en_US_POSIX so output never depends on the
+        // user's locale for date/time names or AM/PM rendering.
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = inputCalendar.timeZone
+        let zone = inputCalendar.timeZone
+        let formatter = DateFormatter()
+        formatter.calendar = gregorian
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+
+        formatter.dateFormat = "EEEE, MMMM d, yyyy"
+        let dateText = formatter.string(from: now)
+        formatter.dateFormat = "h:mm a"
+        let timeText = formatter.string(from: now)
+
+        let abbreviation = zone.abbreviation(for: now) ?? zone.identifier
+        return """
+        [CURRENT DATE AND TIME]
+        Today is \(dateText). The current local time is \(timeText) (\(abbreviation), \(zone.identifier)).
+        """
     }
 
     /// Remove an exact first component from the merged system row. Used when

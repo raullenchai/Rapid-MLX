@@ -32,19 +32,20 @@ Rapid-MLX Desktop release — who is this build for?
 │      scripts/release-local.sh
 │      → a signed, testable .app/DMG on your Mac; no tag, no GitHub Release
 │
-└─ "all users"           →  PUBLIC · GitHub CI  (a few / month)
-       push a rapid-mac-v* tag
-       → rapid-mac-release.yml: build → sign → notarise → GitHub Release,
-         plus the Sparkle appcast / latest.json auto-update feeds
+└─ "all users"           →  PUBLIC · canonical flow (a few / month)
+       chore: bump version to X.Y.Z  on main
+       → auto-release.yml validates a SIGNED Desktop candidate, then at the
+         protected rapid-mac-tag gate a reviewer approves the exact SHA before
+         the tag is claimed → DMG + Sparkle appcast / latest.json auto-update
 ```
 
 A bare `v*` tag is the **engine's** release scheme, not the app's; the desktop
 lane is gated on the `rapid-mac-v*` prefix so the two never collide in this
 monorepo.
 
-| | Dogfood (local) | Public (CI) |
+| | Dogfood (local) | Public (canonical flow) |
 |---|---|---|
-| Command | `scripts/release-local.sh` | push a `rapid-mac-v*` tag |
+| How you trigger | `scripts/release-local.sh` | merge `chore: bump version to X.Y.Z`, approve at the `rapid-mac-tag` gate |
 | Runs on | your Mac ($0 CI) | `macos-15` GitHub runner |
 | Build → sign → notarise → DMG | yes | yes |
 | Attaches DMG to a GitHub Release | no | yes |
@@ -52,6 +53,47 @@ monorepo.
 
 Dividing line: local = *"produce a signed app I can install and test."*
 CI = *"ship it to everyone via a GitHub Release."*
+
+---
+
+## #2301 — an RC tag is claimed only at a validated commit
+
+The immutable `rapid-mac-vX.Y.Z[-rcN]` tag is the identity the auto-update feed
+keys on, so it must be claimed **after** — never before — the desktop app for
+that exact commit has passed the signed build, size gates, notarisation/staple,
+DMG build + validation, and DMG notarisation. `auto-release.yml` therefore runs
+a **candidate gate** (macos-15) that builds/validates the exact release commit
+and produces a Desktop manifest *before* the tag is claimed. The tag claim then:
+
+1. happens only inside the **`rapid-mac-tag`** environment gate (a required
+   reviewer, `prevent_self_review=false`, deployment branch policy exactly
+   `main`), and
+2. is bound to the exact **validated candidate SHA** *and* the **live `main`
+   head** (TOCTOU-re-queried immediately before the claim), so a packaging fix
+   landing on `main` while the candidate validated aborts the release rather
+   than tagging a candidate now behind head, and
+3. is followed by a bounded, fail-closed publication gate: the engine Release
+   is not created until the exact tagged Desktop workflow succeeds, the
+   canonical DMG is published and non-empty, and the tag still resolves to the
+   accepted SHA. A same-SHA tag no-op is never treated as proof of publication.
+
+On the bump PR only **PF-3** runs — a fail-closed read-back that the
+`rapid-mac-tag` environment exists and is protected (required reviewer,
+`prevent_self_review=false`, deployment policy exactly `main`), so a drifted or
+unprotected environment is a NO-GO before any release. The **live** release-
+blocker evidence (against the per-version waiver file) and live main-head
+identity gates (PF-4) run *after merge* in `release-prep`, then again
+immediately pre-tag. An RC that needs correcting is **superseded by the next
+RC** on its own validated commit — the old RC tag is immutable and is never
+moved, force-pushed, or deleted.
+
+If an exact Desktop tag exists but its tagged workflow is missing or failed,
+rerun that exact workflow (or explicitly dispatch `rapid-mac-release.yml` at
+the immutable tag ref), then rerun auto-release. Do not move/delete the tag and
+do not publish the engine half manually.
+
+`release-local.sh` dogfood builds are unaffected: they never create a tag, a
+GitHub Release, or an updater pointer.
 
 ---
 
@@ -212,35 +254,57 @@ Signing degrades gracefully by what's configured:
 
 No tag, no GitHub Release, no CI. Costs $0.
 
-### D2. Public CI release (tag-triggered)
+### D2. Public CI release (canonical flow; `--publish` retired)
+
+The only sanctioned way to ship a user-facing Desktop release is the canonical
+flow. Two distinctions matter:
+
+- **`release-local.sh --publish` is mechanically refused.** The script exits
+  non-zero for `--publish` immediately after arg parsing — before sourcing your
+  env or touching git (#2301) — so that specific local bypass is fail-closed.
+- **Raw manual `git push` / direct API creation of a `rapid-mac-v*` tag is
+  operationally prohibited, not mechanically enforced — and it is unsafe.**
+  Nothing on your workstation stops the bare `git` command, and `rapid-mac-release.yml`
+  triggers on **any** `rapid-mac-v*` tag: it has no pre-tag provenance-
+  authorization lookup, so a hand-created tag can run the shared validation and
+  publish if that lane's own checks pass. That is exactly why it must never be
+  done: it bypasses the *authorization* gates the canonical flow exists for — the
+  signed Desktop candidate acceptance at the exact commit, the live release-
+  blocker / main-head evidence, and the protected `rapid-mac-tag` human
+  approval. Use the canonical automation only; it is the sole supported route.
+
+Canonical steps:
 
 ```bash
 # 1. Bump apps/rapid-mac/Resources/Info.plist:
 #      CFBundleShortVersionString = X.Y.Z
 #      CFBundleVersion = a strictly increasing positive integer
-#    Then add a "## [X.Y.Z]" section to apps/rapid-mac/CHANGELOG.md, on main.
-# 2. Cut it (guarded — preflights CHANGELOG/plist/tag, then pushes the tag):
-cd apps/rapid-mac
-scripts/release-local.sh --publish rapid-mac-v0.11.0
+#    Then add a "## [X.Y.Z]" section to apps/rapid-mac/CHANGELOG.md.
+# 2. Open a PR whose subject is exactly  chore: bump version to X.Y.Z  and merge it.
+#    auto-release.yml then, at the release commit:
+#      - validates a SIGNED Desktop candidate (signed build/notarise/size/DMG gates)
+#      - gathers live main-head + release-blocker evidence (release-prep)
+#      - asks a reviewer to approve the exact SHA at the protected rapid-mac-tag gate
+#      - claims the tag at that exact SHA and mirrors the immutable DMG/Sparkle
+#        artifacts (as a GitHub prerelease for an RC). ONLY a non-RC stable
+#        release publishes the mutable appcast/latest.json updater feeds — an RC
+#        never replaces the stable updater pointers.
 ```
-
-`--publish` does **not** build locally. It preflights (stable
-`rapid-mac-vX.Y.Z` tag, CHANGELOG entry present, tag == plist version, monotonic
-`CFBundleVersion`, local
-`main` == the release remote's `main`, tag is new and strictly newer than the latest
-rapid-mac release, and the root workflow triggers on the tag) then pushes the
-tag. `.github/workflows/rapid-mac-release.yml` then builds → signs →
-notarises → generates an EdDSA-signed Sparkle ZIP/appcast → size-gates →
-publishes both updater feeds → attaches `rapid-mlx-desktop.dmg` to the GitHub
-Release. The script auto-detects the remote whose URL is
-`raullenchai/Rapid-MLX`; set `RAPID_RELEASE_REMOTE=<name>` to select it
-explicitly. (You can equally `git push <release-remote> rapid-mac-v0.11.0` by hand;
-`--publish` only adds the guardrails.)
 
 Watch it:
 ```bash
-gh run watch $(gh run list --workflow=rapid-mac-release.yml --limit=1 --json databaseId -q ".[0].databaseId")
+gh run watch $(gh run list --workflow=auto-release.yml --limit=1 --json databaseId -q ".[0].databaseId")
 ```
+
+**During the final approval + claim, hold `main` merges.** Once `release-prep`
+prints the exact evidence for review, the sole owning reviewer keeps `main`
+frozen through the `rapid-mac-tag` approval and the tag claim. The blocker/head
+re-queries immediately before the claim are a **freshness/cutoff guard, not a
+transaction** — GitHub offers no single atomic op across Issues + `main` + the
+tag POST. If a blocker change is detected before the claim, abort and re-run
+normally at the new head; a change after the cutoff may be unobservable until
+post-claim, at which point it is a next-RC/release incident (a post-cut `main`
+commit is not part of this candidate).
 
 ---
 

@@ -136,4 +136,116 @@ struct MemoryLoadConfirmationQueueTests {
         queue.completeConfirmedLaunch(warningID: warning.id)
         #expect(queue.currentWarning == nil)
     }
+
+    @Test("live memory refresh updates facts without replacing the parked decision")
+    func liveRefreshPreservesDecisionIdentity() throws {
+        let gib = UInt64(1 << 30)
+        var queue = MemoryLoadConfirmationQueue()
+        let request = UUID()
+        let original = ModelSizing.MemoryWarning(
+            alias: "qwen3.5-9b-4bit",
+            hfPath: nil,
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: ModelSizing.estimate(alias: "qwen3.5-9b-4bit").totalGB,
+            freeGB: 2,
+            totalGB: 32
+        )
+        queue.enqueue(warning: original, requestID: request)
+
+        let refreshed = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+        )
+        let transition = try #require(refreshed)
+        #expect(transition.old.severity == .unsafe)
+        #expect(transition.new.severity == .safe)
+        #expect(transition.new.id == original.id)
+        #expect(transition.new.freeGB == 30)
+        #expect(queue.currentWarning == transition.new)
+
+        let unsafeAgain = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 30 * gib)
+        )
+        #expect(unsafeAgain?.old.severity == .safe)
+        #expect(unsafeAgain?.new.severity == .unsafe)
+        #expect(unsafeAgain?.new.id == original.id)
+
+        // Refreshing is not a decision: the original waiter remains parked
+        // until the user activates the newly-safe Load model action.
+        #expect(queue.takeDecision(for: request) == nil)
+        let current = queue.resolveCurrent(
+            warningID: original.id,
+            decision: .confirmed(sequence: 12)
+        )
+        #expect(current == unsafeAgain?.new)
+        #expect(queue.takeDecision(for: request) == .confirmed(sequence: 12))
+    }
+
+    @Test("live refresh reuses the originally captured footprint")
+    func liveRefreshPreservesOriginalFootprint() throws {
+        let gib = UInt64(1 << 30)
+        var queue = MemoryLoadConfirmationQueue()
+        let original = ModelSizing.MemoryWarning(
+            alias: "custom-local-model",
+            hfPath: "/models/custom-local-model",
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: 24,
+            freeGB: 2,
+            totalGB: 32
+        )
+        queue.enqueue(warning: original, requestID: nil)
+
+        let result = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+        )
+        let refreshed = try #require(result)
+
+        #expect(refreshed.new.severity == .tight)
+        #expect(refreshed.new.footprintGB == 24)
+        #expect(refreshed.new.hfPath == original.hfPath)
+    }
+
+    @Test("refresh is ignored after the visible decision starts launching")
+    func liveRefreshCannotRewriteLaunchingDecision() {
+        let gib = UInt64(1 << 30)
+        var queue = MemoryLoadConfirmationQueue()
+        let original = warning("qwen3.5-9b-4bit")
+        queue.enqueue(warning: original, requestID: nil)
+        let confirmed = queue.resolveCurrent(warning: original, decision: .confirmed(sequence: 2))
+        #expect(confirmed)
+        let refreshed = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+        )
+        #expect(refreshed == nil)
+    }
+
+    @Test("activation check owns the warning before alert dismissal")
+    func activationCheckCannotBeCancelledByAlertDismissal() throws {
+        let gib = UInt64(1 << 30)
+        let request = UUID()
+        var queue = MemoryLoadConfirmationQueue()
+        let original = warning("qwen3.5-9b-4bit")
+        queue.enqueue(warning: original, requestID: request)
+
+        let beganChecking = queue.beginChecking(warningID: original.id)
+        #expect(beganChecking)
+        #expect(queue.currentWarning == nil)
+        #expect(queue.isPending(request))
+        let dismissed = queue.resolveCurrent(warning: original, decision: .cancelled)
+        #expect(!dismissed)
+        #expect(queue.isPending(request))
+
+        let checkedWarning = queue.checkingWarning(
+            warningID: original.id,
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 30 * gib)
+        )
+        let checked = try #require(checkedWarning)
+        #expect(checked.id == original.id)
+        #expect(checked.severity == .unsafe)
+
+        queue.restoreAwaiting(warningID: original.id)
+        #expect(queue.currentWarning == checked)
+        #expect(queue.takeDecision(for: request) == nil)
+    }
 }

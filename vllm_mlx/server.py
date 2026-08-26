@@ -1858,6 +1858,7 @@ def load_model(
 
     global \
         _engine, \
+        _model_alias, \
         _model_name, \
         _model_path, \
         _default_max_tokens, \
@@ -1866,23 +1867,49 @@ def load_model(
         _alias_recommended_sampling, \
         _generation_config_sampling
 
+    # ``load_model`` is also the engine-owned residency entry point; callers
+    # outside the CLI (including Desktop model replacement) can pass an alias
+    # that has not gone through ``cli.main``. Resolve that alias once, before
+    # config materialization, lane selection, and the loader consume it. This
+    # keeps those three decisions on the same checkpoint source instead of
+    # probing the alias spelling as though it were a Hub repository.
+    from .model_aliases import resolve_model, resolve_profile
+
+    requested_model_name = model_name
+    model_name = resolve_model(model_name)
+
+    # A direct alias in this request is authoritative. CLI startup reaches
+    # here with an already-canonical path, so only in that case may its saved
+    # alias be reused—and only when it still resolves to this same checkpoint.
+    # A prior resident model's alias must never lend its profile or registry
+    # identity to a replacement model.
+    effective_model_alias = (
+        requested_model_name if requested_model_name != model_name else None
+    )
+    if effective_model_alias is None and _model_alias is not None:
+        try:
+            if resolve_model(_model_alias) == model_name:
+                effective_model_alias = _model_alias
+        except Exception:  # stale prior identity; current request still owns load
+            pass
+
     _default_max_tokens = max_tokens
     _default_max_tokens_is_explicit = max_tokens_is_explicit
+    _model_alias = effective_model_alias
     _model_path = model_name
-    _model_name = served_model_name or model_name
+    _model_name = served_model_name or requested_model_name
     _tool_parser_instance = None
 
     # Populate the sampling overlays now that we know which model we're
     # serving. Both are best-effort — an alias without curated sampling
     # or a model missing generation_config.json simply contributes an
     # empty layer to the cascade in service/helpers.py.
-    from .model_aliases import resolve_profile
     from .utils.generation_config import load_generation_config_sampling
 
     _alias_recommended_sampling = None
     # resolve_profile handles both alias-name and HF-path lookups, so a
     # single call suffices regardless of which form load_model was passed.
-    _profile = resolve_profile(_model_alias or model_name)
+    _profile = resolve_profile(effective_model_alias or requested_model_name)
     if _profile is not None and _profile.recommended_sampling:
         _alias_recommended_sampling = dict(_profile.recommended_sampling)
 
@@ -2006,7 +2033,7 @@ def load_model(
         check_from_profile(
             model_name=model_name,
             profile=_profile,
-            alias=_model_alias,
+            alias=effective_model_alias,
         )
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
         logger.debug(f"mxfp4/moe guardrail probe failed (non-fatal): {_e}")
@@ -2215,8 +2242,8 @@ def load_model(
 
     # Register in multi-model registry
     aliases = set()
-    if _model_alias and _model_alias != _model_name:
-        aliases.add(_model_alias)
+    if effective_model_alias and effective_model_alias != _model_name:
+        aliases.add(effective_model_alias)
     entry = ModelEntry(
         engine=_engine,
         model_name=_model_name,
@@ -2267,6 +2294,11 @@ async def _load_dynamic_resident_model(
     resolved_path = model_path or (
         profile.hf_path if profile is not None else model_name
     )
+    model_config = profile
+    if model_config is None:
+        from .model_auto_config import detect_model_config
+
+        model_config = detect_model_config(resolved_path)
     modality = profile.modality if profile is not None else "text"
 
     if modality == "image-gen":
@@ -2293,8 +2325,30 @@ async def _load_dynamic_resident_model(
             f"runtime residency loading is not available for modality {modality!r}"
         )
     else:
+        from .cli import (
+            _needs_bounded_trim_free_reuse,
+            _resolve_hybrid_cache_entries,
+        )
         from .runtime.resident_models import resident_scheduler_kwargs
         from .scheduler import SchedulerConfig
+
+        scheduler_kwargs = resident_scheduler_kwargs(performance)
+        enable_prefix_cache = bool(scheduler_kwargs.get("enable_prefix_cache", True))
+        hybrid_cache_entries = _resolve_hybrid_cache_entries(
+            enable_prefix_cache=enable_prefix_cache,
+            explicit_value=0,
+            user_set_explicit=False,
+            model_name=resolved_path,
+            model_config=model_config,
+        )
+        scheduler_kwargs["hybrid_cache_entries"] = hybrid_cache_entries
+        scheduler_kwargs["non_trimmable_exact_prefix_reuse"] = (
+            hybrid_cache_entries > 0
+            and _needs_bounded_trim_free_reuse(
+                resolved_path,
+                model_config=model_config,
+            )
+        )
 
         engine = BatchedEngine(
             model_name=resolved_path,
@@ -2303,7 +2357,7 @@ async def _load_dynamic_resident_model(
             ),
             force_text=bool(profile is not None and profile.is_text_only),
             gpu_memory_utilization=_resident_gpu_memory_utilization,
-            scheduler_config=SchedulerConfig(**resident_scheduler_kwargs(performance)),
+            scheduler_config=SchedulerConfig(**scheduler_kwargs),
         )
         await engine.start()
         try:
@@ -3114,6 +3168,32 @@ Examples:
     if args.mcp_config:
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
+    # Resolve checkpoint/profile metadata lazily and at most once for every
+    # standalone-server default below. Cache admission is best-effort; parser,
+    # PFlash, and TurboQuant retain their existing error policy when they are
+    # the first consumer.
+    auto_config = None
+    auto_config_resolved = False
+
+    def resolve_auto_config(*, non_fatal: bool):
+        nonlocal auto_config, auto_config_resolved
+        if auto_config_resolved:  # pragma: no cover - callers guard resolved state
+            return auto_config
+        try:
+            from .model_auto_config import detect_model_config
+        except ImportError:
+            auto_config_resolved = True
+            return None
+        try:
+            auto_config = detect_model_config(args.model)
+        except Exception as exc:
+            if not non_fatal:
+                raise
+            logger.debug("Auto-detection failed (non-fatal): %s", exc)
+            return None
+        auto_config_resolved = True
+        return auto_config
+
     # Auto-detect parser config from model name when not explicitly set.
     # SOP §10: honor --no-tool-call-parser / --no-reasoning-parser opt-
     # outs so this entrypoint matches the unified CLI behavior.
@@ -3128,9 +3208,7 @@ Examples:
             "--reasoning-parser and --no-reasoning-parser are mutually exclusive"
         )
     if not args.tool_call_parser or not args.reasoning_parser:
-        from .model_auto_config import detect_model_config
-
-        auto_config = detect_model_config(args.model)
+        resolve_auto_config(non_fatal=False)
         if auto_config:
             if (
                 not args.tool_call_parser
@@ -3243,8 +3321,16 @@ Examples:
     # two serving entrypoints must not drift. It mutates ``args.pflash`` and
     # ``args.pflash_keep_ratio`` in place so later readers see resolved values.
     try:
+        pflash_detection = {}
+        if auto_config_resolved:
+            pflash_detection["_detected_config"] = auto_config
+        elif args.pflash is None or args.pflash_keep_ratio is None:
+            pflash_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
         server_pflash_config = _server_pflash_resolve_config(
-            args, model_name=args.model, is_multimodal=_srv_is_mllm
+            args,
+            model_name=args.model,
+            is_multimodal=_srv_is_mllm,
+            **pflash_detection,
         )
         _server_pflash_validate(
             server_pflash_config,
@@ -3268,8 +3354,15 @@ Examples:
         turboquant_scheduler_kwargs as _server_turboquant_scheduler_kwargs,
     )
 
+    turboquant_detection = {}
+    if auto_config_resolved:
+        turboquant_detection["_detected_config"] = auto_config
+    elif getattr(args, "kv_cache_turboquant", None) is None and not getattr(
+        args, "kv_cache_quantization", False
+    ):
+        turboquant_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
     args.kv_cache_turboquant = _server_turboquant_resolve_default(
-        args, model_name=args.model
+        args, model_name=args.model, **turboquant_detection
     )
 
     if args.vision_min_pixels < 0 or args.vision_max_pixels < 0:
@@ -3294,11 +3387,34 @@ Examples:
     if vision_prefill_token_budget <= 0:
         parser.error("--vision-prefill-token-budget must be positive")
 
+    if not auto_config_resolved:
+        resolve_auto_config(non_fatal=True)
+    from .cli import (
+        _needs_bounded_trim_free_reuse,
+        _resolve_hybrid_cache_entries,
+    )
+
+    hybrid_cache_entries = _resolve_hybrid_cache_entries(
+        enable_prefix_cache=True,
+        explicit_value=0,
+        user_set_explicit=False,
+        model_name=args.model,
+        model_config=auto_config,
+    )
+
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
         vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,
+        hybrid_cache_entries=hybrid_cache_entries,
+        non_trimmable_exact_prefix_reuse=(
+            hybrid_cache_entries > 0
+            and _needs_bounded_trim_free_reuse(
+                args.model,
+                model_config=auto_config,
+            )
+        ),
         pflash_config=server_pflash_config,
         **_server_turboquant_scheduler_kwargs(args),
     )

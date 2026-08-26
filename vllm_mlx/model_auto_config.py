@@ -759,6 +759,37 @@ def _metadata_model_types(config: dict[str, Any]) -> frozenset[str]:
     return frozenset(types)
 
 
+def config_declares_linear_attention(config: dict | None) -> bool:
+    """Whether the language backbone declares recurrent/linear attention.
+
+    This architecture signal is shared by model auto-detection and prefix-cache
+    admission. Keeping it beside checkpoint metadata resolution prevents those
+    consumers from independently classifying the same config.
+    """
+    if not isinstance(config, dict):
+        return False
+
+    text_config = config.get("text_config")
+    language_config = text_config if isinstance(text_config, dict) else config
+    layer_types = language_config.get("layer_types") or []
+    if any(
+        isinstance(layer_type, str)
+        and any(
+            marker in layer_type.lower() for marker in ("linear", "mamba", "recurrent")
+        )
+        for layer_type in layer_types
+    ):
+        return True
+    return any(
+        isinstance(model_type, str)
+        and any(
+            marker in model_type.lower()
+            for marker in ("mamba", "recurrent", "qwen3_next")
+        )
+        for model_type in (language_config.get("model_type"), config.get("model_type"))
+    )
+
+
 def _chat_template_environment():
     """Build a Jinja environment that PARSES Transformers chat templates.
 
@@ -1132,7 +1163,9 @@ def _template_injects_qwen_thinking(template: str | None) -> bool:
     return "enable_thinking" in variables and "<think>" in source
 
 
-def _detect_metadata_config(model_path: str) -> ModelConfig | None:
+def _detect_metadata_config(
+    model_path: str, *, log_resolution: bool = True
+) -> ModelConfig | None:
     """Infer a safe fallback profile from an already-downloaded checkpoint.
 
     This is deliberately lower priority than an alias or a dedicated family
@@ -1184,6 +1217,13 @@ def _detect_metadata_config(model_path: str) -> ModelConfig | None:
             supports_spec_decode=False,
         )
         reasons.append("dense Qwen3.5 architecture")
+    elif config_declares_linear_attention(config):
+        settings.update(
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("linear/recurrent attention architecture")
 
     if _template_uses_parameterized_xml_tools(metadata.chat_template):
         settings["tool_call_parser"] = "hermes"
@@ -1197,14 +1237,38 @@ def _detect_metadata_config(model_path: str) -> ModelConfig | None:
     if not settings:
         return None
     profile = ModelConfig(**settings)
-    _log_resolution_once(
-        model_path,
-        "Auto-detected checkpoint metadata for "
-        f"'{model_path}' → tool_call_parser={profile.tool_call_parser}, "
-        f"reasoning_parser={profile.reasoning_parser}, "
-        f"is_hybrid={profile.is_hybrid} ({', '.join(reasons)})",
-    )
+    if log_resolution:
+        _log_resolution_once(
+            model_path,
+            "Auto-detected checkpoint metadata for "
+            f"'{model_path}' → tool_call_parser={profile.tool_call_parser}, "
+            f"reasoning_parser={profile.reasoning_parser}, "
+            f"is_hybrid={profile.is_hybrid} ({', '.join(reasons)})",
+        )
     return profile
+
+
+def _with_checkpoint_architecture(
+    family_config: ModelConfig, metadata_config: ModelConfig | None
+) -> ModelConfig:
+    """Overlay authoritative checkpoint architecture onto a family fallback.
+
+    Name-family fallbacks still own parser and reasoning defaults. When the
+    checkpoint itself explicitly establishes recurrent/hybrid routing,
+    however, that architecture truth must reach every downstream consumer
+    even when the path also happens to match a known family name.
+    """
+    if metadata_config is None or not metadata_config.is_hybrid_explicit:
+        return family_config
+    return replace(
+        family_config,
+        is_hybrid=metadata_config.is_hybrid,
+        is_hybrid_explicit=True,
+        is_moe=family_config.is_moe or metadata_config.is_moe,
+        supports_spec_decode=(
+            family_config.supports_spec_decode and metadata_config.supports_spec_decode
+        ),
+    )
 
 
 def detect_model_config(model_path: str) -> ModelConfig | None:
@@ -1253,6 +1317,11 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         # consumers that index by workload key use ``.speedup_dict``.
         return profile
 
+    # Read offline checkpoint metadata once. Family-name fallbacks still own
+    # parser defaults, while explicit architecture fields from this profile
+    # enrich those fallbacks before they reach serving policy.
+    metadata_cfg = _detect_metadata_config(model_path, log_resolution=False)
+
     # DeepSeek-Coder-V2 / V2-Lite routing — handled here (not in the
     # ``_MODEL_PATTERNS`` regex table) because the decision MUST be scoped
     # to the extracted model-name SEGMENT, exactly like the misbind
@@ -1280,8 +1349,14 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     # attention Qwen3 model.  Known aliases returned above remain the SSOT;
     # this is only the direct-HF/local-path fallback.
     if re.search(r"qwen[._-]?3[._]8(?=$|[^0-9])", model_path, re.I):
-        metadata_cfg = _detect_metadata_config(model_path)
         if metadata_cfg is not None:
+            _log_resolution_once(
+                model_path,
+                "Auto-detected checkpoint metadata for "
+                f"'{model_path}' → tool_call_parser={metadata_cfg.tool_call_parser}, "
+                f"reasoning_parser={metadata_cfg.reasoning_parser}, "
+                f"is_hybrid={metadata_cfg.is_hybrid}",
+            )
             return metadata_cfg
         return ModelConfig(
             tool_call_parser="hermes",
@@ -1314,6 +1389,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"tool_call_parser={cfg.tool_call_parser}, "
             f"reasoning_parser={cfg.reasoning_parser} ({note})",
         )
+        cfg = _with_checkpoint_architecture(cfg, metadata_cfg)
         return cfg
 
     for pattern, config in _MODEL_PATTERNS:
@@ -1336,7 +1412,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
                 "tool_call_parser=None, "
                 "reasoning_parser=deepseek_r1_distill",
             )
-            return cfg
+            return _with_checkpoint_architecture(cfg, metadata_cfg)
         # #1071: the Mistral-family entry is a full-path pre-filter that
         # delegates to a MODEL-NAME-SEGMENT-scoped resolver. This keeps the
         # family at its original precedence (so a compound name like
@@ -1355,17 +1431,26 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
                 f"tool_call_parser={mistral_cfg.tool_call_parser}, "
                 f"reasoning_parser={mistral_cfg.reasoning_parser}",
             )
-            return mistral_cfg
+            return _with_checkpoint_architecture(mistral_cfg, metadata_cfg)
+        resolved = _with_checkpoint_architecture(config, metadata_cfg)
         _log_resolution_once(
             model_path,
             f"Auto-detected model family '{pattern.pattern}' → "
-            f"tool_call_parser={config.tool_call_parser}, "
-            f"reasoning_parser={config.reasoning_parser}, "
-            f"is_hybrid={config.is_hybrid}, "
-            f"supports_spec_decode={config.supports_spec_decode}",
+            f"tool_call_parser={resolved.tool_call_parser}, "
+            f"reasoning_parser={resolved.reasoning_parser}, "
+            f"is_hybrid={resolved.is_hybrid}, "
+            f"supports_spec_decode={resolved.supports_spec_decode}",
         )
-        return config
-    return _detect_metadata_config(model_path)
+        return resolved
+    if metadata_cfg is not None:
+        _log_resolution_once(
+            model_path,
+            "Auto-detected checkpoint metadata for "
+            f"'{model_path}' → tool_call_parser={metadata_cfg.tool_call_parser}, "
+            f"reasoning_parser={metadata_cfg.reasoning_parser}, "
+            f"is_hybrid={metadata_cfg.is_hybrid}",
+        )
+    return metadata_cfg
 
 
 # DeepSeek V3-template wire-shape parsers, by the sub-family each one

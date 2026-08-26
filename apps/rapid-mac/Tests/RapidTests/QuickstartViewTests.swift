@@ -800,4 +800,25 @@ struct QuickstartMemoryWiringSourceGuardTests {
             "ContentView's suppression helper no longer keys on the shared memoryWarningToPresent predicate — the two surfaces can drift on who owns the decision (#1503)."
         )
     }
+
+    @Test("Live memory sampling is bound to the warning onboarding actually renders")
+    func liveMemorySamplingUsesVisibleWarningIdentity() throws {
+        let src = try loadStripped("Sources/Rapid/UI/QuickstartView.swift")
+        #expect(
+            src.contains(".task(id:visibleMemoryWarningID)"),
+            "The periodic sampler is no longer keyed to the rendered onboarding warning; a hidden or foreign decision could keep it alive."
+        )
+        #expect(
+            src.contains("while!Task.isCancelled,visibleMemoryWarningID==warningID"),
+            "The periodic sampler no longer stops when the rendered warning changes owner or leaves the current phase."
+        )
+        #expect(
+            src.contains(".onChange(of:visibleMemoryWarningID)"),
+            "The foreground sampler is no longer cancelled when the rendered warning disappears or changes owner."
+        )
+        #expect(
+            src.contains("visibleMemoryWarningID==expectedID,lettransition=awaitserver.refreshPendingMemoryWarning(),!Task.isCancelled,visibleMemoryWarningID==expectedID"),
+            "A foreground or periodic probe can update or announce after its visible warning has disappeared."
+        )
+    }
 }

@@ -74,15 +74,68 @@ struct FileHandleSafeReadTests {
     /// A descriptor closed UNDERNEATH the drainer (the fd-reuse race the
     /// owning-handle design guards) must degrade to empty rather than
     /// crashing — raw `read(2)` surfaces EBADF as -1, never an NSException.
+    ///
+    /// The drainer is constructed while its descriptor is LIVE (so `ready` is
+    /// true and `drain()` really issues a `read(2)` on the now-bad fd — a
+    /// regression that crashes on `EBADF` or reads a recycled descriptor is
+    /// caught). Deterministic-guard (#2318): that descriptor is a private HIGH
+    /// number (via `F_DUPFD`, first free fd >= 1024), closed only AFTER the
+    /// drainer initializes, and never handed back to the low-fd allocator a
+    /// concurrent test's `Pipe()` uses. So `read(high)` always hits a
+    /// genuinely-`EBADF` descriptor and can never consume another test's
+    /// bytes. The LOW fd is released via Foundation's `FileHandle.close()` so
+    /// its deinit cannot later re-`close(2)` a number already recycled. (The
+    /// pre-fix form drained the recycled LOW read fd directly — the OS handed
+    /// that number to a concurrent test's pipe, so the bad drain read that
+    /// test's buffered bytes while the buffered drain read nothing — the #2318
+    /// paired failure.)
     @Test("PipeDrainer returns empty on a bad descriptor instead of crashing")
     func drainOnBadDescriptorDoesNotCrash() throws {
         let pipe = Pipe()
-        let drainer = PipeDrainer(pipe.fileHandleForReading)  // constructed live
-        // Close the read handle out from under the drainer, then drain.
-        try pipe.fileHandleForReading.close()
-        try? pipe.fileHandleForWriting.close()
+        let low = pipe.fileHandleForReading.fileDescriptor
+        // Pin a private HIGH duplicate of the read end. Concurrent test Pipes
+        // only ever take the lowest free fds, so `high` is never routed to them
+        // once freed. Derive the minimum from the real soft RLIMIT_NOFILE so the
+        // F_DUPFD target is always in-range (avoid assuming 1024).
+        var rl = rlimit()
+        getrlimit(RLIMIT_NOFILE, &rl)
+        let soft = rl.rlim_cur
+        let highMin: Int32 = soft > 1024 ? 1024 : max(8, Int32(soft) - 8)
+        let high = fcntl(low, F_DUPFD, highMin)
+        // Abort cleanly (skip) rather than building a FileHandle over -1 if the
+        // environment can't give us a private high descriptor.
+        try #require(high >= 0, "F_DUPFD failed to pin a private high bad fd")
+        // Guarantee the raw `high` fd is closed on EVERY exit path (incl. a throw
+        // from FileHandle.close() below). `highClosed` tracks whether the explicit
+        // `close(high)` below has already run — the deferred close must NOT fire on a
+        // number the OS may have reallocated in between, or it would close an unrelated
+        // live descriptor (the exact corruption class this test pins against).
+        var highClosed = false
+        defer { if !highClosed { close(high) } }
+        // Construct while `high` is live → ready=true (fd captured, O_NONBLOCK).
+        let drainer = PipeDrainer(FileHandle(fileDescriptor: high, closeOnDealloc: false))
+        // Tear the READ side down from underneath the live drainer, but leave the
+        // WRITE end open for the duration of the drain: a still-valid descriptor
+        // would then read EAGAIN → atEOF == false, so `atEOF == true` below proves
+        // the EBADF path was actually exercised (not ordinary EOF).
+        try pipe.fileHandleForReading.close()    // release low via Foundation (no double-close)
+        close(high)                              // free the pinned high — now bad, and private
+        highClosed = true                        // suppress the deferred close: fd already freed
+        // Prove the descriptor really is EBADF at this instant (fcntl F_GETFD on a
+        // closed fd → -1/EBADF) in the same synchronous sequence as the drain, so a
+        // regression like an ineffective close() is caught. Snapshot BOTH the return
+        // value and errno immediately after fcntl — Swift Testing's #expect machinery
+        // may itself clobber the thread-local errno before we can read it. This test is
+        // the ONLY one that ever dup()s into the >= highMin range, so `high` cannot
+        // have been re-issued to a concurrent test's low-numbered Pipe().
+        let fdState = fcntl(high, F_GETFD)
+        let fdErrno = errno
+        #expect(fdState == -1)
+        #expect(fdErrno == EBADF)
         let result = drainer.drain()
+        try? pipe.fileHandleForWriting.close()   // writer held open through the drain
         #expect(result.data.isEmpty)            // no crash, no bytes
+        #expect(result.atEOF == true)           // only EBADF (writer still open) yields EOF
     }
 
     /// The codex r2 BLOCKING regression: two drains of the SAME pipe running
