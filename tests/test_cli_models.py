@@ -486,6 +486,19 @@ def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
     assert cli._cache_entry_is_runnable(repo) is True
 
 
+def _seed_wan_hf_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> None:
+    """Seed an HF-cache-shaped Wan snapshot (blobs + snapshot symlinks)."""
+    repo_root = repo_root.resolve()
+    blobs = repo_root / "blobs"
+    blobs.mkdir(parents=True)
+    snap = repo_root / "snapshots" / pinned_sha
+    snap.mkdir(parents=True)
+    for name, payload in files.items():
+        blob = blobs / f"blob-{len(payload)}-{name}"
+        blob.write_bytes(payload)
+        (snap / name).symlink_to(blob)
+
+
 def test_runnable_recognizes_complete_pinned_wan_repo(tmp_path, monkeypatch):
     """A cached Wan checkpoint pinned by WAN_REVISIONS commit counts as runnable.
 
@@ -500,12 +513,16 @@ def test_runnable_recognizes_complete_pinned_wan_repo(tmp_path, monkeypatch):
     pinned_sha = WAN_REVISIONS[repo]
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo.replace('/', '--')}"
-    snapshot = repo_root / "snapshots" / pinned_sha
-    snapshot.mkdir(parents=True)
-    (snapshot / "config.json").write_text("{}")
-    (snapshot / "model.safetensors").write_bytes(b"w" * 1024)
-    (snapshot / "t5_encoder.safetensors").write_bytes(b"t" * 1024)
-    (snapshot / "vae.safetensors").write_bytes(b"v" * 1024)
+    _seed_wan_hf_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
     # No refs/main — pinned-by-commit download, exactly the live-serving shape.
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
@@ -557,12 +574,16 @@ def test_runnable_rejects_incomplete_pinned_wan_repo(tmp_path, monkeypatch):
     pinned_sha = WAN_REVISIONS[repo]
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo.replace('/', '--')}"
-    snapshot = repo_root / "snapshots" / pinned_sha
-    snapshot.mkdir(parents=True)
-    (snapshot / "config.json").write_text("{}")
-    (snapshot / "model.safetensors").write_bytes(b"w" * 1024)
-    (snapshot / "t5_encoder.safetensors").write_bytes(b"t" * 1024)
-    # vae.safetensors absent.
+    _seed_wan_hf_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            # vae.safetensors absent.
+        },
+    )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert cli._cache_entry_is_runnable(repo) is False

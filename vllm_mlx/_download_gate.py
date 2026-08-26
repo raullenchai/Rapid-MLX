@@ -980,18 +980,27 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
     *weightless* / non-runnable and would re-download on every start.
 
     Deterministic, verified-filename-only completeness mirroring what
-    ``mlx_video.models.wan_2.generate`` loads from ``model_dir`` (all four
-    pinned checkpoints share the set): ``config.json`` at the snapshot root;
-    the mlx-video T5 encoder ``t5_encoder.safetensors``; the VAE
-    ``vae.safetensors``; and the diffusion transformer — ``model.safetensors``
-    (5B single-file) OR both ``high_noise_model.safetensors`` and
-    ``low_noise_model.safetensors`` (A14B dual). No speculative generic
-    ``*.safetensors``: an unrelated stray weight must not make the snapshot
-    look runnable. Every file must be present, non-empty, and resolve inside
-    the repo's own ``blobs`` directory (symlink guard).
+    ``mlx_video.models.wan_2.generate`` loads from ``model_dir``. The pinned
+    checkpoints share the common encoder + VAE files (``config.json``,
+    ``t5_encoder.safetensors``, ``vae.safetensors``); the diffusion transformer
+    layout is **family-exact**, not inferred from whichever files happen to be
+    present: the 5B checkpoints ship a single ``model.safetensors``, the A14B
+    checkpoints ship ``high_noise_model.safetensors`` AND
+    ``low_noise_model.safetensors``. A repo whose id does not indicate a known
+    family (5B / A14B) fails closed rather than guessing, so an incomplete A14B
+    snapshot with a stray ``model.safetensors`` is never accepted. No
+    speculative generic ``*.safetensors``: an unrelated stray weight must not
+    make the snapshot look runnable.
 
-    Returns ``False`` for an unpinned / non-``WAN_REVISIONS`` repo or on any
-    internal error, so the caller falls through to the generic probes.
+    Every file must be present, non-empty, and resolve **strictly inside the
+    repo's own ``blobs`` directory** (HF snapshot leaves symlink into
+    ``blobs/<etag>``). Requiring under ``blobs`` — not merely under the repo
+    root — stops a snapshot from borrowing files from a sibling snapshot via a
+    crafted symlink.
+
+    Returns ``False`` for an unpinned / non-``WAN_REVISIONS`` repo, an
+    unclassifiable family, or on any internal error, so the caller falls
+    through to the generic probes.
     """
     try:
         from vllm_mlx.video.wan import WAN_REVISIONS
@@ -1000,6 +1009,21 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
         if pinned_revision is None or not isinstance(pinned_revision, str):
             # Not a registered pinned Wan checkpoint — not our lane.
             return False
+
+        # Family-exact transformer layout, keyed off the repo id (matches the
+        # four pinned checkpoints: 5B -> single, A14B -> dual). Fail closed on
+        # an unclassifiable repo rather than inferring from file presence.
+        repo_lower = repo_id.casefold()
+        if "a14b" in repo_lower:
+            transformer_names: tuple[str, ...] = (
+                "high_noise_model.safetensors",
+                "low_noise_model.safetensors",
+            )
+        elif "5b" in repo_lower:
+            transformer_names = ("model.safetensors",)
+        else:
+            return False
+
         from huggingface_hub.constants import HF_HUB_CACHE
 
         repo_root = os.path.join(
@@ -1011,6 +1035,8 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             return False
 
         repo_root_real = os.path.realpath(repo_root)
+        # HF snapshot leaves symlink into this repo's own ``blobs`` dir.
+        blobs_prefix = repo_root_real + os.sep + "blobs" + os.sep
 
         def _on_repo(name: str) -> bool:
             path = os.path.join(snap_dir, name)
@@ -1019,18 +1045,13 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             if os.path.getsize(path) <= 0:
                 return False
             real = os.path.realpath(path)
-            # HF snapshot files normally symlink into this repo's own ``blobs``
-            # directory. Reject a fabricated snapshot whose weight or config
-            # links escape the repository cache root.
-            return real == repo_root_real or real.startswith(repo_root_real + os.sep)
+            # Must resolve strictly inside this repo's ``blobs`` — a symlink
+            # escaping to blobs (or a file) elsewhere in the cache is rejected,
+            # and so is borrowing from a sibling snapshot whose files live under
+            # the same repo root but not under ``blobs``.
+            return real.startswith(blobs_prefix)
 
-        # The diffusion transformer: single-file (5B) or dual noise (A14B).
-        if _on_repo("model.safetensors"):
-            transformer_ok = True
-        else:
-            transformer_ok = _on_repo("high_noise_model.safetensors") and _on_repo(
-                "low_noise_model.safetensors"
-            )
+        transformer_ok = all(_on_repo(n) for n in transformer_names)
         return (
             transformer_ok
             and _on_repo("config.json")

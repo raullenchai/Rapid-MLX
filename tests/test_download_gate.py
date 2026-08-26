@@ -721,11 +721,23 @@ def _wan_pinned_pair() -> tuple[str, str]:
 
 
 def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> None:
-    """Write ``snapshots/<pinned_sha>`` under an HF-cache-shaped repo root."""
+    """Seed an HF-cache-shaped Wan snapshot: real blobs + snapshot symlinks.
+
+    Hugging Face stores every LFS blob under ``blobs/<etag>`` and materialises
+    each snapshot file as a **symlink** from ``snapshots/<sha>/<name>`` into the
+    repo's ``blobs/``. The completeness probe requires files to resolve strictly
+    inside ``blobs``, so the fixture mirrors that layout rather than dropping
+    plain files straight into the snapshot.
+    """
+    repo_root = repo_root.resolve()
+    blobs = repo_root / "blobs"
+    blobs.mkdir(parents=True)
     snap = repo_root / "snapshots" / pinned_sha
     snap.mkdir(parents=True)
     for name, payload in files.items():
-        (snap / name).write_bytes(payload)
+        blob = blobs / f"blob-{len(payload)}-{name}"
+        blob.write_bytes(payload)
+        (snap / name).symlink_to(blob)
 
 
 def test_wan_cache_accepts_5b_single_transformer_layout(tmp_path, monkeypatch):
@@ -776,6 +788,35 @@ def test_wan_cache_accepts_a14b_dual_noise_layout(tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate._snapshot_is_complete_wan_model(repo_id) is True
+
+
+def test_wan_cache_rejects_a14b_with_stray_single_model_file(tmp_path, monkeypatch):
+    """Family-exact: an A14B repo needs BOTH noise models, never a lone model.safetensors.
+
+    Regression for codex BLOCKING #1 — the transformer layout is keyed to the
+    repo's A14B family, so an incomplete A14B snapshot carrying a stray single
+    ``model.safetensors`` (with no high/low noise files) must NOT be accepted.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "rickylin20260522/Wan2.2-T2V-A14B-mlx"
+    pinned_sha = WAN_REVISIONS[repo_id]
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(
+        repo_root,
+        pinned_sha,
+        {
+            "config.json": b"{}",
+            # A14B family requires high+low_noise; a lone model.safetensors is WRONG.
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
 
 
 @pytest.mark.parametrize(
@@ -849,6 +890,34 @@ def test_wan_cache_rejects_stray_unrelated_safetensors(tmp_path, monkeypatch):
     assert gate._snapshot_is_complete_wan_model(repo_id) is False
 
 
+def test_wan_cache_rejects_unclassifiable_family_repo(tmp_path, monkeypatch):
+    """A WAN_REVISIONS-pinned repo whose family can't be classed fails closed.
+
+    The transformer layout is keyed to a known family (5B single / A14B dual).
+    A pinned repo whose id carries neither marker is unclassifiable and must be
+    rejected (fail closed) rather than guessing which files to require.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--some-org--mystery-wan"
+    # Any plausible layout must still be rejected because the family is unknown.
+    _seed_wan_snapshot(
+        repo_root,
+        "0123456789abcdef",
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"w" * 1024,
+            "t5_encoder.safetensors": b"t" * 1024,
+            "vae.safetensors": b"v" * 1024,
+        },
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setitem(WAN_REVISIONS, "some-org/mystery-wan", "0123456789abcdef")
+
+    assert gate._snapshot_is_complete_wan_model("some-org/mystery-wan") is False
+
+
 def test_wan_cache_rejects_unpinned_repo(tmp_path, monkeypatch):
     """A repo not in WAN_REVISIONS is not our lane — the helper falls through."""
     repo_id = "some-other/wan2-not-pinned"
@@ -875,26 +944,63 @@ def test_wan_cache_rejects_unpinned_repo(tmp_path, monkeypatch):
 def test_wan_cache_rejects_files_symlinked_outside_repo(
     tmp_path, monkeypatch, escaped_name
 ):
-    """A crafted cache symlink must not borrow proof from an unrelated file."""
+    """A crafted cache symlink must not borrow proof from a non-blob file.
+
+    Only files that resolve strictly inside the repo's own ``blobs`` count. A
+    symlink escaping to anywhere else (a file outside the repo) is rejected
+    even though every other verified file is present.
+    """
     repo_id, pinned_sha = _wan_pinned_pair()
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
-    snap = repo_root / "snapshots" / pinned_sha
-    snap.mkdir(parents=True)
     files = {
         "config.json": b"{}",
         "model.safetensors": b"w" * 1024,
         "t5_encoder.safetensors": b"t" * 1024,
         "vae.safetensors": b"v" * 1024,
     }
+    # Seed the OTHER verified files as proper blobs+symlinks, then rebind the
+    # escaped file to a symlink pointing outside the repo root entirely (its
+    # blobs->snapshot symlink is re-pointed away to a non-blob target).
+    _seed_wan_snapshot(repo_root, pinned_sha, files)
     outside = tmp_path / f"outside-{escaped_name}"
     outside.write_bytes(files[escaped_name])
-    for name, payload in files.items():
-        path = snap / name
-        if name == escaped_name:
-            path.symlink_to(outside)
-        else:
-            path.write_bytes(payload)
+    escaped_path = repo_root / "snapshots" / pinned_sha / escaped_name
+    escaped_path.unlink()
+    escaped_path.symlink_to(outside)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize("escaped_name", ["config.json", "vae.safetensors"])
+def test_wan_cache_rejects_symlink_borrowing_from_sibling_snapshot(
+    tmp_path, monkeypatch, escaped_name
+):
+    """A symlink into ANOTHER snapshot under the same repo must be rejected.
+
+    The blobs contract requires files to resolve under the repo's ``blobs``,
+    not merely anywhere under the repo root — so a snapshot cannot borrow proof
+    from a sibling snapshot whose plain files live outside ``blobs``.
+    """
+    repo_id, pinned_sha = _wan_pinned_pair()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    # Seed a "complete" sibling snapshot with plain files (NOT under blobs).
+    sibling = repo_root / "snapshots" / "otherrev123"
+    sibling.mkdir(parents=True)
+    for name, payload in {
+        "config.json": b"{}",
+        "model.safetensors": b"w" * 1024,
+        "t5_encoder.safetensors": b"t" * 1024,
+        "vae.safetensors": b"v" * 1024,
+    }.items():
+        (sibling / name).write_bytes(payload)
+    # Our pinned snapshot symlinks one file to the sibling's plain file (which
+    # is under repo_root but NOT under blobs) — must be rejected.
+    snap = repo_root / "snapshots" / pinned_sha
+    snap.mkdir(parents=True)
+    (snap / escaped_name).symlink_to(sibling / escaped_name)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate._snapshot_is_complete_wan_model(repo_id) is False
@@ -914,12 +1020,10 @@ def test_wan_cache_rejects_when_pinned_snapshot_dir_missing(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("empty_name", ["config.json", "vae.safetensors"])
 def test_wan_cache_rejects_empty_verified_file(tmp_path, monkeypatch, empty_name):
-    """A zero-byte verified file must not count as a present weight."""
+    """A zero-byte verified file (empty blob) must not count as a present weight."""
     repo_id, pinned_sha = _wan_pinned_pair()
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
-    snapshot = repo_root / "snapshots" / pinned_sha
-    snapshot.mkdir(parents=True)
     files = {
         "config.json": b"{}",
         "model.safetensors": b"w" * 1024,
@@ -927,8 +1031,7 @@ def test_wan_cache_rejects_empty_verified_file(tmp_path, monkeypatch, empty_name
         "vae.safetensors": b"v" * 1024,
     }
     files[empty_name] = b""
-    for name, payload in files.items():
-        (snapshot / name).write_bytes(payload)
+    _seed_wan_snapshot(repo_root, pinned_sha, files)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate._snapshot_is_complete_wan_model(repo_id) is False
