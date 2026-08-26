@@ -24,6 +24,7 @@ struct ImagesView: View {
 
     @State private var composeFocusToken = 0
     @State private var pickerHovering = false
+    @State private var pendingDeletion: GeneratedImage?
     /// Bumped when the user tries to submit while gated, so the readiness
     /// banner flashes for attention (same signal ChatView uses).
     @State private var blockedSendAttempts = 0
@@ -39,6 +40,27 @@ struct ImagesView: View {
         // Download button becomes Start without requiring an app restart.
         .task(id: ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)) {
             await viewModel.refreshCatalog()
+        }
+        .confirmationDialog(
+            "Delete this image?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { image in
+            Button("Delete Image", role: .destructive) {
+                viewModel.delete(image)
+                pendingDeletion = nil
+            }
+            .accessibilityIdentifier("Images.Result.Delete.Confirm")
+            Button("Keep", role: .cancel) {
+                pendingDeletion = nil
+            }
+            .accessibilityIdentifier("Images.Result.Delete.Keep")
+        } message: { _ in
+            Text("This removes it from this session. Copies you've saved stay on disk.")
         }
     }
 
@@ -121,6 +143,20 @@ struct ImagesView: View {
                 .help("Save image")
                 .accessibilityHint("Save image")
                 .accessibilityIdentifier("Images.Result.Save")
+
+                Button(role: .destructive) {
+                    pendingDeletion = image
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.red)
+                        .frame(width: 28, height: 28)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Delete image")
+                .accessibilityLabel("Delete image")
+                .accessibilityIdentifier("Images.Result.Delete")
             }
             .padding(10)
         }

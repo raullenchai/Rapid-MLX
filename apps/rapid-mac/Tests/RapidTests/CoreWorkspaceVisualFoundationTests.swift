@@ -525,6 +525,9 @@ struct CoreWorkspaceVisualFoundationTests {
                 "Images.Gallery",
                 "Images.Result.Edit",
                 "Images.Result.Save",
+                "Images.Result.Delete",
+                "Images.Result.Delete.Confirm",
+                "Images.Result.Delete.Keep",
             ],
             "Sources/Rapid/UI/ReadinessBanner.swift": [
                 "Readiness.Action",

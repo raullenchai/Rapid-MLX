@@ -263,6 +263,35 @@ final class ImageGenViewModel {
         }
     }
 
+    /// Remove an image from the in-memory session gallery. Saved copies are
+    /// independent files and are deliberately untouched.
+    func delete(_ image: GeneratedImage) {
+        let wasActive = activeImage?.id == image.id
+        let wasEditSource = editSource?.id == image.id
+        let removedIndex = results.firstIndex { $0.id == image.id }
+
+        guard removedIndex != nil || wasEditSource else { return }
+        if let removedIndex {
+            results.remove(at: removedIndex)
+        }
+        if wasEditSource {
+            cancelEdit()
+        }
+        guard wasActive else { return }
+
+        let replacement: GeneratedImage?
+        if let removedIndex, results.indices.contains(removedIndex) {
+            // Prefer the next older image, which now occupies the same slot.
+            replacement = results[removedIndex]
+        } else if removedIndex != nil {
+            replacement = results.last
+        } else {
+            // Imported edit sources are not gallery entries.
+            replacement = results.first
+        }
+        activeID = replacement?.id
+    }
+
     /// Load the image-gen alias catalog (safe to call repeatedly).
     func refreshCatalog() async {
         catalogRefreshGeneration &+= 1
