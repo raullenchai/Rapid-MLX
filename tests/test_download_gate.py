@@ -712,6 +712,7 @@ def test_audio_family_exception_is_not_runnable(monkeypatch):
     monkeypatch.setattr(gate, "_resolved_snapshot_sha", _boom)
     assert gate._snapshot_is_complete_audio_model("a/b", "whisper") is False
 
+
 def _wan_pinned_pair() -> tuple[str, str]:
     """A real WAN_REVISIONS-pinned checkpoint (repo_id, pinned commit sha)."""
     from vllm_mlx.video.wan import WAN_REVISIONS
@@ -981,26 +982,35 @@ def test_wan_cache_rejects_symlink_borrowing_from_sibling_snapshot(
 
     The blobs contract requires files to resolve under the repo's ``blobs``,
     not merely anywhere under the repo root — so a snapshot cannot borrow proof
-    from a sibling snapshot whose plain files live outside ``blobs``.
+    from a sibling snapshot whose plain files live outside ``blobs``. The pinned
+    snapshot is seeded COMPLETE (every file present under blobs) and then only
+    ``escaped_name`` is re-bound to the sibling's plain file, so a broken
+    containment check would otherwise let it pass.
     """
     repo_id, pinned_sha = _wan_pinned_pair()
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
-    # Seed a "complete" sibling snapshot with plain files (NOT under blobs).
-    sibling = repo_root / "snapshots" / "otherrev123"
-    sibling.mkdir(parents=True)
-    for name, payload in {
+    files = {
         "config.json": b"{}",
         "model.safetensors": b"w" * 1024,
         "t5_encoder.safetensors": b"t" * 1024,
         "vae.safetensors": b"v" * 1024,
-    }.items():
+    }
+    # Seed a sibling snapshot whose plain files live under repo_root but NOT
+    # under ``blobs`` (a non-HF layout that must not satisfy the probe).
+    repo_root.resolve().mkdir(parents=True)
+    sibling = repo_root / "snapshots" / "otherrev123"
+    sibling.mkdir(parents=True)
+    for name, payload in files.items():
         (sibling / name).write_bytes(payload)
-    # Our pinned snapshot symlinks one file to the sibling's plain file (which
-    # is under repo_root but NOT under blobs) — must be rejected.
-    snap = repo_root / "snapshots" / pinned_sha
-    snap.mkdir(parents=True)
-    (snap / escaped_name).symlink_to(sibling / escaped_name)
+    # Seed our pinned snapshot as fully complete (blobs + symlinks)…
+    _seed_wan_snapshot(repo_root, pinned_sha, files)
+    # …then re-bind ONLY escaped_name to the sibling's plain (non-blob) file.
+    escaped_path = repo_root / "snapshots" / pinned_sha / escaped_name
+    escaped_path.unlink()
+    (repo_root / "snapshots" / pinned_sha / escaped_name).symlink_to(
+        sibling / escaped_name
+    )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate._snapshot_is_complete_wan_model(repo_id) is False
