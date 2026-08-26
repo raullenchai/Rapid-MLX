@@ -81,6 +81,135 @@ class _ReplacementWorker:
         self.stopped = True
 
 
+def test_registered_speech_input_models_have_metadata_capacity():
+    from vllm_mlx.audio.registry import list_audio_aliases
+    from vllm_mlx.runtime.role_capacity import speech_input_capacity
+
+    entries = [entry for entry in list_audio_aliases() if entry.type == "stt"]
+    assert entries
+    for entry in entries:
+        capacity = speech_input_capacity(entry.alias)
+        assert capacity.source == "catalog", entry.alias
+        assert capacity.requested_bytes is not None
+        assert capacity.requested_bytes > 0
+
+    unknown = speech_input_capacity("private/unlisted-speech-model")
+    assert unknown.source == "unknown"
+    assert unknown.requested_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_audio_load_admission_uses_shared_role_ledger(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.runtime.resident_models import ResidentModelManager
+
+    gib = 1024**3
+    registry = ModelRegistry()
+    primary_engine = _ReplacementWorker("chat")
+    primary = ModelEntry(
+        engine=primary_engine,
+        model_name="chat",
+        model_path="repo/chat",
+    )
+    registry.add(primary, is_default=True)
+
+    unused_loader = AsyncMock()
+
+    manager = ResidentModelManager(
+        registry,
+        unused_loader,
+        memory_limit_bytes=8 * gib,
+        memory_reader=lambda: 0,
+    )
+    manager.register_primary(primary, estimated_bytes=4 * gib)
+    monkeypatch.setattr(audio_route, "_residency_manager", lambda: manager)
+
+    async with audio_route._admitting_speech_input("mlx-community/whisper-small-mlx"):
+        role = manager.snapshot()["roles"][-1]
+        assert role["role"] == "speech-input"
+        assert role["state"] == "loading"
+        assert role["capacity_source"] == "catalog"
+
+    assert manager.snapshot()["roles"][-1]["state"] == "resident"
+    await audio_route._release_speech_input_role()
+    assert all(role["role"] != "speech-input" for role in manager.snapshot()["roles"])
+    unused_loader.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_audio_load_admission_surfaces_typed_507(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.runtime.resident_models import ResidentModelManager
+    from vllm_mlx.runtime.role_capacity import speech_input_capacity
+
+    gib = 1024**3
+    registry = ModelRegistry()
+    primary_engine = _ReplacementWorker("chat")
+    primary = ModelEntry(
+        engine=primary_engine,
+        model_name="chat",
+        model_path="repo/chat",
+    )
+    registry.add(primary, is_default=True)
+
+    unused_loader = AsyncMock()
+
+    manager = ResidentModelManager(
+        registry,
+        unused_loader,
+        memory_limit_bytes=5 * gib,
+        memory_reader=lambda: 0,
+    )
+    manager.register_primary(primary, estimated_bytes=4 * gib)
+    monkeypatch.setattr(audio_route, "_residency_manager", lambda: manager)
+
+    old_model = "mlx-community/whisper-small-mlx"
+    old_capacity = speech_input_capacity(old_model)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id=old_model,
+        requested_bytes=old_capacity.requested_bytes,
+        capacity_source=old_capacity.source,
+    ):
+        pass
+
+    admission = audio_route._admitting_speech_input(
+        "mlx-community/whisper-large-v3-mlx", replace_existing=True
+    )
+    with pytest.raises(HTTPException) as raised:
+        await admission.__aenter__()
+
+    assert raised.value.status_code == 507
+    error = raised.value.detail["error"]
+    assert error["code"] == "insufficient_capacity_error"
+    assert error["reason"] == "role_capacity_speech_input"
+    assert error["used_bytes"] == 4 * gib
+    assert error["limit_bytes"] == 5 * gib
+    assert error["requested_bytes"] > 0
+    assert manager.snapshot()["roles"][-1]["model"] == old_model
+    unused_loader.assert_not_awaited()
+
+
+def test_audio_residency_manager_probe_does_not_disable_capacity(monkeypatch):
+    from vllm_mlx import config
+    from vllm_mlx.routes import audio as audio_route
+
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(config, "get_config", unavailable_config)
+    with pytest.raises(RuntimeError, match="config unavailable"):
+        audio_route._residency_manager()
+
+
 def _replacement_manager(server, old_worker):
     from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
     from vllm_mlx.runtime.resident_models import ResidentModelManager
@@ -315,6 +444,7 @@ async def test_lane_snapshot_reports_resident_model_after_successful_load():
     assert dispatcher.snapshot() == [
         {
             "lane": "stt",
+            "role": "speech-input",
             "model": "whisper-small",
             "state": "resident",
             "active_requests": 0,
@@ -555,6 +685,12 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
         def unload(self) -> None:
             operations.append("unload-aligner")
 
+    class _OldSTT:
+        model_name = "old-stt"
+
+        def unload(self) -> None:
+            operations.append("unload-stt")
+
     class _STT:
         def __init__(self, model_name: str) -> None:
             self.model_name = model_name
@@ -570,7 +706,7 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
 
     worker = _RecordingWorker()
     monkeypatch.setattr(stt_module, "STTEngine", _STT)
-    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    monkeypatch.setattr(audio_route, "_stt_engine", _OldSTT())
     monkeypatch.setattr(audio_route, "_aligner_engine", _OldAligner())
     bind_audio_worker(worker)
     try:
@@ -586,8 +722,42 @@ async def test_stt_load_and_inference_use_audio_worker(monkeypatch):
         bind_audio_worker(None)
 
     assert response == {"text": "hello", "language": "en", "duration": 1.0}
-    assert operations == ["unload-aligner", "load-stt", "infer-stt"]
-    assert len(worker.async_calls) == 3
+    assert operations == ["unload-aligner", "unload-stt", "load-stt", "infer-stt"]
+    assert len(worker.async_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_alignment_retires_replaced_speech_input_role(monkeypatch):
+    from vllm_mlx.routes import audio as audio_route
+
+    released = 0
+
+    async def fake_stream(_file, _tmp):
+        return None
+
+    async def fake_completion(_func, *_args):
+        return SimpleNamespace(text="aligned", language="en", duration=1.0)
+
+    async def release_role():
+        nonlocal released
+        released += 1
+
+    class _Upload:
+        filename = "speech.wav"
+
+    monkeypatch.setattr(audio_route, "_resolve_stt_model", lambda _model: "aligner")
+    monkeypatch.setattr(audio_route, "_is_aligner_model", lambda _model: True)
+    monkeypatch.setattr(audio_route, "_stream_upload_to_tempfile", fake_stream)
+    monkeypatch.setattr(audio_route, "run_to_completion", fake_completion)
+    monkeypatch.setattr(audio_route, "_release_speech_input_role", release_role)
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+
+    result = await audio_route._run_alignment_request(
+        _Upload(), "aligner", "known text", "en", "json"
+    )
+
+    assert result == {"text": "aligned", "language": "en", "duration": 1.0}
+    assert released == 1
 
 
 def test_alignment_load_and_inference_use_audio_worker(monkeypatch):
@@ -726,19 +896,63 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
 
     class _Manager:
         def snapshot(self):
-            return {"models": [{"id": "chat-model"}]}
+            return {
+                "models": [{"id": "chat-model"}],
+                "roles": [
+                    {
+                        "role": "speech-input",
+                        "model": "whisper-small",
+                        "state": "resident",
+                        "active_requests": 0,
+                    }
+                ],
+            }
 
     monkeypatch.setattr(residency, "_manager", lambda: _Manager())
     monkeypatch.setattr(
         audio_worker,
         "snapshot",
-        lambda: [{"lane": "stt", "model": "whisper-small"}],
+        lambda: [
+            {
+                "lane": "stt",
+                "role": "speech-input",
+                "model": "whisper-small",
+                "state": "busy",
+                "active_requests": 1,
+            }
+        ],
     )
 
     assert await residency.model_residency() == {
         "models": [{"id": "chat-model"}],
-        "audio_lanes": [{"lane": "stt", "model": "whisper-small"}],
+        "roles": [
+            {
+                "role": "speech-input",
+                "model": "whisper-small",
+                "state": "busy",
+                "active_requests": 1,
+            }
+        ],
+        "audio_lanes": [
+            {
+                "lane": "stt",
+                "role": "speech-input",
+                "model": "whisper-small",
+                "state": "busy",
+                "active_requests": 1,
+            }
+        ],
     }
+
+
+def test_alignment_lane_does_not_claim_dictation_role():
+    from vllm_mlx.runtime.audio_worker import AudioWorkerDispatcher
+
+    dispatcher = AudioWorkerDispatcher()
+    dispatcher.execute_sync("alignment", "aligner", "load", lambda: None)
+
+    assert dispatcher.snapshot()[0]["role"] == "alignment"
+    dispatcher.bind(None)
 
 
 @pytest.mark.asyncio

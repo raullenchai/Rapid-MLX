@@ -103,7 +103,18 @@ async def model_residency():
     from ..runtime.audio_worker import audio_worker
 
     snapshot = _manager().snapshot()
-    snapshot["audio_lanes"] = audio_worker.snapshot()
+    audio_lanes = audio_worker.snapshot()
+    snapshot["audio_lanes"] = audio_lanes
+    role_activity = {
+        lane["role"]: lane
+        for lane in audio_lanes
+        if lane.get("role") is not None and lane.get("model") is not None
+    }
+    for role in snapshot.get("roles", []):
+        lane = role_activity.get(role["role"])
+        if lane is not None:
+            role["state"] = lane["state"]
+            role["active_requests"] = lane["active_requests"]
     return snapshot
 
 
@@ -158,7 +169,7 @@ async def load_resident_model(request: ModelLoadRequest):
     except HTTPException:
         raise
     except ResidentModelCapacityError as exc:
-        raise HTTPException(status_code=507, detail=str(exc)) from exc
+        raise HTTPException(status_code=507, detail=exc.envelope()) from exc
     except ResidentModelError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:

@@ -13,6 +13,7 @@ import tempfile
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
@@ -157,6 +158,52 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 _stt_engine = None
 _tts_engine = None
 _music_engine: Any = None
+
+
+class _NoopRoleAdmission:
+    def retire_previous(self) -> None:
+        pass
+
+
+def _residency_manager():
+    """Return the shared residency manager when this server configured one."""
+
+    from ..config import get_config
+
+    return get_config().residency_manager
+
+
+@asynccontextmanager
+async def _admitting_speech_input(model_name: str, *, replace_existing: bool = False):
+    """Reserve the speech-input role before constructing its engine weights."""
+
+    manager = _residency_manager()
+    if manager is None:
+        yield _NoopRoleAdmission()
+        return
+
+    from ..runtime.resident_models import ResidentModelCapacityError
+    from ..runtime.role_capacity import speech_input_capacity
+
+    capacity = speech_input_capacity(model_name)
+    try:
+        async with manager.admit_role(
+            role="speech-input",
+            model_id=model_name,
+            requested_bytes=capacity.requested_bytes,
+            capacity_source=capacity.source,
+            replace_existing=replace_existing,
+        ) as admission:
+            yield admission
+    except ResidentModelCapacityError as exc:
+        raise HTTPException(status_code=507, detail=exc.envelope()) from exc
+
+
+async def _release_speech_input_role() -> None:
+    manager = _residency_manager()
+    if manager is not None:
+        await manager.release_role("speech-input")
+
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
 # the route can validate the model BEFORE streaming the upload (F-165):
@@ -1311,12 +1358,23 @@ async def _run_stt_request(
             if _stt_engine is None or _stt_engine.model_name != model_name:
                 # Symmetric with the alignment path: one STT model resident.
                 await _evict_other_lane("asr")
-                _stt_engine = None
+                old_stt = _stt_engine
                 stt_engine = STTEngine(model_name)
                 from ..runtime.audio_worker import run_audio_mlx
 
-                await run_audio_mlx("stt", model_name, "load", stt_engine.load)
-                _stt_engine = stt_engine
+                async with _admitting_speech_input(
+                    model_name, replace_existing=old_stt is not None
+                ) as admission:
+                    if old_stt is not None:
+                        unload = getattr(old_stt, "unload", None)
+                        if callable(unload):
+                            await run_audio_mlx(
+                                "stt", old_stt.model_name, "unload", unload
+                            )
+                        _stt_engine = None
+                        admission.retire_previous()
+                    await run_audio_mlx("stt", model_name, "load", stt_engine.load)
+                    _stt_engine = stt_engine
 
             # Forward ``timestamp_granularities`` only when requested.
             # Keeping the default call shape unchanged preserves compatibility
@@ -1555,6 +1613,7 @@ async def shutdown_audio_lanes() -> None:
         finally:
             _stt_engine = None
             _aligner_engine = None
+            await _release_speech_input_role()
 
     async with _get_tts_lane_lock():
         try:
@@ -1810,9 +1869,16 @@ async def _run_alignment_request(
         # for exactly as long as the worker runs, even if the client
         # disconnects and cancels us mid-align.
         async with _get_stt_lane_lock():
-            result = await run_to_completion(
-                _align_blocking, model_name, tmp_path, text, language
-            )
+            try:
+                result = await run_to_completion(
+                    _align_blocking, model_name, tmp_path, text, language
+                )
+            finally:
+                # The blocking aligner path releases any cached ASR engine
+                # before loading its own weights. Retire the matching budget
+                # only after that worker operation reaches a terminal state.
+                if _stt_engine is None:
+                    await _release_speech_input_role()
 
         return _format_stt_response(result, response_format, task="transcribe")
 

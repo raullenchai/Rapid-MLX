@@ -450,6 +450,221 @@ def manager_fixture(*, limit_gib=10, ttl=0):
     return manager, registry, loaded, clock
 
 
+@pytest.mark.asyncio
+async def test_speech_input_reservation_blocks_assistant_before_load():
+    manager, _registry, loaded, _clock = manager_fixture(limit_gib=10)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/whisper",
+        requested_bytes=2 * GIB,
+        capacity_source="catalog",
+    ):
+        loading = manager.snapshot()
+        assert loading["memory_used_bytes"] == 6 * GIB
+        assert loading["roles"][-1] == {
+            "role": "speech-input",
+            "model": "repo/whisper",
+            "state": "loading",
+            "pinned": True,
+            "active_requests": 0,
+            "reserved_bytes": 2 * GIB,
+            "capacity_source": "catalog",
+        }
+
+    with pytest.raises(ResidentModelCapacityError) as raised:
+        await manager.load("large-assistant", estimated_bytes=5 * GIB)
+
+    error = raised.value
+    assert error.reason == "role_capacity_assistant"
+    assert error.requested_bytes == 5 * GIB
+    assert error.used_bytes == 6 * GIB
+    assert error.limit_bytes == 10 * GIB
+    assert "large-assistant" not in loaded
+    assert manager.snapshot()["roles"][-1]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_speech_input_admission_rejects_unknown_and_over_budget_capacity():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=8)
+
+    unknown_admission = manager.admit_role(
+        role="speech-input",
+        model_id="org/unmeasured",
+        requested_bytes=None,
+        capacity_source="unknown",
+    )
+    with pytest.raises(ResidentModelCapacityError) as unknown:
+        await unknown_admission.__aenter__()
+    assert unknown.value.reason == "role_capacity_unknown"
+    assert manager.snapshot()["roles"] == [manager.snapshot()["roles"][0]]
+
+    over_budget_admission = manager.admit_role(
+        role="speech-input",
+        model_id="repo/whisper",
+        requested_bytes=5 * GIB,
+        capacity_source="catalog",
+    )
+    with pytest.raises(ResidentModelCapacityError) as over_budget:
+        await over_budget_admission.__aenter__()
+    assert over_budget.value.reason == "role_capacity_speech_input"
+    assert over_budget.value.used_bytes == 4 * GIB
+
+
+@pytest.mark.asyncio
+async def test_speech_input_admission_reuses_eligible_secondary_eviction():
+    manager, registry, loaded, _clock = manager_fixture(limit_gib=10)
+    secondary = await manager.load("secondary", estimated_bytes=3 * GIB)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/whisper",
+        requested_bytes=4 * GIB,
+        capacity_source="catalog",
+    ):
+        assert "secondary" not in registry
+        assert secondary.entry.engine.stopped is True
+        assert manager.snapshot()["memory_used_bytes"] == 8 * GIB
+
+    assert "secondary" in loaded
+
+
+@pytest.mark.asyncio
+async def test_role_reservation_exact_boundary_and_failed_load_rollback():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=6)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/whisper",
+        requested_bytes=2 * GIB,
+        capacity_source="catalog",
+    ):
+        assert manager.snapshot()["memory_available_bytes"] == 0
+    await manager.release_role("speech-input")
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        async with manager.admit_role(
+            role="speech-input",
+            model_id="repo/whisper",
+            requested_bytes=2 * GIB,
+            capacity_source="catalog",
+        ):
+            raise RuntimeError("load failed")
+    assert all(role["role"] != "speech-input" for role in manager.snapshot()["roles"])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_role_admission_is_rejected():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=8)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/whisper",
+        requested_bytes=2 * GIB,
+        capacity_source="catalog",
+    ):
+        duplicate = manager.admit_role(
+            role="speech-input",
+            model_id="repo/other",
+            requested_bytes=1 * GIB,
+            capacity_source="catalog",
+        )
+        with pytest.raises(ResidentModelError, match="already resident"):
+            await duplicate.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_rejected_role_replacement_preserves_existing_reservation():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=6)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/working-stt",
+        requested_bytes=1 * GIB,
+        capacity_source="catalog",
+    ):
+        pass
+
+    replacement = manager.admit_role(
+        role="speech-input",
+        model_id="repo/too-large-stt",
+        requested_bytes=3 * GIB,
+        capacity_source="catalog",
+        replace_existing=True,
+    )
+    with pytest.raises(ResidentModelCapacityError) as raised:
+        await replacement.__aenter__()
+
+    assert raised.value.reason == "role_capacity_speech_input"
+    role = manager.snapshot()["roles"][-1]
+    assert role["model"] == "repo/working-stt"
+    assert role["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_role_replacement_rollback_tracks_previous_retirement():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=8)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="repo/working-stt",
+        requested_bytes=1 * GIB,
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(RuntimeError, match="unload failed"):
+        async with manager.admit_role(
+            role="speech-input",
+            model_id="repo/replacement",
+            requested_bytes=2 * GIB,
+            capacity_source="catalog",
+            replace_existing=True,
+        ):
+            raise RuntimeError("unload failed")
+    assert manager.snapshot()["roles"][-1]["model"] == "repo/working-stt"
+
+    with pytest.raises(RuntimeError, match="replacement load failed"):
+        async with manager.admit_role(
+            role="speech-input",
+            model_id="repo/replacement",
+            requested_bytes=2 * GIB,
+            capacity_source="catalog",
+            replace_existing=True,
+        ) as admission:
+            admission.retire_previous()
+            raise RuntimeError("replacement load failed")
+    assert all(role["role"] != "speech-input" for role in manager.snapshot()["roles"])
+
+
+@pytest.mark.asyncio
+async def test_disabled_ceiling_keeps_unknown_role_truth_without_rejection():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=0)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="org/unmeasured",
+        requested_bytes=None,
+        capacity_source="unknown",
+    ):
+        pass
+
+    role = manager.snapshot()["roles"][-1]
+    assert role["role"] == "speech-input"
+    assert role["reserved_bytes"] == 0
+    assert role["capacity_source"] == "unknown"
+
+
+def test_role_accounting_keeps_memory_probe_failure_nonfatal():
+    manager, _registry, _loaded, _clock = manager_fixture(limit_gib=8)
+
+    def failed_probe():
+        raise RuntimeError("memory probe unavailable")
+
+    manager._memory_reader = failed_probe
+    assert manager.snapshot()["memory_used_bytes"] == 4 * GIB
+
+
 @pytest.fixture
 def residency_activity_contract(monkeypatch):
     """Exercise the activity SSOT from the MLX-free Linux fixed selector."""
@@ -1539,6 +1754,58 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         )
         assert client.delete("/v1/models/image").status_code == 204
         assert "image" not in registry
+
+
+def test_residency_load_returns_typed_role_capacity_507(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from vllm_mlx.routes.residency import router
+
+    manager, _registry, loaded, _clock = manager_fixture(limit_gib=10)
+
+    async def reserve_speech_input() -> None:
+        async with manager.admit_role(
+            role="speech-input",
+            model_id="repo/whisper",
+            requested_bytes=2 * GIB,
+            capacity_source="catalog",
+        ):
+            pass
+
+    asyncio.run(reserve_speech_input())
+    monkeypatch.setattr(
+        "vllm_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/models/load",
+            json={"model": "large-assistant", "estimated_size_gb": 5},
+        )
+
+    assert response.status_code == 507
+    assert response.json() == {
+        "error": {
+            "message": (
+                "insufficient capacity for assistant: requested=5.00 GiB, "
+                "used=6.00 GiB, limit=10.00 GiB; no idle unpinned model "
+                "is eligible for eviction"
+            ),
+            "type": "insufficient_capacity_error",
+            "code": "insufficient_capacity_error",
+            "reason": "role_capacity_assistant",
+            "param": "model",
+            "requested_bytes": 5 * GIB,
+            "limit_bytes": 10 * GIB,
+            "used_bytes": 6 * GIB,
+        }
+    }
+    assert "large-assistant" not in loaded
 
 
 def test_models_load_requires_strict_json_booleans(monkeypatch):

@@ -12,6 +12,12 @@ from typing import Any, Protocol, TypeVar
 
 _T = TypeVar("_T")
 
+LANE_ROLES = {
+    "stt": "speech-input",
+    "alignment": "alignment",
+    "tts": "speech-output",
+}
+
 
 class ModelWorker(Protocol):
     """Minimal execution surface exported by an inference engine."""
@@ -192,6 +198,7 @@ class AudioWorkerDispatcher:
             return [
                 {
                     "lane": lane,
+                    "role": LANE_ROLES.get(lane),
                     "model": state.model,
                     "state": state.state,
                     "active_requests": state.active_requests,
