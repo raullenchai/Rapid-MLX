@@ -204,7 +204,9 @@ installed_cached_aliases() {
 
 refresh_starter_from_installed_cache() {
     local cached_aliases
-    cached_aliases="$(installed_cached_aliases || true)"
+    if ! cached_aliases="$(installed_cached_aliases)"; then
+        cached_aliases=""
+    fi
     RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "$cached_aliases")"
 }
 
