@@ -150,6 +150,58 @@ dispatch_venv() {
     esac
 }
 
+# First-chat policy shared with Desktop onboarding (#2385): start with a small,
+# reliable baseline, but reuse a known RAM-safe cached model when one is already
+# runnable. The candidate order is the curated RAM-tier order walked downward;
+# aliases above the current tier never enter the list.
+starter_baseline_for_ram() {
+    if [ "$1" -ge 16 ]; then
+        printf '%s\n' "qwen3.5-4b-4bit"
+    else
+        printf '%s\n' "lfm2.5-2.6b-4bit"
+    fi
+}
+
+starter_cached_order_for_ram() {
+    local ram="$1"
+    if [ "$ram" -ge 48 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.6-35b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 32 ]; then printf '%s\n' qwen3.8-27b-4bit qwen3.5-4b-4bit bonsai-27b-2bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 24 ]; then printf '%s\n' bonsai-27b-2bit qwen3.5-4b-4bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 18 ]; then printf '%s\n' qwen3.5-9b-4bit qwen3.5-4b-4bit lfm2.5-2.6b-4bit
+    elif [ "$ram" -ge 16 ]; then printf '%s\n' qwen3.5-4b-4bit lfm2.5-2.6b-4bit
+    else printf '%s\n' lfm2.5-2.6b-4bit
+    fi
+}
+
+starter_alias_is_cached() {
+    local wanted="$1" cached="$2" alias
+    while IFS= read -r alias; do
+        [ "$alias" = "$wanted" ] && return 0
+    done <<EOF
+$cached
+EOF
+    return 1
+}
+
+select_starter_model() {
+    local ram="$1" cached="${2:-}" order candidate
+    order="$(starter_cached_order_for_ram "$ram")"
+    while IFS= read -r candidate; do
+        if starter_alias_is_cached "$candidate" "$cached"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done <<EOF
+$order
+EOF
+    starter_baseline_for_ram "$ram"
+}
+
+installed_cached_aliases() {
+    "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
+        "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
+}
+
 # When sourced by the test harness we only want the definitions above, not the
 # installer itself. `return` succeeds only in a sourced context; the `|| exit 0`
 # keeps an accidental `RAPID_INSTALL_LIB=1 bash install.sh` from erroring out.
@@ -199,38 +251,15 @@ fi
 
 # ── 2. Detect RAM → recommend model ──────────────────────────────────────────
 
-# These tiers MIRROR ``RAMBucketedDefault.tiers`` in the desktop app
-# (apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift), which is
-# the curated table with measured footprints, a capability column and a
-# monotonic-by-RAM invariant guarded by
-# apps/rapid-mac/scripts/verify-recommendation-tiers.swift.
-#
-# They used to disagree — six tiers, one match. Somebody who ran
-# ``curl … | bash`` and then opened the app was told to run two different
-# models on the same Mac, and curl is the canonical entry point in the
-# README. One table, two front doors.
-#
-# The app also surfaces a "fast alternative" per tier; this banner shows a
-# single command, so it takes the app's PRIMARY (smart) pick only.
-#
-# RECOMMENDED_FLAGS carries the tier's launch flags. Every current pick
-# ships with empty flags, but the plumbing stays: a future pick that needs
-# launch flags to fit its tier must have them printed with its serve line.
+# This is the Desktop Quickstart starter policy, not the larger "smart pick"
+# shown in the model browser. A fresh install optimizes time-to-first-chat:
+# <16 GB uses the compact 2.6B starter; every larger Mac uses the 4B starter.
+# After installation, a structured cache query may promote this to a known
+# runnable model that fits the same RAM tier.
 RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
 RECOMMENDED_FLAGS=""
-# 32 GB and up all get the same pick (AA-Index policy, 2026-08-18):
-# qwen3.8-27b-4bit is the highest-scoring open-weights model we serve
-# (AA Intelligence Index 52 — GPT-5.6-class), and its measured 8K-prefill
-# peak of 20 GB clears every one of these tiers' 75 % budgets. The
-# branches stay split so the banner names the user's actual tier.
-if   [ "$RAM_GB" -ge 96 ]; then RECOMMENDED_MODEL="qwen3.8-27b-4bit";    RAM_TIER="96+ GB"
-elif [ "$RAM_GB" -ge 64 ]; then RECOMMENDED_MODEL="qwen3.8-27b-4bit";    RAM_TIER="64-95 GB"
-elif [ "$RAM_GB" -ge 32 ]; then RECOMMENDED_MODEL="qwen3.8-27b-4bit";    RAM_TIER="32-63 GB"
-elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="bonsai-27b-2bit";     RAM_TIER="24-31 GB"
-elif [ "$RAM_GB" -ge 18 ]; then RECOMMENDED_MODEL="qwen3.5-9b-4bit";     RAM_TIER="18-23 GB"
-elif [ "$RAM_GB" -ge 16 ]; then RECOMMENDED_MODEL="qwen3.5-4b-4bit";     RAM_TIER="16-17 GB"
-else                            RECOMMENDED_MODEL="lfm2.5-2.6b-4bit";    RAM_TIER="8-15 GB"
-fi
+RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "")"
+if [ "$RAM_GB" -ge 16 ]; then RAM_TIER="16+ GB"; else RAM_TIER="under 16 GB"; fi
 
 dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
 
@@ -360,6 +389,11 @@ case "$TARGET" in
             || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
         ;;
 esac
+
+# Query the just-installed CLI's stable JSON surface. Failure is harmless and
+# falls back to the RAM baseline; never scrape the human table or cache paths.
+CACHED_ALIASES="$(installed_cached_aliases || true)"
+RECOMMENDED_MODEL="$(select_starter_model "$RAM_GB" "$CACHED_ALIASES")"
 
 # ── 6. Create symlinks ──────────────────────────────────────────────────────
 

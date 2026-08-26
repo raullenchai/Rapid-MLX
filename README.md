@@ -91,7 +91,10 @@ Both install the same `rapid-mlx` CLI. Prefer `uv` or `pip`, or want to verify
 the installer before running it? See [alternative install methods](#alternative-install-methods)
 and [install security](SECURITY.md).
 
-The guided installer prints a serve command sized to your Mac (8–15 GB → `lfm2.5-2.6b-4bit`; 16–17 GB → `qwen3.5-4b-4bit`; 18–23 GB → `qwen3.5-9b-4bit`; 24–31 GB → `bonsai-27b-2bit`; 32 GB+ → `qwen3.8-27b-4bit`).
+The guided installer prefers a runnable model already cached on this Mac when
+it fits the RAM tier. Otherwise its quick first-chat download is
+`lfm2.5-2.6b-4bit` below 16 GB and `qwen3.5-4b-4bit` at 16 GB or above; larger
+quality picks remain available through `rapid-mlx recipe` and the model picker.
 
 ---
 

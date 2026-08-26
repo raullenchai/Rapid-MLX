@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``install.sh`` and the desktop app must recommend the same model.
+"""Installer first-chat and Desktop recommendation source contracts.
 
-We ship two front doors that answer "what should this Mac run": the
-``curl … | bash`` banner and the app's picker. They drifted to six tiers
-with a single match — a user who installed via curl and then opened the
-app was told to run two different models on the same machine, and curl is
-the canonical entry point in the README.
-
-This test is the thing that would have caught it. It parses both tables
-out of their source files and compares them: same floors, same aliases,
-same launch flags. Neither file imports the other (one is shell, one is
-Swift), so a text comparison is the only mechanism available — which is
-precisely why the drift went unnoticed for so long.
+The model browser answers "what is the smartest model this Mac can run";
+the installer and Desktop Quickstart answer "what gets a new user to a good
+first chat quickly". Those are deliberately different policies. This suite
+keeps the browser table aligned with its JSON SSOT while executing the
+installer's library-mode selector to pin the Quickstart baseline and the
+RAM ceiling on cached promotions.
 
 mlx-free: pure parsing, no engine import, runs on the Linux CI leg.
 """
@@ -31,39 +26,24 @@ RECOMMENDATIONS = REPO / "vllm_mlx/model_recommendations.json"
 README = REPO / "README.md"
 
 
-def _parse_install_sh() -> list[tuple[int, str, list[str]]]:
-    """``[(floor_gb, alias, flags)]`` from the RECOMMENDED_MODEL block."""
-    text = INSTALL_SH.read_text()
-    block = re.search(r"RECOMMENDED_FLAGS=\"\"\n(.*?)\nfi\n", text, re.DOTALL)
-    assert block, "RECOMMENDED_MODEL branch block not found in install.sh"
-    body = block.group(1)
-
-    tiers: list[tuple[int, str, list[str]]] = []
-    pending_floor: int | None = None
-    pending_alias: str | None = None
-    for line in body.splitlines():
-        branch = re.search(r'-ge (\d+) \]; then RECOMMENDED_MODEL="([^"]+)"', line)
-        if branch:
-            if pending_alias is not None:
-                tiers.append((pending_floor, pending_alias, []))
-            pending_floor = int(branch.group(1))
-            pending_alias = branch.group(2)
-            continue
-        fallback = re.search(r'^else\s+RECOMMENDED_MODEL="([^"]+)"', line)
-        if fallback:
-            if pending_alias is not None:
-                tiers.append((pending_floor, pending_alias, []))
-            # The else arm is the lowest tier; its floor is the app's
-            # smallest floor, which the caller checks separately.
-            pending_floor, pending_alias = -1, fallback.group(1)
-            continue
-        flags = re.search(r'RECOMMENDED_FLAGS="\s*([^"]*)"', line)
-        if flags and pending_alias is not None:
-            tiers.append((pending_floor, pending_alias, flags.group(1).split()))
-            pending_floor = pending_alias = None
-    if pending_alias is not None:
-        tiers.append((pending_floor, pending_alias, []))
-    return tiers
+def _select_installer_starter(ram_gb: int, cached: tuple[str, ...] = ()) -> str:
+    """Execute only install.sh's library-mode pure starter selector."""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'RAPID_INSTALL_LIB=1 source "$1"; select_starter_model "$2" "$3"',
+            "selector",
+            str(INSTALL_SH),
+            str(ram_gb),
+            "\n".join(cached),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
 
 
 def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
@@ -76,112 +56,36 @@ def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
 
 
 def test_both_tables_parse():
-    """A parser that silently matches nothing would make every assertion
-    below vacuously true."""
-    assert len(_parse_install_sh()) >= 5
+    """Both the first-chat selector and model-browser SSOT are reachable."""
+    assert _select_installer_starter(8) == "lfm2.5-2.6b-4bit"
+    assert _select_installer_starter(16) == "qwen3.5-4b-4bit"
     assert len(_parse_app_tiers()) >= 6
 
 
-def test_same_alias_at_every_ram_size():
-    """The comparison that matters: for a real Mac's RAM, both front doors
-    name the same model. Compared by RAM size rather than by row so the
-    app's explicit laptop tiers are checked at both sides of each boundary."""
-    sh = sorted(_parse_install_sh(), key=lambda t: t[0], reverse=True)
-    app = sorted(_parse_app_tiers(), key=lambda t: t[0], reverse=True)
-
-    def pick(tiers, ram):
-        """Both tables clamp below their lowest floor and must agree there
-        too — ``RAMBucketedDefault.tier`` starts at ``tiers[0]`` and only
-        moves up, install.sh's ``else`` arm catches everything. A 4 GB
-        reading (a probe failure reports 0) must not fall off the end."""
-        for floor, alias, flags in tiers:
-            if ram >= floor:
-                return alias, flags
-        return tiers[-1][1], tiers[-1][2]
-
-    # Every boundary in EITHER table, plus the value on each side of it.
-    # A fixed sample list misses the failure this test exists to catch: move
-    # the shell's 24 GB floor to 23 and a list that never probes 23 stays
-    # green while a real 23 GB Mac gets the wrong model.
-    floors = {f for f, _, _ in sh if f > 0} | {f for f, _, _ in app if f > 0}
-    probes = set()
-    for f in floors:
-        probes.update({f - 1, f, f + 1})
-    probes.update({4, 8, 256})  # below the floor, the floor, and a real Ultra
-    probes = sorted(r for r in probes if r > 0)
-
-    mismatches = []
-    for ram in probes:
-        sh_alias, sh_flags = pick(sh, ram)
-        app_alias, app_flags = pick(app, ram)
-        if (sh_alias, sh_flags) != (app_alias, app_flags):
-            mismatches.append(
-                f"{ram} GB: install.sh={sh_alias} {sh_flags} "
-                f"vs app={app_alias} {app_flags}"
-            )
-    assert not mismatches, (
-        "install.sh and the desktop app disagree about what to run:\n  "
-        + "\n  ".join(mismatches)
-        + "\n\nThe app's RAMBucketedDefault.tiers is the curated table "
-        "(measured footprints, capability column, monotonic invariant). "
-        "install.sh mirrors it. Update install.sh, not this test."
-    )
+def test_fresh_installer_uses_quickstart_baseline_at_every_ram_size():
+    """First chat optimizes time-to-value, not the browser's largest pick."""
+    compact_alias, _ = _parse_quickstart_choice("compactDefaultChoice")
+    standard_alias, _ = _parse_quickstart_choice("defaultChoice")
+    assert "hardware.physicalRAMGB < 16" in QUICKSTART.read_text()
+    for ram in (4, 8, 15):
+        assert _select_installer_starter(ram) == compact_alias
+    for ram in (16, 18, 24, 32, 48, 64, 96, 256):
+        assert _select_installer_starter(ram) == standard_alias
 
 
-def _render_banner(ram_gb: int) -> str:
-    """Run install.sh's own tier block + quick-start line for ``ram_gb``.
-
-    Asserting that ``RECOMMENDED_FLAGS`` gets *assigned* is not enough:
-    delete ``${RECOMMENDED_FLAGS}`` from the echo and the variable is still
-    set, the assignment test still passes, and the banner silently goes
-    back to printing a command that OOMs a 24 GB Mac. So execute the real
-    lines and read what a user would actually see.
-    """
-    text = INSTALL_SH.read_text()
-    block = re.search(r"(RECOMMENDED_FLAGS=\"\"\n.*?\nfi)\n", text, re.DOTALL)
-    assert block, "tier block not found"
-    echo = [
-        ln.strip()
-        for ln in text.splitlines()
-        if "rapid-mlx serve" in ln and ln.strip().startswith("echo ")
-    ]
-    assert echo, "quick-start serve line not found in install.sh"
-    script = f"RAM_GB={ram_gb}\n{block.group(1)}\n" + "\n".join(echo)
-    return subprocess.run(
-        ["sh", "-c", script], capture_output=True, text=True, timeout=30
-    ).stdout
-
-
-def test_the_banner_prints_the_27b_bare_from_32_gb_up():
-    """AA-Index policy (2026-08-18): every Mac from 32 GB up is handed
-    qwen3.8-27b-4bit, and it needs no tier flags — MTP is baked into the
-    alias and the measured 8K peak (20.0 GB) fits every one of these
-    tiers bare. The gemma flag bundle left the table with gemma."""
-    for ram in (32, 64, 96):
-        printed = _render_banner(ram)
-        assert "qwen3.8-27b-4bit" in printed, f"{ram} GB banner: {printed}"
+def test_cached_choice_is_preferred_only_when_it_fits_the_ram_tier():
+    assert _select_installer_starter(32, ("qwen3.8-27b-4bit",)) == "qwen3.8-27b-4bit"
+    assert _select_installer_starter(16, ("qwen3.8-27b-4bit",)) == "qwen3.5-4b-4bit"
 
 
 def test_the_banner_prints_a_bare_command_where_no_flags_are_needed():
-    """Control: launch flags must not leak onto tiers that do not want
-    them — since the gemma pick retired, that is every tier."""
-    for ram in (8, 16, 24, 32, 64, 96):
-        printed = _render_banner(ram)
-        assert "rapid-mlx serve" in printed
-        assert "--no-mllm" not in printed, f"{ram} GB banner: {printed}"
-
-
-def test_launch_flags_travel_with_the_recommendation():
-    """The flags install.sh prints are the flags the app launches with."""
-    for floor, alias, flags in _parse_app_tiers():
-        if not flags:
-            continue
-        sh_match = [t for t in _parse_install_sh() if t[1] == alias]
-        assert sh_match, f"{alias} needs flags {flags} but install.sh never offers it"
-        for _, _, sh_flags in sh_match:
-            assert sh_flags == flags, (
-                f"{alias}: app launches with {flags}, install.sh prints {sh_flags}"
-            )
+    text = INSTALL_SH.read_text()
+    serve_line = next(
+        line
+        for line in text.splitlines()
+        if line.strip().startswith("echo ") and "rapid-mlx serve" in line
+    )
+    assert "${RECOMMENDED_MODEL}${RECOMMENDED_FLAGS}" in serve_line
 
 
 def test_every_recommended_alias_exists():
@@ -189,12 +93,17 @@ def test_every_recommended_alias_exists():
     from vllm_mlx.model_aliases import list_aliases
 
     known = list_aliases()
-    for source, tiers in (
-        ("install.sh", _parse_install_sh()),
-        ("app", _parse_app_tiers()),
-    ):
-        for _, alias, _ in tiers:
-            assert alias in known, f"{source} recommends unknown alias {alias!r}"
+    installer_aliases = set()
+    cached_candidates = {alias for _, alias, _ in _parse_app_tiers()}
+    for ram in (8, 16, 18, 24, 32, 48, 64, 96):
+        installer_aliases.add(_select_installer_starter(ram))
+        for cached in cached_candidates:
+            selected = _select_installer_starter(ram, (cached,))
+            installer_aliases.add(selected)
+    for alias in installer_aliases:
+        assert alias in known, f"install.sh recommends unknown alias {alias!r}"
+    for _, alias, _ in _parse_app_tiers():
+        assert alias in known, f"app recommends unknown alias {alias!r}"
 
 
 @pytest.mark.parametrize(
@@ -202,19 +111,14 @@ def test_every_recommended_alias_exists():
     [
         (8, "lfm2.5-2.6b-4bit"),
         (16, "qwen3.5-4b-4bit"),
-        (18, "qwen3.5-9b-4bit"),
+        (18, "qwen3.5-4b-4bit"),
     ],
 )
 def test_small_macs_get_something_that_fits(ram, expected):
     """Pinned literally: these laptop tiers are the ones that changed, and a
     regression here is the difference between an 8 GB Mac running a model
     and being told nothing fits."""
-    sh = sorted(_parse_install_sh(), key=lambda t: t[0], reverse=True)
-    for floor, alias, _ in sh:
-        if ram >= floor:
-            assert alias == expected
-            return
-    pytest.fail(f"no install.sh tier matched {ram} GB")
+    assert _select_installer_starter(ram) == expected
 
 
 def _readme_table_tiers() -> list[tuple[int, str, str, list[str]]]:
@@ -256,21 +160,12 @@ def _readme_table_tiers() -> list[tuple[int, str, str, list[str]]]:
 
 
 def _readme_prose_tiers() -> list[tuple[int, str]]:
-    """``[(floor_gb, alias)]`` from the quick-start sentence.
-
-    The README states the map twice. The prose copy is the one a reader
-    hits first, and it can drift on its own — so it gets its own parse
-    rather than being covered by the table's.
-    """
+    """The quick-start prose pins the two first-chat baselines."""
     text = README.read_text()
-    m = re.search(r"prints a serve command sized to your Mac \(([^)]*)\)", text)
-    assert m, "quick-start tier sentence not found in README.md"
-    return [
-        (int(a), b)
-        for a, b in re.findall(
-            r"(\d+)(?:[–-]\d+)? GB\+? → `([a-z0-9.\-]+)`", m.group(1)
-        )
-    ]
+    assert "prefers a runnable model already cached" in text
+    assert "`lfm2.5-2.6b-4bit` below 16 GB" in text
+    assert "`qwen3.5-4b-4bit` at 16 GB or above" in text
+    return [(8, "lfm2.5-2.6b-4bit"), (16, "qwen3.5-4b-4bit")]
 
 
 def test_readme_table_matches_the_app_tier_for_tier():
@@ -296,14 +191,11 @@ def test_readme_table_matches_the_app_tier_for_tier():
 
 
 def test_readme_prose_matches_the_readme_table():
-    """The README states the map twice; both have to say the same thing."""
-    prose = sorted(_readme_prose_tiers())
-    table = sorted((f, a) for f, a, *_ in _readme_table_tiers())
-    assert prose == table, (
-        "the README's quick-start sentence and its tier table disagree:\n"
-        f"  prose: {prose}\n"
-        f"  table: {table}"
-    )
+    """Installer starters are deliberately smaller than browser smart picks."""
+    assert _readme_prose_tiers() == [
+        (8, "lfm2.5-2.6b-4bit"),
+        (16, "qwen3.5-4b-4bit"),
+    ]
 
 
 def test_readme_one_shot_commands_carry_the_exact_flags():
