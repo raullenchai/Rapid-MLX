@@ -160,22 +160,9 @@ final class ChatViewModel {
     /// we give the model one tools-disabled round to synthesize what it has.
     private let maxToolExecutions: Int = 3
 
-    /// Separate budget for ``read_document``, spent instead of the general one.
-    ///
-    /// Reading a long document is inherently multi-call — page, page again,
-    /// grep, page around a hit — and charging that to ``maxToolExecutions``
-    /// would let a two-page read starve the search-and-verify budget the cap
-    /// exists to protect. The two are different risks: three bounds how much
-    /// the model may reach OUT and act, while paging a file the user already
-    /// attached reaches nothing new and costs only context and local time.
-    ///
-    /// Twelve slices of ``ReadDocumentTool/charBudget`` cover ~180k characters
-    /// read sequentially, and far more when the model greps first.
+    /// Local document paging does not consume the general external-tool budget.
     private let maxDocumentReads: Int = 12
 
-    /// Tools charged against ``maxDocumentReads`` rather than the general
-    /// budget. A set so the exemption is declared once instead of being
-    /// respelled as a name comparison at each dispatch site.
     nonisolated static let documentToolNames: Set<String> = ["read_document"]
 
     nonisolated private static let toolBudgetSynthesisPreamble = """
@@ -312,11 +299,7 @@ final class ChatViewModel {
     /// App-owned lifecycle signal for a real, visible assistant completion.
     /// Kept as a callback so chat has no dependency on telemetry policy.
     private let onProductValueDelivered: @MainActor (ProductValueKind) -> Void
-    /// Store holding the full text of documents attached to conversations.
-    ///
-    /// Held so conversation deletion can delete the extracts too. Injectable
-    /// for the same reason ``conversationStoreURL`` is: a test that deletes a
-    /// seeded conversation must not reach into the user's real cache.
+    /// Injectable so conversation deletion can remove extracts in isolated tests.
     private let documentCache: DocumentContentCache
 
     init(
@@ -952,37 +935,14 @@ final class ChatViewModel {
         lastFailureAlias = nil
     }
 
-    /// Delete a saved conversation. If it was the open one, drop to a fresh
-    /// empty transcript.
-    ///
-    /// Deleting the transcript deletes the DOCUMENTS attached to it. The
-    /// conversation is the only place those attachments are visible, so once it
-    /// is gone the user has no way to see — let alone remove — the full-text
-    /// extracts sitting in Application Support. Before the preview/full-text
-    /// split the whole extract lived inline in the history file and went with
-    /// it; this restores that property.
+    /// Deletes a conversation and all document extracts in its full branch tree.
     func deleteConversation(_ id: UUID) {
-        // Collect the attachment ids BEFORE the transcript is torn down: the
-        // active-conversation branch below empties `messages`, and the stored
-        // conversation is removed after that.
-        //
-        // Both sources are read as TREES, not as the visible path. ``messages``
-        // and ``ChatConversation/messages`` each hold only the branch the user
-        // is currently looking at; a document attached to a turn the user later
-        // regenerated away sits in ``branchedAway`` / ``branches``, is just as
-        // deleted from the user's point of view, and walking the path alone
-        // would leave its plaintext in Application Support forever.
-        var seen: Set<UUID> = []
-        var attachmentIDs: [UUID] = []
-        func collect(_ nodes: [ChatMessage]) {
-            for attachment in nodes.flatMap(\.fileAttachments)
-            where seen.insert(attachment.id).inserted {
-                attachmentIDs.append(attachment.id)
-            }
+        var attachmentIDs: Set<UUID> = []
+        if id == activeConversationID {
+            attachmentIDs.formUnion(liveTree().flatMap { $0.fileAttachments.map(\.id) })
         }
-        if id == activeConversationID { collect(liveTree()) }
         if let stored = conversations.first(where: { $0.id == id }) {
-            collect(stored.allMessages)
+            attachmentIDs.formUnion(stored.allMessages.flatMap { $0.fileAttachments.map(\.id) })
         }
 
         // If deleting the OPEN conversation, tear down the live transcript
@@ -1005,10 +965,6 @@ final class ChatViewModel {
         }
         conversations.removeAll { $0.id == id }
         saveConversations()
-        // Last, so a failure anywhere above cannot leave the transcript intact
-        // while its documents are gone. ``remove`` also cancels any extraction
-        // still running, which for a large scan is minutes of Vision work on a
-        // document nobody will read again.
         documentCache.remove(contentsOf: attachmentIDs)
     }
 
@@ -1757,43 +1713,8 @@ final class ChatViewModel {
         return false
     }
 
-    /// v0.5.11: silent sliding-window trim. ChatGPT / Claude desktop
-    /// don't show users a token meter — they drop oldest turns behind
-    /// the scenes when the conversation would exceed the model's
-    /// context window. The previous "9.3k / 8k red chip" was both
-    /// confusing (users don't know what 8k means) and useless (no
-    /// affordance to fix the overflow). rapid-mlx's server doesn't
-    /// enforce a window either — it just hands the full prompt to
-    /// mlx-lm, which RoPE-extrapolates past training context and
-    /// degrades quality silently. So the client has to do it.
-    ///
-    /// Contract:
-    ///   * If ``contextWindow`` is ``nil`` or estimated tokens fit
-    ///     under ``keepFraction * contextWindow``, return unchanged.
-    ///   * Otherwise: split off a leading system row, walk the body
-    ///     newest-to-oldest accumulating ``content.count / 4`` tokens,
-    ///     stop when adding the next row would exceed the budget, and
-    ///     drop everything before that cut point.
-    ///   * The complete turn beginning at the most recent user message is
-    ///     always kept — even if it overshoots the budget. During a tool loop,
-    ///     the newest row is a tool result rather than the user question, and
-    ///     neither half of that chain is valid on its own.
-    ///   * When that mandatory tail alone overshoots, its oldest TOOL RESULTS
-    ///     have their bodies elided until it fits (see
-    ///     ``elidingOldestToolResults``). The rows stay, so the
-    ///     assistant(tool_calls) → tool pairing the wire body needs is intact.
-    ///   * After cutting, drop leading non-user rows so the kept tail
-    ///     never starts mid-tool-chain (a bare ``tool`` or
-    ///     ``assistant(tool_calls)`` row at the head of a wire body is
-    ///     a 400 with most chat templates).
-    ///   * Re-attach the system row at index 0 if one was present.
-    ///
-    /// Token estimate is ``TokenEstimate/tokens(in:)`` — a per-script
-    /// weighted count. It replaced a flat ``content.count / 4``
-    /// (OpenAI's ENGLISH rule of thumb), which under-counted CJK
-    /// text by ~2.2x and so let this trim conclude an over-window
-    /// body fitted. Order-of-magnitude is still all that is needed;
-    /// being wrong per-script was not.
+    /// Keeps the system row and latest complete user/tool turn, then fills the
+    /// remaining context newest-first. Oversized tool bodies are shortened in place.
     static func trimMessagesForContextWindow(
         _ messages: [ChatMessage],
         contextWindow: Int?,
@@ -1802,18 +1723,7 @@ final class ChatViewModel {
         guard let ctx = contextWindow, ctx > 0 else { return messages }
         guard !messages.isEmpty else { return messages }
         let budget = max(1, Int(Double(ctx) * keepFraction))
-        // Codex audit r1 (ChatViewModel.swift:282): the pre-audit
-        // shape only counted ``content.count`` and ignored
-        // ``toolCalls.arguments`` — a model that emits a 50 KB JSON
-        // tool argument blob (e.g. a stringified web-search payload)
-        // would slip past the budget because the trimming logic
-        // saw a near-empty assistant turn. Fold the serialized
-        // tool-call arguments into the per-row cost so the budget
-        // reflects the actual wire body. ``modelContent`` includes locally
-        // extracted document text while keeping it out of the visible chat
-        // bubble. Images use multimodal content parts and
-        // are excluded here (token-count-per-image is model-specific
-        // and not estimable from byte count alone).
+        // Count wire-only attachment text and tool arguments as well as prose.
         let perRowCost: (ChatMessage) -> Int = { msg in
             let toolArgs = (msg.toolCalls ?? [])
                 .map(\.function.arguments)
@@ -1832,22 +1742,10 @@ final class ChatViewModel {
         let systemTokens = system.map(perRowCost) ?? 0
         let bodyBudget = max(1, budget - systemTokens)
 
-        // Anchor the mandatory tail at the latest user row. On an ordinary
-        // request that is just the current question; during tool use it also
-        // includes every assistant(tool_calls) and tool-result row after it.
-        // Keeping that tail as a unit prevents an oversized tool result from
-        // being restored as an orphan after the leading-row cleanup below.
         guard let currentTurnStart = body.lastIndex(where: { $0.role == .user }) else {
             return system.map { [$0] } ?? []
         }
         var keep = Array(body[currentTurnStart...])
-        // The tail is mandatory, but "mandatory" cannot mean "unbounded". One
-        // ``read_document`` slice is ~6.3k tokens of ASCII (~9.75k of CJK) and
-        // ``maxDocumentReads`` allows twelve of them, so a tool loop can pile
-        // 75k+ tokens into a single turn — enough to blow past an 8k window on
-        // the FIRST read and a 32k one well before the budget is spent. Elide
-        // the oldest tool bodies until the tail fits rather than shipping a
-        // body the model will silently RoPE-extrapolate through.
         keep = Self.elidingOldestToolResults(keep, within: bodyBudget, cost: perRowCost)
         var running = keep.reduce(0) { $0 + perRowCost($1) }
         for msg in body[..<currentTurnStart].reversed() {
@@ -1866,11 +1764,7 @@ final class ChatViewModel {
         return keep
     }
 
-    /// Replacement body for a tool result the context budget could not carry.
-    ///
-    /// The model has to be told the evidence is GONE rather than empty — a
-    /// bare "" reads as "the tool found nothing", which is exactly the
-    /// confabulation the ambient tool preamble exists to prevent.
+    /// Explicit replacement for evidence removed by context trimming.
     nonisolated static let elidedToolResultBody = """
     [This tool result was dropped from the request because the conversation \
     exceeded the model's context window. Its contents are no longer available. \
@@ -1878,11 +1772,7 @@ final class ChatViewModel {
     so if the answer depends on evidence you can no longer see.]
     """
 
-    /// Appended to a tool result that was cut down to fit rather than emptied.
-    ///
-    /// The distinction matters to the model: unlike ``elidedToolResultBody``
-    /// the text above this marker is real evidence it may use. What it must
-    /// not do is treat the truncation point as the end of the source.
+    /// Appended when real evidence is shortened rather than removed.
     nonisolated static let truncatedToolResultSuffix = """
 
 
@@ -1893,48 +1783,10 @@ final class ChatViewModel {
     read_document, a later 'offset') if you need more.]
     """
 
-    /// Smallest tool result worth keeping in truncated form.
-    ///
-    /// Below this the surviving head is too small to answer anything from, and
-    /// shipping a few hundred characters plus a truncation notice costs the
-    /// tokens of the full elision notice for less usable evidence.
     nonisolated static let minRetainedToolResultTokens = 512
 
-    /// Shrink a mandatory tool tail to `budget` by emptying its OLDEST tool
-    /// results, oldest-first, and stopping as soon as the tail fits.
-    ///
-    /// ## Why elide rather than drop
-    ///
-    /// A `tool` row is only valid on the wire alongside the
-    /// `assistant(tool_calls)` row that requested it: most chat templates
-    /// render an unmatched pair into a malformed prompt, and several servers
-    /// 400 outright. So the ROWS have to survive even when their CONTENT
-    /// cannot. Replacing the body keeps the chain's shape while returning the
-    /// tokens, which is what the caller actually needs back.
-    ///
-    /// ## Why oldest-first, and why the newest is never emptied
-    ///
-    /// The newest result is the one the model is about to reason over — during
-    /// a document read it is the page it just asked for. Older ones have
-    /// usually been summarised into the assistant prose that follows them, so
-    /// they are the cheapest evidence to lose.
-    ///
-    /// Emptying the newest was not merely suboptimal, it made the feature
-    /// unusable on a small model: one ``read_document`` slice is ~6.3k tokens
-    /// of ASCII (~9.75k of CJK) against a 6.1k body budget on an 8k window, so
-    /// the FIRST read — the only tool row in the tail, and the one the loop
-    /// reached immediately — came back as "the result was dropped, call the
-    /// tool again". Twelve retries later the model still had not read a
-    /// character of the document. So the newest result is truncated to
-    /// whatever the budget allows instead, keeping its head (which for
-    /// ``read_document`` includes the document id and offset the model needs
-    /// to continue), and is only emptied when even
-    /// ``minRetainedToolResultTokens`` will not fit.
-    ///
-    /// The user row is never touched: it is the question, and eliding it would
-    /// leave the model answering something it can no longer read. A tail that
-    /// still overshoots after that is returned as-is — there is nothing
-    /// further to give back without breaking the turn.
+    /// Shrinks oldest tool bodies first while preserving assistant/tool row pairs.
+    /// The newest result is truncated when possible because it drives the next step.
     nonisolated static func elidingOldestToolResults(
         _ tail: [ChatMessage],
         within budget: Int,
@@ -1952,8 +1804,6 @@ final class ChatViewModel {
             var candidate = result[index]
             candidate.content = elidedToolResultBody
             let after = cost(candidate)
-            // The notice costs ~50 tokens of its own, so eliding a SHORT result
-            // would make the tail bigger. Those are not what put it over budget.
             guard after < before else { continue }
             result[index] = candidate
             total -= before - after
@@ -1961,12 +1811,8 @@ final class ChatViewModel {
 
         guard total > budget, let newest else { return result }
         let before = cost(result[newest])
-        // What the rest of the tail — the user question, the assistant
-        // tool_calls rows, the already-elided older results — leaves for it.
         let allowance = budget - (total - before)
         var candidate = result[newest]
-        // Price candidate bodies through the caller's own estimator, on this
-        // row, so what is measured here is exactly what the trim measures.
         let bodyCost: (String) -> Int = { body in
             var probe = result[newest]
             probe.content = body
@@ -1987,29 +1833,8 @@ final class ChatViewModel {
         return result
     }
 
-    /// Cut a tool result down to `tokenBudget` while keeping it USABLE.
-    ///
-    /// A blind ``TokenEstimate/prefix`` is not good enough here. Tool results
-    /// are JSON objects, and the payload the model needs in order to CONTINUE
-    /// — `document_id`, `offset`, `total_chars` — is a handful of short fields
-    /// sharing the object with one enormous `content` string. Cutting the
-    /// serialized form at a token boundary lands inside that string, which
-    /// both destroys the JSON and (because keys are emitted sorted, so
-    /// `content` comes first) throws away exactly the cursor fields the next
-    /// call needs.
-    ///
-    /// So the object is re-serialized instead: every short field survives
-    /// intact and only the single largest string value is shortened. When the
-    /// body is not a JSON object — a plain-text error, another tool's format —
-    /// this falls back to a plain prefix, which is the best available.
-    ///
-    /// Returns nil when nothing usable fits, leaving the caller to elide.
-    ///
-    /// `cost` is the caller's own per-row estimator rather than a bare token
-    /// count, so what is measured here is what the trim will measure. JSON
-    /// escaping inflates the serialized form unpredictably (a document full of
-    /// quotes or newlines costs more than its raw text), so the result is
-    /// verified and re-cut proportionally rather than trusted.
+    /// Shortens the largest JSON string while preserving cursor fields, or falls
+    /// back to a marked plain-text prefix. Returns nil when no useful body fits.
     nonisolated static func truncatingToolResultBody(
         _ body: String,
         withinTokens tokenBudget: Int,
@@ -2019,14 +1844,10 @@ final class ChatViewModel {
 
         func fit(_ build: (Int) -> String?) -> String? {
             var headTokens = tokenBudget
-            // Three passes: measure, correct once for escaping, and correct
-            // again for a pathological expansion. Beyond that the caller's
-            // elision path is the honest answer.
             for _ in 0..<3 {
                 guard headTokens > 0, let candidate = build(headTokens) else { return nil }
                 let actual = cost(candidate)
                 if actual <= tokenBudget { return candidate }
-                // Scale the head down by however much it overshot.
                 headTokens = headTokens * tokenBudget / max(1, actual) - 1
             }
             return nil
@@ -2037,8 +1858,6 @@ final class ChatViewModel {
               let field = payload
                 .compactMap({ key, value in (value as? String).map { (key, $0) } })
                 .max(by: { $0.1.count < $1.1.count }),
-              // A payload whose largest string is already small is not what
-              // put the row over budget; there is nothing here to give back.
               field.1.count > 512
         else {
             return fit { headTokens in
@@ -2050,8 +1869,6 @@ final class ChatViewModel {
         }
 
         return fit { headTokens in
-            // Price the envelope — every OTHER field, plus the notice — with
-            // the big field emptied, so the head gets exactly what is left.
             var envelope = payload
             envelope[field.0] = ""
             envelope["\(field.0)_truncated"] = true
@@ -2066,11 +1883,7 @@ final class ChatViewModel {
             guard !head.isEmpty else { return nil }
             var truncated = envelope
             truncated[field.0] = head
-            // The cursor the tool handed back points past the WHOLE slice, so
-            // reusing it would silently skip the part cut off here. Advance it
-            // to the end of what actually survived instead. Driven by the
-            // fields present rather than by the tool's name: any paginated
-            // result carrying `offset` continues the same way.
+            // Advance from retained content, not the original full slice.
             if let offset = payload["offset"] as? Int, payload["content"] != nil {
                 truncated["next_offset"] = offset + head.count
                 truncated["has_more"] = true
@@ -2082,7 +1895,6 @@ final class ChatViewModel {
         }
     }
 
-    /// Explains a re-serialized, shortened tool result to the model.
     nonisolated static let truncatedToolResultNote = """
     This result was shortened to fit the model's context window. The text it \
     carries is real and can be used, but it stops early — do not treat its end \
@@ -2534,14 +2346,7 @@ final class ChatViewModel {
         } ?? MessageTree.defaultLeaf(in: remaining, preferring: branchChoices)
         adoptTree(MessageTree.promotingOrphans(remaining), activeLeafID: leaf)
         persistActive()
-        // Deleting the turns deletes the documents attached to them, for the
-        // same reason ``deleteConversation`` does: once the bubble is gone the
-        // user has no way to see — let alone remove — the extract behind it.
-        //
-        // Only ids that NOTHING surviving still references: an edit branches
-        // the tree by re-sending the same attachment, so two siblings can carry
-        // the same attachment id, and removing every doomed id would empty the
-        // cache out from under a branch still on screen.
+        // Preserve extracts still referenced by a surviving branch.
         let stillReferenced = Set(remaining.flatMap { $0.fileAttachments.map(\.id) })
         let orphaned = tree
             .filter { doomed.contains($0.id) }
@@ -2644,9 +2449,6 @@ final class ChatViewModel {
         // a blank message.
         var draftBeforeCorrection: String?
 
-        // Either budget can keep the loop alive: a model that has spent its
-        // general allowance may still have a document left to page through,
-        // and cutting it off there would strand it mid-read.
         while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
             // History for this request: everything BEFORE the streaming
             // placeholder. The placeholder itself is excluded because the
@@ -2667,10 +2469,6 @@ final class ChatViewModel {
             // ``servingAlias`` is the protected startup/default engine and is
             // no longer authoritative once secondary models are resident.
             let wireAlias = alias
-            // Each allowance narrows the advertised surface independently.
-            // The document quota exists to finish reading an attachment, not
-            // to hand back a second general budget; once it is spent, leaving
-            // read_document advertised would let rejected calls loop forever.
             var offered = enabledDefinitions
             if toolExecutionsLeft == 0 {
                 offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
@@ -2678,9 +2476,6 @@ final class ChatViewModel {
             if documentReadsLeft == 0 {
                 offered = offered.filter { !Self.documentToolNames.contains($0.function.name) }
             }
-            // Nothing left to offer is the same state as a spent budget: enter
-            // the synthesis round so the model is told to answer, instead of
-            // being sent a toolless request it has no instruction to conclude.
             if offered.isEmpty { isFinalSynthesisRound = true }
             let definitions = isFinalSynthesisRound
                 ? []
@@ -2887,14 +2682,7 @@ final class ChatViewModel {
                         finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
                         return
                     }
-                    // A model may batch many calls into one assistant turn.
-                    // Enforce the budget per requested call, and still emit a
-                    // matching result for every skipped call so the transcript
-                    // remains a valid assistant(tool_calls) → tool sequence.
-                    //
-                    // Document reads draw on their own allowance so paging a
-                    // long attachment cannot consume the general budget (or be
-                    // blocked once that budget is gone).
+                    // Emit a matching failure row for every call over its budget.
                     let isDocumentRead = Self.documentToolNames.contains(call.function.name)
                     if isDocumentRead {
                         guard documentReadsLeft > 0 else {
@@ -2919,11 +2707,6 @@ final class ChatViewModel {
                         }
                         toolExecutionsLeft -= 1
                     }
-                    // The executor is the single dispatch boundary: it refuses
-                    // any tool that was not advertised this round (a malformed
-                    // model can emit a tool_call for a tool we never offered)
-                    // and normalises the arguments against the advertised
-                    // schema before running it.
                     let r = await toolExecutor.execute(call, advertised: definitions)
                     results.append(r)
                     if call.function.name == "web_search" {
@@ -2958,10 +2741,6 @@ final class ChatViewModel {
                 }
                 // Open the next assistant placeholder and loop.
                 currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
-                // Both budgets gone means nothing can be offered next round.
-                // The top of the loop reaches the same conclusion from an empty
-                // `offered`; setting it here too keeps the exhausted case
-                // explicit rather than implied by a filter result.
                 if toolExecutionsLeft == 0 && documentReadsLeft == 0 {
                     isFinalSynthesisRound = true
                 }

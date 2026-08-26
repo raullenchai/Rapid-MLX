@@ -2,39 +2,12 @@ import Foundation
 import PDFKit
 import UniformTypeIdentifiers
 
-/// A document attached to a normal chat turn. The original file never enters
-/// the request body: Rapid extracts text locally and persists only that text
-/// with the conversation so follow-up questions keep working after relaunch.
-///
-/// ## Preview + full text
-///
-/// The whole extract does NOT go into the prompt. ``extractedText`` is a
-/// bounded PREVIEW (``maxCombinedCharacters`` shared across the turn's
-/// attachments) and the complete text is registered in
-/// ``DocumentContentCache`` under ``id``, where the ``read_document`` tool
-/// pages through it on demand.
-///
-/// This is what makes a large file analyzable at all. Before it, extraction
-/// stopped at the preview budget and everything past it was discarded, so a
-/// 500-page PDF was silently reduced to its first few pages. Now the budget
-/// only decides how much is shown up front; the rest stays reachable.
+/// A locally extracted attachment. The prompt carries a bounded preview while
+/// `DocumentContentCache` retains the text addressable by `id`.
 struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable {
-    /// Files this large are read into memory during extraction, so this is a
-    /// real memory ceiling and not just a policy knob.
     static let maxSourceBytes = 100 * 1024 * 1024
-    /// Hard ceiling on the extract we retain for one document. Bounds a
-    /// pathological input (a PDF that decompresses to gigabytes of text) from
-    /// exhausting memory and the document cache.
     static let maxExtractedCharacters = 20_000_000
-    /// Preview budget shared by every attachment on one message, in TOKENS.
-    ///
-    /// This is what actually enters the prompt unprompted, so it is paid for
-    /// in prefill time on every turn of the conversation. It was a flat 24,000
-    /// CHARACTERS, which only behaved as intended for English: the same slice
-    /// of Chinese measured ~13,300 real tokens instead of ~6,000, so a CJK
-    /// document silently shipped more than twice the intended prompt and took
-    /// correspondingly longer to answer. 6,000 tokens is what 24,000 English
-    /// characters always meant — now stated in the unit that matters.
+    /// Prompt-preview budget shared by a message's attachments.
     static let maxCombinedTokens = 6_000
     static let maxAttachmentsPerMessage = 4
 
@@ -42,9 +15,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         case pdf
         case csv
         case txt
-        /// A file kind written by a newer build. Keeping the extracted text
-        /// available is safer than making one unknown enum value invalidate
-        /// the user's entire conversation-history file on downgrade.
+        /// Preserves history written by a newer build.
         case unknown
 
         init(from decoder: Decoder) throws {
@@ -71,36 +42,21 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     let id: UUID
     let filename: String
     let kind: Kind
-    /// Bounded preview of the document — what goes into the prompt directly.
-    /// The complete text lives in ``DocumentContentCache`` under ``id``.
+    /// Bounded prompt preview; the cache holds the retained text.
     let extractedText: String
     let sourceByteCount: Int
     let pageCount: Int?
     let rowCount: Int?
     let columnCount: Int?
-    /// True when ``extractedText`` shows less than the whole document. The
-    /// remainder is not lost — it is in the document cache, reachable via
-    /// ``read_document``.
     let wasTruncated: Bool
-    /// Character length of the COMPLETE extract, which may be far larger than
-    /// ``extractedText``. Persisted so a conversation reopened after relaunch
-    /// still knows how much document sits behind the preview.
-    ///
-    /// `nil` while a large PDF's background extraction is still running: the
-    /// total is genuinely not known yet, and inventing one would either
-    /// under-report (telling the model the document ends at the preview) or
-    /// print a fabricated figure.
+    /// Retained extract length, or nil while background extraction is pending.
     let totalCharacterCount: Int?
 
     static func recognizesDocument(at url: URL) -> Bool {
         ["pdf", "csv", "txt"].contains(url.pathExtension.lowercased())
     }
 
-    /// Bound work before opening any selected files. The per-file byte limit
-    /// is not enough on its own: a user can select hundreds of individually
-    /// valid files in one panel/drop, and reading all of them before trimming
-    /// the result to four would turn a small attachment action into unbounded
-    /// disk and PDF parsing work.
+    /// Bound work before opening selected files.
     static func importCandidates(_ urls: [URL], existingCount: Int) -> (
         accepted: [URL], rejectedCount: Int
     ) {
@@ -109,14 +65,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         return (accepted, max(0, urls.count - accepted.count))
     }
 
-    /// Designated initialiser. ``extractedText`` is stored as given (clamped to
-    /// ``maxExtractedCharacters``); it is the caller's job to decide whether
-    /// that is a preview or the whole document.
-    ///
-    /// This deliberately does NOT touch ``DocumentContentCache``: it is also
-    /// the copy path used by ``limited(to:)``, and registering here would let a
-    /// preview-sized copy overwrite the full text under the same ``id``.
-    /// Cache registration happens once, in the import path (``register``).
+    /// Does not update the cache because preview copies also use this path.
     init(
         id: UUID = UUID(),
         filename: String,
@@ -145,11 +94,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         self.columnCount = columnCount
         self.wasTruncated = wasTruncated || limited.count < cleaned.count
         if totalIsPending {
-            // Extraction is still running; the real total is unknown.
             self.totalCharacterCount = nil
         } else {
-            // Absent an explicit count the stored text IS the whole document.
-            // Never below `limited.count`: the preview cannot exceed the total.
             self.totalCharacterCount = max(limited.count, totalCharacterCount ?? limited.count)
         }
     }
@@ -160,11 +106,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         case totalIsPending
     }
 
-    /// Hand-written so a history file written before the preview/full-text
-    /// split still decodes. The synthesised initialiser treats every stored
-    /// property as required, so a missing `totalCharacterCount` would throw —
-    /// and ``ConversationStore.load`` turns one throw into "the whole history
-    /// is corrupt", i.e. an apparently wiped sidebar on upgrade.
+    /// Keeps histories from before the preview/full-text split decodable.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -176,10 +118,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         rowCount = try c.decodeIfPresent(Int.self, forKey: .rowCount)
         columnCount = try c.decodeIfPresent(Int.self, forKey: .columnCount)
         wasTruncated = try c.decodeIfPresent(Bool.self, forKey: .wasTruncated) ?? false
-        // Old histories have neither total field: before deferred extraction,
-        // the inline extract was the whole retained document. New histories
-        // explicitly preserve a pending total so an attachment saved while its
-        // background pass is running is not mistaken for a complete document.
         let totalIsPending = try c.decodeIfPresent(Bool.self, forKey: .totalIsPending) ?? false
         let storedTotal = try c.decodeIfPresent(Int.self, forKey: .totalCharacterCount)
         totalCharacterCount = totalIsPending
@@ -202,32 +140,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         if totalCharacterCount == nil { try c.encode(true, forKey: .totalIsPending) }
     }
 
-    /// How an import left the extract, which decides what the attachment may
-    /// claim about it.
-    ///
-    /// The two failure modes are NOT interchangeable, and collapsing them into
-    /// one `totalIsKnown` flag produced a state nothing could ever leave: a
-    /// short PDF that exhausted the character budget was marked pending, but
-    /// having seen every page it started no background task, so
-    /// `totalCharacterCount` stayed nil for the life of the conversation
-    /// while `wasTruncated` stayed false.
     enum ExtractionState {
-        /// The whole document was extracted.
         case complete
-        /// A background pass is running and will republish the full text.
-        /// Only valid when that task is actually started.
         case pending
-        /// Stopped by the character budget or the retention ceiling. This is
-        /// as much as there will ever be — no pass will finish it.
         case truncated
     }
 
-    /// Build an attachment from a complete extract: register the full text in
-    /// the document cache under a fresh id, then keep a preview inline.
-    ///
-    /// The preview stays whole-document when the text already fits, so a small
-    /// file behaves exactly as it did before the split — no envelope, no tool
-    /// call, no behaviour change for the common case.
+    /// Registers retained text under a fresh id and stores its prompt preview.
     private init(
         fullText: String,
         filename: String,
@@ -243,10 +162,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let cleaned = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw ValidationError.noExtractableText(kind) }
         let complete = String(cleaned.prefix(Self.maxExtractedCharacters))
-        // The retention ceiling truncates just as really as an unfinished
-        // background pass does. A 20M-character TXT keeps its head and loses
-        // its tail, so the cached entry is a fragment however the caller got
-        // here, and `read_document` must not report it as the whole file.
         let withinCeiling = complete.count == cleaned.count
         let id = UUID()
         try self.init(
@@ -260,10 +175,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             columnCount: columnCount,
             wasTruncated: !withinCeiling || state == .truncated,
             totalCharacterCount: complete.count,
-            // Pending ONLY when something will actually republish. A truncated
-            // extract's total is known — it is what we have — and claiming it
-            // unknown would leave the envelope permanently unable to say how
-            // much document is there.
             totalIsPending: state == .pending
         )
         cache.put(
@@ -273,19 +184,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 text: complete,
                 pageCount: pageCount,
                 outline: Self.resolvingOutlineOffsets(outline, in: complete),
-                // A preview persisted while its background pass is still
-                // running must say so on disk: the pending mark is in-memory
-                // only, and a quit before the pass lands would otherwise leave
-                // an entry that reads back as the whole document.
                 isComplete: state == .complete && withinCeiling,
                 hitSizeCeiling: !withinCeiling || state == .truncated
             )
         )
     }
 
-    /// Import a user-selected file. ``cache`` is injectable so tests can
-    /// exercise the extract-and-register round trip without writing to the
-    /// user's real document cache.
+    /// Imports a user-selected file; `cache` is injectable for isolated tests.
     init(contentsOf url: URL, cache: DocumentContentCache = .shared) throws {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
         if let size = values.fileSize, size > Self.maxSourceBytes {
@@ -310,32 +215,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         }
     }
 
-    /// Pages to extract eagerly while the user waits. Sized to comfortably
-    /// cover ``maxCombinedTokens`` of preview — a 302-page book filled that
-    /// budget from its first 5 pages — while staying cheap enough to be
-    /// imperceptible.
+    /// Selectable-text pages read synchronously for the preview.
     private static let eagerPageCount = 24
-
-    /// Pages OCR'd synchronously when a PDF has no text layer.
-    ///
-    /// Far smaller than ``eagerPageCount`` because the two cost wildly
-    /// different amounts: reading selectable text is ~0.006 s/page, while
-    /// recognition measured ~0.69 s/page on a real scan. Twenty-four pages of
-    /// OCR would be a 17-second stall with the send button disabled; four is
-    /// under three seconds and still yields a usable preview. The rest is
-    /// recognized on the same background pass that finishes text PDFs.
+    /// OCR is much slower, so its synchronous preview is smaller.
     private static let eagerOCRPageCount = 4
-    /// Opening pages inspected while looking for the eager OCR preview. A
-    /// cover, separator, or several blank leaves must not make a readable scan
-    /// look empty, but synchronous recognition still needs a firm ceiling.
     private static let maxEagerOCRProbePages = 8
-
-    /// Upper bound on captured outline rows. A real 302-page book has 289;
-    /// this stops a generated PDF with a pathological bookmark tree from
-    /// bloating the cached entry.
     private static let maxOutlineNodes = 2_000
-    /// Outline titles are headings, not prose. Anything longer is a bookmark
-    /// holding a paragraph, which would crowd out the rest of the map.
     private static let maxOutlineTitleCharacters = 200
 
     private init(pdfFilename filename: String, data: Data, cache: DocumentContentCache) throws {
@@ -343,29 +228,16 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             throw ValidationError.invalidPDF
         }
 
-        // Extract only what the preview needs. Extracting all 302 pages of a
-        // real book costs ~1.84s, and it ran while the send button was
-        // disabled — a visible stall for text the model would not see until it
-        // asked for it. The first pages cost ~0.00s and are all the preview
-        // can show; the remainder is finished on a background task below.
-        // Read the bookmark tree before any page text. It costs ~0.03s even
-        // on a 302-page book because it never touches page content, and it is
-        // the highest-quality structure available: hand-authored by whoever
-        // made the PDF, with exact pages. Heuristics over extracted prose are
-        // the fallback, not the primary source.
         let outline = Self.bookmarkOutline(of: document)
 
         let eagerLimit = min(Self.eagerPageCount, document.pageCount)
-        let head = Self.extractPages(
-            document,
+        let head = PDFTextRecognizer.recognizePages(
+            of: document,
             range: 0..<eagerLimit,
-            characterBudget: Self.maxExtractedCharacters
+            characterBudget: Self.maxExtractedCharacters,
+            recognizeScans: false
         )
         guard !head.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // No selectable text in the eager window: this is a scan. Recognize
-            // a few pages so the turn has a preview, and leave the rest to the
-            // background pass — at ~0.69 s/page a 529-page book is ~6 minutes,
-            // which can never run while the user waits.
             try self.init(
                 scannedPDF: document,
                 filename: filename,
@@ -376,12 +248,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             return
         }
 
-        // Three distinct outcomes, and they must not be conflated. Every page
-        // read in full is complete; pages left over means a background pass
-        // will finish them (pending); a budget that stopped the read means
-        // there is nothing more to get, whether or not pages remain — no task
-        // is started for it, so calling it pending would leave the attachment
-        // permanently waiting on work that does not exist.
         let sawEveryPage = eagerLimit == document.pageCount
         let state: ExtractionState = !head.reachedEnd
             ? .truncated
@@ -393,36 +259,18 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             sourceByteCount: data.count,
             pageCount: document.pageCount,
             cache: cache,
-            // A partially-extracted document must not advertise the head's
-            // length as the total, or the envelope would tell the model the
-            // document ends where the preview does.
             state: state,
             outline: outline
         )
         guard state == .pending else { return }
 
-        // Finish the document in the background, then republish the complete
-        // text under the same id. The PDFDocument is captured deliberately:
-        // re-opening it later costs the full ~1.83s again, whereas PDFKit
-        // serves already-parsed pages from this instance in ~0.004s.
-        //
-        // The handle goes to the cache rather than being discarded: this pass
-        // can run for minutes on a document with scanned plates, and removing
-        // the attachment must be able to stop it (see
-        // ``DocumentContentCache/cancelExtraction(_:)``).
         let id = self.id
         let pageCount = document.pageCount
         cache.beginPending(id)
-        // Taken BEFORE the extraction, so a removal at any point during it
-        // invalidates the result. Checking cancellation just before publishing
-        // would not: the task can be descheduled between the check and the
-        // write, and `remove` can complete in that window.
+        // A removal during extraction invalidates this generation.
         let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
-            // ``recognizePages`` passes selectable text straight through and
-            // only rasterizes pages that have none, so a mostly-typeset book
-            // pays the OCR cost for its scanned plates alone and nothing else.
             let extracted = PDFTextRecognizer.recognizePages(
                 of: document,
                 range: 0..<pageCount,
@@ -433,7 +281,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let bounded = String(full.prefix(Self.maxExtractedCharacters))
             guard !bounded.isEmpty else { return }
-            // Conditional: a no-op if the document was removed while this ran.
             cache.publish(
                 id,
                 entry: DocumentContentCache.Entry(
@@ -441,16 +288,9 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                     text: bounded,
                     pageCount: pageCount,
                     outline: Self.resolvingOutlineOffsets(outline, in: bounded),
-                    // Complete only if the pass actually consumed the document.
-                    // A cancelled run stops mid-book, and an extract that hit
-                    // ``maxExtractedCharacters`` lost its tail — both leave a
-                    // partial entry that must not claim otherwise on relaunch.
                     isComplete: extracted.reachedEnd
                         && !Task.isCancelled
                         && bounded.count == full.count,
-                    // Only the CEILING makes a retry pointless — the same file
-                    // truncates at the same point. A cancelled run is worth
-                    // attaching again, so it must not be reported this way.
                     hitSizeCeiling: !Task.isCancelled
                         && (!extracted.reachedEnd || bounded.count < full.count)
                 ),
@@ -460,14 +300,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         cache.registerExtraction(id, task: extraction)
     }
 
-    /// Import a PDF with no text layer by recognizing its pages.
-    ///
-    /// Split out from the text path because the economics are different by two
-    /// orders of magnitude: reading selectable text is ~0.006 s/page, while
-    /// recognition is ~0.69 s/page. At most ``maxEagerOCRProbePages`` opening
-    /// pages are inspected synchronously, stopping once
-    /// ``eagerOCRPageCount`` readable pages have supplied a preview. The
-    /// remainder runs on the same background pass a large text PDF uses.
+    /// Recognizes enough opening pages for a scan preview, then continues async.
     private init(
         scannedPDF document: PDFDocument,
         filename: String,
@@ -492,14 +325,9 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         }
         let head = recognizedPages.joined(separator: "\n\n")
         guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // Recognition found nothing legible in the bounded opening probe.
-            // This is the honest "cannot read this" case: blank scans, pure
-            // diagrams, or a language Vision does not cover.
             throw ValidationError.noExtractableText(.pdf)
         }
 
-        // The probe runs unbudgeted (one page at a time), so the only question
-        // here is whether it covered the document.
         let state: ExtractionState = pagesInspected == document.pageCount
             ? .complete
             : .pending
@@ -519,26 +347,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let pageCount = document.pageCount
         let previewLength = head.count
         cache.beginPending(id)
-        // `.utility`, not `.background`: the model may ask to read this
-        // document seconds from now and blocks until recognition finishes.
-        // `.background` is for work nobody awaits, and macOS throttles it hard
-        // enough that even a six-page scan can overrun the tool's wait.
-        //
-        // This is the pass the cancellation machinery exists for: at
-        // ~0.69 s/page a 529-page scan is ~6 minutes of Vision and PDFKit
-        // work, and before the handle was kept, removing the attachment left
-        // all of it running with nothing to show for it.
-        //
-        // Cancellation is an efficiency measure only. What guarantees a removed
-        // document is not resurrected is the generation taken here, BEFORE the
-        // work starts, and validated inside the cache at publish time — a task
-        // can be descheduled between any cancellation check and its write.
         let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
-            // PDFDocument is not Sendable. Recreate it from Sendable bytes in
-            // this worker so no PDFKit object crosses the concurrency boundary
-            // or remains reachable from the importing task.
+            // Avoid carrying a non-Sendable PDFDocument into the worker.
             guard let workerDocument = PDFDocument(data: data),
                   workerDocument.pageCount == pageCount else { return }
             let extracted = PDFTextRecognizer.recognizePages(
@@ -550,9 +362,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             let full = Self.collapsingLayoutNoise(extracted.text)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let bounded = String(full.prefix(Self.maxExtractedCharacters))
-            // A cancelled run returns only the pages it reached. Publishing
-            // that is right — partial recognized text beats none — but never
-            // publish something SHORTER than the preview already on screen.
             guard bounded.count > previewLength else { return }
             cache.publish(
                 id,
@@ -573,71 +382,10 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         cache.registerExtraction(id, task: extraction)
     }
 
-    /// Concatenate the selectable text of `range`, tagging each page so the
-    /// model can cite one. Pages with no text (images) are skipped.
-    ///
-    /// `characterBudget` stops the accumulation rather than trimming the
-    /// finished string, so the process never holds more than the budget even
-    /// for a PDF whose pages decompress to far more text than the file's size
-    /// suggests. Each page is bounded through
-    /// ``PDFTextRecognizer/boundedText(of:limit:)`` so a single oversized
-    /// sheet is never fully materialized either. See
-    /// ``PDFTextRecognizer/recognizePages(of:range:characterBudget:onPageComplete:)``.
-    private static func extractPages(
-        _ document: PDFDocument,
-        range: Range<Int>,
-        characterBudget: Int = .max
-    ) -> PDFTextRecognizer.Extraction {
-        var pages: [String] = []
-        var remaining = characterBudget
-        for index in range {
-            guard remaining > 0 else {
-                return PDFTextRecognizer.Extraction(
-                    text: pages.joined(separator: "\n\n"), reachedEnd: false
-                )
-            }
-            guard let page = document.page(at: index) else { continue }
-            let bounded = PDFTextRecognizer.boundedText(of: page, limit: remaining)
-            let text = bounded.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
-                if bounded.clamped {
-                    return PDFTextRecognizer.Extraction(
-                        text: pages.joined(separator: "\n\n"), reachedEnd: false
-                    )
-                }
-                continue
-            }
-            let tagged = "[Page \(index + 1)]\n\(text)"
-            let cost = tagged.count + (pages.isEmpty ? 0 : 2)
-            guard cost <= remaining else {
-                pages.append(String(tagged.prefix(max(0, remaining - 2))))
-                return PDFTextRecognizer.Extraction(
-                    text: pages.joined(separator: "\n\n"), reachedEnd: false
-                )
-            }
-            remaining -= cost
-            pages.append(tagged)
-            if bounded.clamped {
-                return PDFTextRecognizer.Extraction(
-                    text: pages.joined(separator: "\n\n"), reachedEnd: false
-                )
-            }
-        }
-        return PDFTextRecognizer.Extraction(
-            text: pages.joined(separator: "\n\n"), reachedEnd: true
-        )
-    }
-
-    /// Flatten the PDF's bookmark tree into depth-tagged rows.
-    ///
-    /// Returns empty when the file carries no bookmarks, which is common —
-    /// exported reports and scans usually have none. ``ReadDocumentTool`` then
-    /// infers structure from the text instead.
+    /// Flattens the bookmark tree without recursion on untrusted nesting.
     private static func bookmarkOutline(of document: PDFDocument) -> [DocumentContentCache.OutlineNode] {
         guard let root = document.outlineRoot else { return [] }
         var nodes: [DocumentContentCache.OutlineNode] = []
-        // Iterative walk with an explicit stack: a malformed or hostile PDF can
-        // nest bookmarks thousands deep, and recursion would overflow.
         var stack: [(node: PDFOutline, childIndex: Int, depth: Int)] = [(root, 0, -1)]
         while var frame = stack.popLast() {
             guard frame.childIndex < frame.node.numberOfChildren,
@@ -662,17 +410,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         return nodes
     }
 
-    /// Attach a character offset to each outline row by locating its page
-    /// marker in `text`.
-    ///
-    /// The page number a bookmark carries is only useful to a human; the model
-    /// needs an offset it can hand back to ``read_document``. Extraction writes
-    /// a `[Page N]` marker at the head of every page, so the mapping is a
-    /// single pass rather than a search per heading.
-    ///
-    /// A row whose page is missing from the text — the page held no selectable
-    /// text, or the document is still partially extracted — simply keeps a nil
-    /// offset and stays in the map for its title alone.
+    /// Resolves bookmark pages to reusable character offsets in one pass.
     static func resolvingOutlineOffsets(
         _ outline: [DocumentContentCache.OutlineNode],
         in text: String
@@ -684,8 +422,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("[Page "), line.hasSuffix("]"),
                let page = Int(line.dropFirst("[Page ".count).dropLast()) {
-                // First occurrence wins: a page marker cannot legitimately
-                // repeat, and a document quoting the marker must not move it.
                 if offsetForPage[page] == nil { offsetForPage[page] = characterOffset }
             }
             characterOffset += line.count + 1   // +1 for the newline
@@ -701,24 +437,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         }
     }
 
-    /// Collapse PDF layout artefacts that carry no meaning but cost real tokens.
-    ///
-    /// Measured on a 302-page book: its table of contents alone contained 9,127
-    /// dot-leader runs (`. . . . . .` padding between a heading and its page
-    /// number). Those tokenize at ~0.5 tokens per character — the worst case
-    /// for a BPE vocabulary, since each ". " lands as its own token — so the
-    /// first 24,000 characters of that document cost 13,306 tokens, more than
-    /// double a normal prose slice of the same length.
-    ///
-    /// They are pure visual filler: a model reading "Introduction 3" learns
-    /// exactly what "Introduction . . . . . 3" tells it. Dropping them shrinks
-    /// the preview, the prefill time, and the cached document, and it makes the
-    /// token estimate honest again (the estimator assumes natural language, and
-    /// nothing about a dot leader is).
-    ///
-    /// Deliberately conservative: only runs of FOUR or more leader characters
-    /// are touched, so ellipses, decimals, and ASCII-art in a code block
-    /// survive intact.
+    /// Removes long dot leaders and rules while preserving ordinary punctuation.
     static func collapsingLayoutNoise(_ text: String) -> String {
         var out = text
         for pattern in [
@@ -732,7 +451,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 options: .regularExpression
             )
         }
-        // Layout noise often leaves runs of blank lines behind it.
         return out.replacingOccurrences(
             of: #"\n{4,}"#,
             with: "\n\n\n",
@@ -779,18 +497,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         return nil
     }
 
-    /// Returns a copy whose PREVIEW is constrained to a token budget. The
-    /// document cache is untouched: ``read_document`` can still reach the whole
-    /// text, so this shrinks what is shown, not what is available.
-    ///
-    /// Budgeting in tokens rather than characters is what keeps a Chinese and
-    /// an English attachment costing the same prompt — the character counts
-    /// differ by ~2x for the same token spend.
-    ///
-    /// ``wasTruncated`` is NOT set here. It means "extraction dropped text
-    /// permanently"; shrinking a preview drops nothing, and conflating the two
-    /// would report unrecoverable loss for the ordinary two-attachment case.
-    /// ``hasUnshownContent`` is what expresses "you are seeing part".
+    /// Returns a preview-limited copy without changing retained cache content.
     func limited(toTokens tokenBudget: Int) -> ChatFileAttachment? {
         guard tokenBudget > 0 else { return nil }
         let text = TokenEstimate.prefix(extractedText, withinTokens: tokenBudget)
@@ -810,10 +517,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         )
     }
 
-    /// Split the shared PREVIEW budget across the turn's attachments. Each
-    /// document remains fully readable through ``read_document`` regardless of
-    /// how small its share is — this only bounds what enters the prompt
-    /// unprompted.
+    /// Splits the prompt-preview budget across a message's attachments.
     static func fittedForMessage(_ attachments: [ChatFileAttachment]) -> [ChatFileAttachment] {
         let candidates = Array(attachments.prefix(maxAttachmentsPerMessage))
         guard !candidates.isEmpty else { return [] }
@@ -829,32 +533,17 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             parts.append("\(rowCount) rows")
             parts.append("\(columnCount) columns")
         }
-        // "partial" describes the PREVIEW, not the retained document: the rest
-        // is in the document cache and the model can page to it. Only say it
-        // when text was genuinely dropped at extraction time.
         if wasTruncated { parts.append("partial") }
         if parts.isEmpty { parts.append(kind.displayName) }
         return parts.joined(separator: " · ")
     }
 
-    /// True when the prompt shows less than the whole document, so the model
-    /// must call ``read_document`` to see the rest.
-    ///
-    /// A `nil` total means extraction is still running, which only happens for
-    /// a document too large to finish eagerly — so there is certainly more.
     var hasUnshownContent: Bool {
         guard let total = totalCharacterCount else { return true }
         return extractedText.count < total
     }
 
-    /// Model-facing source wrapper. Delimiters and the explicit instruction
-    /// distinguish reference material from the user's actual request.
-    ///
-    /// When the document does not fit the preview budget the wrapper also
-    /// carries an envelope: how much is shown, how much exists, and the exact
-    /// ``read_document`` call that reaches the remainder. Without that the
-    /// model has no way to know the text was cut, and would confidently answer
-    /// from a fraction of a long document.
+    /// Wraps untrusted reference text and points partial previews to the tool.
     var promptText: String {
         let safeName = filename
             .replacingOccurrences(of: "\r", with: " ")
@@ -868,8 +557,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         if hasUnshownContent {
             let shown = extractedText.count
             let pages = pageCount.map { " across \($0) pages" } ?? ""
-            // Interpolating the optional directly would print "nil" to the
-            // model while a large PDF's background extraction is still running.
             let extent = totalCharacterCount.map { "the first \(shown) of \($0) characters" }
                 ?? "only the opening \(shown) characters"
             header += """
@@ -919,10 +606,6 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 return "This CSV has an unterminated quoted field."
             case .noExtractableText(let kind):
                 if kind == .pdf {
-                    // Scanned PDFs ARE supported now — they are recognized on
-                    // import. Reaching here means recognition itself found
-                    // nothing: a blank scan, pure imagery, or a script Vision
-                    // does not cover.
                     return "No readable text could be recognized in this PDF. It may be blank, contain only images or diagrams, or be in a language Rapid cannot read."
                 }
                 return "This file contains no readable data."
