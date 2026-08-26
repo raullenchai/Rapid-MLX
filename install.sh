@@ -199,7 +199,7 @@ EOF
 
 installed_cached_aliases() {
     "$INSTALL_DIR/bin/rapid-mlx" models --cached --json 2>/dev/null |
-        "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
+        "$INSTALL_DIR/bin/python" -c 'import json,sys; p=json.load(sys.stdin); print("\n".join(m["alias"] for m in p.get("cached", []) if m.get("state") == "ok" and isinstance(m.get("alias"), str)))' 2>/dev/null
 }
 
 # When sourced by the test harness we only want the definitions above, not the

@@ -213,7 +213,7 @@ check "cache matching is exact, not a substring" \
 CACHE_FIXTURE="$WORK/cache_fixture"; mkdir -p "$CACHE_FIXTURE/bin"
 cat > "$CACHE_FIXTURE/bin/rapid-mlx" <<'EOF'
 #!/bin/bash
-printf '%s\n' '{"cached":[{"alias":"qwen3.5-9b-4bit","state":"ok"},{"alias":"partial","state":"incomplete"},{"alias":null,"state":"unmapped"}]}'
+printf '%s\n' '{"cached":[{"alias":"qwen3.5-9b-4bit","state":"ok"},{"alias":"qwen3.8-27b-4bit","state":"ok"},{"alias":"partial","state":"incomplete"},{"alias":null,"state":"unmapped"}]}'
 EOF
 cat > "$CACHE_FIXTURE/bin/python" <<'EOF'
 #!/bin/bash
@@ -222,7 +222,10 @@ EOF
 chmod +x "$CACHE_FIXTURE/bin/rapid-mlx" "$CACHE_FIXTURE/bin/python"
 OLD_INSTALL_DIR="$INSTALL_DIR"; INSTALL_DIR="$CACHE_FIXTURE"
 check "structured cache reader returns only runnable mapped aliases" \
-    "$(installed_cached_aliases)" "qwen3.5-9b-4bit"
+    "$(installed_cached_aliases)" $'qwen3.5-9b-4bit\nqwen3.8-27b-4bit'
+check "multiple structured cached aliases feed the selector independently" \
+    "$(select_starter_model 32 "$(installed_cached_aliases)")" \
+    "qwen3.8-27b-4bit"
 INSTALL_DIR="$OLD_INSTALL_DIR"
 
 if grep -Fq 'CACHED_ALIASES="$(installed_cached_aliases || true)"' "$INSTALL_SH"; then
