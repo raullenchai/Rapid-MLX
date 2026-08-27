@@ -218,7 +218,25 @@ final class RapidUITestHarness {
         open.click()
     }
 
-    func dragFile(_ url: URL) {
+    /// Drag ``url`` from the helper host app onto the compose field.
+    ///
+    /// ``expectedChip`` is the remove control the drop must produce, fetched at
+    /// the call site via ``element(_:)`` (which keeps the query literal in the
+    /// test source for the xcui workflow contract). A landed drop is treated as
+    /// one whose chip settles (exists and is hittable); the helper waits
+    /// ``dropSettleTimeout`` for that and asserts if it never appears. The chip
+    /// element is polled directly (``exists``/``isHittable``) — never
+    /// dereferenced before it exists, so a not-yet-matched ``firstMatch``
+    /// cannot throw. There is deliberately NO silent re-issue of the synthetic
+    /// drag: a first drop that does not land despite the hittable gate is a
+    /// real product defect the test should surface, not retry over (#2481).
+    /// Callers without an expected chip (the unsupported-file negative case)
+    /// keep the original single-drop behaviour.
+    func dragFile(
+        _ url: URL,
+        expectedChip chip: XCUIElement? = nil,
+        dropSettleTimeout: TimeInterval = 10
+    ) {
         let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
         dragSource.launchEnvironment = ["RAPID_XCUI_DRAG_FILE": url.path]
         dragSource.launch()
@@ -231,7 +249,20 @@ final class RapidUITestHarness {
         // before SwiftUI's enclosing drop destination can handle the event.
         let dropTarget = element("rapid.chat.compose")
         XCTAssertTrue(dropTarget.waitForExistence(timeout: 10))
+        // The synthetic drop must land on a laid-out, frontmost target. The
+        // compose field can exist in the AX tree before it has reached its
+        // final frame after a model start / re-layout; dragging against a
+        // pre-layout frame is how a drop gets silently lost (#2481).
+        XCTAssertTrue(waitUntil(timeout: 10) { dropTarget.isHittable },
+                      "compose drop target never became hittable before drag")
+
+        guard let chip = chip else {
+            source.click(forDuration: 1, thenDragTo: dropTarget)
+            return
+        }
         source.click(forDuration: 1, thenDragTo: dropTarget)
+        XCTAssertTrue(waitUntil(timeout: dropSettleTimeout) { chip.exists && chip.isHittable },
+                      "dropped attachment chip did not settle within \(dropSettleTimeout)s")
     }
 
     func pasteImage(_ url: URL) throws {
@@ -321,6 +352,30 @@ final class RapidUITestHarness {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         } while Date() < deadline
         return condition()
+    }
+
+    /// Take the chip fetched via ``element(_:)`` at the call site (which
+    /// keeps the query literal in the test source for the xcui workflow
+    /// contract) and wait until the remove control it names has settled —
+    /// ``exists`` and ``isHittable`` — so it is fully rendered on-screen.
+    /// Returns the settled element. Reuses ``waitUntil`` (XCUIElement's
+    /// ``exists`` and ``isHittable`` re-query the AX tree on every poll, so the
+    /// stale-capture and mid-animation races a one-shot ``waitForExistence``
+    /// can miss are covered) and the chip is never dereferenced before it
+    /// exists, so a not-yet-matched ``firstMatch`` cannot throw (#2481).
+    @discardableResult
+    func waitForAttachmentRemove(
+        _ chip: XCUIElement,
+        timeout: TimeInterval = 15
+    ) -> XCUIElement {
+        if !waitUntil(timeout: timeout, condition: { chip.exists && chip.isHittable }) {
+            if !chip.exists {
+                XCTFail("Attachment remove control never appeared within \(timeout)s")
+            } else {
+                XCTFail("Attachment remove control never became hittable within \(timeout)s")
+            }
+        }
+        return chip
     }
 
     private func dismissFirstRunIfNeeded() {

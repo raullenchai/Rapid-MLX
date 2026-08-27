@@ -134,6 +134,7 @@ def loaded_model(baseline_tokens):
     return model, tokenizer
 
 
+@pytest.mark.real_hf_cache
 def test_inject_loads_real_sidecar_weights(loaded_model):
     """The sidecar's 31 keys must round-trip into the quantized MTP head.
 

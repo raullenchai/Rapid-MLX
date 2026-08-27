@@ -49,6 +49,29 @@ def main(argv: list[str] | None = None) -> int:
             "names are silently ignored."
         ),
     )
+    parser.add_argument(
+        "--base",
+        default="",
+        metavar="SHA",
+        help=(
+            "Explicit merge-base SHA to review/diff-coverage against. "
+            "Overrides automatic merge-base derivation, so the reviewer "
+            "sees ONLY this PR's diff even when the base branch tip has "
+            "moved past the point where the PR branched. When absent the "
+            "fetch step derives the exact git merge-base automatically."
+        ),
+    )
+    parser.add_argument(
+        "--body-only",
+        action="store_true",
+        help=(
+            "Run ONLY the description-quality gate (fetch + "
+            "cl_description_quality) and reproduce its verdict locally — no "
+            "tests, no codex, no diff review. Use to check a PR's title/body "
+            "hygiene cheaply (e.g. a fresh PR from the template should pass "
+            "with no edits)."
+        ),
+    )
     args = parser.parse_args(argv)
     fail_fast = args.fail_fast or env_truthy("PR_VALIDATE_FAIL_FAST")
     skip_raw = args.skip_steps or os.environ.get("PR_VALIDATE_SKIP_STEPS", "")
@@ -58,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         verbose=args.verbose,
         fail_fast=fail_fast,
         skip_steps=skip_steps,
+        base=args.base,
+        body_only=args.body_only,
     )
 
 

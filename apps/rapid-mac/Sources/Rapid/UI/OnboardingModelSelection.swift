@@ -283,8 +283,28 @@ enum OnboardingModelSelection {
     /// Whether this Mac can run the alias, using the classification the model
     /// picker already disables on. Not a new compatibility claim — the same
     /// ``ModelSizing`` estimate, read in one more place.
+    ///
+    /// A curated recommendation is trusted over ``ModelSizing``'s estimate,
+    /// which over-states low-bit / MoE footprints (the 32 GB tier's
+    /// `qwen3.8-27b-4bit` reads ~22 GB as an estimate but its measured 8K
+    /// serve peak is 20.0 GB and fits). This mirrors every start path —
+    /// ``ContentView.runLaunchAutoStart``, ``ModelPickerBar.handleStartTap``
+    /// and ``CacheAwareDefault`` all gate `.tooBig` on the same
+    /// ``RAMBucketedDefault.isRecommendedPick(alias:physicalRAMGB:)`` — so
+    /// `.tooBig` is only a veto when the alias isn't THIS Mac's curated
+    /// recommendation.
+    ///
+    /// That predicate is floor-guarded: it is true only for a tier this Mac
+    /// genuinely sits in (RAM ≥ the tier's floor). Below the lowest tier's
+    /// floor a Mac sits in no tier, so the curated picks it is shown are NOT
+    /// exempt and the `.tooBig` veto still applies to them.
     static func isAvailable(alias: String, hardware: MacHardware) -> Bool {
-        ModelSizing.classify(ModelSizing.estimate(alias: alias), on: hardware) != .tooBig
+        if RAMBucketedDefault.isRecommendedPick(
+            alias: alias, physicalRAMGB: hardware.physicalRAMGB
+        ) {
+            return true
+        }
+        return ModelSizing.classify(ModelSizing.estimate(alias: alias), on: hardware) != .tooBig
     }
 
     /// Build the row set for a catalogue slice. Cached-ness comes from the

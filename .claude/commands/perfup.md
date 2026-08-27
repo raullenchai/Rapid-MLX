@@ -131,7 +131,7 @@ Independent review via Codex.
    PR body must include:
    - **Summary**: What was optimized and why
    - **Benchmark results**: Before/after table from perfup-results.tsv
-   - **Test plan**: How to verify
+   - **Verification**: How to verify
 4. Update memory:
    - Move optimization to "Completed" in `perf_optimization_queue.md` with PR#, date, confirmed speedup
    - Remove from todo if applicable

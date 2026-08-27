@@ -193,6 +193,11 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--no-memory-aware-cache",  # disables memory-aware cache sizing
         # Privacy toggle.
         "--no-telemetry",
+        # Cheetah launch banner opt-out. Decorative UX knob: it suppresses a
+        # TTY-only print() in cli.main() and never selects a model, parser,
+        # tier, or engine route (no auto-detection). Sibling of the
+        # RAPID_MLX_NO_BANNER allowlist entry in test_no_out_of_band_routing.py.
+        "--no-banner",
     }
 )
 

@@ -709,7 +709,7 @@ class DiffusionEngine(BaseEngine):
                 "dependencies. Install the vision stack: "
                 "`pip install 'rapid-mlx[vision]'` (or, pinned to stay "
                 "compatible with rapid-mlx's transformers pin, "
-                "`pip install 'mlx-vlm==0.6.3'`). "
+                "`pip install 'mlx-vlm==0.6.16'`). "
                 f"Underlying error: {e}"
             )
             self._ready.set()

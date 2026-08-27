@@ -561,6 +561,7 @@ def test_gemma4_structure_info_returns_gemma4_wire_triple():
     assert si.trigger in si.sentinels
 
 
+@pytest.mark.real_hf_cache
 def test_gemma4_supports_grammar_and_auto_unsafe():
     from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
 

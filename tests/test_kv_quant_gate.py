@@ -698,6 +698,7 @@ def test_niah_fail_closed_on_unknown_ram():
     assert "undetected" in result["reason"] or "fail-closed" in result["reason"]
 
 
+@pytest.mark.real_hf_cache
 def test_niah_skips_when_not_requested_and_sub_m3():
     from scripts.kv_quant_quality_gate import _maybe_run_niah
     from vllm_mlx.chip_tier import classify_chip_tier

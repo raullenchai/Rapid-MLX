@@ -52,24 +52,31 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Keep pr_validate test deps in sync with the declared [ci-linux] extra
+        # renders config/pr-validate-deps.txt from pyproject.toml [ci-linux] via
+        # jinja2 and fails closed on a stale committed copy, so the pipeline's
+        # test dependencies can never drift from the declared set (same SSOT
+        # guarantee the ci.yml coverage-union guard provides).
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+          python scripts/render_pr_validate_deps.py --check
+
       - name: Install pr_validate dependencies
         run: |
           python -m pip install --upgrade pip
-          # The pipeline itself is mostly stdlib + a few helpers:
-          # - pyyaml: golden_models.yaml parsing in stress_e2e_bench
-          #   (the step skips on CI but the module loads regardless)
-          # - requests: gh API calls in fetch + supply_chain
+          # Test deps come from the DECLARED `[ci-linux]` extra (rendered by
+          # scripts/render_pr_validate_deps.py), so `full_unit` and
+          # `targeted_tests` see the same pinned import surface the test-matrix
+          # job runs, with no ad hoc copy to drift.
+          pip install --requirement config/pr-validate-deps.txt
+          # Pipeline-only helpers NOT in the test set:
           # - pip-audit: dependency CVE scan in supply_chain
           # - ruff: needed by the `lint` step which shells out to it
-          # - test deps: mirror the test-matrix job so `full_unit` and
-          #   `targeted_tests` see the same import surface they would
-          #   if a contributor ran `make smoke` locally.
-          pip install pyyaml requests pip-audit ruff rich mcp
-          # tomli-w is a RUNTIME dep (agents/adapter.py merges ~/.codex/config.toml).
-          # This runner installs a curated list rather than the package, so a new
-          # runtime dependency has to be named here too or targeted_tests fails on
-          # import while the main-branch control passes.
-          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers tomli-w
+          # - rich: scorecard rendering
+          # - mcp: MultiProtocolClient helpers in server-exercise steps
+          # - tomli-w: RUNTIME dep (agents/adapter.py merges ~/.codex/config.toml).
+          pip install pip-audit ruff rich mcp tomli-w
 
       - name: Resolve PR number
         id: prnum

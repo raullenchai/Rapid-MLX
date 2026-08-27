@@ -1,0 +1,21 @@
+# GENERATED FILE — do not edit.
+# Rendered from pyproject.toml ``[project.optional-dependencies].ci-linux`` by
+# scripts/render_pr_validate_deps.py. pr-validate.yml installs this set so the
+# CI pipeline runs against exactly the declared test dependencies (no ad hoc
+# list). Re-run ``python scripts/render_pr_validate_deps.py`` after changing
+# ``[ci-linux]``; ``--check`` (wired into pr-validate CI) fails on a stale copy.
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pydantic
+fastapi>=0.100.0
+jsonschema>=4.0.0
+httpx
+psutil>=5.9.0
+transformers>=5.0.0,<5.13
+requests>=2.28.0
+pyyaml>=6.0
+python-multipart
+uvicorn>=0.23.0
+websockets>=12.0
+jinja2

@@ -43,6 +43,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
 # Codex round-1 BLOCKING: ``import tomllib`` at module-import time would
 # crash on Python 3.10 (the floor in ``pyproject.toml`` →
 # ``requires-python = ">=3.10"``) before the version-floor test could
@@ -102,8 +106,7 @@ def _split_spec(spec: str) -> tuple[str, str]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Core: vision extra exists, lists mlx-vlm, and the version floor is
-# real (not a placeholder).
+# Core: vision extra exists and lists the exact validated mlx-vlm runtime.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -136,34 +139,38 @@ def test_vision_extra_lists_mlx_vlm() -> None:
     )
 
 
-def test_vision_mlx_vlm_floor_is_recognizable() -> None:
-    """The minimum-version floor must be a concrete version, not an
-    empty pin or a wildcard. ``0.8.0`` was tested against ``>=0.6.3``
-    (Gemma 4 DLM PR #1347 + long-context prefill PR #1348). The L-07
-    TODO references the older ``>=0.4.4`` floor as a workaround — we
-    keep the stricter floor since downgrading would unwire
-    DiffusionGemma support."""
+def test_vision_mlx_vlm_matches_desktop_runtime() -> None:
+    """CLI and Desktop must run the same validated mlx-vlm release.
+
+    A floating 0.6.x range lets pip backtrack to 0.6.3 when another
+    dependency constrains Transformers, which gives fresh CLI installs a
+    different routing/runtime surface from the signed Desktop sidecar.
+    """
     py = _load_pyproject()
-    specs = _extra_specs(py, "vision")
-    for spec in specs:
-        name, ver = _split_spec(spec)
-        if name.lower() == "mlx-vlm":
-            assert ver.startswith(">="), (
-                f"mlx-vlm spec should pin a minimum version with ``>=``; "
-                f"got {spec!r}. A non-floor pin (``==`` / ``~=``) breaks "
-                f"forward compatibility with mlx-vlm patch releases."
-            )
-            # The floor must be a real PEP-440 version string, not a
-            # placeholder. Cheap-check: at least one dot.
-            floor = ver[2:].strip()
-            assert "." in floor, (
-                f"mlx-vlm floor {floor!r} doesn't look like a real version. "
-                f"Expected something like ``>=0.6.3``."
-            )
-            return
-    raise AssertionError(  # pragma: no cover — guarded by the test above
-        "mlx-vlm spec not found in `[vision]` extra"
-    )
+    requirements = [
+        Requirement(spec)
+        for spec in _extra_specs(py, "vision")
+        if Requirement(spec).name == "mlx-vlm"
+    ]
+    assert len(requirements) == 1
+    assert requirements[0].specifier == SpecifierSet("==0.6.16")
+
+
+def test_transformers_range_excludes_5130_and_caps_next_minor() -> None:
+    """The clean resolver may select 5.15.x, but never 5.13.0 or 5.16.x."""
+    py = _load_pyproject()
+    requirements = [
+        Requirement(spec)
+        for spec in py["project"]["dependencies"]
+        if Requirement(spec).name == "transformers"
+    ]
+    assert len(requirements) == 1
+    specifier = requirements[0].specifier
+    assert "!=5.13.0" in str(specifier)
+    assert Version("5.12.1") in specifier
+    assert Version("5.13.0") not in specifier
+    assert Version("5.15.1") in specifier
+    assert Version("5.16.0") not in specifier
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -565,46 +572,13 @@ def test_dev_extra_pins_tomli_for_python_310() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Broken-build exclusion: mlx-vlm 0.6.4 ships a broken qwen3_5
-# GatedDeltaNet SSM forward (garbage output — this is why Bonsai 27B is
-# served text-only via mlx-lm). It is the CURRENT PyPI latest with no
-# 0.6.5 fix, so a bare ``mlx-vlm>=0.6.3`` resolves a fresh
-# ``pip install 'rapid-mlx[vision]'`` STRAIGHT to the broken wheel.
-# Every extra that pulls mlx-vlm must exclude it. Mirrors the upstream
-# Preserve the https://github.com/waybarrios/vllm-mlx/issues/633 fix in our tree.
+# Runtime lockstep: every extra that installs mlx-vlm must select the exact
+# release validated by the Desktop sidecar and dependency-coherence sweep.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _spec_excludes_064(spec: str) -> bool:
-    """True iff ``spec`` cannot resolve to the broken mlx-vlm 0.6.4.
-
-    Evaluated with full PEP 440 semantics via ``packaging`` — NOT a
-    substring check. A naive ``"!=0.6.4" in spec`` would be fooled by
-    ``!=0.6.4.1`` (which excludes 0.6.4.1 yet still ADMITS 0.6.4), so we
-    ask the parsed specifier set directly whether it admits 0.6.4. This
-    also transparently accepts a future ``>=0.6.5`` floor after an
-    upstream fix, with no test edit. ``packaging.requirements.Requirement``
-    parses (and discards) any PEP 508 environment marker such as
-    ``; platform_system == 'Darwin'`` on its own, so the Darwin-gated
-    dev/test pins are handled identically to the unmarked ones.
-    ``prereleases=True`` keeps the check honest if a pin ever carries a
-    0.6.4 prerelease form (defensive; our pins are all final releases)."""
-    from packaging.requirements import Requirement
-    from packaging.version import Version
-
-    return not Requirement(spec).specifier.contains(Version("0.6.4"), prereleases=True)
-
-
-def test_all_mlx_vlm_specs_exclude_broken_064() -> None:
-    """EVERY optional-dependency extra that pulls mlx-vlm must exclude the
-    broken 0.6.4 build.
-
-    0.6.4 ships a broken qwen3_5 GatedDeltaNet SSM forward (garbage
-    output) AND is the current PyPI latest with no 0.6.5 fix, so a bare
-    ``mlx-vlm>=0.6.3`` installs it on a fresh venv — the exact fresh-user
-    trap this test guards. The scan walks ALL extras (not a hard-coded
-    list) so a NEW extra that adds mlx-vlm without the exclusion is caught
-    here, at CI time, instead of by a user's broken vision/dflash boot."""
+def test_all_mlx_vlm_specs_match_validated_desktop_pin() -> None:
+    """Every optional surface must resolve mlx-vlm exactly to 0.6.16."""
     py = _load_pyproject()
     extras = py.get("project", {}).get("optional-dependencies", {})
     offenders: list[tuple[str, str]] = []
@@ -613,13 +587,11 @@ def test_all_mlx_vlm_specs_exclude_broken_064() -> None:
             name, _ = _split_spec(spec)
             if name.lower() != "mlx-vlm":
                 continue
-            if not _spec_excludes_064(spec):
+            if Requirement(spec).specifier != SpecifierSet("==0.6.16"):
                 offenders.append((extra_name, spec))
     assert offenders == [], (
-        "These mlx-vlm specs can still resolve to the BROKEN 0.6.4 build:\n"
+        "These mlx-vlm specs can drift from the Desktop's validated 0.6.16 runtime:\n"
         + "\n".join(f"  [{e}] {s!r}" for e, s in offenders)
-        + "\n\n0.6.4 has a broken qwen3_5 GatedDeltaNet SSM forward and is "
-        "the current PyPI latest with no fix, so a bare `>=0.6.3` installs "
-        "it on a fresh venv. Add `!=0.6.4` to each spec (or a `>=0.6.5` "
-        "floor once an upstream fix ships)."
+        + "\n\nPin every mlx-vlm-bearing extra to ==0.6.16. Move the pin only "
+        "after the Desktop and dependency-coherence sweeps validate a new release."
     )

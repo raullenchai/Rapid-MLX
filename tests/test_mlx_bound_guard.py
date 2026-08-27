@@ -115,7 +115,7 @@ class TestExtractMlxBounds:
 
 
 def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
-    """The signed Desktop bundle must not bypass the coherence-gated cap."""
+    """The signed Desktop and every fresh CLI install use one VLM runtime."""
     pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     vision_specs = [
         Requirement(spec)
@@ -131,12 +131,10 @@ def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
     assert len(matches) == 1, "expected exactly one mlx-vlm sidecar requirement"
 
     desktop_spec = Requirement(matches[0])
-    # The desktop deliberately pins one validated version because its
-    # ``--no-deps`` install must not float.  That exact pin must remain inside
-    # the project's coherence-gated vision range; it need not copy the range
-    # text verbatim.
+    # Both surfaces deliberately pin one validated version. A range here caused
+    # fresh pip installs to backtrack to 0.6.3 while Desktop stayed on 0.6.16.
     assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.16").specifier
-    assert Version("0.6.16") in vision_specs[0].specifier
+    assert vision_specs[0].specifier == desktop_spec.specifier
 
 
 def test_image_extra_tracks_mlx_032_compatible_mflux_line():
@@ -307,7 +305,7 @@ class TestDesktopManifestSynced:
                 continue
             name = cells[0]
             declared = cells[1]
-            if name in ("mlx", "mlx-lm"):
+            if name in ("mlx", "mlx-lm", "transformers"):
                 out[name] = declared.strip("`")
         return out
 
@@ -316,7 +314,7 @@ class TestDesktopManifestSynced:
         core = {
             Requirement(spec).name: str(Requirement(spec).specifier)
             for spec in pyproject["project"]["dependencies"]
-            if Requirement(spec).name in ("mlx", "mlx-lm")
+            if Requirement(spec).name in ("mlx", "mlx-lm", "transformers")
         }
         third = self._third_party_mlx_table()
 

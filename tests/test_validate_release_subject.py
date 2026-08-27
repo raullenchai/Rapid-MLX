@@ -113,3 +113,52 @@ def test_main_exit_0_on_valid(vrs):
 
 def test_main_exit_1_on_invalid(vrs):
     assert vrs.main(["--subject", "wrong"]) == 1
+
+
+# ---------- exact-head pre-flight evidence ---------------------------
+
+
+def test_extracts_one_repository_bound_preflight_run(vrs):
+    body = (
+        "## Evidence\n\n"
+        "Release-Preflight: "
+        "https://github.com/raullenchai/Rapid-MLX/actions/runs/33047129086\n"
+    )
+    assert vrs.extract_preflight_run_id(body, "raullenchai/Rapid-MLX") == "33047129086"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "https://github.com/raullenchai/Rapid-MLX/actions/runs/33047129086",
+        "Release-Preflight: https://github.com/other/repo/actions/runs/1",
+        "Release-Preflight: https://github.com/raullenchai/Rapid-MLX/actions/runs/1/jobs/2",
+        (
+            "Release-Preflight: https://github.com/raullenchai/Rapid-MLX/actions/runs/1\n"
+            "Release-Preflight: https://github.com/raullenchai/Rapid-MLX/actions/runs/2"
+        ),
+    ],
+)
+def test_missing_ambiguous_or_malformed_preflight_evidence_is_rejected(vrs, body):
+    with pytest.raises(ValueError):
+        vrs.extract_preflight_run_id(body, "raullenchai/Rapid-MLX")
+
+
+def test_cli_prints_validated_preflight_run_id(vrs, capsys):
+    assert (
+        vrs.main(
+            [
+                "--subject",
+                "chore: bump version to 0.13.2",
+                "--pr-body",
+                "Release-Preflight: "
+                "https://github.com/raullenchai/Rapid-MLX/actions/runs/123",
+                "--repository",
+                "raullenchai/Rapid-MLX",
+                "--print-preflight-run-id",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.splitlines()[-1] == "123"

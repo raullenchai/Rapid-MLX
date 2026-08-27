@@ -1467,6 +1467,7 @@ _DEEPSEEK_REVISION = "4e0d3848a0ad8f9fb54638891e4928f04fcca978"
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_deepseek_r1_prefilled_think_template_is_tolerated(lltok):
     """Using the REAL DeepSeek-R1 chat template (which prefills ``<think>``) and
     the ``deepseek_r1`` reasoning parser, the AUTO generated stream — reasoning

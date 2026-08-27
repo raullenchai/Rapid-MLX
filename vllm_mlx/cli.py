@@ -4900,11 +4900,9 @@ def _run_submit_flow(
                     "  Or, if you only need text inference (smaller "
                     "footprint, ~16 MB vs ~450 MB):"
                 )
-                # Pinned to ==0.6.3 to match VLM_EXTRA_INSTALL_HINT (0.10.16
-                # dogfood ⑤): an unpinned mlx-vlm resolves to the current
-                # PyPI latest, which pulls transformers 5.14.x and violates
-                # rapid-mlx's own ``transformers<5.13`` core pin.
-                print("    pip install --no-deps 'mlx-vlm==0.6.3'")
+                # Match the validated runtime used by the vision extra and
+                # packaged app so every recovery path installs the same lane.
+                print("    pip install --no-deps 'mlx-vlm==0.6.16'")
                 print()
             else:
                 print(f"  Error loading model: {e}")
@@ -9777,6 +9775,13 @@ Examples:
         help="Disable anonymous usage telemetry for this run "
         "(equivalent to RAPID_MLX_TELEMETRY=0).",
     )
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Do not print the cheetah launch banner. Top-level only "
+        "(place it before the subcommand, e.g. 'rapid-mlx --no-banner "
+        "serve', like --no-telemetry); equivalent to RAPID_MLX_NO_BANNER=1.",
+    )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
@@ -11689,6 +11694,47 @@ def main():
         sys.exit(2)
     if getattr(args, "command", None) in ("chat", "run"):
         args._model_was_explicit = getattr(args, "model", None) is not None
+
+    # Cheetah launch banner. Interactive only — stdout must be a real
+    # terminal, not a pipe/redirect, and none of the machine-facing opt-outs
+    # may be set. Rationale per cue:
+    #   - stdout.isatty(): the banner is decorative; a script parsing
+    #     ``rapid-mlx`` output (e.g. ``rapid-mlx models | jq`` / a NIX
+    #     wrapper) must see bytes it can depend on. Non-TTY stays byte-clean.
+    #   - --json: ``models/recipe/connect --json`` emit machine-readable
+    #     payloads on stdout; a banner in front would corrupt them.
+    #   - --no-banner / RAPID_MLX_NO_BANNER: explicit user opt-out.
+    #   - NO_COLOR: the art's ROSETTE spots and TEAR marks are painted with
+    #     ANSI; under NO_COLOR we keep the (already monochrome) glyphs but
+    #     drop all escapes — suppressing them entirely would be wrong, since
+    #     the mono cheetah is still legible and tasteful.
+    # ``--help`` / ``--version`` (``-V``) are handled by argparse during
+    # parse and exit before this point, so they stay byte-clean; the
+    # equivalent ``help`` / ``version`` SUBCOMMANDS do reach here, and
+    # ``should_show_banner`` suppresses them by name (see
+    # ``_BYTE_CLEAN_SUBCOMMANDS``) so a ``rapid-mlx version`` contract stays
+    # greppable. Only the bare launcher and machine-facing-clean interactive
+    # subcommands show the banner.
+    try:
+        from vllm_mlx._banner import render_banner, should_show_banner
+
+        _no_banner = getattr(args, "no_banner", False) or (
+            os.environ.get("RAPID_MLX_NO_BANNER", "").strip().lower()
+            in {"1", "true", "yes"}
+        )
+        if should_show_banner(
+            command=getattr(args, "command", None),
+            json_output=getattr(args, "json", False),
+            no_banner=_no_banner,
+            stdout_isatty=sys.stdout.isatty(),
+            stdin_isatty=sys.stdin.isatty(),
+        ):
+            print(render_banner(_version, color="NO_COLOR" not in os.environ))
+            print()
+    except Exception:
+        # The banner is decorative; never let a rendering hiccup block the
+        # user's actual command.
+        pass
 
     # First-run consent prompt — fires at most once per machine, only on
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.

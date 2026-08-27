@@ -5,7 +5,7 @@ name: Auto-release on version bump
 # gate passes on the self-hosted Apple-Silicon runner (the Studio). The existing
 # ``publish.yml`` then publishes to PyPI on the ``release: published`` event.
 #
-# Flow:  detect (hosted)  →  tier1-agent-gate (self-hosted Studio)  →  release
+# Flow: detect (hosted) → Tier-1 + Desktop candidate gates → release-prep → release
 # The release job ``needs`` the gate, so a version bump cannot tag or publish
 # unless the five Tier-1 agents (Claude Code / Codex / Hermes / Aider /
 # DeepSeek Harness) re-verify
@@ -28,12 +28,17 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: "Run detect + Tier-1 + signed Desktop candidate gates at the selected branch/tag ref; no tag, Release, updater, or protected environment. Mutually exclusive with force_version and retry_version."
+        type: boolean
+        required: false
+        default: false
       force_version:
-        description: "EMERGENCY only: release this exact version WITHOUT the Tier-1 gate (use when the Studio runner is down). Must equal pyproject.toml. Leave blank otherwise. Mutually exclusive with retry_version."
+        description: "EMERGENCY only: release this exact version WITHOUT the Tier-1 gate (use when the Studio runner is down). Must equal pyproject.toml. Leave blank otherwise. Mutually exclusive with dry_run and retry_version."
         required: false
         default: ""
       retry_version:
-        description: "NORMAL retry: re-run the full release at the CURRENT main head for this version (use when a release stalled because main advanced past the validated candidate). Must equal pyproject.toml, run on main, and bypass NOTHING (Tier-1 + signed candidate + evidence + approval all re-run). Mutually exclusive with force_version."
+        description: "NORMAL retry: re-run the full release at the CURRENT main head for this version (use when a release stalled because main advanced past the validated candidate). Must equal pyproject.toml, run on main, and bypass NOTHING (Tier-1 + signed candidate + evidence + approval all re-run). Mutually exclusive with force_version and dry_run."
         required: false
         default: ""
       reason:
@@ -53,6 +58,7 @@ jobs:
       should_release: ${{ steps.detect.outputs.should_release }}
       version: ${{ steps.detect.outputs.version }}
       force: ${{ steps.detect.outputs.force }}
+      dry_run: ${{ steps.detect.outputs.dry_run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -66,13 +72,36 @@ jobs:
           # explicitly — keep the pattern).
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
           FORCE_VERSION: ${{ github.event.inputs.force_version }}
           RETRY_VERSION: ${{ github.event.inputs.retry_version }}
           REASON: ${{ github.event.inputs.reason }}
           ACTOR: ${{ github.actor }}
         run: |
-          # --- Manual workflow_dispatch (emergency force OR normal retry) --
+          # --- Manual workflow_dispatch (dry-run, emergency force, or retry) --
           if [ "$EVENT" = "workflow_dispatch" ]; then
+            # A dry run exercises the two real pre-publication gates on the
+            # selected branch/tag ref. It is deliberately not a release route.
+            if [ "$DRY_RUN" = "true" ]; then
+              if [ -n "$FORCE_VERSION" ] || [ -n "$RETRY_VERSION" ]; then
+                echo "❌ dry_run cannot be combined with force_version or retry_version." >&2
+                exit 1
+              fi
+              VERSION=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
+              python3 scripts/release_version.py validate "$VERSION" >/dev/null
+              echo "🧪 DRY RUN requested by @$ACTOR at exact source $GITHUB_SHA (v$VERSION)"
+              echo "    ref: $GITHUB_REF"
+              echo "    Tier-1 and signed Desktop candidate gates will run."
+              echo "    release-prep/release are disabled: no tag, Release, updater, or protected environment."
+              {
+                echo "version=$VERSION"
+                echo "should_release=true"
+                echo "force=false"
+                echo "dry_run=true"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             # force_version and retry_version are mutually exclusive routes.
             if [ -n "$FORCE_VERSION" ] && [ -n "$RETRY_VERSION" ]; then
               echo "❌ force_version and retry_version are mutually exclusive; provide at most one." >&2
@@ -80,8 +109,11 @@ jobs:
             fi
             if [ -z "$FORCE_VERSION" ] && [ -z "$RETRY_VERSION" ]; then
               echo "workflow_dispatch with neither force_version nor retry_version — nothing to do."
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              echo "force=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "should_release=false"
+                echo "force=false"
+                echo "dry_run=false"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
@@ -135,24 +167,36 @@ jobs:
                 --json isDraft -q .isDraft 2>/dev/null || echo "missing")
               if [ "$RELEASE_DRAFT" = "false" ]; then
                 echo "Release v$VERSION already exists — nothing to do (idempotent)"
-                echo "should_release=false" >> "$GITHUB_OUTPUT"
-                echo "force=false" >> "$GITHUB_OUTPUT"
+                {
+                  echo "should_release=false"
+                  echo "force=false"
+                  echo "dry_run=false"
+                } >> "$GITHUB_OUTPUT"
                 exit 0
               fi
               echo "Tag v$VERSION exists without a published Release — will recover"
-              echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-              echo "should_release=true" >> "$GITHUB_OUTPUT"
-              echo "force=$FORCE_BOOL" >> "$GITHUB_OUTPUT"
+              {
+                echo "version=$VERSION"
+                echo "should_release=true"
+                echo "force=$FORCE_BOOL"
+                echo "dry_run=false"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "force=$FORCE_BOOL" >> "$GITHUB_OUTPUT"
+            {
+              echo "version=$VERSION"
+              echo "should_release=true"
+              echo "force=$FORCE_BOOL"
+              echo "dry_run=false"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # --- Normal push path -------------------------------------------
-          echo "force=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "force=false"
+            echo "dry_run=false"
+          } >> "$GITHUB_OUTPUT"
           SUBJECT=$(git log -1 --pretty=%s)
           echo "subject: $SUBJECT"
 
@@ -186,8 +230,10 @@ jobs:
             exit 0
           fi
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "should_release=true"
+          } >> "$GITHUB_OUTPUT"
           echo "✓ Detected version bump → v$VERSION (pyproject matches, release missing)"
 
   # 2) The gate. Runs on the self-hosted Apple-Silicon runner (the Studio) —
@@ -432,6 +478,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # A dry run deliberately ends here: after both real pre-publication gates,
+  # before release-prep, the protected rapid-mac-tag environment, or any tag /
+  # Release / updater write. Keep a final fail-closed job so the run conclusion
+  # and summary state both gate results and the exact source identity.
+  dry-run-summary:
+    needs: [detect, tier1-agent-gate, desktop-candidate-gate]
+    if: >-
+      always()
+      && needs.detect.result == 'success'
+      && needs.detect.outputs.dry_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify both dry-run gates and report the zero-publication boundary
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          TIER1_RESULT: ${{ needs.tier1-agent-gate.result }}
+          DESKTOP_RESULT: ${{ needs.desktop-candidate-gate.result }}
+          ACCEPTED_SHA: ${{ needs.desktop-candidate-gate.outputs.accepted_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Auto-release dry run"
+            echo ""
+            echo "Version: ${VERSION}"
+            echo "Selected ref: ${SOURCE_REF}"
+            echo "Exact source SHA: ${SOURCE_SHA}"
+            echo "Tier-1 gate: ${TIER1_RESULT}"
+            echo "Desktop candidate gate: ${DESKTOP_RESULT}"
+            echo "Accepted Desktop SHA: ${ACCEPTED_SHA:-<none>}"
+            echo ""
+            echo "No tag, GitHub Release, updater pointer, or protected environment was created."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TIER1_RESULT" != "success" ] || [ "$DESKTOP_RESULT" != "success" ]; then
+            echo "::error::dry run requires both pre-publication gates to succeed (Tier-1=$TIER1_RESULT, Desktop=$DESKTOP_RESULT)." >&2
+            exit 1
+          fi
+          if [ "$ACCEPTED_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::Desktop candidate accepted $ACCEPTED_SHA, expected selected source $SOURCE_SHA." >&2
+            exit 1
+          fi
+          echo "::notice::dry run passed at exact source $SOURCE_SHA; publication jobs remain disabled."
+
   # 3) Tag + GitHub Release. Runs when the gate passed OR this is a forced
   #    (gate-bypassed) release, AND the desktop candidate gate accepted the
   #    exact commit. ``!cancelled()`` lets the ``if`` evaluate even though the
@@ -448,6 +541,7 @@ jobs:
       !cancelled()
       && needs.detect.result == 'success'
       && needs.detect.outputs.should_release == 'true'
+      && needs.detect.outputs.dry_run != 'true'
       && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
       && needs.desktop-candidate-gate.result == 'success'
     runs-on: ubuntu-latest
@@ -661,6 +755,7 @@ jobs:
       !cancelled()
       && needs.detect.result == 'success'
       && needs.detect.outputs.should_release == 'true'
+      && needs.detect.outputs.dry_run != 'true'
       && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
       && needs.desktop-candidate-gate.result == 'success'
       && needs.release-prep.result == 'success'

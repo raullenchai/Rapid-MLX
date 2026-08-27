@@ -147,21 +147,14 @@ def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
     )
 
 
-# The bare-mlx-vlm line is PINNED to ``==0.6.3`` on purpose (0.10.16
-# dogfood finding ⑤). An unpinned ``pip install 'mlx-vlm>=0.6.3'`` run
-# against a base install resolves to the current PyPI latest (0.6.6),
-# which pulls ``transformers 5.14.x`` — violating rapid-mlx's own core
-# pin (``transformers<5.13``) and printing a pip dependency-conflict.
-# ``rapid-mlx[vision]`` (the primary, recommended path) avoids this
-# because pip resolves the whole graph together and backtracks to an
-# mlx-vlm that satisfies the transformers pin (0.6.3 → transformers
-# 5.12.1). The pinned bare command reproduces that same conflict-free
-# result for users who reach for mlx-vlm directly.
+# The bare-mlx-vlm line is pinned to the same validated runtime as the
+# ``rapid-mlx[vision]`` extra. Keeping both recovery paths aligned avoids
+# resolver-dependent behavior between direct installs and the packaged app.
 VLM_EXTRA_INSTALL_HINT = (
     "Install it with:\n"
     "    pip install 'rapid-mlx[vision]'\n"
     "or directly (pinned to stay compatible with rapid-mlx's transformers pin):\n"
-    "    pip install 'mlx-vlm==0.6.3'"
+    "    pip install 'mlx-vlm==0.6.16'"
 )
 
 

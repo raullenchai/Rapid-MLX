@@ -1,32 +1,11 @@
 #!/usr/bin/env bash
-#
-# Offline contract: the bump-subject policy is TWO-LEVEL, and the wiring in
-# release-preflight.yml + auto-release.yml matches the documented distinction.
-#
-#   detect-bump-pr (release-preflight.yml)   BROAD r: routes a bump title into the
-#                                            gates even when GitHub's default
-#                                            squash suffix "(#NN)" is present
-#                                            (release_version.py subject --allow-pr-suffix).
-#   PF-1 (release-preflight.yml)             STRICT: requires the canonical title
-#                                            (validate_release_subject.py) and FAILS a
-#                                            suffixed one — so a bump PR title is kept clean.
-#   detect (auto-release.yml, post-merge)    TOLERANT: accepts the "(#NN)" suffix on the
-#                                            merged commit subject (--allow-pr-suffix),
-#                                            so an un-"--subject" squash merge can't strand
-#                                            a release.
-#
-# Provable offline: read the two workflow files and assert the exact wiring, then
-# exercise the two code paths (release_version.py --allow-pr-suffix vs the strict
-# validate_release_subject.py) against a suffixed subject.
-#
-#   ./tests/release/test_release_preflight_subject.sh
-#
-# Requires: bash, python3, grep.
+# Offline contract for the split bump guard / dispatched release pre-flight.
 
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PREFLIGHT="$REPO_ROOT/.github/workflows/release-preflight.yml"
+VERSION_GUARD="$REPO_ROOT/.github/workflows/version-check.yml"
 AUTO_RELEASE="$REPO_ROOT/.github/workflows/auto-release.yml"
 
 PASS=0
@@ -34,42 +13,58 @@ FAIL=0
 ok()  { PASS=$((PASS + 1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 contains() { if grep -qF -- "$2" <<<"$1"; then ok "$3"; else bad "$3"; printf '        want: %s\n' "$2"; fi; }
+absent() { if grep -qF -- "$2" <<<"$1"; then bad "$3"; else ok "$3"; fi; }
 
-# 1) detect-bump-pr is BROAD: recognizes the optional "(#NN)" suffix so a suffixed
-#    bump title is still routed into PF-1 (which then fails it). The version
-#    derivation must tolerate the suffix.
-DETECT=$(sed -n '/id: check$/,/^  pf1-subject-regex/p' "$PREFLIGHT")
-contains "$DETECT" 'release_version.py subject --allow-pr-suffix "$TITLE"' \
-  "detect-bump-pr uses --allow-pr-suffix (routing is broad, not strict)"
+TRIGGERS=$(sed -n '/^on:/,/^permissions:/p' "$PREFLIGHT")
+contains "$TRIGGERS" 'workflow_dispatch:' \
+  "release pre-flight is explicitly dispatchable"
+contains "$TRIGGERS" 'pr_number:' \
+  "dispatch binds an open bump PR number"
+contains "$TRIGGERS" 'expected_sha:' \
+  "dispatch binds the expected exact head SHA"
+absent "$TRIGGERS" 'pull_request:' \
+  "release pre-flight never requests privileged context from a PR event"
 
-# 2) PF-1 is STRICT: it runs the canonical-title validator, so a suffixed title is
-#    still caught. PF-1 runs whenever is_bump is true (which now includes suffixed
-#    titles from step 1), so the strict check genuinely applies to them.
-PF1=$(sed -n '/^  pf1-subject-regex:/,/^  pf2-release-secrets:/p' "$PREFLIGHT")
-contains "$PF1" 'needs.detect-bump-pr.outputs.is_bump == '\''true'\''' \
-  "PF-1 runs for every routed bump title (incl. a suffixed one)"
-contains "$PF1" 'validate_release_subject.py --subject "$TITLE"' \
-  "PF-1 enforces the STRICT canonical validator (no --allow-pr-suffix)"
+BIND=$(sed -n '/^  bind-bump-pr:/,/^  pf1-release-contract:/p' "$PREFLIGHT")
+contains "$BIND" 'gh api "repos/${REPO}/pulls/${PR_NUMBER}"' \
+  "dispatch resolves the live PR through GitHub"
+contains "$BIND" '[ "$EXPECTED_SHA" != "$HEAD_SHA" ] || [ "$DISPATCH_SHA" != "$HEAD_SHA" ]' \
+  "dispatch refuses stale input, selected ref, or live PR head"
+contains "$BIND" 'scripts/release_version.py subject "$TITLE"' \
+  "dispatch rejects a noncanonical bump title before privileged jobs"
 
-# 3) Post-merge detect in auto-release.yml is TOLERANT: it derives the version from
-#    the merged commit subject with --allow-pr-suffix.
+GUARD=$(sed -n '/Validate the complete bump PR contract/,/Pass — no stray version change/p' "$VERSION_GUARD")
+# The guard reads the authoritative commit count from the PR payload (GitHub's
+# `pull_request.commits`), NOT a local `git rev-list` that can vary with how the
+# source branch was fetched or whether base advanced — so no stale-count drift.
+contains "$GUARD" 'COMMIT_COUNT="${{ github.event.pull_request.commits }}"' \
+  "required guard enforces one bump commit (authoritative PR payload count)"
+contains "$GUARD" 'must contain exactly one commit' \
+  "required guard refuses a multi-commit bump PR"
+contains "$GUARD" 'scripts/check_release_notes.py' \
+  "required guard synchronizes the two release-note inputs"
+contains "$GUARD" '--pr-body "$PR_BODY"' \
+  "required guard validates the evidence line through the subject SSOT"
+contains "$GUARD" 'RUN_EVENT" != "workflow_dispatch"' \
+  "required guard accepts only an explicit pre-flight dispatch"
+contains "$GUARD" 'RUN_SHA" != "$HEAD_SHA"' \
+  "required guard binds successful evidence to the exact PR head"
+
 AUTO=$(sed -n '/Detect version bump/,/pyproject.toml must match/p' "$AUTO_RELEASE")
 contains "$AUTO" 'release_version.py subject --allow-pr-suffix "$SUBJECT"' \
-  "post-merge detect tolerates the squash suffix (--allow-pr-suffix)"
+  "post-merge detect remains tolerant of GitHub's squash suffix"
 
-# 4) Code-level behaviour: a suffixed subject is ACCEPTED by --allow-pr-suffix
-#    (detect/pf-broad path) and REJECTED by the strict validator (PF-1 path).
 if (cd "$REPO_ROOT" && python3 scripts/release_version.py subject --allow-pr-suffix \
-     "chore: bump version to 0.6.82 (#518)" >/dev/null 2>&1); then
-  ok "release_version.py --allow-pr-suffix accepts a suffixed subject (broad path)"
+     "chore: bump version to 0.13.2 (#2491)" >/dev/null 2>&1); then
+  ok "post-merge parser accepts a suffixed bump subject"
 else
-  bad "release_version.py --allow-pr-suffix accepts a suffixed subject (broad path)"
+  bad "post-merge parser accepts a suffixed bump subject"
 fi
 if (cd "$REPO_ROOT" && python3 scripts/validate_release_subject.py \
-     --subject "chore: bump version to 0.6.82 (#518)" >/dev/null 2>&1); then
-  bad "validate_release_subject.py (PF-1) rejects a suffixed subject (strict path)"
+     --subject "chore: bump version to 0.13.2 (#2491)" >/dev/null 2>&1); then
+  bad "required PR guard rejects a suffixed title"
 else
-  ok "validate_release_subject.py (PF-1) rejects a suffixed subject (strict path)"
+  ok "required PR guard rejects a suffixed title"
 fi
 
 echo

@@ -123,6 +123,7 @@ def test_build_tool_grammar_auto_declines_for_harmony():
 
 
 @_requires_llguidance
+@pytest.mark.real_hf_cache
 def test_build_tool_grammar_auto_still_builds_for_auto_safe_family():
     # The opt-out is per-family: a family WITHOUT the flag (defaults auto-safe,
     # like hermes/qwen) still builds an auto grammar. Proves the gate keys on

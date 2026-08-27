@@ -1,18 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""0.10.16 dogfood finding ⑤ — the base-wheel "needs mlx-vlm" install hint
-must recommend a CONFLICT-FREE install.
+"""The base-wheel "needs mlx-vlm" install hint must recommend the validated
+vision runtime.
 
 Pre-fix, the vision-alias boot guard (and the DiffusionEngine import-error)
-told users to ``pip install 'mlx-vlm>=0.6.3'``. Unpinned, that resolves a
-base install straight to the current PyPI latest (0.6.6), which pulls
-``transformers 5.14.x`` and VIOLATES rapid-mlx's own core pin
-(``transformers<5.13``) — pip prints a dependency-conflict.
+told users to install a different mlx-vlm release than the version validated
+for the optional runtime and packaged app.
 
-The fix:
-  * ``rapid-mlx[vision]`` is the primary suggestion (pip resolves the whole
-    graph together and backtracks to a transformers-compatible mlx-vlm).
-  * the bare-mlx-vlm fallback is PINNED to ``==0.6.3`` (the version that
-    keeps transformers 5.12.1), never an unpinned ``>=0.6.3``.
+The fix keeps ``rapid-mlx[vision]`` as the primary suggestion and pins the
+bare-mlx-vlm fallback to the same validated runtime.
 
 These tests pin the message text at every user-facing site so a future
 edit can't silently regress back to the conflict-producing hint.
@@ -34,7 +29,7 @@ def test_vlm_extra_install_hint_is_pinned_and_conflict_free():
     # Primary path stays the extra.
     assert "rapid-mlx[vision]" in VLM_EXTRA_INSTALL_HINT
     # Bare fallback is pinned to the transformers-compatible version.
-    assert "mlx-vlm==0.6.3" in VLM_EXTRA_INSTALL_HINT
+    assert "mlx-vlm==0.6.16" in VLM_EXTRA_INSTALL_HINT
     # And the unpinned form that produces the transformers conflict is gone.
     assert "mlx-vlm>=0.6.3" not in VLM_EXTRA_INSTALL_HINT
 
@@ -58,20 +53,17 @@ def test_boot_guard_absent_hint_names_pinned_install(monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert "rapid-mlx[vision]" in err
-    assert "mlx-vlm==0.6.3" in err
+    assert "mlx-vlm==0.6.16" in err
     assert "mlx-vlm>=0.6.3" not in err
 
 
 def test_gemma4_load_fallback_hint_is_pinned():
     """The Gemma-4-specific ``serve``/``chat`` load-fallback hint (printed
     when mlx-lm can't import the Gemma-4 architecture classes on a base
-    wheel) must pin the bare mlx-vlm text-only install to ``==0.6.3`` too.
+    wheel) must pin the bare mlx-vlm text-only install to ``==0.6.16`` too.
 
-    Pre-fix this site still printed ``pip install --no-deps 'mlx-vlm>=0.6.1'``
-    — an unpinned lower bound that resolves to the current PyPI latest and
-    violates rapid-mlx's ``transformers<5.13`` core pin (0.10.16 dogfood ⑤,
-    the site #1175 missed). Scan the CLI source so a future edit can't
-    silently regress this last user-facing hint back to the unpinned form.
+    Scan the CLI source so a future edit cannot silently regress this last
+    user-facing hint to an unpinned or differently pinned runtime.
     """
     import pathlib
 
@@ -80,14 +72,14 @@ def test_gemma4_load_fallback_hint_is_pinned():
     source = pathlib.Path(cli_mod.__file__).read_text()
 
     # The text-only footprint fallback must be pinned...
-    assert "pip install --no-deps 'mlx-vlm==0.6.3'" in source, (
-        "Gemma-4 load-fallback hint must pin mlx-vlm==0.6.3 to match "
-        "VLM_EXTRA_INSTALL_HINT (0.10.16 dogfood ⑤)."
+    assert "pip install --no-deps 'mlx-vlm==0.6.16'" in source, (
+        "Gemma-4 load-fallback hint must pin mlx-vlm==0.6.16 to match "
+        "VLM_EXTRA_INSTALL_HINT."
     )
     # ...and no CLI hint may use the conflict-producing unpinned lower bound.
     assert "mlx-vlm>=0.6.1" not in source, (
         "cli.py still recommends the unpinned 'mlx-vlm>=0.6.1' which pulls "
-        "transformers 5.14.x and breaks the transformers<5.13 core pin."
+        "a runtime that was not validated with this rapid-mlx release."
     )
 
 
@@ -111,7 +103,7 @@ def test_diffusion_lane_import_error_hint_is_pinned(monkeypatch):
     msg = str(exc_info.value)
     assert eng._load_error is not None
     assert "rapid-mlx[vision]" in msg
-    assert "mlx-vlm==0.6.3" in msg
+    assert "mlx-vlm==0.6.16" in msg
     assert "mlx-vlm>=0.6.3" not in msg
     # The conflict-producing forced-upgrade flag is gone.
     assert "-U 'mlx-vlm" not in msg

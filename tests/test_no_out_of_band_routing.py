@@ -512,6 +512,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Hard deadline for an already-selected LTX-2.5 generation process;
         # affects lifecycle only, never model/parser/tier routing.
         "RAPID_MLX_LTX25_TIMEOUT_SEC",
+        # Opt-out of the decorative cheetah launch banner (display preference
+        # only). Same shape as DISABLE_VERSION_CHECK: it never selects a
+        # model, parser, tier, or engine route — it only suppresses a
+        # print() in cli.main() when stdout is a TTY. Read by
+        # vllm_mlx/cli.py's banner gate (--no-banner flag is the primary
+        # mechanism; the env var exists for non-interactive launchers).
+        "RAPID_MLX_NO_BANNER",
     }
 )
 

@@ -40,19 +40,17 @@ on:
     # ``types`` overrides the default set.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [main]
-    paths:
-      # Only pyproject.toml matters now — we no longer force bumps based on
-      # aliases.json / model_auto_config.py / cli.py edits (that was the cause
-      # of the incident). We watch pyproject.toml so any version-line edit is
-      # always checked, whoever makes it.
-      - "pyproject.toml"
+    # Do not add a paths filter here. This context is eligible to be a required
+    # check, and GitHub leaves path-filtered required workflows pending forever
+    # when they are skipped. The job exits quickly when the version is unchanged.
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
 jobs:
-  guard:
+  version-bump-guard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -245,6 +243,65 @@ jobs:
           fi
 
           echo "✓ Bump PR: version $BASE_VER -> $HEAD_VER (well-formed, increasing)."
+
+      - name: Validate the complete bump PR contract
+        if: >-
+          steps.verchange.outputs.changed == 'true' &&
+          steps.isbump.outputs.is_bump == 'true' &&
+          steps.isbump.outputs.escape_hatch != 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # The title that will become the release commit subject is strict at
+          # PR time. The post-merge detector remains suffix-tolerant as defense
+          # in depth, but the bump PR itself must stay canonical.
+          RUN_ID=$(
+            python3 scripts/validate_release_subject.py \
+              --subject "$TITLE" \
+              --pr-body "$PR_BODY" \
+              --repository "$REPO" \
+              --print-preflight-run-id
+          )
+
+          # Authoritative commit count comes from the PR itself (GitHub's
+          # ``pull_request.commits``), not a local rev-list that can vary with
+          # how the source branch fetched / whether base advanced.
+          COMMIT_COUNT="${{ github.event.pull_request.commits }}"
+          if [ "$COMMIT_COUNT" != "1" ]; then
+            echo "::error::A release bump PR must contain exactly one commit; this PR has $COMMIT_COUNT. Squash it to the single canonical bump commit before release." >&2
+            exit 1
+          fi
+
+          python3 scripts/check_release_notes.py \
+            --version "$HEAD_VER" \
+            --changelog apps/rapid-mac/CHANGELOG.md \
+            --notes-dir docs/release-notes
+
+          RUN_JSON="$RUNNER_TEMP/release-preflight-run.json"
+          gh api "repos/${REPO}/actions/runs/${RUN_ID}" > "$RUN_JSON"
+          RUN_EVENT=$(jq -r '.event' "$RUN_JSON")
+          RUN_PATH=$(jq -r '.path' "$RUN_JSON")
+          RUN_SHA=$(jq -r '.head_sha' "$RUN_JSON")
+          RUN_STATUS=$(jq -r '.status' "$RUN_JSON")
+          RUN_CONCLUSION=$(jq -r '.conclusion' "$RUN_JSON")
+
+          if [ "$RUN_EVENT" != "workflow_dispatch" ] || \
+             [ "$RUN_PATH" != ".github/workflows/release-preflight.yml" ] || \
+             [ "$RUN_SHA" != "$HEAD_SHA" ] || \
+             [ "$RUN_STATUS" != "completed" ] || \
+             [ "$RUN_CONCLUSION" != "success" ]; then
+            echo "::error::Release-Preflight run $RUN_ID is not a successful release-preflight.yml workflow_dispatch on exact PR head $HEAD_SHA (event=$RUN_EVENT path=$RUN_PATH sha=$RUN_SHA status=$RUN_STATUS conclusion=$RUN_CONCLUSION). Dispatch the pre-flight on this exact head, wait for green, and replace the Release-Preflight URL in the PR body." >&2
+            exit 1
+          fi
+
+          echo "✓ Complete bump contract: one commit, synchronized notes, and exact-head pre-flight run $RUN_ID."
 
       - name: Pass — no stray version change
         if: steps.verchange.outputs.changed != 'true'

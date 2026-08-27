@@ -286,6 +286,120 @@ class TestFailFast:
         assert isinstance(STEPS[0], FetchStep)
 
 
+class TestBodyOnly:
+    """`--body-only` short-circuits the pipeline to JUST the description
+    quality gate (fetch + cl_description_quality) so a maintainer/contributor
+    can reproduce the description verdict locally without tests/codex.
+
+    Contract: when ``body_only=True`` the injectable ``steps`` and
+    ``skip_steps`` are IGNORED — only the real FetchStep and
+    CLDescriptionQualityStep run.
+    """
+
+    @staticmethod
+    def _stub_fetch(monkeypatch, title: str, body: str):
+        """Replace real FetchStep.run (which hits gh/network) with a body
+        populating stub so the test is hermetic."""
+        captured: list[str] = []
+
+        def fake_fetch_run(self, ctx):  # noqa: ARG001 — Step.run(self, ctx)
+            captured.append("fetch")
+            ctx.pr_title = title
+            ctx.pr_body = body
+            return StepResult(name="fetch", status="pass", summary="ok")
+
+        monkeypatch.setattr(FetchStep, "run", fake_fetch_run)
+        return captured
+
+    def test_body_only_runs_only_fetch_and_desc_gate(
+        self, repo_root_cwd, capsys, monkeypatch
+    ):
+        """A well-formed body (a ``## Why`` section + an issue link) passes
+        cl_description_quality — matching a fresh PR from the issue-#2493
+        template; and ``steps``/``skip_steps`` are ignored in body-only."""
+        from scripts.pr_validate.runner import STEPS  # noqa: F401
+
+        self._stub_fetch(
+            monkeypatch,
+            title="feat: scoped pr with a real title",
+            body=(
+                "## Why\n\n"
+                "fixes #123 (parser drops tool_call deltas)\n\n"
+                "## Verification\n- [x] pytest tests/ "
+            ),
+        )
+        # body_only must IGNORE the injected failing steps AND skip_steps.
+        rc = run_pipeline(
+            pr_number=999,
+            body_only=True,
+            steps=_fake_pipeline([("step_a", "fail"), ("step_b", "error")]),
+            skip_steps=("fetch",),
+        )
+        captured = capsys.readouterr()
+        # Well-formed body → desc gate passes → MERGE-SAFE (rc 0).
+        assert rc == 0
+        # Only fetch + cl_description_quality ran; injected steps are skipped.
+        assert "## [cl_description_quality]" in captured.err
+        assert "## [step_a]" not in captured.err
+        assert "## [step_b]" not in captured.err
+
+    def test_body_only_reproduces_fail_verdict_on_poor_body(
+        self, repo_root_cwd, capsys, monkeypatch
+    ):
+        """A poor body (empty rationale) reproduces the hosted FAIL verdict
+        locally — proving --body-only surfaces the same gate decision."""
+        self._stub_fetch(monkeypatch, title="fix bug", body="")
+        rc = run_pipeline(pr_number=999, body_only=True)
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "## [cl_description_quality]" in captured.err
+
+    def test_body_only_passes_on_template_shaped_body(
+        self, repo_root_cwd, capsys, monkeypatch
+    ):
+        """A body shaped exactly like the issue-#2493 template headings passes
+        cl_description_quality with NO edits — the acceptance for the gate."""
+        self._stub_fetch(
+            monkeypatch,
+            title="feat: introduce a scoped contract field",
+            body=(
+                "## Why\n\n"
+                "maintenance value: template keeps necessity front-and-center.\n\n"
+                "## Scope\n- rewrite template headings.\n\n"
+                "## Non-goals\n- no server change.\n\n"
+                "## Acceptance\n- six headings present.\n\n"
+                "## Verification\n- pytest\n\n"
+                "## Behaviour delta\n- none.\n\n"
+                "## AI assistance disclosure\n- Fully human.\n\n"
+                "## Checklist\n- [x] lint"
+            ),
+        )
+        rc = run_pipeline(pr_number=999, body_only=True)
+        captured = capsys.readouterr()
+        assert rc == 0  # template body → desc gate passes
+        assert "## [cl_description_quality]" in captured.err
+
+
+class TestBaseOverrideValidation:
+    def test_bad_base_sha_fails_fast_with_clear_message(self, repo_root_cwd, capsys):
+        """An explicit ``--base <sha>`` that Git can't resolve must fail fast
+        with a fix message — a bad SHA silently degrading the review/
+        diff-coverage base to whatever the fallback picks is exactly the
+        noise the override exists to avoid."""
+        # repo_root_cwd is a non-git tmp dir → `git cat-file -e <badsha>`
+        # exits non-zero, the same as a genuinely bad SHA in a real repo.
+        rc = run_pipeline(
+            pr_number=999,
+            base="0123456789abcdef0123456789abcdef01234567",
+            fail_fast=True,
+        )
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "--base is not an object Git can resolve" in captured.err
+        # Fail fast: no step (not even fetch) got to run.
+        assert "## [fetch]" not in captured.err
+
+
 class TestSelectModels:
     """Pin the candidate-selection contract for ``stress_e2e_bench``.
 

@@ -13,6 +13,17 @@ python3.12 -m scripts.pr_validate <PR#>
 # verbose mode (more progress logging on stderr)
 python3.12 -m scripts.pr_validate <PR#> -v
 
+# Pin the review/diff-coverage base to an EXPLICIT merge-base.
+# Overrides automatic `git merge-base` derivation so the reviewer sees
+# only THIS PR's diff even after the base branch tip has moved on.
+python3.12 -m scripts.pr_validate <PR#> --base <merge-base-sha>
+
+# Body-only: run ONLY the description-quality gate (fetch +
+# cl_description_quality) and reproduce its verdict locally — no tests,
+# no codex, no diff review. A fresh PR from the PR template should pass
+# with no edits.
+python3.12 -m scripts.pr_validate <PR#> --body-only
+
 # stdout = markdown scorecard (paste into PR comment)
 # stderr = progress logs
 # exit 0 = MERGE-SAFE, exit 1 = DO NOT MERGE
@@ -163,9 +174,10 @@ PRs by design — re-open or rebase first.
 
 ### `test_plan_check` (step 0.5)
 
-Reads the PR body for a `## Test plan` checklist. If any item is
-unchecked (`- [ ]`) the step fails — the author hasn't finished what
-they said they'd do. Lesson from #427.
+Scans the PR body for unchecked task items (`- [ ]`, Markdown task list)
+anywhere in any section — the `## Verification` list most often — and
+fails if any is left unchecked: the author hasn't finished what they said
+they'd do. Lesson from #427.
 
 ### `cl_description_quality` (step 0.7)
 

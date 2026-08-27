@@ -353,17 +353,37 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(review.title == OnboardingModelSelection.Verb.downloadAndStart)
     }
 
-    /// Availability is the classification the model picker already disables on
-    /// — not a new claim invented for onboarding.
-    @Test("Availability comes from ModelSizing.classify, not from onboarding")
-    func availabilityUsesTheExistingDecision() {
-        let hardware = MacHardware.detect()
-        for alias in ["qwen3.5-4b-4bit", "lfm2.5-1b-4bit", "qwen3-0.6b-4bit"] {
-            let expected = ModelSizing.classify(
-                ModelSizing.estimate(alias: alias), on: hardware
-            ) != .tooBig
-            #expect(OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware) == expected)
-        }
+    /// Availability reuses the classification the model picker already disables
+    /// on — not a new claim invented for onboarding — plus the ONE established
+    /// carve-out the rest of the app already applies: a Mac's curated
+    /// recommendation (``RAMBucketedDefault.isRecommendedPick``) is trusted over
+    /// ``ModelSizing``'s estimate, which over-states low-bit / MoE footprints.
+    /// So ``isAvailable`` ⇔ ``!tooBig || isRecommendedPick`` — a model is only
+    /// unavailable when it is BOTH too big (per the estimate) AND not a curated
+    /// pick — exactly the predicate every start path uses (#2505 aligned
+    /// onboarding to it).
+    ///
+    /// A fixed 32 GB fixture rather than the host, so the verdict is
+    /// deterministic and exercises the carve-out: on 32 GB the curated
+    /// `qwen3.8-27b-4bit` is `.tooBig` by ``ModelSizing``'s estimate yet MUST
+    /// be available (the exact #2505 dead-end it fixes).
+    @Test("Availability is the picker predicate on top of a narrow curated-pick carve-out")
+    func availabilityUsesThePickerPredicate() {
+        let hw = MacHardware(
+            brandString: "Apple M2 Pro",
+            family: .m2,
+            tier: .pro,
+            physicalRAMBytes: 32 * UInt64(1 << 30),
+            memoryBandwidthGBs: 200
+        )
+        // #2505: the 32 GB curated pick is tooBig by estimate but available.
+        #expect(ModelSizing.classify(
+            ModelSizing.estimate(alias: "qwen3.8-27b-4bit"), on: hw) == .tooBig)
+        #expect(OnboardingModelSelection.isAvailable(alias: "qwen3.8-27b-4bit", hardware: hw))
+        // A too-big NON-pick stays unavailable (no carve-out).
+        #expect(!OnboardingModelSelection.isAvailable(alias: "llama3.1-70b-4bit", hardware: hw))
+        // A fitting non-pick is available as usual.
+        #expect(OnboardingModelSelection.isAvailable(alias: "qwen3.5-4b-4bit", hardware: hw))
     }
 
     @Test("Cached-ness is read from the catalogue, never from copy or grouping")

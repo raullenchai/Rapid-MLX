@@ -3,12 +3,38 @@ from pathlib import Path
 import yaml
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
+PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
+REQ_CI_LINUX = Path(__file__).parents[1] / "config" / "requirements-ci-linux.txt"
 
 
 def _workflow() -> tuple[str, dict]:
     text = WORKFLOW.read_text()
     parsed = yaml.safe_load(text)
     return text, parsed
+
+
+def _ci_linux_extra() -> list[str]:
+    """Parse the canonical ``[ci-linux]`` test-dependency list from pyproject.
+
+    Version-agnostic: ``tomllib`` is stdlib on 3.11+ only, and the Linux
+    test-matrix explicitly includes 3.10. On 3.10 we fall back to extracting
+    the quoted member strings of the ``ci-linux = [...]`` TOML array — every
+    entry is a plain PEP 508 specifier line, so a quote scan is exact and
+    avoids a hard 3.11 dependency in a gate that must run on 3.10-3.12.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import re
+
+        text = PYPROJECT.read_text()
+        block = re.search(r"^ci-linux\s*=\s*\[(.*?)\]\s*$", text, re.S | re.M)
+        if block is None:
+            raise AssertionError("[ci-linux] array not found in pyproject.toml")
+        deps = re.findall(r'"([^"]+)"', block.group(1))
+        return [d for d in deps if d.strip()]
+    with PYPROJECT.open("rb") as fh:
+        return tomllib.load(fh)["project"]["optional-dependencies"]["ci-linux"]
 
 
 def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
@@ -46,9 +72,28 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
     assert early_exit < union_check
 
 
-def test_linux_coverage_lane_has_template_support_and_deselects_known_baseline_failures() -> (
+def test_linux_coverage_lane_declares_ci_linux_and_keeps_reasoning_template_tests_un_deselected() -> (
     None
 ):
+    """#2445 / #2446 root cause was the undeclared ``jinja2`` dep on the Linux
+    lane: ``_should_start_in_thinking`` renders chat templates via
+    ``transformers.utils.chat_template_utils._compile_jinja_template``, which
+    needs jinja2 at runtime, and neither transformers nor the old ad hoc install
+    line pulled it transitively. With jinja2 now declared in the ``[ci-linux]``
+    extra, both formerly --deselect-ed tests run un-deselected.
+
+    The lane must stay no-MLX (Apple-Silicon-only; the roster NOTE "tests in
+    this list MUST not import mlx"), so the install is ``-e . --no-deps`` (the
+    base package's deps include mlx) + the extra's test deps from
+    ``config/requirements-ci-linux.txt`` — never ``-e ".[ci-linux]"``, which
+    would pull mlx onto Linux.
+
+    This guard fails closed if any of the coordination contracts regress:
+    jinja2 (or anything else) drifts out of ``[ci-linux]``, the synced
+    requirements file falls out of step with the extra, the lane stops using
+    the declared set (ad hoc install / safe ``-e .[ci-linux]``), or someone
+    re-adds a ``--deselect`` instead of fixing the underlying dep.
+    """
     _, workflow = _workflow()
     linux = workflow["jobs"]["test-matrix"]
     install = next(
@@ -60,16 +105,32 @@ def test_linux_coverage_lane_has_template_support_and_deselects_known_baseline_f
         if step.get("name") == "Run unit tests (no MLX required)"
     )["run"]
 
-    assert "jinja2" in install.split()
-    assert (
-        "--deselect=tests/test_cohere_command_reasoning_parser.py::"
-        "test_prompt_priming_detects_command_markers_and_mixed_templates"
-    ) in run
-    assert (
-        "--deselect=tests/test_postprocessor.py::"
-        "TestStreamingPostProcessorReasoning::"
-        "test_1570_distill_parser_stays_active_when_thinking_flag_is_false"
-    ) in run
+    # The lane installs the package WITHOUT deps (no mlx) + the declared test
+    # deps from the synced requirements file — never the mlx-pulling editable
+    # full install.
+    assert "pip install -e . --no-deps" in install
+    assert "pip install --requirement config/requirements-ci-linux.txt" in install
+    assert 'pip install -e ".[ci-linux]"' not in install
+
+    # The synced requirements file == the canonical [ci-linux] extra.
+    req_lines = [
+        line.strip()
+        for line in REQ_CI_LINUX.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert req_lines == _ci_linux_extra()
+
+    # jinja2 is declared in the ci-linux extra in pyproject.toml.
+    pyproject = PYPROJECT.read_text()
+    assert "ci-linux" in pyproject
+    assert "jinja2" in pyproject
+
+    # The two reasoning-template tests run un-deselected (fixed by #2489).
+    assert "--deselect=" not in run
+    # Their files remain in the lane's roster so the coverage union runs them.
+    roster = [line.strip().rstrip(" \\") for line in run.splitlines() if line.strip()]
+    assert "tests/test_cohere_command_reasoning_parser.py" in roster
+    assert "tests/test_postprocessor.py" in roster
 
 
 def test_apple_coverage_roster_contains_only_tracked_tests() -> None:

@@ -133,7 +133,7 @@ full. The ranges below are the **root manifest's**; the sidecar build pins
 | --- | --- | --- | --- |
 | mlx | `>=0.32.1,<0.33` | MIT | https://github.com/ml-explore/mlx |
 | mlx-lm | `>=0.31.3,<0.32` | MIT | https://github.com/ml-explore/mlx-lm |
-| transformers | `>=5.0.0,<5.13` | Apache-2.0 | https://github.com/huggingface/transformers |
+| transformers | `>=5.0.0,!=5.13.0,<5.16` | Apache-2.0 | https://github.com/huggingface/transformers |
 | tokenizers | `>=0.19.0` | Apache-2.0 | https://github.com/huggingface/tokenizers |
 | huggingface-hub | `>=0.23.0` | Apache-2.0 | https://github.com/huggingface/huggingface_hub |
 | numpy | `>=1.24.0` | BSD-3-Clause (also 0BSD, MIT, Zlib, CC0-1.0 components) | https://github.com/numpy/numpy |

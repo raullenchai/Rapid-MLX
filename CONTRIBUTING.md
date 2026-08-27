@@ -58,7 +58,7 @@ effect and mask a broken production wiring path.
 2. Make your changes with tests if applicable
 3. Run `ruff check` and `ruff format` before committing
 4. **Self-validate your PR** (see below) — saves a round trip with maintainers
-5. Open a PR against `main` with a clear description, filling in **all required sections of the PR template** (necessity, AI assistance disclosure, test plan)
+5. Open a PR against `main` with a clear description, filling in **all required sections of the PR template** (the six-field contract — Why / Scope / Non-goals / Acceptance / Verification / Behaviour delta — plus the AI assistance disclosure)
 
 ### Necessity & AI assistance — what we ask, why
 
@@ -83,7 +83,7 @@ The script grades your PR through 11 steps and prints a strict markdown scorecar
 | step | what it does | when |
 |---|---|---|
 | `fetch` | pulls your PR + diff, classifies blast radius | always |
-| `test_plan_check` | fails on unchecked `- [ ]` items in your PR body's `## Test plan` | always |
+| `test_plan_check` | fails on any unchecked `- [ ]` task item anywhere in your PR body | always |
 | `cl_description_quality` | title + body hygiene (empty body, bad title, no rationale) | always |
 | `supply_chain` | flags new deps, install hooks, `eval`/`exec`/`shell=True`, hardcoded URLs | always |
 | `test_env_check` | verifies the test interpreter can import required pytest plugins (trusted-pins auto-install) | always |

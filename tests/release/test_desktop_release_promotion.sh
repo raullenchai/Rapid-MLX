@@ -279,7 +279,7 @@ echo "== 6b. candidate gate runs IN PARALLEL with the Tier-1 gate (dependency) =
 # ONLY — it starts at the same time as tier1 — while release-prep still `needs`
 # BOTH and requires BOTH before the tag can be claimed. Parallelism must not let
 # a release skip either gate.
-CAND_NEEDS=$(sed -n '/^  desktop-candidate-gate:/,/^  # 3)/p' "$AUTO_RELEASE")
+CAND_NEEDS=$(sed -n '/^  desktop-candidate-gate:/,/^  dry-run-summary:/p' "$AUTO_RELEASE")
 contains "$CAND_NEEDS" "needs: detect" \
   "desktop-candidate-gate needs only detect (starts in parallel with tier1)"
 lacks "$CAND_NEEDS" "tier1-agent-gate" \

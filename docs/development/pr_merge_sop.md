@@ -75,7 +75,7 @@ Run codex review **iteratively until convergence**.
   - **P2 dismissals**: a one-line rationale is fine.
   - When in doubt, fix rather than dismiss — the failure mode is dismissed-then-shipped-then-broken.
 - **Convergence** = a round produces zero new P0 **and** zero new P1 findings. Open P2s must be either addressed or explicitly dismissed per the rule above; a P2 backlog doesn't block convergence by itself but must be resolved before merge. Two consecutive convergent rounds is the gold standard; one round suffices for diffs ≤ ~50 lines.
-- Typical: 2-4 rounds for a non-trivial PR. If round 5 still finds new P0s, the PR scope is too large — split it.
+- **Default review cap: 3 rounds.** A PR that has not converged by round 3 (and is not aiming at one of the ≤ ~50-line single-round diffs) should be flagged to the reviewer rather than silently churning on. **Extension beyond 3 rounds requires a written scope ledger** — a short note in the PR thread recording: (a) the verified in-scope correctness finding that justifies continuing, (b) which P0/P1s remain open and why they weren't addressable in the first three rounds, and (c) an explicit remainder bound ("one more round, then split"). Extension is for a *substantive correctness defect in scope*, never for unbounded style/refactor churn. If rounds 4+ keep surfacing *new* P0s, the PR scope is too large — split it (this supersedes the old "round 5" guidance).
 
 ## Step 3 — Test coverage
 

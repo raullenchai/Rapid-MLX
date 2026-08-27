@@ -10,6 +10,7 @@ a step: write the module under ``steps/``, import it here, append to
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
@@ -99,6 +100,8 @@ def run_pipeline(
     fail_fast: bool = False,
     skip_steps: Sequence[str] = (),
     steps: Sequence[Step] | None = None,
+    base: str = "",
+    body_only: bool = False,
 ) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
 
@@ -118,13 +121,47 @@ def run_pipeline(
 
     ``steps`` is an injection seam for tests; production callers leave
     it ``None`` and the module-level ``STEPS`` list is used.
-    """
-    pipeline = STEPS if steps is None else steps
-    if skip_steps:
-        dropped = set(skip_steps)
-        pipeline = [s for s in pipeline if s.name not in dropped]
 
-    ctx = Context(pr_number=pr_number, verbose=verbose)
+    ``base`` is an explicit merge-base override (``--base <sha>``). When
+    set it wins over merge-base derivation in the fetch step and is used
+    as the review/diff-coverage base so the reviewer sees only the PR's
+    own diff.
+
+    ``body_only`` short-circuits the pipeline to JUST the description
+    quality gate (fetch + ``cl_description_quality``). Used by
+    ``pr_validate --body-only <pr#>`` to judge a PR's body hygiene
+    locally without burning compute on tests/codex — the description
+    gate needs only the prod-fetched title/body, never the diff.
+    When set, ``steps`` and ``skip_steps`` are ignored.
+    """
+    if body_only:
+        pipeline = [FetchStep(), CLDescriptionQualityStep()]
+    else:
+        pipeline = STEPS if steps is None else steps
+        if skip_steps:
+            dropped = set(skip_steps)
+            pipeline = [s for s in pipeline if s.name not in dropped]
+
+    ctx = Context(pr_number=pr_number, verbose=verbose, base_override=base)
+    if base:
+        # Validate an explicit ``--base <sha>`` fails fast and clearly: a bad
+        # SHA silently degrades review/diff-coverage to whatever the fallback
+        # resolves, which is exactly the noise the override exists to avoid.
+        probe = subprocess.run(
+            ["git", "cat-file", "-e", base],
+            capture_output=True,
+            text=True,
+            cwd=str(ctx.repo_root),
+        )
+        if probe.returncode != 0:
+            print(
+                "error: --base is not an object Git can resolve: "
+                f"{base!r}\n  -> confirm the SHA exists in this clone "
+                "(git cat-file -e <sha>), or drop --base and let the "
+                "fetch step derive the exact merge-base automatically.",
+                file=sys.stderr,
+            )
+            return 1
     run_id = (
         f"run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
         f"{os.getpid()}-{time.time_ns()}"

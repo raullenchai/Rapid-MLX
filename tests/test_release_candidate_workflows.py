@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 DESKTOP_WORKFLOW = ROOT / ".github/workflows/rapid-mac-release.yml"
 DESKTOP_RELEASABLE = ROOT / ".github/actions/desktop-releasable/action.yml"
@@ -32,12 +34,29 @@ def test_desktop_raw_bundle_headroom_does_not_weaken_dmg_growth_gate():
     assert 'DELTA_CAP_MB="${BUNDLE_SIZE_DELTA_CAP_MB:-50}"' in shared_action
 
 
-def test_bump_detection_checks_out_version_parser_before_invoking_it():
+def test_release_preflight_is_dispatch_only_and_exact_head_bound():
     workflow = PREFLIGHT_WORKFLOW.read_text(encoding="utf-8")
-    detect = workflow[workflow.index("  detect-bump-pr:") : workflow.index("\n  pf1-")]
-    checkout = detect.index("actions/checkout@")
-    invocation = detect.index("scripts/release_version.py")
-    assert checkout < invocation
+    parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
+    assert set(parsed["on"]) == {"workflow_dispatch"}
+    inputs = parsed["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["pr_number"]["required"] == "true"
+    assert inputs["expected_sha"]["required"] == "true"
+    bind = parsed["jobs"]["bind-bump-pr"]
+    script = bind["steps"][1]["run"]
+    assert 'gh api "repos/${REPO}/pulls/${PR_NUMBER}"' in script
+    assert 'EXPECTED_SHA" != "$HEAD_SHA' in script
+    assert 'DISPATCH_SHA" != "$HEAD_SHA' in script
+
+
+def test_release_preflight_rechecks_contract_before_privileged_jobs():
+    workflow = yaml.load(
+        PREFLIGHT_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
+    pf1 = workflow["jobs"]["pf1-release-contract"]
+    scripts = [step.get("run", "") for step in pf1["steps"]]
+    assert pf1["needs"] == "bind-bump-pr"
+    assert any("validate_release_subject.py" in script for script in scripts)
+    assert any("check_release_notes.py" in script for script in scripts)
 
 
 def test_rc_never_replaces_stable_updater_pointer():

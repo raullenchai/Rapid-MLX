@@ -88,6 +88,75 @@ struct OnboardingWontFitReviewTests {
         .init(alias: alias, isCached: cached, isAvailable: available)
     }
 
+    /// A Mac with exactly ``ramGB`` of physical RAM, tiered by RAM alone.
+    /// The tier/band only affect ``ModelSizing`` classification; the chip
+    /// identity is irrelevant to the availability verdict under test.
+    private static func hardware(ramGB: Double) -> MacHardware {
+        MacHardware(
+            brandString: "Apple M3 Pro",
+            family: .m3,
+            tier: .pro,
+            physicalRAMBytes: UInt64(ramGB) * UInt64(1 << 30),
+            memoryBandwidthGBs: 150
+        )
+    }
+
+    // MARK: - 1b. #2505 invariant: a curated pick is never refused by its own Review
+
+    /// #2505 regression: on a 32 GB Mac the setup card recommended
+    /// ``qwen3.8-27b-4bit`` while the Download Review ("WON'T FIT")
+    /// disabled Download & start — a dead-end. The card and the Review
+    /// had drifted because ``OnboardingModelSelection.isAvailable`` (which
+    /// drives the Review's disabled primary) applied ``ModelSizing``'s raw
+    /// ``.tooBig`` veto, while every start path exempts the Mac's curated
+    /// recommendation (``RAMBucketedDefault.isRecommendedPick``), trusting
+    /// its measured footprint over the estimate. Table-driven over the
+    /// PINNED tiers so the card and Review can never disagree again.
+    @Test("Every tier's curated recommended picks pass the Review's availability admission")
+    func curatedPicksAreAdmissibleOnTheirOwnTier() {
+        for tier in RAMBucketedDefault.tiers {
+            for pick in tier.picks {
+                let hw = Self.hardware(ramGB: tier.floorGB)
+                // The card presents this as RECOMMENDED, so it is by definition
+                // this Mac's curated pick (the carve-out the card relies on)…
+                #expect(RAMBucketedDefault.isRecommendedPick(
+                    alias: pick.alias, physicalRAMGB: hw.physicalRAMGB),
+                    "\(pick.alias) should be a \(tier.floorGB) GB tier pick")
+                // …and that same pick must NOT be refused by the Download
+                // Review, or the user hits a dead-end: the card says
+                // "recommended" while Review disables Download & start.
+                #expect(OnboardingModelSelection.isAvailable(
+                    alias: pick.alias, hardware: hw),
+                    "\(pick.alias) is curated for the \(tier.floorGB) GB tier but its Review refuses Download")
+            }
+        }
+    }
+
+    /// Condition-2 guard: the `.tooBig && !isRecommendedPick` carve-out must
+    /// not leak — a genuinely-too-big alias that ISN'T this Mac's curated pick
+    /// stays inaccessible, and below the lowest tier's floor a Mac sits in no
+    /// tier, so the curated picks it is shown are not exempt either. Only an
+    /// in-tier curated pick is exempt. The floor is read from the pinned
+    /// ``RAMBucketedDefault.tiers`` rather than restated here.
+    @Test("The carve-out is narrow: only the in-tier curated pick is exempt")
+    func carveOutIsNarrow() {
+        // A 70B model is never a 32 GB tier pick → still refused on 32 GB.
+        #expect(!OnboardingModelSelection.isAvailable(
+            alias: Self.tooBigAlias, hardware: Self.hardware(ramGB: 32)))
+        // bonsai-27b-2bit (~7.6 GB real, ~14.8 GB estimate) is a 24 GB tier
+        // pick, not a lowest-tier pick → on a lowest-tier Mac it is not
+        // recommended and stays subject to the (real) veto.
+        let lowestTier = RAMBucketedDefault.tiers[0]
+        #expect(!OnboardingModelSelection.isAvailable(
+            alias: "bonsai-27b-2bit",
+            hardware: Self.hardware(ramGB: lowestTier.floorGB)))
+        // Below the lowest tier's floor a Mac sits in no tier, so even that
+        // tier's own smart pick is not "recommended" and the veto applies.
+        #expect(!OnboardingModelSelection.isAvailable(
+            alias: lowestTier.primary.alias,
+            hardware: Self.hardware(ramGB: lowestTier.floorGB - 2)))
+    }
+
     // MARK: - 1. The fixture is actually incompatible
 
     /// Everything below is meaningless if the alias under test happens to fit.

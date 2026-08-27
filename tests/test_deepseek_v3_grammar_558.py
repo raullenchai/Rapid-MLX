@@ -283,6 +283,7 @@ def test_distill_qwen_tokenizer_markers_are_multitoken(distill_tok):
     assert are_single_special_tokens(distill_tok, SENTINELS) is False
 
 
+@pytest.mark.real_hf_cache
 def test_distill_qwen_tokenizer_opts_out_to_none(distill_tok):
     # THE regression guard for the release-note nuance: on a Qwen-tokenizer distill
     # carrying the V3 chat_template, structure_info() returns None (safe no-op),

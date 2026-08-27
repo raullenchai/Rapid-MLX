@@ -12,12 +12,19 @@ extended operational guide, `docs/development/releasing.md`, defers to it.
 
 ## TL;DR — cut a release
 
-1. Bump `version` in `pyproject.toml` to `X.Y.Z`.
-2. In the same PR, `git mv docs/release-notes/unreleased.md
+1. Run the non-publishing auto-release dry run on the intended bump parent and
+   record its exact green run URL (procedure below).
+2. Bump `version` in `pyproject.toml` to `X.Y.Z`.
+3. In the same PR, `git mv docs/release-notes/unreleased.md
    docs/release-notes/vX.Y.Z.md` (optional — see "Release notes" below).
-3. Open a PR whose commit subject is exactly `chore: bump version to X.Y.Z`
-   (GitHub's `(#N)` squash suffix is fine), and merge it to `main`.
-4. Merging starts the pipeline. After the Desktop candidate validates the
+4. Open a PR whose commit subject is exactly `chore: bump version to X.Y.Z`
+   (GitHub's `(#N)` squash suffix is fine).
+5. Run the secret/environment pre-flight on that exact bump-PR head (see
+   "Release pre-flight" below), wait for the roll-up to be green, and paste the
+   successful run's `Release-Preflight:` URL into the PR body. The required
+   `version-check.yml` gate verifies that evidence against the live PR head;
+   without it the PR cannot merge.
+6. Merging starts the pipeline. After the Desktop candidate validates the
    exact commit, the live main head and release-blocker evidence are gathered,
    and the protected `rapid-mac-tag` deployment requests approval, a **reviewer
    inspects the exact SHA / main-head / blocker evidence** shown there and
@@ -28,6 +35,130 @@ There is **no separate manual tag or publish command** — no button, no
 hand-run script. The reviewer's approval at the protected environment gate is
 the **only manual transaction step** a release requires; everything else is
 automated.
+
+## Pre-bump auto-release dry run (no publication)
+
+`auto-release.yml` has a maintainer-only `workflow_dispatch` dry-run route that
+executes its real `detect`, `tier1-agent-gate`, and signed
+`desktop-candidate-gate` jobs at the selected branch or tag ref. It then stops:
+`release-prep` and `release` are explicitly skipped, the `rapid-mac-tag`
+environment is never requested, and no tag, GitHub Release, PyPI event, or
+updater pointer is created.
+
+Run it on the exact ref whose head you intend to validate:
+
+```bash
+DRY_RUN_REF=main  # or the pushed branch containing an auto-release change
+DRY_RUN_SHA="$(gh api \
+  "repos/raullenchai/Rapid-MLX/commits/$DRY_RUN_REF" --jq .sha)"
+DRY_RUN_DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+gh workflow run auto-release.yml -R raullenchai/Rapid-MLX --ref "$DRY_RUN_REF" -f dry_run=true
+
+DRY_RUN_ID=
+for _ in {1..30}; do
+  DRY_RUN_ID="$(gh run list -R raullenchai/Rapid-MLX \
+    --workflow auto-release.yml --event workflow_dispatch \
+    --commit "$DRY_RUN_SHA" --created ">=$DRY_RUN_DISPATCHED_AT" \
+    --limit 10 --json databaseId,createdAt \
+    --jq 'sort_by(.createdAt) | last | .databaseId // empty')"
+  test -z "$DRY_RUN_ID" || break
+  sleep 2
+done
+test -n "$DRY_RUN_ID"
+test "$(gh run view "$DRY_RUN_ID" -R raullenchai/Rapid-MLX \
+  --json headSha --jq .headSha)" = "$DRY_RUN_SHA"
+gh run watch "$DRY_RUN_ID" -R raullenchai/Rapid-MLX --exit-status
+gh run view "$DRY_RUN_ID" -R raullenchai/Rapid-MLX
+```
+
+The timestamp-bounded lookup ensures `DRY_RUN_ID` belongs to this dispatch,
+rather than reusing an older run at the same SHA. The final `dry-run-summary`
+job must be green, bind the accepted Desktop SHA to
+`DRY_RUN_SHA`, and report that both publication jobs were skipped with no
+protected environment or release mutation. A failed or mismatched run is not
+evidence; fix the gate or ref selection and run it once on the corrected exact
+head.
+
+Every PR that changes `.github/workflows/auto-release.yml` or a script/action
+invoked by `tier1-agent-gate` or `desktop-candidate-gate` must link a green
+exact-head dry-run URL in its PR body. Before opening the version-bump PR, run
+the same dry run on the intended bump parent (`main` at that moment) and include
+its URL + full `headSha` in the bump PR evidence. This exercises gate changes
+before the bump commit can activate the publishing route.
+
+## Release pre-flight (secret / environment gates, maintainer dispatch)
+
+The secret- and environment-aware release gates (**PF-2** release-secret + var
+presence and credential probe, **PF-3** `rapid-mac-tag` environment protection
+read-back, plus the macOS **G1** release-smoke and **G11** escape-hatch
+registry) do **not** run automatically on every PR. Running them on
+`pull_request` would request the privileged Actions context on every bump PR,
+leaving each one stuck in `action_required` before any gate could run. Instead
+`release-preflight.yml` is an explicit maintainer `workflow_dispatch` bound to
+**one exact bump-PR head** (anti-TOCTOU). Because it is an explicit dispatch it
+can read secrets and the protected environment read-back without creating a
+privileged PR-event context.
+
+To run it, first resolve the exact current bump-PR head **and its branch ref**,
+then dispatch with the PR number and that SHA. The `--ref` is essential:
+without it the dispatch runs on `main`, and `bind-bump-pr` rejects the
+selection immediately ("Stale or wrong pre-flight selection") because the
+dispatch SHA won't equal the bump-PR head:
+
+```bash
+PR_NUMBER=<bump-pr>
+BUMP_BRANCH="$(gh api \
+  "repos/raullenchai/Rapid-MLX/pulls/$PR_NUMBER" --jq .head.ref)"
+EXPECTED_SHA="$(gh api \
+  "repos/raullenchai/Rapid-MLX/pulls/$PR_NUMBER" --jq .head.sha)"
+
+gh workflow run release-preflight.yml -R raullenchai/Rapid-MLX \
+  --ref "$BUMP_BRANCH" \
+  -f pr_number="$PR_NUMBER" -f expected_sha="$EXPECTED_SHA"
+gh run watch "$(gh run list -R raullenchai/Rapid-MLX --workflow release-preflight.yml \
+  --branch "$BUMP_BRANCH" --limit 1 \
+  --json databaseId --jq '.[0].databaseId')" -R raullenchai/Rapid-MLX --exit-status
+```
+
+`--branch "$BUMP_BRANCH" --limit 1` on the run lookup picks the dispatch exactly
+on the bump branch (not some other dispatch racing on the same workflow).
+
+The first job, `bind-bump-pr`, resolves the PR through the GitHub API and fails
+unless it is **open, targeting `main`, from the same repository**, the given
+`expected_sha` equals both the dispatch ref and the PR's live `head.sha`, and
+the title is the canonical bump subject. Everything downstream (`pf1-release-
+contract`, `pf2-release-secrets`, `pf3-tag-environment`, `g1-release-smoke`,
+`g10-upstream-mlx-scan`, `g11-escape-hatch`) `needs: bind-bump-pr`, so a stale
+or wrong SHA never reaches the credential or protected-environment gates.
+
+A successful roll-up prints the evidence line the bump PR must carry:
+
+```
+Release-Preflight: https://github.com/raullenchai/Rapid-MLX/actions/runs/<run-id>
+```
+
+Paste that single line into the bump PR body. The required `version-check.yml`
+gate extracts it (via `validate_release_subject.py --pr-body --repository
+--print-preflight-run-id`) and verifies live through `gh api` that the run is a
+`workflow_dispatch` of `release-preflight.yml`, completed successfully, on
+**exactly** the bump PR head. The gate also enforces that the bump PR contain
+exactly one commit and that the CHANGELOG `## [X.Y.Z]` section
+(`apps/rapid-mac/CHANGELOG.md`) and `docs/release-notes/vX.Y.Z.md` are
+synchronized with the new version. A bump PR therefore cannot merge without a
+valid green exact-head pre-flight run recorded in its body — while the
+pre-flight itself, being a maintainer dispatch, never blocks on a PR-event
+approval prompt.
+
+**Keeping the bump PR current is a REBASE, not a merge.** GitHub's "Update
+branch" creates a merge commit that trips the gate's exactly-one-commit check,
+so keep the bump PR on a single commit by rebasing (`git rebase origin/main`
+then force-push your branch — it is a feature branch, not `main`). And because
+the pre-flight binds to **one exact head**, any `main` advance after the green
+run changes nothing about the run already on the old head — but if you rebase
+the bump branch to a new head, the evidence line is now stale: **re-dispatch
+the pre-flight on the new exact head** and paste the fresh run URL before
+merging. This strictness is intentional (anti-TOCTOU).
 
 ## Desktop (Rapid-MLX Desktop) RC tags — validated before claimed
 
@@ -62,7 +193,7 @@ signed/notarised/DMG-validated lane, and which is still the live `main` head**:
 - An RC needing correction is **superseded by the next RC** on its own validated
   commit; an existing RC tag is never moved, force-pushed, or deleted.
 
-On the bump PR only PF-3 runs — a fail-closed read-back that the
+One of the dispatch pre-flight's jobs, PF-3, is a fail-closed read-back that the
 `rapid-mac-tag` environment exists and is protected (required reviewer,
 `prevent_self_review=false`, deployment policy exactly `main`), so an
 unprotected/drifted environment is a NO-GO before any release rather than a
@@ -150,6 +281,12 @@ The two gates run **in parallel** (they share nothing — different runners,
 different checks) and `release-prep` `needs` BOTH, so **a canonical normal
 release cannot tag or publish unless *both* pass**: the Tier-1 engine gate and
 the signed Desktop candidate at the exact commit.
+
+For `workflow_dispatch` with `dry_run=true`, detect intentionally sets the gate
+route active with `force=false`; the same two gates run, then
+`dry-run-summary` records their exact-SHA result while `release-prep` and
+`release` remain skipped. This is pre-release evidence only and cannot request
+the production environment or publish.
 
 Exact invariant: canonical normal releases require the Tier-1 gate; the audited
 **emergency dispatch may bypass only the Tier-1 gate** (see below); the signed

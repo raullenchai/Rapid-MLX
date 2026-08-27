@@ -257,9 +257,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        # The lane's test surface is declared in pyproject.toml as the
+        # `ci-linux` extra (see its comment for why jinja2 lives there —
+        # reasoning-template tests #2445/#2446 render chat templates with it).
+        # This lane MUST stay no-MLX (Apple-Silicon-only; the roster below
+        # states "tests ... MUST not import mlx"), so `--no-deps` installs the
+        # package without pulling mlx/mlx-lm, and we add only the extra's test
+        # deps via a synced requirements file instead of `-e ".[ci-linux]"`
+        # (which would drag the base deps' mlx onto Linux).
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests pyyaml python-multipart uvicorn websockets jinja2
+          pip install -e . --no-deps
+          pip install --requirement config/requirements-ci-linux.txt
 
       - name: Run unit tests (no MLX required)
         env:
@@ -274,12 +283,11 @@ jobs:
         # no MLX. The separate engine-contracts job runs the shell release
         # scripts under tests/release/.
         run: |
-          # Main baseline: prompt-priming marker classification is tracked separately.
-          # Main baseline: the 1570 thinking-off distill lifecycle is tracked separately.
           pytest \
             tests/test_cli_connect.py \
             tests/test_cli_offline_serve.py \
             tests/test_cli_chat.py \
+            tests/test_cli_cheetah_banner.py \
             tests/test_mcp_security.py \
             tests/test_structured_output.py \
             tests/test_reasoning_parser.py \
@@ -315,8 +323,6 @@ jobs:
             tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_pattern_match_preserves_authoritative_hybrid_metadata \
             tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_pattern_match_preserves_dense_nonhybrid_safety_pin \
             tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_known_family_parser_has_priority_over_metadata_template \
-            --deselect=tests/test_cohere_command_reasoning_parser.py::test_prompt_priming_detects_command_markers_and_mixed_templates \
-            --deselect=tests/test_postprocessor.py::TestStreamingPostProcessorReasoning::test_1570_distill_parser_stays_active_when_thinking_flag_is_false \
             tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_qwen38_local_snapshot_is_not_mislabeled_dense_qwen35 \
             tests/test_model_auto_config.py::TestDetectModelConfig::test_deepseek_coder_v2_routes_to_v3_parser \
             tests/test_model_auto_config.py::TestDetectModelConfig::test_deepseek_r1_distill_does_not_advertise_tool_calls \
@@ -342,11 +348,14 @@ jobs:
             tests/test_streaming_newlines.py \
             tests/test_minimax_reasoning_parser.py \
             tests/test_pr_validate_runner.py \
+            tests/test_pr_validate_merge_base.py \
+            tests/test_pr_validate_diff_coverage.py \
             tests/test_pr_validate_codex.py \
             tests/test_release_baselines.py \
             tests/test_sidecar_distribution_constraints.py \
             tests/test_sidecar_vision_smoke.py \
             tests/test_validate_release_subject.py \
+            tests/test_check_release_notes.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mypy_error_budget.py \
             tests/test_release_version.py \
@@ -437,7 +446,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[vision]"
-          pip install pytest pytest-asyncio pytest-cov
+          # Test infra comes from the declared `ci-apple` extra (issue #2489).
+          pip install -e ".[ci-apple]"
 
       - name: Verify Apple Silicon
         run: |

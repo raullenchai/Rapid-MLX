@@ -296,6 +296,12 @@ class TestAdvisoryContract:
             ("abc123def", "main", "abc123def"),  # known base → the SHA itself
             ("", "main", "origin/main"),  # no metadata → remote-qualified branch
             ("", "release-0.11", "origin/release-0.11"),  # release-branch PR
+            # The EXACT merge-base (issue #2493): fetch.py stores the PR's
+            # git merge-base on ctx.base_sha, so diff-cover MUST compare
+            # against that exact SHA — the same one the review uses — never
+            # the base-branch tip (which would sweep unrelated base-tip
+            # commits into the "changed lines" set).
+            ("f0f5ab5mergebase00", "main", "f0f5ab5mergebase00"),
         ],
     )
     def test_diff_cover_command_is_well_formed(

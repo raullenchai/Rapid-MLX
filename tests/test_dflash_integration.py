@@ -3283,6 +3283,7 @@ _E2E_ENABLED = os.environ.get("RAPID_MLX_DFLASH_E2E", "") in ("1", "true", "yes"
     reason="DFlash e2e disabled — set RAPID_MLX_DFLASH_E2E=1 to enable "
     "(requires Qwen3.5-27B-8bit + drafter cached, ~30 GB)",
 )
+@pytest.mark.real_hf_cache
 def test_dflash_e2e_chat_completion_smoke() -> None:
     """One non-streaming chat completion through the production server.
 

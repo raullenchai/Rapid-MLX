@@ -14,6 +14,8 @@ no longer the release-killer it once was.
 
 Usage:
     python3 scripts/validate_release_subject.py --subject "<text>"
+    python3 scripts/validate_release_subject.py --subject "<text>" \
+        --pr-body "<markdown>" --repository owner/repo --print-preflight-run-id
 
 Exit 0 = OK (title is canonical), exit 1 = not canonical (with reason).
 """
@@ -70,6 +72,33 @@ def diagnose(subject: str) -> list[str]:
     return problems
 
 
+def extract_preflight_run_id(pr_body: str, repository: str) -> str:
+    """Return the single exact-head pre-flight run recorded in a PR body."""
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError(f"invalid GitHub repository: {repository!r}")
+    prefix = f"Release-Preflight: https://github.com/{repository}/actions/runs/"
+    matches = [
+        line.removeprefix(prefix).strip()
+        for line in pr_body.splitlines()
+        if line.startswith(prefix)
+    ]
+    if not matches:
+        raise ValueError(
+            f"PR body is missing the exact pre-flight evidence line: `{prefix}<run-id>`"
+        )
+    if len(matches) != 1:
+        raise ValueError(
+            "PR body must contain exactly one Release-Preflight evidence line"
+        )
+    run_id = matches[0]
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise ValueError(
+            "Release-Preflight must be a bare GitHub Actions run URL with no suffix"
+        )
+    return run_id
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument(
@@ -77,11 +106,33 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="The candidate commit subject (typically the bump PR title).",
     )
+    p.add_argument("--pr-body", help="Bump PR body containing pre-flight evidence.")
+    p.add_argument("--repository", help="GitHub owner/repository for the evidence URL.")
+    p.add_argument(
+        "--print-preflight-run-id",
+        action="store_true",
+        help="Print the validated pre-flight run ID for a caller to verify live.",
+    )
     args = p.parse_args(argv)
 
     problems = diagnose(args.subject)
     if not problems:
-        print(f"OK: subject would auto-release: {args.subject!r}")
+        if not args.print_preflight_run_id:
+            print(f"OK: subject would auto-release: {args.subject!r}")
+        if args.pr_body is None:
+            if args.repository is not None or args.print_preflight_run_id:
+                p.error("--repository/--print-preflight-run-id require --pr-body")
+            return 0
+        if args.repository is None:
+            p.error("--pr-body requires --repository")
+        try:
+            run_id = extract_preflight_run_id(args.pr_body, args.repository)
+        except ValueError as exc:
+            p.error(str(exc))
+        if args.print_preflight_run_id:
+            print(run_id)
+        else:
+            print(f"OK: PR body records Release pre-flight run {run_id}")
         return 0
     print(f"FAIL: subject would NOT auto-release: {args.subject!r}", file=sys.stderr)
     for prob in problems:

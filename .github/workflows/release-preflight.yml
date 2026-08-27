@@ -1,12 +1,11 @@
 name: Release pre-flight
 
-# Runs SOP gates that block a release if they fail. Triggered on PRs
-# whose title is the canonical bump subject ``chore: bump version to
-# X.Y.Z`` (strict, no ``(#NN)`` suffix). The post-merge detect step in
-# auto-release.yml is deliberately MORE tolerant — it accepts the
-# ``(#NN)`` squash suffix via ``release_version.py subject
-# --allow-pr-suffix`` — so pre-merge strictness here is title hygiene,
-# not the gate that decides whether a merged commit auto-releases.
+# Runs the environment- and secret-aware SOP gates for one exact bump-PR head.
+# A maintainer dispatches it explicitly with the PR number and expected SHA,
+# then records the successful run URL in the bump PR body. The secret-free
+# required guard in version-check.yml verifies that evidence live. Keeping this
+# workflow off pull_request prevents GitHub's protected-context approval prompt
+# from leaving every bump PR in action_required before any gate can run.
 #
 # Gate coverage (see docs/development/releasing.md for the canonical list):
 #
@@ -15,7 +14,7 @@ name: Release pre-flight
 #   G3   CLI ↔ Config fidelity audit           covered by ci.yml lint
 #   G10  MLX upstream cross-chip-family scan   advisory
 #   G11  auto-routing escape-hatch registry    macOS-14 (needs MLX)
-#   PF-1 canonical bump-PR title pre-check     ubuntu-latest
+#   PF-1 exact PR/SHA + canonical bump contract ubuntu-latest
 #   PF-2 release secret + var presence         ubuntu-latest
 #        + Cloudflare credential probe (expiry blocks; scope gaps advise)
 #
@@ -29,49 +28,75 @@ name: Release pre-flight
 #   G9 latency 10-seq   — needs live server
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Open bump PR number"
+        required: true
+        type: number
+      expected_sha:
+        description: "Exact 40-character bump PR head SHA"
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
-  detect-bump-pr:
+  bind-bump-pr:
     runs-on: ubuntu-latest
     outputs:
-      is_bump: ${{ steps.check.outputs.is_bump }}
       version: ${{ steps.check.outputs.version }}
+      title: ${{ steps.check.outputs.title }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
       - id: check
         env:
-          TITLE: ${{ github.event.pull_request.title }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPO: ${{ github.repository }}
+          DISPATCH_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Deliberately BROADER than PF-1: detect the optional ``(#NN)`` squash
-          # suffix so a suffixed bump title is still routed INTO the gates (PF-1
-          # then runs and fails it, keeping the title canonical). This mirrors
-          # the post-merge detect step in auto-release.yml, which also uses
-          # --allow-pr-suffix. Non-bump PRs pay zero CI cost.
-          if VERSION=$(python3 scripts/release_version.py subject --allow-pr-suffix "$TITLE"); then
-            echo "is_bump=true" >> "$GITHUB_OUTPUT"
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "Detected bump PR for v$VERSION"
-          else
-            echo "is_bump=false" >> "$GITHUB_OUTPUT"
-            echo "Not a bump PR — skipping all preflight gates"
+          set -euo pipefail
+          if ! [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::expected_sha must be the exact lowercase 40-character bump PR head SHA." >&2
+            exit 1
           fi
 
-  pf1-subject-regex:
-    # PF-1 — keeps the bump-PR title CANONICAL. detect-bump-pr already routed any
-    # (canonical or `(#NN)`-suffixed) bump title here; PF-1 now requires the strict
-    # canonical subject and FAILS a suffixed one. The post-merge detect step in
-    # auto-release.yml is separately suffix-TOLERANT (--allow-pr-suffix), so this
-    # strictness is title hygiene, not what decides whether a merged commit
-    # auto-releases. Pure structural; runs on every bump PR opened/edited.
-    needs: detect-bump-pr
-    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+          PR_JSON="$RUNNER_TEMP/bump-pr.json"
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" > "$PR_JSON"
+          PR_STATE=$(jq -r '.state' "$PR_JSON")
+          BASE_REF=$(jq -r '.base.ref' "$PR_JSON")
+          HEAD_REPO=$(jq -r '.head.repo.full_name' "$PR_JSON")
+          HEAD_SHA=$(jq -r '.head.sha' "$PR_JSON")
+          TITLE=$(jq -r '.title' "$PR_JSON")
+
+          if [ "$PR_STATE" != "open" ] || [ "$BASE_REF" != "main" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::PR #$PR_NUMBER must be open, target main, and originate in $REPO (state=$PR_STATE base=$BASE_REF head_repo=$HEAD_REPO)." >&2
+            exit 1
+          fi
+          if [ "$EXPECTED_SHA" != "$HEAD_SHA" ] || [ "$DISPATCH_SHA" != "$HEAD_SHA" ]; then
+            echo "::error::Stale or wrong pre-flight selection: input=$EXPECTED_SHA dispatch=$DISPATCH_SHA live_pr_head=$HEAD_SHA. Re-dispatch on the exact current bump PR branch head." >&2
+            exit 1
+          fi
+
+          VERSION=$(python3 scripts/release_version.py subject "$TITLE") || {
+            echo "::error::PR #$PR_NUMBER title must be exactly 'chore: bump version to X.Y.Z[-rcN]'." >&2
+            exit 1
+          }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "Bound release pre-flight to PR #$PR_NUMBER at $HEAD_SHA (v$VERSION)."
+
+  pf1-release-contract:
+    # PF-1 repeats the secret-free release contract on the selected exact head.
+    # version-check.yml is the required PR gate; this is defense in depth before
+    # the dispatch proceeds to credential and protected-environment readback.
+    needs: bind-bump-pr
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -80,11 +105,11 @@ jobs:
           python-version: "3.12"
       - name: PF-1 — validate bump PR title matches auto-release regex
         env:
-          TITLE: ${{ github.event.pull_request.title }}
+          TITLE: ${{ needs.bind-bump-pr.outputs.title }}
         run: python scripts/validate_release_subject.py --subject "$TITLE"
       - name: Verify pyproject.toml version matches title
         env:
-          TITLE_VER: ${{ needs.detect-bump-pr.outputs.version }}
+          TITLE_VER: ${{ needs.bind-bump-pr.outputs.version }}
         run: |
           PYPROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
           echo "title: $TITLE_VER"
@@ -93,6 +118,14 @@ jobs:
             echo "::error::PR title says v$TITLE_VER but pyproject.toml is $PYPROJECT_VER. Bump pyproject.toml or rename the PR."
             exit 1
           fi
+      - name: PF-1 — verify synchronized release-note inputs
+        env:
+          TITLE_VER: ${{ needs.bind-bump-pr.outputs.version }}
+        run: |
+          python3 scripts/check_release_notes.py \
+            --version "$TITLE_VER" \
+            --changelog apps/rapid-mac/CHANGELOG.md \
+            --notes-dir docs/release-notes
 
   pf2-release-secrets:
     # PF-2 — every secret and var that rapid-mac-release.yml references must
@@ -103,10 +136,7 @@ jobs:
     #
     # Skipped on fork PRs: Actions withholds secrets from them by design, so
     # an empty context there would fail every name without proving anything.
-    needs: detect-bump-pr
-    if: >-
-      needs.detect-bump-pr.outputs.is_bump == 'true' &&
-      github.event.pull_request.head.repo.fork == false
+    needs: bind-bump-pr
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -152,8 +182,7 @@ jobs:
     # silent unprotected-approval path. can_admins_bypass must be exactly false
     # (GitHub supports disabling it) so an RC claim can never ride an admin who
     # could approve without a required reviewer; missing or true fails closed.
-    needs: detect-bump-pr
-    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    needs: bind-bump-pr
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -201,8 +230,7 @@ jobs:
   g1-release-smoke:
     # G1 — clean-room install + import smoke on macOS-14. Catches the
     # #408 class where dev mlx has a symbol PyPI mlx doesn't.
-    needs: detect-bump-pr
-    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    needs: bind-bump-pr
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -222,8 +250,7 @@ jobs:
     # calls into chip-family-sensitive APIs. Surfaces, does not block.
     # The release-er must cite "audited" in the PR description if any
     # finding lands in a code path our compat shim doesn't already cover.
-    needs: detect-bump-pr
-    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    needs: bind-bump-pr
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -251,8 +278,7 @@ jobs:
     # bugs in #393 (no --no-mllm), #400 (silent flag drop), #404 (no
     # user override for hardware probe). Requires MLX because the test
     # introspects vllm_mlx.engine / vllm_mlx.server signatures.
-    needs: detect-bump-pr
-    if: needs.detect-bump-pr.outputs.is_bump == 'true'
+    needs: bind-bump-pr
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -268,38 +294,40 @@ jobs:
         run: pytest tests/test_no_mllm_flag.py -v --tb=short
 
   preflight-summary:
-    # Roll-up so the bump PR has a single "Release pre-flight" required
-    # check to gate merge on, instead of N independent jobs.
+    # Roll-up of every pre-flight gate on the one exact bound head; the
+    # maintainer reads its conclusion (and pastes the release evidence line the
+    # roll-up emits into the bump PR body).
     needs:
-      - detect-bump-pr
-      - pf1-subject-regex
+      - bind-bump-pr
+      - pf1-release-contract
       - pf2-release-secrets
       - pf3-tag-environment
       - g1-release-smoke
       - g10-upstream-mlx-scan
       - g11-escape-hatch
-    if: always() && needs.detect-bump-pr.outputs.is_bump == 'true'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate gate results
         env:
-          PF1: ${{ needs.pf1-subject-regex.result }}
+          BIND: ${{ needs.bind-bump-pr.result }}
+          PF1: ${{ needs.pf1-release-contract.result }}
           PF2: ${{ needs.pf2-release-secrets.result }}
           PF3: ${{ needs.pf3-tag-environment.result }}
           G1: ${{ needs.g1-release-smoke.result }}
           G10: ${{ needs.g10-upstream-mlx-scan.result }}
           G11: ${{ needs.g11-escape-hatch.result }}
         run: |
-          echo "PF-1 subject regex:   $PF1"
-          echo "PF-2 release secrets: $PF2  (skipped on fork PRs)"
+          echo "Bind exact PR head:   $BIND"
+          echo "PF-1 release inputs:  $PF1"
+          echo "PF-2 release secrets: $PF2"
           echo "PF-3 tag environment: $PF3"
           echo "G1   release-smoke:   $G1"
           echo "G10  upstream MLX:    $G10  (advisory — never fails)"
           echo "G11  escape-hatch:    $G11"
-          # G10 is advisory — never blocks. Others must pass. PF-2 is allowed
-          # to be "skipped" because a fork PR cannot see secrets at all; every
-          # other skip path is already excluded by the is_bump guard above.
-          if [ "$PF2" != "success" ] && [ "$PF2" != "skipped" ]; then
+          # G10 is advisory — never blocks. Every other gate must pass on the
+          # exact selected PR head; a skipped blocking job is a failure.
+          if [ "$PF2" != "success" ]; then
             echo "::error::PF-2 failed: the release workflow references a secret or var that is not configured. A release cut now would fail on the tag with the release already published (#1851)."
             exit 1
           fi
@@ -307,8 +335,9 @@ jobs:
             echo "::error::PF-3 failed: the rapid-mac-tag environment is missing or no longer protected. A tag claim would not be human-authorized (#2301). Recreate it with a required reviewer and a main-only deployment policy, then re-run."
             exit 1
           fi
-          if [ "$PF1" != "success" ] || [ "$G1" != "success" ] || [ "$G11" != "success" ]; then
+          if [ "$BIND" != "success" ] || [ "$PF1" != "success" ] || [ "$G1" != "success" ] || [ "$G11" != "success" ]; then
             echo "::error::One or more release pre-flight gates failed. See docs/development/releasing.md for the gate definitions."
             exit 1
           fi
-          echo "All blocking gates passed. M3-only gates (G4-G9) must be run locally."
+          echo "All blocking gates passed for exact dispatch SHA ${{ github.sha }}. M3-only gates (G4-G9) must be run locally."
+          echo "Release-Preflight: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"

@@ -80,7 +80,18 @@ class Context:
     pr_is_external: bool = False
     head_sha: str = ""
     head_branch: str = ""
+    # The EXACT merge-base of base↔head used for review/diff-coverage.
+    # ``--base <sha>`` (see runner) overrides merge-base derivation.
     base_sha: str = ""
+    # Explicit ``--base <sha>`` from the CLI. When set it wins over any
+    # merge-base derivation in the fetch step.
+    base_override: str = ""
+    # Which strategy resolved ``base_sha``: "override" (explicit --base),
+    # "git-merge-base" (local), "gh-compare" (remote API), or "tip-fallback"
+    # (best-effort derivation failed; fell back to the base-branch tip).
+    # Recorded so the run log / scorecard can show reviewers what was
+    # actually diffed against.
+    base_strategy: str = ""
     diff_path: str = ""  # path to full diff on disk (lazy — large diffs OK)
     files_changed: list[str] = field(default_factory=list)
     additions: int = 0
