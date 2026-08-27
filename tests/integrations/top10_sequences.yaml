@@ -1,0 +1,258 @@
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# top10_sequences.yaml — checked-in residency-load sequences for the top-10
+# usage smoke (issue #2496).
+#
+# PURPOSE
+#   This file is the single source of truth for the EXACT ordered sequence of
+#   `/v1/models/load` calls the Tier-1 gate (`tests/integrations/agent_smoke.sh
+#   --sequences`) must issue. It exists to pin the load ORDER so the release
+#   blocker class that shipped 0.13.0 / 0.13.1 is exercised on every gate run:
+#
+#     #2438 — "second `/v1/models/load` after an MTP primary -> 503
+#              `no Stream(gpu,3) in current thread`".
+#
+#   Root cause: an MTP primary uses Stream(gpu,0,3) while a normal primary uses
+#   Stream(gpu,0,1); loading a SECOND model after an MTP primary tears down /
+#   reuses that stream, and the vendored spec-decode generator could not fall
+#   back (gb._next_tokens stale). A graph that only ever loads ONE model, or
+#   that loads the same family twice, never visits this path. The A->B->A
+#   pattern (load A, load a DIFFERENT model B, load A again) forces it.
+#
+#   The loader will not tear down a text group's primary unless the request
+#   explicitly names `replace_group` (in this schema always the text group
+#   `"assistant"`) — a bare text load becomes a co-resident SECONDARY and never
+#   exercises the teardown (#2438) path. Therefore every step that must hit the
+#   replace/teardown path carries `replace_group: "assistant"` and a
+#   `replace_mode` other than `reject`.
+#
+# SCOPING
+#   * This is a SPEC + gate HARNESS, not a metric. It makes the gate CAPABLE of
+#     reproducing the #2438 path. It deliberately does NOT assert anything about
+#     MTP accept-rate.
+#   * The MTP accept-rate floor assertion is issue #2421, OWNED BY VECTOR, and
+#     is NOT implemented here. `mtp_first: true` sequences only guarantee that
+#     an MTP primary is loaded BEFORE a second model, so Vector can wire the
+#     floor onto the same gate later (see the `metrics_expected` hook below).
+#   * Nothing in this file loads a model by itself — it is declarative data
+#     consumed by the gate's driver. Nobody may run this spec directly.
+#
+# SCHEMA (v3)
+#   top_10_aliases:            ordered list[str] — the top-10 usage-smoke model
+#                              aliases. Each must exist in vllm_mlx/aliases.json.
+#   base_schema_version:       int — bump on any breaking schema change.
+#   sequences:                 list[sequence]
+#
+#   sequence = {
+#     name:            str (unique, kebab-case)
+#     description:     str (free text / rationale)
+#     mtp_first:       bool — true => the FIRST step loads an MTP-capable
+#                      primary that the gate must serve WITH MTP enabled
+#     primary_alias:   str — alias of the model loaded in step 1 (the served
+#                      primary). MUST be in top_10_aliases.
+#     serve_extra:     list[str] (optional) — extra command-line args a gate
+#                      must append to `rapid-mlx serve <primary_alias>` for the
+#                      primary to be MTP-enabled (e.g. the speculative-config
+#                      JSON). Used for mtp_first sequences; empty otherwise.
+#     steps:           list[step]  (ordered; >= 2 for a sequence to be a
+#                      meaningful A->B->A / replace exercise)
+#     metrics_expected: list[str] (optional, v3 hook) — reserved for Vector's
+#                      #2421 accept-rate floor. Current values: none. A gate
+#                      MUST ignore unknown/empty values; adding one here does
+#                      not assert anything until the metric-owner wires it.
+#   }
+#
+#   step = {
+#     action:             "load"  (only supported action)
+#     model:              str — a top_10_aliases entry, or a local checkpoint
+#                         path (starts with "/"). Validated against the alias
+#                         list by the schema test.
+#     replace_group:      "assistant" | null — exact text-group id the loader
+#                         accepts (ModelLoadRequest.replace_group pattern
+#                         `^(assistant)$`). null => co-resident secondary.
+#     replace_mode:       "reject" | "wait" | "abort" — how the loader handles
+#                         an in-use primary in the target group.
+#     estimated_size_gb:  number | null — optional admission hint (gt 0).
+#     expected_status:    int — the HTTP status the gate must assert.
+#     regression_would_be: str (optional) — signage: what a non-expected
+#                         status on THIS step means (fail the gate loudly).
+#   }
+#
+#   A->B->A invariant (enforced by tests/test_top10_sequences_schema.py):
+#     the first and last step of a sequence named `*-aba` load the SAME alias,
+#     and the in-between step loads a DIFFERENT alias.
+#
+# EXTENDING
+#   To add a sequence: append to `sequences`, add any NEW alias to
+#   `top_10_aliases` (keeping it a valid alias in vllm_mlx/aliases.json), then
+#   run `python3 -m pytest tests/test_top10_sequences_schema.py`.
+# ---------------------------------------------------------------------------
+
+base_schema_version: 3
+
+# Top-10 usage-smoke model aliases (mirrors the 0.13.x usage smoke roster; the
+# 11th lane of that smoke was a local on-disk snapshot of qwen3.5-4b, expressed
+# here by the canonical alias since a bare alias is what a gate can reproducibly
+# resolve).
+top_10_aliases:
+  - qwen3.5-4b-4bit
+  - qwen3.5-9b-4bit
+  - qwen3.6-35b-4bit
+  - qwen3.6-35b-8bit
+  - qwen3.8-27b-4bit
+  - qwen3.6-27b-4bit
+  - gemma-4-26b-4bit
+  - bonsai-27b-2bit
+  - qwen3.8-27b-mixed-3.5bpw
+
+sequences:
+  # -------------------------------------------------------------------------
+  # 1. Canonical A->B->A — two distinct small text models, replace each step.
+  #    This is the baseline "second load after a primary" sequence that any
+  #    engine must survive, MTP or not. Small models keep it bootable in a
+  #    release-gate budget.
+  # -------------------------------------------------------------------------
+  - name: simple-aba
+    description: >-
+      Load primary A (qwen3.5-4b-4bit), replace it with a DIFFERENT model B
+      (qwen3.5-9b-4bit), then load A again. Each replacement requests the text
+      "assistant" group so the engine tears down / reuses the previous
+      primary's GPU stream — the A->B->A path from #2438.
+    mtp_first: false
+    primary_alias: qwen3.5-4b-4bit
+    steps:
+      - action: load
+        model: qwen3.5-4b-4bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        regression_would_be: "first primary load failed — residency not usable"
+      - action: load
+        model: qwen3.5-9b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: >-
+          second /v1/models/load after a primary must tear down / reuse the
+          old GPU stream; a 503 here is the #2438 defect class.
+      - action: load
+        model: qwen3.5-4b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: >-
+          reloading the original primary after B — A->B->A home leg — must
+          succeed.
+
+  # -------------------------------------------------------------------------
+  # 2. MTP primary first, then a second model: reproduces #2438 exactly.
+  #    primary = Qwen3.8-27B-4bit-MTP (num_speculative_tokens 3) — an MTP-capable
+  #    alias whose spec-decode generator references Stream(gpu,3). The SECOND
+  #    load (a different model, replace_group=assistant) is the step that 503'd
+  #    in #2438. mtp_first: true tells the gate (and Vector's #2421 floor later)
+  #    that the primary MUST be served MTP-enabled via serve_extra, so the
+  #    resulting Stream(gpu,3) is what step 2 tears down.
+  # -------------------------------------------------------------------------
+  - name: mtp-first-load-second
+    description: >-
+      THE #2438 reproduction. Load BOTH weights as an MTP-served primary first
+      (Qwen3.8 27B MTP + speculative-config num_speculative_tokens=3), then
+      load a DIFFERENT model (Qwen3.6 27B) with replace_group=assistant, then
+      load the MTP primary again. Step 2 is the "second /v1/models/load after
+      an MTP primary" that shipped 503 in 0.13.0/0.13.1 (fixed by #2441,
+      per-worker bit streams). If it regresses, PRIME this step red.
+    mtp_first: true
+    primary_alias: qwen3.8-27b-4bit
+    serve_extra:
+      - "--speculative-config"
+      - '{"method":"mtp","num_speculative_tokens":3}'
+    steps:
+      - action: load
+        model: qwen3.8-27b-4bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        regression_would_be: "MTP primary did not load"
+      - action: load
+        model: qwen3.6-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: >-
+          #2438 PRIME: a second /v1/models/load after an MTP primary that
+          returns 503 (or fails to fall back to plain decode) means the
+          Stream(gpu,3) teardown under residency load has regressed. This step
+          must be RED on regression and is the loud failure Vector's #2421
+          accept-rate floor will later report against.
+      - action: load
+        model: qwen3.8-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: "reloading the MTP primary after the second model failed"
+
+  # -------------------------------------------------------------------------
+  # 3. moe primary, then a second, symmetric reload — covers a non-MTP MoE
+  #    primary so the mtp_first lanes isolate the (stream-3) defect from a
+  #    general residency teardown regression on the larger hybrid A3B family.
+  # -------------------------------------------------------------------------
+  - name: moe-primary-aba
+    description: >-
+      Load the flagship hybrid MoE Qwen3.6-35B-A3B-8bit first, then a different
+      model, then reload the MoE primary. Non-MTP control: if this sequence
+      breaks while mtp-first-load-second still passes MTP-agnostically, it is a
+      general A->B->A residency regression, not the #2438 stream-3 defect.
+    mtp_first: false
+    primary_alias: qwen3.6-35b-8bit
+    steps:
+      - action: load
+        model: qwen3.6-35b-8bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+      - action: load
+        model: qwen3.6-35b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: "hybrid MoE primary teardown on second load regressed"
+      - action: load
+        model: qwen3.6-35b-8bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+
+  # -------------------------------------------------------------------------
+  # 4. mtp_first variant using a mixed-bpw MTP checkpoint as primary — keeps a
+  #    second MTP-repro lineage so the #2438 guard isn't coupled to a single
+  #    SKU; mixed-qwen3.8 is MTP-capable (same MTP head family as qwen3.8-27b).
+  # -------------------------------------------------------------------------
+  - name: mtp-first-mixed-bpw
+    description: >-
+      Alternate #2438 lineage that loads Qwen3.8-27B-mixed-3.5bpw MTP first,
+      then Qwen3.6-27B, then back. Keeps the second-load-after-MTP-primary
+      guard exercised across a second MTP-capable primary SKU.
+    mtp_first: true
+    primary_alias: qwen3.8-27b-mixed-3.5bpw
+    serve_extra:
+      - "--speculative-config"
+      - '{"method":"mtp","num_speculative_tokens":3}'
+    steps:
+      - action: load
+        model: qwen3.8-27b-mixed-3.5bpw
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+      - action: load
+        model: qwen3.6-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        regression_would_be: >-
+          #2438 PRIME (mixed-bpw lineage): second load after MTP primary must
+          not 503 / must not stall on the vendored spec-decode path.
+      - action: load
+        model: qwen3.8-27b-mixed-3.5bpw
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200

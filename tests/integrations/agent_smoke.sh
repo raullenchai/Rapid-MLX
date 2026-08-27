@@ -11,11 +11,22 @@
 # multi-step bug-fix task against the local model, and asserts each one
 # actually made the test pass.
 #
-#   Usage:   RAPID_MLX_VENV=~/rapid-mlx-audit-venv ./agent_smoke.sh [model-alias]
+#   Usage:   RAPID_MLX_VENV=~/rapid-mlx-audit-venv ./agent_smoke.sh \
+#                [--sequences <top10_sequences.yaml>] [model-alias]
 #   Default: model-alias = qwen3.6-35b-8bit   (strong 8-bit — never 4-bit,
 #            which confounds "weak model" with "broken integration")
 #
-# Exit code: 0 iff all five Tier-1 agents PASS. Non-zero blocks the release.
+#   --sequences <file> (or $RAPID_MLX_SEQUENCES_YAML) additionally drives the
+#   top-10 residency-load sequences from tests/integrations/top10_sequences.yaml
+#   AFTER the five agent runs: it issues /v1/models/load in the YAML's specified
+#   order against the still-running warm serve and asserts each expected_status.
+#   This is the #2496 gate that keeps the "second load after a primary / after
+#   an MTP primary" path (#2438) exercised. Default off — the plain five-agent
+#   smoke is byte-for-byte unchanged unless --sequences is passed.
+#
+# Exit code: 0 iff all five Tier-1 agents PASS (and, when --sequences is given,
+# all specified load sequences match their expected_status). Non-zero blocks
+# the release.
 # Non-destructive on the shared Studio: it starts only its own server (and kills
 # only that one), and backs up / restores (or removes) the ~/.codex, ~/.hermes
 # and ~/.dsh config it touches.
@@ -31,7 +42,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PATH="/opt/homebrew/bin:/opt/homebrew/opt/coreutils/libexec/gnubin:$HOME/.local/bin:$PATH"
 VENV="${RAPID_MLX_VENV:-$HOME/rapid-mlx-audit-venv}"
 RMLX="$VENV/bin/rapid-mlx"
-ALIAS="${1:-qwen3.6-35b-8bit}"
+ALIAS="qwen3.6-35b-8bit"
+SEQUENCES_YAML="${RAPID_MLX_SEQUENCES_YAML:-}"
 PORT="${RAPID_MLX_PORT:-8000}"
 B="http://localhost:$PORT"
 # Per-agent wall-clock budgets. The default gate model is a slow 35B hybrid with
@@ -142,6 +154,94 @@ else
   }
 fi
 
+# ---- top-10 residency-load sequences (#2496) ------------------------------
+# Drives tests/integrations/top10_sequences.yaml: issues /v1/models/load in the
+# YAML's specified order against the running server and asserts each
+# expected_status. This keeps the "second load after a primary / after an MTP
+# primary" path (#2438) exercised on the Tier-1 gate. Pure HTTP — no model work
+# beyond what the loader does. Implemented in python (PyYAML is a hard runtime
+# dep of rapid-mlx, so $VENV/bin/python has it; a stdlib-only fallback parser
+# covers the structural subset this file needs if PyYAML is ever missing).
+#
+# Usage: run_load_sequences <sequences.yaml> ; rc=$?
+# Exits 0 iff every step in every sequence returned its expected_status.
+run_load_sequences() {
+  local yaml="$1"
+  # The residency router is Bearer-auth gated ONLY when serve runs with
+  # --api-key. This gate's serve boots without one, but forward any operator
+  # RAPID_MLX_API_KEY so the caller isn't silently locked out.
+  local auth=()
+  [ -n "${RAPID_MLX_API_KEY:-}" ] && auth+=(--auth "$RAPID_MLX_API_KEY")
+  "$VENV/bin/python" - "$B" "$yaml" "${auth[@]}" <<'PY'
+import json
+import sys
+import urllib.request
+
+B, path = sys.argv[1], sys.argv[2]
+auth_header = None
+for argv in sys.argv[3:]:
+    if argv == "--auth":
+        i = sys.argv.index(argv)
+        auth_header = "Bearer " + sys.argv[i + 1]
+        break
+
+def parse_yaml(path):
+    """PyYAML when available; else a minimal parser for THIS file's shape."""
+    try:
+        import yaml
+        return yaml.safe_load(open(path, encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - only hit off the runtime path
+        note = getattr(exc, "__class__", Exception).__name__
+        raise SystemExit(
+            f"can't parse {path} with PyYAML ({note}); and this gate does not "
+            "provide a fallback parser beyond the exact top10_sequences.yaml "
+            "shape. Install PyYAML or run with the rapid-mlx venv python."
+        )
+
+def post(body, step_label):
+    req = urllib.request.Request(
+        B + "/v1/models/load",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": auth_header} if auth_header else {})},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+spec = parse_yaml(path)
+seqs = spec.get("sequences", [])
+if not seqs:
+    raise SystemExit("no 'sequences' found in " + path)
+
+failed = 0
+for seq in seqs:
+    name = seq.get("name", "<unnamed>")
+    print(f"  sequence {name}:")
+    for i, step in enumerate(seq.get("steps", []), start=1):
+        model = step.get("model", "<missing model>")
+        label = f"{i}. /v1/models/load {{model={model}}}"
+        body = {"model": model}
+        if step.get("replace_group") is not None:
+            body["replace_group"] = step["replace_group"]
+        body["replace_mode"] = step.get("replace_mode", "reject")
+        if step.get("estimated_size_gb") is not None:
+            body["estimated_size_gb"] = step["estimated_size_gb"]
+        want = step.get("expected_status", 200)
+        got = post(body, label)
+        ok = got == want
+        if not ok:
+            failed += 1
+        marker = "PASS" if ok else "FAIL"
+        print(f"    {label} -> HTTP {got} (expected {want}) [{marker}]")
+if failed:
+    raise SystemExit(f"{failed} load step(s) did not match expected_status")
+PY
+}
+
 # Restore a config we may have overwritten with `--setup`: if we backed up a
 # pre-existing file, put it back; if the file did not exist before, remove the
 # one `--setup` created (and its marker). Idempotent — safe to call twice.
@@ -183,6 +283,53 @@ trap cleanup EXIT
 
 fail() { echo "SMOKE-ABORT: $*" >&2; exit 3; }
 [ -x "$RMLX" ] || fail "no rapid-mlx at $RMLX (set RAPID_MLX_VENV)"
+
+# ---- argument parsing -----------------------------------------------------
+# Backward compatible: a bare positional [model-alias] is still `$ALIAS`; the
+# optional `--sequences <file>` (or `--sequences=<file>`) adds the #2496
+# residency-load gate. The agent-gate workflow calls `agent_smoke.sh "$MODEL"`,
+# which is untouched.
+_positional=()
+_prev_was_sequences=0
+for _arg in "$@"; do
+  if [ "$_prev_was_sequences" = 1 ]; then
+    # `--sequences` consumes the NEXT argument as the file path.
+    if [ -z "$_arg" ]; then
+      fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+    fi
+    SEQUENCES_YAML="$_arg"
+    _prev_was_sequences=0
+    continue
+  fi
+  case "$_arg" in
+    --sequences)
+      _prev_was_sequences=1
+      ;;
+    --sequences=*)
+      SEQUENCES_YAML="${_arg#*=}"
+      [ -n "$SEQUENCES_YAML" ] || fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+      ;;
+    -h|--help)
+      echo "usage: $0 [--sequences <top10_sequences.yaml>] [model-alias]"
+      exit 0
+      ;;
+    -*)
+      fail "unknown option: $_arg"
+      ;;
+    *)
+      _positional+=("$_arg")
+      ;;
+  esac
+done
+[ "$_prev_was_sequences" = 0 ] || fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+unset _arg _prev_was_sequences
+[ "${#_positional[@]}" -le 1 ] || fail "at most one positional model alias (got: ${_positional[*]})"
+[ "${#_positional[@]}" -eq 1 ] && ALIAS="${_positional[0]}"
+# Validate a sequences file now (fail early), not mid-gate.
+if [ -n "$SEQUENCES_YAML" ]; then
+  [ -f "$SEQUENCES_YAML" ] || fail "--sequences file not found: $SEQUENCES_YAML"
+fi
+unset _positional
 
 echo "== versions =="
 printf "  rapid-mlx  %s\n" "$($RMLX --version 2>&1 | head -1)"
@@ -564,6 +711,20 @@ if [ "${RAPID_MLX_RELEASE_GATE:-0}" = "1" ]; then
     exit 1
   fi
   echo "== release-gate extras PASSED (coherence + perf) =="
+fi
+
+# ---- top-10 residency-load sequences (#2496) — opt-in via --sequences ----
+# Runs LAST, on the same warm serve, so no agent run sees a mutated resident
+# model (each sequence's step 1 loads its own primary, which changes residency).
+# Pure HTTP — no serve reboots, no second model load beyond what the loader does.
+if [ -n "$SEQUENCES_YAML" ]; then
+  echo
+  echo "== top-10 residency-load sequences (#2496) from $SEQUENCES_YAML =="
+  if ! run_load_sequences "$SEQUENCES_YAML"; then
+    echo "RESULT: FAIL — a /v1/models/load sequence did not match its expected_status; this blocks the release."
+    exit 1
+  fi
+  echo "== top-10 residency-load sequences PASSED =="
 fi
 
 echo "RESULT: PASS — all five Tier-1 agents verified on $ALIAS."
