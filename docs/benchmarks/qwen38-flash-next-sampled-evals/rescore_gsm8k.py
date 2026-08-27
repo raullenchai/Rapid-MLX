@@ -8,6 +8,7 @@ Rule here: prefer the last **bold** number in the reply; else fall back to the
 last number. Normalise by stripping $ and , and trailing .00. This is NOT the
 harness metric; it is reported only as a caveat next to the harness number.
 """
+
 import glob
 import json
 import re
@@ -34,7 +35,11 @@ def extract(resp):
 
 
 for model_dir in sys.argv[1:]:
-    files = sorted(glob.glob(f"/private/tmp/atlas-flash-eval/results/{model_dir}/gsm8k_cot_zeroshot/*/samples_*.jsonl"))
+    files = sorted(
+        glob.glob(
+            f"/private/tmp/atlas-flash-eval/results/{model_dir}/gsm8k_cot_zeroshot/*/samples_*.jsonl"
+        )
+    )
     if not files:
         print(model_dir, "no samples")
         continue
@@ -47,4 +52,6 @@ for model_dir in sys.argv[1:]:
         harness_ok += int(d["exact_match"])
         tgt = norm(d["target"].split("#### ")[-1])
         ok += int(extract(d["resps"][0][0]) == tgt)
-    print(f"{model_dir}: N={n} harness flexible-extract={100*harness_ok/n:.1f} bold-aware re-score={100*ok/n:.1f}")
+    print(
+        f"{model_dir}: N={n} harness flexible-extract={100 * harness_ok / n:.1f} bold-aware re-score={100 * ok / n:.1f}"
+    )

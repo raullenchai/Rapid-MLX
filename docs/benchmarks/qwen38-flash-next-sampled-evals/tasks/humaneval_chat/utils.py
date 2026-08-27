@@ -47,7 +47,7 @@ def _extract_code(resp: str, entry_point: str) -> str:
     # Unterminated fence (hit max_gen_toks) or no fence at all.
     m = _OPEN_FENCE.search(resp)
     if m:
-        return resp[m.end():]
+        return resp[m.end() :]
     return resp
 
 
