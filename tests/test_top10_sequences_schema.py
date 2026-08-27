@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Schema validation for ``tests/integrations/top10_sequences.yaml``.
 
-Issue #2496 checked in a declarative spec of the exact `/v1/models/load`
+Issue #2496 checked in a declarative spec of the residency-load / MTP-serve
 sequences the Tier-1 gate must drive so the "second load after a primary"
-path — the class that shipped the 0.13.1 MTP release blocker #2438 —
+path — the class that shipped the 0.13.0 / 0.13.1 MTP release blocker #2438 —
 is exercised every gate run. This test keeps that spec well-formed so a
 future maintainer can extend it without silently breaking the gate driver.
 
@@ -12,20 +12,29 @@ cross-checks every alias against ``vllm_mlx/aliases.json``. ``aliases.json``
 is plain data (no mlx import at module load), so the whole module stays out
 of the no-MLX Linux test-matrix constraint.
 
-What it pins:
-  * ``top_10_aliases`` is a non-empty ordered list of strings.
+What it pins (schema v4):
+  * ``top_10_aliases`` is a non-empty ordered list of unique strings.
   * Every sequence has a unique name, an ordered, non-empty ``steps`` list,
     and the required scalar fields with the documented allowed values.
-  * ``mtp_first: true`` means the first step's model IS the declared primary
-    and is one of the top-10 aliases (so the gate can reproduce the MTP lane).
+  * ``mtp`` is one of ``"none" / "first" / "second"``. Any non-"none" sequence
+    must declare a ``serve_alias`` (in top_10_aliases), a ``serve_extra`` that
+    enables spec-decode, and a non-empty ``metrics_expected`` — the MTP serve
+    is the only way a Stream(gpu,3) / MTP accept counters exist.
+  * ``mtp: first`` loads its serve_alias on step 1; ``mtp: second`` must NOT
+    load serve_alias on step 1 (the MTP primary arrives at a later step).
   * A sequence whose name is ``*-aba`` loads the SAME model first and last,
     and a DIFFERENT model in between (the A->B->A invariant).
-  * Every step ``model`` is either a top-10 alias or a local absolute path,
-    and every alias referenced anywhere resolves in the repo's
-    ``vllm_mlx/aliases.json`` (checked against the live file the loader uses).
-  * Per-step ``expected_status`` present; ``replace_group`` constrained to
+  * Every step ``model`` is a top-10 alias (v4 dropped the absolute-path form)
+    and resolves in the repo's ``vllm_mlx/aliases.json``.
+  * Every step carries ``expected_status``; ``replace_group`` constrained to
     ``"assistant"`` or ``null``; ``replace_mode`` constrained to the loader's
-    accepted set.
+    accepted set; optional positive ``timeout_seconds`` on steps and sequences.
+  * ``metrics_expected`` entries are well-formed (metric is a string, method /
+    description optional strings, require_nonzero a bool, on_absent in
+    {"fail","pass"}, min/max numeric when present).
+  * Coverage: gemma-4-26b-4bit and bonsai-27b-2bit are actually LOADED by some
+    sequence step (v3 listed them but never loaded them), and both MTP-first
+    and MTP-second orderings exist.
 """
 
 from __future__ import annotations
@@ -42,6 +51,11 @@ _ALIASES_FILE = _REPO_ROOT / "vllm_mlx" / "aliases.json"
 
 VALID_REPLACE_MODES = frozenset({"reject", "wait", "abort"})
 VALID_ACTIONS = frozenset({"load"})
+VALID_MTP = frozenset({"none", "first", "second"})
+VALID_ON_ABSENT = frozenset({"fail", "pass"})
+# Aliases that, per the v3->v4 coverage mandate, must actually be LOADED by
+# some sequence step (they were listed in top_10_aliases but never loaded).
+MUST_LOAD_ALIASES = ("gemma-4-26b-4bit", "bonsai-27b-2bit")
 
 
 @pytest.fixture(scope="module")
@@ -53,12 +67,6 @@ def spec() -> dict:
 
 def _aliases() -> dict:
     return json.loads(_ALIASES_FILE.read_text(encoding="utf-8"))
-
-
-def _canonical_name(alias: str) -> str:
-    """A step may reference an alias string; use it as-is (aliases are the
-    keys of ``aliases.json``). Local snapshot paths start with ``/``."""
-    return alias
 
 
 def test_yaml_is_a_mapping(spec) -> None:
@@ -91,6 +99,36 @@ def test_all_top_10_aliases_resolve_in_aliases_json(spec) -> None:
         assert alias in keys, f"top-10 alias {alias!r} is not in vllm_mlx/aliases.json"
 
 
+def _assert_metric_expectation_shape(mx, seq_name, idx) -> None:
+    assert isinstance(mx, dict), f"{seq_name} metrics_expected[{idx}] must be a mapping"
+    metric = mx.get("metric")
+    assert isinstance(metric, str) and metric, (
+        f"{seq_name} metrics_expected[{idx}]: requires a non-empty string 'metric'"
+    )
+    if "method" in mx:
+        assert isinstance(mx["method"], str), (
+            f"{seq_name} metrics_expected[{idx}]: 'method' must be a string"
+        )
+    if "require_nonzero" in mx:
+        assert isinstance(mx["require_nonzero"], bool), (
+            f"{seq_name} metrics_expected[{idx}]: 'require_nonzero' must be bool"
+        )
+    for bound in ("min", "max"):
+        if bound in mx and mx[bound] is not None:
+            assert isinstance(mx[bound], (int, float)), (
+                f"{seq_name} metrics_expected[{idx}]: '{bound}' must be numeric"
+            )
+    if "on_absent" in mx:
+        assert mx["on_absent"] in VALID_ON_ABSENT, (
+            f"{seq_name} metrics_expected[{idx}]: on_absent must be one of "
+            f"{sorted(VALID_ON_ABSENT)}"
+        )
+    if "description" in mx:
+        assert isinstance(mx["description"], str), (
+            f"{seq_name} metrics_expected[{idx}]: 'description' must be a string"
+        )
+
+
 def _assert_step_shape(step, seq_name, idx) -> None:
     assert isinstance(step, dict), f"{seq_name} step {idx} must be a mapping"
     assert step.get("action") in VALID_ACTIONS, (
@@ -115,10 +153,10 @@ def _assert_step_shape(step, seq_name, idx) -> None:
         assert isinstance(step["estimated_size_gb"], (int, float)) and (
             step["estimated_size_gb"] > 0
         ), f"{seq_name} step {idx}: estimated_size_gb must be > 0 if present"
-
-
-def _is_alias_ref(model, top_aliases) -> bool:
-    return isinstance(model, str) and (model in top_aliases or model.startswith("/"))
+    if step.get("timeout_seconds") is not None:
+        assert isinstance(step["timeout_seconds"], (int, float)) and (
+            step["timeout_seconds"] > 0
+        ), f"{seq_name} step {idx}: timeout_seconds must be > 0 if present"
 
 
 def test_every_sequence_is_well_formed(spec) -> None:
@@ -132,68 +170,134 @@ def test_every_sequence_is_well_formed(spec) -> None:
             "sequence names must be unique, non-empty"
         )
         seen_names.add(name)
-        assert isinstance(seq.get("mtp_first"), bool), f"{name}: mtp_first must be bool"
-        assert seq.get("primary_alias") in top_aliases, (
-            f"{name}: primary_alias must be in top_10_aliases"
+
+        mtp = seq.get("mtp")
+        assert mtp in VALID_MTP, (
+            f"{name}: mtp must be one of {sorted(VALID_MTP)}, got {mtp!r}"
         )
+        serve_alias = seq.get("serve_alias")
+        if mtp != "none":
+            assert serve_alias in top_aliases, (
+                f"{name}: mtp={mtp!r} requires serve_alias in top_10_aliases"
+            )
+            extra = seq.get("serve_extra") or []
+            assert isinstance(extra, list) and "--speculative-config" in extra, (
+                f"{name}: mtp={mtp!r} requires serve_extra to include "
+                f"--speculative-config so the gate boots a spec-decode MTP serve"
+            )
+            assert seq.get("metrics_expected"), (
+                f"{name}: mtp={mtp!r} requires a non-empty metrics_expected "
+                f"(the #2421 accept-rate / attempts surface)"
+            )
+        else:
+            assert "metrics_expected" in seq and seq["metrics_expected"] == [], (
+                f"{name}: non-MTP sequences must set an empty metrics_expected list"
+            )
+
+        if seq.get("timeout_seconds") is not None:
+            assert isinstance(seq["timeout_seconds"], (int, float)) and (
+                seq["timeout_seconds"] > 0
+            ), f"{name}: timeout_seconds must be > 0 if present"
+
         steps = seq.get("steps")
         assert isinstance(steps, list) and len(steps) >= 2, (
             f"{name}: a meaningful sequence needs >= 2 ordered steps"
         )
-        if "serve_extra" in seq:
-            assert isinstance(seq["serve_extra"], list), (
-                f"{name}: serve_extra must be a list"
-            )
-        # Every referenced alias must resolve in the live aliases table.
+
+        # Every referenced model must be a top-10 alias and resolve live.
         for step in steps:
             model = step["model"]
-            if model in top_aliases:
-                assert model in aliases_keys, (
-                    f"{name}: model {model!r} is a top-10 alias but missing from aliases.json"
-                )
-            else:
-                assert model.startswith("/"), (
-                    f"{name}: model {model!r} must be a top-10 alias or an absolute local path"
-                )
-        # Ordered steps each well-formed.
+            assert model in top_aliases, (
+                f"{name}: model {model!r} must be a top_10_aliases entry (v4 "
+                f"dropped the absolute-path / local form)"
+            )
+            assert model in aliases_keys, (
+                f"{name}: model {model!r} is a top-10 alias but missing from aliases.json"
+            )
+
         for idx, step in enumerate(steps):
             _assert_step_shape(step, name, idx)
+        for idx, mx in enumerate(seq.get("metrics_expected") or []):
+            _assert_metric_expectation_shape(mx, name, idx)
 
 
-def test_mtp_first_loads_mtp_primary_before_a_second_model(spec) -> None:
-    """mtp_first: true => step 1 is the declared primary (an MTP-capable top-10
-    alias), and a second, DIFFERENT model follows — that ordering is what
-    reaches the #2438 'second load after an MTP primary' path."""
+def test_mtp_first_loads_mtp_primary_on_step1(spec) -> None:
+    """mtp: first => step 1 loads the serve_alias (the MTP-served primary),
+    and a second, DIFFERENT model follows — that ordering reaches the #2438
+    'second load after an MTP primary' path with the MTP primary first."""
     top_aliases = set(spec["top_10_aliases"])
     for seq in spec["sequences"]:
-        if not seq["mtp_first"]:
+        if seq.get("mtp") != "first":
             continue
-        first_model = seq["steps"][0]["model"]
-        assert first_model == seq["primary_alias"], (
-            f"{seq['name']}: with mtp_first=true, step 1 must load the declared "
-            f"primary_alias {seq['primary_alias']!r}, got {first_model!r}"
-        )
-        assert first_model in top_aliases, (
-            f"{seq['name']}: mtp_first primary must be a top-10 alias"
+        serve_alias = seq["serve_alias"]
+        assert seq["serve_alias"] in top_aliases
+        assert seq["steps"][0]["model"] == serve_alias, (
+            f"{seq['name']}: with mtp=first, step 1 must load serve_alias "
+            f"{serve_alias!r}, got {seq['steps'][0]['model']!r}"
         )
         second_model = seq["steps"][1]["model"]
-        assert second_model != first_model, (
+        assert second_model != serve_alias, (
             f"{seq['name']}: step 2 must be a DIFFERENT model to reach the "
             f"load-after-a-primary path"
         )
 
 
-def test_mtp_first_sequences_declare_serve_speculative_config(spec) -> None:
-    """An mtp_first sequence must describe how the gate enables MTP on the
-    primary (serve_extra with --speculative-config), otherwise there is no
-    Stream(gpu,3) to tear down and the sequence silently loses its value."""
+def test_mtp_second_does_not_load_primary_on_step1(spec) -> None:
+    """mtp: second => step 1 must be a DIFFERENT model; the MTP-served primary
+    (serve_alias) arrives on a LATER step. Covers the opposite load order that
+    a first-only sequence never visits."""
     for seq in spec["sequences"]:
-        if not seq["mtp_first"]:
+        if seq.get("mtp") != "second":
             continue
-        extra = seq.get("serve_extra") or []
-        assert "--speculative-config" in extra, (
-            f"{seq['name']}: mtp_first=true requires serve_extra to include "
-            f"--speculative-config so the gate boots an MTP primary"
+        serve_alias = seq["serve_alias"]
+        assert seq["steps"][0]["model"] != serve_alias, (
+            f"{seq['name']}: with mtp=second, step 1 must NOT load serve_alias "
+            f"{serve_alias!r}; the MTP primary arrives at a later step"
+        )
+        later_models = [s["model"] for s in seq["steps"][1:]]
+        assert serve_alias in later_models, (
+            f"{seq['name']}: with mtp=second, a LATER step must load "
+            f"serve_alias {serve_alias!r}"
+        )
+
+
+def test_mtp_sequences_assert_attempts_and_accept_floor(spec) -> None:
+    """Every MTP sequence's metrics_expected must cover BOTH the raw attempts
+    counter (proves spec-decode actually ran -> there WAS a Stream(gpu,3)) and
+    the accept-ratio floor (the #2421 assertion)."""
+    for seq in spec["sequences"]:
+        if seq.get("mtp") == "none":
+            continue
+        metrics = {m.get("metric") for m in seq.get("metrics_expected") or []}
+        assert "rapid_mlx_spec_decode_attempts_total" in metrics, (
+            f"{seq['name']}: MTP sequence must assert the attempts counter "
+            f"(proves MTP ran / Stream(gpu,3) existed)"
+        )
+        assert "rapid_mlx_spec_decode_accept_ratio" in metrics, (
+            f"{seq['name']}: MTP sequence must assert the #2421 accept_ratio floor"
+        )
+
+
+def test_mtp_second_exists_in_addition_to_mtp_first(spec) -> None:
+    """#2438/#2496 want BOTH orderings: an MTP primary served first AND served
+    second. A repo that only encodes first-forgets the opposite choreography."""
+    mtp_modes = {seq.get("mtp") for seq in spec["sequences"]}
+    assert "first" in mtp_modes, "at least one mtp: first sequence required"
+    assert "second" in mtp_modes, "at least one mtp: second sequence required"
+
+
+def test_gemma_and_bonsai_actually_load(spec) -> None:
+    """v3 listed gemma-4-26b and bonsai-27b aliases but never loaded them.
+    Every MUST_LOAD alias must appear as a step 'model' in some sequence."""
+    loaded = {
+        model
+        for seq in spec["sequences"]
+        for step in seq.get("steps", [])
+        for model in (step["model"],)
+    }
+    for alias in MUST_LOAD_ALIASES:
+        assert alias in loaded, (
+            f"{alias} is listed in top_10_aliases but no sequence step loads it"
         )
 
 
