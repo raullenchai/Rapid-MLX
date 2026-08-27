@@ -87,19 +87,19 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         let unsupported = temporaryDirectory.appendingPathComponent("unsupported.bin")
         try Data("not an attachment".utf8).write(to: unsupported)
 
-        harness.dragFile(image)
+        // dragFile(expectedChip:) waits for each dropped chip's remove control
+        // to settle (exists + hittable) and re-issues the drop if it is lost, so
+        // the control is guaranteed before we send (#2481).
         let imageChip = harness.element("ChatView.Attachment.Remove.\(image.lastPathComponent)")
-        XCTAssertTrue(imageChip.waitForExistence(timeout: 15))
+        harness.dragFile(image, expectedChip: imageChip)
         harness.send("Dragged photo", expectedRequestCount: 1)
 
-        harness.dragFile(document)
         let documentChip = harness.element("ChatView.Attachment.Remove.\(document.lastPathComponent)")
-        XCTAssertTrue(documentChip.waitForExistence(timeout: 15))
+        harness.dragFile(document, expectedChip: documentChip)
         harness.send("Dragged document", expectedRequestCount: 2)
 
-        harness.dragFile(pdf)
         let pdfChip = harness.element("ChatView.Attachment.Remove.\(pdf.lastPathComponent)")
-        XCTAssertTrue(pdfChip.waitForExistence(timeout: 15))
+        harness.dragFile(pdf, expectedChip: pdfChip)
         harness.send("Dragged PDF", expectedRequestCount: 3)
 
         let compose = harness.element("rapid.chat.compose")
@@ -115,13 +115,14 @@ final class ChatAttachmentJourneyTests: XCTestCase {
 
         try harness.pasteImage(image)
         let pastedChip = harness.element("ChatView.Attachment.Remove.Pasted image.png")
-        XCTAssertTrue(pastedChip.waitForExistence(timeout: 15))
+        harness.waitForAttachmentRemove(pastedChip)
         pastedChip.click()
         XCTAssertTrue(harness.waitUntil(timeout: 10) { !pastedChip.exists })
         harness.send("Removed before send", expectedRequestCount: 5)
 
         try harness.pasteImage(image)
-        XCTAssertTrue(pastedChip.waitForExistence(timeout: 15))
+        let repastedChip = harness.element("ChatView.Attachment.Remove.Pasted image.png")
+        harness.waitForAttachmentRemove(repastedChip)
         harness.send("Pasted photo", expectedRequestCount: 6)
 
         let requests = harness.chatRequests()
