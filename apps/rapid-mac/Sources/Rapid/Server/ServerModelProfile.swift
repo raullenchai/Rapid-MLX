@@ -186,10 +186,27 @@ struct ImageInputAvailability: Equatable, Sendable {
         return ImageInputAvailability(isAvailable: true, unavailableMessage: nil)
     }
 
+    /// Maps the engine's stable lane reason to user-facing copy.
+    ///
+    /// Every reason the engine can emit with ``auto_text_fallback`` set needs a
+    /// case here. Those are the paths where a vision-capable checkpoint is
+    /// serving text-only, so the generic fallback copy — which tells the user to
+    /// pick a vision-capable model — names a remedy they have already applied.
+    /// ``tests/test_serving_lane_reason_contract.py`` enforces both halves of
+    /// that contract against the engine source.
     private static func message(for laneReason: String?) -> String {
         switch laneReason {
-        case "operator_forced_text":
-            return "This model is running text-only because of its current settings. Photos need a vision-capable model."
+        case "text_lane_forced":
+            // The checkpoint may well be vision-capable — the operator asked
+            // for the text lane. Pointing at a different model would send them
+            // after a model they may already have.
+            return "This model is running text-only because of its current settings. Turn off text-only mode and start it again to send photos."
+        case "text_lane_speculative_decode":
+            return "This model is running text-only because speculative decoding is on. Turn it off to send photos."
+        case "vision_memory_insufficient":
+            return "This model's vision mode needs more memory than this Mac has available. Free up memory or choose a smaller vision-capable model."
+        case "vision_hybrid_runtime_unsupported":
+            return "This model is running text-only because its vision runtime isn't supported here. Choose a different vision-capable model to add photos."
         case "vision_architecture_unavailable", "vision_hybrid_cache_unsupported",
              "vision_weights_unavailable":
             return "This model is running text-only because its vision features aren't available. Choose a vision-capable model to add photos."

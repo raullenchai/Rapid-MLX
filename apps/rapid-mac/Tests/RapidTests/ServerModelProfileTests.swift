@@ -46,7 +46,7 @@ final class ServerModelProfileTests {
           "reasoning_parser": "qwen3",
           "capabilities": ["text", "vision", "tools"],
           "serving_lane": "vision",
-          "serving_lane_reason": "vision_hybrid_serialized",
+          "serving_lane_reason": "vision_hybrid_runtime_supported",
           "modality": "text"
         }
         """
@@ -64,7 +64,7 @@ final class ServerModelProfileTests {
         #expect(profile.reasoningParser == "qwen3")
         #expect(profile.capabilities == ["text", "vision", "tools"])
         #expect(profile.servingLane == "vision")
-        #expect(profile.servingLaneReason == "vision_hybrid_serialized")
+        #expect(profile.servingLaneReason == "vision_hybrid_runtime_supported")
         #expect(profile.modality == "text")
     }
 
@@ -137,6 +137,102 @@ final class ServerModelProfileTests {
             fallbackSupportsImageInput: false,
             profile: legacy
         ).isAvailable)
+    }
+
+    // MARK: - Auto-fallback lane reasons
+    //
+    // Every reason below is emitted with `auto_text_fallback` by the engine:
+    // the checkpoint IS vision-capable, but its vision lane was not admitted.
+    // The generic fallback copy names a remedy the user has already applied
+    // ("choose a vision-capable model"), so each needs its own case. The
+    // shared assertion is therefore that the copy is NOT the generic string.
+
+    /// The copy every auto-fallback reason must avoid.
+    private static let genericLaneCopy =
+        "This model is running text-only. Photos need a vision-capable model."
+
+    /// Resolve a text lane for a vision-capable checkpoint downgraded by `reason`.
+    private func downgradedVisionLane(reason: String) -> ImageInputAvailability {
+        ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: true,
+            profile: ServerModelProfile(
+                id: "model",
+                capabilities: ["text", "vision"],
+                servingLane: "text",
+                servingLaneReason: reason
+            )
+        )
+    }
+
+    @Test("Vision that does not fit in memory blames memory, not a missing capability")
+    func visionMemoryInsufficientExplainsTheMemoryLimit() {
+        let availability = downgradedVisionLane(reason: "vision_memory_insufficient")
+        let message = availability.unavailableMessage ?? ""
+        #expect(!availability.isAvailable)
+        // The remedy must be memory-shaped. Telling a user whose model is
+        // already vision-capable to "choose a vision-capable model" sends them
+        // after the wrong fix — that is the bug this case exists to prevent.
+        #expect(message.contains("memory"))
+        #expect(message != Self.genericLaneCopy)
+    }
+
+    @Test("An unsupported vision runtime says so instead of falling through")
+    func visionHybridRuntimeUnsupportedExplainsTheRuntime() {
+        let availability = downgradedVisionLane(reason: "vision_hybrid_runtime_unsupported")
+        let message = availability.unavailableMessage ?? ""
+        #expect(!availability.isAvailable)
+        #expect(message.contains("runtime"))
+        #expect(message != Self.genericLaneCopy)
+    }
+
+    @Test("Speculative decoding downgrade names the decoder, not the model's capability")
+    func speculativeDecodeDowngradeExplainsTheDecoder() {
+        let availability = downgradedVisionLane(reason: "text_lane_speculative_decode")
+        let message = availability.unavailableMessage ?? ""
+        #expect(!availability.isAvailable)
+        // This downgrade is a throughput tradeoff, not a capability limit, and
+        // it is the one reason here the user can undo directly.
+        #expect(message.contains("speculative decoding"))
+        #expect(message != Self.genericLaneCopy)
+    }
+
+    @Test("Operator-forced text uses the settings copy under the engine's real reason")
+    func operatorForcedTextUsesTheSettingsCopy() {
+        // The engine emits `text_lane_forced`; the app matched a string the
+        // engine never sent, so this copy was unreachable until it was fixed.
+        let availability = downgradedVisionLane(reason: "text_lane_forced")
+        let message = availability.unavailableMessage ?? ""
+        #expect(!availability.isAvailable)
+        #expect(message.contains("current settings"))
+        #expect(message != Self.genericLaneCopy)
+    }
+
+    /// Reasons the user can undo from the app without changing model.
+    ///
+    /// `--no-mllm` / `--text-only` and speculative decoding are both launch
+    /// settings, and the checkpoint underneath may be fully vision-capable.
+    /// Copy that recommends a vision-capable model sends the user shopping for
+    /// something they may already be running — the same wrong-remedy failure
+    /// that made the memory case worth fixing.
+    @Test(
+        "A downgrade the user can reverse must not recommend a different model",
+        arguments: ["text_lane_forced", "text_lane_speculative_decode"]
+    )
+    func reversibleDowngradesPointAtTheSetting(reason: String) {
+        let message = downgradedVisionLane(reason: reason).unavailableMessage ?? ""
+        #expect(!message.contains("vision-capable model"))
+        // ...and must instead name the switch to flip. Matched loosely so the
+        // copy can read naturally ("turn it off") without failing the intent.
+        let lowered = message.lowercased()
+        #expect(lowered.contains("turn") && lowered.contains("off"))
+    }
+
+    @Test("An unknown lane reason still degrades to the generic copy")
+    func unknownLaneReasonKeepsTheGenericCopy() {
+        // The default arm stays reachable for sidecars newer than the app.
+        let availability = downgradedVisionLane(reason: "reason_from_a_future_sidecar")
+        #expect(!availability.isAvailable)
+        #expect(availability.unavailableMessage == Self.genericLaneCopy)
     }
 
     @Test("A replacement sidecar invalidates the selected-model profile task")

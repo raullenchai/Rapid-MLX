@@ -309,7 +309,7 @@ struct ModelResidencyTests {
                 id: "current-model",
                 capabilities: ["text"],
                 servingLane: "text",
-                servingLaneReason: "operator_forced_text"
+                servingLaneReason: "text_lane_forced"
             ),
             forAlias: "current-model"
         )
@@ -356,7 +356,7 @@ struct ModelResidencyTests {
                 id: "secondary-model",
                 capabilities: ["text"],
                 servingLane: "text",
-                servingLaneReason: "operator_forced_text"
+                servingLaneReason: "text_lane_forced"
             ),
             forAlias: "secondary-model"
         )
