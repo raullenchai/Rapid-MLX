@@ -34,12 +34,17 @@ REPO = Path(__file__).resolve().parents[1]
 
 # The engine has no single source of truth for these values: the decision
 # function emits most of them, but startup seeds one and the engine rewrites
-# another after a failed vision load. All three files must be read.
-LANE_DECISIONS = REPO / "vllm_mlx/api/utils.py"
-SERVER = REPO / "vllm_mlx/server.py"
-BATCHED = REPO / "vllm_mlx/engine/batched.py"
+# another after a failed vision load. Scan the tree rather than naming files,
+# so a reason introduced in a fourth module cannot slip past this contract.
+ENGINE = REPO / "vllm_mlx"
+LANE_DECISIONS = ENGINE / "api/utils.py"
+BATCHED = ENGINE / "engine/batched.py"
 
 PROFILE_SWIFT = REPO / "apps/rapid-mac/Sources/Rapid/Server/ServerModelProfile.swift"
+
+# ``ServingLaneDecision(False, "x", auto_text_fallback=True)`` — tolerant of
+# line breaks and spacing, strict about the keyword actually being True.
+AUTO_FALLBACK_RE = re.compile(r"auto_text_fallback\s*=\s*True")
 
 
 def _balanced_call(text: str, open_paren: int) -> str:
@@ -63,7 +68,7 @@ def _engine_decisions() -> dict[str, bool]:
         call = _balanced_call(text, match.end() - 1)
         reason = re.search(r'"([^"]+)"', call)
         assert reason, f"ServingLaneDecision without a literal reason: {call!r}"
-        auto_fallback = "auto_text_fallback=True" in call.replace(" ", "")
+        auto_fallback = bool(AUTO_FALLBACK_RE.search(call))
         # A reason emitted from several call sites is auto-fallback if ANY of
         # them sets the flag — the user can reach the copy through that path.
         found[reason.group(1)] = found.get(reason.group(1), False) or auto_fallback
@@ -71,34 +76,36 @@ def _engine_decisions() -> dict[str, bool]:
     return found
 
 
-def _literal_assignments(path: Path, attribute: str) -> set[str]:
-    """Reason strings assigned directly to ``attribute`` in ``path``."""
-    pattern = rf'{re.escape(attribute)}\s*=\s*"([^"]+)"'
-    return set(re.findall(pattern, path.read_text()))
+def _literal_assignments(attribute: str) -> set[str]:
+    """Reason strings assigned to ``attribute`` anywhere in the engine tree."""
+    pattern = re.compile(rf'{re.escape(attribute)}\s*=\s*"([^"]+)"')
+    found: set[str] = set()
+    for path in ENGINE.rglob("*.py"):
+        found.update(pattern.findall(path.read_text(encoding="utf-8")))
+    return found
 
 
 def _engine_reasons() -> dict[str, bool]:
-    """``{reason: needs_dedicated_copy}`` across all three engine files.
+    """``{reason: needs_dedicated_copy}`` across the whole engine tree.
 
     The flag answers "can a vision-capable model reach the user with this
     reason while serving text-only", which is what makes the generic copy
     wrong. ``ServingLaneDecision`` records that as ``auto_text_fallback``;
-    the other two sources have to be classified here.
+    assignments outside it have to be classified here.
     """
     reasons = _engine_decisions()
-    # Startup seeds this for image-gen / video-gen modalities and passes it
-    # straight through. Those models have no vision lane to lose, so the
-    # generic copy is not misleading for them.
-    for reason in _literal_assignments(SERVER, "_serving_lane_reason"):
+    # Plain assignments seed the field — startup does this for image-gen /
+    # video-gen modalities and passes it straight through. Those models have
+    # no vision lane to lose, so the generic copy is not misleading for them.
+    for reason in _literal_assignments("serving_lane_reason"):
         reasons.setdefault(reason, False)
-    for reason in _literal_assignments(SERVER, "serving_lane_reason"):
-        reasons.setdefault(reason, False)
-    # Rewritten in place by the engine after a vision load fails. Its own
-    # warning calls this "auto-falling back to text-only serving" and it then
-    # starts the text lane — the same silent downgrade the flag marks
-    # elsewhere. It simply never passes through ServingLaneDecision, so there
-    # is no flag to read: assign it here rather than let it default to False.
-    for reason in _literal_assignments(BATCHED, "self._serving_lane_reason"):
+    # An assignment to the instance attribute is the engine downgrading
+    # itself mid-load: after a failed vision load its own warning calls this
+    # "auto-falling back to text-only serving" before starting the text lane.
+    # Same silent downgrade the flag marks elsewhere, but it never passes
+    # through ServingLaneDecision, so there is no flag to read. Runs after the
+    # loop above, whose broader pattern also matches these lines.
+    for reason in _literal_assignments("self._serving_lane_reason"):
         reasons[reason] = True
     return reasons
 
@@ -166,19 +173,21 @@ def test_every_auto_text_fallback_reason_has_dedicated_copy():
     )
 
 
-def test_operator_forced_text_reason_has_dedicated_copy():
-    """The one downgrade the user performed deliberately.
+def test_text_lane_forced_reason_has_dedicated_copy():
+    """The deliberate text-lane pin still needs its own sentence.
 
-    ``text_lane_forced`` is not an auto-fallback — the operator asked for it
-    via ``--no-mllm`` / ``--text-only`` — but it is the most common way to
-    reach disabled photos, and the remedy (change the setting) is unrelated to
-    picking a different model.
+    ``text_lane_forced`` is not an auto-fallback: the CLI reaches it through
+    ``--no-mllm`` / ``--text-only``. The Desktop app exposes no such switch, so
+    in-app it arrives only from an alias pinned ``is_text_only`` in the
+    registry — a vision-config checkpoint served through the text lane. Either
+    way the checkpoint looks vision-capable while photos are refused, which is
+    exactly when the generic copy is at its most confusing.
     """
     assert "text_lane_forced" in _engine_reasons(), (
         "the engine no longer emits text_lane_forced; update this test and the "
         "Swift case together"
     )
     assert "text_lane_forced" in _swift_case_labels(), (
-        "ServerModelProfile.swift lost its text_lane_forced case — operator-"
-        "forced text mode is back to the generic copy"
+        "ServerModelProfile.swift lost its text_lane_forced case — a "
+        "registry-pinned text-only alias is back to the generic copy"
     )

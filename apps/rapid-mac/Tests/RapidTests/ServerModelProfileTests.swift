@@ -169,10 +169,14 @@ final class ServerModelProfileTests {
         let availability = downgradedVisionLane(reason: "vision_memory_insufficient")
         let message = availability.unavailableMessage ?? ""
         #expect(!availability.isAvailable)
-        // The remedy must be memory-shaped. Telling a user whose model is
-        // already vision-capable to "choose a vision-capable model" sends them
-        // after the wrong fix — that is the bug this case exists to prevent.
+        // The remedy must be memory-shaped. The generic copy's "choose a
+        // vision-capable model" sends a user who is already running one after
+        // the wrong fix — that is the bug this case exists to prevent.
         #expect(message.contains("memory"))
+        // "Smaller" is what makes it actionable: the engine gates on physical
+        // RAM, so a same-size vision model fails identically and freeing
+        // memory changes nothing.
+        #expect(message.contains("smaller"))
         #expect(message != Self.genericLaneCopy)
     }
 
@@ -196,27 +200,36 @@ final class ServerModelProfileTests {
         #expect(message != Self.genericLaneCopy)
     }
 
-    @Test("Operator-forced text uses the settings copy under the engine's real reason")
-    func operatorForcedTextUsesTheSettingsCopy() {
+    @Test("Registry-pinned text-only sends the user to the model picker")
+    func textLaneForcedPointsAtTheModelPicker() {
         // The engine emits `text_lane_forced`; the app matched a string the
         // engine never sent, so this copy was unreachable until it was fixed.
+        //
+        // The CLI reaches this via --no-mllm, but the GUI has no such switch:
+        // in-app it only comes from an alias pinned `is_text_only`, which the
+        // user cannot change. Choosing another model is the real remedy.
         let availability = downgradedVisionLane(reason: "text_lane_forced")
         let message = availability.unavailableMessage ?? ""
         #expect(!availability.isAvailable)
-        #expect(message.contains("current settings"))
+        #expect(message.contains("text-only"))
+        #expect(message.contains("vision-capable model"))
         #expect(message != Self.genericLaneCopy)
     }
 
     /// Reasons the user can undo from the app without changing model.
     ///
-    /// `--no-mllm` / `--text-only` and speculative decoding are both launch
-    /// settings, and the checkpoint underneath may be fully vision-capable.
-    /// Copy that recommends a vision-capable model sends the user shopping for
-    /// something they may already be running — the same wrong-remedy failure
-    /// that made the memory case worth fixing.
+    /// Speculative decoding is a launch setting reachable in Settings, and the
+    /// checkpoint underneath is fully vision-capable. Copy that recommends a
+    /// vision-capable model would send the user shopping for something they
+    /// are already running — the same wrong-remedy failure that made the
+    /// memory case worth fixing.
+    ///
+    /// `text_lane_forced` is deliberately absent: it is operator-reversible on
+    /// the CLI but not in this app, so for GUI users the model picker IS the
+    /// remedy. See ``textLaneForcedPointsAtTheModelPicker``.
     @Test(
         "A downgrade the user can reverse must not recommend a different model",
-        arguments: ["text_lane_forced", "text_lane_speculative_decode"]
+        arguments: ["text_lane_speculative_decode"]
     )
     func reversibleDowngradesPointAtTheSetting(reason: String) {
         let message = downgradedVisionLane(reason: reason).unavailableMessage ?? ""
