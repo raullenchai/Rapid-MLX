@@ -93,7 +93,7 @@ and [install security](SECURITY.md).
 
 The guided installer prefers a runnable model already cached on this Mac when
 it fits the RAM tier. Otherwise its quick first-chat download is
-`lfm2.5-2.6b-4bit` below 16 GB and `qwen3.5-4b-4bit` at 16 GB or above; larger
+`lfm2.5-1b-4bit` below 16 GB and `qwen3.5-4b-4bit` at 16 GB or above; larger
 quality picks remain available through `rapid-mlx recipe` and the model picker.
 
 ---

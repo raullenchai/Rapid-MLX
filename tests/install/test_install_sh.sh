@@ -194,8 +194,8 @@ CALLS=""; dispatch_venv rebuild
 check "dispatch rebuild -> reset then create" "$CALLS" " reset create"
 
 # ── 13. first-chat starter mirrors Desktop Quickstart (#2385) ────────────────
-check "15 GB fresh install uses the compact starter" \
-    "$(select_starter_model 15 '')" "lfm2.5-2.6b-4bit"
+check "15 GB fresh install uses the safe 1.2B starter" \
+    "$(select_starter_model 15 '')" "lfm2.5-1b-4bit"
 check "16 GB fresh install uses the standard starter" \
     "$(select_starter_model 16 '')" "qwen3.5-4b-4bit"
 check "32 GB fresh install does not suggest an uncached 27B model" \

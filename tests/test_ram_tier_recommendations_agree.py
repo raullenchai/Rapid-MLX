@@ -75,18 +75,22 @@ def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
 
 def test_both_tables_parse():
     """Both the first-chat selector and model-browser SSOT are reachable."""
-    assert _select_installer_starter(8) == "lfm2.5-2.6b-4bit"
+    assert _select_installer_starter(8) == "lfm2.5-1b-4bit"
     assert _select_installer_starter(16) == "qwen3.5-4b-4bit"
     assert len(_parse_app_tiers()) >= 6
 
 
 def test_fresh_installer_uses_quickstart_baseline_at_every_ram_size():
     """First chat optimizes time-to-value, not the browser's largest pick."""
-    compact_alias, _ = _parse_quickstart_choice("compactDefaultChoice")
+    # Desktop's sub-16 GB baseline is the safe 1.2B lowMemoryChoice (#2432);
+    # at 16 GB and up it is the standard 4B defaultChoice.
+    sub16_alias, _ = _parse_quickstart_choice("lowMemoryChoice")
     standard_alias, _ = _parse_quickstart_choice("defaultChoice")
-    assert "hardware.physicalRAMGB < 16" in QUICKSTART.read_text()
+    assert (
+        "physicalRAMGB < 16 ? lowMemoryChoice : defaultChoice" in QUICKSTART.read_text()
+    )
     for ram in (4, 8, 15):
-        assert _select_installer_starter(ram) == compact_alias
+        assert _select_installer_starter(ram) == sub16_alias
     for ram in (16, 18, 24, 32, 48, 64, 96, 256):
         assert _select_installer_starter(ram) == standard_alias
 
@@ -129,7 +133,7 @@ def test_every_recommended_alias_exists():
 @pytest.mark.parametrize(
     "ram,expected",
     [
-        (8, "lfm2.5-2.6b-4bit"),
+        (8, "lfm2.5-1b-4bit"),
         (16, "qwen3.5-4b-4bit"),
         (18, "qwen3.5-4b-4bit"),
     ],
@@ -183,9 +187,9 @@ def _readme_prose_tiers() -> list[tuple[int, str]]:
     """The quick-start prose pins the two first-chat baselines."""
     text = README.read_text()
     assert "prefers a runnable model already cached" in text
-    assert "`lfm2.5-2.6b-4bit` below 16 GB" in text
+    assert "`lfm2.5-1b-4bit` below 16 GB" in text
     assert "`qwen3.5-4b-4bit` at 16 GB or above" in text
-    return [(8, "lfm2.5-2.6b-4bit"), (16, "qwen3.5-4b-4bit")]
+    return [(8, "lfm2.5-1b-4bit"), (16, "qwen3.5-4b-4bit")]
 
 
 def test_readme_table_matches_the_app_tier_for_tier():
@@ -213,7 +217,7 @@ def test_readme_table_matches_the_app_tier_for_tier():
 def test_readme_prose_matches_the_readme_table():
     """Installer starters are deliberately smaller than browser smart picks."""
     assert _readme_prose_tiers() == [
-        (8, "lfm2.5-2.6b-4bit"),
+        (8, "lfm2.5-1b-4bit"),
         (16, "qwen3.5-4b-4bit"),
     ]
 

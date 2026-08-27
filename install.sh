@@ -152,13 +152,16 @@ dispatch_venv() {
 
 # First-chat policy shared with Desktop onboarding (#2385): start with a small,
 # reliable baseline, but reuse a known RAM-safe cached model when one is already
-# runnable. The candidate order is the curated RAM-tier order walked downward;
-# aliases above the current tier never enter the list.
+# runnable. The baseline mirrors ``QuickstartCoordinator.baselineChoice``:
+# <16 GB uses the safe 1.2B starter (Desktop's ``lowMemoryChoice``), >=16 GB the
+# 4B starter. The candidate order is the curated RAM-tier order walked downward,
+# aliases above the current tier never enter the list; the sub-16 GB order is
+# just the 1.2B baseline, because Desktop auto-selects nothing else there.
 starter_baseline_for_ram() {
     if [ "$1" -ge 16 ]; then
         printf '%s\n' "qwen3.5-4b-4bit"
     else
-        printf '%s\n' "lfm2.5-2.6b-4bit"
+        printf '%s\n' "lfm2.5-1b-4bit"
     fi
 }
 
@@ -169,7 +172,7 @@ starter_cached_order_for_ram() {
     elif [ "$ram" -ge 24 ]; then printf '%s\n' bonsai-27b-2bit qwen3.5-4b-4bit qwen3.5-9b-4bit lfm2.5-2.6b-4bit
     elif [ "$ram" -ge 18 ]; then printf '%s\n' qwen3.5-9b-4bit qwen3.5-4b-4bit lfm2.5-2.6b-4bit
     elif [ "$ram" -ge 16 ]; then printf '%s\n' qwen3.5-4b-4bit lfm2.5-2.6b-4bit
-    else printf '%s\n' lfm2.5-2.6b-4bit
+    else printf '%s\n' lfm2.5-1b-4bit
     fi
 }
 
@@ -274,7 +277,7 @@ fi
 
 # This is the Desktop Quickstart starter policy, not the larger "smart pick"
 # shown in the model browser. A fresh install optimizes time-to-first-chat:
-# <16 GB uses the compact 2.6B starter; every larger Mac uses the 4B starter.
+# <16 GB uses the safe 1.2B starter; every larger Mac uses the 4B starter.
 # After installation, a structured cache query may promote this to a known
 # runnable model that fits the same RAM tier.
 RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
