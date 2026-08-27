@@ -1,0 +1,5210 @@
+{
+  "results": {
+    "mmlu_redux_abstract_algebra_generative": {
+      "name": "mmlu_redux_abstract_algebra_generative",
+      "alias": "abstract_algebra",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_anatomy_generative": {
+      "name": "mmlu_redux_anatomy_generative",
+      "alias": "anatomy",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_astronomy_generative": {
+      "name": "mmlu_redux_astronomy_generative",
+      "alias": "astronomy",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_college_biology_generative": {
+      "name": "mmlu_redux_college_biology_generative",
+      "alias": "college_biology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_college_chemistry_generative": {
+      "name": "mmlu_redux_college_chemistry_generative",
+      "alias": "college_chemistry",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_college_computer_science_generative": {
+      "name": "mmlu_redux_college_computer_science_generative",
+      "alias": "college_computer_science",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_college_mathematics_generative": {
+      "name": "mmlu_redux_college_mathematics_generative",
+      "alias": "college_mathematics",
+      "sample_len": 4,
+      "exact_match,default": 0.25,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_college_physics_generative": {
+      "name": "mmlu_redux_college_physics_generative",
+      "alias": "college_physics",
+      "sample_len": 4,
+      "exact_match,default": 0.25,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_computer_security_generative": {
+      "name": "mmlu_redux_computer_security_generative",
+      "alias": "computer_security",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_conceptual_physics_generative": {
+      "name": "mmlu_redux_conceptual_physics_generative",
+      "alias": "conceptual_physics",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_electrical_engineering_generative": {
+      "name": "mmlu_redux_electrical_engineering_generative",
+      "alias": "electrical_engineering",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_elementary_mathematics_generative": {
+      "name": "mmlu_redux_elementary_mathematics_generative",
+      "alias": "elementary_mathematics",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_high_school_biology_generative": {
+      "name": "mmlu_redux_high_school_biology_generative",
+      "alias": "high_school_biology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_chemistry_generative": {
+      "name": "mmlu_redux_high_school_chemistry_generative",
+      "alias": "high_school_chemistry",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_high_school_computer_science_generative": {
+      "name": "mmlu_redux_high_school_computer_science_generative",
+      "alias": "high_school_computer_science",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_high_school_mathematics_generative": {
+      "name": "mmlu_redux_high_school_mathematics_generative",
+      "alias": "high_school_mathematics",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_high_school_physics_generative": {
+      "name": "mmlu_redux_high_school_physics_generative",
+      "alias": "high_school_physics",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_high_school_statistics_generative": {
+      "name": "mmlu_redux_high_school_statistics_generative",
+      "alias": "high_school_statistics",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_machine_learning_generative": {
+      "name": "mmlu_redux_machine_learning_generative",
+      "alias": "machine_learning",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_business_ethics_generative": {
+      "name": "mmlu_redux_business_ethics_generative",
+      "alias": "business_ethics",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_clinical_knowledge_generative": {
+      "name": "mmlu_redux_clinical_knowledge_generative",
+      "alias": "clinical_knowledge",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_college_medicine_generative": {
+      "name": "mmlu_redux_college_medicine_generative",
+      "alias": "college_medicine",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_global_facts_generative": {
+      "name": "mmlu_redux_global_facts_generative",
+      "alias": "global_facts",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_human_aging_generative": {
+      "name": "mmlu_redux_human_aging_generative",
+      "alias": "human_aging",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_management_generative": {
+      "name": "mmlu_redux_management_generative",
+      "alias": "management",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_marketing_generative": {
+      "name": "mmlu_redux_marketing_generative",
+      "alias": "marketing",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_medical_genetics_generative": {
+      "name": "mmlu_redux_medical_genetics_generative",
+      "alias": "medical_genetics",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_miscellaneous_generative": {
+      "name": "mmlu_redux_miscellaneous_generative",
+      "alias": "miscellaneous",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_nutrition_generative": {
+      "name": "mmlu_redux_nutrition_generative",
+      "alias": "nutrition",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_professional_accounting_generative": {
+      "name": "mmlu_redux_professional_accounting_generative",
+      "alias": "professional_accounting",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_professional_medicine_generative": {
+      "name": "mmlu_redux_professional_medicine_generative",
+      "alias": "professional_medicine",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_virology_generative": {
+      "name": "mmlu_redux_virology_generative",
+      "alias": "virology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_econometrics_generative": {
+      "name": "mmlu_redux_econometrics_generative",
+      "alias": "econometrics",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_high_school_geography_generative": {
+      "name": "mmlu_redux_high_school_geography_generative",
+      "alias": "high_school_geography",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_government_and_politics_generative": {
+      "name": "mmlu_redux_high_school_government_and_politics_generative",
+      "alias": "high_school_government_and_politics",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_macroeconomics_generative": {
+      "name": "mmlu_redux_high_school_macroeconomics_generative",
+      "alias": "high_school_macroeconomics",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_high_school_microeconomics_generative": {
+      "name": "mmlu_redux_high_school_microeconomics_generative",
+      "alias": "high_school_microeconomics",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_psychology_generative": {
+      "name": "mmlu_redux_high_school_psychology_generative",
+      "alias": "high_school_psychology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_human_sexuality_generative": {
+      "name": "mmlu_redux_human_sexuality_generative",
+      "alias": "human_sexuality",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_professional_psychology_generative": {
+      "name": "mmlu_redux_professional_psychology_generative",
+      "alias": "professional_psychology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_public_relations_generative": {
+      "name": "mmlu_redux_public_relations_generative",
+      "alias": "public_relations",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_security_studies_generative": {
+      "name": "mmlu_redux_security_studies_generative",
+      "alias": "security_studies",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_sociology_generative": {
+      "name": "mmlu_redux_sociology_generative",
+      "alias": "sociology",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_us_foreign_policy_generative": {
+      "name": "mmlu_redux_us_foreign_policy_generative",
+      "alias": "us_foreign_policy",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_formal_logic_generative": {
+      "name": "mmlu_redux_formal_logic_generative",
+      "alias": "formal_logic",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_european_history_generative": {
+      "name": "mmlu_redux_high_school_european_history_generative",
+      "alias": "high_school_european_history",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_us_history_generative": {
+      "name": "mmlu_redux_high_school_us_history_generative",
+      "alias": "high_school_us_history",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_high_school_world_history_generative": {
+      "name": "mmlu_redux_high_school_world_history_generative",
+      "alias": "high_school_world_history",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_international_law_generative": {
+      "name": "mmlu_redux_international_law_generative",
+      "alias": "international_law",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_jurisprudence_generative": {
+      "name": "mmlu_redux_jurisprudence_generative",
+      "alias": "jurisprudence",
+      "sample_len": 4,
+      "exact_match,default": 0.75,
+      "exact_match_stderr,default": 0.25
+    },
+    "mmlu_redux_logical_fallacies_generative": {
+      "name": "mmlu_redux_logical_fallacies_generative",
+      "alias": "logical_fallacies",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_moral_disputes_generative": {
+      "name": "mmlu_redux_moral_disputes_generative",
+      "alias": "moral_disputes",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_moral_scenarios_generative": {
+      "name": "mmlu_redux_moral_scenarios_generative",
+      "alias": "moral_scenarios",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_philosophy_generative": {
+      "name": "mmlu_redux_philosophy_generative",
+      "alias": "philosophy",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_prehistory_generative": {
+      "name": "mmlu_redux_prehistory_generative",
+      "alias": "prehistory",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_professional_law_generative": {
+      "name": "mmlu_redux_professional_law_generative",
+      "alias": "professional_law",
+      "sample_len": 4,
+      "exact_match,default": 0.5,
+      "exact_match_stderr,default": 0.28867513459481287
+    },
+    "mmlu_redux_world_religions_generative": {
+      "name": "mmlu_redux_world_religions_generative",
+      "alias": "world_religions",
+      "sample_len": 4,
+      "exact_match,default": 1.0,
+      "exact_match_stderr,default": 0.0
+    },
+    "mmlu_redux_generative::stem": {
+      "alias": "mmlu_redux_generative::stem",
+      "name": "mmlu_redux_generative::stem",
+      "sample_len": 76,
+      "exact_match,default": 0.7368421052631579,
+      "exact_match_stderr,default": 0.0468292905790847,
+      "sample_count": {
+        "exact_match,default": 76
+      }
+    },
+    "mmlu_redux_generative::other": {
+      "alias": "mmlu_redux_generative::other",
+      "name": "mmlu_redux_generative::other",
+      "sample_len": 52,
+      "exact_match,default": 0.8846153846153846,
+      "exact_match_stderr,default": 0.04154320960517859,
+      "sample_count": {
+        "exact_match,default": 52
+      }
+    },
+    "mmlu_redux_generative::social sciences": {
+      "alias": "mmlu_redux_generative::social sciences",
+      "name": "mmlu_redux_generative::social sciences",
+      "sample_len": 48,
+      "exact_match,default": 0.8541666666666666,
+      "exact_match_stderr,default": 0.05242940580049132,
+      "sample_count": {
+        "exact_match,default": 48
+      }
+    },
+    "mmlu_redux_generative::humanities": {
+      "alias": "mmlu_redux_generative::humanities",
+      "name": "mmlu_redux_generative::humanities",
+      "sample_len": 52,
+      "exact_match,default": 0.9038461538461539,
+      "exact_match_stderr,default": 0.03682411952908993,
+      "sample_count": {
+        "exact_match,default": 52
+      }
+    },
+    "mmlu_redux_generative": {
+      "alias": "mmlu_redux (generative)",
+      "name": "mmlu_redux_generative",
+      "sample_len": 228,
+      "exact_match,default": 0.8333333333333334,
+      "exact_match_stderr,default": 0.022930390557541112,
+      "sample_count": {
+        "exact_match,default": 228
+      }
+    }
+  },
+  "groups": {
+    "mmlu_redux_generative::stem": {
+      "alias": "mmlu_redux_generative::stem",
+      "name": "mmlu_redux_generative::stem",
+      "sample_len": 76,
+      "exact_match,default": 0.7368421052631579,
+      "exact_match_stderr,default": 0.0468292905790847,
+      "sample_count": {
+        "exact_match,default": 76
+      }
+    },
+    "mmlu_redux_generative::other": {
+      "alias": "mmlu_redux_generative::other",
+      "name": "mmlu_redux_generative::other",
+      "sample_len": 52,
+      "exact_match,default": 0.8846153846153846,
+      "exact_match_stderr,default": 0.04154320960517859,
+      "sample_count": {
+        "exact_match,default": 52
+      }
+    },
+    "mmlu_redux_generative::social sciences": {
+      "alias": "mmlu_redux_generative::social sciences",
+      "name": "mmlu_redux_generative::social sciences",
+      "sample_len": 48,
+      "exact_match,default": 0.8541666666666666,
+      "exact_match_stderr,default": 0.05242940580049132,
+      "sample_count": {
+        "exact_match,default": 48
+      }
+    },
+    "mmlu_redux_generative::humanities": {
+      "alias": "mmlu_redux_generative::humanities",
+      "name": "mmlu_redux_generative::humanities",
+      "sample_len": 52,
+      "exact_match,default": 0.9038461538461539,
+      "exact_match_stderr,default": 0.03682411952908993,
+      "sample_count": {
+        "exact_match,default": 52
+      }
+    },
+    "mmlu_redux_generative": {
+      "alias": "mmlu_redux (generative)",
+      "name": "mmlu_redux_generative",
+      "sample_len": 228,
+      "exact_match,default": 0.8333333333333334,
+      "exact_match_stderr,default": 0.022930390557541112,
+      "sample_count": {
+        "exact_match,default": 228
+      }
+    }
+  },
+  "group_subtasks": {
+    "mmlu_redux_generative": [
+      "mmlu_redux_generative::stem",
+      "mmlu_redux_generative::other",
+      "mmlu_redux_generative::social sciences",
+      "mmlu_redux_generative::humanities"
+    ],
+    "mmlu_redux_generative::stem": [
+      "mmlu_redux_abstract_algebra_generative",
+      "mmlu_redux_anatomy_generative",
+      "mmlu_redux_astronomy_generative",
+      "mmlu_redux_college_biology_generative",
+      "mmlu_redux_college_chemistry_generative",
+      "mmlu_redux_college_computer_science_generative",
+      "mmlu_redux_college_mathematics_generative",
+      "mmlu_redux_college_physics_generative",
+      "mmlu_redux_computer_security_generative",
+      "mmlu_redux_conceptual_physics_generative",
+      "mmlu_redux_electrical_engineering_generative",
+      "mmlu_redux_elementary_mathematics_generative",
+      "mmlu_redux_high_school_biology_generative",
+      "mmlu_redux_high_school_chemistry_generative",
+      "mmlu_redux_high_school_computer_science_generative",
+      "mmlu_redux_high_school_mathematics_generative",
+      "mmlu_redux_high_school_physics_generative",
+      "mmlu_redux_high_school_statistics_generative",
+      "mmlu_redux_machine_learning_generative"
+    ],
+    "mmlu_redux_generative::other": [
+      "mmlu_redux_business_ethics_generative",
+      "mmlu_redux_clinical_knowledge_generative",
+      "mmlu_redux_college_medicine_generative",
+      "mmlu_redux_global_facts_generative",
+      "mmlu_redux_human_aging_generative",
+      "mmlu_redux_management_generative",
+      "mmlu_redux_marketing_generative",
+      "mmlu_redux_medical_genetics_generative",
+      "mmlu_redux_miscellaneous_generative",
+      "mmlu_redux_nutrition_generative",
+      "mmlu_redux_professional_accounting_generative",
+      "mmlu_redux_professional_medicine_generative",
+      "mmlu_redux_virology_generative"
+    ],
+    "mmlu_redux_generative::social sciences": [
+      "mmlu_redux_econometrics_generative",
+      "mmlu_redux_high_school_geography_generative",
+      "mmlu_redux_high_school_government_and_politics_generative",
+      "mmlu_redux_high_school_macroeconomics_generative",
+      "mmlu_redux_high_school_microeconomics_generative",
+      "mmlu_redux_high_school_psychology_generative",
+      "mmlu_redux_human_sexuality_generative",
+      "mmlu_redux_professional_psychology_generative",
+      "mmlu_redux_public_relations_generative",
+      "mmlu_redux_security_studies_generative",
+      "mmlu_redux_sociology_generative",
+      "mmlu_redux_us_foreign_policy_generative"
+    ],
+    "mmlu_redux_generative::humanities": [
+      "mmlu_redux_formal_logic_generative",
+      "mmlu_redux_high_school_european_history_generative",
+      "mmlu_redux_high_school_us_history_generative",
+      "mmlu_redux_high_school_world_history_generative",
+      "mmlu_redux_international_law_generative",
+      "mmlu_redux_jurisprudence_generative",
+      "mmlu_redux_logical_fallacies_generative",
+      "mmlu_redux_moral_disputes_generative",
+      "mmlu_redux_moral_scenarios_generative",
+      "mmlu_redux_philosophy_generative",
+      "mmlu_redux_prehistory_generative",
+      "mmlu_redux_professional_law_generative",
+      "mmlu_redux_world_religions_generative"
+    ]
+  },
+  "configs": {
+    "mmlu_redux_abstract_algebra_generative": {
+      "task": "mmlu_redux_abstract_algebra_generative",
+      "task_alias": "abstract_algebra",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "abstract_algebra",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about abstract algebra.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_abstract_algebra.yaml"
+      }
+    },
+    "mmlu_redux_anatomy_generative": {
+      "task": "mmlu_redux_anatomy_generative",
+      "task_alias": "anatomy",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "anatomy",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about anatomy.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_anatomy.yaml"
+      }
+    },
+    "mmlu_redux_astronomy_generative": {
+      "task": "mmlu_redux_astronomy_generative",
+      "task_alias": "astronomy",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "astronomy",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about astronomy.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_astronomy.yaml"
+      }
+    },
+    "mmlu_redux_business_ethics_generative": {
+      "task": "mmlu_redux_business_ethics_generative",
+      "task_alias": "business_ethics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "business_ethics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about business ethics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_business_ethics.yaml"
+      }
+    },
+    "mmlu_redux_clinical_knowledge_generative": {
+      "task": "mmlu_redux_clinical_knowledge_generative",
+      "task_alias": "clinical_knowledge",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "clinical_knowledge",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about clinical knowledge.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_clinical_knowledge.yaml"
+      }
+    },
+    "mmlu_redux_college_biology_generative": {
+      "task": "mmlu_redux_college_biology_generative",
+      "task_alias": "college_biology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_biology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college biology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_biology.yaml"
+      }
+    },
+    "mmlu_redux_college_chemistry_generative": {
+      "task": "mmlu_redux_college_chemistry_generative",
+      "task_alias": "college_chemistry",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_chemistry",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college chemistry.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_chemistry.yaml"
+      }
+    },
+    "mmlu_redux_college_computer_science_generative": {
+      "task": "mmlu_redux_college_computer_science_generative",
+      "task_alias": "college_computer_science",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_computer_science",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college computer science.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_computer_science.yaml"
+      }
+    },
+    "mmlu_redux_college_mathematics_generative": {
+      "task": "mmlu_redux_college_mathematics_generative",
+      "task_alias": "college_mathematics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_mathematics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college mathematics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_mathematics.yaml"
+      }
+    },
+    "mmlu_redux_college_medicine_generative": {
+      "task": "mmlu_redux_college_medicine_generative",
+      "task_alias": "college_medicine",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_medicine",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college medicine.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_medicine.yaml"
+      }
+    },
+    "mmlu_redux_college_physics_generative": {
+      "task": "mmlu_redux_college_physics_generative",
+      "task_alias": "college_physics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "college_physics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about college physics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_college_physics.yaml"
+      }
+    },
+    "mmlu_redux_computer_security_generative": {
+      "task": "mmlu_redux_computer_security_generative",
+      "task_alias": "computer_security",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "computer_security",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about computer security.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_computer_security.yaml"
+      }
+    },
+    "mmlu_redux_conceptual_physics_generative": {
+      "task": "mmlu_redux_conceptual_physics_generative",
+      "task_alias": "conceptual_physics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "conceptual_physics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about conceptual physics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_conceptual_physics.yaml"
+      }
+    },
+    "mmlu_redux_econometrics_generative": {
+      "task": "mmlu_redux_econometrics_generative",
+      "task_alias": "econometrics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "econometrics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about econometrics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_econometrics.yaml"
+      }
+    },
+    "mmlu_redux_electrical_engineering_generative": {
+      "task": "mmlu_redux_electrical_engineering_generative",
+      "task_alias": "electrical_engineering",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "electrical_engineering",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about electrical engineering.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_electrical_engineering.yaml"
+      }
+    },
+    "mmlu_redux_elementary_mathematics_generative": {
+      "task": "mmlu_redux_elementary_mathematics_generative",
+      "task_alias": "elementary_mathematics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "elementary_mathematics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about elementary mathematics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_elementary_mathematics.yaml"
+      }
+    },
+    "mmlu_redux_formal_logic_generative": {
+      "task": "mmlu_redux_formal_logic_generative",
+      "task_alias": "formal_logic",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "formal_logic",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about formal logic.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_formal_logic.yaml"
+      }
+    },
+    "mmlu_redux_global_facts_generative": {
+      "task": "mmlu_redux_global_facts_generative",
+      "task_alias": "global_facts",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "global_facts",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about global facts.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_global_facts.yaml"
+      }
+    },
+    "mmlu_redux_high_school_biology_generative": {
+      "task": "mmlu_redux_high_school_biology_generative",
+      "task_alias": "high_school_biology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_biology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school biology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_biology.yaml"
+      }
+    },
+    "mmlu_redux_high_school_chemistry_generative": {
+      "task": "mmlu_redux_high_school_chemistry_generative",
+      "task_alias": "high_school_chemistry",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_chemistry",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school chemistry.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_chemistry.yaml"
+      }
+    },
+    "mmlu_redux_high_school_computer_science_generative": {
+      "task": "mmlu_redux_high_school_computer_science_generative",
+      "task_alias": "high_school_computer_science",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_computer_science",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school computer science.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_computer_science.yaml"
+      }
+    },
+    "mmlu_redux_high_school_european_history_generative": {
+      "task": "mmlu_redux_high_school_european_history_generative",
+      "task_alias": "high_school_european_history",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_european_history",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school european history.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_european_history.yaml"
+      }
+    },
+    "mmlu_redux_high_school_geography_generative": {
+      "task": "mmlu_redux_high_school_geography_generative",
+      "task_alias": "high_school_geography",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_geography",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school geography.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_geography.yaml"
+      }
+    },
+    "mmlu_redux_high_school_government_and_politics_generative": {
+      "task": "mmlu_redux_high_school_government_and_politics_generative",
+      "task_alias": "high_school_government_and_politics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_government_and_politics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school government and politics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_government_and_politics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_macroeconomics_generative": {
+      "task": "mmlu_redux_high_school_macroeconomics_generative",
+      "task_alias": "high_school_macroeconomics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_macroeconomics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school macroeconomics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_macroeconomics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_mathematics_generative": {
+      "task": "mmlu_redux_high_school_mathematics_generative",
+      "task_alias": "high_school_mathematics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_mathematics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school mathematics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_mathematics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_microeconomics_generative": {
+      "task": "mmlu_redux_high_school_microeconomics_generative",
+      "task_alias": "high_school_microeconomics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_microeconomics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school microeconomics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_microeconomics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_physics_generative": {
+      "task": "mmlu_redux_high_school_physics_generative",
+      "task_alias": "high_school_physics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_physics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school physics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_physics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_psychology_generative": {
+      "task": "mmlu_redux_high_school_psychology_generative",
+      "task_alias": "high_school_psychology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_psychology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school psychology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_psychology.yaml"
+      }
+    },
+    "mmlu_redux_high_school_statistics_generative": {
+      "task": "mmlu_redux_high_school_statistics_generative",
+      "task_alias": "high_school_statistics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_statistics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school statistics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_statistics.yaml"
+      }
+    },
+    "mmlu_redux_high_school_us_history_generative": {
+      "task": "mmlu_redux_high_school_us_history_generative",
+      "task_alias": "high_school_us_history",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_us_history",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school us history.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_us_history.yaml"
+      }
+    },
+    "mmlu_redux_high_school_world_history_generative": {
+      "task": "mmlu_redux_high_school_world_history_generative",
+      "task_alias": "high_school_world_history",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "high_school_world_history",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about high school world history.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_high_school_world_history.yaml"
+      }
+    },
+    "mmlu_redux_human_aging_generative": {
+      "task": "mmlu_redux_human_aging_generative",
+      "task_alias": "human_aging",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "human_aging",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about human aging.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_human_aging.yaml"
+      }
+    },
+    "mmlu_redux_human_sexuality_generative": {
+      "task": "mmlu_redux_human_sexuality_generative",
+      "task_alias": "human_sexuality",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "human_sexuality",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about human sexuality.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_human_sexuality.yaml"
+      }
+    },
+    "mmlu_redux_international_law_generative": {
+      "task": "mmlu_redux_international_law_generative",
+      "task_alias": "international_law",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "international_law",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about international law.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_international_law.yaml"
+      }
+    },
+    "mmlu_redux_jurisprudence_generative": {
+      "task": "mmlu_redux_jurisprudence_generative",
+      "task_alias": "jurisprudence",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "jurisprudence",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about jurisprudence.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_jurisprudence.yaml"
+      }
+    },
+    "mmlu_redux_logical_fallacies_generative": {
+      "task": "mmlu_redux_logical_fallacies_generative",
+      "task_alias": "logical_fallacies",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "logical_fallacies",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about logical fallacies.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_logical_fallacies.yaml"
+      }
+    },
+    "mmlu_redux_machine_learning_generative": {
+      "task": "mmlu_redux_machine_learning_generative",
+      "task_alias": "machine_learning",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "machine_learning",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about machine learning.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_machine_learning.yaml"
+      }
+    },
+    "mmlu_redux_management_generative": {
+      "task": "mmlu_redux_management_generative",
+      "task_alias": "management",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "management",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about management.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_management.yaml"
+      }
+    },
+    "mmlu_redux_marketing_generative": {
+      "task": "mmlu_redux_marketing_generative",
+      "task_alias": "marketing",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "marketing",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about marketing.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_marketing.yaml"
+      }
+    },
+    "mmlu_redux_medical_genetics_generative": {
+      "task": "mmlu_redux_medical_genetics_generative",
+      "task_alias": "medical_genetics",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "medical_genetics",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about medical genetics.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_medical_genetics.yaml"
+      }
+    },
+    "mmlu_redux_miscellaneous_generative": {
+      "task": "mmlu_redux_miscellaneous_generative",
+      "task_alias": "miscellaneous",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "miscellaneous",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about miscellaneous.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_miscellaneous.yaml"
+      }
+    },
+    "mmlu_redux_moral_disputes_generative": {
+      "task": "mmlu_redux_moral_disputes_generative",
+      "task_alias": "moral_disputes",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "moral_disputes",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about moral disputes.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_moral_disputes.yaml"
+      }
+    },
+    "mmlu_redux_moral_scenarios_generative": {
+      "task": "mmlu_redux_moral_scenarios_generative",
+      "task_alias": "moral_scenarios",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "moral_scenarios",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about moral scenarios.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_moral_scenarios.yaml"
+      }
+    },
+    "mmlu_redux_nutrition_generative": {
+      "task": "mmlu_redux_nutrition_generative",
+      "task_alias": "nutrition",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "nutrition",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about nutrition.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_nutrition.yaml"
+      }
+    },
+    "mmlu_redux_philosophy_generative": {
+      "task": "mmlu_redux_philosophy_generative",
+      "task_alias": "philosophy",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "philosophy",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about philosophy.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_philosophy.yaml"
+      }
+    },
+    "mmlu_redux_prehistory_generative": {
+      "task": "mmlu_redux_prehistory_generative",
+      "task_alias": "prehistory",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "prehistory",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about prehistory.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_prehistory.yaml"
+      }
+    },
+    "mmlu_redux_professional_accounting_generative": {
+      "task": "mmlu_redux_professional_accounting_generative",
+      "task_alias": "professional_accounting",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "professional_accounting",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about professional accounting.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_professional_accounting.yaml"
+      }
+    },
+    "mmlu_redux_professional_law_generative": {
+      "task": "mmlu_redux_professional_law_generative",
+      "task_alias": "professional_law",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "professional_law",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about professional law.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_professional_law.yaml"
+      }
+    },
+    "mmlu_redux_professional_medicine_generative": {
+      "task": "mmlu_redux_professional_medicine_generative",
+      "task_alias": "professional_medicine",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "professional_medicine",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about professional medicine.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_professional_medicine.yaml"
+      }
+    },
+    "mmlu_redux_professional_psychology_generative": {
+      "task": "mmlu_redux_professional_psychology_generative",
+      "task_alias": "professional_psychology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "professional_psychology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about professional psychology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_professional_psychology.yaml"
+      }
+    },
+    "mmlu_redux_public_relations_generative": {
+      "task": "mmlu_redux_public_relations_generative",
+      "task_alias": "public_relations",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "public_relations",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about public relations.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_public_relations.yaml"
+      }
+    },
+    "mmlu_redux_security_studies_generative": {
+      "task": "mmlu_redux_security_studies_generative",
+      "task_alias": "security_studies",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "security_studies",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about security studies.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_security_studies.yaml"
+      }
+    },
+    "mmlu_redux_sociology_generative": {
+      "task": "mmlu_redux_sociology_generative",
+      "task_alias": "sociology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "sociology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about sociology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_sociology.yaml"
+      }
+    },
+    "mmlu_redux_us_foreign_policy_generative": {
+      "task": "mmlu_redux_us_foreign_policy_generative",
+      "task_alias": "us_foreign_policy",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "us_foreign_policy",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about us foreign policy.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_us_foreign_policy.yaml"
+      }
+    },
+    "mmlu_redux_virology_generative": {
+      "task": "mmlu_redux_virology_generative",
+      "task_alias": "virology",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "virology",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about virology.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_virology.yaml"
+      }
+    },
+    "mmlu_redux_world_religions_generative": {
+      "task": "mmlu_redux_world_religions_generative",
+      "task_alias": "world_religions",
+      "dataset_path": "fxmarty/mmlu-redux-2.0-ok",
+      "dataset_name": "world_religions",
+      "dataset_kwargs": {},
+      "test_split": "test",
+      "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+      "doc_to_target": "{{['A','B','C','D'][answer]}}",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about world religions.\n\n",
+      "target_delimiter": ":",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nPlease respond with the correct letter (A, B, C or D) without any additional comments, only the correct letter:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{['A','B','C','D'][answer]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": ":"
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>"
+        ],
+        "temperature": 0,
+        "max_gen_toks": 64
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "default",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "([ABCD])"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 4.0,
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/lm-eval-venv/lib/python3.12/site-packages/lm_eval/tasks/mmlu-redux/generative/mmlu_world_religions.yaml"
+      }
+    }
+  },
+  "versions": {
+    "mmlu_redux_abstract_algebra_generative": 4.0,
+    "mmlu_redux_anatomy_generative": 4.0,
+    "mmlu_redux_astronomy_generative": 4.0,
+    "mmlu_redux_business_ethics_generative": 4.0,
+    "mmlu_redux_clinical_knowledge_generative": 4.0,
+    "mmlu_redux_college_biology_generative": 4.0,
+    "mmlu_redux_college_chemistry_generative": 4.0,
+    "mmlu_redux_college_computer_science_generative": 4.0,
+    "mmlu_redux_college_mathematics_generative": 4.0,
+    "mmlu_redux_college_medicine_generative": 4.0,
+    "mmlu_redux_college_physics_generative": 4.0,
+    "mmlu_redux_computer_security_generative": 4.0,
+    "mmlu_redux_conceptual_physics_generative": 4.0,
+    "mmlu_redux_econometrics_generative": 4.0,
+    "mmlu_redux_electrical_engineering_generative": 4.0,
+    "mmlu_redux_elementary_mathematics_generative": 4.0,
+    "mmlu_redux_formal_logic_generative": 4.0,
+    "mmlu_redux_generative": "4",
+    "mmlu_redux_generative::humanities": "N/A",
+    "mmlu_redux_generative::other": "N/A",
+    "mmlu_redux_generative::social sciences": "N/A",
+    "mmlu_redux_generative::stem": "N/A",
+    "mmlu_redux_global_facts_generative": 4.0,
+    "mmlu_redux_high_school_biology_generative": 4.0,
+    "mmlu_redux_high_school_chemistry_generative": 4.0,
+    "mmlu_redux_high_school_computer_science_generative": 4.0,
+    "mmlu_redux_high_school_european_history_generative": 4.0,
+    "mmlu_redux_high_school_geography_generative": 4.0,
+    "mmlu_redux_high_school_government_and_politics_generative": 4.0,
+    "mmlu_redux_high_school_macroeconomics_generative": 4.0,
+    "mmlu_redux_high_school_mathematics_generative": 4.0,
+    "mmlu_redux_high_school_microeconomics_generative": 4.0,
+    "mmlu_redux_high_school_physics_generative": 4.0,
+    "mmlu_redux_high_school_psychology_generative": 4.0,
+    "mmlu_redux_high_school_statistics_generative": 4.0,
+    "mmlu_redux_high_school_us_history_generative": 4.0,
+    "mmlu_redux_high_school_world_history_generative": 4.0,
+    "mmlu_redux_human_aging_generative": 4.0,
+    "mmlu_redux_human_sexuality_generative": 4.0,
+    "mmlu_redux_international_law_generative": 4.0,
+    "mmlu_redux_jurisprudence_generative": 4.0,
+    "mmlu_redux_logical_fallacies_generative": 4.0,
+    "mmlu_redux_machine_learning_generative": 4.0,
+    "mmlu_redux_management_generative": 4.0,
+    "mmlu_redux_marketing_generative": 4.0,
+    "mmlu_redux_medical_genetics_generative": 4.0,
+    "mmlu_redux_miscellaneous_generative": 4.0,
+    "mmlu_redux_moral_disputes_generative": 4.0,
+    "mmlu_redux_moral_scenarios_generative": 4.0,
+    "mmlu_redux_nutrition_generative": 4.0,
+    "mmlu_redux_philosophy_generative": 4.0,
+    "mmlu_redux_prehistory_generative": 4.0,
+    "mmlu_redux_professional_accounting_generative": 4.0,
+    "mmlu_redux_professional_law_generative": 4.0,
+    "mmlu_redux_professional_medicine_generative": 4.0,
+    "mmlu_redux_professional_psychology_generative": 4.0,
+    "mmlu_redux_public_relations_generative": 4.0,
+    "mmlu_redux_security_studies_generative": 4.0,
+    "mmlu_redux_sociology_generative": 4.0,
+    "mmlu_redux_us_foreign_policy_generative": 4.0,
+    "mmlu_redux_virology_generative": 4.0,
+    "mmlu_redux_world_religions_generative": 4.0
+  },
+  "n-shot": {
+    "mmlu_redux_abstract_algebra_generative": 0,
+    "mmlu_redux_anatomy_generative": 0,
+    "mmlu_redux_astronomy_generative": 0,
+    "mmlu_redux_business_ethics_generative": 0,
+    "mmlu_redux_clinical_knowledge_generative": 0,
+    "mmlu_redux_college_biology_generative": 0,
+    "mmlu_redux_college_chemistry_generative": 0,
+    "mmlu_redux_college_computer_science_generative": 0,
+    "mmlu_redux_college_mathematics_generative": 0,
+    "mmlu_redux_college_medicine_generative": 0,
+    "mmlu_redux_college_physics_generative": 0,
+    "mmlu_redux_computer_security_generative": 0,
+    "mmlu_redux_conceptual_physics_generative": 0,
+    "mmlu_redux_econometrics_generative": 0,
+    "mmlu_redux_electrical_engineering_generative": 0,
+    "mmlu_redux_elementary_mathematics_generative": 0,
+    "mmlu_redux_formal_logic_generative": 0,
+    "mmlu_redux_generative::humanities": 0,
+    "mmlu_redux_generative::other": 0,
+    "mmlu_redux_generative::social sciences": 0,
+    "mmlu_redux_generative::stem": 0,
+    "mmlu_redux_global_facts_generative": 0,
+    "mmlu_redux_high_school_biology_generative": 0,
+    "mmlu_redux_high_school_chemistry_generative": 0,
+    "mmlu_redux_high_school_computer_science_generative": 0,
+    "mmlu_redux_high_school_european_history_generative": 0,
+    "mmlu_redux_high_school_geography_generative": 0,
+    "mmlu_redux_high_school_government_and_politics_generative": 0,
+    "mmlu_redux_high_school_macroeconomics_generative": 0,
+    "mmlu_redux_high_school_mathematics_generative": 0,
+    "mmlu_redux_high_school_microeconomics_generative": 0,
+    "mmlu_redux_high_school_physics_generative": 0,
+    "mmlu_redux_high_school_psychology_generative": 0,
+    "mmlu_redux_high_school_statistics_generative": 0,
+    "mmlu_redux_high_school_us_history_generative": 0,
+    "mmlu_redux_high_school_world_history_generative": 0,
+    "mmlu_redux_human_aging_generative": 0,
+    "mmlu_redux_human_sexuality_generative": 0,
+    "mmlu_redux_international_law_generative": 0,
+    "mmlu_redux_jurisprudence_generative": 0,
+    "mmlu_redux_logical_fallacies_generative": 0,
+    "mmlu_redux_machine_learning_generative": 0,
+    "mmlu_redux_management_generative": 0,
+    "mmlu_redux_marketing_generative": 0,
+    "mmlu_redux_medical_genetics_generative": 0,
+    "mmlu_redux_miscellaneous_generative": 0,
+    "mmlu_redux_moral_disputes_generative": 0,
+    "mmlu_redux_moral_scenarios_generative": 0,
+    "mmlu_redux_nutrition_generative": 0,
+    "mmlu_redux_philosophy_generative": 0,
+    "mmlu_redux_prehistory_generative": 0,
+    "mmlu_redux_professional_accounting_generative": 0,
+    "mmlu_redux_professional_law_generative": 0,
+    "mmlu_redux_professional_medicine_generative": 0,
+    "mmlu_redux_professional_psychology_generative": 0,
+    "mmlu_redux_public_relations_generative": 0,
+    "mmlu_redux_security_studies_generative": 0,
+    "mmlu_redux_sociology_generative": 0,
+    "mmlu_redux_us_foreign_policy_generative": 0,
+    "mmlu_redux_virology_generative": 0,
+    "mmlu_redux_world_religions_generative": 0
+  },
+  "higher_is_better": {
+    "mmlu_redux_abstract_algebra_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_anatomy_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_astronomy_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_business_ethics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_clinical_knowledge_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_biology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_chemistry_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_computer_science_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_mathematics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_medicine_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_college_physics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_computer_security_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_conceptual_physics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_econometrics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_electrical_engineering_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_elementary_mathematics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_formal_logic_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_generative::humanities": {
+      "exact_match": true
+    },
+    "mmlu_redux_generative::other": {
+      "exact_match": true
+    },
+    "mmlu_redux_generative::social sciences": {
+      "exact_match": true
+    },
+    "mmlu_redux_generative::stem": {
+      "exact_match": true
+    },
+    "mmlu_redux_global_facts_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_biology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_chemistry_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_computer_science_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_european_history_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_geography_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_government_and_politics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_macroeconomics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_mathematics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_microeconomics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_physics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_psychology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_statistics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_us_history_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_high_school_world_history_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_human_aging_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_human_sexuality_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_international_law_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_jurisprudence_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_logical_fallacies_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_machine_learning_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_management_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_marketing_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_medical_genetics_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_miscellaneous_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_moral_disputes_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_moral_scenarios_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_nutrition_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_philosophy_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_prehistory_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_professional_accounting_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_professional_law_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_professional_medicine_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_professional_psychology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_public_relations_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_security_studies_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_sociology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_us_foreign_policy_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_virology_generative": {
+      "exact_match": true
+    },
+    "mmlu_redux_world_religions_generative": {
+      "exact_match": true
+    }
+  },
+  "n-samples": {
+    "mmlu_redux_abstract_algebra_generative": {
+      "original": 89,
+      "effective": 4
+    },
+    "mmlu_redux_anatomy_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_astronomy_generative": {
+      "original": 94,
+      "effective": 4
+    },
+    "mmlu_redux_college_biology_generative": {
+      "original": 98,
+      "effective": 4
+    },
+    "mmlu_redux_college_chemistry_generative": {
+      "original": 75,
+      "effective": 4
+    },
+    "mmlu_redux_college_computer_science_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_college_mathematics_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_college_physics_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_computer_security_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_conceptual_physics_generative": {
+      "original": 92,
+      "effective": 4
+    },
+    "mmlu_redux_electrical_engineering_generative": {
+      "original": 98,
+      "effective": 4
+    },
+    "mmlu_redux_elementary_mathematics_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_biology_generative": {
+      "original": 95,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_chemistry_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_computer_science_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_mathematics_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_physics_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_statistics_generative": {
+      "original": 98,
+      "effective": 4
+    },
+    "mmlu_redux_machine_learning_generative": {
+      "original": 89,
+      "effective": 4
+    },
+    "mmlu_redux_business_ethics_generative": {
+      "original": 85,
+      "effective": 4
+    },
+    "mmlu_redux_clinical_knowledge_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_college_medicine_generative": {
+      "original": 87,
+      "effective": 4
+    },
+    "mmlu_redux_global_facts_generative": {
+      "original": 88,
+      "effective": 4
+    },
+    "mmlu_redux_human_aging_generative": {
+      "original": 87,
+      "effective": 4
+    },
+    "mmlu_redux_management_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_marketing_generative": {
+      "original": 96,
+      "effective": 4
+    },
+    "mmlu_redux_medical_genetics_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_miscellaneous_generative": {
+      "original": 90,
+      "effective": 4
+    },
+    "mmlu_redux_nutrition_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_professional_accounting_generative": {
+      "original": 92,
+      "effective": 4
+    },
+    "mmlu_redux_professional_medicine_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_virology_generative": {
+      "original": 43,
+      "effective": 4
+    },
+    "mmlu_redux_econometrics_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_geography_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_government_and_politics_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_macroeconomics_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_microeconomics_generative": {
+      "original": 98,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_psychology_generative": {
+      "original": 96,
+      "effective": 4
+    },
+    "mmlu_redux_human_sexuality_generative": {
+      "original": 81,
+      "effective": 4
+    },
+    "mmlu_redux_professional_psychology_generative": {
+      "original": 96,
+      "effective": 4
+    },
+    "mmlu_redux_public_relations_generative": {
+      "original": 91,
+      "effective": 4
+    },
+    "mmlu_redux_security_studies_generative": {
+      "original": 94,
+      "effective": 4
+    },
+    "mmlu_redux_sociology_generative": {
+      "original": 98,
+      "effective": 4
+    },
+    "mmlu_redux_us_foreign_policy_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_formal_logic_generative": {
+      "original": 87,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_european_history_generative": {
+      "original": 91,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_us_history_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_high_school_world_history_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_international_law_generative": {
+      "original": 95,
+      "effective": 4
+    },
+    "mmlu_redux_jurisprudence_generative": {
+      "original": 99,
+      "effective": 4
+    },
+    "mmlu_redux_logical_fallacies_generative": {
+      "original": 74,
+      "effective": 4
+    },
+    "mmlu_redux_moral_disputes_generative": {
+      "original": 96,
+      "effective": 4
+    },
+    "mmlu_redux_moral_scenarios_generative": {
+      "original": 97,
+      "effective": 4
+    },
+    "mmlu_redux_philosophy_generative": {
+      "original": 89,
+      "effective": 4
+    },
+    "mmlu_redux_prehistory_generative": {
+      "original": 100,
+      "effective": 4
+    },
+    "mmlu_redux_professional_law_generative": {
+      "original": 82,
+      "effective": 4
+    },
+    "mmlu_redux_world_religions_generative": {
+      "original": 99,
+      "effective": 4
+    }
+  },
+  "config": {
+    "model": "local-chat-completions",
+    "model_args": {
+      "model": "qwen3.8-27b-4bit",
+      "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false
+    },
+    "batch_size": 1,
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": 4.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "temperature": 0,
+      "max_gen_toks": 64
+    },
+    "random_seed": 1234,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": null,
+  "date": 1787845570.321553,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.12",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "mmlu_redux_abstract_algebra_generative": "b374c32022f5a47cede146919fa8bb847ae328009b67e25c995b4d220fcdf7d5",
+    "mmlu_redux_anatomy_generative": "f59bb32eed08411bce08c41901c61704c97e9b8b2cd7b46b0dd534cf43573b6c",
+    "mmlu_redux_astronomy_generative": "41d2f936c471d90e250045f4628ec96d1f1321ff68c8dd897948c48aaeb273b0",
+    "mmlu_redux_college_biology_generative": "ba19387ed3cd91f769fb68e2473a2d153820ef6e6784bc0111186c525eceab11",
+    "mmlu_redux_college_chemistry_generative": "451d655c3681f2aae72b2ae519064600fc3cb04df6bee7bb8a9bdaf391a46b0a",
+    "mmlu_redux_college_computer_science_generative": "7cdd67004078ede26c670afc97f4d2710ff9d8d18e99f89a761c38e3133e97b6",
+    "mmlu_redux_college_mathematics_generative": "93d87529fe9e0060b85c7946bce7721f1eb4b59ee7ddf07785ba9631dbd85f5b",
+    "mmlu_redux_college_physics_generative": "77d6721f244b366cfa0c2dd7dcf7c5854a1bbd70a1b71cb3b0b14d1970336b0d",
+    "mmlu_redux_computer_security_generative": "296b1b592e7dd3e4ae7f80fc6a159e46109224c585ec4609b4f4311a56333cd4",
+    "mmlu_redux_conceptual_physics_generative": "41db386b9ba01049600812a86f3587c7cc766d95f0183485f13c1c99ad6afae3",
+    "mmlu_redux_electrical_engineering_generative": "385be07b4d8e01f5ea21a1f3d176939dc53ef351904281d35b52c7daef074ac3",
+    "mmlu_redux_elementary_mathematics_generative": "e548ca0fe0b32516db2c42805a87462294f24611748f3aad858ca6a09732230e",
+    "mmlu_redux_high_school_biology_generative": "185e3be69c68d02875058bc2a2058baf4d5c1e79185c747aad42145d60564f37",
+    "mmlu_redux_high_school_chemistry_generative": "730e20dfe3b512f3611acc0bb3b1355832a60dab50e378546b6eb3ece0c0d959",
+    "mmlu_redux_high_school_computer_science_generative": "b00fd1b7a47762ee47a0802a5aca016d2f2564bd5f7f0ba87171618aa07ec7cc",
+    "mmlu_redux_high_school_mathematics_generative": "fa24867c31cf29367dd12f431c4d0dde1cf99415835fa34bd2e31843f7a9d002",
+    "mmlu_redux_high_school_physics_generative": "ac33e76f50a5891a89dc606b1155a1c758a0a6955a7fad098e15c7b459ec3049",
+    "mmlu_redux_high_school_statistics_generative": "475e85667154f4bd27c28d6e9392efd2c339bfc15149a0572357246e97ba9ce4",
+    "mmlu_redux_machine_learning_generative": "d5ac80275217ca9b35ff338f7dd018919f04dd79c759136a95e61b3df30743fe",
+    "mmlu_redux_business_ethics_generative": "8c89949fd3331f9b7fddd63fd97f43131a38f1f72717275ab1820c783261a20f",
+    "mmlu_redux_clinical_knowledge_generative": "815cf016b16ea39de2766a6e8384a15962ef2c0b70b1ae6f5ca733b087873491",
+    "mmlu_redux_college_medicine_generative": "b274729c62949143db0f7689de9d85183c7e8b7edb04941498db7dca91f60e3e",
+    "mmlu_redux_global_facts_generative": "bae1696503b57cb11ca259c1429b08d14011086c8f89f04f940d9948fc5a015e",
+    "mmlu_redux_human_aging_generative": "d6d16111d02d72ff5e7747e401f7185801e4b694ed7bfb195ba94486d0a60f6a",
+    "mmlu_redux_management_generative": "bfe952c4edeec63b47b21d19623177a240bce8ebc7bbe386857d8a185e369f3f",
+    "mmlu_redux_marketing_generative": "485b8acfec792279210b1671c30feed048d4ce02d06b00e73361f95d360739c6",
+    "mmlu_redux_medical_genetics_generative": "572373f5ac2eac7f3da3c91a9d529e9ce6de765053554d31a70c5e676195048d",
+    "mmlu_redux_miscellaneous_generative": "268d0eab6ef29560a01403ba4ef4d98b0c06cbb0cee78997a9fcee722ca9b244",
+    "mmlu_redux_nutrition_generative": "ddf791342ac07bd7e2a60c5333e8667a28123db5a479ec9a249b38a6668f059a",
+    "mmlu_redux_professional_accounting_generative": "920b55fff5014e626b78328dec04f5b6797cddbe68e262dcefd4f64ce140f60c",
+    "mmlu_redux_professional_medicine_generative": "a677fee6662fbfc34abb61c92763356e733dfba9bf06d961babf0caf916924cb",
+    "mmlu_redux_virology_generative": "83a786b1145b80b87700f6c07fcd68cc5e6d66a0aa94f9d5555b9dae7c4c7fe1",
+    "mmlu_redux_econometrics_generative": "1cdefccdacb2731f3390781afa220776f220524ba77b6e2b3aba19f0f31177a8",
+    "mmlu_redux_high_school_geography_generative": "211f20e5aa96e3d2a5bccacb00ef5e295f55a54253be8b8e8293bcf9c85b4825",
+    "mmlu_redux_high_school_government_and_politics_generative": "4a866fe60013bb08a4325c7b306fcfe16a4730b6dca4306c2181e5135cad7b1e",
+    "mmlu_redux_high_school_macroeconomics_generative": "fa5b69cf0488857574bda4befb08b7b70c60ccdf59cbeaebb9b4b1ee999f11db",
+    "mmlu_redux_high_school_microeconomics_generative": "e14579782d18c3fb61511995d32571f9211f03edc13908720492c3e03296d5e8",
+    "mmlu_redux_high_school_psychology_generative": "5931e934de3b5ee69e6f2acd30cc4a33d4b41d5f94dc6ee81a74ec3e2bef2b75",
+    "mmlu_redux_human_sexuality_generative": "17aba84dd9f5ed4736897fac156aa99caf36863ec5f5c030469d4099e528b44b",
+    "mmlu_redux_professional_psychology_generative": "c23f751273370c8c7e492388e33c18e69e4f72e7cc1d0c9d8506f70887181906",
+    "mmlu_redux_public_relations_generative": "932421d5d05bed835a948360e8ea9f85d36e4ba9ae3ee801b575498dfee9c049",
+    "mmlu_redux_security_studies_generative": "5cda1fce760e2f0dc62c9e770465f2e90bd24717ec81a8dcc55fd42e1ad91ff2",
+    "mmlu_redux_sociology_generative": "2afe934b7b2c2de94344e52fc3a28257d8682a77d56f8af037fb05bb422dea4c",
+    "mmlu_redux_us_foreign_policy_generative": "be36ac5463c9907b0376efa4c6e1dd9b14732c96338a442d07944c2b1b03ffec",
+    "mmlu_redux_formal_logic_generative": "eb9c247eeb11389ceb397bdb6d7b170b340861c9d7fb5b29cfec0958c73a519a",
+    "mmlu_redux_high_school_european_history_generative": "ec60a1cbef3e856f3278ea7faddb965cfe96640578f743f04ffdfae6b8807c98",
+    "mmlu_redux_high_school_us_history_generative": "a498b6476d1340b29706d03a82bc984628d402b7d1f5f97f23ec9e8ca1a635f9",
+    "mmlu_redux_high_school_world_history_generative": "18bd3f267a23be775c1b2b75f1e14f0aa70969582e6ea7a5071ae32e2b4a11a5",
+    "mmlu_redux_international_law_generative": "b4ad23c8bc4b5abb7753aaf4ab1542efc7a8fcbb6d29fbe2f095d91a0d7a9062",
+    "mmlu_redux_jurisprudence_generative": "7b36d02bed6c51ab4ee0897c71e62ad6cad31a1f2881b80c3bdece114626fa11",
+    "mmlu_redux_logical_fallacies_generative": "e57d8052b106fde887123d9714a56c0f17fd0a538aca8c33fab782212eb6bb5c",
+    "mmlu_redux_moral_disputes_generative": "2759a3d1eba17d46720376e42f8b4dcf688a0659f0b5da7b73be3ac4d5f5847b",
+    "mmlu_redux_moral_scenarios_generative": "3df0c6c01d6a5e7adcbd803bdb2c131c841f0332a29340815b5301061a01a825",
+    "mmlu_redux_philosophy_generative": "f8e225441f3ef138d044514e1a9c6d6e01efe4406579fcc5e4329e130aff83f0",
+    "mmlu_redux_prehistory_generative": "74b4a0386005204b2018c6186f9cfb3920beeae57e91b1f2f07b11ebf5857bfc",
+    "mmlu_redux_professional_law_generative": "f87e3b5ef461506a6d06e2ab198affcecf72d9f6e52775abfe05e924dc0bb4d3",
+    "mmlu_redux_world_religions_generative": "77bcf972a31646ae7d95ebb555c27a80c75b0aba3ec4d0acc66ac2c62561dabf"
+  },
+  "model_source": "local-chat-completions",
+  "model_name": "qwen3.8-27b-4bit",
+  "model_name_sanitized": "qwen3.8-27b-4bit",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": true,
+  "chat_template": "",
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "195.0825162078254"
+}

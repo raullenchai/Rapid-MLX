@@ -1,0 +1,34 @@
+# Chat-completions-safe variant of lm_eval's stock `humaneval_instruct` (v4.0).
+# Identical dataset, prompt wording, pass@1 metric (hf `code_eval`) and k=[1].
+# Differences, both forced by the OpenAI chat-completions transport:
+#   1. `until` is empty. The stock task inherits completion-style stop strings
+#      ("\ndef", "\n#", "\nif", ...) from humaneval.yaml, which truncate a chat
+#      reply at its first line ("```python\nfrom typing import List" -> stop).
+#   2. No `gen_prefix`: an assistant-prefill cannot be sent over chat
+#      completions, so the model writes a full fenced function and the filter
+#      extracts the fenced block that defines `entry_point`.
+task: humaneval_instruct_chat
+dataset_path: openai/openai_humaneval
+unsafe_code: true
+output_type: generate_until
+test_split: test
+doc_to_text: "Write a solution to the following problem and make sure that it passes the tests:\n```python\n{{ prompt }}\n```\n"
+doc_to_target: "{{test}}\ncheck({{entry_point}})"
+metric_list:
+  - metric: !function utils.pass_at_k
+    aggregation: mean
+    higher_is_better: true
+    k: [1]
+generation_kwargs:
+  until: []
+  max_gen_toks: 1024
+  do_sample: false
+repeats: 1
+num_fewshot: 0
+filter_list:
+  - name: "create_test"
+    filter:
+      - function: "custom"
+        filter_fn: !function utils.build_predictions_chat
+metadata:
+  version: 4.0-chat

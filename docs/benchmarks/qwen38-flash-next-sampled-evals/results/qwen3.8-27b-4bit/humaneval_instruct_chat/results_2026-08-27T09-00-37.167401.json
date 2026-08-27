@@ -1,0 +1,138 @@
+{
+  "results": {
+    "humaneval_instruct_chat": {
+      "name": "humaneval_instruct_chat",
+      "alias": "humaneval_instruct_chat",
+      "sample_len": 100,
+      "pass@1,create_test": 0.98,
+      "pass@1_stderr,create_test": 0.014070529413628957
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "humaneval_instruct_chat": {
+      "task": "humaneval_instruct_chat",
+      "dataset_path": "openai/openai_humaneval",
+      "test_split": "test",
+      "doc_to_text": "Write a solution to the following problem and make sure that it passes the tests:\n```python\n{{ prompt }}\n```\n",
+      "doc_to_target": "{{test}}\ncheck({{entry_point}})",
+      "unsafe_code": true,
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Write a solution to the following problem and make sure that it passes the tests:\n```python\n{{ prompt }}\n```\n",
+        "doc_to_choice": null,
+        "doc_to_target": "{{test}}\ncheck({{entry_point}})",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "def pass_at_k(references: list[str], predictions: list[list[str]], k: list[int] = None):\n    global compute_\n    assert k is not None\n    if isinstance(k, int):\n        k = [k]\n    res = compute_.compute(\n        references=references,\n        predictions=predictions,\n        k=k,\n    )\n    return res[0]\n",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "k": [
+            1
+          ]
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [],
+        "max_gen_toks": 1024,
+        "do_sample": false,
+        "temperature": 0
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "create_test",
+          "filter": [
+            {
+              "function": "custom",
+              "filter_fn": "<function build_predictions_chat at 0x1274ea2a0>"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": "4.0-chat",
+        "model": "qwen3.8-27b-4bit",
+        "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "/private/tmp/atlas-flash-eval/tasks/humaneval_chat/humaneval_instruct_chat.yaml"
+      }
+    }
+  },
+  "versions": {
+    "humaneval_instruct_chat": "4.0-chat"
+  },
+  "n-shot": {
+    "humaneval_instruct_chat": 0
+  },
+  "higher_is_better": {
+    "humaneval_instruct_chat": {
+      "pass_at_k": true,
+      "pass@1": true
+    }
+  },
+  "n-samples": {
+    "humaneval_instruct_chat": {
+      "original": 164,
+      "effective": 100
+    }
+  },
+  "config": {
+    "model": "local-chat-completions",
+    "model_args": {
+      "model": "qwen3.8-27b-4bit",
+      "base_url": "http://127.0.0.1:8464/v1/chat/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false
+    },
+    "batch_size": 1,
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": 100.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "temperature": 0,
+      "max_gen_toks": 1024
+    },
+    "random_seed": 1234,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": null,
+  "date": 1787845765.975225,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.12",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "humaneval_instruct_chat": "8fc48cf77513c42da42c58bfbdfcc00a473ec9922ac0eb531179ba08b48010f4"
+  },
+  "model_source": "local-chat-completions",
+  "model_name": "qwen3.8-27b-4bit",
+  "model_name_sanitized": "qwen3.8-27b-4bit",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": true,
+  "chat_template": "",
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "674.3406216669828"
+}
