@@ -114,6 +114,57 @@ def _reject_nonfinite_float(v: float | None) -> float | None:
     return v
 
 
+def _validate_timeout(v: float | None) -> float | None:
+    """Reject a non-positive / non-finite request ``timeout`` at the
+    schema layer so both OpenAI surfaces share one contract.
+
+    ``timeout`` feeds ``asyncio.wait_for``-style guards in the routes
+    (the non-streaming path and the disconnect watcher). A value that is
+    ``<= 0`` or NaN/±inf makes those guards fire an immediate timeout →
+    a 504 the client can't diagnose. Rejecting here (4xx naming the
+    ``timeout`` field) surfaces the malformed field instead. ``None``
+    passes through so the server-default path is preserved.
+    """
+    if v is None:
+        return None
+    if not math.isfinite(v):
+        raise ValueError("timeout must be a finite number of seconds (not NaN or inf)")
+    if v <= 0:
+        raise ValueError(
+            "timeout must be > 0 seconds when set (got "
+            f"{v}); omit the field to use the server default."
+        )
+    return v
+
+
+def _normalize_stop(v) -> list[str] | None:
+    """Accept ``stop`` as either a scalar string or a sequence of
+    strings, normalizing to a list once at the schema layer
+    (mirrors the OpenAI request shape, where ``stop`` is
+    ``str | list[str]``). A bare string becomes a one-element list so
+    downstream code (``SamplingParams.stop: list[str]``) never has to
+    handle both shapes -- the normalization happens exactly once, at
+    the request schema, on both chat and legacy completions.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, (list, tuple)):
+        out = []
+        for item in v:
+            if isinstance(item, bool) or not isinstance(item, str):
+                raise ValueError(
+                    "stop must be a string or a list of strings "
+                    f"(got non-string element {item!r})."
+                )
+            out.append(item)
+        return out
+    raise ValueError(
+        f"stop must be a string or a list of strings (got {type(v).__name__})."
+    )
+
+
 # =============================================================================
 # Shared finite-range guard (H-10) — one source of truth
 # =============================================================================
@@ -551,6 +602,7 @@ _FINITE_SAMPLING_FIELDS: tuple[str, ...] = (
     "repetition_penalty",
     "presence_penalty",
     "frequency_penalty",
+    "timeout",
 )
 
 
@@ -1512,7 +1564,12 @@ class ChatCompletionRequest(BaseModel):
     stream_options: StreamOptions | None = (
         None  # Streaming options (include_usage, etc.)
     )
-    stop: list[str] | None = None
+    # OpenAI request shape: ``stop`` accepts a scalar string OR an array
+    # of strings; declare the union so the OpenAPI/JSON schema advertises
+    # both. ``_normalize_stop`` (mode="before") wraps a scalar into a
+    # one-element list, so the runtime value stays a list for downstream
+    # code (``SamplingParams.stop: list[str]``).
+    stop: str | list[str] | None = None
     # Extended OpenAI-compatible sampling parameters. Without these declared,
     # Pydantic drops them on parse (#355). top_k / min_p flow through to the
     # mlx-lm sampler; repetition_penalty / presence_penalty / frequency_penalty
@@ -1850,6 +1907,29 @@ class ChatCompletionRequest(BaseModel):
     def _validate_max_completion_tokens(cls, v) -> int | None:
         return _validate_positive_int(v, field_name="max_completion_tokens")
 
+    # ``mode="before"`` so a scalar string is wrapped into a list BEFORE
+    # Pydantic tries to validate it against the ``list[str]`` field type
+    # (a bare ``"END"`` would otherwise 422 as "not a list"). Mirrors the
+    # OpenAI request shape (``stop`` is ``str | list[str]``) while keeping
+    # the normalized value a list for the engine contract.
+    @field_validator("stop", mode="before")
+    @classmethod
+    def _normalize_stop(cls, v):
+        return _normalize_stop(v)
+
+    @field_validator("timeout")
+    @classmethod
+    def _validate_timeout(cls, v: float | None) -> float | None:
+        return _validate_timeout(v)
+
+    def stop_sequences(self) -> list[str] | None:
+        """The normalized ``stop`` sequences for the engine contract
+        (``SamplingParams.stop: list[str]``). ``_normalize_stop`` (mode="before")
+        already guarantees a list at runtime, so this returns the canonical
+        normalization — giving mypy a ``list[str] | None`` view at the engine
+        boundary while the wire schema keeps accepting a scalar string."""
+        return _normalize_stop(self.stop)
+
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
         if self.max_completion_tokens is not None:
@@ -2150,7 +2230,12 @@ class CompletionRequest(BaseModel):
     # LangChain / AI-SDK accumulators (same root cause as the
     # chat-route bug). Default ``None`` ⇒ no usage on the wire.
     stream_options: StreamOptions | None = None
-    stop: list[str] | None = None
+    # OpenAI request shape: ``stop`` accepts a scalar string OR an array
+    # of strings; declare the union so the OpenAPI/JSON schema advertises
+    # both. ``_normalize_stop`` (mode="before") wraps a scalar into a
+    # one-element list, so the runtime value stays a list for downstream
+    # code (``SamplingParams.stop: list[str]``).
+    stop: str | list[str] | None = None
     # Extended OpenAI-compatible sampling parameters — see #355 + the
     # matching block on ChatCompletionRequest for wiring + caveats.
     # H-10: ``top_k`` / ``repetition_penalty`` finite-range gates
@@ -2266,6 +2351,23 @@ class CompletionRequest(BaseModel):
     @classmethod
     def _validate_max_tokens(cls, v) -> int | None:
         return _validate_positive_int(v, field_name="max_tokens")
+
+    # ``_normalize_stop`` + ``_validate_timeout`` mirror the chat
+    # surface so /v1/completions and /v1/chat/completions share one
+    # schema contract -- same helpers, same wire acceptance rules.
+    @field_validator("stop", mode="before")
+    @classmethod
+    def _normalize_stop(cls, v):
+        return _normalize_stop(v)
+
+    @field_validator("timeout")
+    @classmethod
+    def _validate_timeout(cls, v: float | None) -> float | None:
+        return _validate_timeout(v)
+
+    def stop_sequences(self) -> list[str] | None:
+        """See ``ChatCompletionRequest.stop_sequences`` — same contract."""
+        return _normalize_stop(self.stop)
 
     # F-155: enforce ``n == 1`` at parse time, mirroring the chat
     # surface. The route already 400's ``n > 1``; the schema layer
@@ -2419,6 +2521,12 @@ class ModelInfo(BaseModel):
     # dispatches on this — populating from the server lets us drop
     # the desktop-side hard-coded modality map in a future release.
     modality: str | None = None
+    # Live serving lane and its machine-readable resolution reason. These are
+    # populated for a resident text/vision engine so clients can distinguish
+    # a genuinely text-only checkpoint from a multimodal checkpoint currently
+    # served through a text fallback. Discovery-only entries keep ``None``.
+    serving_lane: str | None = None
+    serving_lane_reason: str | None = None
     # Max prompt-token context window the loaded engine advertises
     # for this id. Populated only when the entry maps to an actively
     # loaded engine (single-model serve, or the matching ModelEntry

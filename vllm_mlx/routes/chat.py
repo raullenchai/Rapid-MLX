@@ -54,6 +54,7 @@ from ..api.tool_calling import (
     validate_output_against_schema,
 )
 from ..api.utils import (
+    UnsupportedContentBlockError,
     clean_output_text,
     decode_inline_tool_call_arguments,
     extract_json_from_response,
@@ -90,6 +91,7 @@ from ..service.helpers import (
     _is_structured_output_requested,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
@@ -117,6 +119,14 @@ from ..service.helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _new_stream_request_id() -> str:
+    """Return an unguessable public identity suitable for scheduler admission."""
+
+    return f"chatcmpl-{uuid.uuid4().hex}"
+
+
 _SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 router = APIRouter()
@@ -3253,6 +3263,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         return await _create_chat_completion_impl(
             request, raw_request, engine, _commit_state, _admission_acquired
         )
+    except asyncio.CancelledError as exc:
+        _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
         if _admission_acquired[0]:
             _release_admission_unless_committed(engine, _commit_state[0])
@@ -4011,6 +4023,13 @@ async def _create_chat_completion_impl(
             allow_video=engine.is_mllm,
             allow_audio=False,
         )
+    except UnsupportedContentBlockError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=e.openai_detail(
+                serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+            ),
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -4951,6 +4970,11 @@ async def _create_chat_completion_impl(
         # the GPU once the client TCP-RST'd.
         request_id_holder: list[str | None] = [None]
         chat_kwargs["request_id_holder"] = request_id_holder
+        # One request identity crosses the public SSE and scheduler surfaces.
+        # The cancel endpoint receives only this client-visible id, so a
+        # separately generated scheduler UUID would make a live request
+        # impossible to address.
+        response_id = _new_stream_request_id()
         # Opt-in telemetry (Phase 2.2): the inbound User-Agent for the
         # streaming ``request`` event's ``caller_agent``. Passed RAW (not
         # bucketed) — ``emit.request`` funnels it through
@@ -4973,6 +4997,7 @@ async def _create_chat_completion_impl(
                         messages,
                         request,
                         json_schema,
+                        response_id=response_id,
                         strict_mode=strict_mode,
                         caller_agent=_caller_ua,
                         **chat_kwargs,
@@ -5010,6 +5035,8 @@ async def _create_chat_completion_impl(
                         messages,
                         request,
                         json_schema,
+                        response_id=response_id,
+                        request_id=response_id,
                         caller_agent=_caller_ua,
                         **chat_kwargs,
                     ),
@@ -5028,6 +5055,8 @@ async def _create_chat_completion_impl(
             engine,
             messages,
             request,
+            response_id=response_id,
+            request_id=response_id,
             caller_agent=_caller_ua,
             _client_disconnect_state=_client_disconnect_state,
             **chat_kwargs,
@@ -6210,12 +6239,14 @@ async def stream_chat_completion(
 
     cfg = get_config()
     gc_was_enabled = gc.isenabled()
+    first_engine_output_task: asyncio.Task | None = None
+    admission_task: asyncio.Task | None = None
     if cfg.gc_control and gc_was_enabled:
         gc.disable()
 
     try:
         if response_id is None:
-            response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+            response_id = _new_stream_request_id()
         start_time = time.perf_counter()
         # Opt-in telemetry (Phase 2.2): wall-clock of the FIRST real output
         # token (content / reasoning / tool_call). This is the meaningful
@@ -6338,6 +6369,38 @@ async def stream_chat_completion(
                 ],
             )
             return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+
+        # Start the engine and wait only for scheduler admission before
+        # exposing the public request id. Waiting for the first generated
+        # output would hide the cancellation identity throughout a slow
+        # prefill. Engines that do not implement the notification retain the
+        # legacy first-output fallback.
+        request_admitted_event = asyncio.Event()
+        kwargs["request_admitted_event"] = request_admitted_event
+        engine_stream = engine.stream_chat(
+            messages=messages, is_streaming=True, **kwargs
+        )
+        engine_output_task = asyncio.create_task(anext(engine_stream))
+        first_engine_output_task = engine_output_task
+        admission_task = asyncio.create_task(request_admitted_event.wait())
+        done, _ = await asyncio.wait(
+            {engine_output_task, admission_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        first_engine_output = None
+        first_output_pending = engine_output_task not in done
+        if not first_output_pending:
+            try:
+                first_engine_output = engine_output_task.result()
+            except StopAsyncIteration:
+                first_engine_output = None
+            request_admitted_event.set()
+        if not admission_task.done():
+            admission_task.cancel()
+            try:
+                await admission_task
+            except asyncio.CancelledError:
+                pass
 
         # First chunk with role
         _first_sse = f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
@@ -6516,9 +6579,19 @@ async def stream_chat_completion(
         # ``**kwargs`` tail on ``BaseEngine.stream_chat`` — no behavior
         # change for BatchedEngine which uses its own special-token
         # handling.
-        async for output in engine.stream_chat(
-            messages=messages, is_streaming=True, **kwargs
-        ):
+        async def _primed_engine_outputs():
+            nonlocal first_engine_output
+            if first_output_pending:
+                try:
+                    first_engine_output = await engine_output_task
+                except StopAsyncIteration:
+                    first_engine_output = None
+            if first_engine_output is not None:
+                yield first_engine_output
+            async for output in engine_stream:
+                yield output
+
+        async for output in _primed_engine_outputs():
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
@@ -7527,6 +7600,18 @@ async def stream_chat_completion(
                 surface=_telemetry_emit.server_surface(),
             )
     finally:
+        if admission_task is not None and not admission_task.done():
+            admission_task.cancel()
+            try:
+                await admission_task
+            except asyncio.CancelledError:
+                pass
+        if first_engine_output_task is not None and not first_engine_output_task.done():
+            first_engine_output_task.cancel()
+            try:
+                await first_engine_output_task
+            except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                pass
         if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
@@ -7538,6 +7623,7 @@ async def stream_chat_completion_guided(
     request: ChatCompletionRequest,
     json_schema: dict,
     *,
+    response_id: str | None = None,
     strict_mode: bool = False,
     caller_agent: str | None = None,
     **kwargs,
@@ -7566,7 +7652,8 @@ async def stream_chat_completion_guided(
         gc.disable()
 
     try:
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        if response_id is None:
+            response_id = _new_stream_request_id()
         start_time = time.perf_counter()
 
         include_usage = bool(
@@ -7688,6 +7775,7 @@ async def stream_chat_completion_guided(
                 request,
                 response_id=response_id,
                 created=_sse_created,
+                request_id=response_id,
                 caller_agent=caller_agent,
                 **kwargs,
             ):
@@ -7839,6 +7927,7 @@ async def stream_chat_completion_strict_postgen(
     request: ChatCompletionRequest,
     json_schema: dict,
     *,
+    response_id: str | None = None,
     caller_agent: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
@@ -7877,7 +7966,8 @@ async def stream_chat_completion_strict_postgen(
     # the end shares the id with the upstream stream's content chunks
     # — clients group by id, so a fresh uuid here would surface as a
     # second un-associated completion.
-    response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    if response_id is None:
+        response_id = _new_stream_request_id()
     created = int(time.time())
     model_name = _resolve_model_name(request.model)
 

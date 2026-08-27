@@ -96,6 +96,89 @@ struct CustomInstructionsTests {
         #expect(result.last?.id == user.id)
     }
 
+    @Test("Effective prompt preview uses the wire assembly and includes automatic context")
+    func effectivePromptPreviewUsesWireAssembly() {
+        let preview = ChatViewModel.effectiveSystemPrompt(
+            dateContext: "[CURRENT DATE AND TIME]\nToday is Tuesday, August 25, 2026.",
+            global: "Reply in plain language.",
+            conversation: "Use bullet points."
+        )
+
+        #expect(preview.hasPrefix("[CURRENT DATE AND TIME]"))
+        #expect(preview.contains("[GLOBAL USER INSTRUCTIONS]"))
+        #expect(preview.contains("Reply in plain language."))
+        #expect(preview.contains("[CONVERSATION INSTRUCTIONS - HIGHEST USER PRIORITY]"))
+        #expect(preview.contains("Use bullet points."))
+        #expect(preview.range(of: "Reply in plain language.")!.lowerBound
+            < preview.range(of: "Use bullet points.")!.lowerBound)
+    }
+
+    @Test("Effective prompt preview refreshes across midnight and time-zone changes")
+    func effectivePromptPreviewFollowsClockAndZone() throws {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let beforeMidnight = try #require(
+            utc.date(from: DateComponents(
+                year: 2026, month: 8, day: 25, hour: 23, minute: 59
+            ))
+        )
+        let afterMidnight = beforeMidnight.addingTimeInterval(120)
+
+        let before = EffectiveSystemPromptDisclosure.prompt(
+            at: beforeMidnight,
+            calendar: utc,
+            global: "Global",
+            conversation: "Conversation"
+        )
+        let after = EffectiveSystemPromptDisclosure.prompt(
+            at: afterMidnight,
+            calendar: utc,
+            global: "Global",
+            conversation: "Conversation"
+        )
+
+        #expect(before.contains("Tuesday, August 25, 2026"))
+        #expect(before.contains("11:59 PM (GMT, GMT)"))
+        #expect(after.contains("Wednesday, August 26, 2026"))
+        #expect(after.contains("12:01 AM (GMT, GMT)"))
+
+        var tokyo = utc
+        tokyo.timeZone = try #require(TimeZone(identifier: "Asia/Tokyo"))
+        let tokyoPreview = EffectiveSystemPromptDisclosure.prompt(
+            at: beforeMidnight,
+            calendar: tokyo,
+            global: "Global",
+            conversation: "Conversation"
+        )
+        #expect(tokyoPreview.contains("Wednesday, August 26, 2026"))
+        #expect(tokyoPreview.contains("8:59 AM (GMT+9, Asia/Tokyo)"))
+        #expect(tokyoPreview != before)
+    }
+
+    @Test("System prompt UI names global and conversation precedence explicitly")
+    func systemPromptTerminologyAndPreviewWiring() throws {
+        let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
+        #expect(settings.contains("case .instructions: return \"System Prompt\""))
+        #expect(settings.contains("\"Global default\""))
+        #expect(settings.contains("Conversation prompts can override it."))
+        #expect(settings.contains("Settings.SystemPrompt.EffectivePreview"))
+
+        let editor = try Self.source("Sources/Rapid/UI/InstructionTextEditor.swift")
+        #expect(editor.contains("Text(\"Conversation System Prompt\")"))
+        #expect(editor.contains("this prompt wins."))
+        #expect(editor.contains("DisclosureGroup(\"Effective System Prompt\""))
+        #expect(editor.contains("Tool and attachment context may be added when you send."))
+        #expect(editor.contains("TimelineView(.periodic(from: .now, by: 60))"))
+        #expect(editor.contains("at: context.date"))
+        #expect(editor.contains("calendar: .autoupdatingCurrent"))
+        #expect(editor.contains("ChatViewModel.effectiveSystemPrompt"))
+        #expect(editor.contains("ChatView.SystemPrompt.EffectivePreview"))
+
+        let chat = try Self.source("Sources/Rapid/UI/ChatView.swift")
+        #expect(chat.contains(".accessibilityLabel(\"Conversation system prompt\")"))
+        #expect(chat.contains("global: viewModel.customInstructions.global"))
+    }
+
     @Test("Conversation instructions explicitly override conflicting global preferences")
     func conversationLayerHasExplicitPrecedence() {
         let result = ChatViewModel.addingInstructionLayers(

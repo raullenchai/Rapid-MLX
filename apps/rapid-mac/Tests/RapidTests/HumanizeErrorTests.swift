@@ -42,6 +42,39 @@ struct HumanizeErrorTests {
         #expect(msg.lowercased().contains("try again") || msg.lowercased().contains("restart"))
     }
 
+    @Test("Structured invalid-request reason is available only to the attachment failure path")
+    func structuredInvalidRequestReason() {
+        let body = #"{"error":{"message":"This model is serving text-only; image input is unsupported.","type":"invalid_request_error","code":"image_input_unsupported"}}"#
+        let error = ChatStreamError.httpStatus(400, body)
+        #expect(
+            error.attachmentFailureMessage
+                == "This model is serving text-only; image input is unsupported."
+        )
+        // The generic humanizer remains deliberately opaque for callers that
+        // did not originate an image turn.
+        #expect(!ChatViewModel.humanize(error).contains("image input"))
+    }
+
+    @Test("Unrelated structured server failures remain private diagnostics")
+    func structuredServerFailureReasonStaysPrivate() {
+        #expect(ChatStreamError.httpStatus(
+            500,
+            #"{"error":{"message":"Internal server error"}}"#
+        ).attachmentFailureMessage == nil)
+        #expect(ChatStreamError.httpStatus(
+            503,
+            #"{"error":{"message":"Metal is out of memory","type":"server_error","code":"oom"}}"#
+        ).attachmentFailureMessage == nil)
+    }
+
+    @Test("Unstructured error bodies never become user copy")
+    func unstructuredBodiesStayPrivate() {
+        #expect(ChatStreamError.httpStatus(
+            400,
+            "raw internal detail"
+        ).attachmentFailureMessage == nil)
+    }
+
     @Test("transport never leaks the raw transport message")
     func transportPassthrough() {
         let msg = ChatViewModel.humanize(

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Text completion endpoints — /v1/completions."""
 
+import asyncio
 import inspect
 import json
 import logging
@@ -27,6 +28,7 @@ from ..service.helpers import (
     _check_admission_or_503,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
+    _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -443,7 +445,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     max_tokens=_resolve_max_tokens(request.max_tokens),
                     temperature=_resolve_temperature(request.temperature),
                     top_p=_resolve_top_p(request.top_p),
-                    stop=request.stop,
+                    stop=request.stop_sequences(),
                     **extended_kwargs,
                 )
 
@@ -518,7 +520,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         max_tokens=_resolve_max_tokens(request.max_tokens),
                         temperature=_resolve_temperature(request.temperature),
                         top_p=_resolve_top_p(request.top_p),
-                        stop=request.stop,
+                        stop=request.stop_sequences(),
                         **extended_kwargs,
                     ),
                     raw_request,
@@ -652,6 +654,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             content=comp_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+    except asyncio.CancelledError as exc:
+        _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
         _release_admission_unless_committed(engine, _admission_committed)
 
@@ -767,7 +771,7 @@ async def stream_completion(
         max_tokens=_resolve_max_tokens(request.max_tokens),
         temperature=_resolve_temperature(request.temperature),
         top_p=_resolve_top_p(request.top_p),
-        stop=request.stop,
+        stop=request.stop_sequences(),
         **extended_kwargs,
     ):
         if _json_mode:

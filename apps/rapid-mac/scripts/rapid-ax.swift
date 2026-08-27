@@ -1,7 +1,8 @@
 #!/usr/bin/env swift
 // Minimal native Accessibility driver for deterministic Rapid GUI journeys.
-// It deliberately exposes only semantic operations: dump, press, set-value,
-// paste-file, and closing a named native window through its AXCloseButton.
+// It deliberately exposes only semantic operations: dump, press, key,
+// set-value, paste-file, and closing a named native window through its
+// AXCloseButton.
 import AppKit
 import ApplicationServices
 import Foundation
@@ -111,7 +112,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|key|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -386,6 +387,21 @@ if command == "dump" {
     let data = try! JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
+
+// Keyboard shortcuts are interaction contracts, not AXPress aliases. Post the
+// real key to the activated app so unattended golden flows can prove native
+// cancel semantics without taking a dependency on a screen-recording bridge.
+if command == "key" {
+    guard wanted == "escape" else { fail("key supports only escape") }
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)
+    else { fail("could not create Escape key events") }
+    down.postToPid(pid)
+    up.postToPid(pid)
+    usleep(150_000)
+    print("{\"success\":true,\"key\":\"escape\",\"action\":\"key\"}")
     exit(0)
 }
 

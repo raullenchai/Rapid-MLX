@@ -30,7 +30,7 @@ private final class RecommendationBundleFinder: NSObject {}
 ///
 /// | RAM    | 🧠 Smart            | GB   | Cap | tok/s | 🚀 Fast                          |
 /// | ------ | ------------------- | ---- | --- | ----- | -------------------------------- |
-/// |  8 GB  | lfm2.5-2.6b-4bit    |  3.0 | 64% | 93.5  | lfm2.5-1b-4bit · basic · 208.4   |
+/// |  8 GB  | lfm2.5-2.6b-4bit¹   |  3.0 | 64% | 93.5  | lfm2.5-1b-4bit · basic · 208.4   |
 /// | 16 GB  | qwen3.5-4b-4bit     |  6.0 | 78% | 60.7  | lfm2.5-1b-4bit · basic · 208.4   |
 /// | 18 GB  | qwen3.5-9b-4bit     |  8.7 | 82% | 35.7  | qwen3.5-4b-4bit · 78% · 60.7     |
 /// | 24 GB  | bonsai-27b-2bit     | 13.0 | 86% | 17.5  | qwen3.5-4b-4bit · 78% · 60.7     |
@@ -38,6 +38,11 @@ private final class RecommendationBundleFinder: NSObject {}
 /// | 48 GB  | qwen3.8-27b-4bit    | 20.0 | 92% | 40.7  | qwen3.6-35b-4bit · 87% · 60      |
 /// | 64 GB  | qwen3.8-27b-4bit    | 20.0 | 92% | 40.7  | qwen3.6-35b-4bit · 87% · 60      |
 /// | 96 GB+ | qwen3.8-27b-4bit    | 20.0 | 92% | 40.7  | qwen3.6-35b-4bit · 87% · 60      |
+///
+/// ¹ The clean 8 GB first-run gate projects the smarter 2.6B pick beyond the
+/// app's usable-memory budget. Quickstart therefore defaults to this tier's
+/// 1.2B fast pick; the recommendation table still offers 2.6B as an informed
+/// capability trade-up.
 ///
 /// Every tier from 32 GB up shares one smart pick (AA-Index policy,
 /// 2026-08-18): qwen3.8-27b-4bit is the highest-scoring open-weights model

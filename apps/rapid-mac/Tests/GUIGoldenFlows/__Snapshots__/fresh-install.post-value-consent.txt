@@ -1,0 +1,67 @@
+# rapid-mac AX structural baseline v1
+AXApplication title="Rapid-MLX"
+  AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
+    AXGroup subrole=AXHostingView
+      AXGroup id="TelemetryConsent.PostValueBanner" enabled=true
+        AXImage id="chart.bar.xaxis" desc="chart.bar.xaxis" enabled=true
+        AXStaticText value=text enabled=true
+        AXStaticText value=text enabled=true
+        AXButton id="TelemetryConsent.PostValue.Decline" desc="No thanks" enabled=true
+        AXButton id="TelemetryConsent.PostValue.Share" desc="Share" enabled=true
+        AXButton id="TelemetryConsent.PostValue.Close" desc="Dismiss telemetry invitation" help="Dismiss" enabled=true
+      AXSplitGroup id="main, SidebarNavigationSplitView"
+        AXGroup subrole=AXHostingView
+          AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
+          AXButton id="Sidebar.Images" desc="Images" enabled=true
+          AXButton id="Sidebar.Audio" desc="Audio" enabled=true
+          AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXScrollArea
+            AXHeading desc="<relative-day>" enabled=true
+            AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
+            AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
+            AXButton id="Sidebar.Conversation.<uuid>" desc="Say hello in one short sentence." enabled=true
+          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
+          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+        AXSplitter value=number enabled=false
+        AXGroup subrole=AXHostingView
+          AXScrollArea
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXButton id="ChatView.Message.Delete.<uuid>" desc="Delete message" help="Delete message" enabled=true
+            AXDisclosureTriangle id="ChatView.Message.ReasoningDisclosure.<uuid>" desc="Reasoning" value=bool:false enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+            AXButton id="ChatView.Message.Delete.<uuid>" desc="Delete message" help="Delete message" enabled=true
+          AXStaticText value=text enabled=true
+          AXScrollArea
+            AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
+          AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add photos or files" enabled=true
+          AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
+          AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
+      AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
+      AXUnknown desc="Server status" enabled=true
+      AXUnknown desc="Tokens per second: no data yet" enabled=true
+      AXUnknown desc="CPU <percent>" enabled=true
+      AXUnknown desc="GPU <gpu>" enabled=true
+      AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
+    AXToolbar
+      AXButton desc="Hide Sidebar" enabled=true
+      AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true

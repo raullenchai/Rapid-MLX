@@ -254,7 +254,8 @@ fi
     --no-compile \
     --upgrade \
     "${RAPID_MLX_SOURCE}[audio-desktop]" \
-    'transformers>=5.5.0,<5.13'
+    'mlx==0.32.2' \
+    'transformers==5.12.1'
 
 # pip normally selects wheels for the BUILD host. A sidecar assembled on
 # macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
@@ -321,7 +322,7 @@ echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader p
     --no-warn-script-location \
     --no-compile \
     --no-deps \
-    'mlx-vlm==0.6.3' \
+    'mlx-vlm==0.6.16' \
     'Pillow>=10.0'
 
 # ----- step 2.6: bundle mflux --no-deps (Images tab image-gen lane) ----
@@ -456,26 +457,10 @@ PY
 # ``--no-deps`` is intentional for bundle size, but it must not hide version
 # conflicts among distributions that ARE present. Missing optional heavy deps
 # remain allowed; every installed-to-installed edge must satisfy its metadata.
-PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - <<'PY'
-from importlib import metadata
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
-
-installed = {canonicalize_name(dist.metadata["Name"]): dist.version for dist in metadata.distributions()}
-errors = []
-for dist in metadata.distributions():
-    owner = dist.metadata["Name"]
-    for raw in dist.requires or ():
-        req = Requirement(raw)
-        if req.marker and not req.marker.evaluate():
-            continue
-        actual = installed.get(canonicalize_name(req.name))
-        if actual is not None and req.specifier and actual not in req.specifier:
-            errors.append(f"{owner} requires {req}, but bundled {req.name}=={actual}")
-if errors:
-    raise SystemExit("incompatible bundled distributions:\n  " + "\n  ".join(sorted(errors)))
-print("==> bundled distribution metadata constraints: OK")
-PY
+PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+    "$STAGE/python/bin/python3.12" -s \
+    "$REPO_ROOT/scripts/check-sidecar-distributions.py" \
+    "$STAGE/site-packages"
 
 # ----- step 3: strip dev / unused artifacts ----------------------------
 
@@ -983,6 +968,31 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
         echo "$METAL_OUT" >&2
         exit 3
     fi
+fi
+
+# Release-candidate builds can opt into a real image request against a cached
+# checkpoint. Once configured, this gate is fail-closed: a missing model/image,
+# failed server start, non-200 response, or implausible description aborts the
+# build. Hosted package builders do not download multi-GB model weights, so the
+# release operator supplies the immutable local snapshot explicitly.
+if [[ -n "${SIDECAR_VISION_SMOKE_MODEL:-}" ]]; then
+    SIDECAR_VISION_SMOKE_IMAGE="${SIDECAR_VISION_SMOKE_IMAGE:-$REPO_ROOT/Sources/Rapid/Resources/cheetah.png}"
+    SIDECAR_VISION_SMOKE_NEGATIVE_IMAGE="${SIDECAR_VISION_SMOKE_NEGATIVE_IMAGE:-$REPO_ROOT/Sources/Rapid/Resources/Assets.xcassets/RapidLogo.imageset/RapidLogo.png}"
+    SIDECAR_VISION_SMOKE_ARGS=(
+        --sidecar-root "$STAGE"
+        --model "$SIDECAR_VISION_SMOKE_MODEL"
+        --image "$SIDECAR_VISION_SMOKE_IMAGE"
+        --negative-image "$SIDECAR_VISION_SMOKE_NEGATIVE_IMAGE"
+    )
+    if [[ -n "${SIDECAR_VISION_SMOKE_REVISION:-}" ]]; then
+        SIDECAR_VISION_SMOKE_ARGS+=(--revision "$SIDECAR_VISION_SMOKE_REVISION")
+    fi
+    PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+        "$STAGE/python/bin/python3.12" \
+        "$REPO_ROOT/scripts/smoke-sidecar-vision.py" \
+        "${SIDECAR_VISION_SMOKE_ARGS[@]}"
+else
+    echo "==> real image smoke: not configured (set SIDECAR_VISION_SMOKE_MODEL for release candidates)"
 fi
 
 # ----- step 7: package --------------------------------------------------

@@ -42,6 +42,82 @@ struct VoiceCoLoadTests {
         #expect(server.servingAlias == "qwen3.6-27b-4bit")
         #expect(server.voiceCoLoadsOnPrimary == true)
         #expect(server.isVoiceLaneReady(for: "whisper-small") == true)
+        #expect(server.isVoiceLaneResident(
+            for: "whisper-small",
+            modelPath: "mlx-community/whisper-small-mlx"
+        ) == false, "a mounted route is not resident speech weights")
+    }
+
+    @Test("audio residency truth survives an in-process chat-model switch")
+    func residentVoiceLaneUsesExactCatalogPath() {
+        let snapshot = ModelResidencySnapshot(
+            memoryLimitBytes: 1,
+            memoryUsedBytes: 1,
+            memoryAvailableBytes: 0,
+            idleTTLSeconds: 1,
+            loadsTotal: 1,
+            evictionsTotal: 0,
+            models: [],
+            audioLanes: [ResidentAudioLaneStatus(
+                lane: "stt",
+                model: "mlx-community/whisper-small-mlx",
+                state: "resident"
+            )]
+        )
+        let server = ServerManager(
+            testingState: .ready(alias: "lfm2.5-1b-4bit"),
+            residency: snapshot,
+            activeBearer: "test-bearer"
+        )
+
+        #expect(server.isVoiceLaneResident(
+            for: "whisper-small",
+            modelPath: "mlx-community/whisper-small-mlx"
+        ))
+        #expect(!server.isVoiceLaneResident(
+            for: "whisper-small",
+            modelPath: "mlx-community/other-whisper"
+        ))
+        #expect(server.servingAlias == "lfm2.5-1b-4bit")
+    }
+
+    @Test("failed refresh cannot validate a stale audio-lane snapshot")
+    func failedRefreshRejectsStaleVoiceLane() async {
+        let snapshot = ModelResidencySnapshot(
+            memoryLimitBytes: 1,
+            memoryUsedBytes: 1,
+            memoryAvailableBytes: 0,
+            idleTTLSeconds: 1,
+            loadsTotal: 1,
+            evictionsTotal: 0,
+            models: [],
+            audioLanes: [ResidentAudioLaneStatus(
+                lane: "stt",
+                model: "mlx-community/whisper-small-mlx",
+                state: "resident"
+            )]
+        )
+        let server = await ServerManager(
+            testingState: .ready(alias: "lfm2.5-1b-4bit"),
+            residency: snapshot,
+            activeBearer: "test-bearer"
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FailedResidencyRefreshProtocol.self]
+        var client = ServerResidencyClient()
+        client.session = URLSession(configuration: configuration)
+        await server._testSetResidencyClient(client)
+
+        let verified = await server.refreshVoiceLaneResidency(
+            for: "whisper-small",
+            modelPath: "mlx-community/whisper-small-mlx"
+        )
+
+        #expect(!verified)
+        #expect(await server.isVoiceLaneResident(
+            for: "whisper-small",
+            modelPath: "mlx-community/whisper-small-mlx"
+        ), "the stale snapshot remains cached but is not accepted as current")
     }
 
     @Test("mid-start is not co-loaded (no live serving alias yet)")
@@ -102,4 +178,23 @@ struct VoiceCoLoadTests {
         let readyNoAuth = ServerManager(testingState: .ready(alias: "qwen3.6-27b-4bit"))
         #expect(readyNoAuth.voiceCoLoadsOnPrimary == false)
     }
+}
+
+private final class FailedResidencyRefreshProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 503,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"error":"unavailable"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

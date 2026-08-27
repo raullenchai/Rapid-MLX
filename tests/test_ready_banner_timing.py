@@ -88,6 +88,24 @@ async def test_ready_banner_emitted_when_bind_fields_set():
     assert cfg.ready is False  # reset on shutdown (second next())
 
 
+async def test_ready_banner_shows_served_model_name_when_overridden(monkeypatch):
+    """Issue #2353: when ``--served-model-name`` is in effect, the banner's
+    ``Model:`` line must show the copyable served API name, not the catalog
+    alias."""
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"  # the typed alias
+    cfg.model_name = "studio-assistant"  # --served-model-name override
+    monkeypatch.setattr(server, "_served_model_name_set", True)
+
+    out = await _enter_then_exit_lifespan()
+
+    assert "Model:     studio-assistant" in out, out
+    # The alias is not what the API serves — it must not lead the Model line.
+    assert "Model:     lfm2.5-1b-4bit" not in out, out
+
+
 async def test_ready_banner_suppressed_when_no_bind_info():
     """Embedded usage (uvicorn owned elsewhere) leaves bind_* unset — silent."""
     cfg = get_config()

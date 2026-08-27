@@ -45,16 +45,15 @@ struct BundledModelTests {
     }
 
     @MainActor
-    @Test("Bundled alias agrees with the Quickstart wizard starter — the upgrade nudge keys on this")
-    func bundledAliasMatchesQuickstartStarter() {
+    @Test("Air-gapped bundle remains the explicit low-memory onboarding choice")
+    func bundledAliasMatchesLowMemoryChoice() {
         // The upgrade banner fires only when the active alias equals
         // ``BundledModel.bundledAlias`` (see ``UpgradeBannerCoordinator``),
-        // but the model a fresh-install user actually gets is
-        // ``QuickstartCoordinator.defaultChoice``. If these two ever
-        // drift apart the nudge silently never fires. Pin them equal so
-        // a one-sided edit fails here instead of shipping a dead banner.
-        #expect(BundledModel.bundledAlias == QuickstartCoordinator.defaultChoice.alias)
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo == BundledModel.bundledRepoID)
+        // and air-gapped builds deliberately keep the smallest authored
+        // onboarding choice. Production DMGs bundle no weights, so their
+        // hardware-aware starter is independent from this fallback.
+        #expect(BundledModel.bundledAlias == QuickstartCoordinator.lowMemoryChoice.alias)
+        #expect(QuickstartCoordinator.lowMemoryChoice.hfRepo == BundledModel.bundledRepoID)
     }
 
     // MARK: - Snapshot URL resolution

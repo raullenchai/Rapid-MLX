@@ -174,6 +174,18 @@ struct AudioCatalogTests {
         #expect(!source.contains("Picker(\"\", selection: $controller.modelAlias)"))
     }
 
+    @Test("enabled dictation exposes automatic hotkey state without a manual arm control")
+    func dictationHotkeyIsAutomatic() throws {
+        let source = try String(contentsOf: Self.dictationViewURL, encoding: .utf8)
+
+        #expect(!source.contains("Arm now"))
+        #expect(!source.contains("Dictation.Arm"))
+        #expect(source.contains("controller.isHotkeyArmed"))
+        #expect(source.contains("Listening — press"))
+        #expect(source.contains("Listening paused — reconnecting the speech model"))
+        #expect(source.contains("Rapid will reconnect the speech model automatically."))
+    }
+
     @Test("parser extracts audio rows and preserves subtype, family, size, and repo")
     func parsesRows() {
         let rows = ModelCatalog.parseAudioRows(Self.sample)

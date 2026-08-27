@@ -306,7 +306,9 @@ def test_openai_text_only_model_rejects_image_url_block():
         },
     )
     assert resp.status_code == 400, resp.text
-    assert "does not support" in resp.json()["detail"]
+    assert resp.json().get("detail", resp.json())["error"]["code"] == (
+        "image_input_unsupported"
+    )
 
 
 def test_openai_text_only_model_accepts_text_only_content():

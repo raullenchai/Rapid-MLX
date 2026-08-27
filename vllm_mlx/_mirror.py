@@ -1431,8 +1431,24 @@ def download_with_mirror_fallback(
     *,
     revision: str | None = None,
     on_pull_start: Callable[[], None] | None = None,
+    allow_patterns: list[str] | None = None,
+    out: dict | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
+
+    ``out`` (optional) receives ``out["transferred_bytes"]`` = the total
+    completed-file bytes of every file actually fetched over the wire this
+    pull (R2 + HF-fallback only; warm ``cached`` hits are excluded). This is
+    the files' on-disk size after download, NOT a byte-exact wire delta: a
+    resumed partial reuses bytes already written by the prior attempt, so the
+    count can over-state the fresh bytes in a resume. It is authoritative for
+    "did we fetch at all" (see ``network_fetch``) and for the approximate
+    download size, not for per-byte metering. ``pull_command`` uses it to say
+    "already cached … (nothing to download)" truthfully (issue #2349).
+    Known, accepted limitation (Atlas 2026-08-26): a non-LFS file with no
+    catalog sha256 that warm re-links a locally-cached blob counts as a fetch
+    (classifies ``"hf"``), because the relink is indistinguishable without
+    downloader instrumentation; LFS weight bytes are exact.
 
     Returns True if every file landed in the snapshot dir (mix of R2 +
     HF is fine). Returns False if the caller should fall back to the
@@ -1460,7 +1476,19 @@ def download_with_mirror_fallback(
     round-trips resolve). The CLI uses it to retire a "Resolving…" spinner so
     it doesn't collide with the download output. It never fires on the
     ``return False`` fall-through path.
+
+    ``allow_patterns`` narrows the enumerated repo to a subset of files,
+    ``fnmatch``-ed against each sibling's in-repo path — the SAME contract as
+    ``snapshot_download(allow_patterns=…)``. A subfolder-per-quant repo
+    (``LiquidAI/LFM2.5-2.6B-MLX`` ships eight quants side by side, of which
+    ``4bit/`` is one) is mirrored a single quant at a time, so the caller
+    passes ``["4bit/*"]`` to fetch ONLY that quant from R2 — without it the
+    enumeration would list all ~20 GB of siblings, 404 the non-mirrored quants
+    on R2, and fall each back to HF. ``None`` (the default) keeps the whole
+    repo, correct for the one-quant-per-repo layout every other mirror uses.
     """
+    from fnmatch import fnmatch
+
     from ._hf_logging import silence_hf_unauthenticated_warning
 
     # Whether we pull via R2 + hf_hub_download below or bail (returning
@@ -1542,6 +1570,16 @@ def download_with_mirror_fallback(
             # malicious, refuse to act on it. Punt to HF's own loader,
             # which has its own checks.
             return False
+        # Narrow to the requested subset (a subfolder-per-quant repo asks for
+        # one quant's directory). Filter HERE, before every downstream
+        # consumer — the plan count, byte total, fetch loop and verify pass all
+        # read ``files`` — so a subfolder pull can never enumerate, fetch, or
+        # measure the quants the caller didn't ask for. Match ``snapshot_
+        # download``'s semantics: a file is kept if it matches ANY pattern.
+        if allow_patterns is not None and not any(
+            fnmatch(rname, pat) for pat in allow_patterns
+        ):
+            continue
         size = getattr(s, "size", None)
         size = size if isinstance(size, int) else None
         lfs = getattr(s, "lfs", None)
@@ -1695,6 +1733,12 @@ def download_with_mirror_fallback(
     hf_hits = 0
     misses: list[str] = []
     total_bytes = 0
+    # Bytes actually transferred over the wire this pull (R2 + HF-fallback
+    # files). ``total_bytes`` also counts warm ``cached`` hits, which helps
+    # the progress bar but must NOT be reported as a download — the pull
+    # summary needs the fresh-only count so a warm pull says "already
+    # cached / nothing to download" truthfully (issue #2349).
+    transferred_bytes = 0
 
     def _do_file(
         item: tuple[str, int | None, str | None],
@@ -1891,6 +1935,31 @@ def download_with_mirror_fallback(
         # Mute HF's tqdm for confirmed-small metadata files so it doesn't
         # collide with our aggregate UI; keep it for weight/unknown-size
         # files (see ``_should_suppress_hf_bar``).
+        #
+        # Stable transfer-account seam (Codex #2392): detect a warm HF re-link
+        # per-file, deterministically and WITHOUT a shared-cache diff (a
+        # repository-wide blob diff is racy under concurrent workers / foreign
+        # processes, and per-file mtime heuristics are fragile on coarse
+        # timestamps — both rejected by Codex).
+        #   * LFS files (catalog exposes ``expected_sha256``): the blob key is
+        #     known, so probe ``blobs/<sha>`` directly — O(1), deterministic,
+        #     immune to other workers. If it is present BEFORE the call,
+        #     ``hf_hub_download`` only re-links it (zero bytes) -> "cached".
+        #   * Non-LFS files (no catalog sha): the blob key is unknowable ahead
+        #     of time, so a warm relink is indistinguishable from a real fetch
+        #     without downloader instrumentation. Per Atlas decision 2026-08-26
+        #     ((A) documented limitation), these classify "hf" — a no-sha tiny
+        #     non-LFS file showing "Downloaded" only when R2 misses AND its
+        #     blob is already local is an ACCEPTED, bounded edge (the weight
+        #     bytes — the actual transfer a pull exists for — are exact via the
+        #     LFS probe above). Follow-up for full exactness: huggingface_hub
+        #     downloader instrumentation, post-0.13.1 Vector lane.
+        blob_already_local = False
+        if expected_sha256 is not None:
+            try:
+                blob_already_local = (repo_root / "blobs" / expected_sha256).is_file()
+            except OSError:
+                blob_already_local = False
         ok, hf_path = _hf_fallback_one(
             repo_id,
             fname,
@@ -1912,7 +1981,11 @@ def download_with_mirror_fallback(
                     size = (snap_dir / fname).stat().st_size
             except OSError:
                 size = 0
-            return fname, "hf", size
+            # A warm re-link of an already-local LFS blob transfers no bytes ->
+            # "cached", so `network_fetch`/`transferred_bytes` never mislabel a
+            # warm pull as a download (Codex #2392). Non-LFS re-links (no sha)
+            # are the accepted documented limitation above: they classify "hf".
+            return fname, ("cached" if blob_already_local else "hf"), size
 
         return fname, "miss", 0
 
@@ -1965,9 +2038,11 @@ def download_with_mirror_fallback(
                 if kind == "r2":
                     r2_hits += 1
                     total_bytes += size
+                    transferred_bytes += size
                 elif kind == "hf":
                     hf_hits += 1
                     total_bytes += size
+                    transferred_bytes += size
                     # HF fallback's tqdm doesn't feed into the R2 chunk loop,
                     # so the aggregate tracker would miss these bytes
                     # entirely. Bump it at completion so the heartbeat
@@ -2035,6 +2110,24 @@ def download_with_mirror_fallback(
         # 100% before the failure banner.
         progress_tracker.flush()
 
+    # Transfer account — populated on EVERY exit path (success AND partial
+    # miss), so ``pull_command`` combines a failed/partial mirror attempt
+    # with its HF-fallback baseline instead of discarding the bytes the
+    # mirror DID fetch (Codex #2392 R5 + #2353). ``network_fetch`` is the
+    # authoritative "did THIS invocation fetch anything over the wire?" —
+    # aggregated from the per-file classifications, never a shared-cache blob
+    # diff, so concurrent processes cannot pollute it (Codex #2392 R5 #1/#2).
+    # ``r2_hits``/``hf_hits`` are bumped only for files this worker actually
+    # fetched: R2 workers return "cached" before fetching when the target
+    # already exists, and an HF worker re-linking an already-local blob
+    # classifies "cached" (LFS via the pre-call blob probe; non-LFS via the
+    # resolved blob's pre-pull mtime). A fetched zero-byte file still counts
+    # (its freshly-written blob classifies hf). ``bool(r2_hits) or
+    # bool(hf_hits)`` is therefore foreign-process-immune and O(1).
+    if out is not None:
+        out["transferred_bytes"] = transferred_bytes
+        out["network_fetch"] = bool(r2_hits) or bool(hf_hits)
+
     if misses:
         # At least one file we couldn't get from either source. Caller
         # should fall back to ``snapshot_download`` — it has more retry
@@ -2097,6 +2190,9 @@ def download_with_mirror_fallback(
             f"{DIM}(HF: {hf_hits}){RESET}{suffix}"
         )
     else:
-        # All files were already cached — quiet success.
+        # All files were already cached — quiet success. NB ``out`` was
+        # already populated before the ``if misses`` branch above, so the
+        # "Already cached" label here is consistent with what the caller
+        # reads from ``out["network_fetch"]``.
         _print_dim(f"  {BOLD}Already cached{RESET} ({len(files)} files, {mb:.0f} MB)")
     return True

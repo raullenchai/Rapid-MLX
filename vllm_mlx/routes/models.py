@@ -208,6 +208,42 @@ def _engine_is_mllm_or_none(engine: object | None) -> bool | None:
     return is_mllm if isinstance(is_mllm, bool) else None
 
 
+def _served_lane_fields(model_id: str) -> tuple[str | None, str | None]:
+    """Return lane truth from the matching live engine, never static guesses."""
+    engine = _engine_for(model_id)
+    if engine is None:
+        return None, None
+    lane = getattr(engine, "serving_lane", None)
+    reason = getattr(engine, "serving_lane_reason", None)
+    return (
+        lane if isinstance(lane, str) else None,
+        reason if isinstance(reason, str) else None,
+    )
+
+
+def _served_experimental(model_id: str) -> bool:
+    """Return architecture-derived experimental truth for a live model.
+
+    The residency registry owns this value because it is resolved once from
+    the checkpoint config before engine construction. Discovery-only aliases
+    must not infer it from names, and a lookup miss must remain the stable
+    non-experimental default.
+    """
+    try:
+        cfg = get_config()
+        if cfg.model_registry is not None:
+            entry = cfg.model_registry.get_entry(model_id)
+            if entry.matches(model_id) is True:
+                return getattr(entry, "experimental", False) is True
+            return False
+        if model_id in {cfg.model_name, cfg.model_alias} - {None}:
+            candidate = getattr(cfg, "engine", None)
+            return getattr(candidate, "experimental", False) is True
+    except (AttributeError, KeyError):
+        return False
+    return False
+
+
 def _served_engine_is_mllm(model_id: str) -> bool | None:
     """Return the LIVE engine's actual modality for the served model.
 
@@ -506,6 +542,7 @@ def _detect_capabilities(
     profile_modality: str | None = None,
     profile_tool_parser: str | None = None,
     is_text_only: bool = False,
+    experimental: bool = False,
 ) -> list[str]:
     """Compute the ``capabilities`` tag list for ``model_id``.
 
@@ -551,6 +588,8 @@ def _detect_capabilities(
         caps.append("vision")
     if _tools_capable(model_id, profile_tool_parser):
         caps.append("tools")
+    if experimental:
+        caps.append("experimental")
     return caps
 
 
@@ -887,6 +926,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # SERVER-WIDE backend health, not per-model audio capability
     # (which would require a separate dry-run per audio alias).
     audio_lanes = _audio_lane_snapshot()
+    serving_lane, serving_lane_reason = _served_lane_fields(model_id)
 
     # R11-B-F4 (Bo 0.8.12 dogfood): audio aliases get an audio-shaped
     # ModelInfo regardless of whether the registry has a text profile
@@ -973,7 +1013,10 @@ def _build_model_info(model_id: str) -> ModelInfo:
         # (missing) alias profile would have said.
         eff_tool, eff_reasoning = effective_parsers_for(model_id, None, None)
         capabilities = _detect_capabilities(
-            model_id, profile_modality=None, profile_tool_parser=eff_tool
+            model_id,
+            profile_modality=None,
+            profile_tool_parser=eff_tool,
+            experimental=_served_experimental(model_id),
         )
         try:
             # Route through ``_reported_modality`` (not a bare
@@ -993,6 +1036,8 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     context_window=context_window,
                     max_model_len=max_model_len,
                     audio_lanes=audio_lanes,
+                    serving_lane=serving_lane,
+                    serving_lane_reason=serving_lane_reason,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -1005,6 +1050,8 @@ def _build_model_info(model_id: str) -> ModelInfo:
             context_window=context_window,
             max_model_len=max_model_len,
             audio_lanes=audio_lanes,
+            serving_lane=serving_lane,
+            serving_lane_reason=serving_lane_reason,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
@@ -1033,6 +1080,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         profile_modality=profile.modality,
         profile_tool_parser=eff_tool,
         is_text_only=profile.is_text_only,
+        experimental=profile.experimental or _served_experimental(model_id),
     )
     return ModelInfo(
         id=model_id,
@@ -1046,6 +1094,8 @@ def _build_model_info(model_id: str) -> ModelInfo:
         context_window=context_window,
         max_model_len=max_model_len,
         audio_lanes=audio_lanes,
+        serving_lane=serving_lane,
+        serving_lane_reason=serving_lane_reason,
     )
 
 

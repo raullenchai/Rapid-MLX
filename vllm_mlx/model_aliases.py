@@ -192,6 +192,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
             "min_memory_gb",
+            "vision_min_memory_gb",
+            "experimental",
             "recommended_sampling",
             "pflash_tier",
             "pflash_keep_ratio",
@@ -397,22 +399,19 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     # rejected on non-numeric / zero / negative so a typo fails at load
     # time instead of silently disabling the guard for an Ultra-only
     # alias.
-    raw_min_mem = value.get("min_memory_gb")
-    min_memory_gb: float | None
-    if raw_min_mem is None:
-        min_memory_gb = None
-    elif isinstance(raw_min_mem, bool) or not isinstance(raw_min_mem, (int, float)):
-        raise ValueError(
-            f"alias {alias!r}: min_memory_gb must be a positive number, "
-            f"got {type(raw_min_mem).__name__}={raw_min_mem!r}"
-        )
-    elif raw_min_mem <= 0:
-        raise ValueError(
-            f"alias {alias!r}: min_memory_gb must be a positive number, "
-            f"got {raw_min_mem}"
-        )
-    else:
-        min_memory_gb = float(raw_min_mem)
+    def _optional_positive_number(key: str) -> float | None:
+        raw = value.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a positive number, "
+                f"got {type(raw).__name__}={raw!r}"
+            )
+        return float(raw)
+
+    min_memory_gb = _optional_positive_number("min_memory_gb")
+    vision_min_memory_gb = _optional_positive_number("vision_min_memory_gb")
     raw_sampling = value.get("recommended_sampling")
     recommended_sampling: tuple[tuple[str, float], ...] | None
     if raw_sampling is None:
@@ -580,6 +579,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         pflash_keep_ratio=pflash_keep_ratio,
         turboquant_tier=turboquant_tier,
         min_memory_gb=min_memory_gb,
+        vision_min_memory_gb=vision_min_memory_gb,
+        experimental=_strict_bool("experimental", False),
     )
 
 

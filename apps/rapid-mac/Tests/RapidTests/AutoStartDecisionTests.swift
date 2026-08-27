@@ -674,7 +674,7 @@ struct AutoStartDecisionTests {
     @Test("#356: SkipReason cardinality + case-name set is pinned — adding/renaming a case requires explicit test update")
     func skipReasonCardinality() {
         let allCases = AutoStartDecision.SkipReason.allCases
-        #expect(allCases.count == 7)
+        #expect(allCases.count == 6)
         // Pin the exact case-name set via the raw-string backing so a
         // rename (``.userOptedOut`` → ``.userExplicitlyOptedOut``)
         // surfaces here even though ``count`` is unchanged.
@@ -691,13 +691,10 @@ struct AutoStartDecisionTests {
             // took several review rounds to answer instead of one red test.
             "retiredStarter",
             // Added 2026-08-06 with the #1589 ordering fix. The audit this
-            // test demands: both sit ABOVE the ``serverState`` switch —
+            // test demands: this sits ABOVE the ``serverState`` switch —
             // below it they could only observe the race, not prevent it —
-            // and below ``userOptedOut``, which stays absolute. Relative
-            // order (consent, then onboarding) mirrors
-            // ``ContentView.quickstartVisible``. Precedence is pinned in
+            // and below ``userOptedOut``, which stays absolute. Precedence is pinned in
             // ``LaunchOnboardingOrderingTests.skipPrecedenceLadder``.
-            "firstRunDecisionPending",
             "onboardingPending",
         ])
     }

@@ -11,6 +11,8 @@ import Testing
 @MainActor
 @Suite("SamplingConfig defaults + persistence")
 final class SamplingConfigTests {
+    init() { CIHangWatchdog.noteProgress() }
+
     /// Names of every suite ``freshDefaults`` minted for this test
     /// instance. Each ``@Test`` gets a fresh instance of the suite
     /// type, so ``deinit`` runs after the test exits — the suite is
@@ -24,7 +26,10 @@ final class SamplingConfigTests {
     /// test`` runs.
     nonisolated(unsafe) private var createdSuiteNames: [String] = []
 
-    deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
+    deinit {
+        CIHangWatchdog.noteProgress()
+        TestDefaultsScope.cleanup(suiteNames: createdSuiteNames)
+    }
 
     /// Issue #139 dedupe — the cleanup mechanics that used to live
     /// here are now shared with the other suite-minting tests via
@@ -358,7 +363,10 @@ final class SamplingConfigTests {
         #expect(s.isAtDefaults)
     }
 
-    @Test("Zero / negative on a Double knob WOULD persist as 0 via UserDefaults.double(forKey:) — verify the absent-key fallback handles that distinction")
+    @Test(
+        "Zero / negative on a Double knob WOULD persist as 0 via UserDefaults.double(forKey:) — verify the absent-key fallback handles that distinction",
+        .timeLimit(.minutes(1))
+    )
     func zeroDoubleDistinguishedFromAbsent() {
         // The init uses ``object(forKey:)`` precisely so a missing
         // key on first launch doesn't read as 0.0 (which would

@@ -778,7 +778,11 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
 @pytest.mark.asyncio
 async def test_primary_replacement_rebinds_after_audio_work_finishes(monkeypatch):
     import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from vllm_mlx.runtime.audio_worker import (
+        audio_worker,
+        bind_audio_worker,
+        run_audio_mlx,
+    )
 
     old_worker = _ReplacementWorker("chat-old")
     _configure_server_primary(monkeypatch, server, old_worker)
@@ -788,6 +792,11 @@ async def test_primary_replacement_rebinds_after_audio_work_finishes(monkeypatch
         assert (
             await run_audio_mlx("stt", "whisper", "infer", lambda: "before") == "before"
         )
+        stt_before = next(
+            lane for lane in audio_worker.snapshot() if lane["lane"] == "stt"
+        )
+        assert stt_before["model"] == "whisper"
+        assert stt_before["state"] == "resident"
 
         replacement = await manager.load(
             "chat-new",
@@ -804,13 +813,39 @@ async def test_primary_replacement_rebinds_after_audio_work_finishes(monkeypatch
         )
         assert old_worker.async_calls == 1
         assert loaded["chat-new"].async_calls == 1
+        stt_after = next(
+            lane for lane in audio_worker.snapshot() if lane["lane"] == "stt"
+        )
+        assert stt_after["model"] == "whisper"
+        assert stt_after["state"] == "resident"
+
+        # Switching again, including back to the original assistant identity,
+        # must only replace the assistant engine. Dictation is product-wide
+        # process state and remains resident across every picker transition.
+        switched_back = await manager.load(
+            "chat-old",
+            estimated_bytes=1,
+            replace_group="assistant",
+        )
+        assert registry.default_name == "chat-old"
+        assert server._engine is switched_back.entry.engine
+        assert await run_audio_mlx("stt", "whisper", "infer", lambda: "back") == (
+            "back"
+        )
+        stt_switched_back = next(
+            lane for lane in audio_worker.snapshot() if lane["lane"] == "stt"
+        )
+        assert stt_switched_back["model"] == "whisper"
+        assert stt_switched_back["state"] == "resident"
     finally:
         bind_audio_worker(None)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replace_mode", ["reject", "wait", "abort"])
 async def test_primary_replacement_rejects_active_audio_without_stopping_old_worker(
     monkeypatch,
+    replace_mode,
 ):
     import vllm_mlx.server as server
     from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
@@ -836,6 +871,7 @@ async def test_primary_replacement_rejects_active_audio_without_stopping_old_wor
                 "chat-new",
                 estimated_bytes=1,
                 replace_group="assistant",
+                replace_mode=replace_mode,
             )
 
         assert registry.default_name == "chat-old"
@@ -895,7 +931,11 @@ async def test_primary_reload_rejects_active_audio_without_stopping_worker(
 @pytest.mark.asyncio
 async def test_primary_reload_commits_audio_worker_handoff(monkeypatch):
     import vllm_mlx.server as server
-    from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
+    from vllm_mlx.runtime.audio_worker import (
+        audio_worker,
+        bind_audio_worker,
+        run_audio_mlx,
+    )
     from vllm_mlx.runtime.resident_models import ResidentPerformanceConfig
 
     old_worker = _ReplacementWorker("chat-old")
@@ -903,6 +943,9 @@ async def test_primary_reload_commits_audio_worker_handoff(monkeypatch):
     manager, registry, loaded = _replacement_manager(server, old_worker)
     bind_audio_worker(old_worker)
     try:
+        assert await run_audio_mlx("stt", "whisper", "infer", lambda: "before") == (
+            "before"
+        )
         replacement = await manager.load(
             "chat-old",
             performance=ResidentPerformanceConfig(prefix_cache_enabled=True),
@@ -915,8 +958,13 @@ async def test_primary_reload_commits_audio_worker_handoff(monkeypatch):
         assert await run_audio_mlx("stt", "whisper", "infer", lambda: "after") == (
             "after"
         )
-        assert old_worker.async_calls == 0
+        assert old_worker.async_calls == 1
         assert loaded["chat-old"].async_calls == 1
+        stt_after = next(
+            lane for lane in audio_worker.snapshot() if lane["lane"] == "stt"
+        )
+        assert stt_after["model"] == "whisper"
+        assert stt_after["state"] == "resident"
     finally:
         bind_audio_worker(None)
 
@@ -953,9 +1001,9 @@ async def test_primary_reload_restores_old_config_after_publication_failure(
             model_path=path or f"repo/{name}",
         )
 
-    def publish(entry: ModelEntry) -> None:
+    def publish(entry: ModelEntry | None) -> None:
         server._set_resident_primary(entry)
-        if entry.engine is loaded[0]:
+        if entry is not None and entry.engine is loaded[0]:
             raise RuntimeError("primary publication failed")
 
     manager = ResidentModelManager(
@@ -992,7 +1040,7 @@ async def test_primary_reload_restores_old_config_after_publication_failure(
 
 
 @pytest.mark.asyncio
-async def test_primary_reload_rolls_back_handoff_when_old_stop_fails(monkeypatch):
+async def test_primary_reload_rebuilds_handoff_when_old_stop_fails(monkeypatch):
     import vllm_mlx.server as server
     from vllm_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
     from vllm_mlx.runtime.resident_models import ResidentPerformanceConfig
@@ -1011,13 +1059,15 @@ async def test_primary_reload_rolls_back_handoff_when_old_stop_fails(monkeypatch
 
         assert old_worker.stop_calls == 1
         assert old_worker.stopped is False
-        assert loaded == {}
+        restored = loaded["chat-old"]
         assert registry.default_name == "chat-old"
-        assert registry.get_entry("chat-old").engine is old_worker
-        assert server._engine is old_worker
+        assert registry.get_entry("chat-old").engine is restored
+        assert server._engine is restored
         assert await run_audio_mlx("stt", "whisper", "infer", lambda: "after") == (
             "after"
         )
+        assert old_worker.async_calls == 0
+        assert restored.async_calls == 1
     finally:
         bind_audio_worker(None)
 
@@ -1117,9 +1167,10 @@ async def test_primary_reload_releases_handoff_when_cleanup_and_restore_fail(
             model_path=path or f"repo/{name}",
         )
 
-    def reject_publication(entry: ModelEntry) -> None:
+    def reject_publication(entry: ModelEntry | None) -> None:
         server._set_resident_primary(entry)
-        raise RuntimeError("primary publication failed")
+        if entry is not None:
+            raise RuntimeError("primary publication failed")
 
     manager = ResidentModelManager(
         registry,
@@ -1152,7 +1203,7 @@ async def test_primary_reload_releases_handoff_when_cleanup_and_restore_fail(
 
 
 @pytest.mark.asyncio
-async def test_primary_replacement_rolls_back_after_old_worker_stop_failure(
+async def test_primary_replacement_keeps_new_worker_after_old_stop_failure(
     monkeypatch,
 ):
     import vllm_mlx.server as server
@@ -1163,23 +1214,23 @@ async def test_primary_replacement_rolls_back_after_old_worker_stop_failure(
     manager, registry, loaded = _replacement_manager(server, old_worker)
     bind_audio_worker(old_worker)
     try:
-        with pytest.raises(RuntimeError, match="old stop failed"):
-            await manager.load(
-                "chat-new",
-                estimated_bytes=1,
-                replace_group="assistant",
-            )
+        replacement = await manager.load(
+            "chat-new",
+            estimated_bytes=1,
+            replace_group="assistant",
+        )
 
-        assert registry.default_name == "chat-old"
-        assert [entry.model_name for entry in registry.list_entries()] == ["chat-old"]
-        assert server._engine is old_worker
+        assert replacement.primary is True
+        assert registry.default_name == "chat-new"
+        assert [entry.model_name for entry in registry.list_entries()] == ["chat-new"]
+        assert server._engine is loaded["chat-new"]
         assert old_worker.stopped is False
-        assert loaded["chat-new"].stopped is True
+        assert loaded["chat-new"].stopped is False
         assert await run_audio_mlx("stt", "whisper", "infer", lambda: "after") == (
             "after"
         )
-        assert old_worker.async_calls == 1
-        assert loaded["chat-new"].async_calls == 0
+        assert old_worker.async_calls == 0
+        assert loaded["chat-new"].async_calls == 1
     finally:
         bind_audio_worker(None)
 

@@ -134,16 +134,17 @@ class ServerEndpoints:
 
 
 # The ``--setup`` verbs printed in the human banner's "Connect:" section.
-# Each row is ``(app label, command prefix, OpenAI endpoint?)``. Rows that
-# point a first-class agent at the server (`claude-code`, `continue`) take an
-# OpenAI-style ``/v1`` base URL and get ``--base-url <url>`` appended so the
-# copied command targets the *actual* running server, not the localhost
-# default the agent would otherwise assume. ``openai-python`` writes no config
-# and just prints a snippet, so it carries no ``--base-url``.
+# Each row is ``(app label, command prefix, OpenAI endpoint?)``. Every row —
+# including ``openai-python`` — takes an OpenAI-style ``/v1`` base URL and
+# gets ``--base-url <url>`` appended so the copied command targets the
+# *actual* running server, not the localhost:8000 default the standalone
+# process would otherwise assume (#2348). ``connect`` accepts ``--base-url``
+# as the explicit way to receive that instance context, so the pasted command
+# resolves the real host/port/model instead of printing placeholders.
 _CONNECT_ROWS: list[tuple[str, str, bool]] = [
     ("Claude Code", "rapid-mlx agents claude-code --setup", True),
     ("Continue", "rapid-mlx agents continue --setup", True),
-    ("Python", "rapid-mlx connect openai-python", False),
+    ("Python", "rapid-mlx connect openai-python", True),
 ]
 
 
@@ -247,6 +248,68 @@ def endpoints_from_bind(
     if listen_fd is not None and (host is None or port is None):
         return ServerEndpoints(host="", port=0, model=model, listen_fd=listen_fd)
     return ServerEndpoints(host or "localhost", port or 8000, model=model)
+
+
+def _parse_base_url(base_url: str) -> tuple[str, int]:
+    """Split an OpenAI-style base URL into ``(host, port)``.
+
+    ``rapid-mlx connect`` accepts ``--base-url`` as the explicit way to carry
+    the *live* server context across process boundaries (#2348). Without it a
+    standalone ``connect`` process cannot know the port/model a ``serve``
+    picked, so it would print the localhost:8000 default instead of the real
+    endpoint. A trailing ``/v1`` (OpenAI-style, what the banner prints) is
+    accepted and ignored for host/port derivation.
+
+    Accepts and normalizes the same host shapes as :func:`_authority` —
+    bare IPv4/hostnames and bracket-wrapped or scoped IPv6 literals — so a
+    user can paste the banner URL verbatim. A missing port falls back to the
+    rapid-mlx default (8000).
+
+    ``connect`` targets a local ``http://`` server whose endpoints the SSOT
+    models as ``http://host:port`` (+ a literal ``/v1`` for OpenAI) — it has no
+    notion of a URL path prefix. So, mirroring the scheme check, any path other
+    than empty or ``/v1`` is rejected with a clear error rather than silently
+    rewriting a proxied base URL to the wrong API (codex #2348-R2). An explicit
+    port is validated against the CLI ``_port_arg`` 1-65535 invariant, so ``:0``
+    or out-of-range values fail loudly instead of retargeting the snippet.
+
+    Raises ``ValueError`` on a non-http scheme, a URL with no host, an
+    unexpected path, or an explicit out-of-range port.
+    """
+    from urllib.parse import urlsplit
+
+    split = urlsplit(base_url, scheme="http")
+    scheme = split.scheme or "http"
+    if scheme != "http":
+        raise ValueError(f"base-url must be an http URL, got {base_url!r}")
+    host = split.hostname
+    if not host:
+        raise ValueError(f"base-url has no host, got {base_url!r}")
+    # Empty path (``http://host:port``), a bare trailing slash (``/``), and
+    # ``/v1`` (+ a single trailing slash) are the only paths the SSOT renders
+    # losslessly; one trailing slash is a semantics-free spelling from SDK/config
+    # tooling and is normalized away before comparing. Repeated slashes
+    # (``//``, ``/v1//``) and real path-prefixes are rejected since they are
+    # path-significant and this local-server tool does not model them.
+    path = ""
+    raw = split.path or ""
+    if raw:
+        path = raw[:-1] if raw.endswith("/") else raw
+    if path not in ("", "/v1"):
+        raise ValueError(f"base-url path must be empty or /v1, got {base_url!r}")
+    # A scoped IPv6 literal is the only host that carries a ``%25`` zone-id
+    # separator (``fe80::1%25en0`` -> raw ``fe80::1%en0``); :func:`_authority`
+    # then re-encodes it consistently when rendering, so the round-trip is
+    # stable. Detect IPv6 the same way ``_authority`` does (a ``:`` in the
+    # host) and decode ``%25`` ONLY there — in an ordinary hostname ``%25`` is
+    # a genuine encoded octet that must be left untouched, or the generated
+    # URL would be malformed (codex #2348-R2/R3).
+    if ":" in host:
+        host = host.replace("%25", "%")
+    port = split.port if split.port is not None else 8000
+    if not (1 <= port <= 65535):
+        raise ValueError(f"base-url port must be between 1 and 65535, got {port}")
+    return host, port
 
 
 def resolve_endpoints(

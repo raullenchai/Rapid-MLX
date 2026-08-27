@@ -23,6 +23,7 @@ struct ThroughputCaptionIntegrationTests {
     @Test("The persisted stats separate prefill from decode on a real stream")
     func streamRecordsTimeToFirstToken() async throws {
         let clock = TestStreamClock()
+        var deliveredValues: [ProductValueKind] = []
         PrefillHeavyProtocol.reset(
             prefillDelay: 0.45,
             contentDeltas: 12,
@@ -35,7 +36,8 @@ struct ThroughputCaptionIntegrationTests {
                 session: PrefillHeavyProtocol.session(),
                 now: clock.now
             ),
-            persistsConversations: false
+            persistsConversations: false,
+            onProductValueDelivered: { deliveredValues.append($0) }
         )
 
         model.send("anything", alias: "test-model")
@@ -43,6 +45,7 @@ struct ThroughputCaptionIntegrationTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(!model.isStreaming)
+        #expect(deliveredValues == [.chatReply])
 
         let stats = try #require(model.messages.last?.stats)
 

@@ -1940,6 +1940,221 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
     )
 
 
+def test_chat_switch_download_abort_reports_reason_above(monkeypatch, capsys):
+    """When ``/model``'s pre-download aborts via ``sys.exit(1)`` (offline +
+    uncached refusal, disk gate, or resolve timeout), the summary must say
+    "(reason above)" — NOT re-attribute it as "(disk gate)" — and keep the
+    previous server running untouched (#2357)."""
+    spawned: list[object] = []
+
+    class _FakeProc:
+        def __init__(self, name):
+            self.name = name
+            self._rapid_mlx_log = None
+            self._rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
+        proc = _FakeProc(model)
+        spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
+        return proc, f"http://127.0.0.1:{port}"
+
+    download_calls = {"n": 0}
+
+    def _ensure_aborts_on_switch(*_a, **_kw):
+        # Initial spawn's pre-download succeeds; the /model switch's
+        # pre-download aborts with the offline/disk SystemExit.
+        download_calls["n"] += 1
+        if download_calls["n"] >= 2:
+            raise SystemExit(1)
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", _ensure_aborts_on_switch)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda alias: f"mlx-community/{alias}-resolved",
+    )
+
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (fake_port, payloads):
+        port = fake_port
+        inputs = iter(["first turn", "/model bogus", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port, model="qwen3.5-4b-4bit")
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    out = capsys.readouterr().out
+    assert "Model switch aborted" in out
+    assert "reason above" in out, "must not mis-attribute the abort to the disk gate"
+    assert "disk gate" not in out
+    assert "previous server still running" in out
+
+
+def test_chat_switch_confirm_cancel_keeps_old_server(monkeypatch, capsys):
+    """When the /model switch's confirm prompt is declined (``confirm_or_abort``
+    raises SystemExit, i.e. the user said no), chat_command prints "Model
+    switch cancelled" and keeps the previous server untouched."""
+    spawned: list[object] = []
+
+    class _FakeProc:
+        def __init__(self, name):
+            self.name = name
+            self._rapid_mlx_log = None
+            self._rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
+        proc = _FakeProc(model)
+        spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
+        return proc, f"http://127.0.0.1:{port}"
+
+    from vllm_mlx import _download_gate as gate
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(gate, "is_repo_cached", lambda _repo: False)
+    # The switch's uncached-model confirm is declined -> SystemExit.
+    monkeypatch.setattr(
+        gate,
+        "confirm_or_abort",
+        lambda *_a, **_kw: (_ for _ in ()).throw(SystemExit(0)),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda alias: f"mlx-community/{alias}-resolved",
+    )
+
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (fake_port, payloads):
+        port = fake_port
+        inputs = iter(["first turn", "/model bogus", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port, model="qwen3.5-4b-4bit")
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    out = capsys.readouterr().out
+    assert "Model switch cancelled" in out
+    assert "previous server still running" in out
+    # Only the initial server ever spawned; the cancelled switch spawned nothing.
+    assert len(spawned) == 1
+
+
+def test_chat_switch_refuses_offline_uncached_before_confirm(monkeypatch, capsys):
+    """An interactive offline /model to an uncached repo must refuse with the
+    one-shot action message BEFORE the confirm/size-estimate gate prints an
+    'About to download' notice (codex #2357-P2)."""
+    spawned: list[object] = []
+
+    class _FakeProc:
+        def __init__(self, name):
+            self.name = name
+            self._rapid_mlx_log = None
+            self._rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
+        proc = _FakeProc(model)
+        spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
+        return proc, f"http://127.0.0.1:{port}"
+
+    from vllm_mlx import _download_gate as gate
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(gate, "is_repo_cached", lambda _repo: False)
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    confirm_calls = []
+
+    def _confirm_never(*_a, **_k):
+        confirm_calls.append(_a)
+        raise AssertionError("confirm must not run for offline+uncached")
+
+    monkeypatch.setattr(gate, "confirm_or_abort", _confirm_never)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda alias: f"mlx-community/{alias}-resolved",
+    )
+
+    canned = [_delta("ack")]
+    with _fake_server(canned) as (fake_port, payloads):
+        port = fake_port
+        inputs = iter(["first turn", "/model bogus", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port, model="qwen3.5-4b-4bit")
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "not cached and the network is unavailable" in out
+    assert confirm_calls == []  # refused before the confirm gate
+    # Only the initial server spawned; the offline /model spawned nothing.
+    assert len(spawned) == 1
+
+
 def test_chat_command_slash_command_dispatch_uses_exact_match(
     monkeypatch, tmp_path, capsys
 ):

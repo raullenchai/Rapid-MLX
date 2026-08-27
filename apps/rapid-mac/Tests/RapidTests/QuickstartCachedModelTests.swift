@@ -125,10 +125,13 @@ struct QuickstartCachedModelTests {
         ]
         let shortlist = QuickstartView.shortlist(
             catalog: rows,
-            selection: "qwen3.5-4b-4bit"
+            selection: "qwen3.5-4b-4bit",
+            physicalRAMGB: 16
         )
 
         #expect(shortlist.cached.count == 6)
+        #expect(shortlist.cached.last?.alias == "qwen3.5-4b-4bit")
+        #expect(shortlist.visibleAliases.contains("qwen3.5-4b-4bit"))
         #expect(QuickstartView.cachedModel(
             alias: "qwen3.5-4b-4bit",
             cachedModels: rows

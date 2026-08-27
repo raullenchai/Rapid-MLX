@@ -249,6 +249,152 @@ TOOLS = [
     },
 ]
 
+# The shipped Rapid Desktop tool schemas (apps/rapid-mac/.../*Tool.swift). Shared
+# across tool-choice eval scenarios that exercise weather-vs-web_search
+# disambiguation, so the eval stays model-agnostic and matches what the Desktop
+# actually advertises. Issue #2222: an explicit current-weather request must select
+# `weather`, never `web_search`, when BOTH Desktop schemas are present. The two
+# schemas deliberately cross-reference each other ("not web_search" / "do not use it
+# for current weather when the weather tool is available") — a weather-routing case
+# must advertise both authentic schemas or it does not model the real Desktop
+# contract.
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "weather",
+        "description": "Get current weather or current temperature for a city or place. Use this tool—not web_search—for current conditions. Pass the location from the user's request, preserving country or state/province qualifiers. This tool does not provide future forecasts, and ambiguous places are not guessed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City or place name in the user's language, optionally followed by region/country, e.g. '西安', 'Springfield, Illinois', or 'Paris, France'.",
+                },
+                "country": {
+                    "type": "string",
+                    "description": "Optional country name or two-letter country code used to disambiguate the place.",
+                },
+                "admin1": {
+                    "type": "string",
+                    "description": "Optional state, province, or first-level administrative region used to disambiguate the place.",
+                },
+                "units": {
+                    "type": "string",
+                    "description": "Either 'metric' (Celsius, km/h) or 'imperial' (Fahrenheit, mph). Defaults to metric.",
+                    "enum": ["metric", "imperial"],
+                },
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+# The shipped Desktop WebSearchTool schema. Distinct from the generic "Search the
+# web" fixture used by the shared TOOLS list: the Desktop description forbids using
+# web_search for current weather when the weather tool is available, and a routing
+# eval must advertise exactly this to exercise the real two-schema contract.
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web and get the top results (title + URL + snippet). Use this for current events, recent news, or facts that may have changed since training. Do not use it for current weather when the weather tool is available.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query in natural language.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+# Registry of named tool schemas a scenario may reference by name via its ``tools``
+# list. A scenario may also carry full tool schema dicts inline (see _resolve_tools);
+# inline dicts let a case advertise the exact Desktop pair (WEATHER_TOOL +
+# WEB_SEARCH_TOOL) without conflating the generic shared web_search name.
+#
+# Intentional override: the Desktop WEB_SEARCH_TOOL is registered under the same
+# "web_search" name as the generic shared schema in TOOLS, so a scenario that opts
+# into the Desktop pair BY NAME (e.g. tools: ["weather", "web_search"]) gets the
+# Desktop-authentic schema, not the generic one. Today only tc31 references these
+# names, and it passes inline dicts, so the named path is unused — but the override
+# is deliberate so a future named reference resolves to the Desktop contract.
+_TOOL_REGISTRY = {t["function"]["name"]: t for t in TOOLS}
+_TOOL_REGISTRY.update(
+    {t["function"]["name"]: t for t in (WEATHER_TOOL, WEB_SEARCH_TOOL)}
+)
+
+
+def _resolve_tools(scenario: dict) -> list:
+    """Return the tool list for a scenario.
+
+    A scenario may set ``tools`` to either a list of tool-name strings (resolved from
+    ``_TOOL_REGISTRY``) or a list of full tool schema dicts (used verbatim). An
+    unknown tool NAME fails fast with a clear error rather than silently dropping it —
+    silently weakening the advertised set is exactly the bug that would let a
+    weather-routing case pass by omitting web_search. A MALFORMED ``tools`` value
+    (a non-list, an empty list, or a bad entry) also fails fast instead of silently
+    broadening to the global set. Only the ABSENCE of the ``tools`` KEY defaults to
+    the shared ``TOOLS`` list (existing behavior unchanged); an explicitly configured
+    ``"tools": null`` is malformed and fails fast rather than broadening silently.
+    """
+    if "tools" not in scenario:
+        return TOOLS
+    if scenario.get("tools") is None:
+        raise ValueError(
+            f"scenario {scenario.get('id', '<unknown>')} has a malformed tools value "
+            f"None (explicit null is not the same as an absent override)"
+        )
+    spec = scenario.get("tools")
+    if not isinstance(spec, list) or not spec:
+        raise ValueError(
+            f"scenario {scenario.get('id', '<unknown>')} has a malformed tools value "
+            f"{spec!r} (expected a non-empty list of tool name strings or schema dicts)"
+        )
+    resolved = []
+    for entry in spec:
+        if isinstance(entry, str):
+            if entry not in _TOOL_REGISTRY:
+                raise ValueError(
+                    f"scenario {scenario.get('id', '<unknown>')} references unknown "
+                    f"tool name {entry!r}; known names: {sorted(_TOOL_REGISTRY)}"
+                )
+            resolved.append(_TOOL_REGISTRY[entry])
+        elif isinstance(entry, dict):
+            # Validate the OpenAI tool-schema shape so a malformed dictionary
+            # (e.g. {"name": "weather"} or {"function": {"name": ...}} without a
+            # type/parameters) fails fast here rather than silently hitting the
+            # request path.
+            fn = entry.get("function")
+            name = fn.get("name") if isinstance(fn, dict) else None
+            is_type_fn = entry.get("type") == "function"
+            has_params = (
+                isinstance(fn, dict)
+                and isinstance(fn.get("parameters"), dict)
+                and isinstance(fn["parameters"].get("type"), str)
+            )
+            if (
+                not is_type_fn
+                or not isinstance(name, str)
+                or not name
+                or not has_params
+            ):
+                raise ValueError(
+                    f"scenario {scenario.get('id', '<unknown>')} has a malformed "
+                    f"tools entry {entry!r} (expected an OpenAI function-tool dict "
+                    f'with type="function" and a non-empty function.name + parameters)'
+                )
+            resolved.append(entry)
+        else:
+            raise ValueError(
+                f"scenario {scenario.get('id', '<unknown>')} has a malformed tools "
+                f"entry {entry!r} (expected a name string or a tool schema dict)"
+            )
+    return resolved
+
 
 # =============================================================================
 # Helpers
@@ -498,7 +644,13 @@ def fuzzy_match_args(expected: dict, actual: dict) -> float:
         if isinstance(exp_val, str) and isinstance(act_val, str):
             exp_lower = exp_val.lower()
             act_lower = act_val.lower()
-            # Exact substring match
+            # Exact substring match. A non-empty actual value is required: the
+            # empty string substring-matches ANY expectation (`"" in "tokyo"`),
+            # so an empty location would otherwise score a perfect match and let
+            # tc31 pass without a usable weather request (the real tool rejects
+            # an empty location). Fail closed on an unset/blank value.
+            if not act_lower:
+                continue
             if exp_lower in act_lower or act_lower in exp_lower:
                 matches += 1
             else:
@@ -511,6 +663,21 @@ def fuzzy_match_args(expected: dict, actual: dict) -> float:
         elif exp_val == act_val:
             matches += 1
     return matches / total if total > 0 else 0.0
+
+
+def _forbidden_tool_names(tool_calls, forbid: list) -> list:
+    """Return the tool names in ``tool_calls`` that appear in ``forbid``.
+
+    Pure helper so the standard-branch first-turn guard and the final-completion
+    guard share one definition and are directly testable. ``tool_calls`` may be the
+    OpenAI-style list (each with ``function.name``) or None/empty.
+    """
+    forbid_set = set(forbid or [])
+    return [
+        t.get("function", {}).get("name")
+        for t in (tool_calls or [])
+        if t.get("function", {}).get("name") in forbid_set
+    ]
 
 
 def _check_tool_call(tool_calls, scenario, step_prefix="") -> dict:
@@ -666,7 +833,12 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
             # ── Irrelevance / Missing Params: expect NO tool call ──
             if sc_type in ("irrelevance", "missing_params"):
                 content, tool_calls, ttft, elapsed = stream_chat(
-                    host, port, messages, tools=TOOLS, max_tokens=512, temperature=0.0
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
                 )
                 no_tool = not tool_calls
                 has_content = bool(content and content.strip())
@@ -694,7 +866,12 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
             # ── Parallel: expect multiple tool calls in one response ──
             if sc_type == "parallel":
                 content, tool_calls, ttft, elapsed = stream_chat(
-                    host, port, messages, tools=TOOLS, max_tokens=512, temperature=0.0
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
                 )
                 grade = _check_parallel_calls(tool_calls, sc)
                 ok = (
@@ -718,7 +895,12 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
             # ── Error Recovery: feed error result, check model adapts ──
             if sc_type == "error_recovery":
                 content, tool_calls, ttft, elapsed = stream_chat(
-                    host, port, messages, tools=TOOLS, max_tokens=512, temperature=0.0
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
                 )
                 grade = _check_tool_call(tool_calls, sc)
                 first_ok = grade["tool_detected"] and grade["correct_name"]
@@ -758,7 +940,7 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                         host,
                         port,
                         messages,
-                        tools=TOOLS,
+                        tools=_resolve_tools(sc),
                         max_tokens=512,
                         temperature=0.0,
                     )
@@ -793,9 +975,40 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                 continue
 
             # ── Standard / Sequential: existing logic ──
-            content, tool_calls, ttft, elapsed = stream_chat(
-                host, port, messages, tools=TOOLS, max_tokens=512, temperature=0.0
-            )
+            # Default sends the first call through stream_chat (SSE) to match
+            # every legacy scenario. A scenario may set `first_call_stream: false`
+            # to use the non-streaming completion instead, so the tool call is
+            # captured as structured `tool_calls` for models that emit the call as
+            # streamed content text (issue #2222 weather-routing case) — otherwise
+            # the tool result would never be fed back and the check would no-op.
+            if sc.get("first_call_stream", True):
+                content, tool_calls, ttft, elapsed = stream_chat(
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
+                )
+            else:
+                _start = time.monotonic()
+                nonstream = chat_request(
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
+                    stream=False,
+                )
+                elapsed = time.monotonic() - _start
+                first_msg = nonstream["choices"][0]["message"]
+                content = first_msg.get("content") or ""
+                tool_calls = first_msg.get("tool_calls") or []
+                # TTFT is not defined on the non-streaming path: do not store a
+                # 0.0 placeholder (that would read as instantaneous first-token
+                # latency). Only the total wall-clock `elapsed` is real, and that
+                # is what is reported via result["elapsed_s"] below.
 
             grade = _check_tool_call(tool_calls, sc)
             first_ok = (
@@ -807,6 +1020,19 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
 
             result.update(grade)
             result["elapsed_s"] = round(elapsed, 2)
+
+            # A scenario may forbid certain tools from being called at all (e.g.
+            # issue #2222 requires weather and NEVER web_search). _check_tool_call
+            # grades only tool_calls[0], so a response that ALSO calls a forbidden
+            # tool must fail even though the first call is correct — only the
+            # first-tool metadata is fed back downstream. Check every call in the
+            # response's first turn.
+            if sc.get("forbid_tools"):
+                forbidden_calls = _forbidden_tool_names(tool_calls, sc["forbid_tools"])
+                if forbidden_calls:
+                    result["forbidden_tool_called"] = forbidden_calls
+                    first_ok = False
+
             steps_passed = [first_ok]
 
             # --- Followup rounds (sequential scenarios) ---
@@ -849,7 +1075,7 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                         host,
                         port,
                         messages,
-                        tools=TOOLS,
+                        tools=_resolve_tools(sc),
                         max_tokens=512,
                         temperature=0.0,
                     )
@@ -914,6 +1140,87 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                         )
                     else:
                         break  # stop if a followup step fails
+
+            # Optional final-text check (opt-in; NOT inherited from the
+            # un-enforced legacy `expect_final_text` flag). After the tool result
+            # is fed back, run one more non-streaming completion and require that
+            # the final turn is non-empty AND does not deny the tool it just used
+            # (issue #2222's exact failure: calling weather then claiming "Weather
+            # tool is unavailable; use web search"). Scenarios may additionally
+            # require the reply to reflect a term drawn from the supplied tool
+            # result (`require_final_terms`, any-match) to prove it reported the
+            # result rather than a canned refusal. Applied only to scenarios that
+            # set `verify_final_text`, leaving every other scenario's behavior
+            # unchanged. Matches are simple `in` substring checks against
+            # scenario-declared phrases — never regex over arbitrary model text.
+            if sc.get("verify_final_text"):
+                final_resp = chat_request(
+                    host,
+                    port,
+                    messages,
+                    tools=_resolve_tools(sc),
+                    max_tokens=512,
+                    temperature=0.0,
+                    stream=False,
+                )
+                final_msg = final_resp["choices"][0]["message"]
+                final_text = (final_msg.get("content") or "").strip()
+                final_ok = bool(final_text)
+                reasons = []
+                if not final_ok:
+                    reasons.append("empty final content after tool result")
+                # A final turn is only a final answer if it calls NO tool. A
+                # completion that issues any tool call here (a repeat `weather`
+                # to retry, or a `web_search` fallback) means the model is still
+                # looping rather than reporting the result — so ANY `final_calls`,
+                # not just a forbidden one, fails the final-text check. Requiring
+                # an empty set prevents a weather-then-weather repeat (which the
+                # forbid_tools-only check above would otherwise let pass) from
+                # being counted as a final answer.
+                final_calls = final_msg.get("tool_calls") or []
+                final_forbidden = _forbidden_tool_names(
+                    final_calls, sc.get("forbid_tools", [])
+                )
+                if final_forbidden:
+                    final_ok = False
+                    reasons.append(
+                        "final turn also called forbidden tool(s): "
+                        + ", ".join(final_forbidden)
+                    )
+                    result["forbidden_tool_called"] = final_forbidden
+                if final_calls and not final_forbidden:
+                    final_ok = False
+                    reasons.append(
+                        "final turn called a tool rather than answering: "
+                        + ", ".join(
+                            t.get("function", {}).get("name", "?") for t in final_calls
+                        )
+                    )
+                forbidden = [
+                    p
+                    for p in sc.get("forbid_final_phrases", [])
+                    if p.lower() in final_text.lower()
+                ]
+                if forbidden:
+                    final_ok = False
+                    reasons.append(
+                        "final text denies a just-used tool: " + ", ".join(forbidden)
+                    )
+                required = sc.get("require_final_terms", [])
+                if required and not any(
+                    t.lower() in final_text.lower() for t in required
+                ):
+                    final_ok = False
+                    reasons.append(
+                        "final text does not reflect the supplied tool result "
+                        f"(none of {required})"
+                    )
+                steps_passed.append(final_ok)
+                if final_ok:
+                    result["final_text"] = final_text[:200]
+                else:
+                    result["final_text_error"] = "; ".join(reasons)
+                    result["final_text"] = final_text[:200]
 
             fully_correct = all(steps_passed)
             result["fully_correct"] = fully_correct

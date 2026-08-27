@@ -15,7 +15,7 @@
   },
   "qwen3.5-4b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
-    "is_text_only": true,
+    "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
@@ -53,6 +53,7 @@
   },
   "qwen3.5-9b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
+    "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
@@ -371,6 +372,17 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
     "mtp_speculative_tokens": 3
+  },
+  "qwen3.8-flash-next-4bit": {
+    "hf_path": "rapid-mlx/Qwen3.8-Flash-Next-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "min_memory_gb": 128,
+    "experimental": true
   },
   "qwen3.6-35b-nvfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",

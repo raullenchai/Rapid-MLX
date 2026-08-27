@@ -4,11 +4,143 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import deque
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+from tests._headless_mlx import install_headless_mlx_import_stubs
+
+install_headless_mlx_import_stubs()
+
+from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler  # noqa: E402
+
+
+def test_batch_generator_uses_worker_default_stream(monkeypatch) -> None:
+    """Construction binds each generator lifetime to its worker's stream."""
+    from vllm_mlx import mllm_batch_generator as module
+
+    stream = object()
+    monkeypatch.setattr(module.mx, "default_device", lambda: "gpu")
+    monkeypatch.setattr(module.mx, "default_stream", lambda device: stream)
+    monkeypatch.setattr(module.mx.metal, "is_available", lambda: False)
+
+    generator = module.MLLMBatchGenerator(
+        model=SimpleNamespace(language_model=object()),
+        processor=object(),
+        enable_vision_cache=False,
+    )
+
+    assert generator._stream is stream
+
+
+def test_batch_generator_close_tolerates_retired_worker_stream(
+    monkeypatch, caplog
+) -> None:
+    """A stale thread-local stream cannot prevent wired-limit cleanup."""
+    from vllm_mlx import mllm_batch_generator as module
+
+    generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
+    generator._stream = object()
+    generator._old_wired_limit = 123
+    restored: list[int] = []
+    caplog.set_level(logging.DEBUG, logger=module.__name__)
+    monkeypatch.setattr(
+        module.mx,
+        "synchronize",
+        lambda _stream: (_ for _ in ()).throw(RuntimeError("retired stream")),
+    )
+    monkeypatch.setattr(module.mx, "set_wired_limit", restored.append)
+
+    generator.close()
+
+    assert restored == [123]
+    assert generator._old_wired_limit is None
+    assert "retired stream" in caplog.text
+
+
+def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
+    """Vision prefill executes under the generator-owned stream context."""
+    from contextlib import contextmanager
+
+    from mlx_lm.models import cache as cache_module
+
+    from vllm_mlx import mllm_batch_generator as module
+
+    owned_stream = object()
+    entered: list[object] = []
+
+    @contextmanager
+    def stream_context(stream):
+        entered.append(stream)
+        yield
+
+    generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
+    generator.language_model = object()
+    generator._stream = owned_stream
+    generator.vision_prefill_token_budget = 8192
+    generator.allow_arrays_cache = False
+    generator._stats = SimpleNamespace(prompt_tokens=0)
+    generator._preprocess_request = lambda _request: None
+    generator._run_vision_encoding = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("prefill reached")
+    )
+    request = SimpleNamespace(input_ids=SimpleNamespace(size=1))
+    monkeypatch.setattr(
+        cache_module, "make_prompt_cache", lambda _model: object(), raising=False
+    )
+    monkeypatch.setattr(module.mx, "stream", stream_context)
+    monkeypatch.setattr(module, "_prefill_cap_violation", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="prefill reached"):
+        generator._process_prompts([request])
+
+    assert entered == [owned_stream]
+
+
+def test_batch_generator_next_uses_owned_stream(monkeypatch) -> None:
+    """Each decode step runs in the same worker-owned stream context."""
+    from contextlib import contextmanager
+
+    from vllm_mlx import mllm_batch_generator as module
+
+    owned_stream = object()
+    entered: list[object] = []
+
+    @contextmanager
+    def stream_context(stream):
+        entered.append(stream)
+        yield
+
+    generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
+    generator._stream = owned_stream
+    generator._next = lambda: ["token"]
+    monkeypatch.setattr(module.mx, "stream", stream_context)
+
+    assert generator.next() == ["token"]
+    assert entered == [owned_stream]
+
+
+def test_mllm_scheduler_rejects_duplicate_public_ids() -> None:
+    """A duplicate cannot replace the MLLM request cancellation addresses."""
+    public_id = "chatcmpl-" + "a" * 32
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    scheduler._generation_paused = False
+    scheduler._paused_admission_tokens = set()
+    scheduler._paused_add_allowance = 0
+    scheduler.requests = {}
+    scheduler.waiting = deque()
+    scheduler._cancelled_request_ids = set()
+    scheduler._disconnect_abort_ids = set()
+    request = SimpleNamespace(request_id=public_id, lifecycle_admission_token=None)
+
+    scheduler._commit_request(request)
+
+    with pytest.raises(ValueError, match="already exists"):
+        scheduler._commit_request(request)
+    assert scheduler.requests[public_id] is request
 
 
 @pytest.mark.asyncio
@@ -42,6 +174,7 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
     scheduler._detokenizer_pool = {running.request_id: object()}
     scheduler._pending_abort_ids = {running.request_id, pending_only}
     scheduler._aborted_queue_ids = {aborted}
+    scheduler._abort_error_kinds = {aborted: "lifecycle"}
     scheduler.finished_req_ids = set()
     scheduler._running = True
     scheduler._injected_step_executor = None
@@ -86,7 +219,9 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
         uid_only,
         pending_only,
     }
-    assert outputs[-1] is None
+    assert outputs[-1].request_id == aborted
+    assert outputs[-1].finished is True
+    assert outputs[-1].error_kind == "lifecycle"
     for output in outputs[:-1]:
         assert output.finished is True
         assert output.finish_reason == "length"

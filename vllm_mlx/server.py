@@ -119,6 +119,7 @@ from .api.utils import (
     extract_multimodal_content,  # noqa: F401
     is_mllm_model,  # noqa: F401
     resolve_serving_lane,  # noqa: F401
+    resolve_serving_lane_decision,
     sanitize_output,  # noqa: F401
     strip_special_tokens,  # noqa: F401
     strip_thinking_tags,  # noqa: F401
@@ -224,6 +225,11 @@ _enable_audio_lane: bool = False
 _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
+# True when ``load_model`` was given an explicit ``--served-model-name``, so
+# downstream surfaces (the readiness banner) can prefer the served API name
+# over the catalog alias. Set regardless of what the name resolves to (issue
+# #2353).
+_served_model_name_set: bool = False
 _default_max_tokens: int = 4096
 _default_max_tokens_is_explicit: bool = False
 _thinking_token_budget: int = 2048  # Extra tokens added for thinking models
@@ -860,10 +866,21 @@ async def lifespan(app: FastAPI):
     # embedded usage where uvicorn is owned elsewhere), fall back silently.
     from vllm_mlx.connect import endpoints_from_bind, render_banner
 
+    # The banner's "Model:" line is the copyable API identity the user
+    # pastes into an SDK request. Prefer the explicit ``--served-model-name``
+    # when one was supplied; otherwise keep the catalog alias. Tracking the
+    # option explicitly (not inferring from ``model_name``/``model_path``
+    # differences) keeps the banner correct even when a served name happens
+    # to equal the resolved path (issue #2353).
+    _banner_model = (
+        _cfg.model_name
+        if _served_model_name_set
+        else (_cfg.model_alias or _cfg.model_name)
+    )
     _ep = endpoints_from_bind(
         _cfg.bind_host,
         _cfg.bind_port,
-        model=_cfg.model_alias or _cfg.model_name,
+        model=_banner_model,
         listen_fd=_cfg.bind_listen_fd,
     )
     if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
@@ -1705,6 +1722,59 @@ def _ensure_routing_config(model_name: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _ServingCheckpoint:
+    """One resolved checkpoint identity and the path the engine must load."""
+
+    model_path: str
+    load_path: str
+    auto_text_fallback: bool
+    lane_reason: str
+
+
+def _resolve_serving_checkpoint(
+    model_name: str,
+    *,
+    force_mllm: bool = False,
+    force_text: bool = False,
+) -> _ServingCheckpoint:
+    """Resolve alias, local checkpoint, and serving lane as one contract.
+
+    Both startup and runtime residency must route and load the same checkpoint.
+    In particular, a commit-pinned Hub download may have one complete snapshot
+    but no ``refs/main``; metadata resolution can identify that snapshot, and
+    the engine must receive that local path rather than retrying the repo id.
+    """
+    from .model_aliases import resolve_model, resolve_profile
+
+    model_path = resolve_model(model_name)
+    if not force_mllm and not force_text:
+        _ensure_routing_config(model_path)
+    from .model_metadata import read_model_metadata
+
+    metadata = read_model_metadata(model_path)
+    load_path = (
+        str(metadata.snapshot_dir)
+        if metadata is not None and metadata.snapshot_dir is not None
+        else model_path
+    )
+    profile = resolve_profile(model_path)
+    decision = resolve_serving_lane_decision(
+        load_path,
+        force_mllm=force_mllm,
+        force_text=force_text,
+        vision_min_memory_gb=(
+            profile.vision_min_memory_gb if profile is not None else None
+        ),
+    )
+    return _ServingCheckpoint(
+        model_path=model_path,
+        load_path=load_path,
+        auto_text_fallback=decision.auto_text_fallback,
+        lane_reason=decision.reason,
+    )
+
+
 def load_model(
     model_name: str,
     scheduler_config=None,
@@ -1861,6 +1931,7 @@ def load_model(
         _model_alias, \
         _model_name, \
         _model_path, \
+        _served_model_name_set, \
         _default_max_tokens, \
         _default_max_tokens_is_explicit, \
         _tool_parser_instance, \
@@ -1897,7 +1968,8 @@ def load_model(
     _default_max_tokens_is_explicit = max_tokens_is_explicit
     _model_alias = effective_model_alias
     _model_path = model_name
-    _model_name = served_model_name or requested_model_name
+    _model_name = served_model_name or model_name
+    _served_model_name_set = bool(served_model_name)
     _tool_parser_instance = None
 
     # Populate the sampling overlays now that we know which model we're
@@ -1910,6 +1982,11 @@ def load_model(
     # resolve_profile handles both alias-name and HF-path lookups, so a
     # single call suffices regardless of which form load_model was passed.
     _profile = resolve_profile(effective_model_alias or requested_model_name)
+    _model_config = _profile
+    if _model_config is None:
+        from .model_auto_config import detect_model_config
+
+        _model_config = detect_model_config(model_name)
     if _profile is not None and _profile.recommended_sampling:
         _alias_recommended_sampling = dict(_profile.recommended_sampling)
 
@@ -1991,30 +2068,45 @@ def load_model(
     # ``z-image-turbo`` alias could never start: a fully-cached 5.5 GB
     # checkpoint refused with an error about hybrid-VLM misrouting, a hazard
     # that does not exist for a diffusion model.
-    _auto_text_fallback = False
     _is_generative_media = _profile is not None and _profile.modality in (
         "image-gen",
         "video-gen",
     )
-    if not force_text and not force_mllm and not _is_generative_media:
-        _ensure_routing_config(model_name)
-        _lane_is_mllm, _auto_text_fallback = resolve_serving_lane(
-            model_name, force_mllm=force_mllm, force_text=force_text
+    _engine_model_path = model_name
+    _auto_text_fallback = False
+    _serving_lane_reason = "not_applicable"
+    if not _is_generative_media:
+        _serving_checkpoint = _resolve_serving_checkpoint(
+            model_name,
+            force_mllm=force_mllm,
+            force_text=force_text,
         )
-        if _auto_text_fallback:
-            logger.info(
-                "Model %r auto-downgraded to the text-only mlx-lm lane for "
-                "full batched throughput: it is a multimodal checkpoint whose "
-                "language backbone the MLLM continuous-batching engine cannot "
-                "batch — either hybrid/linear-attention (GatedDeltaNet: "
-                "Qwen3.5/3.6/3.8) or a vision architecture the installed "
-                "mlx-vlm cannot drive yet (e.g. muse_glimmer, served via the "
-                "vendored text backbone). Pass --mllm to serve vision: a "
-                "hybrid backbone runs a serialized one-request-at-a-time lane "
-                "(#1798); an unsupported arch errors instead. Pass --no-mllm "
-                "to silence this notice.",
-                model_name,
-            )
+        _engine_model_path = _serving_checkpoint.load_path
+        _auto_text_fallback = _serving_checkpoint.auto_text_fallback
+        _serving_lane_reason = _serving_checkpoint.lane_reason
+    if _auto_text_fallback:
+        fallback_detail = {
+            "vision_hybrid_runtime_unsupported": (
+                "the installed vision runtime does not support its hybrid "
+                "language backbone"
+            ),
+            "vision_architecture_unavailable": (
+                "the installed vision runtime does not provide its architecture"
+            ),
+            "vision_memory_insufficient": (
+                "its measured vision footprint exceeds this Mac's physical memory"
+            ),
+        }.get(
+            _serving_lane_reason,
+            "its vision cache contract is not supported",
+        )
+        logger.info(
+            "Model %r auto-downgraded to the text-only lane because %s. "
+            "Pass --mllm to request the vision lane explicitly, or --no-mllm "
+            "to select text-only serving explicitly.",
+            model_name,
+            fallback_detail,
+        )
 
     try:
         gen_cfg = load_generation_config_sampling(model_name)
@@ -2133,7 +2225,7 @@ def load_model(
     else:
         logger.info(f"Loading model with BatchedEngine: {model_name}")
         _engine = BatchedEngine(
-            model_name=model_name,
+            model_name=_engine_model_path,
             chat_template_id=(
                 _profile.chat_template_id if _profile is not None else None
             ),
@@ -2141,6 +2233,7 @@ def load_model(
             stream_interval=stream_interval,
             force_mllm=force_mllm,
             force_text=_effective_force_text,
+            serving_lane_reason=_serving_lane_reason,
             gpu_memory_utilization=gpu_memory_utilization,
             force_hybrid=force_hybrid,
             no_hybrid=no_hybrid,
@@ -2252,6 +2345,7 @@ def load_model(
         tool_call_parser=_tool_call_parser,
         reasoning_parser=_reasoning_parser_name,
         is_mllm=getattr(_engine, "is_mllm", False),
+        experimental=bool(_model_config is not None and _model_config.experimental),
         max_tokens=_default_max_tokens,
     )
     _model_registry.add(entry, is_default=True)
@@ -2286,20 +2380,35 @@ async def _load_dynamic_resident_model(
 ) -> ModelEntry:
     """Construct and start one non-primary engine for the residency manager."""
 
-    from .model_aliases import resolve_profile
+    from .model_aliases import resolve_model, resolve_profile
 
     profile = resolve_profile(model_name) or (
         resolve_profile(model_path) if model_path else None
     )
-    resolved_path = model_path or (
-        profile.hf_path if profile is not None else model_name
+    resolved_path = resolve_model(
+        model_path or (profile.hf_path if profile is not None else model_name)
     )
+    modality = profile.modality if profile is not None else "text"
+    profile_force_text = bool(profile is not None and profile.is_text_only)
+    load_path = resolved_path
+    effective_force_text = profile_force_text
+    serving_lane_reason = "not_applicable"
+    if modality == "text":
+        serving_checkpoint = _resolve_serving_checkpoint(
+            resolved_path,
+            force_text=profile_force_text,
+        )
+        resolved_path = serving_checkpoint.model_path
+        load_path = serving_checkpoint.load_path
+        effective_force_text = (
+            profile_force_text or serving_checkpoint.auto_text_fallback
+        )
+        serving_lane_reason = serving_checkpoint.lane_reason
     model_config = profile
     if model_config is None:
         from .model_auto_config import detect_model_config
 
-        model_config = detect_model_config(resolved_path)
-    modality = profile.modality if profile is not None else "text"
+        model_config = detect_model_config(load_path)
 
     if modality == "image-gen":
         from .runtime.image_lane import ImageEngine
@@ -2338,24 +2447,25 @@ async def _load_dynamic_resident_model(
             enable_prefix_cache=enable_prefix_cache,
             explicit_value=0,
             user_set_explicit=False,
-            model_name=resolved_path,
+            model_name=load_path,
             model_config=model_config,
         )
         scheduler_kwargs["hybrid_cache_entries"] = hybrid_cache_entries
         scheduler_kwargs["non_trimmable_exact_prefix_reuse"] = (
             hybrid_cache_entries > 0
             and _needs_bounded_trim_free_reuse(
-                resolved_path,
+                load_path,
                 model_config=model_config,
             )
         )
 
         engine = BatchedEngine(
-            model_name=resolved_path,
+            model_name=load_path,
             chat_template_id=(
                 profile.chat_template_id if profile is not None else None
             ),
-            force_text=bool(profile is not None and profile.is_text_only),
+            force_text=effective_force_text,
+            serving_lane_reason=serving_lane_reason,
             gpu_memory_utilization=_resident_gpu_memory_utilization,
             scheduler_config=SchedulerConfig(**scheduler_kwargs),
         )
@@ -2373,6 +2483,7 @@ async def _load_dynamic_resident_model(
         tool_call_parser=(profile.tool_call_parser if profile is not None else None),
         reasoning_parser=(profile.reasoning_parser if profile is not None else None),
         is_mllm=getattr(engine, "is_mllm", False),
+        experimental=bool(model_config is not None and model_config.experimental),
         max_tokens=_default_max_tokens,
     )
 
@@ -2442,17 +2553,44 @@ def _handoff_resident_primary_audio_worker(
         ) from exc
 
 
-def _set_resident_primary(entry: ModelEntry) -> None:
+def _set_resident_primary(entry: ModelEntry | None) -> None:
     """Publish a replacement assistant as the legacy/default engine."""
 
-    global _engine, _model_name, _model_alias, _model_path
+    global _engine, _model_name, _model_alias, _model_path, _served_model_name_set
     global _enable_auto_tool_choice, _tool_call_parser, _tool_parser_instance
     global _reasoning_parser, _reasoning_parser_name
+
+    if entry is None:
+        _engine = None
+        _model_name = None
+        _model_alias = None
+        _model_path = None
+        _enable_auto_tool_choice = False
+        _tool_call_parser = None
+        _tool_parser_instance = None
+        _reasoning_parser = None
+        _reasoning_parser_name = None
+
+        cfg = get_config()
+        cfg.engine = None
+        cfg.model_name = None
+        cfg.model_alias = None
+        cfg.model_path = None
+        cfg.enable_auto_tool_choice = False
+        cfg.tool_call_parser = None
+        cfg.tool_parser_instance = None
+        cfg.reasoning_parser = None
+        cfg.reasoning_parser_name = None
+        cfg.ready = False
+        return
 
     _engine = entry.engine
     _model_name = entry.model_name
     _model_alias = entry.model_name
     _model_path = entry.model_path
+    # A replacement assistant has no --served-model-name override; the banner
+    # must fall back to the alias, so clear the explicit-override marker.
+    _served_model_name_set = False
     _tool_call_parser = entry.tool_call_parser
     _tool_parser_instance = None
     _enable_auto_tool_choice = entry.tool_call_parser is not None
@@ -2474,6 +2612,7 @@ def _set_resident_primary(entry: ModelEntry) -> None:
     cfg.tool_parser_instance = None
     cfg.reasoning_parser = _reasoning_parser
     cfg.reasoning_parser_name = entry.reasoning_parser
+    cfg.ready = True
 
 
 def _sync_config() -> None:

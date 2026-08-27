@@ -85,8 +85,8 @@ struct TelemetryToggleRerenderTests {
             """
         )
         #expect(
-            stripped.contains("TelemetryConsent.record(enabled:enabled)"),
-            "The setter must still record consent — this fix is display-only."
+            stripped.contains("deferredTelemetryConsent.settingsChanged(enabled:enabled)"),
+            "The setter must route the durable choice through the app-owned consent coordinator."
         )
     }
 
@@ -97,7 +97,7 @@ struct TelemetryToggleRerenderTests {
             stripped.contains(".onAppear{telemetryEnabled=TelemetryConfig.isEnabled}"),
             """
             The panel must re-read the stored value when it appears. The \
-            first-run consent sheet writes the same preference, so a value \
+            post-value invitation writes the same preference, so a value \
             seeded at init can be stale by the time Settings is first opened — \
             which would show the opposite of the truth.
             """
@@ -105,7 +105,7 @@ struct TelemetryToggleRerenderTests {
     }
 
     /// `onAppear` alone leaves a real hole: Settings can be opened *over* the
-    /// still-attached first-run sheet, and answering "Share" there would leave
+    /// still-attached post-value invitation, and answering "Share" there would leave
     /// this already-visible switch reading off while telemetry is running.
     @Test("The panel also re-reads consent written while it is visible")
     func panelResyncsOnDefaultsChange() throws {
@@ -124,7 +124,7 @@ struct TelemetryToggleRerenderTests {
             """
             The Privacy panel must observe UserDefaults.didChangeNotification \
             ON THE MAIN RUN LOOP and resync the mirror in the handler. The \
-            first-run consent sheet in ContentView writes the same key and can \
+            post-value consent invitation writes the same key and can \
             be answered while this panel is already on screen — onAppear will \
             not fire again for that. The hop to main is not ceremony: the \
             notification is delivered on the thread that made the write, so a \

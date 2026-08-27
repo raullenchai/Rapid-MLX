@@ -44,6 +44,9 @@ final class ServerModelProfileTests {
           "is_moe": false,
           "tool_call_parser": "hermes",
           "reasoning_parser": "qwen3",
+          "capabilities": ["text", "vision", "tools"],
+          "serving_lane": "vision",
+          "serving_lane_reason": "vision_hybrid_serialized",
           "modality": "text"
         }
         """
@@ -59,6 +62,9 @@ final class ServerModelProfileTests {
         #expect(profile.isMoe == false)
         #expect(profile.toolCallParser == "hermes")
         #expect(profile.reasoningParser == "qwen3")
+        #expect(profile.capabilities == ["text", "vision", "tools"])
+        #expect(profile.servingLane == "vision")
+        #expect(profile.servingLaneReason == "vision_hybrid_serialized")
         #expect(profile.modality == "text")
     }
 
@@ -83,6 +89,85 @@ final class ServerModelProfileTests {
         #expect(profile.recommendedSampling == nil)
         #expect(profile.isHybrid == nil)
         #expect(profile.toolCallParser == nil)
+        #expect(profile.capabilities == nil)
+        #expect(profile.servingLane == nil)
+        #expect(profile.servingLaneReason == nil)
+    }
+
+    @Test("Live text lane overrides a vision-capable catalog and explains why")
+    func liveTextLaneBlocksPhotos() {
+        let availability = ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: true,
+            profile: ServerModelProfile(
+                id: "model",
+                capabilities: ["text", "tools"],
+                servingLane: "text",
+                servingLaneReason: "vision_weights_unavailable"
+            )
+        )
+        #expect(!availability.isAvailable)
+        #expect(availability.unavailableMessage?.contains("vision features") == true)
+    }
+
+    @Test("Live vision lane enables photos even when an old catalog fallback is false")
+    func liveVisionLaneEnablesPhotos() {
+        let availability = ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: false,
+            profile: ServerModelProfile(
+                id: "model",
+                capabilities: ["text", "vision"],
+                servingLane: "vision",
+                servingLaneReason: "vision_supported"
+            )
+        )
+        #expect(availability == ImageInputAvailability(
+            isAvailable: true,
+            unavailableMessage: nil
+        ))
+    }
+
+    @Test("Legacy model profile preserves the existing launch capability fallback")
+    func legacyProfileUsesFallback() {
+        let legacy = ServerModelProfile(id: "model")
+        #expect(ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: true,
+            profile: legacy
+        ).isAvailable)
+        #expect(!ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: false,
+            profile: legacy
+        ).isAvailable)
+    }
+
+    @Test("A replacement sidecar invalidates the selected-model profile task")
+    func selectedProfileTracksServerSession() {
+        let first = SelectedModelProfileKey(
+            alias: "model", isResident: true, port: 8000, bearer: "session-a"
+        )
+        let replacement = SelectedModelProfileKey(
+            alias: "model", isResident: true, port: 8000, bearer: "session-b"
+        )
+        #expect(first != replacement)
+    }
+
+    @Test("Selected live profile is retried on the existing residency cadence")
+    func selectedProfileRetriesAfterInitialFailure() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/ContentView.swift"),
+            encoding: .utf8
+        )
+        let residencyRefresh = try #require(source.range(of: "await server.refreshResidency()"))
+        let retry = try #require(
+            source.range(
+                of: "await refreshSelectedModelProfile(for: alias)",
+                range: residencyRefresh.lowerBound..<source.endIndex
+            )
+        )
+        #expect(retry.lowerBound > residencyRefresh.lowerBound)
     }
 
     @Test("Partial sampling block — only some keys populated")

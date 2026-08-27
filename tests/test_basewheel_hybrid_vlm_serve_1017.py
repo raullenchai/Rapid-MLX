@@ -43,13 +43,28 @@ def _args(model: str = "some/model", *, mllm: bool = False, no_mllm: bool = Fals
 # ---------------------------------------------------------------------------
 
 
-def _patch_probes(monkeypatch, *, is_mllm: bool, hybrid: bool):
+def _patch_probes(
+    monkeypatch,
+    *,
+    is_mllm: bool,
+    hybrid: bool,
+    hybrid_runtime_supported: bool = False,
+):
     """Stub the two offline probes ``resolve_serving_lane`` consults so the
     lane decision is exercised without a materialized checkpoint config."""
     from vllm_mlx.api import utils as api_utils
 
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: is_mllm)
-    monkeypatch.setattr(api_utils, "mllm_backbone_is_hybrid", lambda name: hybrid)
+    monkeypatch.setattr(
+        api_utils,
+        "mllm_backbone_cache_mode",
+        lambda name: "arrays" if hybrid else None,
+    )
+    monkeypatch.setattr(
+        api_utils,
+        "mllm_hybrid_runtime_supported",
+        lambda: hybrid_runtime_supported,
+    )
 
 
 def test_helper_hybrid_vlm_does_not_run_on_mllm_lane(monkeypatch):
@@ -68,6 +83,18 @@ def test_helper_genuine_vlm_runs_on_mllm_lane(monkeypatch):
     from vllm_mlx import cli
 
     _patch_probes(monkeypatch, is_mllm=True, hybrid=False)
+    assert cli._serve_will_run_on_mllm_lane(_args()) is True
+
+
+def test_helper_supported_hybrid_vlm_runs_on_mllm_lane(monkeypatch):
+    from vllm_mlx import cli
+
+    _patch_probes(
+        monkeypatch,
+        is_mllm=True,
+        hybrid=True,
+        hybrid_runtime_supported=True,
+    )
     assert cli._serve_will_run_on_mllm_lane(_args()) is True
 
 

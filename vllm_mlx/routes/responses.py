@@ -69,6 +69,7 @@ from ..api.utils import (
     StreamingReasoningSanitizer,
     StreamingThinkRouter,
     StreamingToolCallFilter,
+    UnsupportedContentBlockError,
     clean_output_text,
     decode_inline_tool_call_arguments,
     extract_json_from_response,
@@ -94,6 +95,7 @@ from ..service.helpers import (
     _finalize_content_and_reasoning,
     _is_structured_output_requested,
     _parse_tool_calls_with_parser,
+    _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -1310,6 +1312,13 @@ async def create_response(request: Request):
                 allow_video=getattr(engine, "is_mllm", False),
                 allow_audio=False,
             )
+        except UnsupportedContentBlockError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=e.openai_detail(
+                    serving_lane_reason=getattr(engine, "serving_lane_reason", None)
+                ),
+            ) from e
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -1421,6 +1430,8 @@ async def create_response(request: Request):
             explicit_no_thinking=explicit_no_thinking,
             namespace_by_tool=namespace_by_tool,
         )
+    except asyncio.CancelledError as exc:
+        _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
         _release_admission_unless_committed(engine, _admission_committed)
 

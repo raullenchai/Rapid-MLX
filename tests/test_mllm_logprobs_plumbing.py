@@ -145,10 +145,6 @@ def test_mllm_batch_generator_init_does_not_call_new_stream(monkeypatch):
 
     from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator
 
-    # Reset the class-level singleton so this test exercises the
-    # construction-time stream assignment regardless of test ordering.
-    monkeypatch.setattr(MLLMBatchGenerator, "_stream", None)
-
     new_stream_calls: list[object] = []
 
     def _trap_new_stream(device):
@@ -168,29 +164,54 @@ def test_mllm_batch_generator_init_does_not_call_new_stream(monkeypatch):
     monkeypatch.setattr(mx, "new_stream", _trap_new_stream)
 
     # Build the generator through the real constructor.
-    MLLMBatchGenerator(
+    generator = MLLMBatchGenerator(
         model=_RecordingVLMModel(),
         processor=object(),
         mm_processor=None,
         enable_vision_cache=False,
     )
 
-    try:
-        assert new_stream_calls == [], (
-            "Construction must not allocate a new mx.stream. "
-            "Saw mx.new_stream calls: " + repr(new_stream_calls)
-        )
-        # And the stream must equal the worker's process-wide default.
-        expected = mx.default_stream(mx.default_device())
-        assert MLLMBatchGenerator._stream is not None
-        assert MLLMBatchGenerator._stream == expected, (
-            "MLLMBatchGenerator._stream must be the worker default "
-            "stream (process-wide, materialisable from any thread). "
-            f"Got: {MLLMBatchGenerator._stream!r}, expected: {expected!r}"
-        )
-    finally:
-        # Cleanup the singleton so other tests start clean.
-        MLLMBatchGenerator._stream = None
+    assert new_stream_calls == [], (
+        "Construction must not allocate a new mx.stream. "
+        "Saw mx.new_stream calls: " + repr(new_stream_calls)
+    )
+    # And the stream must equal the worker's default.
+    expected = mx.default_stream(mx.default_device())
+    assert generator._stream is not None
+    assert generator._stream == expected, (
+        "generator._stream must be the worker default stream. "
+        f"Got: {generator._stream!r}, expected: {expected!r}"
+    )
+
+
+def test_reloaded_generator_owns_the_new_worker_stream(monkeypatch):
+    """A new engine lifetime must not reuse the unloaded worker's stream."""
+    import mlx.core as mx
+
+    from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator
+
+    old_worker_stream = object()
+    new_worker_stream = object()
+    streams = iter((old_worker_stream, new_worker_stream))
+    monkeypatch.setattr(mx, "default_stream", lambda _device: next(streams))
+    monkeypatch.setattr(mx, "synchronize", lambda _stream: None)
+
+    first = MLLMBatchGenerator(
+        model=_RecordingVLMModel(),
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=False,
+    )
+    first.close()
+    reloaded = MLLMBatchGenerator(
+        model=_RecordingVLMModel(),
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=False,
+    )
+
+    assert first._stream is old_worker_stream
+    assert reloaded._stream is new_worker_stream
 
 
 def test_mllm_next_evals_outgoing_logprobs_before_response(monkeypatch):

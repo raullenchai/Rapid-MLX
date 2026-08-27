@@ -1,7 +1,7 @@
 import Foundation
 
 /// Process-lifetime lifecycle reporter shared by the launch task, the
-/// first-run consent sheet, and Settings. The enabled check happens
+/// post-value consent invitation, and Settings. The enabled check happens
 /// before the once latch so opting in after launch can still emit the
 /// current session exactly once.
 @MainActor

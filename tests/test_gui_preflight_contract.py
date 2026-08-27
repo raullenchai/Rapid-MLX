@@ -64,6 +64,22 @@ def test_ax_dump_omits_non_finite_numbers_before_json_serialization():
     assert "origin.x.isFinite" in bounds and "extent.height.isFinite" in bounds
 
 
+def test_ax_escape_posts_a_real_key_to_the_target_process():
+    source = DRIVER.read_text()
+    key = source.split('if command == "key" {', 1)[1].split("\n}", 1)[0]
+    assert 'wanted == "escape"' in key
+    assert "virtualKey: 53" in key
+    assert "down.postToPid(pid)" in key
+    assert "up.postToPid(pid)" in key
+
+    fresh_install = (
+        HARNESS.read_text().split("flow_fresh_install() {", 1)[1].split("\n}", 1)[0]
+    )
+    assert '"$AX_DRIVER" key "$APP_PID" escape' in fresh_install
+    assert "Escape did not dismiss the telemetry invitation" in fresh_install
+    assert "dismissed telemetry invitation returned after relaunch" in fresh_install
+
+
 def test_each_fault_fails_with_its_own_message():
     source = DRIVER.read_text()
     assert source.count("fail(") >= 4
@@ -126,6 +142,7 @@ def test_peekaboo_requirement_is_default_deny():
         "chat-multimodal-attachments",
         "image-generation",
         "dictation",
+        "dictation-rc2-upgrade",
         "audio-readiness",
         "window-close-prompt",
         "resident-load-rejected",

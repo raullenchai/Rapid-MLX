@@ -51,13 +51,13 @@ struct LaunchAutoStartMemoryTests {
         let originalID = try #require(server.pendingMemoryWarning?.id)
         #expect(server.pendingMemoryWarning?.severity == .unsafe)
 
-        snapshots.current = .init(totalBytes: 32 * gib, usedBytes: 16 * gib)
+        snapshots.current = .init(totalBytes: 32 * gib, usedBytes: 22 * gib)
         let becameTight = await server.refreshPendingMemoryWarning()
         #expect(becameTight?.old == .unsafe)
         #expect(becameTight?.new == .tight)
         #expect(server.pendingMemoryWarning?.confirmTitle == "Load model")
 
-        snapshots.current = .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+        snapshots.current = .init(totalBytes: 32 * gib, usedBytes: 16 * gib)
         let becameSafe = await server.refreshPendingMemoryWarning()
         #expect(becameSafe?.old == .tight)
         #expect(becameSafe?.new == .safe)

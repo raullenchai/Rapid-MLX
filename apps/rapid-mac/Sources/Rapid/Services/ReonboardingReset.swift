@@ -19,7 +19,7 @@ struct ReonboardingScope: OptionSet, Sendable {
     static let preferences = ReonboardingScope(rawValue: 1 << 1)
     /// `conversations.json`. Hard delete, no undo.
     static let conversations = ReonboardingScope(rawValue: 1 << 2)
-    /// The telemetry decision, so the consent sheet runs again. Shared with
+    /// The telemetry decision, so the post-value invitation can run again. Shared with
     /// the `rapid-mlx` CLI — see ``ReonboardingReset/confirmation(for:)``.
     static let telemetry = ReonboardingScope(rawValue: 1 << 3)
 }
@@ -73,7 +73,9 @@ enum ReonboardingReset {
         }
 
         return Confirmation(
-            title: "Erase this Mac's Rapid state and restart?",
+            title: scope == .onboarding
+                ? "Run guided setup again?"
+                : "Erase this Mac's Rapid state and restart?",
             message: message,
             confirmTitle: scope.contains(.conversations)
                 ? "Erase and restart"

@@ -89,7 +89,9 @@ class TestTextOnlyMediaRejection:
                 ),
             )
             assert resp.status_code == 400
-            assert "does not support" in resp.json()["detail"]
+            assert resp.json().get("detail", resp.json())["error"]["code"] == (
+                "image_input_unsupported"
+            )
         finally:
             reset_config()
 

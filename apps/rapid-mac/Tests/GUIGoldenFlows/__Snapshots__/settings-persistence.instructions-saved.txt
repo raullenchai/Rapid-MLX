@@ -21,7 +21,7 @@ AXApplication title="Rapid-MLX"
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add photos or files" enabled=true
-          AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
+          AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
@@ -49,7 +49,7 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.modelManagement" desc="Model Management" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
-              AXButton id="Settings.Category.instructions" desc="Instructions" enabled=true
+              AXButton id="Settings.Category.instructions" desc="System Prompt" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.tools" desc="Tools" enabled=true
@@ -70,12 +70,13 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.app" desc="App" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
-        AXHeading desc="Custom Instructions, Set preferences for how the assistant responds in every conversation." enabled=true
-        AXHeading desc="Global, Used in every conversation. A conversation can add more specific direction." enabled=true
-        AXButton id="Settings.Instructions.Clear" desc="Clear global instructions" help="Clear global instructions" enabled=true
+        AXHeading desc="System Prompt, Sent as a system message with every conversation. Conversation prompts can override it." enabled=true
+        AXHeading desc="Global default, Used when a conversation has no conflicting prompt. Stored only on this Mac." enabled=true
+        AXButton id="Settings.Instructions.Clear" desc="Clear global system prompt" help="Clear global system prompt" enabled=true
         AXScrollArea
           AXTextArea id="Settings.Instructions.GlobalEditor" value=text
         AXStaticText id="Settings.Instructions.GlobalEditor.Count" value=text enabled=true
+        AXDisclosureTriangle id="Settings.SystemPrompt.EffectivePreview.Disclosure" desc="Effective System Prompt" value=bool:false enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

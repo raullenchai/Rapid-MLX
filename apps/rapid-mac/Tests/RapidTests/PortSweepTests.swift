@@ -5,6 +5,53 @@ import Testing
 
 @Suite("PortSweep process identity")
 struct PortSweepTests {
+    @Test("Current socket-table parser returns only exact TCP listeners without filesystem discovery")
+    func currentSocketTableParserIsListenerAndPortScoped() {
+        #expect(PortSweep.socketTableProbeExecutable.path == "/usr/sbin/netstat")
+        #expect(PortSweep.socketTableProbeArguments == ["-anv", "-p", "tcp"])
+
+        let output = """
+        Active Internet connections (including servers)
+        Proto Recv-Q Send-Q  Local Address Foreign Address (state) rxbytes txbytes rhiwat shiwat process:pid state
+        tcp4 0 0 127.0.0.1.8000 *.* LISTEN 0 0 131072 131072 python3.12:4321 00000
+        tcp6 0 0 ::1.8000 *.* LISTEN 0 0 131072 131072 rapid-mlx:4321 00000
+        tcp4 0 0 127.0.0.1.18000 *.* LISTEN 0 0 131072 131072 foreign:9999 00000
+        tcp4 0 0 127.0.0.1.8000 127.0.0.1.50000 ESTABLISHED 0 0 131072 131072 curl:7777 00102
+        tcp4 0 0 127.0.0.1.8000 *.* LISTEN 0 0 131072 131072 unknown:* 00000
+        """
+
+        let pids = PortSweep.parseListeningPIDs(Data(output.utf8), port: 8000)
+
+        #expect(pids == [4321])
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 18_000) == [9999])
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 0).isEmpty)
+    }
+
+    @Test("Legacy socket-table parser reads the separate numeric pid column")
+    func legacySocketTableParserReadsNumericPIDColumn() {
+        let output = """
+        Active Internet connections (including servers)
+        Proto Recv-Q Send-Q  Local Address Foreign Address (state) rhiwat shiwat pid epid state options
+        tcp4 0 0 127.0.0.1.8000 *.* LISTEN 131072 131072 2468 0 00000 00000000
+        tcp6 0 0 ::1.8000 *.* LISTEN 131072 131072 2468 0 00000 00000000
+        tcp4 0 0 127.0.0.1.18000 *.* LISTEN 131072 131072 9753 0 00000 00000000
+        tcp4 0 0 127.0.0.1.8000 127.0.0.1.50000 ESTABLISHED 131072 131072 8642 0 00102 00000000
+        """
+
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 8000) == [2468])
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 18_000) == [9753])
+    }
+
+    @Test("Socket-table parser fails closed when the owner layout is absent or malformed")
+    func socketTableParserRejectsUnknownOwnerLayout() {
+        let output = """
+        Proto Recv-Q Send-Q Local Address Foreign Address (state) rxbytes txbytes rhiwat shiwat owner state
+        tcp4 0 0 127.0.0.1.8000 *.* LISTEN 0 0 131072 131072 4321 00000
+        """
+
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 8000).isEmpty)
+    }
+
     @Test("rapid-mlx serve command is considered sweep-owned")
     func rapidMlxServeAccepted() {
         #expect(PortSweep.isRapidOwnedCommand("/opt/homebrew/bin/rapid-mlx serve qwen3.5-4b --port 8000"))

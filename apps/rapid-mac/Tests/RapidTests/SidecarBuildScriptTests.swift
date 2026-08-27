@@ -60,12 +60,16 @@ struct SidecarBuildScriptTests {
     func visionStackIsReproducibleAndCompatible() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
 
-        #expect(script.contains("'mlx-vlm==0.6.3'"))
+        #expect(script.contains("'mlx-vlm==0.6.16'"))
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
                 "The no-deps sidecar install must never float within a range.")
-        #expect(script.contains("from packaging.requirements import Requirement"))
-        #expect(script.contains("actual not in req.specifier"),
-                "Post-install validation must reject incompatible installed dependency versions.")
+        #expect(script.contains("$REPO_ROOT/scripts/check-sidecar-distributions.py"),
+                "Every sidecar build must execute the tested metadata-coherence gate.")
+        #expect(script.contains("SIDECAR_VISION_SMOKE_MODEL"))
+        #expect(script.contains("$REPO_ROOT/scripts/smoke-sidecar-vision.py"),
+                "Configured release-candidate builds must run real image inference through the sidecar.")
+        #expect(script.contains(#"PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1"#),
+                "The image gate must resolve its pinned snapshot with the bundled runtime, not host Python.")
         for architecture in [
             "diffusion_gemma", "gemma3", "gemma3n", "gemma4", "gemma4_unified",
             "qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe",

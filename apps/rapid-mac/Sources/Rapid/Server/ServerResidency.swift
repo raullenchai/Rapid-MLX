@@ -13,6 +13,7 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
     let measuredBytes: UInt64?
     let idleSeconds: Double
     var performance: ResidentPerformanceStatus? = nil
+    var replacementProjection: ResidentReplacementProjection? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -27,6 +28,7 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
         case measuredBytes = "measured_bytes"
         case idleSeconds = "idle_seconds"
         case performance
+        case replacementProjection = "replacement_projection"
     }
 
     func matches(_ alias: String) -> Bool {
@@ -50,6 +52,55 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
     /// its first request materializes the weights. Never present that partial
     /// delta as smaller than the admission reservation.
     var displayBytes: UInt64 { max(estimatedBytes, measuredBytes ?? 0) }
+}
+
+/// Engine-authored admission plan for an assistant replacement. Desktop sends
+/// the policy but never recreates the engine's role-capacity decision: this
+/// response is the authoritative account of what the load kept or released.
+struct ResidentReplacementProjection: Codable, Sendable, Equatable {
+    struct ModelToFree: Codable, Sendable, Equatable {
+        let id: String
+        let estimatedBytes: UInt64
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case estimatedBytes = "estimated_bytes"
+        }
+    }
+
+    let strategy: String
+    let modelsToFree: [ModelToFree]
+    let currentBytes: UInt64
+    let requestedBytes: UInt64
+    let projectedBytes: UInt64
+    let limitBytes: UInt64
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case strategy
+        case modelsToFree = "models_to_free"
+        case currentBytes = "current_bytes"
+        case requestedBytes = "requested_bytes"
+        case projectedBytes = "projected_bytes"
+        case limitBytes = "limit_bytes"
+        case reason
+    }
+
+    func rejectionMessage(alias: String) -> String? {
+        guard reason == "role_capacity_insufficient_after_eviction" else { return nil }
+        let gib = Double(UInt64(1) << 30)
+        let releasedGB = modelsToFree.reduce(0.0) {
+            $0 + Double($1.estimatedBytes)
+        } / gib
+        let projectedGB = Double(projectedBytes) / gib
+        let limitGB = Double(limitBytes) / gib
+        let release = releasedGB > 0
+            ? "Rapid can release about \(max(1, Int(releasedGB.rounded()))) GB from the current model, but "
+            : ""
+        return release
+            + "\(alias) would still need about \(Int(projectedGB.rounded())) GB "
+            + "of the \(Int(limitGB.rounded())) GB model-memory budget."
+    }
 }
 
 struct ResidentPerformanceStatus: Codable, Sendable, Equatable {
@@ -89,6 +140,20 @@ struct ResidentPerformanceStatus: Codable, Sendable, Equatable {
     }
 }
 
+/// One lazily loaded speech engine mounted beside the primary chat model.
+/// The server reports the authoritative model path and lifecycle state; the
+/// Desktop uses those fields instead of assuming that an audio-capable route
+/// means the selected speech weights are still resident.
+struct ResidentAudioLaneStatus: Codable, Sendable, Equatable {
+    let lane: String
+    let model: String?
+    let state: String
+
+    func matches(modelPath: String) -> Bool {
+        model == modelPath && state == "resident"
+    }
+}
+
 struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     let memoryLimitBytes: UInt64
     let memoryUsedBytes: UInt64
@@ -97,6 +162,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     let loadsTotal: Int
     let evictionsTotal: Int
     let models: [ResidentModelStatus]
+    let audioLanes: [ResidentAudioLaneStatus]
 
     enum CodingKeys: String, CodingKey {
         case memoryLimitBytes = "memory_limit_bytes"
@@ -106,6 +172,42 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         case loadsTotal = "loads_total"
         case evictionsTotal = "evictions_total"
         case models
+        case audioLanes = "audio_lanes"
+    }
+
+    init(
+        memoryLimitBytes: UInt64,
+        memoryUsedBytes: UInt64,
+        memoryAvailableBytes: UInt64?,
+        idleTTLSeconds: Double,
+        loadsTotal: Int,
+        evictionsTotal: Int,
+        models: [ResidentModelStatus],
+        audioLanes: [ResidentAudioLaneStatus] = []
+    ) {
+        self.memoryLimitBytes = memoryLimitBytes
+        self.memoryUsedBytes = memoryUsedBytes
+        self.memoryAvailableBytes = memoryAvailableBytes
+        self.idleTTLSeconds = idleTTLSeconds
+        self.loadsTotal = loadsTotal
+        self.evictionsTotal = evictionsTotal
+        self.models = models
+        self.audioLanes = audioLanes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        memoryLimitBytes = try values.decode(UInt64.self, forKey: .memoryLimitBytes)
+        memoryUsedBytes = try values.decode(UInt64.self, forKey: .memoryUsedBytes)
+        memoryAvailableBytes = try values.decodeIfPresent(UInt64.self, forKey: .memoryAvailableBytes)
+        idleTTLSeconds = try values.decode(Double.self, forKey: .idleTTLSeconds)
+        loadsTotal = try values.decode(Int.self, forKey: .loadsTotal)
+        evictionsTotal = try values.decode(Int.self, forKey: .evictionsTotal)
+        models = try values.decode([ResidentModelStatus].self, forKey: .models)
+        audioLanes = try values.decodeIfPresent(
+            [ResidentAudioLaneStatus].self,
+            forKey: .audioLanes
+        ) ?? []
     }
 
     static let empty = ModelResidencySnapshot(
@@ -115,11 +217,16 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         idleTTLSeconds: 0,
         loadsTotal: 0,
         evictionsTotal: 0,
-        models: []
+        models: [],
+        audioLanes: []
     )
 
     func contains(_ alias: String) -> Bool {
         models.contains { $0.matches(alias) && $0.state != "evicting" }
+    }
+
+    func containsResidentAudioLane(modelPath: String) -> Bool {
+        audioLanes.contains { $0.matches(modelPath: modelPath) }
     }
 
     /// Pick the resident text model that can host chat-only subsystems such
@@ -215,6 +322,11 @@ enum ResidentModelReplacementGroup: String, Sendable {
     case assistant
 }
 
+enum ResidentMemoryPolicy: String, Sendable, Encodable {
+    case keepThenCommit = "keep_then_commit"
+    case evictFirstIfNeeded = "evict_first_if_needed"
+}
+
 enum ResidentImageMode: String, Sendable, Encodable {
     case generation
     case editing
@@ -227,13 +339,50 @@ struct ServerResidencyClient {
         let estimated_size_gb: Double
         let pin: Bool
         let replace_group: String?
+        let memory_policy: ResidentMemoryPolicy?
         let image_mode: ResidentImageMode?
         let performance: ResidentPerformanceStatus?
         let reload_if_changed: Bool
     }
 
     private struct ErrorEnvelope: Decodable {
-        let detail: String?
+        struct StructuredDetail: Decodable {
+            struct Error: Decodable {
+                let message: String?
+            }
+
+            let error: Error?
+            let replacementProjection: ResidentReplacementProjection?
+
+            enum CodingKeys: String, CodingKey {
+                case error
+                case replacementProjection = "replacement_projection"
+            }
+        }
+
+        enum Detail: Decodable {
+            case message(String)
+            case structured(StructuredDetail)
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                if let message = try? container.decode(String.self) {
+                    self = .message(message)
+                } else {
+                    self = .structured(try container.decode(StructuredDetail.self))
+                }
+            }
+        }
+
+        let detail: Detail?
+        let error: StructuredDetail.Error?
+        let replacementProjection: ResidentReplacementProjection?
+
+        enum CodingKeys: String, CodingKey {
+            case detail
+            case error
+            case replacementProjection = "replacement_projection"
+        }
     }
 
     var session: URLSession = {
@@ -268,6 +417,7 @@ struct ServerResidencyClient {
         hfPath: String?,
         estimatedSizeGB: Double,
         replaceGroup: ResidentModelReplacementGroup? = nil,
+        memoryPolicy: ResidentMemoryPolicy? = nil,
         imageMode: ResidentImageMode? = nil,
         performance: ModelPerfConfig? = nil,
         reloadIfChanged: Bool = false,
@@ -284,6 +434,7 @@ struct ServerResidencyClient {
                 estimated_size_gb: estimatedSizeGB,
                 pin: false,
                 replace_group: replaceGroup?.rawValue,
+                memory_policy: memoryPolicy,
                 image_mode: imageMode,
                 performance: performance.map(ResidentPerformanceStatus.init),
                 reload_if_changed: reloadIfChanged
@@ -303,7 +454,17 @@ struct ServerResidencyClient {
             if http.statusCode == 404 || http.statusCode == 405 {
                 return .unsupported
             }
-            let detail = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.detail
+            let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+            let nestedDetail: String? = switch envelope?.detail {
+            case .message(let message): message
+            case .structured(let structured):
+                structured.replacementProjection?.rejectionMessage(alias: alias)
+                    ?? structured.error?.message
+            case nil: nil
+            }
+            let detail = envelope?.replacementProjection?.rejectionMessage(alias: alias)
+                ?? envelope?.error?.message
+                ?? nestedDetail
             return .rejected(detail ?? "The model could not be kept resident (HTTP \(http.statusCode)).")
         } catch {
             return .rejected("The model server could not load another resident model.")

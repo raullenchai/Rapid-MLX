@@ -62,19 +62,20 @@ Chat, Images, Audio, and Launch surfaces from the sidebar
 
 ---
 
-## Flow 2 — Telemetry consent (first run)
+## Flow 2 — Telemetry consent (after first value)
 
-**Trigger.** First launch, once the shell is up, when no telemetry decision has
-been recorded (`ContentView.swift:45`, `TelemetryConsent.needsDecision()`).
+**Trigger.** After the first successful assistant reply, delivered dictation
+transcript, or generated image, when no telemetry decision has been recorded.
 
-**Expected.** A consent sheet (`TelemetryConsentView`) offers **Share** /
-**Don't share** (`TelemetryConsent.Share` / `TelemetryConsent.DontShare`); the
-choice is persisted via `TelemetryConsent.record(enabled:)`
-(`ContentView.swift:838`). The decision is later changeable in Settings →
-Privacy (`Settings.Privacy.TelemetryToggle`).
+**Expected.** A non-modal banner offers **Share** / **No thanks**
+(`TelemetryConsent.PostValue.Share` / `.Decline`) without covering the result
+or taking composer focus. Decline and close are durable and never re-prompt;
+the decision remains changeable in Settings → Privacy
+(`Settings.Privacy.TelemetryToggle`). Nothing is sent before opt-in.
 
 **Touches.** `UI/TelemetryConsentView.swift`, `UI/ContentView.swift`
-(`decideTelemetry`), `Telemetry/TelemetryConsent.swift`,
+(`productionShell`), `Telemetry/DeferredTelemetryConsentCoordinator.swift`,
+`Telemetry/TelemetryConsent.swift`,
 `Telemetry/TelemetryConfig.swift`.
 
 ---
@@ -700,7 +701,7 @@ Error}`.
 Close}`.
 
 **Telemetry consent — `UI/TelemetryConsentView.swift`:**
-`TelemetryConsent.{Share,DontShare}`.
+`TelemetryConsent.PostValue{Banner,.Share,.Decline,.Close}`.
 
 **Banners / misc:** `UI/FailedReplaceBanner.swift`
 `FailedReplaceBanner`, `FailedReplace.{OpenUpdate,Dismiss}`;

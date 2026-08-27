@@ -36,6 +36,11 @@ class ModelEntry:
     reasoning_parser: str | None = None
     is_mllm: bool = False
     max_tokens: int = 4096
+    # Architecture-derived support status for the loaded checkpoint. This is
+    # live model identity, not catalog policy: unpublished experimental
+    # architectures may be served by explicit local path without introducing
+    # an alias that points at a nonexistent artifact.
+    experimental: bool = False
 
     def matches(self, name: str) -> bool:
         """Check if a request model name matches this entry."""
@@ -205,6 +210,12 @@ class ModelRegistry:
         self._default = canonical
         logger.info("Promoted model %r to registry default", canonical)
         return self._entries[canonical]
+
+    def clear_default(self) -> None:
+        """Remove request-default ownership without unloading named entries."""
+
+        self._default = None
+        logger.info("Cleared registry default model")
 
     def __len__(self) -> int:
         return len(self._entries)

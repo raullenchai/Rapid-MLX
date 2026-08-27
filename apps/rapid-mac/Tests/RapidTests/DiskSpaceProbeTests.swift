@@ -31,6 +31,23 @@ struct DiskSpaceProbeTests {
         #expect(DiskSpaceProbe.quickstartRequiredBytes == 2 * 1024 * 1024 * 1024)
     }
 
+    @Test("Automatic starters derive model-sized download headroom")
+    func automaticStarterRequirements() {
+        let gib: Int64 = 1024 * 1024 * 1024
+
+        #expect(QuickstartView.requiredDiskBytes(
+            for: QuickstartCoordinator.compactDefaultChoice
+        ) == 4 * gib)
+        #expect(QuickstartView.requiredDiskBytes(
+            for: QuickstartCoordinator.defaultChoice
+        ) == 6 * gib)
+        #expect(QuickstartView.requiredDiskBytes(
+            for: QuickstartCoordinator.lowMemoryChoice
+        ) == 2 * gib)
+        #expect(QuickstartCoordinator.defaultChoice.downloadBytes == 3_061_121_321)
+        #expect(QuickstartCoordinator.compactDefaultChoice.downloadBytes == 1_601_103_345)
+    }
+
     // MARK: - Decision truth table
 
     @Test("decide returns .ok when free bytes exceed requirement")

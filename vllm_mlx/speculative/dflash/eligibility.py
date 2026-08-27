@@ -184,9 +184,9 @@ def have_runtime() -> bool:
         # Probe the specific symbol DFlash needs — a partial install
         # (pre-0.5.0 mlx-vlm in our deps) would have `mlx_vlm` but no
         # `speculative.drafters.load_drafter`.
-        import importlib
+        from importlib.util import find_spec
 
-        spec = importlib.util.find_spec("mlx_vlm.speculative.drafters")
+        spec = find_spec("mlx_vlm.speculative.drafters")
         return spec is not None
     except (ImportError, AttributeError):
         return False

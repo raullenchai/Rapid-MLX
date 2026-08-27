@@ -10,11 +10,19 @@ import Foundation
 /// (`src-tauri/src/server.rs`), which is the v0.1.13 cross-session
 /// orphan fix.
 ///
-/// Strategy: `lsof -ti :8000` lists every pid holding the port, we send
+/// Strategy: `netstat -anv -p tcp` lists every TCP listener without walking
+/// mounted filesystems, we select the pids holding the target port, then send
 /// each one SIGTERM, wait 1.5 s for graceful uvicorn shutdown, then
 /// SIGKILL anyone still alive. A developer running rapid-mlx in their
 /// own terminal can opt out via `RAPID_DESKTOP_NO_PORT_SWEEP=1`.
 enum PortSweep {
+    /// Filesystem-independent listener inventory. Exposed internally so the
+    /// removable-volume regression test pins the executable as well as the
+    /// output parser; replacing this with a file-descriptor scanner would
+    /// reintroduce the picker-time mount traversal fixed in #2343.
+    static let socketTableProbeExecutable = URL(fileURLWithPath: "/usr/sbin/netstat")
+    static let socketTableProbeArguments = ["-anv", "-p", "tcp"]
+
     /// The opportunistic launch-time sweep, so a spawn can wait it out
     /// instead of racing it. Detached at launch (never blocking the UI); a
     /// ``ServerManager.start`` that lands while it is still running awaits it
@@ -254,36 +262,23 @@ enum PortSweep {
         return owned
     }
 
-    /// Shells out to `lsof -nP -sTCP:LISTEN -ti :<port>` and parses the
-    /// pid list. `-sTCP:LISTEN` restricts to processes actively LISTENing
-    /// on the port — a client merely connected TO :8000 is excluded, so
-    /// a curl/browser session can't accidentally be SIGTERM'd by the
-    /// sweep. `-ti` is terse pid-only output we can parse directly;
-    /// `-nP` disables name resolution for speed.
+    /// Ask the kernel's socket table for TCP listeners, then select the exact
+    /// local port. Do not use `lsof` here: even an internet-socket-filtered
+    /// invocation walks the mount table and stats mounted filesystems. A model
+    /// switch can call this once per candidate port, so an unrelated mounted
+    /// installer or external disk was touched merely by opening the picker and
+    /// could trigger macOS removable-volume consent (#2343).
     ///
-    /// Codex round-1 finding: the previous version returned every pid
-    /// `lsof -i :8000` saw (listeners + clients) AND killed them
-    /// unconditionally. Launching Rapid while a user had any other
-    /// dev server on :8000 would SIGTERM/SIGKILL that server. We now
-    /// (a) filter to LISTEN sockets only, and (b) verify each pid's
-    /// executable matches a ``rapid-mlx`` / ``python`` profile before
-    /// signalling — anything else is left untouched and reported.
+    /// `netstat` reads the networking table directly. `-n` disables name
+    /// resolution, `-a` includes listeners, `-v` includes the owning
+    /// `process:pid` field, and `-p tcp` excludes unrelated protocols. The
+    /// ownership check below remains authoritative before any signal is sent.
     private static func pidsOnPort(port: Int) -> [Int32] {
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        task.arguments = ["-nP", "-sTCP:LISTEN", "-ti", ":\(port)"]
-        guard let data = runCapturingStdout(task) else {
-            return pidsOnPortFallback(port: port)
-        }
-        return parsePids(data)
-    }
-
-    private static func pidsOnPortFallback(port: Int) -> [Int32] {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
-        task.arguments = ["-nP", "-sTCP:LISTEN", "-ti", ":\(port)"]
+        task.executableURL = socketTableProbeExecutable
+        task.arguments = socketTableProbeArguments
         guard let data = runCapturingStdout(task) else { return [] }
-        return parsePids(data)
+        return parseListeningPIDs(data, port: port)
     }
 
     /// Run ``task`` to completion and return its stdout bytes, draining
@@ -352,11 +347,69 @@ enum PortSweep {
         return stdoutData
     }
 
-    private static func parsePids(_ data: Data) -> [Int32] {
+    /// Parse macOS `netstat -anv -p tcp` output. Kept as a pure seam so the
+    /// listener-only and exact-port contracts do not depend on the host's live
+    /// sockets. Field positions are defined by netstat's own header; malformed
+    /// or permission-redacted rows fail closed.
+    static func parseListeningPIDs(_ data: Data, port: Int) -> [Int32] {
         guard let text = String(data: data, encoding: .utf8) else { return [] }
-        return text
-            .split(whereSeparator: { $0.isWhitespace })
-            .compactMap { Int32($0) }
+        guard (1...65_535).contains(port) else { return [] }
+
+        enum OwnerColumn {
+            case processAndPID(Int)
+            case numericPID(Int)
+        }
+
+        let portSuffix = ".\(port)"
+        var result: [Int32] = []
+        var seen: Set<Int32> = []
+        var ownerColumn: OwnerColumn?
+        for line in text.split(separator: "\n") {
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+
+            // Header labels contain two two-word address columns, while each
+            // data row contains one token per address. Derive the owner column
+            // from the table's own header so both supported macOS layouts work:
+            // current releases expose `process:pid`; older releases expose
+            // separate numeric `pid` / `epid` columns.
+            if fields.first == "Proto" {
+                let addressLabelAdjustment = 2
+                if let index = fields.firstIndex(of: "process:pid"),
+                   index >= addressLabelAdjustment {
+                    ownerColumn = .processAndPID(index - addressLabelAdjustment)
+                } else if let index = fields.firstIndex(of: "pid"),
+                          fields.contains("epid"),
+                          index >= addressLabelAdjustment {
+                    ownerColumn = .numericPID(index - addressLabelAdjustment)
+                } else {
+                    ownerColumn = nil
+                }
+                continue
+            }
+
+            guard let ownerColumn,
+                  fields.count > 5,
+                  fields[0] == "tcp4" || fields[0] == "tcp6",
+                  fields[5] == "LISTEN",
+                  fields[3].hasSuffix(portSuffix) else { continue }
+
+            let pid: Int32?
+            switch ownerColumn {
+            case let .processAndPID(index):
+                guard fields.indices.contains(index),
+                      let separator = fields[index].lastIndex(of: ":") else { continue }
+                pid = Int32(fields[index][fields[index].index(after: separator)...])
+            case let .numericPID(index):
+                guard fields.indices.contains(index) else { continue }
+                pid = Int32(fields[index])
+            }
+
+            guard let pid,
+                  pid > 0,
+                  seen.insert(pid).inserted else { continue }
+            result.append(pid)
+        }
+        return result
     }
 
     /// Drain a child process's pipe to EOF using the *throwing*

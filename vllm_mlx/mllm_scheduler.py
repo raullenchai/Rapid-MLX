@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -156,6 +156,7 @@ class MLLMRequest:
     # Token counts
     num_prompt_tokens: int = 0
     num_output_tokens: int = 0
+    lifecycle_admission_token: str | None = None
 
 
 def _find_stop_match_in_new_window(
@@ -302,6 +303,9 @@ class MLLMScheduler:
         self.waiting: deque[MLLMRequest] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, MLLMRequest] = {}  # Running requests by ID
         self.requests: dict[str, MLLMRequest] = {}  # All requests by ID
+        self._generation_paused = False
+        self._paused_add_allowance = 0
+        self._paused_admission_tokens: set[str] = set()
         self.finished_req_ids: set[str] = set()  # Recently finished
 
         # Mapping between our request IDs and BatchGenerator UIDs
@@ -342,6 +346,7 @@ class MLLMScheduler:
         self._cancel_counter_lock = threading.Lock()
         # Aborted request IDs that need queue signaling (executor → event loop).
         self._aborted_queue_ids: set[str] = set()
+        self._abort_error_kinds: dict[str, str] = {}
 
         # Async processing control
         self._running = False
@@ -523,6 +528,16 @@ class MLLMScheduler:
         Returns:
             Request ID for tracking
         """
+        with self._request_state_lock():
+            if getattr(self, "_generation_paused", False):
+                from .scheduler import BackpressureError
+
+                allowed: set[str] = getattr(self, "_paused_admission_tokens", set())
+                token = kwargs.get("lifecycle_admission_token")
+                if token not in allowed:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
         if request_id is None:
             request_id = str(uuid.uuid4())
 
@@ -573,6 +588,7 @@ class MLLMScheduler:
             stop=stop or [],
             video_fps=video_fps,
             video_max_frames=video_max_frames,
+            lifecycle_admission_token=kwargs.pop("lifecycle_admission_token", None),
         )
 
         # D-M01-2X (0.8.2 dogfood, codex r10 BLOCKING follow-up):
@@ -589,17 +605,10 @@ class MLLMScheduler:
         # abort+cleanup window; see
         # ``Scheduler.remove_finished_request`` docstring for the
         # multi-branch race repro the persistence plugs.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.discard(request_id)
-            self._disconnect_abort_ids.discard(request_id)
-            self.requests[request_id] = request
-        self.waiting.append(request)
+        self._commit_request(request)
         # Wake the idle scheduler loop immediately (see ``_new_request_event``)
         # instead of letting it sleep out its poll tick. Safe from here: both
-        # this append and the loop's wait run on the event-loop thread.
-        # ``getattr`` keeps ``add_request`` callable on the minimally
-        # constructed schedulers unit tests build via ``__new__`` (which set
-        # only ``config`` and skip ``__init__``); the live loop always has it.
+        # request collections were published atomically above.
         new_request_event = getattr(self, "_new_request_event", None)
         if new_request_event is not None:
             new_request_event.set()
@@ -611,7 +620,67 @@ class MLLMScheduler:
 
         return request_id
 
-    def abort_request(self, request_id: str) -> bool:
+    def _commit_request(self, request: MLLMRequest) -> None:
+        """Atomically publish a request to lifecycle truth and the run queue."""
+
+        with self._request_state_lock():
+            if request.request_id in self.requests:
+                raise ValueError(f"Request {request.request_id} already exists")
+            if getattr(self, "_generation_paused", False):
+                from .scheduler import BackpressureError
+
+                commit_tokens: set[str] = getattr(
+                    self, "_paused_admission_tokens", set()
+                )
+                token = request.lifecycle_admission_token
+                if token is None or token not in commit_tokens:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
+                commit_tokens.remove(token)
+            self._cancelled_request_ids.discard(request.request_id)
+            self._disconnect_abort_ids.discard(request.request_id)
+            self.requests[request.request_id] = request
+            self.waiting.append(request)
+
+    def set_generation_paused(self, paused: bool, *, add_allowance: int = 0) -> None:
+        """Close or reopen scheduler admission for model replacement."""
+
+        with self._request_state_lock():
+            self._generation_paused = bool(paused)
+            self._paused_add_allowance = max(0, int(add_allowance)) if paused else 0
+            self._paused_admission_tokens = set()
+
+    def pause_generation_admission(self, admission_tokens: set[str], mode: str) -> None:
+        """Close admission and preserve only pre-pause route reservations."""
+
+        with self._request_state_lock():
+            self._generation_paused = True
+            owned = {
+                request.lifecycle_admission_token
+                for request in self.requests.values()
+                if request.lifecycle_admission_token is not None
+            }
+            pending = set(admission_tokens) - owned
+            self._paused_admission_tokens = pending if mode == "wait" else set()
+            self._paused_add_allowance = len(self._paused_admission_tokens)
+
+    def request_ids_snapshot(self) -> tuple[str, ...]:
+        """Return a lock-protected snapshot of queued and running IDs."""
+
+        with self._request_state_lock():
+            return tuple(self.requests)
+
+    def _request_state_lock(self):
+        """Return the request lock, including for minimal test doubles."""
+
+        lock = getattr(self, "_cancel_counter_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._cancel_counter_lock = lock
+        return lock
+
+    def abort_request(self, request_id: str, *, error_kind: str | None = None) -> bool:
         """
         Queue request for abort.  Thread-safe (called from event loop).
 
@@ -652,6 +721,12 @@ class MLLMScheduler:
             already_counted = request_id in self._cancelled_request_ids
             self._cancelled_request_ids.add(request_id)
             self._pending_abort_ids.add(request_id)
+            if error_kind is not None:
+                abort_error_kinds = getattr(self, "_abort_error_kinds", None)
+                if abort_error_kinds is None:
+                    abort_error_kinds = {}
+                    self._abort_error_kinds = abort_error_kinds
+                abort_error_kinds[request_id] = error_kind
             if not already_counted:
                 self.num_requests_cancelled += 1
         logger.debug(f"Enqueued abort for request {request_id}")
@@ -741,14 +816,14 @@ class MLLMScheduler:
         # ``via_disconnect_total <= cancelled_total`` and the
         # "exactly one tick per abort" contract that three personas
         # independently observed broken on PyPI 0.8.2.
-        with self._cancel_counter_lock:
+        with self._request_state_lock():
             self.requests.pop(request_id, None)
             self._detokenizer_pool.pop(request_id, None)
-
-        # Do NOT write to output_queues here — this may run on the
-        # executor thread where asyncio.Queue is not safe.  Mark for
-        # signaling on the event loop thread via _distribute_outputs.
-        self._aborted_queue_ids.add(request_id)
+            # Do NOT write to output_queues here — this may run on the
+            # executor thread where asyncio.Queue is not safe. Mark for
+            # signaling on the event-loop thread while holding the same lock
+            # reset() uses to clear the reason and delivery ledgers.
+            self._aborted_queue_ids.add(request_id)
 
         logger.debug(f"Aborted request {request_id}")
         mx.clear_cache()
@@ -1139,7 +1214,8 @@ class MLLMScheduler:
 
             # Track as finished
             self.finished_req_ids.add(request_id)
-            self.requests.pop(request_id, None)
+            with self._request_state_lock():
+                self.requests.pop(request_id, None)
 
     def _step_no_queue(self) -> MLLMSchedulerOutput:
         """Execute one scheduling step WITHOUT queue distribution.
@@ -1285,14 +1361,47 @@ class MLLMScheduler:
                         queue.put_nowait(req_output)
 
         # Signal queues for requests aborted during this step
-        while self._aborted_queue_ids:
-            request_id = self._aborted_queue_ids.pop()
+        while True:
+            with self._request_state_lock():
+                if not self._aborted_queue_ids:
+                    break
+                request_id = self._aborted_queue_ids.pop()
+                error_kind = getattr(self, "_abort_error_kinds", {}).pop(
+                    request_id, None
+                )
             queue = self.output_queues.get(request_id)
             if queue is not None:
+                if error_kind != "lifecycle":
+                    try:
+                        queue.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+                    continue
                 try:
-                    queue.put_nowait(None)
+                    queue.put_nowait(
+                        RequestOutput(
+                            request_id=request_id,
+                            finished=True,
+                            finish_reason="length",
+                            error="Inference aborted by a cancellation request",
+                            error_kind="lifecycle",
+                        )
+                    )
                 except asyncio.QueueFull:
-                    pass
+                    while not queue.empty():
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:  # pragma: no cover - race
+                            break
+                    queue.put_nowait(
+                        RequestOutput(
+                            request_id=request_id,
+                            finished=True,
+                            finish_reason="length",
+                            error="Inference aborted by a cancellation request",
+                            error_kind="lifecycle",
+                        )
+                    )
 
     def _fail_all_inflight(self, exc: Exception) -> MLLMSchedulerOutput:
         """Fail and detach every request after an unexpected step exception.
@@ -1353,7 +1462,8 @@ class MLLMScheduler:
             self.batch_generator = None
         self.waiting.clear()
         self.running.clear()
-        self.requests.clear()
+        with self._request_state_lock():
+            self.requests.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
@@ -1385,7 +1495,8 @@ class MLLMScheduler:
 
     def remove_finished_request(self, request_id: str) -> MLLMRequest | None:
         """Remove a finished request from tracking."""
-        return self.requests.pop(request_id, None)
+        with self._request_state_lock():
+            return self.requests.pop(request_id, None)
 
     # ========== Async API (for streaming) ==========
 
@@ -1772,6 +1883,7 @@ class MLLMScheduler:
         stop: list[str] | None = None,
         video_fps: float | None = None,
         video_max_frames: int | None = None,
+        on_request_committed: Callable[[], None] | None = None,
         **kwargs,
     ) -> str:
         """
@@ -1807,6 +1919,8 @@ class MLLMScheduler:
 
         # Create output queue for streaming
         self.output_queues[request_id] = asyncio.Queue()
+        if on_request_committed is not None:
+            on_request_committed()
 
         return request_id
 
@@ -1841,6 +1955,13 @@ class MLLMScheduler:
                     # Mark finished BEFORE raising so the finally block
                     # doesn't double-abort what's already cleaned up.
                     finished_normally = True
+                    if output.error_kind == "lifecycle":
+                        from .request import InferenceAbortedError
+
+                        raise InferenceAbortedError(
+                            output.error,
+                            error_kind=output.error_kind,
+                        )
                     if output.error_kind == "invalid_request":
                         raise ClientRequestError(output.error)
                     raise ValueError(output.error)
@@ -1906,8 +2027,8 @@ class MLLMScheduler:
             )
 
         # Cleanup
-        if request_id in self.requests:
-            del self.requests[request_id]
+        with self._request_state_lock():
+            self.requests.pop(request_id, None)
 
         return final_output
 
@@ -1916,7 +2037,9 @@ class MLLMScheduler:
     def get_stats(self) -> dict[str, Any]:
         """Get scheduler statistics."""
         stats = {
-            "num_waiting": len(self.waiting),
+            # Abort ownership ends after the event-loop queue receives its
+            # terminal object, not when the worker removes scheduler state.
+            "num_waiting": len(self.waiting) + len(self._aborted_queue_ids),
             "num_running": len(self.running),
             "num_finished": len(self.finished_req_ids),
             "num_requests_processed": self.num_requests_processed,
@@ -1962,7 +2085,13 @@ class MLLMScheduler:
 
         self.waiting.clear()
         self.running.clear()
-        self.requests.clear()
+        with self._request_state_lock():
+            self.requests.clear()
+            self._pending_abort_ids.clear()
+            self._aborted_queue_ids.clear()
+            self._abort_error_kinds.clear()
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
         self.finished_req_ids.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
@@ -1975,10 +2104,6 @@ class MLLMScheduler:
         # in-flight request can't interleave inconsistently, AND
         # under the lock so the clear is atomic against any
         # concurrent abort-path mutation.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.clear()
-            self._disconnect_abort_ids.clear()
-
         if self.batch_generator is not None:
             self.batch_generator.close()
             self.batch_generator = None

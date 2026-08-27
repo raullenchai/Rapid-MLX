@@ -1191,7 +1191,16 @@ def _detect_metadata_config(
     # classification even when served from a local snapshot path.
     is_qwen38 = bool(re.search(r"qwen[._-]?3[._]8", model_path, re.IGNORECASE))
 
-    if "qwen3_5_moe" in model_types:
+    if "qwen4_exp" in model_types:
+        settings.update(
+            is_hybrid=True,
+            is_hybrid_explicit=True,
+            is_moe=True,
+            supports_spec_decode=False,
+            experimental=True,
+        )
+        reasons.append("experimental Qwen4-Exp hybrid MoE architecture")
+    elif "qwen3_5_moe" in model_types:
         settings.update(
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -2371,6 +2380,8 @@ def format_profile_summary(
         summary = f"Model profile: {model_path} (unknown family — using defaults)"
         return f"{summary}, {runtime_status}" if runtime_status else summary
     parts = [_arch_label(cfg)]
+    if cfg.experimental:
+        parts.append("experimental")
     parts.append(f"throttle {'ON' if cfg.is_hybrid else 'OFF'}")
     parts.append(
         runtime_status
@@ -2470,6 +2481,8 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Throttle", throttle),
             ("Suffix tier", _suffix_tier_cell(cfg, max_width=value_width)),
         ]
+        if cfg.experimental:
+            rows.insert(0, ("Status", "⚠ experimental"))
 
     body = [_row(header), _row(sep)]
     for k, v in rows:

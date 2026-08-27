@@ -429,6 +429,12 @@ class DiffusionEngine(BaseEngine):
         # racy concurrent read returning a stale event is harmless (we
         # just signal an already-finished cancel_event).
         self._active_cancel: threading.Event | None = None
+        # Public streaming request identity -> the existing per-job cancel
+        # event. The registry does not introduce a second cancellation
+        # mechanism; it only makes the worker's established event addressable
+        # through the shared /v1/requests/{id}/cancel contract.
+        self._request_cancels: dict[str, threading.Event] = {}
+        self._request_cancels_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # BaseEngine — required properties
@@ -510,6 +516,9 @@ class DiffusionEngine(BaseEngine):
         active = self._active_cancel
         if active is not None:
             active.set()
+        with self._request_cancels_lock:
+            for cancel_event in self._request_cancels.values():
+                cancel_event.set()
         self._jobs.put(None)
         # mlx-vlm loads weights into mx.array buffers backed by the
         # MTL allocator. Clearing references is enough for the next
@@ -568,6 +577,8 @@ class DiffusionEngine(BaseEngine):
         self._ready = threading.Event()
         self._stop = False
         self._active_cancel = None
+        with self._request_cancels_lock:
+            self._request_cancels.clear()
         self._load_error = None
         self._worker_stuck = False
         with self._admission_lock:
@@ -578,6 +589,16 @@ class DiffusionEngine(BaseEngine):
     # ------------------------------------------------------------------
     # BaseEngine — admission control
     # ------------------------------------------------------------------
+
+    async def abort_request(self, request_id: str) -> bool:
+        """Signal the diffusion worker job addressed by its public ID."""
+
+        with self._request_cancels_lock:
+            cancel_event = self._request_cancels.get(request_id)
+            if cancel_event is None:
+                return False
+            cancel_event.set()
+            return True
 
     def check_admission(self) -> None:
         """Atomic admission gate; reserves a slot on success or raises
@@ -941,6 +962,8 @@ class DiffusionEngine(BaseEngine):
         images: list[str] | None = None,
         videos: list[str] | None = None,
         is_streaming: bool = False,
+        request_id: str | None = None,
+        request_admitted_event: asyncio.Event | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         self._ensure_loaded()
@@ -979,6 +1002,8 @@ class DiffusionEngine(BaseEngine):
             max_tokens=max_tokens,
             temperature=temperature,
             has_tools=has_tools,
+            request_id=request_id,
+            request_admitted_event=request_admitted_event,
             **kwargs,
         ):
             yield chunk
@@ -990,6 +1015,8 @@ class DiffusionEngine(BaseEngine):
         temperature: float,
         *,
         has_tools: bool = False,
+        request_id: str | None = None,
+        request_admitted_event: asyncio.Event | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         """Shared queue / cancel / stop-sequence plumbing for chat and
@@ -1061,12 +1088,11 @@ class DiffusionEngine(BaseEngine):
             # cleanly instead (codex round 8 [P2]).
             #
             # NOTE on streaming-503 contract (codex round 9 [P2]):
-            # The route's ``stream_chat_completion`` yields the
-            # ``role`` SSE chunk BEFORE entering ``engine.stream_chat``.
-            # So for the in-flight race (request waiting on the lock
-            # when stuck flips), this raise lands inside the streaming
-            # generator and the route surfaces it as an SSE error on
-            # HTTP 200 — not a clean 503. The PRIMARY contract this
+            # The route primes ``engine.stream_chat`` through admission
+            # before exposing its public role frame. For the in-flight race
+            # (request waiting on the lock when stuck flips), this raise still
+            # lands inside the StreamingResponse iterator and is surfaced as
+            # an SSE error on HTTP 200 — not a clean 503. The PRIMARY contract this
             # gate enforces is "do not enqueue work to a wedged
             # worker"; the streaming-protocol equivalent of the 503
             # is the SSE error chunk, and clients should treat it as
@@ -1113,13 +1139,29 @@ class DiffusionEngine(BaseEngine):
             # cleanup anyway, but explicit drain matches the rest of
             # the lifecycle and lets the unit test pin it.
             _pump_started = False
+            registered_request_id: str | None = None
             try:
                 pump_thread.start()
                 _pump_started = True
+                if request_id is not None:
+                    with self._request_cancels_lock:
+                        if request_id in self._request_cancels:
+                            raise ValueError(f"Request {request_id} already exists")
+                        self._request_cancels[request_id] = cancel_event
+                    registered_request_id = request_id
                 self._jobs.put(
                     (prompt, max_tokens, cfg, thread_q, cancel_event, done_event)
                 )
+                if request_admitted_event is not None:
+                    request_admitted_event.set()
             except BaseException:
+                if registered_request_id is not None:
+                    with self._request_cancels_lock:
+                        if (
+                            self._request_cancels.get(registered_request_id)
+                            is cancel_event
+                        ):
+                            self._request_cancels.pop(registered_request_id, None)
                 if _pump_started:
                     thread_q.put(_STREAM_DONE)
                     pump_thread.join(timeout=2.0)
@@ -1250,6 +1292,13 @@ class DiffusionEngine(BaseEngine):
                 # path beat us to it.
                 if not stream_done_observed:
                     cancel_event.set()
+                if registered_request_id is not None:
+                    with self._request_cancels_lock:
+                        if (
+                            self._request_cancels.get(registered_request_id)
+                            is cancel_event
+                        ):
+                            self._request_cancels.pop(registered_request_id, None)
                 # Wait for the worker to fully release this job before
                 # we drop the engine lock, else a queued sibling
                 # request acquires the lock while the worker is still

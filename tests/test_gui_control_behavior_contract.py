@@ -48,7 +48,7 @@ def test_dictation_journey_proves_loading_before_ready():
     assert "RAPID_GUI_DICTATION_READINESS_FIXTURE=1" in flow
     assert "FAKE_AUDIO_TRANSCRIPTION_DELAY_MS=1800" in flow
     assert "Dictation never exposed model loading before readiness" in flow
-    assert "Dictation did not become Ready after model warmup" in flow
+    assert "Dictation did not become Listening after model warmup" in flow
     assert '.event == "audio_transcription"' in flow
     assert 'and (((.description // .value // .label // "") | tostring)' in flow
 

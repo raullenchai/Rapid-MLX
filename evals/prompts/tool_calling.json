@@ -5,10 +5,15 @@
     "level": 1,
     "description": "Single tool, simple args — web search",
     "messages": [
-      {"role": "user", "content": "What's the weather like in Tokyo right now?"}
+      {
+        "role": "user",
+        "content": "What's the weather like in Tokyo right now?"
+      }
     ],
     "expected_tool": "web_search",
-    "expected_args": {"query": "weather Tokyo"},
+    "expected_args": {
+      "query": "weather Tokyo"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "Tokyo weather: Partly cloudy, 18°C (64°F), humidity 62%, wind 8 km/h NE.",
     "expect_final_text": true
@@ -19,10 +24,16 @@
     "level": 1,
     "description": "Single tool, simple args — translate",
     "messages": [
-      {"role": "user", "content": "Translate 'Good morning' to Japanese"}
+      {
+        "role": "user",
+        "content": "Translate 'Good morning' to Japanese"
+      }
     ],
     "expected_tool": "translate",
-    "expected_args": {"text": "Good morning", "to": "Japanese"},
+    "expected_args": {
+      "text": "Good morning",
+      "to": "Japanese"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "おはようございます (Ohayou gozaimasu)",
     "expect_final_text": true
@@ -33,10 +44,15 @@
     "level": 1,
     "description": "Single tool, simple args — image generation",
     "messages": [
-      {"role": "user", "content": "Generate an image of a sunset over the ocean with palm trees"}
+      {
+        "role": "user",
+        "content": "Generate an image of a sunset over the ocean with palm trees"
+      }
     ],
     "expected_tool": "image_gen",
-    "expected_args": {"prompt": "sunset ocean palm trees"},
+    "expected_args": {
+      "prompt": "sunset ocean palm trees"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "Image generated: sunset_ocean_palms.png (1024x1024)",
     "expect_final_text": true
@@ -47,10 +63,16 @@
     "level": 1,
     "description": "Single tool, explicit code — code_run",
     "messages": [
-      {"role": "user", "content": "Run this Python code: print(sum(range(1, 101)))"}
+      {
+        "role": "user",
+        "content": "Run this Python code: print(sum(range(1, 101)))"
+      }
     ],
     "expected_tool": "code_run",
-    "expected_args": {"language": "python", "code": "print(sum(range(1, 101)))"},
+    "expected_args": {
+      "language": "python",
+      "code": "print(sum(range(1, 101)))"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "5050",
     "expect_final_text": true
@@ -61,10 +83,16 @@
     "level": 2,
     "description": "Function selection — memory_store not write or send_message",
     "messages": [
-      {"role": "user", "content": "Store this for later: my API key is sk-abc123def456"}
+      {
+        "role": "user",
+        "content": "Store this for later: my API key is sk-abc123def456"
+      }
     ],
     "expected_tool": "memory_store",
-    "expected_args": {"key": "API key", "value": "sk-abc123def456"},
+    "expected_args": {
+      "key": "API key",
+      "value": "sk-abc123def456"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "Stored: api_key = sk-abc123def456",
     "expect_final_text": true
@@ -75,10 +103,15 @@
     "level": 2,
     "description": "Function selection — browse not web_search",
     "messages": [
-      {"role": "user", "content": "Open https://example.com and tell me what's on the page"}
+      {
+        "role": "user",
+        "content": "Open https://example.com and tell me what's on the page"
+      }
     ],
     "expected_tool": "browse",
-    "expected_args": {"url": "https://example.com"},
+    "expected_args": {
+      "url": "https://example.com"
+    },
     "arg_match_mode": "exact",
     "fake_result": "Example Domain. This domain is for use in illustrative examples in documents.",
     "expect_final_text": true
@@ -89,10 +122,15 @@
     "level": 2,
     "description": "Function selection — exec not read for listing files",
     "messages": [
-      {"role": "user", "content": "List all files in the /tmp directory"}
+      {
+        "role": "user",
+        "content": "List all files in the /tmp directory"
+      }
     ],
     "expected_tool": "exec",
-    "expected_args": {"command": "ls /tmp"},
+    "expected_args": {
+      "command": "ls /tmp"
+    },
     "arg_match_mode": "contains",
     "fake_result": "cache.txt\ndata.csv\nhello.py\nrequirements.txt",
     "expect_final_text": true
@@ -103,10 +141,16 @@
     "level": 2,
     "description": "Function selection — code_run not exec for Python",
     "messages": [
-      {"role": "user", "content": "Run this Python snippet and show me the output:\nimport math\nprint(math.factorial(10))"}
+      {
+        "role": "user",
+        "content": "Run this Python snippet and show me the output:\nimport math\nprint(math.factorial(10))"
+      }
     ],
     "expected_tool": "code_run",
-    "expected_args": {"language": "python", "code": "math.factorial"},
+    "expected_args": {
+      "language": "python",
+      "code": "math.factorial"
+    },
     "arg_match_mode": "contains",
     "fake_result": "3628800",
     "expect_final_text": true
@@ -117,10 +161,16 @@
     "level": 2,
     "description": "Function selection — create_reminder not calendar_create or send_message",
     "messages": [
-      {"role": "user", "content": "Remind me tomorrow at 3pm to call Bob"}
+      {
+        "role": "user",
+        "content": "Remind me tomorrow at 3pm to call Bob"
+      }
     ],
     "expected_tool": "create_reminder",
-    "expected_args": {"text": "call Bob", "time": "3pm"},
+    "expected_args": {
+      "text": "call Bob",
+      "time": "3pm"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "Reminder set: 'Call Bob' at 2026-03-03 15:00",
     "expect_final_text": true
@@ -131,10 +181,16 @@
     "level": 3,
     "description": "Complex args — write file with multi-line code content",
     "messages": [
-      {"role": "user", "content": "Write a Python hello world script to /tmp/hello.py"}
+      {
+        "role": "user",
+        "content": "Write a Python hello world script to /tmp/hello.py"
+      }
     ],
     "expected_tool": "write",
-    "expected_args": {"path": "/tmp/hello.py", "content": "print"},
+    "expected_args": {
+      "path": "/tmp/hello.py",
+      "content": "print"
+    },
     "arg_match_mode": "contains",
     "fake_result": "File written: /tmp/hello.py (28 bytes)",
     "expect_final_text": true
@@ -145,10 +201,16 @@
     "level": 3,
     "description": "Complex args — calendar with natural date/time",
     "messages": [
-      {"role": "user", "content": "Create a calendar event: Team standup meeting next Tuesday at 2:30pm"}
+      {
+        "role": "user",
+        "content": "Create a calendar event: Team standup meeting next Tuesday at 2:30pm"
+      }
     ],
     "expected_tool": "calendar_create",
-    "expected_args": {"title": "Team standup meeting", "start": "2:30"},
+    "expected_args": {
+      "title": "Team standup meeting",
+      "start": "2:30"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "Calendar event created: 'Team standup meeting' on 2026-03-10 at 14:30",
     "expect_final_text": true
@@ -159,10 +221,15 @@
     "level": 3,
     "description": "Complex args — exec with piped command",
     "messages": [
-      {"role": "user", "content": "Show me all running Python processes"}
+      {
+        "role": "user",
+        "content": "Show me all running Python processes"
+      }
     ],
     "expected_tool": "exec",
-    "expected_args": {"command": "ps"},
+    "expected_args": {
+      "command": "ps"
+    },
     "arg_match_mode": "contains",
     "fake_result": "  PID TTY           TIME CMD\n12345 ttys000    0:01.23 python server.py\n12346 ttys001    0:00.45 python eval.py",
     "expect_final_text": true
@@ -173,10 +240,16 @@
     "level": 3,
     "description": "Complex args — code_run with multi-line Python and imports",
     "messages": [
-      {"role": "user", "content": "Run this code:\nimport json\ndata = {\"name\": \"Alice\", \"age\": 30}\nprint(json.dumps(data, indent=2))"}
+      {
+        "role": "user",
+        "content": "Run this code:\nimport json\ndata = {\"name\": \"Alice\", \"age\": 30}\nprint(json.dumps(data, indent=2))"
+      }
     ],
     "expected_tool": "code_run",
-    "expected_args": {"language": "python", "code": "json.dumps"},
+    "expected_args": {
+      "language": "python",
+      "code": "json.dumps"
+    },
     "arg_match_mode": "contains",
     "fake_result": "{\n  \"name\": \"Alice\",\n  \"age\": 30\n}",
     "expect_final_text": true
@@ -188,11 +261,26 @@
     "type": "parallel",
     "description": "Parallel — two web searches",
     "messages": [
-      {"role": "user", "content": "What's the weather in Tokyo and what's the weather in Paris?"}
+      {
+        "role": "user",
+        "content": "What's the weather in Tokyo and what's the weather in Paris?"
+      }
     ],
     "expected_tools": [
-      {"tool": "web_search", "expected_args": {"query": "weather Tokyo"}, "arg_match_mode": "fuzzy"},
-      {"tool": "web_search", "expected_args": {"query": "weather Paris"}, "arg_match_mode": "fuzzy"}
+      {
+        "tool": "web_search",
+        "expected_args": {
+          "query": "weather Tokyo"
+        },
+        "arg_match_mode": "fuzzy"
+      },
+      {
+        "tool": "web_search",
+        "expected_args": {
+          "query": "weather Paris"
+        },
+        "arg_match_mode": "fuzzy"
+      }
     ],
     "fake_results": [
       "Tokyo weather: Partly cloudy, 18°C, humidity 62%.",
@@ -207,12 +295,36 @@
     "type": "parallel",
     "description": "Parallel — three translations",
     "messages": [
-      {"role": "user", "content": "Translate 'hello' to Japanese, Korean, and French"}
+      {
+        "role": "user",
+        "content": "Translate 'hello' to Japanese, Korean, and French"
+      }
     ],
     "expected_tools": [
-      {"tool": "translate", "expected_args": {"text": "hello", "to": "Japanese"}, "arg_match_mode": "fuzzy"},
-      {"tool": "translate", "expected_args": {"text": "hello", "to": "Korean"}, "arg_match_mode": "fuzzy"},
-      {"tool": "translate", "expected_args": {"text": "hello", "to": "French"}, "arg_match_mode": "fuzzy"}
+      {
+        "tool": "translate",
+        "expected_args": {
+          "text": "hello",
+          "to": "Japanese"
+        },
+        "arg_match_mode": "fuzzy"
+      },
+      {
+        "tool": "translate",
+        "expected_args": {
+          "text": "hello",
+          "to": "Korean"
+        },
+        "arg_match_mode": "fuzzy"
+      },
+      {
+        "tool": "translate",
+        "expected_args": {
+          "text": "hello",
+          "to": "French"
+        },
+        "arg_match_mode": "fuzzy"
+      }
     ],
     "fake_results": [
       "こんにちは (Konnichiwa)",
@@ -228,11 +340,26 @@
     "type": "parallel",
     "description": "Parallel — web_search + image_gen (different tools)",
     "messages": [
-      {"role": "user", "content": "Search for the latest MLX news and also generate an image of the Apple M3 Ultra chip"}
+      {
+        "role": "user",
+        "content": "Search for the latest MLX news and also generate an image of the Apple M3 Ultra chip"
+      }
     ],
     "expected_tools": [
-      {"tool": "web_search", "expected_args": {"query": "MLX"}, "arg_match_mode": "fuzzy"},
-      {"tool": "image_gen", "expected_args": {"prompt": "Apple M3 Ultra"}, "arg_match_mode": "fuzzy"}
+      {
+        "tool": "web_search",
+        "expected_args": {
+          "query": "MLX"
+        },
+        "arg_match_mode": "fuzzy"
+      },
+      {
+        "tool": "image_gen",
+        "expected_args": {
+          "prompt": "Apple M3 Ultra"
+        },
+        "arg_match_mode": "fuzzy"
+      }
     ],
     "fake_results": [
       "MLX v0.25.0 released with improved Metal shaders and 2x faster attention.",
@@ -247,11 +374,26 @@
     "type": "parallel",
     "description": "Parallel — two file reads",
     "messages": [
-      {"role": "user", "content": "Read /tmp/a.txt and /tmp/b.txt and compare their contents"}
+      {
+        "role": "user",
+        "content": "Read /tmp/a.txt and /tmp/b.txt and compare their contents"
+      }
     ],
     "expected_tools": [
-      {"tool": "read", "expected_args": {"path": "/tmp/a.txt"}, "arg_match_mode": "exact"},
-      {"tool": "read", "expected_args": {"path": "/tmp/b.txt"}, "arg_match_mode": "exact"}
+      {
+        "tool": "read",
+        "expected_args": {
+          "path": "/tmp/a.txt"
+        },
+        "arg_match_mode": "exact"
+      },
+      {
+        "tool": "read",
+        "expected_args": {
+          "path": "/tmp/b.txt"
+        },
+        "arg_match_mode": "exact"
+      }
     ],
     "fake_results": [
       "Hello from file A. Version 1.0.",
@@ -266,7 +408,10 @@
     "type": "irrelevance",
     "description": "Irrelevance — factual question, no tool needed",
     "messages": [
-      {"role": "user", "content": "What is the capital of France?"}
+      {
+        "role": "user",
+        "content": "What is the capital of France?"
+      }
     ],
     "expect_no_tool": true
   },
@@ -277,7 +422,10 @@
     "type": "irrelevance",
     "description": "Irrelevance — knowledge question, no tool needed",
     "messages": [
-      {"role": "user", "content": "Explain how neural networks work in 2-3 sentences"}
+      {
+        "role": "user",
+        "content": "Explain how neural networks work in 2-3 sentences"
+      }
     ],
     "expect_no_tool": true
   },
@@ -288,7 +436,10 @@
     "type": "irrelevance",
     "description": "Irrelevance — conversation closer, no tool needed",
     "messages": [
-      {"role": "user", "content": "Thank you, that's all I needed for now. Have a great day!"}
+      {
+        "role": "user",
+        "content": "Thank you, that's all I needed for now. Have a great day!"
+      }
     ],
     "expect_no_tool": true
   },
@@ -298,10 +449,15 @@
     "level": 4,
     "description": "Sequential — web_search then browse",
     "messages": [
-      {"role": "user", "content": "Find the latest MLX framework release notes and summarize them"}
+      {
+        "role": "user",
+        "content": "Find the latest MLX framework release notes and summarize them"
+      }
     ],
     "expected_tool": "web_search",
-    "expected_args": {"query": "MLX framework release"},
+    "expected_args": {
+      "query": "MLX framework release"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "1. MLX v0.25.0 Release Notes - https://github.com/ml-explore/mlx/releases/tag/v0.25.0\n2. Apple MLX Documentation - https://ml-explore.github.io/mlx/",
     "followup_expected_tool": "browse",
@@ -314,10 +470,15 @@
     "level": 4,
     "description": "Sequential — read then exec",
     "messages": [
-      {"role": "user", "content": "Read the file /tmp/requirements.txt and install the packages listed in it"}
+      {
+        "role": "user",
+        "content": "Read the file /tmp/requirements.txt and install the packages listed in it"
+      }
     ],
     "expected_tool": "read",
-    "expected_args": {"path": "/tmp/requirements.txt"},
+    "expected_args": {
+      "path": "/tmp/requirements.txt"
+    },
     "arg_match_mode": "exact",
     "fake_result": "flask==3.0.0\nrequests>=2.31.0\npydantic~=2.5",
     "followup_expected_tool": "exec",
@@ -330,10 +491,15 @@
     "level": 5,
     "description": "Sequential 3-step — exec + memory_store + send_message",
     "messages": [
-      {"role": "user", "content": "Check my Python version, remember it, and send a message to Alice with the version info"}
+      {
+        "role": "user",
+        "content": "Check my Python version, remember it, and send a message to Alice with the version info"
+      }
     ],
     "expected_tool": "exec",
-    "expected_args": {"command": "python"},
+    "expected_args": {
+      "command": "python"
+    },
     "arg_match_mode": "contains",
     "fake_result": "Python 3.11.5",
     "followup_expected_tool": "memory_store",
@@ -348,10 +514,15 @@
     "level": 5,
     "description": "Sequential 3-step — web_search + code_run + write",
     "messages": [
-      {"role": "user", "content": "Search for how to calculate Fibonacci in Python, then run the code for fib(10), and save the result to /tmp/fib_result.txt"}
+      {
+        "role": "user",
+        "content": "Search for how to calculate Fibonacci in Python, then run the code for fib(10), and save the result to /tmp/fib_result.txt"
+      }
     ],
     "expected_tool": "web_search",
-    "expected_args": {"query": "Fibonacci Python"},
+    "expected_args": {
+      "query": "Fibonacci Python"
+    },
     "arg_match_mode": "fuzzy",
     "fake_result": "def fib(n): return n if n < 2 else fib(n-1) + fib(n-2)\nExample: fib(10) = 55",
     "followup_expected_tool": "code_run",
@@ -367,7 +538,10 @@
     "type": "missing_params",
     "description": "Missing params — send_message with no recipient or text",
     "messages": [
-      {"role": "user", "content": "Send a message"}
+      {
+        "role": "user",
+        "content": "Send a message"
+      }
     ],
     "expect_no_tool": true
   },
@@ -378,7 +552,10 @@
     "type": "missing_params",
     "description": "Missing params — write with no path or content",
     "messages": [
-      {"role": "user", "content": "Write to a file"}
+      {
+        "role": "user",
+        "content": "Write to a file"
+      }
     ],
     "expect_no_tool": true
   },
@@ -389,10 +566,15 @@
     "type": "error_recovery",
     "description": "Error recovery — permission denied, model should explain or retry",
     "messages": [
-      {"role": "user", "content": "Delete the file /etc/important_config"}
+      {
+        "role": "user",
+        "content": "Delete the file /etc/important_config"
+      }
     ],
     "expected_tool": "exec",
-    "expected_args": {"command": "rm"},
+    "expected_args": {
+      "command": "rm"
+    },
     "arg_match_mode": "contains",
     "error_result": "Error: Permission denied. Cannot delete /etc/important_config. Operation requires root privileges.",
     "expect_recovery_text": true
@@ -404,10 +586,15 @@
     "type": "error_recovery",
     "description": "Error recovery — 404 not found, model should try alternative",
     "messages": [
-      {"role": "user", "content": "Open https://example.com/nonexistent-page and show me the content"}
+      {
+        "role": "user",
+        "content": "Open https://example.com/nonexistent-page and show me the content"
+      }
     ],
     "expected_tool": "browse",
-    "expected_args": {"url": "https://example.com/nonexistent-page"},
+    "expected_args": {
+      "url": "https://example.com/nonexistent-page"
+    },
     "arg_match_mode": "exact",
     "error_result": "Error: 404 Not Found. The page at https://example.com/nonexistent-page does not exist.",
     "recovery_expected_tool": "web_search",
@@ -420,14 +607,21 @@
     "level": 4,
     "description": "Nested dependent — read URL from file then browse it",
     "messages": [
-      {"role": "user", "content": "Read the file /tmp/url.txt and browse to the URL that's inside it"}
+      {
+        "role": "user",
+        "content": "Read the file /tmp/url.txt and browse to the URL that's inside it"
+      }
     ],
     "expected_tool": "read",
-    "expected_args": {"path": "/tmp/url.txt"},
+    "expected_args": {
+      "path": "/tmp/url.txt"
+    },
     "arg_match_mode": "exact",
     "fake_result": "https://example.com/api/status",
     "followup_expected_tool": "browse",
-    "followup_expected_args": {"url": "https://example.com/api/status"},
+    "followup_expected_args": {
+      "url": "https://example.com/api/status"
+    },
     "followup_arg_match_mode": "exact",
     "followup_fake_result": "{\"status\": \"healthy\", \"uptime\": \"99.9%\", \"version\": \"2.1.0\"}",
     "expect_final_text": true
@@ -438,16 +632,128 @@
     "level": 4,
     "description": "Nested dependent — exec output becomes memory_store value",
     "messages": [
-      {"role": "user", "content": "Find my Python version and store it in memory for later"}
+      {
+        "role": "user",
+        "content": "Find my Python version and store it in memory for later"
+      }
     ],
     "expected_tool": "exec",
-    "expected_args": {"command": "python"},
+    "expected_args": {
+      "command": "python"
+    },
     "arg_match_mode": "contains",
     "fake_result": "Python 3.12.1",
     "followup_expected_tool": "memory_store",
-    "followup_expected_args": {"value": "Python 3.12.1"},
+    "followup_expected_args": {
+      "value": "Python 3.12.1"
+    },
     "followup_arg_match_mode": "contains",
     "followup_fake_result": "Stored: python_version = Python 3.12.1",
     "expect_final_text": true
+  },
+  {
+    "id": "tc31-weather-explicit",
+    "category": "single_tool",
+    "level": 1,
+    "description": "Explicit Weather request routes to weather, not web_search (both tools advertised) — issue #2222",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "weather",
+          "description": "Get current weather or current temperature for a city or place. Use this tool—not web_search—for current conditions. Pass the location from the user's request, preserving country or state/province qualifiers. This tool does not provide future forecasts, and ambiguous places are not guessed.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City or place name in the user's language, optionally followed by region/country, e.g. '西安', 'Springfield, Illinois', or 'Paris, France'."
+              },
+              "country": {
+                "type": "string",
+                "description": "Optional country name or two-letter country code used to disambiguate the place."
+              },
+              "admin1": {
+                "type": "string",
+                "description": "Optional state, province, or first-level administrative region used to disambiguate the place."
+              },
+              "units": {
+                "type": "string",
+                "description": "Either 'metric' (Celsius, km/h) or 'imperial' (Fahrenheit, mph). Defaults to metric.",
+                "enum": [
+                  "metric",
+                  "imperial"
+                ]
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "web_search",
+          "description": "Search the web and get the top results (title + URL + snippet). Use this for current events, recent news, or facts that may have changed since training. Do not use it for current weather when the weather tool is available.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "Search query in natural language."
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the current weather in Tokyo? Use the Weather tool, not web search, and report the tool result."
+      }
+    ],
+    "expected_tool": "weather",
+    "expected_args": {
+      "location": "Tokyo"
+    },
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Tokyo: Partly cloudy, 18°C (64°F), humidity 62%, wind 8 km/h NE.",
+    "verify_final_text": true,
+    "forbid_final_phrases": [
+      "weather tool is unavailable",
+      "no weather tool",
+      "don't have access to a weather tool",
+      "do not have access to a weather tool",
+      "cannot access the weather tool",
+      "can't access the weather tool",
+      "weather tool is not available",
+      "use web search instead",
+      "can't use the weather",
+      "cannot use the weather",
+      "cannot use the temperature tool",
+      "no access to weather",
+      "weather is unavailable",
+      "weather is not available",
+      "weather unavailable",
+      "cannot provide weather",
+      "can't provide the weather",
+      "unable to fetch weather",
+      "weather function unavailable"
+    ],
+    "require_final_terms": [
+      "Partly cloudy",
+      "18°C",
+      "62%"
+    ],
+    "first_call_stream": false,
+    "forbid_tools": [
+      "web_search"
+    ]
   }
 ]

@@ -132,6 +132,59 @@ def _parse_sse_events(text: str) -> tuple[list[dict], bool]:
     return events, saw_done
 
 
+def test_public_stream_id_is_the_scheduler_request_id():
+    """The first public SSE id must be the id admitted by the engine.
+
+    Clients can only cancel with the ``chatcmpl-*`` id exposed on the wire.
+    A separately generated scheduler UUID makes that documented endpoint
+    return 404 while generation continues.
+    """
+    engine = _PlainStreamEngine(["ok"])
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    events, saw_done = _parse_sse_events(response.text)
+    assert saw_done
+    public_id = events[0]["id"]
+    assert public_id.startswith("chatcmpl-")
+    assert engine.stream_calls[0]["kwargs"]["request_id"] == public_id
+
+
+@pytest.mark.asyncio
+async def test_engine_admission_precedes_first_public_stream_frame():
+    """An immediate cancel cannot race scheduler admission after the role SSE."""
+    from vllm_mlx.routes.chat import stream_chat_completion
+
+    engine = _PlainStreamEngine(["ok"])
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    stream = stream_chat_completion(
+        engine,
+        request.messages,
+        request,
+        response_id="chatcmpl-public1",
+        request_id="chatcmpl-public1",
+    )
+
+    first_chunk = await anext(stream)
+
+    assert '"role":"assistant"' in first_chunk
+    assert engine.stream_calls[0]["kwargs"]["request_id"] == "chatcmpl-public1"
+    await stream.aclose()
+
+
 def test_non_guided_streaming_pins_single_created_timestamp(monkeypatch):
     """Bug B regression: every SSE chunk in one completion must share a
     single ``created`` value.

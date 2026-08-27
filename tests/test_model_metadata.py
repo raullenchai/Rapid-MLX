@@ -293,6 +293,73 @@ def test_cached_metadata_returns_none_without_any_cached_metadata(monkeypatch):
     assert metadata.read_cached_model_metadata("publisher/model") is None
 
 
+def test_unreferenced_single_complete_snapshot_is_resolved_offline(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshot = repo_root / "snapshots" / "immutable-revision"
+    snapshot.mkdir(parents=True)
+    _write_json(snapshot / "config.json", {"model_type": "qwen3_5"})
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    result = metadata.read_cached_model_metadata("publisher/model")
+
+    assert result is not None
+    assert result.snapshot_dir == snapshot
+    assert result.config == {"model_type": "qwen3_5"}
+
+
+def test_unreferenced_snapshot_fails_closed_when_partial_or_ambiguous(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshots = repo_root / "snapshots"
+    partial = snapshots / "partial"
+    partial.mkdir(parents=True)
+    _write_json(partial / "config.json", {"model_type": "qwen3_5"})
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
+
+    (partial / "model.safetensors").write_bytes(b"complete")
+    second = snapshots / "second"
+    second.mkdir()
+    _write_json(second / "config.json", {"model_type": "qwen3_5"})
+    (second / "model.safetensors").write_bytes(b"complete")
+
+    assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
+
+
+def test_unreferenced_snapshot_does_not_override_existing_main_ref(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshot = repo_root / "snapshots" / "other-revision"
+    snapshot.mkdir(parents=True)
+    _write_json(snapshot / "config.json", {"model_type": "qwen3_5"})
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("missing-revision", encoding="utf-8")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
+
+
+def test_unreferenced_snapshot_rejects_weight_link_outside_repo(monkeypatch, tmp_path):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshot = repo_root / "snapshots" / "immutable-revision"
+    snapshot.mkdir(parents=True)
+    _write_json(snapshot / "config.json", {"model_type": "qwen3_5"})
+    outside = tmp_path / "outside-model.safetensors"
+    outside.write_bytes(b"complete")
+    (snapshot / "model.safetensors").symlink_to(outside)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
+
+
 def test_read_model_metadata_prefers_local_directory_then_cache(monkeypatch, tmp_path):
     local = metadata.ModelMetadata({}, "local", tmp_path)
     cached = metadata.ModelMetadata({}, "cached", tmp_path)

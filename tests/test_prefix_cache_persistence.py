@@ -47,6 +47,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 mx = pytest.importorskip("mlx.core")
@@ -58,6 +59,7 @@ from vllm_mlx.memory_cache import (  # noqa: E402
     MemoryCacheConfig,
     _load_prompt_cache_compat,
     _save_prompt_cache_compat,
+    _trim_cache_offset,
 )
 
 # --------------------------------------------------------------------------
@@ -178,6 +180,59 @@ def test_deepseek_v4_populated_cache_uses_vendored_class_on_load(tmp_path):
     restored_pooling = restored[0].caches[1]
     assert isinstance(restored_pooling, DeepseekV4PoolingCache)
     mx.eval(restored_pooling.state)
+
+
+def test_qwen4_qsa_cachelist_roundtrip_preserves_side_cache_owner(tmp_path):
+    """QSA raw-ring/compressed state restores through the vendored registry."""
+    from mlx_lm.models.cache import CacheList, KVCache
+
+    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+
+    kv = KVCache()
+    values = mx.arange(20, dtype=mx.float32).reshape(1, 1, 5, 4)
+    kv.update_and_fetch(values, -values)
+    qsa = QSAIndexCache(compress_ratio=2)
+    qsa.update(
+        mx.arange(20, dtype=mx.float32).reshape(1, 5, 4),
+        lambda group, start: group + start,
+    )
+
+    path = str(tmp_path / "qwen4-qsa.safetensors")
+    _save_prompt_cache_compat(path, [CacheList(kv, qsa)], {})
+    restored = _load_prompt_cache_compat(path)
+
+    restored_qsa = restored[0].caches[1]
+    assert isinstance(restored_qsa, QSAIndexCache)
+    assert restored_qsa.offset == 5
+    assert restored_qsa._compressed_count == 2
+    mx.eval(restored_qsa.state)
+    np.testing.assert_array_equal(
+        np.array(restored_qsa.raw_ring), np.array(qsa.raw_ring)
+    )
+    np.testing.assert_array_equal(
+        np.array(restored_qsa.compressed_keys), np.array(qsa.state[1])
+    )
+
+
+def test_qwen4_qsa_prefix_trim_rewinds_main_and_side_cache_together():
+    from mlx_lm.models.cache import CacheList, KVCache
+
+    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+
+    kv = KVCache()
+    values = mx.arange(32, dtype=mx.float32).reshape(1, 1, 8, 4)
+    kv.update_and_fetch(values, -values)
+    qsa = QSAIndexCache(compress_ratio=4)
+    qsa.update(
+        values.squeeze(axis=1),
+        lambda group, start: group + start,
+    )
+
+    trimmed = _trim_cache_offset([CacheList(kv, qsa)], 1)
+    assert trimmed is not None
+    assert trimmed[0][0].offset == 7
+    assert trimmed[0][1].offset == 7
+    assert trimmed[0][1]._compressed_count == 1
 
 
 def test_deepseek_v4_prefix_cache_survives_real_process_restart(tmp_path):

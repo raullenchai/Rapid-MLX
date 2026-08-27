@@ -208,6 +208,70 @@ def _cached_file(model_name: str, filename: str) -> Path | None:
     return Path(cached)
 
 
+def resolve_unreferenced_cached_snapshot(model_name: str) -> Path | None:
+    """Return one complete cached checkpoint when no Hub ref resolves it.
+
+    ``snapshot_download(..., revision=<commit>)`` materializes
+    ``snapshots/<commit>/`` but intentionally does not update ``refs/main``.
+    That is the exact shape produced by an immutable catalog download.  The
+    normal ``try_to_load_from_cache`` lookup therefore cannot see the files,
+    even though the selected checkpoint is complete and directly loadable.
+
+    This fallback is deliberately narrow: there must be exactly one snapshot
+    directory, it must contain a valid config and a complete mlx-lm checkpoint,
+    and the checkpoint files must stay inside that repository's cache root.
+    Multiple revisions are ambiguous and return ``None``; callers then retain
+    the normal online/default-ref behavior instead of guessing which revision
+    the user intended.
+    """
+    if not _looks_like_hub_repo_id(model_name):
+        return None
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        from ._download_gate import _snapshot_is_complete
+        from .model_aliases import checkpoint_prefix
+
+        repo_root = Path(HF_HUB_CACHE) / ("models--" + model_name.replace("/", "--"))
+        # This path is only for commit-pinned downloads that deliberately do
+        # not publish a default ref. If ``main`` exists, the Hub resolver owns
+        # revision selection and we must never substitute a different snapshot.
+        if os.path.lexists(repo_root / "refs" / "main"):
+            return None
+        snapshots_root = repo_root / "snapshots"
+        if snapshots_root.is_symlink() or not snapshots_root.is_dir():
+            return None
+        candidates = [
+            entry
+            for entry in snapshots_root.iterdir()
+            if entry.is_dir() and not entry.is_symlink()
+        ]
+        if len(candidates) != 1:
+            return None
+        checkpoint = candidates[0] / checkpoint_prefix(model_name)
+        if checkpoint.is_symlink() or not checkpoint.is_dir():
+            return None
+        config_path = checkpoint / "config.json"
+
+        # HF snapshot leaves normally symlink into this repository's own
+        # ``blobs`` directory. Reject a fabricated snapshot whose config or
+        # weight links escape the repository cache root before opening them.
+        repo_real = repo_root.resolve(strict=True)
+        inspected = [config_path, *checkpoint.glob("model*.safetensors")]
+        index_path = checkpoint / "model.safetensors.index.json"
+        if index_path.exists():
+            inspected.append(index_path)
+        for path in inspected:
+            path.resolve(strict=True).relative_to(repo_real)
+        if _read_json(config_path) is None or not _snapshot_is_complete(
+            str(checkpoint)
+        ):
+            return None
+        return checkpoint
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
 def read_cached_model_metadata(model_name: str) -> ModelMetadata | None:
     """Read metadata for a cached HF repository, never triggering download.
 
@@ -228,6 +292,8 @@ def read_cached_model_metadata(model_name: str) -> ModelMetadata | None:
     if snapshot_dir is None:
         tokenizer_path = _cached_file(model_name, f"{prefix}tokenizer_config.json")
         snapshot_dir = tokenizer_path.parent if tokenizer_path is not None else None
+    if snapshot_dir is None:
+        snapshot_dir = resolve_unreferenced_cached_snapshot(model_name)
     if snapshot_dir is None:
         return None
     return ModelMetadata(

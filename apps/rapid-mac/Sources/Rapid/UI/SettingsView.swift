@@ -42,6 +42,7 @@ struct SettingsView: View {
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
     @Environment(QuickstartCoordinator.self) private var quickstart
+    @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @State private var confirmingSetupRestart = false
     @State private var restartingSetup = false
 
@@ -66,8 +67,8 @@ struct SettingsView: View {
         /// the older stand-alone "Models" tab was folded in here so
         /// users don't face two competing model surfaces.
         case modelManagement
-        /// Instructions applied to every chat before any conversation-specific
-        /// override. Stored locally in UserDefaults.
+        /// Global system-prompt default applied before any conversation-specific
+        /// override. Stored locally in UserDefaults under the legacy key.
         case instructions
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
@@ -102,7 +103,7 @@ struct SettingsView: View {
         var title: String {
             switch self {
             case .modelManagement: return "Model Management"
-            case .instructions: return "Instructions"
+            case .instructions: return "System Prompt"
             case .tools: return "Tools"
             case .connectors: return "Connectors"
             case .performance: return "Performance"
@@ -502,23 +503,28 @@ struct SettingsView: View {
         @Bindable var config = customInstructions
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Custom Instructions",
-                subtitle: "Set preferences for how the assistant responds in every conversation.",
+                "System Prompt",
+                subtitle: "Sent as a system message with every conversation. Conversation prompts can override it.",
                 emphasis: .page
             )
             InstructionEditorSection(
-                "Global",
-                subtitle: "Used in every conversation. A conversation can add more specific direction.",
+                "Global default",
+                subtitle: "Used when a conversation has no conflicting prompt. Stored only on this Mac.",
                 clearEnabled: CustomInstructionsConfig.normalized(config.global) != nil,
                 onClear: { config.global = "" }
             ) {
                 InstructionTextEditor(
                     text: $config.global,
-                    placeholder: "For example: Be concise, use plain language, and include code examples when useful.",
+                    placeholder: "For example: Answer concisely, use plain language, and include code examples when useful.",
                     height: 172,
                     accessibilityIdentifier: "Settings.Instructions.GlobalEditor"
                 )
             }
+            EffectiveSystemPromptDisclosure(
+                global: config.global,
+                conversation: "",
+                accessibilityIdentifier: "Settings.SystemPrompt.EffectivePreview"
+            )
         }
     }
 
@@ -568,12 +574,12 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
-            // The first-run consent sheet (ContentView) writes the same
+            // The post-value consent invitation writes the same
             // preference, so the seeded value can be stale by the time this
             // panel is first shown...
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
             // ...and it can go stale *while* the panel is open: Settings can be
-            // opened over the still-attached first-run sheet, and answering
+            // opened while the invitation is visible, and answering
             // "Share" there would otherwise leave this switch reading off while
             // telemetry is running. Re-reading on any defaults change keeps the
             // two surfaces honest without either one knowing about the other.
@@ -651,7 +657,7 @@ struct SettingsView: View {
     /// rebuilds the view for unrelated reasons.
     ///
     /// Seeded once and re-read in ``onAppear`` so a change made elsewhere —
-    /// the first-run consent sheet writes the same key — is still reflected.
+    /// the post-value consent invitation writes the same key — is still reflected.
     @State private var telemetryEnabled = TelemetryConfig.isEnabled
 
     private var telemetryEnabledBinding: Binding<Bool> {
@@ -663,10 +669,7 @@ struct SettingsView: View {
                 // reintroduce the same problem the moment a write is deferred
                 // or rejected.
                 telemetryEnabled = enabled
-                TelemetryConsent.record(enabled: enabled)
-                if enabled {
-                    Task { await TelemetrySession.sendStartIfNeeded() }
-                }
+                deferredTelemetryConsent.settingsChanged(enabled: enabled)
             }
         )
     }

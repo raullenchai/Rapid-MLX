@@ -81,6 +81,8 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "ddtree_speculative_tokens",
         "ddtree_tree_budget",
         "min_memory_gb",
+        "vision_min_memory_gb",
+        "experimental",
         "recommended_sampling",
         "pflash_tier",
         "pflash_keep_ratio",
@@ -99,6 +101,36 @@ def _raw_aliases() -> dict[str, dict | str]:
 def _alias_ids() -> list[str]:
     """Stable alias name list for ``parametrize`` IDs."""
     return sorted(_raw_aliases().keys())
+
+
+def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
+    """The published M1 artifact stays explicit and Ultra-class only."""
+
+    alias = "qwen3.8-flash-next-4bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "rapid-mlx/Qwen3.8-Flash-Next-4bit"
+    assert profile.experimental is True
+    assert profile.min_memory_gb == 128.0
+    assert profile.is_hybrid is True
+    assert profile.is_hybrid_explicit is True
+    assert profile.is_moe is True
+    assert profile.supports_spec_decode is False
+    assert profile.tool_call_parser == "hermes"
+    assert profile.reasoning_parser == "qwen3"
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+
+
+@pytest.mark.parametrize("bad_value", [0, 1, "true", None])
+def test_experimental_alias_flag_requires_a_boolean(bad_value) -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="experimental"):
+        _coerce(
+            "bad-experimental-alias",
+            {"hf_path": "publisher/model", "experimental": bad_value},
+        )
 
 
 def test_minicpm5_aliases_pin_the_verified_native_xml_contract() -> None:
@@ -591,6 +623,20 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         _coerce(
             "fake-alias",
             {"hf_path": "fake/Model", "supports_dflash": True},
+        )
+
+
+@pytest.mark.parametrize("bad_floor", [0, -1, True, "32"])
+def test_vision_memory_floor_requires_a_positive_number(bad_floor) -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="vision_min_memory_gb"):
+        _coerce(
+            "fake-vision-alias",
+            {
+                "hf_path": "fake/Vision-Model",
+                "vision_min_memory_gb": bad_floor,
+            },
         )
 
 

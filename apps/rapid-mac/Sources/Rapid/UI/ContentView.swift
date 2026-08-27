@@ -6,6 +6,29 @@ import SwiftUI
 /// server is ready the picker's Start button owns the flow, and a
 /// brand-new user with no model on disk sees the Quickstart card.
 struct ContentView: View {
+    enum RestoredChatAlias: Equatable {
+        case pendingCatalog
+        /// The bounded catalog retry also failed. The persisted key remains
+        /// untouched for a future launch, but this session must not stay
+        /// blocked behind an alias it could not classify.
+        case unresolved
+        case resolved(String?)
+    }
+
+    /// Outer nil means catalog classification is still pending. Outer some
+    /// carries the value onboarding should evaluate; `.unresolved` therefore
+    /// deliberately behaves like no persisted chat model for this session.
+    static func quickstartChatAlias(for state: RestoredChatAlias) -> String?? {
+        switch state {
+        case .pendingCatalog:
+            nil
+        case .unresolved:
+            .some(nil)
+        case .resolved(let alias):
+            .some(alias)
+        }
+    }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// #459: hard window-width floor. The original 640pt target preserved
     /// half-screen tiling on built-in MacBook displays; 720pt is the smallest
@@ -23,12 +46,14 @@ struct ContentView: View {
     @Environment(ChatViewModel.self) private var chat
     @Environment(ImageGenViewModel.self) private var imageGen
     @Environment(AudioViewModel.self) private var audio
+    @Environment(DictationController.self) private var dictation
     @Environment(SamplingConfig.self) private var sampling
     @Environment(UpdateChecker.self) private var updater
     @Environment(QuickstartCoordinator.self) private var quickstart
     @Environment(BrowseApprovalStore.self) private var browseApproval
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
+    @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @Environment(\.openWindow) private var openWindow
 
     @State private var alias: String = ""
@@ -40,9 +65,6 @@ struct ContentView: View {
     @State private var section: SidebarSection = .chat
     /// Window-level conversation search, opened from the toolbar.
     @State private var showConversationSearch = false
-    /// An absent telemetry preference is an undecided first run, not
-    /// implicit consent.
-    @State private var telemetryConsentPending = TelemetryConsent.needsDecision()
     @SceneStorage("Rapid.showLogs") private var showLogs: Bool = false
     /// Per-session "browse all models" dismissal of the Quickstart card.
     @State private var quickstartDismissedThisSession: Bool = false
@@ -69,6 +91,16 @@ struct ContentView: View {
     /// FU-1: persisted opt-out for the launch-time auto-start path.
     @AppStorage(AutoStartPreference.storageKey) private var autoStartOnLaunch: Bool = AutoStartPreference.defaultValue
     @State private var campaign: Campaign? = Campaign.previewFromEnvironment(ProcessInfo.processInfo.environment)
+    /// The rc2 key predates lane ownership. A non-empty value cannot decide
+    /// onboarding until catalog metadata proves it is a chat model; keeping an
+    /// explicit pending state prevents the launch gate and Quickstart surface
+    /// from interpreting the same legacy audio alias differently.
+    @State private var restoredChatAlias: RestoredChatAlias =
+        ServerManager.lastServedAlias() == nil ? .resolved(nil) : .pendingCatalog
+    /// A legacy chat key needs catalog metadata before it can be trusted. If
+    /// the shared launch probe fails empty, permit one immediate authoritative
+    /// retry without turning session restoration into a polling loop.
+    @State private var catalogRestoreRetryAttempted = false
 
     var body: some View {
         // Capture the identity owned by this alert render. A delayed dismiss
@@ -82,9 +114,7 @@ struct ContentView: View {
         // model comes up on first send (implicit lifecycle). Search belongs
         // to the sidebar column beside macOS's native collapse control.
         Group {
-            if telemetryConsentPending {
-                firstRunConsentGate
-            } else if quickstartVisible {
+            if quickstartVisible {
                 // Setup owns the window (Paper 05.1.A). See ``onboardingShell``.
                 onboardingShell
             } else {
@@ -111,6 +141,10 @@ struct ContentView: View {
             }
         }
         .onChange(of: server.state) { _, newState in
+            // A chat-model replacement can keep the process or respawn it.
+            // Dictation owns the same reconciliation entry point for both so
+            // an enabled STT lane is resident before its hotkey reads Ready.
+            dictation.serverStateDidChange(newState)
             // #223: clear the download-prompt CTA the moment the server
             // moves out of ``.idle``.
             if case .idle = newState {} else { autoStartPendingDownload = nil }
@@ -239,14 +273,7 @@ struct ContentView: View {
         // the browse sheet above — an MCP server is an arbitrary local process,
         // so "may the model run this" is a decision that belongs on screen.
         .modifier(MCPToolApprovalDialog(store: mcpApproval))
-        // #1589: keyed on the consent decision rather than fire-once, so
-        // the launch auto-start that stood down for the consent gate gets
-        // its turn the moment the user answers it. The value only ever
-        // moves true → false (once per install), so this is a single
-        // re-run, and the first pass returns at the gate without an
-        // in-flight `server.start` for SwiftUI's task cancellation to
-        // interrupt. Users with no pending decision see one run, as before.
-        .task(id: telemetryConsentPending) { await runLaunchAutoStart() }
+        .task { await restorePersistedSession() }
         // Keyed exactly as the picker's own catalog task: re-fetch when
         // the engine binary appears and whenever the set of models on
         // disk changes anywhere in the app. Routed through the shared
@@ -255,17 +282,56 @@ struct ContentView: View {
         .task(id: ModelPickerBar.PickerCatalogKey(
             binaryPath: server.binaryPath,
             cacheGeneration: downloads.cacheGeneration,
-            refreshEnabled: !telemetryConsentPending
+            refreshEnabled: true
         )) {
-            guard !telemetryConsentPending else { return }
             await refreshCatalogSnapshot()
+        }
+        // The selected chat alias may be a secondary resident model rather
+        // than the process-owning `servingAlias`. Fetch its exact live profile
+        // whenever that selection becomes resident so photo admission follows
+        // the lane that will actually receive the request.
+        .task(id: SelectedModelProfileKey(
+            alias: alias,
+            isResident: server.isModelResident(alias),
+            port: server.activePort,
+            bearer: server.activeBearer
+        )) {
+            let requestedAlias = alias
+            server.clearActiveModelProfile()
+            await refreshSelectedModelProfile(for: requestedAlias)
         }
         .task {
             while !Task.isCancelled {
                 await server.refreshResidency()
                 try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                // Reuse the existing local residency cadence as recovery for
+                // a transient profile timeout/non-2xx. A successful profile
+                // remains authoritative for this bearer session; only a
+                // missing/mismatched profile needs another request.
+                if server.activeModelProfile?.id.caseInsensitiveCompare(alias) != .orderedSame {
+                    await refreshSelectedModelProfile(for: alias)
+                }
             }
         }
+    }
+
+    private func refreshSelectedModelProfile(for requestedAlias: String) async {
+        guard server.isModelResident(requestedAlias) else { return }
+        let requestedPort = server.activePort
+        let requestedBearer = server.activeBearer
+        let profile = await ServerProfileFetcher.fetch(
+            baseURL: ChatStreamClient.loopbackURL(port: requestedPort),
+            alias: requestedAlias,
+            bearer: requestedBearer
+        )
+        guard !Task.isCancelled,
+              alias == requestedAlias,
+              server.activePort == requestedPort,
+              server.activeBearer == requestedBearer,
+              server.isModelResident(requestedAlias),
+              let profile else { return }
+        server.applyActiveModelProfile(profile, forAlias: requestedAlias)
     }
 
     /// First-run setup, filling the window (Paper 05.1.A).
@@ -292,8 +358,8 @@ struct ContentView: View {
     ///
     /// Nothing about the state machine moves with it. ``quickstartVisible`` is
     /// the same predicate that gated the sheet, and every alert, dialog and
-    /// task modifier stays attached to the root above this branch, so consent,
-    /// approvals and the launch auto-start all behave exactly as before.
+    /// task modifier stays attached to the root above this branch, so approval
+    /// dialogs and launch auto-start behave exactly as before.
     @ViewBuilder
     private var onboardingShell: some View {
         quickstartSurface
@@ -324,8 +390,10 @@ struct ContentView: View {
             // but was never mounted, so a failed Finder replacement was
             // detected and then silently discarded.
             FailedReplaceBanner()
+            if deferredTelemetryConsent.isPresented {
+                DeferredTelemetryConsentBanner()
+            }
             if let campaign,
-               !telemetryConsentPending,
                !UserDefaults.standard.bool(forKey: campaign.dismissalKey) {
                 CampaignBanner(
                     campaign: campaign,
@@ -586,14 +654,32 @@ struct ContentView: View {
     private func refreshCatalogSnapshot() async {
         guard let binary = server.binaryPath else { return }
         let generation = downloads.cacheGeneration
-        let loaded = await ModelCatalogCache.shared.entries(
+        var loaded = await ModelCatalogCache.shared.entries(
             binary: binary,
             generation: generation
         )
         guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
+        if loaded.isEmpty,
+           case .pendingCatalog = restoredChatAlias,
+           !catalogRestoreRetryAttempted {
+            catalogRestoreRetryAttempted = true
+            await ModelCatalogCache.shared.invalidate()
+            loaded = await ModelCatalogCache.shared.entries(
+                binary: binary,
+                generation: generation
+            )
+            guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
+        }
         catalogEntries = loaded
         catalogGeneration = generation
         catalogLoaded = true
+        if case .pendingCatalog = restoredChatAlias,
+           !loaded.isEmpty || catalogRestoreRetryAttempted {
+            await restorePersistedSession(
+                catalog: loaded,
+                emptyCatalogIsAuthoritative: loaded.isEmpty
+            )
+        }
     }
 
     /// Perform the readiness banner's next-step action.
@@ -632,7 +718,8 @@ struct ContentView: View {
     }
 
     private func startModel(_ target: String) {
-        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
+        let catalogEntry = catalogEntries.first(where: { $0.alias == target })
+        let hfPath = catalogEntry?.hfRepo
         // ``ensureServing`` via the shared helper, NOT ``server.start``: start is
         // cold-start only and no-ops while a different model (e.g. an Images
         // checkpoint) is resident, silently dropping the switch (#1739).
@@ -641,7 +728,8 @@ struct ContentView: View {
                 alias: target,
                 hfPath: hfPath,
                 estimatedMemoryGB: nil,
-                replacementGroup: .assistant
+                replacementGroup: .assistant,
+                catalogEntryHint: catalogEntry
             )
         }
     }
@@ -672,7 +760,8 @@ struct ContentView: View {
                 alias: target,
                 hfPath: hfPath,
                 estimatedMemoryGB: nil,
-                replacementGroup: .assistant
+                replacementGroup: .assistant,
+                catalogEntryHint: entry
             )
         }
     }
@@ -685,10 +774,17 @@ struct ContentView: View {
     }
 
     private func restartModel(_ target: String) {
-        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
+        let catalogEntry = catalogEntries.first(where: { $0.alias == target })
+        let hfPath = catalogEntry?.hfRepo
         Task {
             await server.stop()
-            _ = await server.ensureServing(alias: target, hfPath: hfPath)
+            _ = await server.ensureServing(
+                alias: target,
+                hfPath: hfPath,
+                estimatedMemoryGB: nil,
+                replacementGroup: .assistant,
+                catalogEntryHint: catalogEntry
+            )
         }
     }
 
@@ -722,13 +818,14 @@ struct ContentView: View {
     private var mainArea: some View {
         switch ContentView.mainAreaBranch(for: server.state) {
         case .chat:
+            let imageAvailability = imageInputAvailability(for: alias)
             ChatView(
                 viewModel: chat,
                 server: server,
                 alias: $alias,
                 readiness: readiness,
-                supportsImageInput: supportsImageInput(for: alias),
-                catalogRefreshEnabled: !telemetryConsentPending,
+                supportsImageInput: imageAvailability.isAvailable,
+                imageInputUnavailableMessage: imageAvailability.unavailableMessage,
                 onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction,
                 composerFocusRequest: composerFocusRequest
@@ -738,7 +835,7 @@ struct ContentView: View {
         }
     }
 
-    private func supportsImageInput(for alias: String) -> Bool {
+    private func imageInputAvailability(for alias: String) -> ImageInputAvailability {
         let entry = catalogEntries.first {
             $0.alias.caseInsensitiveCompare(alias) == .orderedSame
         }
@@ -747,7 +844,7 @@ struct ContentView: View {
             isBuiltinProfile: entry?.isBuiltinProfile,
             isTextOnly: entry?.isTextOnly
         )
-        return server.supportsImageInput(
+        return server.imageInputAvailability(
             forAlias: alias,
             catalogSupportsImageInput: catalogSupportsImageInput
         )
@@ -829,23 +926,19 @@ struct ContentView: View {
         // global onboarding sheet.
         guard ContentView.quickstartCanPresent(in: section) else { return false }
         guard !quickstartDismissedThisSession else { return false }
-        // Telemetry consent comes first. Both surfaces used to be able to fire
-        // together (nothing referenced the other's condition) — tolerable when
-        // Quickstart merely filled the detail pane behind the consent sheet,
-        // but now they compete for the same presentation channel, and macOS
-        // grants that to whichever asks first. Deferring here keeps the order
-        // deterministic: decide on telemetry, then pick a model.
-        guard !telemetryConsentPending else { return false }
         if ContentView.serverEngagedWithDifferentAlias(
             state: server.state,
             quickstartAlias: quickstart.selection.alias
         ) {
             return false
         }
+        guard let chatAlias = Self.quickstartChatAlias(for: restoredChatAlias) else {
+            return false
+        }
         if QuickstartCoordinator.isEligible(
             done: quickstart.done,
             legacyDone: quickstart.legacyDone,
-            lastServedAlias: ServerManager.lastServedAlias(),
+            lastServedAlias: chatAlias,
             serverState: server.state
         ) {
             return true
@@ -925,25 +1018,6 @@ struct ContentView: View {
         case .idle, .stopped, .missing, .crashed:
             return nil
         }
-    }
-
-    // MARK: - First-run telemetry consent
-
-    @ViewBuilder
-    private var firstRunConsentGate: some View {
-        TelemetryConsentView(onDecision: decideTelemetry)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(color: .black.opacity(0.16), radius: 24, y: 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RapidTheme.surfaceCanvas)
-        .accessibilityAddTraits(.isModal)
-    }
-
-    private func decideTelemetry(_ enabled: Bool) {
-        TelemetryConsent.record(enabled: enabled)
-        telemetryConsentPending = false
-        guard enabled else { return }
-        Task { await TelemetrySession.sendStartIfNeeded() }
     }
 
     // MARK: - Missing-sidecar overlay
@@ -1121,27 +1195,88 @@ struct ContentView: View {
 
     // MARK: - Launch auto-start (Flow A/B)
 
-    private func runLaunchAutoStart() async {
-        // Consent is the first user-controlled surface. Do not even inspect
-        // model caches behind it: the final AutoStartDecision also knows about
-        // this gate, but reaching that decision requires loading the catalog
-        // first (`rapid-mlx models` + `ls`). Besides doing work the user has not
-        // allowed the app to begin yet, that made first-launch UI depend on the
-        // operator's existing HF cache. The task is keyed on this value and
-        // runs again immediately after the user answers.
-        guard !telemetryConsentPending else { return }
-        guard autoStartOnLaunch else {
+    /// Restore lane-owned state in dependency order. Start resolving chat
+    /// first, while arming Dictation's persisted global shortcut immediately;
+    /// audio model preparation remains deferred until the chat launch settles.
+    /// This keeps a slow primary health check from disabling the shortcut
+    /// without letting an audio fallback win ownership of the shared process.
+    private func restorePersistedSession(
+        catalog suppliedCatalog: [ModelEntry]? = nil,
+        emptyCatalogIsAuthoritative: Bool = false
+    ) async {
+        let resolutionWasPending: Bool = {
+            if case .pendingCatalog = restoredChatAlias { return true }
+            return false
+        }()
+        _ = BundledModel.installBundledSnapshotSymlink()
+        _ = QuickstartModel.installAllSnapshotSymlinks()
+        let sessionCatalog: [ModelEntry]
+        if let suppliedCatalog {
+            sessionCatalog = suppliedCatalog
+        } else if let binary = server.binaryPath {
+            sessionCatalog = await ModelCatalogCache.shared.entries(
+                binary: binary,
+                generation: downloads.cacheGeneration
+            )
+        } else {
+            sessionCatalog = []
+        }
+        let launchPlan = SessionModelRestore.launchPlan(
+            legacyLastAlias: ServerManager.lastServedAlias(),
+            dictationAlias: nil,
+            speechAlias: nil,
+            catalog: sessionCatalog,
+            autoStartEnabled: autoStartOnLaunch,
+            emptyCatalogIsAuthoritative: emptyCatalogIsAuthoritative
+        )
+        // Another reader may have resolved the same shared load while this
+        // task was suspended. A stale empty result cannot re-establish the
+        // audio barrier after the winning restore has already paired it.
+        if resolutionWasPending {
+            guard case .pendingCatalog = restoredChatAlias else { return }
+        }
+        if launchPlan.chatAliasResolved {
+            restoredChatAlias = emptyCatalogIsAuthoritative
+                ? .unresolved
+                : .resolved(launchPlan.models.chatAlias)
+        }
+
+        async let chatRestore: Void = runLaunchAutoStart(
+            catalogEntries: sessionCatalog,
+            launchPlan: launchPlan
+        )
+        await dictation.bootstrap(deferModelPreparation: true)
+        await chatRestore
+        // A failed catalog probe cannot classify the legacy key. Keep the
+        // audio barrier established; `refreshCatalogSnapshot` re-enters this
+        // same function when its independent probe produces real rows.
+        guard launchPlan.chatAliasResolved else { return }
+        if Task.isCancelled {
+            // The catalog task is keyed on cache generation. Hand ownership
+            // back to its replacement and pair the already-established audio
+            // barrier without starting audio from this cancelled task.
+            if resolutionWasPending {
+                restoredChatAlias = .pendingCatalog
+            }
+            await dictation.finishDeferredBootstrap()
+            return
+        }
+        await dictation.finishDeferredBootstrap()
+    }
+
+    private func runLaunchAutoStart(
+        catalogEntries: [ModelEntry],
+        launchPlan: SessionModelRestore.LaunchPlan
+    ) async {
+        guard launchPlan.shouldAutoStart else {
             autoStartPendingDownload = nil
             return
         }
         guard case .idle = server.state else { return }
 
-        _ = BundledModel.installBundledSnapshotSymlink()
-        _ = QuickstartModel.installAllSnapshotSymlinks()
-
         let aliasAtEntry = alias
         let userSelectionRevisionAtEntry = userSelectionRevision
-        var cachedAliases: Set<String> = []
+        let cachedAliases = Set(catalogEntries.filter { $0.cached }.map(\.alias))
         // #1706: the full catalog membership snapshot (cached AND
         // uncached entries the sidecar can serve), used to validate the
         // stored last-served alias before we resume it. `nil` would ask
@@ -1149,15 +1284,9 @@ struct ContentView: View {
         // concrete set when the binary is reachable so a stored alias
         // the engine can't serve (renamed/dropped/wrong-modality) falls
         // through to the picker instead of a failed serve.
-        var catalogAliases: Set<String>? = nil
-        if let binary = server.binaryPath {
-            let entries = await ModelCatalogCache.shared.entries(
-                binary: binary,
-                generation: downloads.cacheGeneration
-            )
-            cachedAliases = Set(entries.filter { $0.cached }.map(\.alias))
-            catalogAliases = Set(entries.map(\.alias))
-        }
+        let catalogAliases: Set<String>? = server.binaryPath == nil
+            ? nil
+            : Set(catalogEntries.map(\.alias))
         guard case .idle = server.state else {
             autoStartPendingDownload = nil
             return
@@ -1184,7 +1313,7 @@ struct ContentView: View {
                     alias: candidate, physicalRAMGB: hardware.physicalRAMGB)
         }
         let decision = AutoStartDecision.decide(
-            lastServedAlias: ServerManager.lastServedAlias(),
+            lastServedAlias: launchPlan.models.chatAlias,
             bundledFallbackAlias: BundledModel.firstLaunchAlias(lastServedAlias: nil),
             binaryReachable: server.binaryPath != nil,
             cachedAliases: cachedAliases,
@@ -1192,12 +1321,6 @@ struct ContentView: View {
             catalogAliases: catalogAliases,
             rejectsAlias: rejectsAlias,
             userOptedIn: autoStartOnLaunch,
-            // #1589: the two first-run surfaces get the launch before
-            // auto-start does. Nothing loads behind the modal consent
-            // sheet, and nothing loads for a user Quickstart still owes
-            // onboarding to — auto-start restores a last-used model, it
-            // does not invent a first one.
-            firstRunDecisionPending: telemetryConsentPending,
             // The SAME predicate the Quickstart sheet presents on (via
             // ``QuickstartCoordinator.isEligible``), minus the server-state
             // gate that this path is about to move. Asking it here rather
@@ -1206,7 +1329,7 @@ struct ContentView: View {
             onboardingPending: QuickstartCoordinator.onboardingOwed(
                 done: quickstart.done,
                 legacyDone: quickstart.legacyDone,
-                lastServedAlias: ServerManager.lastServedAlias()
+                lastServedAlias: launchPlan.models.chatAlias
             ),
             // Skip a retired starter only while the rescue is still on
             // offer. Once the user has completed or dismissed Quickstart,
@@ -1229,7 +1352,14 @@ struct ContentView: View {
             // modal the user never asked for (issue: annoying warning on every
             // app open). The user's own Start/first-message routes through
             // ``start`` without this flag and still gets the warning.
-            await server.start(alias: resume, isLaunchAutoStart: true)
+            let catalogEntry = catalogEntries.first {
+                $0.alias.caseInsensitiveCompare(resume) == .orderedSame
+            }
+            await server.start(
+                alias: resume,
+                isLaunchAutoStart: true,
+                catalogEntryHint: catalogEntry
+            )
         case .promptDownload(let pending):
             let footprint = ModelSizing.estimate(alias: pending)
             let sizeText: String? = footprint.paramsBillions == nil
@@ -1305,6 +1435,16 @@ struct ContentView: View {
             return .chat
         }
     }
+}
+
+/// Identity of the exact live server session whose selected-model profile is
+/// shown by the composer. A fresh sidecar rotates its bearer even when it
+/// reuses the same alias and port, so capability state must be fetched again.
+struct SelectedModelProfileKey: Equatable {
+    let alias: String
+    let isResident: Bool
+    let port: Int
+    let bearer: String?
 }
 
 /// Approval dialog for the ``browse`` tool: present while a request is

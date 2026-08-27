@@ -314,6 +314,45 @@ struct ResidentLoadFeedbackTests {
         #expect(server.residentLoadFailure(for: "flux2-klein-4b") == nil)
     }
 
+    @Test("Assistant resident load persists authoritative catalog provenance without a hint")
+    func residentAssistantPersistsProbedChatAlias() async throws {
+        defer { ResidentLoadRejectProtocol.reset() }
+        ResidentLoadRejectProtocol.rejectLoad = false
+        let suite = "ResidentLoadFeedbackTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("previous-chat", forKey: SessionModelRestore.chatAliasStorageKey)
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let fakeServer = packageRoot.appendingPathComponent("scripts/fake-rapid-mlx.sh")
+        let wrapper = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-resident-catalog-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: wrapper) }
+        try "#!/bin/sh\nFAKE_CACHED_CURATED_TRADEUP=1 exec '\(fakeServer.path)' \"$@\"\n"
+            .write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: wrapper.path
+        )
+        let server = makeServer(
+            initialAlias: "previous-chat",
+            binaryPath: wrapper,
+            sessionDefaults: defaults
+        )
+
+        let ok = await server.ensureServing(
+            alias: "qwen3.5-4b-4bit",
+            hfPath: "fake/model",
+            estimatedMemoryGB: nil,
+            replacementGroup: .assistant
+        )
+
+        #expect(ok)
+        #expect(defaults.string(forKey: SessionModelRestore.chatAliasStorageKey) == "qwen3.5-4b-4bit")
+    }
+
     /// The cross-talk regression from the earlier single-slot design (#1838
     /// follow-up): a rejection for model B must NOT be cleared by model A
     /// successfully loading, and a rejection for model A must not surface for
@@ -441,10 +480,18 @@ struct ResidentLoadFeedbackTests {
     /// Build a ``ServerManager`` in the resident-ready state with the stub
     /// transport and a stub child, so ``ensureServing`` takes the in-process
     /// ``/v1/models/load`` path rather than the cold-start fallback.
-    private func makeServer() -> ServerManager {
+    private func makeServer(
+        initialAlias: String = "qwen3.5-4b-4bit",
+        binaryPath: URL? = nil,
+        sessionDefaults: UserDefaults? = nil
+    ) -> ServerManager {
         var client = ServerResidencyClient()
         client.session = ResidentLoadRejectProtocol.session()
-        let server = ServerManager(testingState: .ready(alias: "qwen3.5-4b-4bit"))
+        let server = ServerManager(
+            testingState: .ready(alias: initialAlias),
+            binaryPath: binaryPath,
+            sessionDefaults: sessionDefaults
+        )
         server._testSetResidencyClient(client)
         server._testInstallChild(ProcessGroupChild.testStub())
         return server

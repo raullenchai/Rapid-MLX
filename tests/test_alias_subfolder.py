@@ -511,32 +511,69 @@ def test_cache_probe_does_not_invent_a_directory(tmp_path):
     assert _descend_to_checkpoint(str(snap), REPO) == str(snap)
 
 
-def test_mirror_declines_subfolder_repos(monkeypatch):
-    """The R2 mirror hydrates whole repos and has no per-folder mode.
+def test_mirror_runs_subfolder_repos_with_allow_patterns(monkeypatch):
+    """The mirror IS consulted for a subfolder repo — narrowed to its quant.
 
-    Letting it run on a subfolder repo would pull all eight quantizations
-    behind a progress bar that says "Pulling LiquidAI/LFM2.5-2.6B-MLX".
-    None of these repos is mirrored today; this guard is what keeps
-    mirroring one later from silently reintroducing the 20 GB pull.
+    A subfolder repo is mirrored one quant at a time (``mirror_to_r2.py
+    --subfolder 4bit``), so ``_try_mirror_prefetch`` hands the matching
+    ``allow_patterns`` down to the mirror instead of hard-declining it. The
+    ``allow_patterns`` is what stops the pull from enumerating all eight
+    quants (the 20 GB fear) — the mirror only fetches ``4bit/*``.
+
+    Regression guard: this used to ``return False`` for every subfolder repo
+    on the assumption none were mirrored, which stranded lfm2.5-2.6b-4bit's
+    R2 copy and routed the desktop through a HF path that could hang at
+    "Starting…".
     """
     import vllm_mlx.cli as cli
 
-    called: list[str] = []
+    seen: list[list[str] | None] = []
 
     def tripwire(*a, **kw):
-        called.append("mirror ran")
+        seen.append(kw.get("allow_patterns"))
         return True
 
     import vllm_mlx._mirror as mirror
 
     monkeypatch.setattr(mirror, "download_with_mirror_fallback", tripwire)
 
-    assert cli._try_mirror_prefetch(REPO) is False
-    assert called == [], "mirror must not be consulted for a subfolder repo"
+    # Subfolder repo → mirror runs, scoped to the declared quant.
+    assert cli._try_mirror_prefetch(REPO) is True
+    assert seen == [["4bit/*"]], "subfolder repo must reach the mirror with its glob"
 
-    # Control: a flat repo still goes through the mirror.
+    # Control: a flat repo still goes through the mirror with no filter.
+    seen.clear()
     assert cli._try_mirror_prefetch("mlx-community/LFM2.5-8B-A1B-MLX-4bit") is True
-    assert called == ["mirror ran"]
+    assert seen == [None], "flat repo must pull the whole repo (allow_patterns=None)"
+
+
+def test_mirror_filter_discards_unselected_siblings_before_io(monkeypatch, tmp_path):
+    """The Linux gate exercises the real mirror-side filter, not only CLI wiring."""
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    import vllm_mlx._mirror as mirror
+
+    info = SimpleNamespace(
+        sha="deadbeef",
+        siblings=[
+            SimpleNamespace(rfilename="8bit/model.safetensors", size=400, lfs=None),
+            SimpleNamespace(rfilename="LICENSE", size=50, lfs=None),
+        ],
+    )
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", mirror.MIRROR_DEFAULT)
+    monkeypatch.setattr(huggingface_hub, "model_info", lambda *a, **kw: info)
+
+    assert (
+        mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, allow_patterns=["4bit/*"]
+        )
+        is False
+    )
+    assert list(tmp_path.iterdir()) == [], (
+        "an empty selection must fall through before creating cache state"
+    )
 
 
 def test_registry_fails_closed_on_every_load_not_just_the_first(monkeypatch):
@@ -884,3 +921,34 @@ def test_local_snapshot_falls_back_when_the_local_resolve_fails(monkeypatch):
     monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: True)
 
     assert tok._local_snapshot_if_cached("org/warm-repo") == "org/warm-repo"
+
+
+def test_local_snapshot_uses_one_complete_immutable_revision_without_main_ref(
+    monkeypatch, tmp_path
+):
+    """Issue #2329: the text loader consumes the same unambiguous checkpoint
+    source that automatic lane resolution inspected, without a network lookup.
+    """
+    import json
+
+    import huggingface_hub
+
+    from vllm_mlx.utils import tokenizer as tok
+
+    repo_root = tmp_path / "models--mlx-community--Qwen3.5-2B-MLX-4bit"
+    revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+    snapshot = repo_root / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Qwen3_5ForConditionalGeneration"],
+                "model_type": "qwen3_5",
+            }
+        )
+    )
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+    resolved = tok._local_snapshot_if_cached("mlx-community/Qwen3.5-2B-MLX-4bit")
+    assert resolved == str(snapshot)

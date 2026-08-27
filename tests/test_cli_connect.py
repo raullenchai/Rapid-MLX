@@ -30,7 +30,9 @@ def _endpoints(host="localhost", port=8000, model="qwen3.6-35b-4bit"):
     return connect.ServerEndpoints(host, port, model=model)
 
 
-def _run_connect(*, target=None, json_=False, host=None, port=None, model=None):
+def _run_connect(
+    *, target=None, json_=False, host=None, port=None, model=None, base_url=None
+):
     """Invoke ``connect_command`` the way argparse drives it, capturing stdout."""
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -41,6 +43,7 @@ def _run_connect(*, target=None, json_=False, host=None, port=None, model=None):
                 host=host,
                 port=port,
                 model=model,
+                base_url=base_url,
             )
         )
     return buf.getvalue()
@@ -81,7 +84,9 @@ def test_render_banner_matches_spec():
     assert (
         "rapid-mlx agents continue --setup --base-url http://localhost:8000/v1" in out
     )
-    assert "rapid-mlx connect openai-python" in out
+    # #2348: every Connect row carries the live endpoint — including the Python
+    # snippet, which a standalone `connect` process otherwise can't know.
+    assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
 
 
 def test_listen_fd_shape():
@@ -258,7 +263,12 @@ def test_connect_unknown_target_exits(monkeypatch):
     with pytest.raises(SystemExit) as exc, redirect_stdout(buf):
         connect_command(
             argparse.Namespace(
-                target="nope", json=False, host=None, port=None, model=None
+                target="nope",
+                json=False,
+                host=None,
+                port=None,
+                model=None,
+                base_url=None,
             )
         )
     assert exc.value.code == 1
@@ -483,6 +493,152 @@ def test_banner_already_bracketed_host_not_double_bracketed():
     out = connect.render_banner(connect.ServerEndpoints("[::1]", 8000, model="m"))
     assert "Ready: http://[::1]:8000" in out
     assert "[[::1]]" not in out
+
+
+# --- #2348: connect must accept/use the live instance base URL ---------------
+# The serve banner advertises ``connect openai-python --base-url <url>`` so the
+# pasted command points at the *actual* running server (its port + model),
+# not the localhost:8000 default the standalone process would otherwise print.
+
+
+def test_parse_base_url_derives_host_and_port():
+    assert connect._parse_base_url("http://localhost:8123/v1") == ("localhost", 8123)
+    assert connect._parse_base_url("http://127.0.0.1:9000") == ("127.0.0.1", 9000)
+    # Trailing /v1 is the OpenAI-style form the banner prints; it's stripped.
+    assert connect._parse_base_url("http://localhost:8123/v1")[1] == 8123
+
+
+def test_parse_base_url_ipv6_bracketing():
+    # Bracket-wrapped / scoped IPv6 pasted verbatim from the banner.
+    assert connect._parse_base_url("http://[::1]:8000/v1") == ("::1", 8000)
+    assert connect._parse_base_url("http://[fe80::1%25en0]:8123/v1") == (
+        "fe80::1%en0",
+        8123,
+    )
+
+
+def test_parse_base_url_does_not_decode_non_zone_host_escapes():
+    # In an ordinary (non-IPv6) hostname every percent-escape is a genuine
+    # octet and must survive untouched — including `%25` — else the generated
+    # URL would be malformed (codex #2348-R2/R3).
+    assert connect._parse_base_url("http://%2Fexample.com:8000/v1") == (
+        "%2Fexample.com",
+        8000,
+    )
+    assert connect._parse_base_url("http://%20host:8000/v1") == ("%20host", 8000)
+    assert connect._parse_base_url("http://%25example.com:8000/v1") == (
+        "%25example.com",
+        8000,
+    )
+    # Only in a scoped IPv6 literal is `%25` a zone-id separator, decoded back
+    # to `%`.
+    assert connect._parse_base_url("http://[fe80::1%25en0]:8123/v1") == (
+        "fe80::1%en0",
+        8123,
+    )
+
+
+def test_parse_base_url_default_port_and_errors():
+    # No port → the rapid-mlx default.
+    assert connect._parse_base_url("http://server.local/v1") == ("server.local", 8000)
+    # Non-http scheme (incl. https, which the http-only connect SSOT would
+    # silently downgrade), malformed URL, no host, an out-of-range/zero
+    # explicit port, and an unexpected path-prefix (a proxied endpoint the
+    # SSOT does not model) are all rejected rather than retargeting the snippet.
+    for bad in (
+        "ftp://localhost:8123",
+        "https://localhost:8123/v1",
+        "not-a-url",
+        "http://:8123",
+        "http://localhost:0/v1",
+        "http://localhost:70000/v1",
+        "http://server/proxy/v1",
+        "http://localhost:8123/custom",
+        "http://localhost:8123//",
+        "http://localhost:8123/v1//",
+    ):
+        with pytest.raises(ValueError):
+            connect._parse_base_url(bad)
+    # The SSOT-renderable paths — empty, bare/trailing slash, `/v1` (+ one
+    # trailing slash) — are all accepted losslessly.
+    assert connect._parse_base_url("http://localhost:8123/v1") == ("localhost", 8123)
+    assert connect._parse_base_url("http://localhost:8123/") == ("localhost", 8123)
+    assert connect._parse_base_url("http://localhost:8123/v1/") == ("localhost", 8123)
+
+
+def test_connect_base_url_partial_override_keeps_other_coordinate(monkeypatch):
+    """`--host` and `--port` are independent overrides of the base URL: giving
+    only `--host` must keep the base URL's port (not fall back to 8000)."""
+    probed = []
+
+    def fake_probe(host, port):
+        probed.append((host, port))
+        return "m"
+
+    monkeypatch.setattr(connect, "_probe_running_model", fake_probe)
+    out = _run_connect(
+        target="openai-python",
+        base_url="http://localhost:8123/v1",
+        host="127.0.0.1",
+    )
+    assert "http://127.0.0.1:8123/v1" in out
+    assert probed == [("127.0.0.1", 8123)]
+
+
+def test_connect_openai_python_uses_base_url_for_snippet(monkeypatch):
+    """`--base-url` (the banner's pasted command) must make the standalone
+    snippet target the live host/port and probe THAT server for the model, not
+    default to localhost:8000."""
+    probed = []
+
+    def fake_probe(host, port):
+        probed.append((host, port))
+        return "lfm2.5-1b-4bit"
+
+    monkeypatch.setattr(connect, "_probe_running_model", fake_probe)
+    out = _run_connect(target="openai-python", base_url="http://localhost:8123/v1")
+    assert "http://localhost:8123/v1" in out
+    assert "lfm2.5-1b-4bit" in out
+    assert "http://localhost:8000" not in out
+    # The probe hit the base-url's port, not the 8000 default.
+    assert probed == [("localhost", 8123)]
+
+
+def test_connect_base_url_yields_to_explicit_host_port(monkeypatch):
+    """Explicit --host/--port flags win over --base-url (flags > base-url)."""
+    probed = []
+
+    def fake_probe(host, port):
+        probed.append((host, port))
+        return "m"
+
+    monkeypatch.setattr(connect, "_probe_running_model", fake_probe)
+    out = _run_connect(
+        target="openai-python",
+        base_url="http://localhost:8123/v1",
+        host="10.0.0.5",
+        port=9999,
+    )
+    assert "http://10.0.0.5:9999/v1" in out
+    assert probed == [("10.0.0.5", 9999)]
+
+
+def test_connect_invalid_base_url_exits_cleanly(monkeypatch):
+    """A malformed --base-url must not crash; it prints a clear message."""
+    buf = io.StringIO()
+    with pytest.raises(SystemExit) as exc, redirect_stdout(buf):
+        connect_command(
+            argparse.Namespace(
+                target="openai-python",
+                json=False,
+                host=None,
+                port=None,
+                model=None,
+                base_url="ftp://localhost:8123",
+            )
+        )
+    assert exc.value.code == 1
+    assert "invalid --base-url" in buf.getvalue()
 
 
 def test_point_command_base_url_is_shell_quoted():

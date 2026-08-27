@@ -125,10 +125,9 @@ Both pinned by `PBS_VERSION` / `PBS_TAG` in `scripts/build-sidecar.sh`.
 ### Engine runtime dependencies
 
 The root `pyproject.toml` `[project].dependencies` block, installed in
-full. The ranges below are the **root manifest's**; the sidecar build
-narrows one of them, pinning `transformers>=5.5.0,<5.13` at install time
-(step 2 of `scripts/build-sidecar.sh`), so a shipped bundle never carries
-a `transformers` older than 5.5.0.
+full. The ranges below are the **root manifest's**; the sidecar build pins
+`mlx==0.32.2` and `transformers==5.12.1` at install time (step 2 of
+`scripts/build-sidecar.sh`) so the shipped vision stack is reproducible.
 
 | Component | Declared range | License | Project |
 | --- | --- | --- | --- |
@@ -159,7 +158,7 @@ path works in a text-only bundle:
 
 | Component | Pin | License | Project |
 | --- | --- | --- | --- |
-| mlx-vlm | `==0.6.3` | MIT | https://github.com/Blaizzy/mlx-vlm |
+| mlx-vlm | `==0.6.16` | MIT | https://github.com/Blaizzy/mlx-vlm |
 | Pillow | `>=10.0` | MIT-CMU | https://github.com/python-pillow/Pillow |
 
 ### Third-party source vendored into the engine

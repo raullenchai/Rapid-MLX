@@ -79,7 +79,7 @@ struct SettingsDeveloperPanel: View {
             Toggle(isOn: $eraseTelemetry) {
                 SettingsRowLabel(
                     title: "Also erase the telemetry decision",
-                    description: "Brings back the consent sheet that runs before Quickstart. This decision is shared with the rapid-mlx CLI, so the command line will ask again too."
+                    description: "Brings back the invitation after Rapid next delivers a successful result. This decision is shared with the rapid-mlx CLI, so the command line will ask again too."
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())

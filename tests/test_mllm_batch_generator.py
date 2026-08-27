@@ -609,7 +609,7 @@ def test_close_swallows_synchronize_thread_error(monkeypatch):
     """`close()` must not propagate RuntimeError from mx.synchronize.
 
     mlx-lm 0.31.3+ streams are thread-local. When the engine is torn down
-    from a thread that isn't the one that owns MLLMBatchGenerator._stream,
+    from a thread that isn't the one that owns the generator's stream,
     mx.synchronize raises `There is no Stream(gpu, N) in current thread`.
     Pre-fix this propagated out of the lifespan shutdown and produced a
     scary traceback (Persona E v0.6.51 onboarding finding). The sync is

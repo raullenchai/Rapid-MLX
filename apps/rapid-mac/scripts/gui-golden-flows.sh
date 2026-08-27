@@ -27,8 +27,8 @@ FAKE_IMAGE_ALIAS="fake-image-alias"
 # the operator's release Mac), so every persona that renders the chooser
 # pins the same tier to keep its AX baseline deterministic.
 # 8 = the 8 GB tier, which is exactly what the committed compact-chooser
-# baseline captures (smart lfm2.5-2.6B; its fast pick lfm2.5-1B equals the
-# starter, so the row renders just the one card). Pinning 8 also happens to
+# baseline captures (safe fast pick lfm2.5-1B as the starter; smart
+# lfm2.5-2.6B as the optional memory-guarded capability upgrade). Pinning 8 also happens to
 # be the safe tier for cached-curated-tradeup: its assertion needs
 # qwen3.5-4b to stay a native curated trade-up, which 8 GB guarantees
 # (16/24/32 GB hosts fold qwen3.5-4b into the recommended row instead).
@@ -57,7 +57,7 @@ Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, audio-readiness, all
+       browse-all-destination, chat-document-attachment, chat-multimodal-attachments, image-generation, dictation, dictation-rc2-upgrade, audio-readiness, all
 
 Most named regression flows drive the app through the accessibility API alone.
 The preflight contract tests keep the exact allowlist in sync with
@@ -146,7 +146,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -289,8 +289,20 @@ start_persona() {
     local isolated_app
     isolated_app="$(cat "$OUT/isolated-app.txt")"
     BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$isolated_app/Contents/Info.plist")"
+    # All regression journeys except fresh-install start with a durable quiet
+    # opt-out. They test their named feature, not the one-time consent invite;
+    # leaving the preference absent would make the first successful result add
+    # an unrelated banner midway through dozens of snapshots.
+    if [[ "$name" != "fresh-install" ]]; then
+        env HOME="$PERSONA/home" CFFIXED_USER_HOME="$PERSONA/home" \
+            /usr/bin/defaults write "$BUNDLE_ID" \
+            com.rapidmlx.rapid.telemetry.enabled -bool false
+    fi
     local config="$PERSONA/home/.rapid-golden-fake.json"
-    jq -n --arg event_log "$OUT/fake-events.jsonl" '{FAKE_EVENT_LOG: $event_log}' > "$config"
+    jq -n \
+        --arg event_log "$OUT/fake-events.jsonl" \
+        --arg pull_state "$OUT/pulled-models" \
+        '{FAKE_EVENT_LOG: $event_log, FAKE_PULL_STATE: $pull_state}' > "$config"
     local assignment key value updated
     # macOS ships Bash 3.2, where expanding a declared-but-empty array under
     # `set -u` raises "unbound variable". The `+` form expands to nothing
@@ -966,20 +978,6 @@ press_and_require_selected() {
 dismiss_first_run() {
     local tree="$OUT/first-run.json"
     see_main "$tree"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
-        if ! press "$tree" TelemetryConsent.DontShare "$OUT/consent.json" 2>/dev/null; then
-            # The coordinate fallback is peekaboo's. A flow that declared
-            # itself peekaboo-free has no fallback left, and reaching for one
-            # anyway would surface as a bare "peekaboo: command not found"
-            # attached to whichever assertion happened to run next.
-            command -v peekaboo >/dev/null \
-                || die "AXPress on TelemetryConsent.DontShare failed and $FLOW has no peekaboo fallback"
-            read -r x y < <(jq -r '.data.ui_elements[] | select(.identifier == "TelemetryConsent.DontShare") | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)] | @tsv' "$tree")
-            pb_click_coords "$x,$y" --app "PID:$APP_PID" --json > "$OUT/consent-coordinate-fallback.json"
-        fi
-        sleep 0.5
-        see_main "$tree"
-    fi
     if jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Skip")' "$tree" >/dev/null; then
         press "$tree" Quickstart.Skip "$OUT/quickstart-skip.json"
         sleep 0.5
@@ -1094,7 +1092,28 @@ start_model() {
     # never asked to start.  Gate the interaction on the same enabled state a
     # user needs before clicking it.
     wait_identifier_enabled Readiness.Action "$OUT/readiness-start.json"
+    local initial_action
+    initial_action="$(element_field "$OUT/readiness-start.json" Readiness.Action description)"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
+    if [[ "$initial_action" == "Download" ]]; then
+        local download_ready=0
+        for _ in {1..240}; do
+            see_main "$OUT/readiness-after-download.json"
+            if jq -e '.data.ui_elements[]?
+                      | select(.identifier == "Readiness.Action"
+                               and .description == "Start"
+                               and .enabled == true)' \
+                "$OUT/readiness-after-download.json" >/dev/null; then
+                download_ready=1
+                break
+            fi
+            sleep 0.25
+        done
+        [[ "$download_ready" == 1 ]] \
+            || die "download completed without exposing the model Start action"
+        press "$OUT/readiness-after-download.json" Readiness.Action \
+            "$OUT/start-downloaded-model.json"
+    fi
     # ``server_started`` says the fake bound its port; it does NOT say the app
     # has finished wiring up to it. The old gate also tested
     # ``description == "Send message"``, which is the button's label for the
@@ -1236,35 +1255,11 @@ flow_fresh_install() {
     start_persona fresh-install FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
-    see_main "$OUT/consent-visible.json"
-    jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
-        || die "fresh install did not show telemetry consent"
-    # Consent owns the window as a full-window gate. It deliberately must not
-    # be an AppKit sheet: sheets prevent a fresh-install user from quitting
-    # normally before making a telemetry choice.
-    if jq -e '.data.ui_elements[]? | select(.role == "AXSheet")' \
-        "$OUT/consent-visible.json" >/dev/null; then
-        die "fresh-install consent regressed to a quit-blocking AXSheet"
-    fi
-    for hidden in Sidebar.NewChat Sidebar.Launch rapid.chat.compose; do
-        if jq -e --arg id "$hidden" '.data.ui_elements[]? | select(.identifier == $id)' \
-            "$OUT/consent-visible.json" >/dev/null; then
-            die "telemetry consent mounted production control $hidden behind the gate"
-        fi
-    done
-    role_subtree_only "$OUT/consent-visible.json" AXGroup "$OUT/consent-gate.json"
-    baseline fresh-install.consent "$OUT/consent-gate.json"
-    # #1560: merely launching a fresh install must not inspect model caches
-    # behind the consent gate. Give both SwiftUI catalog tasks time to run;
-    # the fake sidecar records every non-serve command before it exits.
-    sleep 0.75
-    if [[ -s "$OUT/fake-events.jsonl" ]] && jq -e \
-        'select(.event == "command" and (.subcommand == "models" or .subcommand == "ls"))' \
-        "$OUT/fake-events.jsonl" >/dev/null; then
-        die "#1560: first launch probed the model catalog before user interaction"
-    fi
-    press "$OUT/consent-visible.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    if jq -e '.data.ui_elements[]? | select((.identifier? // "") | startswith("TelemetryConsent."))' \
+        "$OUT/welcome.json" >/dev/null; then
+        die "fresh install asked for telemetry before Rapid delivered product value"
+    fi
 
     # Direction D owns the window rather than mounting production controls
     # behind a sheet. Pin all three responsive tiers before continuing the
@@ -1285,7 +1280,7 @@ flow_fresh_install() {
     see_main "$OUT/compact.json"
     baseline onboarding-direction-d.compact "$OUT/compact.json"
     press "$OUT/compact.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_tree_text "~633 MB" "$OUT/chooser-settled.json"
+    wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/chooser-settled.json"
     baseline onboarding-direction-d.compact-chooser "$OUT/chooser-settled.json"
     press "$OUT/chooser-settled.json" Quickstart.Footer.Back "$OUT/chooser-back.json"
     wait_identifier Quickstart.Skip "$OUT/welcome-returned.json"
@@ -1293,7 +1288,7 @@ flow_fresh_install() {
     wait_identifier rapid.chat.compose "$OUT/steady.json"
     selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
     [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
-        || die "#1564: skipping Quickstart selected '$selected_model' instead of the small starter"
+        || die "#2219: 8 GB onboarding selected '$selected_model' instead of the compact starter"
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
         jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
             || die "post-onboarding shell missing $id"
@@ -1308,6 +1303,36 @@ flow_fresh_install() {
     jq -e '.actual.width >= 720 and .actual.height >= 560' \
         "$OUT/window-floor.json" >/dev/null \
         || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
+
+    # Consent follows proof of value instead of blocking first launch. A real
+    # completed assistant turn is the trigger; the answer remains visible and
+    # usable under the non-modal invitation.
+    start_model
+    send_prompt "Say hello in one short sentence." "post-value-consent"
+    wait_identifier TelemetryConsent.PostValueBanner "$OUT/post-value-consent-visible.json"
+    assert_tree_text "$OUT/post-value-consent-visible.json" "Hello"
+    baseline fresh-install.post-value-consent "$OUT/post-value-consent-visible.json"
+    # Exercise the native cancel shortcut rather than only the button action:
+    # closing this invitation is a durable decline and must never re-prompt.
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/post-value-consent-escape.json"
+    for _ in {1..40}; do
+        see_main "$OUT/post-value-consent-declined.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.PostValueBanner")' \
+            "$OUT/post-value-consent-declined.json" >/dev/null; then
+            break
+        fi
+        sleep 0.25
+    done
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.PostValueBanner")' \
+        "$OUT/post-value-consent-declined.json" >/dev/null; then
+        die "Escape did not dismiss the telemetry invitation"
+    fi
+    relaunch_persona
+    wait_identifier rapid.chat.compose "$OUT/post-value-consent-relaunch.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.PostValueBanner")' \
+        "$OUT/post-value-consent-relaunch.json" >/dev/null; then
+        die "dismissed telemetry invitation returned after relaunch"
+    fi
     cleanup_persona
 }
 
@@ -1390,11 +1415,6 @@ flow_cached_quickstart() {
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
-    see_main "$OUT/consent.json"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
-        "$OUT/consent.json" >/dev/null; then
-        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
-    fi
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Progress")
@@ -1463,34 +1483,23 @@ flow_cached_quickstart() {
 }
 
 flow_cached_curated_tradeup() {
-    log "cached curated trade-up keeps its on-disk state past the six-row cap"
+    log "cached hardware-fit starter stays visible past the six-row cap"
     start_persona cached-curated-tradeup FAKE_CACHED_CURATED_TRADEUP=1 \
-        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=16 \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
-    see_main "$OUT/consent.json"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
-        "$OUT/consent.json" >/dev/null; then
-        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
-    fi
-
     # Six alphabetically earlier cached rows consume the bounded "Already on
-    # this Mac" presentation. Qwen remains a native curated trade-up, so this
-    # pins the exact seam where cached provenance used to be discarded.
+    # this Mac" presentation. The hardware-fit cached starter still has to own
+    # the one visible selected row; cached preference cannot produce a hidden
+    # choice with a disabled footer.
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_identifier Quickstart.Choice.qwen3.5-4b-4bit "$OUT/chooser.json"
+    wait_selected Quickstart.CachedModel.qwen3.5-4b-4bit "$OUT/chooser.json"
     jq -e '.data.ui_elements[]?
-            | select(.identifier == "Quickstart.Choice.qwen3.5-4b-4bit")
+            | select(.identifier == "Quickstart.CachedModel.qwen3.5-4b-4bit")
             | select((.description // "") | contains("on disk 2.9 GB"))
-            | select(((.description // "") | contains("download")) | not)' \
+            | select(((.description // "") | contains("Download 2.9 GB")) | not)' \
         "$OUT/chooser.json" >/dev/null \
-        || die "cached curated trade-up still advertises a download"
-    press "$OUT/chooser.json" Quickstart.Choice.qwen3.5-4b-4bit "$OUT/select.json"
-    # Verify the action's semantic result, not footer copy. The cached model's
-    # provenance is pinned above; after the press the durable contract is that
-    # this exact card becomes selected. Footer wording is presentation copy and
-    # is not required for the cached trade-up behavior under test.
-    wait_selected Quickstart.Choice.qwen3.5-4b-4bit "$OUT/selected.json"
+        || die "cached hardware-fit starter is hidden or advertises a download"
     cleanup_persona
 }
 
@@ -1499,12 +1508,6 @@ flow_cached_variant_collapse() {
     start_persona cached-variant-collapse FAKE_CACHED_VARIANTS=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
-    see_main "$OUT/consent.json"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
-        "$OUT/consent.json" >/dev/null; then
-        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
-    fi
-
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier Quickstart.CachedModel.qwen3-0.6b-4bit "$OUT/chooser.json"
@@ -1527,18 +1530,15 @@ flow_download_progress() {
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
-    see_main "$OUT/consent.json"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
-        "$OUT/consent.json" >/dev/null; then
-        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
-    fi
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
-    # The footer exists while Step 2 is still asynchronously reading the
-    # catalogue. Waiting for that shared identifier can capture the transient
-    # "Matching models" state before the recommendation and its size land.
-    wait_tree_text "~633 MB" "$OUT/chooser.json"
-    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/review-open.json"
+    # Cached preference is the normal first-run policy now. Select the explicit
+    # low-memory download so this journey still exercises the 633 MB overrun
+    # fixture rather than accidentally starting the cached fake model.
+    wait_identifier Quickstart.Choice.lfm2.5-1b-4bit "$OUT/chooser.json"
+    press "$OUT/chooser.json" Quickstart.Choice.lfm2.5-1b-4bit "$OUT/select-download.json"
+    wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/selected-download.json"
+    press "$OUT/selected-download.json" Quickstart.Footer.Primary "$OUT/review-open.json"
     wait_identifier Quickstart.Review.Alias "$OUT/review.json"
     assert_tree_text "$OUT/review.json" "Download & start"
     # AXPress is normally immediate, but AppKit can synchronously hold the
@@ -2485,25 +2485,21 @@ flow_low_memory_choice() {
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
     local tree="$OUT/onboarding.json"
-    see_main "$tree"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
-        press "$tree" TelemetryConsent.DontShare "$OUT/consent.json"
-    fi
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_identifier Quickstart.Choice.qwen3-0.6b-4bit "$OUT/model-choices.json"
+    wait_identifier Quickstart.Choice.lfm2.5-1b-4bit "$OUT/model-choices.json"
 
     local fallback_label
-    fallback_label="$(element_field "$OUT/model-choices.json" Quickstart.Choice.qwen3-0.6b-4bit description)"
+    fallback_label="$(element_field "$OUT/model-choices.json" Quickstart.Choice.lfm2.5-1b-4bit description)"
     [[ "$fallback_label" == *"Lowest memory"* ]] \
         || die "low-memory choice is missing its spoken category label"
     [[ "$fallback_label" == *"less accurate"* ]] \
         || die "low-memory choice hides its quality trade-off"
     [[ "$fallback_label" == *"not recommended for tools"* ]] \
         || die "low-memory choice hides its tool-use limitation"
-    press "$OUT/model-choices.json" Quickstart.Choice.qwen3-0.6b-4bit "$OUT/select-low-memory.json"
+    press "$OUT/model-choices.json" Quickstart.Choice.lfm2.5-1b-4bit "$OUT/select-low-memory.json"
     see_main "$OUT/low-memory-selected.json"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Choice.qwen3-0.6b-4bit")' \
+    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Choice.lfm2.5-1b-4bit")' \
         "$OUT/low-memory-selected.json" >/dev/null \
         || die "selecting the low-memory choice dismissed or replaced the chooser"
     jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Footer.Primary")' \
@@ -2994,15 +2990,8 @@ flow_browse_all_destination() {
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
-    # Only the consent sheet — the wizard has to stay up, it is the subject.
+    # The wizard has to stay up; it is the subject of this flow.
     local tree="$OUT/ba-first-run.json"
-    see_main "$tree"
-    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
-        press "$tree" TelemetryConsent.DontShare "$OUT/ba-consent.json" \
-            || die "could not answer the telemetry consent sheet"
-        sleep 0.5
-    fi
-
     wait_identifier Quickstart.GetStarted "$OUT/ba-welcome.json"
     press "$OUT/ba-welcome.json" Quickstart.GetStarted "$OUT/ba-get-started.json" \
         || die "Quickstart.GetStarted is not pressable"
@@ -3030,10 +3019,14 @@ flow_browse_all_destination() {
     for ((i=0; i<40; i++)); do
         see_main "$OUT/ba-chooser.json"
         chosen="$(jq -r '[.data.ui_elements[]?
-                          | select((.identifier // "") | startswith("Quickstart.Choice."))]
+                          | select((.identifier // "") as $id
+                            | ($id | startswith("Quickstart.Choice."))
+                              or ($id | startswith("Quickstart.CachedModel."))
+                              or ($id | startswith("Quickstart.YourPick.")))]
                          | (map(select(.selected == true))) as $default
                          | if ($default | length) != 1 then empty
-                           else (map(select(.identifier != $default[0].identifier))[0].identifier // empty)
+                           else (map(select(.identifier != $default[0].identifier
+                                    and ((.identifier // "") | startswith("Quickstart.Choice."))))[0].identifier // empty)
                            end' \
                   "$OUT/ba-chooser.json")"
         if [[ -n "$chosen" ]]; then break; fi
@@ -4754,6 +4747,55 @@ flow_audio_readiness() {
 # is reachable, raw recordings remain opt-in, local vocabulary edits work,
 # mode round-trips preserve the pane, opening it alone never starts a model,
 # and enabling visibly transitions from Loading to Ready.
+flow_dictation_rc2_upgrade() {
+    log "flow: dictation-rc2-upgrade"
+    start_persona dictation-rc2-upgrade \
+        RAPID_GUI_GOLDEN_MODE=1 \
+        RAPID_GUI_DICTATION_READINESS_FIXTURE=1 \
+        FAKE_CACHED_DICTATION=1
+    dismiss_first_run
+    stop_app
+
+    # Recreate the keys written by rc2 before lane ownership existed: one
+    # shared last-served chat key plus independently persisted Dictation intent
+    # and its audio model. The bundle id is unique to this throwaway persona.
+    defaults write "$BUNDLE_ID" rapid.serve.lastAlias "fake-alias"
+    defaults write "$BUNDLE_ID" dictation.enabled -bool true
+    defaults write "$BUNDLE_ID" dictation.model "fake-whisper-small"
+    relaunch_persona
+    dismiss_first_run
+
+    local i restored_chat=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/rc2-upgrade-chat.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "ModelPickerBar.ModelMenu"
+                           and .value == "fake-alias")' \
+                 "$OUT/rc2-upgrade-chat.json" >/dev/null; then
+            restored_chat=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$restored_chat" == 1 ]] \
+        || die "rc2 upgrade did not restore the persisted chat model"
+    wait_send_idle "$OUT/rc2-upgrade-send-ready.json"
+    jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-alias")
+              and (any(.[]; .event == "server_started" and .alias == "fake-whisper-small") | not)' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "rc2 upgrade restored the transcription alias as process owner"
+    press "$OUT/rc2-upgrade-send-ready.json" Sidebar.Audio \
+        "$OUT/rc2-upgrade-audio-open.json" \
+        || die "Audio is not reachable after rc2 upgrade"
+    wait_identifier Dictation.Enable "$OUT/rc2-upgrade-audio.json"
+    [[ "$(element_field "$OUT/rc2-upgrade-audio.json" Dictation.Enable value)" == "1" ]] \
+        || die "rc2 upgrade lost persisted Dictation intent"
+
+    log "  rc2 chat + Dictation state restored with Send enabled"
+    log "  dictation-rc2-upgrade OK"
+    cleanup_persona
+}
+
+
 flow_dictation() {
     log "flow: dictation"
     start_persona dictation \
@@ -4879,14 +4921,14 @@ flow_dictation() {
         if jq -e '.data.ui_elements[]?
                   | select(.identifier == "Dictation.Status"
                            and (((.description // .value // .label // "") | tostring)
-                                | startswith("Ready — press")))' \
+                                | startswith("Listening — press")))' \
                  "$OUT/dictation-ready.json" >/dev/null; then
             ready_seen=1; break
         fi
         sleep 0.1
     done
     [[ "$ready_seen" == 1 ]] \
-        || die "Dictation did not become Ready after model warmup"
+        || die "Dictation did not become Listening after model warmup"
 
     # The warmup request must have stayed on the conversation server. A
     # transcription-only start here is the exact silent-eviction regression.
@@ -4905,7 +4947,38 @@ flow_dictation() {
         "Conversation state before dictation"
     send_prompt "Conversation survives dictation" "dictation-chat"
 
-    log "  setup controls, privacy toggle, vocabulary, co-loaded warmup, and preserved chat produced effects"
+    # Relaunch is the state-ownership contract: Dictation remains enabled, but
+    # its audio selection must never become the restored chat model. Session
+    # restore starts the catalog-proven chat alias first, then re-arms the
+    # audio lane on that process; no transcription-only child may appear.
+    relaunch_persona
+    dismiss_first_run
+    local restored_chat=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/dictation-relaunch-chat.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "ModelPickerBar.ModelMenu"
+                           and .value == "fake-alias")' \
+                 "$OUT/dictation-relaunch-chat.json" >/dev/null; then
+            restored_chat=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$restored_chat" == 1 ]] \
+        || die "Relaunch did not restore the conversation model after enabling Dictation"
+    wait_send_idle "$OUT/dictation-relaunch-send-ready.json"
+    jq -e -s '(map(select(.event == "server_started" and .alias == "fake-alias")) | length) == 2
+              and (any(.[]; .event == "server_started" and .alias == "fake-whisper-small") | not)' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "Relaunch restored the transcription alias as the process-owning chat model"
+    press "$OUT/dictation-relaunch-send-ready.json" Sidebar.Audio \
+        "$OUT/dictation-relaunch-audio-open.json" \
+        || die "Audio is not reachable after Dictation relaunch"
+    wait_identifier Dictation.Enable "$OUT/dictation-relaunch-audio.json"
+    [[ "$(element_field "$OUT/dictation-relaunch-audio.json" Dictation.Enable value)" == "1" ]] \
+        || die "Relaunch disabled the user's persisted Dictation intent"
+
+    log "  setup controls, privacy toggle, vocabulary, co-loaded warmup, relaunch, and preserved chat produced effects"
     log "  dictation OK"
     cleanup_persona
 }
@@ -4945,6 +5018,7 @@ case "$FLOW" in
     chat-multimodal-attachments) flow_chat_multimodal_attachments ;;
     image-generation) flow_image_generation ;;
     dictation) flow_dictation ;;
+    dictation-rc2-upgrade) flow_dictation_rc2_upgrade ;;
     audio-readiness) flow_audio_readiness ;;
     resident-load-rejected) flow_resident_load_rejected ;;
     launch-integrations) flow_launch_integrations ;;

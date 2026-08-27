@@ -17,82 +17,46 @@ import SwiftUI
 /// inert until something finishes loading. That is the worst possible
 /// first-touch shape for an inference app.
 ///
-/// Quickstart collapses the cold-start into one click. The card surfaces
+/// Quickstart collapses the cold-start into one guided choice. The card surfaces
 /// when (a) the user has no last-served alias persisted — or has one that
 /// is a ``retiredStarters`` entry, i.e. a model we stranded them on —
 /// AND (b) the quickstart flag in UserDefaults hasn't been set yet AND
-/// (c) the server isn't already busy with something else. Clicking
-/// "Get started"
-/// triggers a ``rapid-mlx pull lfm2.5-1b-4bit`` (~0.6 GB) via the
-/// existing ``DownloadManager``, then auto-spawns
-/// ``rapid-mlx serve lfm2.5-1b-4bit`` once the pull is done, then
+/// (c) the server isn't already busy with something else. The chooser picks a
+/// hardware-fit starter, preferring an eligible cached chat model, and uses the
+/// existing ``DownloadManager`` only when the chosen model is not on disk. It
+/// then auto-spawns that selection and
 /// drops the user into chat with a single seeded assistant message
 /// introducing the model.
 ///
-/// ## Why lfm2.5-1b-4bit
+/// ## Starter policy
 ///
-/// Starter = LFM2.5 1.2B Instruct (mlx 4-bit; rapid-mlx alias
-/// ``lfm2.5-1b-4bit``). This supersedes the ``bonsai-1.7b-2bit``
-/// starter, which degenerated 4/4 on a plain-chat word problem — see
-/// ``defaultChoice`` for the measurements.
-///
-/// History: the original ``qwen3.5-4b-4bit`` (~2.3 GB) cold-installed in
-/// ~11 minutes at the user's observed 4.4 MB/s — an atrocious first
-/// impression — so F-LWT-1 dropped to a tiny ~400 MB 0.6B purely for
-/// install latency. #1092 then moved to Bonsai on the strength of a
-/// tool-call eval. Both swaps optimised something other than "does the
-/// first answer come out right", which is what the user actually sees.
-///
-/// ### The selection criterion this slot actually has
-///
-/// A starter is judged on the first plain-chat reply, not on capability
-/// breadth. Concretely, in priority order:
-///
-///   1. **It must terminate and be coherent.** Non-negotiable, and the
-///      one thing neither prior pick was measured on. Note the guard
-///      cannot cover for a weak model here: the loop breaker and the
-///      streaming hard-stop are both gated on ``request.has_tools``,
-///      and onboarding is plain chat.
-///   2. **It must answer immediately.** A reasoning model is
-///      disqualified regardless of quality — hidden thinking means a
-///      blank screen on the one interaction that forms the impression.
-///      This is why the stronger ``lfm2.5-2.6b-4bit`` is not the
-///      starter even though it is the 8-15 GB tier pick.
-///   3. **Download small enough not to lose the user.** Real, but
-///      weaker than it looks: 637 MB pulled in 21 s, *faster* than
-///      Bonsai's 484 MB in 24 s. Shard parallelism dominates at this
-///      size, so a few hundred MB is not the deciding axis.
-///
-/// Tool calling is deliberately absent from that list. It is the right
-/// bar for a *recommended* model, not for the first 60 seconds.
+/// Below 16 GB, onboarding starts from LFM2.5 2.6B; at 16 GB and above,
+/// it starts from Qwen 3.5 4B. An eligible cached chat model takes priority
+/// so an existing installation does not force another download. LFM2.5 1.2B
+/// remains visible as an explicit low-memory alternative, but is never chosen
+/// automatically. The policy is pure and covered by the starter matrix tests.
 ///
 /// ### What this means for the empty state
 ///
-///   1. The starter is text-first. If ``ToolUseCapability`` does not
-///      list ``lfm2.5-`` as ``.known``, the empty-state capability chip
-///      row stays hidden by the tool-bias gate (PR #333 + FU-9) — which
-///      is the correct, honest surface for it.
+///   1. Capability affordances continue to come from catalog metadata; the
+///      starter choice does not invent capability claims.
 ///   2. The ``ChatView`` empty-state prompts stay model-agnostic pure
 ///      text by design — they must read well on ANY starter, not tease
 ///      a capability tied to one alias — so they are unchanged.
 ///   3. Users who want more depth trade up via the picker's
-///      **Recommended Default** (``RAMBucketedDefault``, RAM-aware —
-///      e.g. ``qwen3.5-9b-4bit`` on an 18 GB Mac), and the
+///      **Recommended Default** (``RAMBucketedDefault``), and the
 ///      ``UpgradeBanner`` nudges them there after a few turns.
 ///
 /// ### What we keep
 ///
-///   * One-click install + chat for the brand-new user, well under a
-///     minute of cold install.
-///   * A dedicated "Quickstart" picker section (RAM-blind, persists
-///     post-dismiss) so a user who skipped Quickstart can still
-///     one-click install the demo model from the picker.
+///   * A short install + chat path for the brand-new user.
+///   * A dedicated "Quickstart" picker section after onboarding.
 ///
 /// The alias resolves in ``vllm_mlx/aliases.json`` (rapid-mlx submodule)
 /// so the value is pinned, not derived. Bumping it is a deliberate
 /// product decision — change the constant + re-run the model
-/// recommendation tests, and keep ``BundledModel.bundledAlias`` in
-/// lock-step (the upgrade nudge keys on it).
+/// recommendation tests. Air-gapped bundled builds keep their independently
+/// versioned small fallback; production DMGs do not bundle model weights.
 ///
 /// ## Why a separate surface (not folded into ``ModelPickerBar``)
 ///
@@ -116,10 +80,10 @@ import SwiftUI
 
 /// One selectable model in the Quickstart wizard's "choose your first
 /// model" step (#1524). The wizard defaults to — and recommends — the
-/// small starter (see ``QuickstartCoordinator.defaultChoice``), but lets
+/// hardware-fit starter (see ``QuickstartCoordinator.defaultChoice(hardware:catalog:)``), but lets
 /// the user trade up to a bigger model before the first download.
 ///
-/// ``hfRepo`` is pinned only for the starter (it wires the precise
+/// ``hfRepo`` is pinned for authored starters (it wires the precise
 /// bytes-on-disk monitor for the first-impression cold install — see the
 /// ``kickoffDownload`` rationale). The bigger options pass ``nil`` and
 /// fall back to tqdm file-count progress; both drive an identical
@@ -134,14 +98,14 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     var id: String { alias }
     /// Canonical alias resolved in ``vllm_mlx/aliases.json``.
     let alias: String
-    /// Prose label for onboarding copy ("LFM2.5 · 1.2B"). Hand-picked
+    /// Prose label for onboarding copy (for example, "Qwen 3.5 · 4B"). Hand-picked
     /// rather than catalog-derived so the copy never reads a raw alias.
     let displayName: String
-    /// HF repo backing the byte monitor. Pinned for the starter; ``nil``
+    /// HF repo backing the byte monitor. Pinned for authored starters; ``nil``
     /// for bigger options (tqdm-fallback progress is acceptable there).
     let hfRepo: String?
     /// Curated download size for choices whose alias rounds away a meaningful
-    /// parameter fraction. The starter alias says `1b` for a 1.2B repository;
+    /// parameter fraction. The low-memory alias says `1b` for a 1.2B repository;
     /// using its alias estimate under-reported both the chooser and progress
     /// denominator. Other choices continue to use `ModelSizing` estimates.
     let downloadBytes: Int64?
@@ -284,77 +248,39 @@ final class QuickstartCoordinator {
         case failed(message: String, origin: FailureOrigin)
     }
 
-    /// The default + recommended starter — the first-run decision.
-    /// Pinned, not derived (F-LWT-1: ~11 min cold install of the old 4B
-    /// pick was the wrong first-impression tradeoff; a small starter
-    /// wins).
-    ///
-    /// ## History
-    ///
-    /// - 2026-07-10 (#1092): ``qwen3-0.6b-4bit`` → ``bonsai-1.7b-2bit``.
-    /// - 2026-08-05: ``bonsai-1.7b-2bit`` → ``lfm2.5-1b-4bit``, because
-    ///   the Bonsai starter does not survive an ordinary chat question.
-    ///
-    /// ## Why the Bonsai starter had to go
-    ///
-    /// A community report showed the starter collapsing on a basic
-    /// multi-step word problem. Reproduced on an M2 Pro against engine
-    /// 0.12.4, one plain-chat request (no tools), 4 attempts at two
-    /// different token budgets: it degenerated **4/4** and terminated
-    /// **0/4**. Output doubles words within the first line ("for for",
-    /// "the the the the"), then collapses into an unbounded loop
-    /// (``\text{1} \text{1} …``, ``1 + 9 = 1 + 9 = …``) that only ends
-    /// when it hits ``max_tokens``.
-    ///
-    /// Two things made this the worst possible default. It is *fast*
-    /// while being wrong, so it reads as "this app is broken" rather
-    /// than "this Mac is slow". And the runaway-generation guard cannot
-    /// save it: both the logits-level loop breaker and the streaming
-    /// hard-stop are gated on ``request.has_tools``, and onboarding is
-    /// plain chat — so nothing intervenes.
-    ///
-    /// The prior "6/6 clean ``tool_calls``" evidence is not contradicted;
-    /// it just measured the wrong thing for this slot. Emitting
-    /// well-formed tool calls says nothing about staying coherent in the
-    /// free-form chat every new user actually types first.
-    ///
-    /// ## Why the 1.2B and not the 2.6B
-    ///
-    /// Measured on the same M2 Pro, same prompt. The download worry that
-    /// motivated a ~0.5 GB pick does not survive measurement: 637 MB
-    /// pulled in 21 s, *faster* than Bonsai's 484 MB in 24 s (HF shard
-    /// parallelism dominates at this size).
-    ///
-    /// ``lfm2.5-2.6b-4bit`` is the stronger model and stays the 8-15 GB
-    /// tier recommendation — but it is the wrong *starter*. It routes
-    /// through the ``qwen3`` reasoning parser, so ~2/3 of its output is
-    /// hidden thinking: 3.6 s to a first answer, most of it a blank
-    /// screen. The 1.2B has no reasoning phase — 1.1 s, 170 tok/s, and it
-    /// answered correctly and terminated on **16/16** recorded runs
-    /// (12/12 of them in one controlled repro; quote the 16, it is the
-    /// whole sample). For a first impression, "instant and right" beats
-    /// "smarter but silent first".
-    ///
-    /// Users still trade up in the wizard or later via the picker.
+    /// Standard starter for Macs with at least 16 GB RAM. The first-run
+    /// decision itself is made by ``defaultChoice(hardware:catalog:)`` so a
+    /// lower-memory Mac and an eligible cached model can take the right path.
     static let defaultChoice = QuickstartModelChoice(
+        alias: "qwen3.5-4b-4bit",
+        displayName: "Qwen 3.5 · 4B",
+        hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit",
+        downloadBytes: 3_061_121_321,
+        blurb: "Strong everyday chat and tools, chosen for a reliable first conversation.",
+        tier: .starter
+    )
+
+    /// Smarter optional choice for Macs below 16 GB RAM. Clean 8 GB hardware
+    /// validation showed that loading it projects beyond the app's usable RAM
+    /// budget, so first run defaults to ``lowMemoryChoice`` instead.
+    static let compactDefaultChoice = QuickstartModelChoice(
+        alias: "lfm2.5-2.6b-4bit",
+        displayName: "LFM2.5 · 2.6B",
+        hfRepo: "LiquidAI/LFM2.5-2.6B-MLX",
+        downloadBytes: 1_601_103_345,
+        blurb: "A lighter everyday model chosen to fit lower-memory Macs.",
+        tier: .starter
+    )
+
+    /// Deliberately weaker than the starter. Onboarding surfaces this one explicitly as
+    /// a memory-first fallback and names the trade-off instead of pretending
+    /// it is an equivalent recommendation.
+    static let lowMemoryChoice = QuickstartModelChoice(
         alias: "lfm2.5-1b-4bit",
         displayName: "LFM2.5 · 1.2B",
         hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
         downloadBytes: 663_397_140,
-        blurb: "Small download (~0.6 GB), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.",
-        tier: .starter
-    )
-
-    /// Deliberately weaker than the starter. The normal model picker hides
-    /// sub-1B models to protect users from accidentally choosing quality
-    /// below the product floor; onboarding surfaces this one explicitly as
-    /// a memory-first fallback and names the trade-off instead of pretending
-    /// it is an equivalent recommendation.
-    static let lowMemoryChoice = QuickstartModelChoice(
-        alias: "qwen3-0.6b-4bit",
-        displayName: "Qwen 3 · 0.6B",
-        hfRepo: "mlx-community/Qwen3-0.6B-4bit",
-        blurb: "Lowest memory and fastest startup. Good for basic chat, but less accurate and not recommended for tools.",
+        blurb: "For basic chat only; less accurate and not recommended for tools.",
         tier: .lowMemory
     )
 
@@ -370,14 +296,8 @@ final class QuickstartCoordinator {
     /// ``BenchScoresCatalog`` at render.
     static let onboardingChoices: [QuickstartModelChoice] = [
         defaultChoice,
+        compactDefaultChoice,
         lowMemoryChoice,
-        QuickstartModelChoice(
-            alias: "qwen3.5-4b-4bit",
-            displayName: "Qwen 3.5 · 4B",
-            hfRepo: nil,
-            blurb: "Better everyday quality. Still light on disk.",
-            tier: .tradeUp
-        ),
         QuickstartModelChoice(
             alias: "qwen3.5-9b-4bit",
             displayName: "Qwen 3.5 · 9B",
@@ -403,6 +323,54 @@ final class QuickstartCoordinator {
         ),
     ]
 
+    /// Hardware-aware first-run policy. The existing cache-aware policy is the
+    /// eligibility SSOT for cached choices; onboarding adds only its explicit
+    /// 16 GB baseline. The 1.2B choice is automatic only when it is already
+    /// the sub-16 GB baseline; larger Macs keep it as an explicit fallback.
+    static func defaultChoice(
+        hardware: MacHardware,
+        catalog: [ModelEntry]
+    ) -> QuickstartModelChoice {
+        let baseline = baselineChoice(hardware: hardware)
+        let eligibleCatalog = catalog.filter { $0.kind == .chat }
+        var excluded = CacheAwareDefault.retiredAutomaticAliases
+        if baseline.alias != lowMemoryChoice.alias {
+            excluded.insert(lowMemoryChoice.alias)
+        } else {
+            // Clean 8 GB validation puts the 2.6B option beyond the usable-RAM
+            // guard. A cached copy still avoids a download, but does not make
+            // that load safe enough to become the automatic first run.
+            excluded.insert(compactDefaultChoice.alias)
+        }
+        guard let alias = CacheAwareDefault.pick(
+            catalog: eligibleCatalog,
+            hardware: hardware,
+            bucketedDefault: baseline.alias,
+            excludedAliases: excluded
+        ) else {
+            // An older sidecar may not know the new starter aliases yet. The
+            // authored 1.2B ladder entry remains a catalog-proven compatibility
+            // fallback; it is not considered while either current baseline or
+            // another eligible cached choice can be resolved.
+            if !eligibleCatalog.isEmpty,
+               eligibleCatalog.contains(where: { $0.alias == lowMemoryChoice.alias }) {
+                return lowMemoryChoice
+            }
+            return baseline
+        }
+        return choice(forAlias: alias)
+    }
+
+    /// RAM-only baseline shared by onboarding and the persistent picker row.
+    /// Cached preference is deliberately layered only by ``defaultChoice``.
+    static func baselineChoice(hardware: MacHardware) -> QuickstartModelChoice {
+        baselineChoice(physicalRAMGB: hardware.physicalRAMGB)
+    }
+
+    static func baselineChoice(physicalRAMGB: Double) -> QuickstartModelChoice {
+        physicalRAMGB < 16 ? lowMemoryChoice : defaultChoice
+    }
+
     /// UserDefaults key for the persistent "Quickstart already
     /// completed" flag. Once set, the surface NEVER returns — not
     /// even after the user deletes every model. Versioned so a
@@ -422,13 +390,11 @@ final class QuickstartCoordinator {
     /// intro rather than an empty transcript. Interpolates the chosen
     /// model's display name.
     ///
-    /// The starter (lfm2.5-1b-4bit) is intentionally the smallest
-    /// pick, so its copy keeps the "start in about a minute, trade up
-    /// any time" framing. A bigger pick gets a plainer intro without
-    /// the "smallest model" framing (it earned the trade-up, so don't
-    /// undersell it).
+    /// An authored starter keeps the short onboarding framing. A cached or
+    /// manually selected alternative gets a plainer intro without implying it
+    /// was downloaded specifically for setup.
     var seedMessage: String {
-        if selection.isStarter {
+        if selection.alias == baselineStarterAlias {
             return """
 You're chatting with \(selection.displayName) — a model picked so you can start \
 chatting in about a minute. Open the picker any time to trade up to a larger \
@@ -452,6 +418,15 @@ Open the picker any time to switch models.
     /// ContentView visibility gate's alias check) reads this instead of
     /// a pinned constant.
     private(set) var selection: QuickstartModelChoice = QuickstartCoordinator.defaultChoice
+    /// RAM-only starter identity for this launch. Unlike ``choice.tier``, this
+    /// is contextual: 1.2B is the starter below 16 GB and remains the explicit
+    /// low-memory fallback everywhere else.
+    private var baselineStarterAlias = QuickstartCoordinator.defaultChoice.alias {
+        didSet { defaults.set(baselineStarterAlias, forKey: Self.baselineStarterAliasKey) }
+    }
+    /// False after the user or persisted session chose a concrete model, so a
+    /// later catalog refresh can never replace explicit intent.
+    private var selectionUsesAutomaticPolicy = true
 
     /// Which pre-download wizard screen shows while ``phase`` is
     /// ``.idle``. Once the download kicks off, ``phase`` leaves ``.idle``
@@ -552,6 +527,7 @@ Open the picker any time to switch models.
     /// return rather than a reset.
     func beginBrowsingCatalog() {
         guard case .idle = phase else { return }
+        selectionUsesAutomaticPolicy = false
         stage = .chooseModel
         step2Stage = .browsing
     }
@@ -576,6 +552,7 @@ Open the picker any time to switch models.
     func beginReviewDownload(origin: ReviewOrigin) {
         guard case .idle = phase else { return }
         guard step2Stage != .reviewing else { return }
+        selectionUsesAutomaticPolicy = false
         stage = .chooseModel
         reviewOrigin = origin
         step2Stage = .reviewing
@@ -757,9 +734,28 @@ Open the picker any time to switch models.
     func select(_ choice: QuickstartModelChoice) {
         guard case .idle = phase else { return }
         selection = choice
+        selectionUsesAutomaticPolicy = false
         if let pending = pendingReadyAlias, pending != choice.alias {
             clearPendingReady()
         }
+    }
+
+    /// Apply the first-run policy once the authoritative catalog snapshot is
+    /// available. Re-applying is safe when cache state changes, but only while
+    /// the selection is still automatic.
+    func applyDefaultChoice(hardware: MacHardware, catalog: [ModelEntry]) {
+        guard case .idle = phase, selectionUsesAutomaticPolicy else { return }
+        baselineStarterAlias = Self.baselineChoice(hardware: hardware).alias
+        selection = Self.defaultChoice(hardware: hardware, catalog: catalog)
+    }
+
+    /// Apply the first authoritative catalog decision exactly once. Later
+    /// cache refreshes must not retarget a starter the chooser already shows.
+    func settleDefaultChoice(hardware: MacHardware, catalog: [ModelEntry]) {
+        guard case .idle = phase, selectionUsesAutomaticPolicy else { return }
+        baselineStarterAlias = Self.baselineChoice(hardware: hardware).alias
+        selection = Self.defaultChoice(hardware: hardware, catalog: catalog)
+        selectionUsesAutomaticPolicy = false
     }
 
     /// True once ``markDone`` has been called. Read on every eligibility
@@ -805,7 +801,7 @@ Open the picker any time to switch models.
             // quit-mid-flow relaunch trivially matched. Now the live
             // ``selection`` drives the seed target, but ``selection`` is
             // NOT persisted — a fresh ``QuickstartCoordinator()`` re-inits
-            // it to ``defaultChoice`` (0.6B). Persisting the target alias
+            // it to the static standard choice. Persisting the target alias
             // here (and restoring ``selection`` from it in ``init``) keeps
             // the ContentView seed observers comparing the served alias
             // against the model that was actually in flight, so a
@@ -856,6 +852,7 @@ Open the picker any time to switch models.
     /// ``enterDownloading``, ``skipForNow``, selecting a different alias,
     /// and ``_testingReset``.
     static let pendingReadyAliasKey: String = "rapid.quickstart.v1.pendingReadyAlias"
+    static let baselineStarterAliasKey: String = "rapid.quickstart.v1.baselineStarterAlias"
 
     /// Provenance for "this install has been inside setup before and never
     /// finished it" (Paper 05.1 state 18 — "Relaunch, setup incomplete").
@@ -920,6 +917,8 @@ Open the picker any time to switch models.
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.baselineStarterAlias = defaults.string(forKey: Self.baselineStarterAliasKey)
+            ?? Self.defaultChoice.alias
         self.done = defaults.bool(forKey: Self.storageKey)
         self.legacyDone = defaults.bool(forKey: Self.legacyStorageKey)
         // History only. Nothing below reconstructs a phase, a selection or a
@@ -940,6 +939,7 @@ Open the picker any time to switch models.
         if self.awaitingWelcomeSeed,
            let alias = defaults.string(forKey: Self.awaitingSeedAliasKey) {
             self.selection = Self.choice(forAlias: alias)
+            self.selectionUsesAutomaticPolicy = false
         }
         // An unconfirmed Ready flow restores its model and drops the user
         // back at the chooser rather than the welcome hero — they already
@@ -951,6 +951,7 @@ Open the picker any time to switch models.
         // re-entered by the live server observer or not at all.
         if let alias = self.pendingReadyAlias {
             self.selection = Self.choice(forAlias: alias)
+            self.selectionUsesAutomaticPolicy = false
             self.stage = .chooseModel
         }
     }
@@ -1010,6 +1011,8 @@ Open the picker any time to switch models.
         catalogSort = .familyThenSize
         catalogScrollID = nil
         selection = Self.defaultChoice
+        baselineStarterAlias = Self.defaultChoice.alias
+        selectionUsesAutomaticPolicy = true
         hasSeededWelcome = false
         awaitingWelcomeSeed = false
         pendingReadyAlias = nil
@@ -1033,6 +1036,7 @@ Open the picker any time to switch models.
         defaults.removeObject(forKey: Self.awaitingSeedKey)
         defaults.removeObject(forKey: Self.awaitingSeedAliasKey)
         defaults.removeObject(forKey: Self.pendingReadyAliasKey)
+        defaults.removeObject(forKey: Self.baselineStarterAliasKey)
     }
 
     /// The name 44 call sites in the suite and ``DevSnapshot`` already use.
@@ -1529,6 +1533,16 @@ struct QuickstartView: View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RapidTheme.canvas)
+            // Establish the RAM-only baseline synchronously before welcome
+            // actions become interactive. The catalog task below may replace
+            // it with an eligible cached model, but an immediate Skip can
+            // never leak the static 16 GB starter onto a smaller Mac.
+            .onAppear {
+                coordinator.applyDefaultChoice(
+                    hardware: hardware,
+                    catalog: catalogLoaded ? cachedModels : []
+                )
+            }
             // Observe serve transitions so we can flip to ``.ready`` (and
             // seed the welcome message) as soon as the sidecar comes
             // online. ``.task(id:)`` re-fires on every ``server.state``
@@ -1544,6 +1558,19 @@ struct QuickstartView: View {
             // status enum changes — exactly the trigger shape we want.
             .task(id: downloadJobStatusKey) {
                 handleDownloadStatusChange()
+            }
+            // Selection belongs to the whole onboarding lifecycle, not Step 2:
+            // Skip is available on the welcome screen and must hand the parent
+            // the same hardware/cache-aware alias the chooser would show.
+            .task(id: StarterSelectionKey(
+                catalogLoaded: catalogLoaded,
+                physicalRAMGB: hardware.physicalRAMGB,
+                catalogSignature: cachedModels
+                    .map { "\($0.alias):\($0.kind):\($0.cached)" }
+                    .sorted()
+            )) {
+                guard catalogLoaded else { return }
+                coordinator.settleDefaultChoice(hardware: hardware, catalog: cachedModels)
             }
             // The warning asks the user to free memory, so keep observing the
             // result of that action while this exact decision is visible.
@@ -1874,7 +1901,7 @@ struct QuickstartView: View {
 
                 OnboardingActionLane {
                     Button {
-                        coordinator.advanceToChooseModel()
+                        advanceToModelChoice()
                     } label: {
                         Text(Self.welcomePrimaryTitle(resuming: coordinator.isResumingIncompleteSetup))
                     }
@@ -1899,7 +1926,7 @@ struct QuickstartView: View {
                     // #1653; it does not any more, because a user asking to
                     // see the catalogue has not asked to leave setup.
                     Button("Skip for now") {
-                        onSkip()
+                        skipForNow()
                     }
                     .buttonStyle(.onboardingQuiet)
                     .keyboardShortcut(.cancelAction)
@@ -1922,6 +1949,32 @@ struct QuickstartView: View {
     /// the model chooser").
     static func welcomePrimaryTitle(resuming: Bool) -> String {
         resuming ? "Continue setup" : "Get started"
+    }
+
+    /// Resolve the latest hardware/cache policy at the user's action boundary.
+    /// SwiftUI's catalogue task can legitimately settle before or after the
+    /// welcome screen appears; neither ordering may leave the chooser pointing
+    /// at a card it does not render.
+    private func advanceToModelChoice() {
+        if catalogLoaded {
+            coordinator.settleDefaultChoice(hardware: hardware, catalog: cachedModels)
+        } else {
+            // This is a provisional RAM baseline, not an authoritative empty
+            // catalog. Keep automatic policy live so the first real snapshot
+            // can still prefer an eligible cached model.
+            coordinator.applyDefaultChoice(hardware: hardware, catalog: [])
+        }
+        coordinator.advanceToChooseModel()
+    }
+
+    /// The one genuine onboarding dismissal. Keep the live policy refresh and
+    /// callback together so every exit preserves the same starter selection.
+    private func skipForNow() {
+        coordinator.applyDefaultChoice(
+            hardware: hardware,
+            catalog: catalogLoaded ? cachedModels : []
+        )
+        onSkip()
     }
 
     // MARK: - Step 2 · Choose a model
@@ -1953,6 +2006,12 @@ struct QuickstartView: View {
         .task(id: catalogLoaded) {
             coordinator.resolveRecommendationLoading(catalogLoaded: catalogLoaded)
         }
+    }
+
+    private struct StarterSelectionKey: Equatable {
+        let catalogLoaded: Bool
+        let physicalRAMGB: Double
+        let catalogSignature: [String]
     }
 
     /// The canvas + footer lane every Step 2 micro-stage shares.
@@ -2365,7 +2424,9 @@ struct QuickstartView: View {
 
                     if !list.recommended.isEmpty {
                         OnboardingGroupLabel(
-                            text: "RECOMMENDED FOR YOUR \(Self.wholeGB(hardware.physicalRAMGB)) MAC"
+                            text: Self.recommendedGroupLabel(
+                                physicalRAMGB: hardware.physicalRAMGB
+                            )
                         )
                         .padding(.top, 14)
                         ForEach(list.recommended) { choice in
@@ -2751,6 +2812,10 @@ struct QuickstartView: View {
     private func catalogRow(_ entry: ModelEntry) -> some View {
         let choice = Self.choice(forCatalogEntry: entry)
         let available = OnboardingModelSelection.isAvailable(alias: entry.alias, hardware: hardware)
+        let recommendedAlias = QuickstartCoordinator.defaultChoice(
+            hardware: hardware,
+            catalog: cachedModels
+        ).alias
         OnboardingCatalogRow(
             alias: entry.alias,
             subtitle: Self.catalogRowSubtitle(
@@ -2761,7 +2826,11 @@ struct QuickstartView: View {
             sizeText: Self.rowSizeText(for: entry),
             selected: coordinator.selection.alias == entry.alias,
             isAvailable: available,
-            badges: Self.catalogRowBadges(entry: entry, available: available),
+            badges: Self.catalogRowBadges(
+                entry: entry,
+                available: available,
+                recommendedAlias: recommendedAlias
+            ),
             onActivate: { activatePrimary(in: .catalogue) }
         ) {
             coordinator.select(choice)
@@ -2808,10 +2877,11 @@ struct QuickstartView: View {
     /// capability, benchmark or compatibility claim is introduced.
     static func catalogRowBadges(
         entry: ModelEntry,
-        available: Bool
+        available: Bool,
+        recommendedAlias: String
     ) -> [OnboardingCatalogRow.Badge] {
         var badges: [OnboardingCatalogRow.Badge] = []
-        if entry.alias == QuickstartCoordinator.defaultChoice.alias {
+        if entry.alias == recommendedAlias {
             badges.append(.init(text: "RECOMMENDED", tone: .amber))
         }
         if !available {
@@ -2948,7 +3018,9 @@ struct QuickstartView: View {
                 }
                 if !list.recommended.isEmpty {
                     OnboardingGroupLabel(
-                        text: "RECOMMENDED FOR YOUR \(Self.wholeGB(hardware.physicalRAMGB)) MAC"
+                        text: Self.recommendedGroupLabel(
+                            physicalRAMGB: hardware.physicalRAMGB
+                        )
                     )
                     .padding(.top, 14)
                     ForEach(list.recommended) { choice in
@@ -3236,7 +3308,24 @@ struct QuickstartView: View {
         physicalRAMGB: Double? = nil
     ) -> Shortlist {
         let choices = QuickstartCoordinator.onboardingChoices
-        let cachedPresentation = quickstartCachedPresentation(catalog, limit: 6)
+        let starterAlias = physicalRAMGB.map {
+            QuickstartCoordinator.baselineChoice(physicalRAMGB: $0).alias
+        } ?? QuickstartCoordinator.defaultChoice.alias
+        var cachedPresentation = quickstartCachedPresentation(catalog, limit: 6)
+        // A catalog-preferred authored choice can sit just beyond the bounded
+        // cached row. Keep the bound, but swap that selected row into view so
+        // selection and AXSelected always have one visible owner.
+        if choices.contains(where: { $0.alias == selection }),
+           !cachedPresentation.primary.contains(where: { $0.alias == selection }),
+           let selectedEntry = quickstartCachedModels(catalog).first(where: {
+               $0.alias == selection
+           }) {
+            cachedPresentation.alternates.removeAll { $0.alias == selection }
+            if let displaced = cachedPresentation.primary.popLast() {
+                cachedPresentation.alternates.insert(displaced, at: 0)
+            }
+            cachedPresentation.primary.append(selectedEntry)
+        }
         let existing = cachedPresentation.primary
         let existingAliases = Set(existing.map(\.alias))
         // The RAM-aware recommended row: SSOT picks for this Mac, dropped if
@@ -3245,7 +3334,10 @@ struct QuickstartView: View {
         var recommended: [QuickstartModelChoice] = []
         if let ram = physicalRAMGB {
             var excluded = existingAliases
-            excluded.insert(QuickstartCoordinator.defaultChoice.alias)
+            excluded.insert(starterAlias)
+            if starterAlias != QuickstartCoordinator.lowMemoryChoice.alias {
+                excluded.insert(QuickstartCoordinator.lowMemoryChoice.alias)
+            }
             recommended = Self.recommendedChoices(
                 from: RAMBucketedDefault.picks(forPhysicalRAMGB: ram),
                 authored: choices,
@@ -3268,14 +3360,30 @@ struct QuickstartView: View {
         return Shortlist(
             cached: existing,
             cachedAlternates: cachedPresentation.alternates,
-            starters: choices.filter { $0.isStarter && !existingAliases.contains($0.alias) },
+            starters: choices.filter {
+                $0.alias == starterAlias && !existingAliases.contains($0.alias)
+            },
             recommended: recommended,
-            lowMemory: choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) },
+            lowMemory: choices.filter {
+                $0.isLowMemory
+                    && $0.alias != starterAlias
+                    && !existingAliases.contains($0.alias)
+            },
             tradeUps: tradeUps,
             yourPick: native.contains(selection)
                 ? nil
                 : onboardingCatalogModels(catalog).first { $0.alias == selection }
         )
+    }
+
+    /// The smallest tier's smart pick remains an explicit capability upgrade,
+    /// not the automatic recommendation: clean 8 GB validation showed that it
+    /// crosses the usable-memory guard. The row itself still owns the exact
+    /// measured warning and Load Anyway decision.
+    static func recommendedGroupLabel(physicalRAMGB: Double) -> String {
+        physicalRAMGB < 16
+            ? "OPTIONAL — MORE CAPABLE, USES MORE MEMORY"
+            : "RECOMMENDED FOR YOUR \(wholeGB(physicalRAMGB)) MAC"
     }
 
     /// Map the SSOT's RAM-tier picks into renderable wizard choices.
@@ -4027,8 +4135,8 @@ struct QuickstartView: View {
 
     /// Return the curated low-memory fallback only when the same snapshot
     /// that blocked the original load says the replacement falls below the
-    /// 85% danger line. This prevents a reassuring "Switch" button from
-    /// merely leading to a second warning. If the snapshot is unavailable,
+    /// blocking beyond-physical-RAM line. This prevents a reassuring "Switch"
+    /// button from merely leading to a second warning. If the snapshot is unavailable,
     /// Cancel still returns to the chooser and the fallback remains visible,
     /// but the warning does not claim it is safe.
     static func lowMemoryRecoveryChoice(
@@ -4386,7 +4494,15 @@ struct QuickstartView: View {
             }
         case .restart:
             coordinator.enterStarting()
-            Task { await server.start(alias: coordinator.selection.alias) }
+            let catalogEntry = cachedModels.first {
+                $0.alias == coordinator.selection.alias
+            }
+            Task {
+                await server.start(
+                    alias: coordinator.selection.alias,
+                    catalogEntryHint: catalogEntry
+                )
+            }
         case .openModelManagement, .openWebSearchSettings:
             // One path for every Settings deep-link. ``route`` stages the
             // target tab and only then runs the open — ``SettingsView`` reads
@@ -4420,8 +4536,8 @@ struct QuickstartView: View {
     /// disk probe (FU-4) and the real kickoff:
     ///
     ///   * Probe ``freeBytesProbe`` (defaults to the HF cache volume).
-    ///   * Run ``DiskSpaceProbe.decide`` against
-    ///     ``DiskSpaceProbe.quickstartRequiredBytes``.
+    ///   * Derive the selected model's transient + OS-headroom requirement.
+    ///   * Run ``DiskSpaceProbe.decide`` against that requirement.
     ///   * ``.ok`` → fire ``kickoffDownload`` directly.
     ///   * ``.warn`` → flip the coordinator to ``.lowDiskWarning`` and
     ///     let the user choose Continue / Cancel from the rendered
@@ -4440,11 +4556,22 @@ struct QuickstartView: View {
         QuickstartView.applyPreflightDecision(
             decision: DiskSpaceProbe.decide(
                 freeBytes: freeBytesProbe(),
-                requiredBytes: DiskSpaceProbe.quickstartRequiredBytes
+                requiredBytes: Self.requiredDiskBytes(for: coordinator.selection)
             ),
             coordinator: coordinator,
             onKickoff: { kickoffDownload() }
         )
+    }
+
+    /// Translate the same selected-model size shown by onboarding into the
+    /// disk pre-flight budget. Authored byte receipts win; other choices use
+    /// the existing model-sizing estimate rather than alias-specific logic.
+    static func requiredDiskBytes(for choice: QuickstartModelChoice) -> Int64 {
+        let gib = Double(1 << 30)
+        let downloadBytes = choice.downloadBytes ?? Int64(
+            (ModelSizing.estimate(alias: choice.alias).weightsGB * gib).rounded(.up)
+        )
+        return DiskSpaceProbe.requiredBytes(downloadBytes: downloadBytes)
     }
 
     /// Cached models skip both the disk-space warning and DownloadManager.
@@ -4464,7 +4591,8 @@ struct QuickstartView: View {
             await coordinator.afterSkippingDownloadBeat(duration: Self.skippingDownloadBeat) {
                 await server.start(
                     alias: cached.alias,
-                    hfPath: cached.hfRepo
+                    hfPath: cached.hfRepo,
+                    catalogEntryHint: cached
                 )
             }
         }
@@ -4557,10 +4685,14 @@ struct QuickstartView: View {
             // and re-enters main actor; we kick it via a Task because
             // the .task(id:) closure is already main-actor bound.
             coordinator.enterStarting()
+            let catalogEntry = cachedModels.first {
+                $0.alias == coordinator.selection.alias
+            }
             Task { @MainActor in
                 await server.start(
                     alias: coordinator.selection.alias,
-                    hfPath: coordinator.selection.hfRepo
+                    hfPath: coordinator.selection.hfRepo,
+                    catalogEntryHint: catalogEntry
                 )
             }
         case .cancelled:

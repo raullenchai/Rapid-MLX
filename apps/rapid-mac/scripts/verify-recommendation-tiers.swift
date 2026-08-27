@@ -309,13 +309,11 @@ func isRetiredStarter(_ alias: String) -> Bool { retiredStarters.contains(alias)
 
 func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
                   serverState: FakeServerState, userOptedIn: Bool = true,
-                  quickstartDone: Bool = false, legacyDone: Bool = false,
-                  firstRunDecisionPending: Bool = false) -> FakeDecision {
+                  quickstartDone: Bool = false, legacyDone: Bool = false) -> FakeDecision {
     if !userOptedIn { return .skip("userOptedOut") }
-    // #1589: both first-run gates sit ABOVE the serverState switch. Below it
+    // #1589: the onboarding gate sits ABOVE the serverState switch. Below it
     // they could only observe the race, never prevent it — auto-start is the
     // thing that moves the state every downstream predicate then reads.
-    if firstRunDecisionPending { return .skip("firstRunDecisionPending") }
     if onboardingOwed(done: quickstartDone, legacyDone: legacyDone,
                       lastServedAlias: lastServedAlias) {
         return .skip("onboardingPending")
@@ -377,11 +375,6 @@ check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
                    cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle,
                    quickstartDone: true) == .start("qwen3.5-9b-4bit"),
       "returning user still gets their last-used model restored")
-check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
-                   cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle,
-                   quickstartDone: true, firstRunDecisionPending: true)
-        == .skip("firstRunDecisionPending"),
-      "nothing loads behind the unanswered first-run consent sheet")
 // The invariant, over the whole persisted state space: auto-start never
 // starts a model for a user the wizard would still be offered to.
 for done in [false, true] {

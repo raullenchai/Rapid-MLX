@@ -24,13 +24,15 @@ struct GroundingConfabulationRetryTests {
     func confabulatedDenialTriggersOneCorrection() async throws {
         ConfabRetryProtocol.reset(firstAnswer: kConfabAnswer)
         let registry = WebSearchStubRegistry()
+        var deliveredValues: [ProductValueKind] = []
         let model = ChatViewModel(
             client: ChatStreamClient(
                 baseURL: URL(string: "fake://confab")!,
                 session: ConfabRetryProtocol.session()
             ),
             tools: registry,
-            persistsConversations: false
+            persistsConversations: false,
+            onProductValueDelivered: { deliveredValues.append($0) }
         )
 
         model.send("What's a major news story from the last week?", alias: "test-model")
@@ -39,6 +41,7 @@ struct GroundingConfabulationRetryTests {
         }
 
         #expect(!model.isStreaming)
+        #expect(deliveredValues == [.chatReply], "intermediate tool rounds must not trigger consent")
         // The final answer is the grounded retry, not the confabulated draft.
         #expect(model.messages.last?.content == kGroundedAnswer)
         #expect(model.messages.last?.status == .complete)

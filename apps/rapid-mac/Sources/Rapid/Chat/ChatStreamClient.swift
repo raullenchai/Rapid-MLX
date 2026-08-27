@@ -143,6 +143,8 @@ struct ChatStreamClient {
     struct Request: Sendable {
         let alias: String
         let messages: [Wire.Message]
+        /// Local identity only; never encoded into the API request.
+        let imageMessageID: UUID?
         let temperature: Double
         let topP: Double
         let maxTokens: Int
@@ -203,7 +205,9 @@ struct ChatStreamClient {
                             && (!$0.imageAttachments.isEmpty || !$0.fileAttachments.isEmpty)
                     })
                     if let attachmentTurn,
-                        !modelMessages[attachmentTurn].imageAttachments.isEmpty
+                        !modelMessages[attachmentTurn].imageAttachments.isEmpty,
+                        modelMessages[attachmentTurn].imageDeliveryStatus == nil
+                            || modelMessages[attachmentTurn].imageDeliveryStatus == .accepted
                     {
                         imageMessageIndex = attachmentTurn
                     } else {
@@ -211,6 +215,7 @@ struct ChatStreamClient {
                     }
                 }
             }
+            self.imageMessageID = imageMessageIndex.map { modelMessages[$0].id }
             self.messages = modelMessages.enumerated().map { index, message in
                 Wire.Message(from: message, includeImages: index == imageMessageIndex)
             }
@@ -793,6 +798,24 @@ enum ChatStreamError: LocalizedError {
         case .streamTruncated:
             return "rapid-mlx closed the stream mid-response (likely a crash). Restart the server and resend."
         }
+    }
+
+    /// Only the typed image-rejection contract is safe, user-facing copy.
+    /// Other structured 4xx/5xx envelopes may contain operational details and
+    /// must continue through the normal actionable-error diagnosis.
+    var attachmentFailureMessage: String? {
+        guard case .httpStatus(let code, let body) = self,
+              (400..<600).contains(code),
+              let data = body.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(Wire.ErrorEnvelope.self, from: data),
+              envelope.error.type == "invalid_request_error",
+              envelope.error.code == "image_input_unsupported",
+              let message = envelope.error.message?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              !message.isEmpty
+        else { return nil }
+        return message
     }
 }
 

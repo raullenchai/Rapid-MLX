@@ -583,7 +583,11 @@ struct OnboardingWontFitReviewTests {
             cached: true
         )
         // Still one badge, still replacing ON THIS MAC rather than stacking.
-        let badges = QuickstartView.catalogRowBadges(entry: entry, available: false)
+        let badges = QuickstartView.catalogRowBadges(
+            entry: entry,
+            available: false,
+            recommendedAlias: QuickstartCoordinator.defaultChoice.alias
+        )
         #expect(badges.map { $0.text } == ["WON'T FIT"])
         #expect(badges.first?.tone == .error)
 

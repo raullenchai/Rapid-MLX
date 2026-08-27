@@ -307,6 +307,25 @@ def test_engine_is_mllm_or_none_is_defensive():
     assert models_route._engine_is_mllm_or_none(_StubEngine(False)) is False
 
 
+def test_model_info_exposes_live_serving_lane_reason(monkeypatch):
+    from vllm_mlx.config import get_config
+    from vllm_mlx.routes import models as models_route
+
+    model_id = "fake/qwen3.5-9b-4bit"
+    restore = _stub_single_serve(monkeypatch, model_id=model_id, engine_is_mllm=False)
+    engine = get_config().engine
+    engine.serving_lane = "text"
+    engine.serving_lane_reason = "vision_hybrid_runtime_unsupported"
+    monkeypatch.setattr(models_route, "is_mllm_model", lambda _m: True)
+    try:
+        info = models_route._build_model_info(model_id)
+    finally:
+        restore()
+
+    assert info.serving_lane == "text"
+    assert info.serving_lane_reason == "vision_hybrid_runtime_unsupported"
+
+
 def test_build_model_info_prefers_live_hybrid_probe(monkeypatch):
     """The wire reports the scheduler's loaded profile, not stale alias data."""
     from vllm_mlx.routes import models as models_route

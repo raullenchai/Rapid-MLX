@@ -166,28 +166,29 @@ struct ModelSizingTests {
     func liveGuardCatchesLowFreeMemory() {
         let g = ModelSizing.estimate(alias: "gemma-4-12b") // ~11.8 GB
         let gib: UInt64 = 1 << 30
-        // 64 GB Mac with 50 GB already used → ~14 GB free; projected ~96%
-        // → unsafe. This is the reported near-crash: static classify says
-        // "fits a 64 GB Mac", but live free RAM can't take it.
-        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 50 * gib, totalBytes: 64 * gib) == .unsafe)
+        // 64 GB Mac with 50 GB already used projects to ~96%: advisory,
+        // but not a blocking confirmation while compression/swap can absorb it.
+        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 50 * gib, totalBytes: 64 * gib) == .tight)
+        // Beyond physical RAM requires an explicit decision.
+        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 55 * gib, totalBytes: 64 * gib) == .unsafe)
         // Same Mac idle → comfortable.
         #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 10 * gib, totalBytes: 64 * gib) == .safe)
-        // 32 GB Mac, 14 GB used → ~80% projected → tight (warn, allow).
-        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 14 * gib, totalBytes: 32 * gib) == .tight)
+        // 32 GB Mac, 14 GB used → ~80% projected → ordinary load.
+        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 14 * gib, totalBytes: 32 * gib) == .safe)
     }
 
-    @Test("memorySafety: only >=85% blocks — the 75-85% band still loads")
+    @Test("memorySafety: 95% is advisory and only beyond 100% blocks")
     func liveGuardBlocksOnlyAtDangerLine() {
-        let g = ModelSizing.estimate(alias: "gemma-4-12b") // ~11.8 GB
         let gib: UInt64 = 1 << 30
-        // ServerManager holds a load for confirmation on `.unsafe` ONLY.
-        // 13 GiB used on a 32 GiB Mac projects to ~77.5%: a routine load
-        // on a mid-size Mac. It must classify `.tight`, not `.unsafe` —
-        // prompting here would fire on ordinary loads and train the user
-        // to click through the one prompt that actually matters.
-        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 13 * gib, totalBytes: 32 * gib) == .tight)
-        // Just over the 85% panic line on the same Mac → blocked.
-        #expect(ModelSizing.memorySafety(footprint: g, usedBytes: 16 * gib, totalBytes: 32 * gib) == .unsafe)
+        #expect(ModelSizing.memorySafety(
+            footprintGB: 1, usedBytes: 94 * gib, totalBytes: 100 * gib
+        ) == .tight)
+        #expect(ModelSizing.memorySafety(
+            footprintGB: 0, usedBytes: 100 * gib, totalBytes: 100 * gib
+        ) == .tight)
+        #expect(ModelSizing.memorySafety(
+            footprintGB: 1, usedBytes: 100 * gib, totalBytes: 100 * gib
+        ) == .unsafe)
         #expect(!ModelSizing.requiresMemoryConfirmation(.tight))
         #expect(ModelSizing.requiresMemoryConfirmation(.unsafe))
     }
@@ -208,12 +209,14 @@ struct ModelSizingTests {
     func memoryWarningCopy() {
         let w = ModelSizing.MemoryWarning(
             alias: "gemma-4-12b", hfPath: nil, isAutoRespawn: false,
-            severity: .unsafe, footprintGB: 5.9, freeGB: 8.8, totalGB: 24.0
+            severity: .unsafe, footprintGB: 5.9, freeGB: 0.8, totalGB: 24.0,
+            plannedReleaseGB: 6.3
         )
         #expect(w.title.contains("gemma-4-12b"))
-        #expect(w.message.contains("88%"))
-        #expect(w.message.contains("85%"))
-        #expect(w.message.contains("1 GB"))
+        #expect(w.message.contains("121%"))
+        #expect(w.message.contains("accounts for about 6 GB released"))
+        #expect(w.message.contains("more memory than this Mac has"))
+        #expect(w.message.contains("6 GB"))
         #expect(!w.message.contains("only about 9 GB is free"))
         #expect(w.confirmTitle.localizedCaseInsensitiveContains("anyway"))
     }

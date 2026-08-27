@@ -96,6 +96,9 @@ struct RapidApp: App {
     @State private var appearance: AppearanceConfig
     /// Deep-link channel into the Settings window.
     @State private var settingsRouter: SettingsRouter
+    /// App-owned owner of the one-time invitation that follows the first
+    /// successful product outcome. Feature models only publish typed success.
+    @State private var deferredTelemetryConsent: DeferredTelemetryConsentCoordinator
     /// Side-car downloader — spawns ``rapid-mlx pull <alias>`` jobs.
     @State private var downloads: DownloadManager
     /// Detects the "Finder Replace into /Applications silently failed
@@ -134,8 +137,9 @@ struct RapidApp: App {
         CrashReporter.install()
         // Migrate only users who had explicitly changed the legacy
         // telemetry toggle. An absent value remains undecided/off and is
-        // handled by the first-run consent sheet in ContentView.
+        // handled by the post-value consent coordinator.
         TelemetryConsent.synchronizeExistingDecision()
+        let consentCoordinator = DeferredTelemetryConsentCoordinator()
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
         //
@@ -252,7 +256,10 @@ struct RapidApp: App {
             tools: toolRegistry,
             sampling: samplingConfig,
             customInstructions: customInstructionsConfig,
-            server: manager
+            server: manager,
+            onProductValueDelivered: { [weak consentCoordinator] kind in
+                consentCoordinator?.productValueDelivered(kind)
+            }
         )
         // Deterministic AX fixture for the otherwise release-only state where
         // Sparkle is already downloading in the background. Requiring both
@@ -297,7 +304,10 @@ struct RapidApp: App {
         let dictationController = DictationController(
             server: manager,
             testingReadiness: fixtureReadiness,
-            testingHotkeyStart: fixtureHotkeyStart
+            testingHotkeyStart: fixtureHotkeyStart,
+            onProductValueDelivered: { [weak consentCoordinator] kind in
+                consentCoordinator?.productValueDelivered(kind)
+            }
         )
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
         // background pull for the same alias before spawning serve.
@@ -310,7 +320,11 @@ struct RapidApp: App {
         _dockPromptStore = State(initialValue: dockPrompt)
         AppDelegate.shared.dockPromptStore = dockPrompt
         _chatViewModel = State(initialValue: chat)
-        _imageGen = State(initialValue: ImageGenViewModel(server: manager))
+        let imageGenViewModel = ImageGenViewModel(server: manager)
+        imageGenViewModel.observeProductValue { [weak consentCoordinator] kind in
+            consentCoordinator?.productValueDelivered(kind)
+        }
+        _imageGen = State(initialValue: imageGenViewModel)
         _audio = State(initialValue: AudioViewModel(server: manager))
         _dictation = State(initialValue: dictationController)
         _updater = State(initialValue: updateChecker)
@@ -319,6 +333,7 @@ struct RapidApp: App {
         _customInstructions = State(initialValue: customInstructionsConfig)
         _appearance = State(initialValue: appearanceConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
+        _deferredTelemetryConsent = State(initialValue: consentCoordinator)
         // Hand the live singletons to the delegate so the shutdown hook
         // and the AppKit menu-bar tray can reach them without rebuilding
         // the SwiftUI environment.
@@ -350,6 +365,7 @@ struct RapidApp: App {
                 .environment(customInstructions)
                 .environment(appearance)
                 .environment(settingsRouter)
+                .environment(deferredTelemetryConsent)
                 .environment(installTracker)
                 .environment(quickstart)
                 .environment(dockPromptStore)
@@ -360,11 +376,6 @@ struct RapidApp: App {
                 .environment(mcpApproval)
                 .environment(mcpTools)
                 .environment(perfConfig)
-                .task {
-                    // Dictation is a background service: arm it at launch so
-                    // the hotkey works without ever opening the Audio tab.
-                    await dictation.bootstrap()
-                }
                 .task {
                     // DEV-ONLY: render real screens to PNG when
                     // RAPID_DEV_SNAPSHOT_DIR is set, then quit. Inert
@@ -517,6 +528,7 @@ struct RapidApp: App {
                 .environment(mcpApproval)
                 .environment(mcpTools)
                 .environment(perfConfig)
+                .environment(deferredTelemetryConsent)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 900, height: 720)

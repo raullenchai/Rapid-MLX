@@ -208,6 +208,10 @@ final class WebSearchConfig {
     /// looked" from "looked, no secret stored" — the latter must
     /// short-circuit ``apiKey(for:)`` without another keychain hit.
     private var probedAccounts: Set<String> = []
+    /// Accounts whose no-UI Keychain lookup was refused. Kept distinct from
+    /// ordinary absence so Settings can ask for re-entry without ever causing
+    /// the macOS login-keychain password dialog.
+    private var unavailableAccounts: Set<String> = []
     /// Process-local mutation generation per Keychain account. Value equality
     /// cannot detect an ABA replacement (K → another value → K), so callers
     /// that act on an async response capture this revision with the key.
@@ -248,12 +252,17 @@ final class WebSearchConfig {
             // HTTP header has to land clean or the upstream rejects.
             return keyCache[account]?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
         }
-        let value = keychain.read(account: account)
+        let result = keychain.readWithoutUserInteraction(account: account)
         probedAccounts.insert(account)
-        if let value, !value.isEmpty {
+        guard case .found(let value) = result else {
+            if result == .unavailable { unavailableAccounts.insert(account) }
+            return nil
+        }
+        unavailableAccounts.remove(account)
+        if !value.isEmpty {
             keyCache[account] = value
         }
-        return value?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
     }
 
     /// Atomically capture the cached credential value and its mutation
@@ -314,6 +323,7 @@ final class WebSearchConfig {
             // disk.
             if keychain.delete(account: account) {
                 keyCache.removeValue(forKey: account)
+                unavailableAccounts.remove(account)
                 probedAccounts.insert(account)
                 keyRevisions[account, default: 0] &+= 1
                 return true
@@ -337,6 +347,7 @@ final class WebSearchConfig {
             // disk, silently disabling the provider until restart.
             if keychain.write(account: account, secret: trimmed) {
                 keyCache[account] = trimmed
+                unavailableAccounts.remove(account)
                 probedAccounts.insert(account)
                 keyRevisions[account, default: 0] &+= 1
                 // Auto-promote happens AFTER a successful keychain
@@ -364,14 +375,13 @@ final class WebSearchConfig {
         !provider.requiresKey || apiKey(for: provider) != nil
     }
 
-    // MARK: - Async prefetch (cycle-12 P3: Settings → Web Search blocked
-    // the UI on tab construction because the panel's view-builder asked
-    // ``apiKey(for:)`` for both Brave and Tavily — each call synchronously
-    // crosses the securityd XPC hop, and the first cross-process Keychain
-    // access against a ``kSecAttrAccessibleWhenUnlockedThisDeviceOnly``
-    // item can surface a system permission modal. The UI now warms the
-    // cache off the main actor before reading the cache; these two
-    // helpers are the seam.
+    // MARK: - Lazy async lookup
+    //
+    // Settings must not touch Keychain merely because its Tools page opened.
+    // A required-key backend selection or an API-key field focus calls the
+    // single-provider helper below; actual tool dispatch can also resolve its
+    // selected provider through ``apiKey(for:)``. Both routes use the same
+    // no-authentication-UI storage contract.
     //
     // The pre-existing positive/negative cache contracts in
     // ``WebSearchKeyCacheTests`` are preserved verbatim: ``apiKey(for:)``
@@ -397,6 +407,7 @@ final class WebSearchConfig {
     func cachedKeyState(for provider: WebSearchProvider) -> CachedKeyState {
         guard let account = provider.keychainAccount else { return .absent }
         guard probedAccounts.contains(account) else { return .unknown }
+        if unavailableAccounts.contains(account) { return .unavailable }
         if let trimmed = keyCache[account]?
             .trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty {
             return .present(trimmed)
@@ -404,7 +415,7 @@ final class WebSearchConfig {
         return .absent
     }
 
-    /// Warm ``cachedKeyState(for:)`` for ``provider`` without blocking
+    /// Resolve ``cachedKeyState(for:)`` for ``provider`` without blocking
     /// the calling actor on the Keychain XPC hop. Returns after the
     /// cache + probed set have been populated. Safe to call repeatedly;
     /// a probed provider short-circuits without re-reading Keychain.
@@ -442,8 +453,8 @@ final class WebSearchConfig {
         // which it isn't (it's main-actor isolated for the @Observable
         // reasons above).
         let keychain = self.keychain
-        let value = await Task.detached(priority: .userInitiated) {
-            keychain.read(account: account)
+        let result = await Task.detached(priority: .userInitiated) {
+            keychain.readWithoutUserInteraction(account: account)
         }.value
         // codex r1 MAJOR: discard the result if our parent task was
         // cancelled while we were waiting on the detached read — the
@@ -457,25 +468,13 @@ final class WebSearchConfig {
         // read / write is authoritative (the write path also primes
         // the cache directly).
         if probedAccounts.contains(account) { return }
-        if let value, !value.isEmpty {
+        if case .found(let value) = result, !value.isEmpty {
             keyCache[account] = value
         }
+        if result == .unavailable { unavailableAccounts.insert(account) }
         probedAccounts.insert(account)
     }
 
-    /// Convenience: warm every keyed provider in parallel. Used by the
-    /// Settings → Web Search panel's ``.task`` so the cache is populated
-    /// once, off the main actor, before the panel re-renders.
-    func prefetchAllAPIKeys() async {
-        await withTaskGroup(of: Void.self) { group in
-            // ``acceptsKey``, not ``requiresKey``: Keenable's key is
-            // optional but still lives in the Keychain and still
-            // needs warming before the Settings key row renders.
-            for provider in WebSearchProvider.allCases where provider.acceptsKey {
-                group.addTask { await self.prefetchAPIKey(for: provider) }
-            }
-        }
-    }
 }
 
 /// Result of ``WebSearchConfig.cachedKeyState(for:)``. ``.unknown``
@@ -486,6 +485,7 @@ enum CachedKeyState: Equatable, Sendable {
     case unknown
     case absent
     case present(String)
+    case unavailable
 
     var hasKey: Bool {
         if case .present = self { return true }

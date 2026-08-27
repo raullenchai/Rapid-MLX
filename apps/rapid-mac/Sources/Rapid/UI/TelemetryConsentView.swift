@@ -1,80 +1,55 @@
 import SwiftUI
 
-/// First-run disclosure for the shared desktop + embedded-engine
-/// telemetry pipeline. The full-window presenter blocks the workspace
-/// until the user makes an explicit choice without creating an AppKit
-/// modal sheet that would also block normal application termination.
-struct TelemetryConsentView: View {
-    let onDecision: (Bool) -> Void
-    @FocusState private var primaryActionFocused: Bool
+/// Non-modal invitation shown only after Rapid has delivered useful output.
+/// It deliberately does not take focus from the composer or the result the
+/// user just received.
+struct DeferredTelemetryConsentBanner: View {
+    @Environment(DeferredTelemetryConsentCoordinator.self) private var consent
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
-                Image(systemName: "chart.bar.xaxis")
-                    .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(RapidTheme.brand)
-                    .frame(width: 40, height: 40)
-                    .background(RapidTheme.brandTint, in: RoundedRectangle(cornerRadius: 8))
+        HStack(spacing: RapidTheme.Space.md) {
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(RapidTheme.brand)
+                .frame(width: 32, height: 32)
+                .background(RapidTheme.brandTint, in: RoundedRectangle(cornerRadius: RapidTheme.Radius.row))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Help improve Rapid-MLX")
-                        .font(.title2.weight(.semibold))
-                    Text("Anonymous usage data is off until you choose to share it.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                Text("Help improve Rapid by sharing anonymous usage data?")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(RapidTheme.textPrimary)
+                Text("Prompts, responses, attachments, and API keys are never collected. Change this anytime in Settings > Privacy.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .lineLimit(2)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                disclosureRow(
-                    icon: "desktopcomputer",
-                    text: "App and engine versions, macOS version, chip family, and memory tier"
-                )
-                disclosureRow(
-                    icon: "gauge.with.dots.needle.50percent",
-                    text: "Public model names, feature names, coarse performance, redacted crash diagnostics, and error categories"
-                )
-                disclosureRow(
-                    icon: "hand.raised.fill",
-                    text: "Never prompts, responses, attachments, API keys, account details, device serials, or unredacted user paths"
-                )
-            }
+            Spacer(minLength: RapidTheme.Space.md)
 
-            Text("The app and its embedded engine share one random identifier so this Mac is counted once. Change this choice anytime in Settings > Privacy.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Button("No thanks", role: .cancel) { consent.decline() }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("TelemetryConsent.PostValue.Decline")
 
-            HStack(spacing: 10) {
-                Spacer()
-                Button("Don't share", role: .cancel) {
-                    onDecision(false)
-                }
-                .accessibilityIdentifier("TelemetryConsent.DontShare")
-                Button("Share anonymous data") {
-                    onDecision(true)
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .focused($primaryActionFocused)
-                .accessibilityIdentifier("TelemetryConsent.Share")
+            Button("Share") { consent.share() }
+                .buttonStyle(.rapidPrimaryCompact)
+                .accessibilityIdentifier("TelemetryConsent.PostValue.Share")
+
+            Button { consent.close() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 24)
             }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss telemetry invitation")
+            .accessibilityIdentifier("TelemetryConsent.PostValue.Close")
         }
-        .padding(24)
-        .frame(width: 500)
-        .onAppear { primaryActionFocused = true }
-    }
-
-    private func disclosureRow(icon: String, text: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-            Text(text)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        .padding(.horizontal, RapidTheme.Space.lg)
+        .padding(.vertical, RapidTheme.Space.sm)
+        .background(RapidTheme.surfaceRaised)
+        .overlay(alignment: .bottom) { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("TelemetryConsent.PostValueBanner")
     }
 }

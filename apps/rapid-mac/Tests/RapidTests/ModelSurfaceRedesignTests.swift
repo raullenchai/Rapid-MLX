@@ -128,10 +128,12 @@ struct ModelSurfaceRedesignTests {
         #expect(model.contains("func retryAssistantMessage(\n        id: UUID,\n        alias: String,\n        supportsImageInput: Bool? = nil"))
         #expect(!model.contains("imageCapabilityByAlias"),
                 "restored conversations must not depend on transient per-send state")
-        #expect(server.contains("let catalogEntry = await ModelCatalogCache.shared.entries"))
+        #expect(server.contains("let probedCatalogEntry = await ModelCatalogCache.shared.entries"))
         let catalogProbe = try #require(server.range(
-            of: "let catalogEntry = await ModelCatalogCache.shared.entries"
+            of: "let probedCatalogEntry = await ModelCatalogCache.shared.entries"
         ))
+        #expect(server.contains("let catalogEntry = Self.readyCatalogEntry("),
+                "the authoritative probe and exact-alias start hint must converge before launch")
         let criticalSection = try #require(server.range(
             of: "        isOperating = true\n\n        // Clear the log tail"
         ))

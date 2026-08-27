@@ -960,6 +960,16 @@ class TestVisibility:
         assert "✗ disabled (hybrid arch)" in table
         assert "✓ 200ms gap" in table
 
+    def test_qwen4_exp_alias_surfaces_experimental_status(self):
+        cfg = detect_model_config("qwen3.8-flash-next-4bit")
+        assert cfg is not None and cfg.experimental is True
+
+        summary = format_profile_summary("qwen3.8-flash-next-4bit", cfg)
+        table = format_profile_table("qwen3.8-flash-next-4bit", cfg)
+
+        assert "experimental" in summary
+        assert "Status           : ⚠ experimental" in table
+
     def test_table_for_pure_attention_shows_supported(self):
         cfg = detect_model_config("mlx-community/Qwen3-0.6B-8bit")
         table = format_profile_table("mlx-community/Qwen3-0.6B-8bit", cfg)
@@ -2381,6 +2391,32 @@ class TestCheckpointMetadataFallback:
         assert config.is_hybrid_explicit is True
         assert config.supports_spec_decode is False
 
+    def test_qwen4_exp_metadata_marks_local_checkpoint_experimental(self, monkeypatch):
+        """The typed architecture, never a repository label, owns M1 status."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "model_type": "qwen4_exp",
+                    "text_config": {
+                        "model_type": "qwen4_exp_text",
+                        "layer_types": ["linear_attention", "full_attention"],
+                    },
+                },
+                None,
+            ),
+        )
+
+        config = detect_model_config("/models/operator-converted-checkpoint")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        assert config.is_hybrid_explicit is True
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+        assert config.experimental is True
+
     def test_metadata_detection_logs_when_called_directly(self, monkeypatch):
         log = mock.Mock()
         monkeypatch.setattr(
@@ -2458,6 +2494,28 @@ class TestCheckpointMetadataFallback:
         assert config.is_hybrid is True
         assert config.is_hybrid_explicit is True
         assert config.supports_spec_decode is False
+
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "model_type": "qwen4_exp",
+                    "text_config": {
+                        "model_type": "qwen4_exp",
+                        "layer_types": ["linear_attention", "qwen_sparse_attention"],
+                    },
+                },
+                self._XML_TOOLS,
+            ),
+        )
+        flash = detect_model_config("/tmp/models/Qwen3.8-Flash-Next/snapshot")
+        assert flash is not None
+        assert flash.is_hybrid is True
+        assert flash.is_moe is True
+        assert flash.experimental is True
+        assert "experimental" in format_profile_summary("local-flash-next", flash)
+        assert "⚠ experimental" in format_profile_table("local-flash-next", flash)
 
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the

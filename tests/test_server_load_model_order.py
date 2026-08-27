@@ -42,6 +42,12 @@ class _StubEngine:
         self.args = args
         self.kwargs = kwargs
 
+    async def start(self):
+        pass
+
+    def generate_warmup(self):
+        pass
+
 
 @pytest.fixture(autouse=True)
 def _reset_cfg_around_each_test():
@@ -84,6 +90,31 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     # ordering fix, detection sees the synced cfg and propagates that
     # to the engine.
     assert server._engine.preserve_native_tool_format is True
+
+
+@pytest.mark.parametrize("served,expected", [("studio-assistant", True), (None, False)])
+def test_load_model_tracks_explicit_served_model_name(monkeypatch, served, expected):
+    """Issue #2353: ``load_model(..., served_model_name=...)`` must set the
+    flag the readiness banner consumes, and leave it clear when no override
+    is supplied — otherwise the banner would silently fall back to the
+    catalog alias."""
+    from vllm_mlx import server
+
+    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+    monkeypatch.setattr(server, "_served_model_name_set", not expected, raising=False)
+
+    server.load_model("mlx-community/Qwen3.5-9B-4bit", served_model_name=served)
+
+    assert server._served_model_name_set is expected
 
 
 def _stub_routing_globals(monkeypatch, server):
@@ -132,8 +163,11 @@ def test_load_model_materializes_config_before_hybrid_routing_probe(
     # its config has been materialized (i.e. after the download).
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: True)
     monkeypatch.setattr(
-        api_utils, "mllm_backbone_is_hybrid", lambda name: state["materialized"]
+        api_utils,
+        "mllm_backbone_cache_mode",
+        lambda name: "arrays" if state["materialized"] else None,
     )
+    monkeypatch.setattr(api_utils, "mllm_hybrid_runtime_supported", lambda: False)
 
     with caplog.at_level(logging.INFO, logger="vllm_mlx.server"):
         server.load_model("some/uncached-hybrid-vlm-4bit")
@@ -161,7 +195,7 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: True)
-    monkeypatch.setattr(api_utils, "mllm_backbone_is_hybrid", lambda name: False)
+    monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda name: None)
 
     server.load_model("some/genuine-vlm-4bit")
 
@@ -169,6 +203,114 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
     # No downgrade → force_text stays False; BatchedEngine does its own MLLM
     # auto-detection from there.
     assert server._engine.kwargs.get("force_text") is False
+
+
+def test_materialized_checkpoint_keeps_catalog_vision_memory_floor(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import model_aliases, model_metadata, server
+    from vllm_mlx.api import utils as api_utils
+    from vllm_mlx.model_profile import ModelProfile
+
+    monkeypatch.setattr(model_aliases, "resolve_model", lambda _name: "publisher/model")
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_profile",
+        lambda _name: ModelProfile(vision_min_memory_gb=32.0),
+    )
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda _name: SimpleNamespace(snapshot_dir="/cache/snapshots/revision"),
+    )
+    monkeypatch.setattr(api_utils, "is_mllm_model", lambda _name: True)
+    monkeypatch.setattr(
+        api_utils, "mllm_arch_unsupported_but_text_vendored", lambda _name: False
+    )
+    monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda _name: "arrays")
+    monkeypatch.setattr(api_utils, "mllm_hybrid_runtime_supported", lambda: True)
+    monkeypatch.setattr(api_utils, "physical_ram_gb", lambda: 16.0)
+
+    resolved = server._resolve_serving_checkpoint("qwen3.5-4b-4bit")
+
+    assert resolved.load_path == "/cache/snapshots/revision"
+    assert resolved.auto_text_fallback is True
+    assert resolved.lane_reason == "vision_memory_insufficient"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auto_text_fallback", "lane_reason", "expected_force_text"),
+    [
+        (True, "vision_hybrid_runtime_unsupported", True),
+        (False, "vision_hybrid_runtime_supported", False),
+    ],
+)
+async def test_startup_and_runtime_use_identical_checkpoint_lane_contract(
+    monkeypatch,
+    scheduler_config_stub,
+    auto_text_fallback,
+    lane_reason,
+    expected_force_text,
+):
+    """Startup and residency must hand the same resolved path/lane to engine."""
+    pytest.importorskip("mlx")  # checkpoint-lane contract drives real mlx engine
+    from vllm_mlx import server
+    from vllm_mlx.model_profile import ModelProfile
+
+    _stub_routing_globals(monkeypatch, server)
+    calls = []
+    resolved = server._ServingCheckpoint(
+        model_path="publisher/model",
+        load_path="/cache/snapshots/revision",
+        auto_text_fallback=auto_text_fallback,
+        lane_reason=lane_reason,
+    )
+
+    def resolve_once(model_name, **kwargs):
+        calls.append((model_name, kwargs))
+        return resolved
+
+    monkeypatch.setattr(server, "_resolve_serving_checkpoint", resolve_once)
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config",
+        lambda _name: ModelProfile(is_hybrid=False, experimental=True),
+    )
+
+    server.load_model("publisher/model")
+    startup_kwargs = dict(server._engine.kwargs)
+    runtime = await server._load_dynamic_resident_model("publisher/model", None)
+
+    startup = server._model_registry.get_entry("publisher/model")
+    assert startup.experimental is True
+    assert runtime.experimental is True
+
+    assert calls == [
+        (
+            "publisher/model",
+            {
+                "force_mllm": False,
+                "force_text": False,
+            },
+        ),
+        (
+            "publisher/model",
+            {"force_text": False},
+        ),
+    ]
+    assert startup_kwargs["model_name"] == runtime.engine.kwargs["model_name"]
+    assert (
+        startup_kwargs["force_text"]
+        == runtime.engine.kwargs["force_text"]
+        is expected_force_text
+    )
+    assert (
+        startup_kwargs["serving_lane_reason"]
+        == runtime.engine.kwargs["serving_lane_reason"]
+        == lane_reason
+    )
 
 
 def test_ensure_routing_config_raises_when_prefetch_does_not_materialize(monkeypatch):
@@ -348,7 +490,10 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     assert cfg.default_max_tokens_is_explicit is False
 
 
-def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
+def test_load_model_mtp_kwarg_translates_to_scheduler_config(
+    monkeypatch, scheduler_config_stub
+):
+    pytest.importorskip("mlx")  # mtp spec-decode path imports mlx.core (no-MLX job)
     from vllm_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
@@ -371,11 +516,13 @@ def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
     assert cfg.enable_mtp is True
 
 
-def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
+def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode(scheduler_config_stub):
+    pytest.importorskip(
+        "mlx"
+    )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
     from vllm_mlx import server
-    from vllm_mlx.scheduler import SchedulerConfig
 
-    cfg = SchedulerConfig()
+    cfg = scheduler_config_stub()
     cfg.spec_decode = "suffix"
 
     with pytest.raises(ValueError, match="mtp=True.*spec_decode='suffix'"):
@@ -386,26 +533,34 @@ def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
         )
 
 
-def test_load_model_mtp_kwarg_rejects_conflicting_suffix_config():
+def test_load_model_mtp_kwarg_rejects_conflicting_suffix_config(
+    scheduler_config_stub,
+):
+    pytest.importorskip(
+        "mlx"
+    )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
     from vllm_mlx import server
-    from vllm_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="enable_suffix_decoding=True"):
         server.load_model(
             "mlx-community/Qwen3.5-9B-4bit",
-            scheduler_config=SchedulerConfig(enable_suffix_decoding=True),
+            scheduler_config=scheduler_config_stub(enable_suffix_decoding=True),
             mtp=True,
         )
 
 
-def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config():
+def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config(
+    scheduler_config_stub,
+):
+    pytest.importorskip(
+        "mlx"
+    )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
     from vllm_mlx import server
-    from vllm_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="dflash_drafter_path"):
         server.load_model(
             "mlx-community/Qwen3.5-9B-4bit",
-            scheduler_config=SchedulerConfig(dflash_drafter_path="local/draft"),
+            scheduler_config=scheduler_config_stub(dflash_drafter_path="local/draft"),
             mtp=True,
         )
 
@@ -475,18 +630,22 @@ def test_load_model_response_cache_reconfigure_failure_forces_disabled(monkeypat
     rc.reset_response_cache_for_tests()
 
 
-def test_load_model_mtp_kwarg_rejects_legacy_optimistic_config():
+def test_load_model_mtp_kwarg_rejects_legacy_optimistic_config(
+    scheduler_config_stub,
+):
     """PR #1050 hard-reject: server.load_model(mtp=True) with a
     scheduler_config carrying ``mtp_optimistic=True`` must fail because
     the direct mutation of ``spec_decode='mtp'`` below would bypass
     ``__post_init__`` and silently drop the flag under the vendored path."""
+    pytest.importorskip(
+        "mlx"
+    )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
     from vllm_mlx import server
-    from vllm_mlx.scheduler import SchedulerConfig
 
     # SchedulerConfig(mtp_optimistic=True) alone (spec_decode="none") is
     # legal — the reject is triggered only once mtp=True elevates the
     # config into the unified spec-decode interface path.
-    cfg = SchedulerConfig(mtp_optimistic=True)
+    cfg = scheduler_config_stub(mtp_optimistic=True)
 
     with pytest.raises(
         ValueError, match="mtp_optimistic.*not supported under the unified"

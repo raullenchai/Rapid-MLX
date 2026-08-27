@@ -564,6 +564,10 @@ _SCHEMA_OWNED_FIELD_NAMES: frozenset[str] = frozenset(
         # tool definitions
         "input_schema",
         "parameters",
+        # Resident-model control plane (ModelLoadRequest / ModelPinRequest)
+        "pin",
+        "pinned",
+        "reload_if_changed",
     }
 )
 

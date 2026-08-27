@@ -8,6 +8,7 @@ These are pure Pydantic models with no MLX dependency.
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -50,6 +51,8 @@ from vllm_mlx.api.models import (
     ToolDefinition,
     Usage,
     VideoUrl,
+    _normalize_stop,
+    _validate_timeout,
 )
 
 
@@ -566,6 +569,122 @@ class TestTextCompletion:
         assert len(resp.choices) == 1
 
 
+def _chat(**kwargs):
+    return ChatCompletionRequest(
+        model="test-model", messages=[Message(role="user", content="Hi")], **kwargs
+    )
+
+
+def _completion(**kwargs):
+    return CompletionRequest(model="test-model", prompt="Once upon a time", **kwargs)
+
+
+class TestStopScalar:
+    """``stop`` must accept a scalar string as well as a list on both the
+    chat and legacy-completion surfaces, normalizing once to a list in the
+    request schema (OpenAI request shape: ``stop`` is ``str | list[str]``).
+    Downstream code (``SamplingParams.stop: list[str]``) reads only lists."""
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_scalar_string_normalized_to_list(self, factory):
+        req = factory(stop="END")
+        assert req.stop == ["END"]
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_list_preserved(self, factory):
+        req = factory(stop=["END", "STOP"])
+        assert req.stop == ["END", "STOP"]
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_empty_list_ok(self, factory):
+        assert factory(stop=[]).stop == []
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_none_default(self, factory):
+        assert factory().stop is None
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_non_string_element_rejected(self, factory):
+        with pytest.raises(ValidationError):
+            factory(stop=["END", 42])
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_stop_sequences_returns_normalized_list(self, factory):
+        """``stop_sequences()`` — the typed accessor used at the engine
+        boundary — returns the canonical normalized list even when the wire
+        input was a scalar string, so downstream ``SamplingParams.stop``
+        always sees a flat ``list[str]``."""
+        assert factory(stop="END").stop_sequences() == ["END"]
+        assert factory(stop=["END", "STOP"]).stop_sequences() == ["END", "STOP"]
+        assert factory().stop_sequences() is None
+
+    @pytest.mark.parametrize("req_model", [ChatCompletionRequest, CompletionRequest])
+    def test_openapi_schema_advertises_scalar_or_array(self, req_model):
+        """The OpenAPI/JSON schema for ``stop`` must advertise both a
+        scalar string and an array of strings (the accepted wire shapes),
+        so generated clients accept the newly supported scalar form."""
+        stop_prop = req_model.model_json_schema()["properties"]["stop"]
+        assert "anyOf" in stop_prop, f"stop schema is not a union: {stop_prop}"
+        type_set = {arm.get("type") for arm in stop_prop["anyOf"]}
+        # string or array are the OpenAI-accepted wire shapes; ``null`` is
+        # present because the field is optional (None = server default).
+        assert type_set == {"string", "array", "null"}, (
+            f"stop schema wrong: {stop_prop}"
+        )
+
+
+class TestTimeoutValidation:
+    """A non-positive / non-finite ``timeout`` must be rejected with a
+    4xx naming the field (schema layer) instead of firing an instant 504
+    when it reaches the request-timeout guard in the routes."""
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    @pytest.mark.parametrize("bad", [0, 0.0, -1, -0.5, -1.0])
+    def test_non_positive_rejected(self, factory, bad):
+        with pytest.raises(ValidationError) as excinfo:
+            factory(timeout=bad)
+        assert "timeout" in str(excinfo.value)
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_rejected(self, factory, bad):
+        with pytest.raises(ValidationError) as excinfo:
+            factory(timeout=bad)
+        assert "timeout" in str(excinfo.value)
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    @pytest.mark.parametrize("good", [0.1, 1, 30.0, 300])
+    def test_positive_accepted(self, factory, good):
+        assert factory(timeout=good).timeout == good
+
+    @pytest.mark.parametrize("factory", [_chat, _completion])
+    def test_none_default(self, factory):
+        assert factory().timeout is None
+
+
+class TestStopAndTimeoutHelpers:
+    """Direct coverage of the shared ``_normalize_stop`` /
+    ``_validate_timeout`` helpers. Pydantic skips field validators for
+    an *absent* optional field, so the ``None`` guards inside the
+    helpers are only exercised when called directly."""
+
+    def test_validate_timeout_none_passthrough(self):
+        assert _validate_timeout(None) is None
+
+    def test_validate_timeout_nonfinite_rejected(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError):
+                _validate_timeout(bad)
+
+    def test_normalize_stop_none_passthrough(self):
+        assert _normalize_stop(None) is None
+
+    def test_normalize_stop_non_string_type_rejected(self):
+        for bad in (42, [1, 2], True, 1.5):
+            with pytest.raises(ValueError):
+                _normalize_stop(bad)
+
+
 class TestModelsEndpoint:
     """Tests for models list models."""
 
@@ -830,6 +949,505 @@ class TestStreamingModels:
             usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
         assert chunk.usage.total_tokens == 15
+
+    @pytest.mark.asyncio
+    async def test_guided_stream_helper_generates_default_response_id(self):
+        """Direct helper callers retain the existing generated-ID contract."""
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import stream_chat_completion_guided
+
+        class _GuidedEngine:
+            async def generate_with_schema(self, **_kwargs):
+                return GenerationOutput(
+                    text="{}",
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_completion_guided(
+                _GuidedEngine(),
+                request.messages,
+                request,
+                {"type": "object"},
+            )
+        ]
+        first = json.loads(chunks[0].removeprefix("data: "))
+        assert first["id"].startswith("chatcmpl-")
+
+    @pytest.mark.asyncio
+    async def test_guided_buffer_exposes_no_id_while_generation_is_live(self):
+        """Buffered guided work has no public cancellation window."""
+        import asyncio
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.routes.chat import stream_chat_completion_guided
+
+        started = asyncio.Event()
+
+        class _BlockedGuidedEngine:
+            async def generate_with_schema(self, **_kwargs):
+                started.set()
+                await asyncio.Event().wait()
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        stream = stream_chat_completion_guided(
+            _BlockedGuidedEngine(),
+            request.messages,
+            request,
+            {"type": "object"},
+            response_id="chatcmpl-" + "e" * 32,
+        )
+        first_wire_event = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(started.wait(), timeout=0.2)
+
+        assert first_wire_event.done() is False
+        first_wire_event.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_wire_event
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_strict_stream_helper_generates_default_response_id(self):
+        """Strict helper direct callers also retain generated IDs."""
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import stream_chat_completion_strict_postgen
+
+        class _StreamEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **_kwargs):
+                del messages
+                yield GenerationOutput(
+                    text="{}",
+                    new_text="{}",
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_completion_strict_postgen(
+                _StreamEngine(),
+                request.messages,
+                request,
+                {"type": "object"},
+            )
+        ]
+        first = json.loads(chunks[0].removeprefix("data: "))
+        assert first["id"].startswith("chatcmpl-")
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_waits_for_scheduler_admission(self):
+        """Synthetic tool prefixes cannot expose an unadmitted request id."""
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = False
+
+        async def _stream_generate(**_kwargs):
+            nonlocal admitted
+            admitted = True
+            yield GenerationOutput(
+                text="answer",
+                new_text="answer",
+                prompt_tokens=1,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+        )
+
+        first = await anext(stream)
+
+        assert admitted is True
+        assert first.new_text == "<tool_call>"
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_role_frame_waits_for_admission_not_first_token(self):
+        """Slow prefill still exposes a cancellable ID immediately after admit."""
+        import asyncio
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import stream_chat_completion
+
+        class _SlowPrefillEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages
+                kwargs["request_admitted_event"].set()
+                await asyncio.Event().wait()
+                yield GenerationOutput(text="unreachable")
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        stream = stream_chat_completion(
+            _SlowPrefillEngine(),
+            request.messages,
+            request,
+            response_id="chatcmpl-" + "d" * 32,
+            request_id="chatcmpl-" + "d" * 32,
+        )
+
+        first = await asyncio.wait_for(anext(stream), timeout=0.2)
+
+        assert '"role":"assistant"' in first
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_stream_helper_handles_empty_engine_before_and_after_admission(self):
+        """Both immediate and post-admission exhaustion close cleanly."""
+        import asyncio
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes.chat import stream_chat_completion
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        class _ImmediatelyEmptyEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **_kwargs):
+                del messages
+                if False:
+                    yield None
+
+        immediate = [
+            chunk
+            async for chunk in stream_chat_completion(
+                _ImmediatelyEmptyEngine(), request.messages, request
+            )
+        ]
+        assert any('"role":"assistant"' in chunk for chunk in immediate)
+
+        release = asyncio.Event()
+
+        class _AdmittedThenEmptyEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages
+                kwargs["request_admitted_event"].set()
+                await release.wait()
+                if False:
+                    yield None
+
+        delayed_stream = stream_chat_completion(
+            _AdmittedThenEmptyEngine(), request.messages, request
+        )
+        first = await anext(delayed_stream)
+        assert '"role":"assistant"' in first
+        release.set()
+        assert [chunk async for chunk in delayed_stream]
+
+        class _TwoOutputEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **_kwargs):
+                del messages
+                yield GenerationOutput(text="one", new_text="one")
+                yield GenerationOutput(
+                    text="onetwo",
+                    new_text="two",
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        outputs = [
+            chunk
+            async for chunk in stream_chat_completion(
+                _TwoOutputEngine(), request.messages, request
+            )
+        ]
+        assert any('"content":"two"' in chunk for chunk in outputs)
+
+    def test_stream_route_generates_one_public_scheduler_identity(self, monkeypatch):
+        """The route-generated wire ID is passed unchanged to the engine."""
+        import sys
+        import types
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.routes import chat as chat_route
+
+        scheduler_stub = types.ModuleType("vllm_mlx.scheduler")
+        scheduler_stub.BackpressureError = type("BackpressureError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler_stub)
+
+        class _Engine:
+            is_mllm = False
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            def __init__(self):
+                self.stream_kwargs = None
+
+            def build_prompt(self, *_args, **_kwargs):
+                return "prompt"
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages
+                self.stream_kwargs = kwargs
+                kwargs["request_admitted_event"].set()
+                yield GenerationOutput(
+                    text="ok",
+                    new_text="ok",
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        engine = _Engine()
+        cfg = reset_config()
+        cfg.engine = engine
+        cfg.model_name = "test-model"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        monkeypatch.setattr(chat_route, "get_engine", lambda *_args: engine)
+        app = FastAPI()
+        app.include_router(chat_route.router)
+
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert response.status_code == 200
+        wire_id = engine.stream_kwargs["request_id"]
+        assert wire_id.startswith("chatcmpl-")
+        assert f'"id":"{wire_id}"' in response.text
+
+    @pytest.mark.asyncio
+    async def test_stream_helper_cancels_pending_admission_on_caller_cancel(self):
+        """Cancellation while prefill is pending retires both helper tasks."""
+        import asyncio
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.routes.chat import stream_chat_completion
+
+        started = asyncio.Event()
+
+        class _BlockedEngine:
+            preserve_native_tool_format = False
+            tokenizer = None
+
+            async def stream_chat(self, messages, **_kwargs):
+                del messages
+                started.set()
+                await asyncio.Event().wait()
+                if False:
+                    yield None
+
+        cfg = reset_config()
+        cfg.model_name = "test-model"
+        request = ChatCompletionRequest(
+            model="test-model",
+            stream=True,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        stream = stream_chat_completion(_BlockedEngine(), request.messages, request)
+        pending = asyncio.create_task(anext(stream))
+        await started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await stream.aclose()
+
+    def test_stream_request_ids_keep_full_entropy_past_shared_prefix(self, monkeypatch):
+        """Two UUIDs sharing the old 32-bit prefix remain distinct IDs."""
+        from vllm_mlx.routes import chat
+
+        values = iter(
+            [
+                SimpleNamespace(hex="12345678" + "a" * 24),
+                SimpleNamespace(hex="12345678" + "b" * 24),
+            ]
+        )
+        monkeypatch.setattr(chat.uuid, "uuid4", lambda: next(values))
+
+        first = chat._new_stream_request_id()
+        second = chat._new_stream_request_id()
+
+        assert first == "chatcmpl-12345678" + "a" * 24
+        assert second == "chatcmpl-12345678" + "b" * 24
+        assert first != second
+
+    @pytest.mark.asyncio
+    async def test_diffusion_stream_registers_public_id_for_cancellation(self):
+        """The diffusion worker's existing cancel event is publicly addressable."""
+        import asyncio
+        import queue
+        import threading
+
+        from vllm_mlx.runtime.diffusion_lane import _STREAM_DONE, DiffusionEngine
+
+        engine = DiffusionEngine.__new__(DiffusionEngine)
+        engine._max_tokens = 32
+        engine._scheduler_config = None
+        engine._generation_lock = asyncio.Lock()
+        engine._worker_stuck = False
+        engine._jobs = queue.Queue()
+        engine._request_cancels = {}
+        engine._request_cancels_lock = threading.Lock()
+        public_id = "chatcmpl-" + "c" * 32
+        admitted = asyncio.Event()
+
+        async def _consume():
+            return [
+                chunk
+                async for chunk in engine._stream_prompt_raw(
+                    "prompt",
+                    max_tokens=8,
+                    temperature=0.0,
+                    request_id=public_id,
+                    request_admitted_event=admitted,
+                )
+            ]
+
+        consumer = asyncio.create_task(_consume())
+        while engine._jobs.empty():
+            await asyncio.sleep(0)
+        _, _, _, worker_output, cancel_event, done_event = engine._jobs.get_nowait()
+
+        assert admitted.is_set()
+        assert await engine.abort_request(public_id) is True
+        assert cancel_event.is_set()
+        worker_output.put(_STREAM_DONE)
+        done_event.set()
+        assert await consumer == []
+        assert public_id not in engine._request_cancels
+        assert await engine.abort_request(public_id) is False
+
+    @pytest.mark.asyncio
+    async def test_diffusion_lifecycle_cancels_and_clears_public_requests(self):
+        """Stop signals every public request and resets the identity registry."""
+        import threading
+
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="test-model")
+        active = threading.Event()
+        public = threading.Event()
+        engine._active_cancel = active
+        engine._request_cancels["chatcmpl-public"] = public
+
+        await engine.stop()
+
+        assert active.is_set()
+        assert public.is_set()
+        assert engine._request_cancels == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("duplicate", [False, True])
+    async def test_diffusion_setup_failure_removes_public_request(self, duplicate):
+        """Admission setup is transactional for duplicate and queue failures."""
+        import asyncio
+        import queue
+        import threading
+
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        class _FailingJobs(queue.Queue):
+            def put(self, item, *args, **kwargs):
+                raise RuntimeError("queue unavailable")
+
+        engine = DiffusionEngine.__new__(DiffusionEngine)
+        engine._max_tokens = 32
+        engine._scheduler_config = None
+        engine._generation_lock = asyncio.Lock()
+        engine._worker_stuck = False
+        engine._jobs = _FailingJobs() if not duplicate else queue.Queue()
+        engine._request_cancels = {}
+        engine._request_cancels_lock = threading.Lock()
+        public_id = "chatcmpl-duplicate"
+        if duplicate:
+            engine._request_cancels[public_id] = threading.Event()
+
+        stream = engine._stream_prompt_raw(
+            "prompt",
+            max_tokens=8,
+            temperature=0.0,
+            request_id=public_id,
+        )
+        expected = "already exists" if duplicate else "queue unavailable"
+        with pytest.raises((ValueError, RuntimeError), match=expected):
+            await anext(stream)
+        await stream.aclose()
+
+        if duplicate:
+            assert public_id in engine._request_cancels
+        else:
+            assert public_id not in engine._request_cancels
 
 
 class TestModelSerialization:

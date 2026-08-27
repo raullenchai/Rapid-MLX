@@ -66,6 +66,35 @@ struct OnboardingDirectionDTests {
                 "the setup surface must take the window's size, not a panel's")
     }
 
+    @Test("Welcome-screen Skip receives the hardware-aware starter policy")
+    func starterPolicyIsOwnedByTheRootView() throws {
+        let source = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
+        let body = try #require(source.range(of: "varbody:someView{"))
+        let content = try #require(source.range(of: "privatevarcontent:someView{"))
+        let baseline = try #require(source.range(of: ".onAppear{coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])"))
+        let policyTask = try #require(source.range(of: ".task(id:StarterSelectionKey("))
+        let chooser = try #require(source.range(of: "privatevarchooseModelStep:someView{"))
+        let actionBoundary = try #require(source.range(
+            of: "privatefuncadvanceToModelChoice(){ifcatalogLoaded{coordinator.settleDefaultChoice(hardware:hardware,catalog:cachedModels)}else{coordinator.applyDefaultChoice(hardware:hardware,catalog:[])}coordinator.advanceToChooseModel()}"
+        ))
+        let skipRefresh = try #require(source.range(
+            of: "privatefuncskipForNow(){coordinator.applyDefaultChoice(hardware:hardware,catalog:catalogLoaded?cachedModels:[])onSkip()}"
+        ))
+
+        #expect(baseline.lowerBound > body.lowerBound)
+        #expect(baseline.lowerBound < content.lowerBound,
+                "the RAM baseline must be synchronous in the root view")
+        #expect(policyTask.lowerBound > body.lowerBound)
+        #expect(policyTask.lowerBound < content.lowerBound,
+                "the policy task must mount with the root view before welcome Skip is actionable")
+        #expect(policyTask.lowerBound < chooser.lowerBound,
+                "the policy task must not be owned by Step 2")
+        #expect(actionBoundary.lowerBound < chooser.lowerBound,
+                "Get Started must synchronously consume the latest authoritative snapshot")
+        #expect(skipRefresh.lowerBound < chooser.lowerBound,
+                "welcome Skip must synchronously consume the latest authoritative snapshot")
+    }
+
     /// #2033 finding 2 — a first-time user reported two enabled "Start"
     /// controls on Step 2 at once: the wizard's own footer primary
     /// ("Start existing model") AND the shared ``ReadinessBanner``'s inline
@@ -787,21 +816,37 @@ struct OnboardingDirectionDTests {
             sizeOnDisk: nil,
             cached: true
         )
-        let starterBadges = QuickstartView.catalogRowBadges(entry: starter, available: true)
+        let starterBadges = QuickstartView.catalogRowBadges(
+            entry: starter,
+            available: true,
+            recommendedAlias: starter.alias
+        )
         #expect(starterBadges.map { $0.text } == ["RECOMMENDED", "ON THIS MAC"])
 
-        let plain = ModelEntry(alias: "qwen3.5-4b-4bit", hfRepo: "r", sizeOnDisk: nil, cached: false)
-        #expect(QuickstartView.catalogRowBadges(entry: plain, available: true).isEmpty,
+        let plain = ModelEntry(alias: "qwen3.5-9b-4bit", hfRepo: "r", sizeOnDisk: nil, cached: false)
+        #expect(QuickstartView.catalogRowBadges(
+            entry: plain,
+            available: true,
+            recommendedAlias: starter.alias
+        ).isEmpty,
                 "an ordinary uncached row makes no claim at all")
 
-        let cached = ModelEntry(alias: "qwen3.5-4b-4bit", hfRepo: "r", sizeOnDisk: nil, cached: true)
-        #expect(QuickstartView.catalogRowBadges(entry: cached, available: true)
+        let cached = ModelEntry(alias: "qwen3.5-9b-4bit", hfRepo: "r", sizeOnDisk: nil, cached: true)
+        #expect(QuickstartView.catalogRowBadges(
+            entry: cached,
+            available: true,
+            recommendedAlias: starter.alias
+        )
             .map { $0.text } == ["ON THIS MAC"])
 
         // WON'T FIT replaces the cached badge rather than stacking with it:
         // whether it is on disk stops being the useful fact once it cannot run.
         let tooBig = ModelEntry(alias: "llama3.1-70b-4bit", hfRepo: "r", sizeOnDisk: nil, cached: true)
-        #expect(QuickstartView.catalogRowBadges(entry: tooBig, available: false)
+        #expect(QuickstartView.catalogRowBadges(
+            entry: tooBig,
+            available: false,
+            recommendedAlias: starter.alias
+        )
             .map { $0.text } == ["WON'T FIT"])
     }
 

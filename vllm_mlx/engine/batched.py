@@ -11,11 +11,15 @@ MLLMBatchGenerator. MLLM models only initialise the MLLM scheduler (not the
 LLM engine), so text-only requests must also be routed through it.
 """
 
+import asyncio
+import contextvars
 import functools
 import json
 import logging
 import threading
 import time
+import uuid
+import weakref
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -32,6 +36,12 @@ logger = logging.getLogger(__name__)
 # appended. Replay a negligible suffix so non-trimmable caches never snapshot
 # an optimistic boundary that the next request cannot reuse.
 _PREFIX_BOUNDARY_REPLAY_TOKENS = 8
+_admission_token_context: contextvars.ContextVar[tuple[int, tuple[str, ...]] | None] = (
+    contextvars.ContextVar("rapid_mlx_admission_token", default=None)
+)
+_admission_engine_context: contextvars.ContextVar["BatchedEngine | None"] = (
+    contextvars.ContextVar("rapid_mlx_admission_engine", default=None)
+)
 
 
 def _load_lazy_and_install_disk_stream(
@@ -787,6 +797,7 @@ class BatchedEngine(BaseEngine):
         enable_disk_stream: bool = False,
         disk_stream_cache_gb: float = 1.0,
         chat_template_id: str | None = None,
+        serving_lane_reason: str | None = None,
     ):
         """
         Initialize the batched engine.
@@ -823,6 +834,9 @@ class BatchedEngine(BaseEngine):
             chat_template_id: Keyword-only model-profile prompt contract.
                 Control-plane callers pass this when ``model_name`` is a local
                 snapshot path whose originating profile is already known.
+            serving_lane_reason: Machine-readable reason from the shared
+                serving-lane decision. Kept on the live engine so model and
+                residency APIs report the decision that was actually loaded.
         """
         self._model_name = model_name
         if chat_template_id is None:
@@ -856,6 +870,7 @@ class BatchedEngine(BaseEngine):
         # demand for the vision lane, so a missing vision tower must hard-fail
         # for that operator rather than silently degrade behind their back.
         self._force_mllm = force_mllm
+        self._serving_lane_reason = serving_lane_reason
         if force_text:
             # User explicitly opted out of MLLM routing. Skip the probe
             # entirely so a False from auto-detection can't be overridden
@@ -891,11 +906,26 @@ class BatchedEngine(BaseEngine):
         # checks; an asyncio lock would only serialise the event loop.
         self._admission_lock = threading.Lock()
         self._admission_reservations = 0
+        self._admission_tokens: set[str] = set()
+        self._admission_tasks: dict[str, asyncio.Task] = {}
+        self._lifecycle_aborted_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
+        self._generation_paused = False
+        self._generation_pause_mode: str | None = None
 
     @property
     def model_name(self) -> str:
         """Get the model name."""
         return self._model_name
+
+    @property
+    def serving_lane(self) -> str:
+        """The live request lane exposed to capability consumers."""
+        return "vision" if self._is_mllm else "text"
+
+    @property
+    def serving_lane_reason(self) -> str | None:
+        """Stable reason supplied by the shared serving-lane contract."""
+        return self._serving_lane_reason
 
     @property
     def is_mllm(self) -> bool:
@@ -973,16 +1003,44 @@ class BatchedEngine(BaseEngine):
             else:
                 cap = getattr(scheduler.config, "max_concurrent_requests", None)
 
-        if cap is None or cap <= 0:
-            return
-
         with self._admission_lock:
-            if self._admission_reservations >= cap:
+            if getattr(self, "_generation_paused", False):
+                raise BackpressureError(
+                    "generation is paused for a model lifecycle operation"
+                )
+            if cap is not None and cap > 0 and self._admission_reservations >= cap:
                 raise BackpressureError(
                     f"max_concurrent_requests={cap} reached "
                     f"(currently {self._admission_reservations} in-flight)"
                 )
             self._admission_reservations += 1
+            tokens: set[str] | None = getattr(self, "_admission_tokens", None)
+            if tokens is None:
+                tokens = set()
+                self._admission_tokens = tokens
+            token = uuid.uuid4().hex
+            tokens.add(token)
+            try:
+                owner = asyncio.current_task()
+            except RuntimeError:
+                owner = None
+            if owner is not None:
+                # A task may survive a handled cancellation and later make a
+                # new request. Do not let an old replacement marker bleed into
+                # the new admission; the active cancellation path consumes it
+                # at the route boundary before it can re-enter here.
+                getattr(self, "_lifecycle_aborted_tasks", set()).discard(owner)
+                tasks: dict[str, asyncio.Task] | None = getattr(
+                    self, "_admission_tasks", None
+                )
+                if tasks is None:
+                    tasks = {}
+                    self._admission_tasks = tasks
+                tasks[token] = owner
+            context = _admission_token_context.get()
+            stack = context[1] if context is not None and context[0] == id(self) else ()
+            _admission_token_context.set((id(self), (*stack, token)))
+            _admission_engine_context.set(self)
 
     def release_admission_reservation(self) -> None:
         """Release a slot reserved by ``check_admission``.
@@ -992,8 +1050,228 @@ class BatchedEngine(BaseEngine):
         cancellation) cannot corrupt the cap accounting.
         """
         with self._admission_lock:
-            if self._admission_reservations > 0:
-                self._admission_reservations -= 1
+            context = _admission_token_context.get()
+            stack = context[1] if context is not None and context[0] == id(self) else ()
+            token = stack[-1] if stack else None
+            self._consume_admission_token_locked(token, stack)
+
+    def _consume_admission_token_locked(
+        self,
+        token: str | None,
+        context_stack: tuple[str, ...],
+        *,
+        clear_context: bool = True,
+    ) -> None:
+        """Release one route reservation while holding ``_admission_lock``."""
+
+        tokens: set[str] = getattr(self, "_admission_tokens", set())
+        consumed_token: str | None = None
+        if token is not None and token in tokens:
+            tokens.remove(token)
+            consumed_token = token
+            self._admission_reservations -= 1
+        elif token is None and tokens:
+            # The historical API permits release from a task that did not
+            # inherit the reservation context.
+            consumed_token = tokens.pop()
+            self._admission_reservations -= 1
+        elif not tokens and self._admission_reservations > 0:
+            # Minimal engine doubles created before lifecycle tokens still
+            # exercise the public counter-based release contract.
+            self._admission_reservations -= 1
+        if consumed_token is not None:
+            getattr(self, "_admission_tasks", {}).pop(consumed_token, None)
+        if clear_context and token is not None and token in context_stack:
+            remaining = tuple(value for value in context_stack if value != token)
+            _admission_token_context.set((id(self), remaining) if remaining else None)
+            if not remaining:
+                _admission_engine_context.set(None)
+
+    def _current_admission_token(self) -> str | None:
+        context = _admission_token_context.get()
+        if context is None or context[0] != id(self) or not context[1]:
+            return None
+        return context[1][-1]
+
+    def _ensure_generation_admission(self) -> tuple[str, bool]:
+        """Return an active token, reserving one for direct/repeated calls."""
+
+        token = self._current_admission_token()
+        with self._admission_lock:
+            if token is not None and token in self._admission_tokens:
+                return token, False
+        self.check_admission()
+        token = self._current_admission_token()
+        if token is None:  # pragma: no cover - check_admission always publishes it
+            raise RuntimeError("admission reservation did not publish a token")
+        return token, True
+
+    def bind_admission_task(self, task: asyncio.Task) -> None:
+        """Transfer a route reservation to its actual generation task."""
+
+        token = self._current_admission_token()
+        if token is None:
+            return
+        with self._admission_lock:
+            if token in getattr(self, "_admission_tokens", set()):
+                self._admission_tasks[token] = task
+
+    def consume_lifecycle_task_abort(self, task: asyncio.Task) -> bool:
+        """Return whether ``task`` was cancelled by lifecycle replacement."""
+
+        with self._admission_lock:
+            aborted: set[asyncio.Task] = getattr(
+                self, "_lifecycle_aborted_tasks", set()
+            )
+            if task not in aborted:
+                return False
+            aborted.remove(task)
+            return True
+
+    def _transfer_admission_to_scheduler(
+        self, token: str | None, *, clear_context: bool = False
+    ) -> None:
+        """End route ownership once the scheduler has committed the request."""
+
+        if token is None:
+            return
+        with self._admission_lock:
+            context = _admission_token_context.get()
+            stack = context[1] if context is not None and context[0] == id(self) else ()
+            # Route-owned streaming requests still release in their terminal
+            # guard, so their consumed token remains as a tombstone and makes
+            # that release an exact no-op. Direct/repeated generate calls own
+            # their token and clear it at commit.
+            self._consume_admission_token_locked(
+                token, stack, clear_context=clear_context
+            )
+
+    def lifecycle_status(self) -> dict[str, object]:
+        """Return engine-owned admission and scheduler activity."""
+
+        with self._admission_lock:
+            paused = getattr(self, "_generation_paused", False)
+            pause_mode = getattr(self, "_generation_pause_mode", None)
+            admitted = getattr(self, "_admission_reservations", 0)
+        stats = self.get_stats()
+        running = int(stats.get("num_running", 0) or 0)
+        queued = int(stats.get("num_waiting", 0) or 0)
+        return {
+            "paused": paused,
+            "pause_mode": pause_mode,
+            "active_requests": admitted + running + queued,
+            "admitted_requests": admitted,
+            "running_requests": running,
+            "queued_requests": queued,
+        }
+
+    def _lifecycle_scheduler(self):
+        scheduler = self._mllm_scheduler
+        if scheduler is None and self._engine is not None:
+            scheduler = getattr(
+                getattr(self._engine, "engine", None), "scheduler", None
+            )
+        return scheduler
+
+    def _lifecycle_request_ids(self) -> set[str]:
+        """Snapshot request IDs owned by either scheduler implementation."""
+
+        scheduler = self._lifecycle_scheduler()
+        if scheduler is None:
+            return set()
+        snapshot = getattr(scheduler, "request_ids_snapshot", None)
+        if callable(snapshot):
+            return {str(request_id) for request_id in snapshot()}
+        return {str(request_id) for request_id in (scheduler.requests or {})}
+
+    async def pause_generation(
+        self, mode: str = "wait", *, timeout: float | None = None
+    ) -> dict[str, object]:
+        """Close admission, then drain or abort scheduler-owned work."""
+
+        if mode not in {"wait", "abort"}:
+            raise ValueError("pause mode must be 'wait' or 'abort'")
+
+        scheduler = self._lifecycle_scheduler()
+        admitted_tasks: tuple[asyncio.Task, ...] = ()
+        with self._admission_lock:
+            self._generation_paused = True
+            self._generation_pause_mode = mode
+            admitted_tokens = set(getattr(self, "_admission_tokens", set()))
+            if mode == "abort":
+                task_by_token: dict[str, asyncio.Task] = getattr(
+                    self, "_admission_tasks", {}
+                )
+                admitted_tasks = tuple(
+                    {
+                        task_by_token[token]
+                        for token in admitted_tokens
+                        if token in task_by_token
+                    }
+                )
+                aborted_tasks = getattr(self, "_lifecycle_aborted_tasks", None)
+                if aborted_tasks is None:
+                    aborted_tasks = weakref.WeakSet()
+                    self._lifecycle_aborted_tasks = aborted_tasks
+                aborted_tasks.update(admitted_tasks)
+            pause_admission = getattr(scheduler, "pause_generation_admission", None)
+            if callable(pause_admission):
+                pause_admission(admitted_tokens, mode)
+            else:
+                set_paused = getattr(scheduler, "set_generation_paused", None)
+                if callable(set_paused):
+                    scheduler_owned = len(self._lifecycle_request_ids())
+                    set_paused(
+                        True,
+                        add_allowance=(
+                            max(0, len(admitted_tokens) - scheduler_owned)
+                            if mode == "wait"
+                            else 0
+                        ),
+                    )
+
+        if mode == "abort":
+            current = asyncio.current_task()
+            for task in admitted_tasks:
+                if task is not current and not task.done():
+                    task.cancel("request aborted for model replacement")
+
+        async def _drain() -> dict[str, object]:
+            while True:
+                if mode == "abort":
+                    for request_id in self._lifecycle_request_ids():
+                        await self.abort_request(request_id, error_kind="lifecycle")
+                status = self.lifecycle_status()
+                if (
+                    status["admitted_requests"] == 0
+                    and status["running_requests"] == 0
+                    and status["queued_requests"] == 0
+                ):
+                    return status
+                await asyncio.sleep(0.01)
+
+        initial = self.lifecycle_status()
+        if (
+            initial["admitted_requests"] == 0
+            and initial["running_requests"] == 0
+            and initial["queued_requests"] == 0
+        ):
+            return initial
+        if timeout is None:
+            return await _drain()
+        return await asyncio.wait_for(_drain(), timeout=max(0.0, timeout))
+
+    async def resume_generation(self) -> dict[str, object]:
+        """Reopen route and scheduler admission after a failed transaction."""
+
+        with self._admission_lock:
+            self._generation_paused = False
+            self._generation_pause_mode = None
+        scheduler = self._lifecycle_scheduler()
+        set_paused = getattr(scheduler, "set_generation_paused", None)
+        if callable(set_paused):
+            set_paused(False)
+        return self.lifecycle_status()
 
     @property
     def tokenizer(self) -> Any:
@@ -1151,6 +1429,7 @@ class BatchedEngine(BaseEngine):
             )
             gc.collect()
             self._is_mllm = False
+            self._serving_lane_reason = "vision_weights_unavailable"
             await self._start_llm()
             return
 
@@ -1808,6 +2087,12 @@ class BatchedEngine(BaseEngine):
         """
         if not self._loaded:
             await self.start()
+        admission_token, owns_admission = self._ensure_generation_admission()
+
+        def request_committed() -> None:
+            self._transfer_admission_to_scheduler(
+                admission_token, clear_context=owns_admission
+            )
 
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all requests when model is multimodal.
@@ -1835,18 +2120,25 @@ class BatchedEngine(BaseEngine):
                 for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
                 if k in kwargs
             }
-            output = await self._mllm_scheduler.generate(
-                prompt=prompt,
-                images=images,
-                videos=videos,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop,
-                video_fps=kwargs.pop("video_fps", None),
-                video_max_frames=kwargs.pop("video_max_frames", None),
-                **_mllm_penalty_kwargs,
-            )
+            try:
+                output = await self._mllm_scheduler.generate(
+                    prompt=prompt,
+                    images=images,
+                    videos=videos,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=stop,
+                    video_fps=kwargs.pop("video_fps", None),
+                    video_max_frames=kwargs.pop("video_max_frames", None),
+                    lifecycle_admission_token=admission_token,
+                    on_request_committed=request_committed,
+                    **_mllm_penalty_kwargs,
+                )
+            except BaseException:
+                if owns_admission:
+                    self.release_admission_reservation()
+                raise
             mllm_full_text = output.output_text or ""
             if mllm_assistant_text_prefix:
                 mllm_full_text = mllm_assistant_text_prefix + mllm_full_text
@@ -1939,16 +2231,23 @@ class BatchedEngine(BaseEngine):
                     has_tools=False,
                     as_token_ids=False,
                 )
-        output = await self._engine.generate(
-            prompt=prompt,
-            sampling_params=sampling_params,
-            prefix_boundary=prefix_boundary,
-            has_tools=has_tools,
-            requires_prompt_integrity=requires_prompt_integrity,
-            grammar_logits_processor=grammar_logits_processor,
-            reasoning_budget_logits_processor=reasoning_budget_logits_processor,
-            suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
-        )
+        try:
+            output = await self._engine.generate(
+                prompt=prompt,
+                sampling_params=sampling_params,
+                prefix_boundary=prefix_boundary,
+                has_tools=has_tools,
+                requires_prompt_integrity=requires_prompt_integrity,
+                grammar_logits_processor=grammar_logits_processor,
+                reasoning_budget_logits_processor=reasoning_budget_logits_processor,
+                suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+                lifecycle_admission_token=admission_token,
+                on_request_committed=request_committed,
+            )
+        except BaseException:
+            if owns_admission:
+                self.release_admission_reservation()
+            raise
 
         if assistant_text_prefix:
             # Prepend the forced prefix to the raw text so the tool
@@ -2003,6 +2302,8 @@ class BatchedEngine(BaseEngine):
         stop: list[str] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        request_id: str | None = None,
+        request_admitted_event: asyncio.Event | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         """
@@ -2016,6 +2317,11 @@ class BatchedEngine(BaseEngine):
             stop: Stop sequences
             images: Optional image URLs/paths (for MLLM)
             videos: Optional video URLs/paths (for MLLM)
+            request_id: Optional caller-provided request identity. Streaming
+                API routes use the public response id so cancellation and
+                scheduler admission address the same request.
+            request_admitted_event: Optional route notification set after
+                scheduler admission, before waiting for the first output.
             **kwargs: Additional model-specific parameters. C-01:
                 ``request_id_holder`` (``list[str | None]``) — when
                 provided, the engine writes the admitted scheduler
@@ -2043,6 +2349,19 @@ class BatchedEngine(BaseEngine):
         # disconnect. Popped from kwargs so it never reaches the
         # scheduler's add_request (which would reject unknown kwargs).
         request_id_holder = kwargs.pop("request_id_holder", None)
+        admission_token, owns_admission = self._ensure_generation_admission()
+        request_committed = False
+
+        def commit_admission() -> None:
+            nonlocal request_committed
+            self._transfer_admission_to_scheduler(
+                admission_token, clear_context=owns_admission
+            )
+            request_committed = True
+
+        def release_uncommitted_admission() -> None:
+            if owns_admission and not request_committed:
+                self.release_admission_reservation()
 
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all streaming when model is multimodal
@@ -2053,18 +2372,25 @@ class BatchedEngine(BaseEngine):
                 for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
                 if k in kwargs
             }
-            request_id = await self._mllm_scheduler.add_request_async(
-                prompt=prompt,
-                images=images,
-                videos=videos,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop,
-                video_fps=kwargs.pop("video_fps", None),
-                video_max_frames=kwargs.pop("video_max_frames", None),
-                **_mllm_penalty_kwargs,
-            )
+            try:
+                request_id = await self._mllm_scheduler.add_request_async(
+                    request_id=request_id,
+                    prompt=prompt,
+                    images=images,
+                    videos=videos,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=stop,
+                    video_fps=kwargs.pop("video_fps", None),
+                    video_max_frames=kwargs.pop("video_max_frames", None),
+                    lifecycle_admission_token=admission_token,
+                    on_request_committed=commit_admission,
+                    **_mllm_penalty_kwargs,
+                )
+            except BaseException:
+                release_uncommitted_admission()
+                raise
             # C-01 force-abort: publish the scheduler request id so the
             # route's disconnect_guard can call abort_request directly.
             if request_id_holder is not None:
@@ -2075,6 +2401,8 @@ class BatchedEngine(BaseEngine):
                         "[stream_generate] request_id_holder publish failed",
                         exc_info=True,
                     )
+            if request_admitted_event is not None:
+                request_admitted_event.set()
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):
                 # ``logprobs`` is now wired through from
@@ -2125,36 +2453,45 @@ class BatchedEngine(BaseEngine):
             )
             if k in kwargs
         }
-        sampling_params = SamplingParams(
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop or [],
-            **_sp_kwargs,
-        )
+        try:
+            sampling_params = SamplingParams(
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop or [],
+                **_sp_kwargs,
+            )
 
-        prefix_boundary = kwargs.pop("prefix_boundary", 0)
-        # PFlash routing hints (#287) — parity with generate().
-        has_tools = bool(kwargs.pop("has_tools", False))
-        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
-        # Grammar-constrained tool calling (#558) — streaming parity.
-        grammar_logits_processor = kwargs.pop("grammar_logits_processor", None)
-        reasoning_budget_logits_processor = kwargs.pop(
-            "reasoning_budget_logits_processor", None
-        )
-        suppressed_tokens_logits_processor = kwargs.pop(
-            "suppressed_tokens_logits_processor", None
-        )
-        request_id = await self._engine.add_request(
-            prompt=prompt,
-            sampling_params=sampling_params,
-            prefix_boundary=prefix_boundary,
-            has_tools=has_tools,
-            requires_prompt_integrity=requires_prompt_integrity,
-            grammar_logits_processor=grammar_logits_processor,
-            reasoning_budget_logits_processor=reasoning_budget_logits_processor,
-            suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
-        )
+            prefix_boundary = kwargs.pop("prefix_boundary", 0)
+            # PFlash routing hints (#287) — parity with generate().
+            has_tools = bool(kwargs.pop("has_tools", False))
+            requires_prompt_integrity = bool(
+                kwargs.pop("requires_prompt_integrity", False)
+            )
+            # Grammar-constrained tool calling (#558) — streaming parity.
+            grammar_logits_processor = kwargs.pop("grammar_logits_processor", None)
+            reasoning_budget_logits_processor = kwargs.pop(
+                "reasoning_budget_logits_processor", None
+            )
+            suppressed_tokens_logits_processor = kwargs.pop(
+                "suppressed_tokens_logits_processor", None
+            )
+            request_id = await self._engine.add_request(
+                request_id=request_id,
+                prompt=prompt,
+                sampling_params=sampling_params,
+                prefix_boundary=prefix_boundary,
+                has_tools=has_tools,
+                requires_prompt_integrity=requires_prompt_integrity,
+                grammar_logits_processor=grammar_logits_processor,
+                reasoning_budget_logits_processor=reasoning_budget_logits_processor,
+                suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+                lifecycle_admission_token=admission_token,
+                on_request_committed=commit_admission,
+            )
+        except BaseException:
+            release_uncommitted_admission()
+            raise
         # C-01 force-abort: publish the scheduler request id (text path)
         # so the route's disconnect_guard can call abort_request directly
         # on client disconnect.
@@ -2166,6 +2503,8 @@ class BatchedEngine(BaseEngine):
                     "[stream_generate] request_id_holder publish failed",
                     exc_info=True,
                 )
+        if request_admitted_event is not None:
+            request_admitted_event.set()
 
         # F-012 belt-and-suspenders: ``stream_outputs.finally`` already
         # aborts on any abnormal exit AFTER it enters its ``try`` block.
@@ -3114,6 +3453,15 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
+        # Prime scheduler admission before exposing any synthetic prefix. The
+        # route publishes the public request id with its first SSE frame; if a
+        # forced prefix were yielded first, an immediate cancel could race the
+        # scheduler registration and return 404 for a live request.
+        routed_stream = self._stream_with_output_router(stream, router)
+        try:
+            first_output = await anext(routed_stream)
+        except StopAsyncIteration:
+            first_output = None
         # On the streaming path inject the forced prefix as a synthetic
         # first chunk so the route layer's streaming tool-call parser
         # sees the wire envelope opener from the very first delta.
@@ -3126,7 +3474,9 @@ class BatchedEngine(BaseEngine):
                 finished=False,
                 finish_reason=None,
             )
-        async for output in self._stream_with_output_router(stream, router):
+        if first_output is not None:
+            yield first_output
+        async for output in routed_stream:
             yield output
 
     def get_stats(self) -> dict[str, Any]:
@@ -3192,7 +3542,9 @@ class BatchedEngine(BaseEngine):
             return self._engine.clear_prefix_cache(reset_stats=reset_stats)
         return False
 
-    async def abort_request(self, request_id: str) -> bool:
+    async def abort_request(
+        self, request_id: str, *, error_kind: str | None = None
+    ) -> bool:
         """Abort an active or queued batched request by request ID.
 
         Routes to whichever backend is loaded:
@@ -3205,9 +3557,14 @@ class BatchedEngine(BaseEngine):
         import inspect
 
         if self._mllm_scheduler is not None:
-            return self._mllm_scheduler.abort_request(request_id)
+            if error_kind is None:
+                return self._mllm_scheduler.abort_request(request_id)
+            return self._mllm_scheduler.abort_request(request_id, error_kind=error_kind)
         if self._engine is not None and hasattr(self._engine, "abort_request"):
-            result = self._engine.abort_request(request_id)
+            if error_kind is None:
+                result = self._engine.abort_request(request_id)
+            else:
+                result = self._engine.abort_request(request_id, error_kind=error_kind)
             if inspect.isawaitable(result):
                 return await result
             return result

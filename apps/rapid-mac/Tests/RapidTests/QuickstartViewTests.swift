@@ -57,17 +57,9 @@ struct QuickstartViewTests {
         #expect(!lowered.contains("web search"))
     }
 
-    /// F-LWT-1 belt-and-suspenders: explicitly forbid the previous
-    /// 4B pick. The principled checks above pin the new identifiers;
-    /// this guard catches an accidental "revert to 4B for capability
-    /// reasons" regression even if a future refactor accidentally
-    /// re-introduces the literal.
-    @Test("F-LWT-1: alias must NOT regress to ``qwen3.5-4b-4bit``")
-    func aliasIsNotPreviousFourB() {
-        #expect(
-            QuickstartCoordinator.defaultChoice.alias != "qwen3.5-4b-4bit",
-            "Quickstart alias must not regress to qwen3.5-4b-4bit — the starter is lfm2.5-1b-4bit, which keeps the small-download win while adding real tool calls."
-        )
+    @Test("The standard starter is the approved 16 GB choice")
+    func standardStarterIsFourB() {
+        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
     }
 
     @Test("Persistent flag storage key is v1-versioned")
@@ -525,7 +517,7 @@ struct QuickstartViewTests {
 
     /// Build an ``.unsafe`` memory warning for an alias — the shape
     /// ``ServerManager.start`` parks on when a Quickstart serve would push
-    /// live memory past the 85% panic line.
+    /// live memory beyond physical RAM.
     private func makeWarning(alias: String) -> ModelSizing.MemoryWarning {
         ModelSizing.MemoryWarning(
             alias: alias,
@@ -540,15 +532,15 @@ struct QuickstartViewTests {
 
     @Test("Low-memory recovery is offered only when it clears the live danger line")
     func lowMemoryRecoveryMustActuallyBeSafer() {
-        // On an 18 GB Mac, 12.2 GB already used makes the 3.36 GB starter
-        // unsafe (~86.4%) while the 3.03 GB 0.6B fallback stays below 85%.
+        // The warning snapshot leaves enough headroom for the 1.2B fallback,
+        // while the standard 4B choice remains unsafe.
         let recoverable = ModelSizing.MemoryWarning(
             alias: QuickstartCoordinator.defaultChoice.alias,
             hfPath: QuickstartCoordinator.defaultChoice.hfRepo,
             isAutoRespawn: false,
             severity: .unsafe,
             footprintGB: ModelSizing.estimate(alias: QuickstartCoordinator.defaultChoice.alias).totalGB,
-            freeGB: 5.8,
+            freeGB: 7.0,
             totalGB: 18
         )
         #expect(
@@ -556,7 +548,7 @@ struct QuickstartViewTests {
                 == QuickstartCoordinator.lowMemoryChoice.alias
         )
 
-        // Under heavier pressure the 0.6B would trip the same guard. Do not
+        // Under heavier pressure the 1.2B would trip the same guard. Do not
         // advertise a reassuring switch that merely opens a second warning.
         let noSafeEscape = ModelSizing.MemoryWarning(
             alias: QuickstartCoordinator.defaultChoice.alias,
@@ -564,7 +556,7 @@ struct QuickstartViewTests {
             isAutoRespawn: false,
             severity: .unsafe,
             footprintGB: recoverable.footprintGB,
-            freeGB: 5.0,
+            freeGB: 3.0,
             totalGB: 18
         )
         #expect(QuickstartView.lowMemoryRecoveryChoice(for: noSafeEscape) == nil)
@@ -667,43 +659,34 @@ struct QuickstartViewTests {
 /// is exactly the kind of bug the F-LWT-1 review explicitly called
 /// out.
 @MainActor
-@Suite("Quickstart source-grep tripwires — F-LWT-1 partial-swap guard")
+@Suite("Quickstart starter identity contracts")
 struct QuickstartViewSourceGrepTests {
 
-    // #1524: the old blanket source-grep for the ``qwen3.5-4b-4bit``
-    // literal is retired — 4B is now a legitimate *bigger trade-up*
-    // option in ``QuickstartCoordinator.onboardingChoices`` — so a
-    // whole-file grep would fire on an intentional line. The intent
-    // (the STARTER must stay the small lfm2.5-1b-4bit pick, never
-    // the old 4B one) is preserved as direct value assertions on
-    // ``defaultChoice``.
-
-    @Test("Starter alias stays the lfm2.5-1b-4bit pick, never regresses to the old 4B")
-    func starterAliasNotOld4B() {
-        #expect(QuickstartCoordinator.defaultChoice.alias == "lfm2.5-1b-4bit")
-        #expect(QuickstartCoordinator.defaultChoice.alias != "qwen3.5-4b-4bit")
+    @Test("Standard and compact starter aliases remain pinned")
+    func starterAliasesStayPinned() {
+        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
+        #expect(QuickstartCoordinator.compactDefaultChoice.alias == "lfm2.5-2.6b-4bit")
     }
 
-    @Test("Starter hfRepo is the bonsai repo, not the old 4B repo")
-    func starterHFRepoNotOld4B() {
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/LFM2.5-1.2B-Instruct-4bit")
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo?.contains("4B") != true)
+    @Test("Starter repositories match their catalog contracts")
+    func starterRepositoriesStayPinned() {
+        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/Qwen3.5-4B-MLX-4bit")
+        #expect(QuickstartCoordinator.compactDefaultChoice.hfRepo == "LiquidAI/LFM2.5-2.6B-MLX")
     }
 
-    @Test("Starter advertises and seeds its curated repository size, not the rounded 1B alias estimate (#1550)")
-    func starterUsesCuratedDownloadSize() {
-        let choice = QuickstartCoordinator.defaultChoice
+    @Test("Low-memory alternative keeps its curated repository size (#1550)")
+    func lowMemoryChoiceUsesCuratedDownloadSize() {
+        let choice = QuickstartCoordinator.lowMemoryChoice
         #expect(choice.downloadBytes == 663_397_140)
         #expect(QuickstartView.sizeText(for: choice) == "~633 MB")
         #expect(QuickstartView.sizeText(for: choice) != QuickstartView.sizeText(for: choice.alias))
     }
 
-    @Test("Onboarding keeps one explicit, honestly-labelled sub-1B escape hatch")
+    @Test("Onboarding keeps one explicit, honestly-labelled low-memory escape hatch")
     func lowMemoryChoiceIsExplicitAndHonest() {
         let choice = QuickstartCoordinator.lowMemoryChoice
-        #expect(choice.alias == "qwen3-0.6b-4bit")
+        #expect(choice.alias == "lfm2.5-1b-4bit")
         #expect(choice.tier == .lowMemory)
-        #expect(choice.blurb.localizedCaseInsensitiveContains("lowest memory"))
         #expect(choice.blurb.localizedCaseInsensitiveContains("less accurate"))
         #expect(choice.blurb.localizedCaseInsensitiveContains("not recommended for tools"))
         #expect(QuickstartCoordinator.onboardingChoices.filter(\.isLowMemory) == [choice])

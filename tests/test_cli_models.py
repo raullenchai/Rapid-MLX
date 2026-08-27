@@ -402,6 +402,65 @@ def test_cached_view_recognizes_complete_unmapped_whisper_npz(
     assert repo in out
 
 
+# --- #2406 part A: _cache_entry_is_runnable routes audio families -----------
+
+
+def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
+    """A cached Kokoro repo (``kokoro-v1_0.safetensors``) is runnable — the
+    audio-family branch, not the text ``model*.safetensors`` probe."""
+    repo = "mlx-community/Kokoro-82M-bf16"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
+    sha = "kokoro123"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "kokoro-v1_0.safetensors").write_bytes(b"k" * 4096)
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(sha)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert cli._cache_entry_is_runnable(repo) is True
+
+
+def test_cache_entry_runnable_for_cached_whisper_turbo(tmp_path, monkeypatch):
+    """A cached whisper-large-v3-turbo (``weights.safetensors``, not NPZ) is
+    runnable via the audio-family branch."""
+    repo = "mlx-community/whisper-large-v3-turbo"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--whisper-large-v3-turbo"
+    sha = "w12345"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "weights.safetensors").write_bytes(b"w" * 4096)
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(sha)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert cli._cache_entry_is_runnable(repo) is True
+
+
+def test_cache_entry_not_runnable_for_metadata_only_kokoro(tmp_path, monkeypatch):
+    """A Kokoro repo with only config.json (no weights) is NOT runnable — the
+    weightless-cache guard must hold for audio families too."""
+    repo = "mlx-community/Kokoro-82M-bf16"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
+    sha = "kokoro-stub"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(sha)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert cli._cache_entry_is_runnable(repo) is False
+
+
 def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, capsys):
     """Metadata-only cache directories must not advertise an alias as ready."""
     from vllm_mlx.model_aliases import list_profiles
@@ -428,6 +487,66 @@ def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "(incomplete)" in out
     assert alias not in out
+
+
+def test_cached_view_marks_singleton_snapshot_without_refs_main_runnable(
+    tmp_path, monkeypatch, capsys
+):
+    """#2351: an unambiguous COMPLETE immutable snapshot with NO ``refs/main``
+    (a pinned ``snapshot_download``/manual pull of an exact commit) is loadable
+    by the routing & loader contract, so ``models --cached`` must report it
+    available, not ``(incomplete)`` — the inventory must agree with the serve
+    path. Ambiguous (multiple) snapshots stay unresolved."""
+    repo = "mlx-community/qwen-cached-singleton"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--qwen-cached-singleton"
+    sha = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
+    snapshot = repo_root / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    # NO refs/ directory at all — the #2351 repro.
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [(repo, 1_600_000_000, 0.0)],
+    )
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert repo in out
+    assert "(incomplete)" not in out, out
+
+
+def test_cached_view_marks_ambiguous_multiple_snapshots_incomplete(
+    tmp_path, monkeypatch, capsys
+):
+    """Two snapshots with no ``refs/main`` stay unresolved (can't know which a
+    fresh resolve would pick) — preserves the round-10 guarantee that an old
+    complete snapshot cannot mask a newer incomplete one."""
+    repo = "mlx-community/qwen-ambiguous"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--qwen-ambiguous"
+    for sha in ("aaa", "bbb"):
+        snap = repo_root / "snapshots" / sha
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text("{}")
+        (snap / "model.safetensors").write_bytes(b"weights")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [(repo, 1_600_000_000, 0.0)],
+    )
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    assert "(incomplete)" in out
 
 
 def test_cached_view_renders_complete_mflux_alias(monkeypatch, capsys):

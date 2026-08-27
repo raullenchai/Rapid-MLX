@@ -220,6 +220,8 @@ final class ImageGenViewModel {
     private let client = ImageClient()
     private let server: ServerManager
     @ObservationIgnored
+    private var onProductValueDelivered: @MainActor (ProductValueKind) -> Void = { _ in }
+    @ObservationIgnored
     private let catalogLoader: (URL) async -> [ModelEntry]
     @ObservationIgnored
     private var catalogRefreshGeneration: UInt = 0
@@ -232,6 +234,12 @@ final class ImageGenViewModel {
     ) {
         self.server = server
         self.catalogLoader = catalogLoader
+    }
+
+    func observeProductValue(
+        _ observer: @escaping @MainActor (ProductValueKind) -> Void
+    ) {
+        onProductValueDelivered = observer
     }
 
     var canSubmit: Bool {
@@ -341,6 +349,7 @@ final class ImageGenViewModel {
                     self.results.removeLast(self.results.count - Self.maxResults)
                 }
                 self.activeID = first.id
+                self.onProductValueDelivered(.generatedImage)
             }
             self.prompt = ""
             // Empty (cancelled before the first image) leaves the gallery as-is.

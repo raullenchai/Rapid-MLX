@@ -107,8 +107,9 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")' in harness
     )
     assert 'matching(identifier: "RapidUITests.FileDragSource")' in harness
-    assert 'let dropTarget = element("ChatView.AddAttachments")' in harness
+    assert 'let dropTarget = element("rapid.chat.compose")' in harness
     assert "click(forDuration: 1, thenDragTo: dropTarget)" in harness
+    assert "func testDragPasteAndRemovalPreserveWireIdentity()" in chat_source
     assert "NSImage(data: data)" in harness
     assert "pasteboard.writeObjects([image])" in harness
     assert "XCTAssertNotNil(NSImage(pasteboard: pasteboard))" in harness

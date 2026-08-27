@@ -847,6 +847,34 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
 
+    if "mlx_lm.models.qwen4_exp" not in sys.modules:
+        # Qwen3.8-Flash-Next's qwen4_exp text decoder. Prefer a future native
+        # mlx-lm implementation as soon as one ships; until then the vendored
+        # module owns the typed QSA/PLE/HC architecture contract.
+        import importlib.util as _importlib_util
+
+        _qwen4_native_spec = None
+        try:
+            _qwen4_native_spec = _importlib_util.find_spec("mlx_lm.models.qwen4_exp")
+        except (ImportError, ValueError):
+            _qwen4_native_spec = None
+
+        if _qwen4_native_spec is None:
+            try:
+                from ..models import qwen4_exp as _qwen4_exp
+
+                sys.modules.setdefault("mlx_lm.models.qwen4_exp", _qwen4_exp)
+            except Exception as e:
+                logger.warning(
+                    "qwen4_exp vendored module failed to register — "
+                    "Qwen4-Exp checkpoints will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("qwen4_exp")
+        else:
+            _VENDORED_MODEL_TYPES.add("qwen4_exp")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
@@ -947,9 +975,11 @@ def _local_snapshot_if_cached(model_name: str) -> str:
     """
     try:
         from .._download_gate import is_repo_cached
+        from ..model_metadata import resolve_unreferenced_cached_snapshot
 
         if not is_repo_cached(model_name):
-            return model_name
+            snapshot = resolve_unreferenced_cached_snapshot(model_name)
+            return str(snapshot) if snapshot is not None else model_name
     except Exception:
         return model_name
     try:

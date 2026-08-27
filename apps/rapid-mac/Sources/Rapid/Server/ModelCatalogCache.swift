@@ -32,6 +32,15 @@ import Foundation
 actor ModelCatalogCache {
     static let shared = ModelCatalogCache()
 
+    typealias Loader = @Sendable (URL, URL?) async -> [ModelEntry]
+    private let loader: Loader
+
+    init(loader: @escaping Loader = { binary, override in
+        await ModelCatalog.load(binary: binary, hubCacheOverride: override)
+    }) {
+        self.loader = loader
+    }
+
     /// Backstop for out-of-band changes (see above).
     ///
     /// Five minutes, not seconds: ``cacheGeneration`` already catches every
@@ -212,8 +221,9 @@ actor ModelCatalogCache {
         binary: URL, override: URL?, binaryPath: String,
         generation: UInt, overridePath: String?
     ) -> InFlight {
+        let loader = self.loader
         let task = Task<[ModelEntry], Never> {
-            await ModelCatalog.load(binary: binary, hubCacheOverride: override)
+            await loader(binary, override)
         }
         nextInFlightID &+= 1
         let entry = InFlight(

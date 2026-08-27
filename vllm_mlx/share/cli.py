@@ -460,12 +460,12 @@ def _maybe_confirm_download(alias: str) -> None:
         return
     from vllm_mlx._download_gate import (
         confirm_or_abort,
-        estimate_repo_size_bytes,
+        estimate_download_size_bytes,
         is_repo_cached,
     )
 
     if not is_repo_cached(alias):
-        confirm_or_abort(alias, estimate_repo_size_bytes(alias))
+        confirm_or_abort(alias, estimate_download_size_bytes(alias))
 
 
 def share_command(args: argparse.Namespace) -> None:

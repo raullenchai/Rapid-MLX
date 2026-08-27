@@ -6,6 +6,10 @@ Utility functions for text processing and model detection.
 import json
 import logging
 import re
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+
+from packaging.version import InvalidVersion, Version
 
 from ..model_aliases import resolve_profile
 from ..model_metadata import (
@@ -15,9 +19,12 @@ from ..model_metadata import (
     read_local_model_metadata,
     read_model_metadata,
 )
+from ..recommendations import physical_ram_gb
 from .models import Message
 
 logger = logging.getLogger(__name__)
+
+_HYBRID_VISION_RUNTIME_MIN_VERSION = Version("0.6.16")
 
 # =============================================================================
 # Special Token Patterns
@@ -1276,6 +1283,59 @@ def mllm_arch_unsupported_but_text_vendored(model_name: str) -> bool:
     return spec is None
 
 
+def mllm_backbone_cache_mode(model_name: str) -> str | None:
+    """Return the MLLM cache mode implied by checkpoint architecture metadata.
+
+    ``"arrays"`` is the GatedDeltaNet/linear-attention layout supported by
+    Rapid's existing correctness-first serialized MLLM scheduler.  ``"other"``
+    covers recurrent layouts whose concrete cache is not admitted there.
+    ``None`` means the language backbone uses ordinary attention caches.
+
+    This is deliberately architecture-driven.  Repository names and aliases
+    are not a cache contract and must never decide whether image inference is
+    safe.
+    """
+    metadata = read_model_metadata(model_name)
+    config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        return None
+    text_cfg = config.get("text_config")
+    if not isinstance(text_cfg, dict):
+        text_cfg = config
+
+    layer_types = text_cfg.get("layer_types")
+    if isinstance(layer_types, list):
+        normalized = [lt.lower() for lt in layer_types if isinstance(lt, str)]
+        if any("linear" in lt or "gated_delta" in lt for lt in normalized):
+            return "arrays"
+        if any("mamba" in lt or "recurrent" in lt for lt in normalized):
+            return "other"
+
+    for model_type in (text_cfg.get("model_type"), config.get("model_type")):
+        if not isinstance(model_type, str):
+            continue
+        normalized_type = model_type.lower()
+        if "qwen3_next" in normalized_type:
+            return "arrays"
+        if "mamba" in normalized_type or "recurrent" in normalized_type:
+            return "other"
+    return None
+
+
+def mllm_hybrid_runtime_supported() -> bool:
+    """Whether the installed vision runtime can serve hybrid backbones.
+
+    Version 0.6.16 is the first release with the upstream Qwen3.5 vision fix.
+    Missing or malformed distribution metadata fails closed to the established
+    text fallback; an explicit vision-lane request still bypasses this guard.
+    """
+    try:
+        installed = Version(version("mlx-vlm"))
+    except (PackageNotFoundError, InvalidVersion):
+        return False
+    return bool(installed >= _HYBRID_VISION_RUNTIME_MIN_VERSION)
+
+
 def mllm_backbone_is_hybrid(model_name: str) -> bool:
     """True when a checkpoint's *language* backbone is hybrid/linear-attention.
 
@@ -1300,34 +1360,63 @@ def mllm_backbone_is_hybrid(model_name: str) -> bool:
     Returns:
         True if the language backbone uses linear-attention / recurrent layers.
     """
-    metadata = read_model_metadata(model_name)
-    config = metadata.config if metadata is not None else None
-    if not isinstance(config, dict):
-        return False
-    text_cfg = config.get("text_config")
-    if not isinstance(text_cfg, dict):
-        text_cfg = config
+    return mllm_backbone_cache_mode(model_name) is not None
 
-    # Per-layer attention markers: GatedDeltaNet declares ``linear_attention``
-    # entries interleaved with ``full_attention``; Mamba/recurrent blocks label
-    # their own layers. Sliding-window attention (``sliding_attention``) is NOT
-    # hybrid — it still uses a RotatingKVCache the MLLM engine handles.
-    layer_types = text_cfg.get("layer_types")
-    if isinstance(layer_types, list) and any(
-        isinstance(lt, str)
-        and any(tok in lt.lower() for tok in ("linear", "mamba", "recurrent"))
-        for lt in layer_types
-    ):
-        return True
 
-    # Whole-model recurrent / state-space architectures that don't enumerate
-    # per-layer types (pure Mamba, RecurrentGemma, Qwen3-Next linear stack).
-    for mt in (text_cfg.get("model_type"), config.get("model_type")):
-        if isinstance(mt, str) and any(
-            tok in mt.lower() for tok in ("mamba", "recurrent", "qwen3_next")
-        ):
-            return True
-    return False
+@dataclass(frozen=True)
+class ServingLaneDecision:
+    """Metadata-derived serving lane and stable machine-readable reason."""
+
+    is_mllm: bool
+    reason: str
+    auto_text_fallback: bool = False
+
+
+def resolve_serving_lane_decision(
+    model_name: str,
+    *,
+    force_mllm: bool = False,
+    force_text: bool = False,
+    vision_min_memory_gb: float | None = None,
+) -> ServingLaneDecision:
+    """Resolve one lane contract for startup, residency, and diagnostics."""
+    if force_text:
+        return ServingLaneDecision(False, "text_lane_forced")
+    if force_mllm:
+        return ServingLaneDecision(True, "vision_lane_forced")
+    if not is_mllm_model(model_name):
+        return ServingLaneDecision(False, "text_checkpoint")
+    if mllm_arch_unsupported_but_text_vendored(model_name):
+        return ServingLaneDecision(
+            False, "vision_architecture_unavailable", auto_text_fallback=True
+        )
+
+    cache_mode = mllm_backbone_cache_mode(model_name)
+    if cache_mode == "other":
+        return ServingLaneDecision(
+            False, "vision_hybrid_cache_unsupported", auto_text_fallback=True
+        )
+    if cache_mode == "arrays":
+        if mllm_hybrid_runtime_supported():
+            if vision_min_memory_gb is None:
+                profile = resolve_profile(model_name)
+                vision_min_memory_gb = (
+                    profile.vision_min_memory_gb if profile is not None else None
+                )
+            available_gb = physical_ram_gb()
+            if (
+                vision_min_memory_gb is not None
+                and available_gb > 0
+                and available_gb < vision_min_memory_gb
+            ):
+                return ServingLaneDecision(
+                    False, "vision_memory_insufficient", auto_text_fallback=True
+                )
+            return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
+        return ServingLaneDecision(
+            False, "vision_hybrid_runtime_unsupported", auto_text_fallback=True
+        )
+    return ServingLaneDecision(True, "vision_supported")
 
 
 def resolve_serving_lane(
@@ -1347,16 +1436,15 @@ def resolve_serving_lane(
       text lane is treated as text (PFlash-capable) everywhere, exactly as an
       explicit ``--text-only`` run would be.
     * ``auto_text_fallback`` — True iff a multimodal checkpoint was
-      *automatically* routed to the text-only lane because its language
-      backbone is hybrid/linear-attention (ArraysCache, incompatible with MLLM
-      continuous batching — GitHub #352). Kept DISTINCT from an explicit
-      ``--no-mllm``/``force_text`` so diagnostics can say "auto-downgraded"
-      rather than falsely claim the user passed ``--no-mllm``.
+      *automatically* routed to the text-only lane because its architecture or
+      installed vision runtime cannot safely serve the checkpoint. Kept
+      DISTINCT from an explicit ``--no-mllm``/``force_text`` so diagnostics
+      can say "auto-downgraded" rather than falsely claim the user passed
+      ``--no-mllm``.
 
     Explicit flags win: ``force_text`` → text lane (no auto-fallback marker),
-    ``force_mllm`` → MLLM lane (the engine may still reject a hybrid backbone
-    with its own #352 error — the operator asked for it, so they get the flag
-    they set named in the message).
+    ``force_mllm`` → MLLM lane (the engine may still reject an unsupported
+    architecture or cache — the operator asked for it, so failures stay loud).
 
     The two probes are offline and read the checkpoint config from the local
     cache. Callers MUST materialize that config first (the model download must
@@ -1365,25 +1453,10 @@ def resolve_serving_lane(
     hybrid VLM would probe "not hybrid" and be routed into the crashing MLLM
     engine (#352 dogfood P1-②).
     """
-    if force_text:
-        return (False, False)
-    if force_mllm:
-        return (True, False)
-    if not is_mllm_model(model_name):
-        return (False, False)
-    # Auto-routed to the MLLM lane by its vision weights — but the lane
-    # cannot serve every backbone. Two auto-downgrade causes, both marked
-    # with the same ``auto_text_fallback`` flag:
-    #  * the installed mlx-vlm has no model package for the arch and we
-    #    vendor a text backbone for it (Muse Glimmer until
-    #    Blaizzy/mlx-vlm#1838 ships in a release we pin);
-    #  * a hybrid/linear-attention backbone produces ArraysCache layers the
-    #    MLLM continuous-batching engine cannot assemble (GitHub #352).
-    if mllm_arch_unsupported_but_text_vendored(model_name):
-        return (False, True)
-    if mllm_backbone_is_hybrid(model_name):
-        return (False, True)
-    return (True, False)
+    decision = resolve_serving_lane_decision(
+        model_name, force_mllm=force_mllm, force_text=force_text
+    )
+    return decision.is_mllm, decision.auto_text_fallback
 
 
 def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
@@ -1521,6 +1594,26 @@ def _validate_content_part_payload(item: dict) -> None:
             )
 
 
+class UnsupportedContentBlockError(ValueError):
+    """Typed request-boundary error for unsupported media content."""
+
+    def __init__(self, message: str, *, code: str, param: str):
+        super().__init__(message)
+        self.code = code
+        self.param = param
+
+    def openai_detail(self, *, serving_lane_reason: str | None = None) -> dict:
+        error = {
+            "message": str(self),
+            "type": "invalid_request_error",
+            "code": self.code,
+            "param": self.param,
+        }
+        if isinstance(serving_lane_reason, str):
+            error["serving_lane_reason"] = serving_lane_reason
+        return {"error": error}
+
+
 def validate_content_blocks_for_capabilities(
     messages: list,
     *,
@@ -1562,6 +1655,13 @@ def validate_content_blocks_for_capabilities(
                 detail = "video inputs"
             else:
                 detail = f"{item_type!r} content blocks"
+            if item_type in IMAGE_CONTENT_TYPES and not allow_image:
+                raise UnsupportedContentBlockError(
+                    f"Model '{model_name}' is serving text-only; image input "
+                    "is unsupported.",
+                    code="image_input_unsupported",
+                    param="messages.content",
+                )
             raise ValueError(f"Model '{model_name}' does not support {detail}.")
 
 
@@ -1746,7 +1846,10 @@ def extract_multimodal_content(
 
                     tool_calls_list.append(tc_copy)
 
-                msg_dict = {"role": role, "content": _content_to_text(content)}
+                msg_dict: dict[str, object] = {
+                    "role": role,
+                    "content": _content_to_text(content),
+                }
                 if tool_calls_list:
                     msg_dict["tool_calls"] = tool_calls_list
                 processed_messages.append(msg_dict)

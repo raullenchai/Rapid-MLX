@@ -54,7 +54,6 @@ struct LaunchOnboardingOrderingTests {
         cachedAliases: Set<String>,
         done: Bool = false,
         legacyDone: Bool = false,
-        consentPending: Bool = false,
         serverState: ServerState = .idle
     ) -> AutoStartDecision {
         AutoStartDecision.decide(
@@ -64,7 +63,6 @@ struct LaunchOnboardingOrderingTests {
             cachedAliases: cachedAliases,
             serverState: serverState,
             userOptedIn: true,
-            firstRunDecisionPending: consentPending,
             onboardingPending: QuickstartCoordinator.onboardingOwed(
                 done: done,
                 legacyDone: legacyDone,
@@ -103,6 +101,45 @@ struct LaunchOnboardingOrderingTests {
         #expect(!ContentView.serverEngagedWithDifferentAlias(
             state: .idle,
             quickstartAlias: QuickstartCoordinator.defaultChoice.alias
+        ))
+    }
+
+    @Test("legacy audio ownership cannot suppress first-run onboarding")
+    func legacyAudioAliasStillOwesOnboarding() {
+        let audio = ModelEntry(
+            alias: "speech-input",
+            hfRepo: "example/speech-input",
+            sizeOnDisk: "500 MB",
+            cached: true,
+            kind: .audio,
+            audioCapability: .transcription
+        )
+        let launchPlan = SessionModelRestore.launchPlan(
+            legacyLastAlias: audio.alias,
+            dictationAlias: audio.alias,
+            speechAlias: nil,
+            catalog: [audio],
+            autoStartEnabled: false
+        )
+        let restored = launchPlan.models
+
+        #expect(restored.chatAlias == nil)
+        #expect(launchPlan.chatAliasResolved)
+        #expect(!launchPlan.shouldAutoStart)
+        #expect(QuickstartCoordinator.onboardingOwed(
+            done: false,
+            legacyDone: false,
+            lastServedAlias: restored.chatAlias
+        ))
+        #expect(launchDecision(
+            lastServedAlias: restored.chatAlias,
+            cachedAliases: [audio.alias]
+        ) == .skip(reason: .onboardingPending))
+        #expect(QuickstartCoordinator.isEligible(
+            done: false,
+            legacyDone: false,
+            lastServedAlias: restored.chatAlias,
+            serverState: .idle
         ))
     }
 
@@ -218,69 +255,12 @@ struct LaunchOnboardingOrderingTests {
         #expect(decision == .skip(reason: .retiredStarter))
     }
 
-    // MARK: - Consent gate
-
-    /// Nothing loads behind the full-window first-run consent gate. The
-    /// overlay owns hit testing, so the user cannot reach anything a warm
-    /// model would serve. Previously an 8.4 GB serve could be committed
-    /// before they had answered the first question the app asks.
-    @Test("Nothing auto-starts while the first-run consent gate is still unanswered")
-    func consentPendingBlocksAutoStart() {
-        let decision = launchDecision(
-            lastServedAlias: "qwen3.5-4b-4bit",
-            cachedAliases: ["qwen3.5-4b-4bit"],
-            done: true,
-            consentPending: true
-        )
-        #expect(decision == .skip(reason: .firstRunDecisionPending))
-    }
-
-    @Test("Consent blocks the workspace without an AppKit modal sheet")
-    func consentUsesNonModalOverlay() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Rapid/UI/ContentView.swift")
-        let rawSource = try String(contentsOf: sourceURL, encoding: .utf8)
-        let source = rawSource.filter { !$0.isWhitespace }
-        let presenterStart = try #require(
-            rawSource.range(of: "private var firstRunConsentGate"))
-        let presenterEnd = try #require(
-            rawSource.range(of: "private func decideTelemetry", range: presenterStart.upperBound..<rawSource.endIndex))
-        let presenter = rawSource[presenterStart.lowerBound..<presenterEnd.lowerBound]
-        let bodyStart = try #require(rawSource.range(of: "var body: some View"))
-        let bodyEnd = try #require(
-            rawSource.range(of: "/// First-run setup", range: bodyStart.upperBound..<rawSource.endIndex))
-        let body = rawSource[bodyStart.lowerBound..<bodyEnd.lowerBound]
-
-        #expect(source.contains("iftelemetryConsentPending{firstRunConsentGate}"))
-        #expect(!body.contains(".sheet"))
-        #expect(!presenter.contains(".sheet"))
-        #expect(!presenter.contains("interactiveDismissDisabled"))
-    }
-
-    /// Once answered, the same user's model comes up — the deferral is a
-    /// single re-run of the launch hook, not a permanent suppression.
-    @Test("Answering consent releases the deferred auto-start")
-    func consentAnsweredReleasesAutoStart() {
-        let decision = launchDecision(
-            lastServedAlias: "qwen3.5-4b-4bit",
-            cachedAliases: ["qwen3.5-4b-4bit"],
-            done: true,
-            consentPending: false
-        )
-        #expect(decision == .start(alias: "qwen3.5-4b-4bit"))
-    }
-
     // MARK: - Precedence ladder
 
     /// The skip reasons are a diagnostic surface, so their order has to be
     /// stable and meaningful: the user's explicit opt-out outranks
-    /// everything, then consent, then onboarding, then mechanical state.
-    /// Consent-before-onboarding mirrors `quickstartVisible`, which defers
-    /// to the consent sheet for the same reason.
-    @Test("Skip precedence: userOptedOut > firstRunDecisionPending > onboardingPending > serverNotIdle")
+    /// everything, then onboarding, then mechanical state.
+    @Test("Skip precedence: userOptedOut > onboardingPending > serverNotIdle")
     func skipPrecedenceLadder() {
         // Opt-out beats both new gates.
         #expect(AutoStartDecision.decide(
@@ -290,20 +270,8 @@ struct LaunchOnboardingOrderingTests {
             cachedAliases: ["qwen3.5-4b-4bit"],
             serverState: .idle,
             userOptedIn: false,
-            firstRunDecisionPending: true,
             onboardingPending: true
         ) == .skip(reason: .userOptedOut))
-
-        // Consent beats onboarding.
-        #expect(AutoStartDecision.decide(
-            lastServedAlias: nil,
-            bundledFallbackAlias: nil,
-            binaryReachable: true,
-            cachedAliases: ["qwen3.5-4b-4bit"],
-            serverState: .idle,
-            firstRunDecisionPending: true,
-            onboardingPending: true
-        ) == .skip(reason: .firstRunDecisionPending))
 
         // Onboarding beats the mechanical serverState skip — the gate has
         // to sit above the switch or it cannot prevent the race.
@@ -318,10 +286,10 @@ struct LaunchOnboardingOrderingTests {
     }
 
     /// Back-compat anchor, same shape as the existing `userOptedIn`
-    /// default pin: both new parameters default to "not pending" so every
+    /// default pin: the new parameter defaults to "not pending" so every
     /// pre-#1589 call site and test keeps its contract.
-    @Test("Both new gates default to false — pre-#1589 callers are unchanged")
-    func newGatesDefaultToFalse() {
+    @Test("The onboarding gate defaults to false — pre-#1589 callers are unchanged")
+    func onboardingGateDefaultsToFalse() {
         let decision = AutoStartDecision.decide(
             lastServedAlias: "qwen3.5-4b-4bit",
             bundledFallbackAlias: nil,

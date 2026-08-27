@@ -63,8 +63,12 @@ class PoolingCache(_BaseCache):
                 )
             else:
                 self._undo = (
-                    None if self.remainder == 0 else self.buf_kv[:, : self.remainder] + 0,
-                    None if self.remainder == 0 else self.buf_gate[:, : self.remainder] + 0,
+                    None
+                    if self.remainder == 0
+                    else self.buf_kv[:, : self.remainder] + 0,
+                    None
+                    if self.remainder == 0
+                    else self.buf_gate[:, : self.remainder] + 0,
                     self.remainder,
                     0 if self.pooled is None else self.pooled.shape[1],
                     kv,
@@ -206,6 +210,37 @@ class PoolingCache(_BaseCache):
     def is_trimmable(self):
         return self.pooled is None or self.remainder > 0 or self._can_undo(1)
 
+    def can_trim(self, n):
+        return n >= 0 and (n <= self.remainder or self._can_undo(n))
+
+    def trim_checkpoint(self):
+        """Capture the small rolling state that trim may overwrite in-place."""
+        state = {
+            "undo": self._undo,
+            "remainder": self.remainder,
+            "pooled": self.pooled,
+            "buf_kv": None if self.buf_kv is None else self.buf_kv + 0,
+            "buf_gate": None if self.buf_gate is None else self.buf_gate + 0,
+            "overlap_kv": getattr(self, "overlap_kv", None),
+            "overlap_gate": getattr(self, "overlap_gate", None),
+        }
+        arrays = [
+            value for value in (state["buf_kv"], state["buf_gate"]) if value is not None
+        ]
+        if arrays:
+            mx.eval(*arrays)
+        return state
+
+    def restore_trim_checkpoint(self, state):
+        self._undo = state["undo"]
+        self.remainder = state["remainder"]
+        self.pooled = state["pooled"]
+        self.buf_kv = state["buf_kv"]
+        self.buf_gate = state["buf_gate"]
+        if hasattr(self, "overlap_kv"):
+            self.overlap_kv = state["overlap_kv"]
+            self.overlap_gate = state["overlap_gate"]
+
     def _can_undo(self, n):
         undo = getattr(self, "_undo", None)
         return undo is not None and undo[4].shape[1] >= n
@@ -246,8 +281,12 @@ class PoolingCache(_BaseCache):
             self.buf_gate[:, : self.remainder] = remainder_gate
         if hasattr(self, "overlap_kv"):
             if completed:
-                last_kv = mx.unflatten(prefix_kv[:, used - self.ratio : used], 1, (-1, self.ratio))[:, -1]
-                last_gate = mx.unflatten(prefix_gate[:, used - self.ratio : used], 1, (-1, self.ratio))[:, -1]
+                last_kv = mx.unflatten(
+                    prefix_kv[:, used - self.ratio : used], 1, (-1, self.ratio)
+                )[:, -1]
+                last_gate = mx.unflatten(
+                    prefix_gate[:, used - self.ratio : used], 1, (-1, self.ratio)
+                )[:, -1]
                 half = last_kv.shape[-1] // 2
                 self.overlap_kv = last_kv[..., :half]
                 self.overlap_gate = last_gate[..., :half]
@@ -527,13 +566,44 @@ class BatchPoolingCache(_BaseCache):
     def is_trimmable(self):
         return self.pooled is None or min(self.remainder) > 0 or self._can_undo(1)
 
+    def can_trim(self, n):
+        return n >= 0 and (n <= min(self.remainder) or self._can_undo(n))
+
+    def trim_checkpoint(self):
+        """Capture the small per-batch rolling state mutated by trim."""
+        state = {
+            "undo": self._undo,
+            "remainder": list(self.remainder),
+            "pool_lengths": list(self._pool_lengths),
+            "processed": list(self._processed),
+            "pooled": self.pooled,
+            "buf_kv": None if self.buf_kv is None else self.buf_kv + 0,
+            "buf_gate": None if self.buf_gate is None else self.buf_gate + 0,
+            "overlap_kv": getattr(self, "overlap_kv", None),
+            "overlap_gate": getattr(self, "overlap_gate", None),
+        }
+        arrays = [
+            value for value in (state["buf_kv"], state["buf_gate"]) if value is not None
+        ]
+        if arrays:
+            mx.eval(*arrays)
+        return state
+
+    def restore_trim_checkpoint(self, state):
+        self._undo = state["undo"]
+        self.remainder = state["remainder"]
+        self._pool_lengths = state["pool_lengths"]
+        self._processed = state["processed"]
+        self.pooled = state["pooled"]
+        self.buf_kv = state["buf_kv"]
+        self.buf_gate = state["buf_gate"]
+        if hasattr(self, "overlap_kv"):
+            self.overlap_kv = state["overlap_kv"]
+            self.overlap_gate = state["overlap_gate"]
+
     def _can_undo(self, n):
         undo = getattr(self, "_undo", None)
-        return (
-            undo is not None
-            and len(self.remainder) == 1
-            and undo[5].shape[1] >= n
-        )
+        return undo is not None and len(self.remainder) == 1 and undo[5].shape[1] >= n
 
     def trim(self, n):
         if n <= min(self.remainder):
@@ -557,7 +627,9 @@ class BatchPoolingCache(_BaseCache):
         ) = self._undo
         self._undo = None
         keep = kv.shape[1] - n
-        prefix_kv = mx.concatenate([buf_kv[:, : old_remainder[0]], kv[:, :keep]], axis=1)
+        prefix_kv = mx.concatenate(
+            [buf_kv[:, : old_remainder[0]], kv[:, :keep]], axis=1
+        )
         prefix_gate = mx.concatenate(
             [buf_gate[:, : old_remainder[0]], gate[:, :keep]], axis=1
         )
@@ -577,8 +649,12 @@ class BatchPoolingCache(_BaseCache):
             self.buf_gate[:, : self.remainder[0]] = remainder_gate
         if hasattr(self, "overlap_kv"):
             if completed:
-                last_kv = mx.unflatten(prefix_kv[:, used - self.ratio : used], 1, (-1, self.ratio))[:, -1]
-                last_gate = mx.unflatten(prefix_gate[:, used - self.ratio : used], 1, (-1, self.ratio))[:, -1]
+                last_kv = mx.unflatten(
+                    prefix_kv[:, used - self.ratio : used], 1, (-1, self.ratio)
+                )[:, -1]
+                last_gate = mx.unflatten(
+                    prefix_gate[:, used - self.ratio : used], 1, (-1, self.ratio)
+                )[:, -1]
                 half = last_kv.shape[-1] // 2
                 self.overlap_kv = last_kv[..., :half]
                 self.overlap_gate = last_gate[..., :half]

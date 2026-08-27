@@ -194,7 +194,7 @@ journeys:
     risk: high
     driver: hybrid
     ci_tier: pr
-    fixtures: [fake-sidecar, document, isolated-home]
+    fixtures: [fake-sidecar, document, native-file-drag, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
     owns_baseline: false
   - name: chat-multimodal-attachments
@@ -202,7 +202,7 @@ journeys:
     risk: high
     driver: hybrid
     ci_tier: pr
-    fixtures: [fake-sidecar, two-images, document, isolated-home]
+    fixtures: [fake-sidecar, two-images, document, native-file-drag, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
     owns_baseline: false
   - name: image-generation
@@ -220,6 +220,14 @@ journeys:
     ci_tier: pr
     fixtures: [fake-sidecar, delayed-transcription, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Dictation/, apps/rapid-mac/Sources/Rapid/Audio/, apps/rapid-mac/Sources/Rapid/UI/DictationView.swift]
+    owns_baseline: false
+  - name: dictation-rc2-upgrade
+    group: audio
+    risk: high
+    driver: ax
+    ci_tier: local
+    fixtures: [fake-sidecar, audio-models, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Dictation/, apps/rapid-mac/Sources/Rapid/Audio/, apps/rapid-mac/Sources/Rapid/Server/SessionModelRestore.swift, apps/rapid-mac/Sources/Rapid/UI/ContentView.swift]
     owns_baseline: false
   - name: audio-readiness
     group: audio

@@ -17,6 +17,53 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-26
+
+Rapid-MLX 0.13.0 makes first setup clearer, expands local model support, keeps
+chat and speech workloads available together, and improves long-prompt
+responsiveness and cache correctness.
+
+### Added
+
+- **More capable local models.** Supported Qwen3-Next checkpoints can stream
+  experts from disk, Nemotron Labs Diffusion 3B runs as a standard text model,
+  and verified Ornith 1.5 models are available from the Desktop catalog.
+- **Chat understands the current local date and time.** Questions about today
+  no longer depend on the model's training cutoff or require a web search.
+- **Desktop workflows cover more of the local stack.** Attachments, dedicated
+  photo input, separate Speech to Text and Text to Speech controls, and clearer
+  agent setup make multimodal and tool-assisted work easier to configure.
+
+### Changed
+
+- **Repeated long prompts start much faster on hybrid models.** Compatible
+  prefix caches are reused, reducing verified repeat-turn prefill from tens of
+  seconds to sub-second latency.
+- **Setup guidance follows current memory conditions.** First-run
+  recommendations are re-evaluated as available memory changes instead of
+  retaining a stale verdict.
+- **Active work is protected during model switches.** Desktop asks for
+  confirmation before a switch interrupts requests already in progress.
+
+### Fixed
+
+- Runtime model switches now choose the same serving lane as startup, including
+  complete cached checkpoints that need the text-only lane.
+- Performance reloads preserve the model's served names and aliases, so clients
+  can continue using the same identifier after settings change.
+- Relaunching with dictation enabled restores the conversation model before the
+  speech lane, preventing an audio model from replacing the active chat model.
+- Search-provider key failures, model readiness progress, image-generation
+  recovery, tool-call correction, reasoning privacy, and release validation
+  received the fixes exercised across the 0.13 release candidates.
+
+### Known issues
+
+- If both a resident model's performance reload and its rollback fail, residency
+  status and request routing can disagree until the server is relaunched. This
+  recovery edge case is planned for 0.13.1
+  ([#2360](https://github.com/raullenchai/Rapid-MLX/issues/2360)).
+
 ## [0.13.0-rc2] — 2026-08-25
 
 This second 0.13 release candidate focuses on the first-run and release-blocking
@@ -58,9 +105,9 @@ does not replace the stable updater feed.
 - **Ornith 1.5 is available end to end.** The 9B dense and 35B-A3B
   mixture-of-experts checkpoints are recognized by the engine and exposed in
   the Mac model picker with the correct runtime routes.
-- **More local generation choices.** Nemotron Labs Diffusion 3B can generate
-  images through its autoregressive path, and Qwen3-Next can stream routed
-  experts from disk on memory-constrained machines.
+- **More local generation choices.** Nemotron Labs Diffusion 3B runs as a
+  standard text model, and Qwen3-Next can stream routed experts from disk on
+  memory-constrained machines.
 - **Agent health is visible and actionable.** The CLI reports integration
   health and can re-run setup, while the Mac menu bar can copy the active API
   endpoint for connecting another client.

@@ -110,12 +110,6 @@ struct DictationView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: RapidTheme.Space.md)
-            if controller.isEnabled && controller.phase == .off
-                && controller.readinessSnapshot.isReady {
-                Button("Arm now") { Task { await controller.enable() } }
-                    .buttonStyle(.rapidSecondary)
-                    .accessibilityIdentifier("Dictation.Arm")
-            }
             // Gate turning it ON, never turning it OFF, so a session whose
             // permissions lapsed can always be switched back.
             Toggle("", isOn: $controller.isEnabled)
@@ -138,9 +132,12 @@ struct DictationView: View {
         if controller.phase == .preparingModel {
             return "Loading \(controller.modelAlias) into memory…"
         }
-        return controller.phase == .off
-            ? "Not listening — the hotkey isn't armed"
-            : "Ready — press \(controller.trigger.label) in any app"
+        if controller.phase == .off {
+            return controller.isHotkeyArmed
+                ? "Listening paused — reconnecting the speech model"
+                : "Not listening — the hotkey isn't armed"
+        }
+        return "Listening — press \(controller.trigger.label) in any app"
     }
 
     private var statusDetail: String {
@@ -151,6 +148,10 @@ struct DictationView: View {
         }
         if controller.phase == .preparingModel {
             return "The local model is warming up. Recording starts when it’s ready."
+        }
+        if controller.phase == .off {
+            return controller.lastError
+                ?? "Rapid will reconnect the speech model automatically."
         }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
@@ -248,7 +249,10 @@ struct DictationView: View {
 
             Divider().overlay(RapidTheme.hairline)
 
-            setupRow(label: "Hotkey", done: true) {
+            setupRow(
+                label: "Hotkey",
+                done: !controller.isEnabled || controller.isHotkeyArmed
+            ) {
                 Menu {
                     Picker("", selection: $controller.trigger) {
                         ForEach(DictationHotkey.Trigger.allCases) { trigger in

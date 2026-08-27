@@ -248,9 +248,15 @@ struct QuickstartBrowseAllDestinationTests {
             the user gets to choose.
             """
         )
+        let stripped = Self.stripped(source)
         #expect(
-            Self.stripped(source).contains(#"Button("Skipfornow"){onSkip()}"#),
-            "The one onSkip() call must be Skip for now."
+            stripped.contains(#"Button("Skipfornow"){skipForNow()}"#),
+            "The one dismissal control must route through the complete Skip action."
+        )
+        #expect(
+            stripped.contains(#"privatefuncskipForNow(){coordinator.applyDefaultChoice("#)
+                && stripped.contains(#"catalog:catalogLoaded?cachedModels:[])onSkip()}"#),
+            "Skip must refresh the live starter policy before its one onSkip() callback."
         )
     }
 

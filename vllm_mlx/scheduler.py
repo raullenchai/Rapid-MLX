@@ -2522,21 +2522,24 @@ def _install_suffix_decoding(
             _counter.record_fallthrough("no_draft")
             return _orig_step()
 
+        K = len(draft)
+
         # Defense-in-depth: even though ``profile.supports_spec_decode``
         # already gates installation on hybrid arches, verify that EVERY
         # cache layer is trimmable before paying the verify-forward cost.
         # If any layer can't trim and we end up needing to roll back, the
         # cache state would silently diverge — better to fall through.
-        for c in gb.prompt_cache:
-            if not (
-                hasattr(c, "is_trimmable") and c.is_trimmable() and hasattr(c, "trim")
-            ):
-                _stats["fallthrough_steps"] += 1
-                _stats["ft_non_trimmable_cache"] += 1
-                _counter.record_fallthrough("non_trimmable_cache")
-                return _orig_step()
+        # Preflight the maximum possible rollback amount before the verify
+        # forward mutates anything. Composite caches are checked recursively,
+        # so one side-cache cannot refuse after its sibling already trimmed.
+        from .cache_rollback import can_trim
 
-        K = len(draft)
+        if not all(can_trim(c, K) for c in gb.prompt_cache):
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_non_trimmable_cache"] += 1
+            _counter.record_fallthrough("non_trimmable_cache")
+            return _orig_step()
+
         _stats["verify_steps"] += 1
         _stats["draft_tokens_proposed"] += K
 
@@ -2652,9 +2655,12 @@ def _install_suffix_decoding(
 
         n_rejected = K - n_accepted
         if n_rejected > 0:
-            # Pre-checked above — every layer here is trimmable.
-            for c in gb.prompt_cache:
-                c.trim(n_rejected)
+            from .cache_rollback import trim_all
+
+            if not trim_all(gb.prompt_cache, n_rejected):
+                raise RuntimeError(
+                    "suffix verification cache rollback violated its preflight"
+                )
 
         # Token emission accounting.
         #
@@ -2814,13 +2820,12 @@ def _install_suffix_decoding(
                     # reuse for the next request that hits this prefix.
                     unused = len(pending) - emit_idx - 1
                     if unused > 0:
-                        for c in gb.prompt_cache:
-                            if (
-                                hasattr(c, "is_trimmable")
-                                and c.is_trimmable()
-                                and hasattr(c, "trim")
-                            ):
-                                c.trim(unused)
+                        from .cache_rollback import trim_all
+
+                        if not trim_all(gb.prompt_cache, unused):
+                            raise RuntimeError(
+                                "suffix terminal cache rollback violated its preflight"
+                            )
                     augmented.append(
                         gb.Response(
                             uid=uid,
@@ -3036,6 +3041,9 @@ class Scheduler:
         self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
+        self._generation_paused = False
+        self._paused_add_allowance = 0
+        self._paused_admission_tokens: set[str] = set()
         self.finished_req_ids: set[str] = set()  # Recently finished
         # Debug aid (#1878): resolved ONCE — an os.environ lookup per
         # step would put dict access on the decode hot path advertised
@@ -4381,22 +4389,13 @@ class Scheduler:
                         from mlx_lm.models import cache as _mlx_cache
                         from mlx_lm.models.cache import CacheList as _CacheList
 
-                        from vllm_mlx.models.deepseek_v4_cache import (
-                            BatchDeepseekV4PoolingCache,
-                            BatchPoolingCache,
-                            DeepseekV4PoolingCache,
-                            PoolingCache,
-                        )
+                        from vllm_mlx.memory_cache import _vendored_cache_registry
 
-                        vendored = {
-                            cls.__name__: cls
-                            for cls in (
-                                PoolingCache,
-                                BatchPoolingCache,
-                                DeepseekV4PoolingCache,
-                                BatchDeepseekV4PoolingCache,
+                        vendored = _vendored_cache_registry()
+                        if not isinstance(meta_state, tuple) or len(meta_state) != 2:
+                            raise ValueError(
+                                "CacheList metadata must be a (names, metadata) tuple"
                             )
-                        }
                         names, nested_meta = meta_state
                         if not (len(state) == len(names) == len(nested_meta)):
                             raise ValueError(
@@ -5856,6 +5855,14 @@ class Scheduler:
                 above ``config.max_concurrent_requests``. Routes catch
                 this and return 503 with Retry-After.
         """
+        with self._request_state_lock():
+            if getattr(self, "_generation_paused", False):
+                allowed: set[str] = getattr(self, "_paused_admission_tokens", set())
+                token = getattr(request, "lifecycle_admission_token", None)
+                if token not in allowed:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
         if request.request_id in self.requests:
             raise ValueError(f"Request {request.request_id} already exists")
 
@@ -6069,16 +6076,68 @@ class Scheduler:
         # exception path between admission and tracking leaves
         # the ledger intact and the prior lifetime's dedupe
         # stays effective.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.discard(request.request_id)
-            self._disconnect_abort_ids.discard(request.request_id)
-            self._orphaned_running_candidates.pop(request.request_id, None)
-            self.requests[request.request_id] = request
-        self.waiting.append(request)
+        self._commit_request(request)
 
         logger.debug(
             f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
         )
+
+    def _commit_request(self, request: Request) -> None:
+        """Atomically publish a request to lifecycle truth and the run queue."""
+
+        with self._request_state_lock():
+            if getattr(self, "_generation_paused", False):
+                commit_tokens: set[str] = getattr(
+                    self, "_paused_admission_tokens", set()
+                )
+                token = getattr(request, "lifecycle_admission_token", None)
+                if not isinstance(token, str) or token not in commit_tokens:
+                    raise BackpressureError(
+                        "generation is paused for a model lifecycle operation"
+                    )
+                commit_tokens.remove(token)
+            self._cancelled_request_ids.discard(request.request_id)
+            self._disconnect_abort_ids.discard(request.request_id)
+            self._orphaned_running_candidates.pop(request.request_id, None)
+            self.requests[request.request_id] = request
+            self.waiting.append(request)
+
+    def set_generation_paused(self, paused: bool, *, add_allowance: int = 0) -> None:
+        """Close or reopen scheduler admission for model replacement."""
+
+        with self._request_state_lock():
+            self._generation_paused = bool(paused)
+            self._paused_add_allowance = max(0, int(add_allowance)) if paused else 0
+            self._paused_admission_tokens = set()
+
+    def pause_generation_admission(self, admission_tokens: set[str], mode: str) -> None:
+        """Close admission and preserve only pre-pause route reservations."""
+
+        with self._request_state_lock():
+            self._generation_paused = True
+            owned = {
+                getattr(request, "lifecycle_admission_token", None)
+                for request in self.requests.values()
+                if getattr(request, "lifecycle_admission_token", None) is not None
+            }
+            pending = set(admission_tokens) - owned
+            self._paused_admission_tokens = pending if mode == "wait" else set()
+            self._paused_add_allowance = len(self._paused_admission_tokens)
+
+    def request_ids_snapshot(self) -> tuple[str, ...]:
+        """Return a lock-protected snapshot of queued and running IDs."""
+
+        with self._cancel_counter_lock:
+            return tuple(self.requests)
+
+    def _request_state_lock(self):
+        """Return the request lock, including for minimal test doubles."""
+
+        lock = getattr(self, "_cancel_counter_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._cancel_counter_lock = lock
+        return lock
 
     def abort_request(self, request_id: str) -> bool:
         """
@@ -8331,7 +8390,8 @@ class Scheduler:
 
         self.waiting.clear()
         self.running.clear()
-        self.requests.clear()
+        with self._cancel_counter_lock:
+            self.requests.clear()
         self.finished_req_ids.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()

@@ -250,6 +250,11 @@ async def test_stream_generate_finally_is_double_safety_net():
     # stream_outputs yields ONE chunk and then awaits forever so we
     # can close the generator after the first yield.
     fake_engine = MagicMock()
+    # ``BatchedEngine`` reaches the real scheduler through
+    # ``AsyncEngineCore.engine``. This focused double intentionally has no
+    # inner core, so admission must use the configured fallback instead of a
+    # recursively-created ``MagicMock`` scheduler/config tree.
+    fake_engine.engine = None
     fake_engine.add_request = MagicMock(return_value=_completed_future("req-xyz"))
 
     async def stream_outputs(request_id):

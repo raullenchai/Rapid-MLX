@@ -197,13 +197,40 @@ struct MemoryLoadConfirmationQueueTests {
         queue.enqueue(warning: original, requestID: nil)
 
         let result = queue.refreshCurrentWarning(
-            snapshot: .init(totalBytes: 32 * gib, usedBytes: 2 * gib)
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 7 * gib)
         )
         let refreshed = try #require(result)
 
         #expect(refreshed.new.severity == .tight)
         #expect(refreshed.new.footprintGB == 24)
         #expect(refreshed.new.hfPath == original.hfPath)
+    }
+
+    @Test("post-stop refresh does not credit the released model twice")
+    func liveRefreshUsesPostStopHostTruth() throws {
+        let gib = UInt64(1 << 30)
+        var queue = MemoryLoadConfirmationQueue()
+        let original = ModelSizing.MemoryWarning(
+            alias: "qwen3.8-27b-4bit",
+            hfPath: nil,
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: 20,
+            freeGB: 18,
+            totalGB: 32,
+            plannedReleaseGB: 6
+        )
+        queue.enqueue(warning: original, requestID: nil)
+
+        let result = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 32 * gib, usedBytes: 14 * gib)
+        )
+        let refreshed = try #require(result)
+
+        // The fresh 14 GB sample is post-stop truth. Crediting the old 6 GB a
+        // second time would incorrectly classify 8 + 20 GB as safe.
+        #expect(refreshed.new.severity == .unsafe)
+        #expect(refreshed.new.plannedReleaseGB == 6)
     }
 
     @Test("refresh is ignored after the visible decision starts launching")

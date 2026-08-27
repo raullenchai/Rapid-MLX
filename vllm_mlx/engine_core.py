@@ -20,7 +20,7 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -1090,6 +1090,8 @@ class EngineCore:
         grammar_logits_processor: Any | None = None,
         reasoning_budget_logits_processor: Any | None = None,
         suppressed_tokens_logits_processor: Any | None = None,
+        lifecycle_admission_token: str | None = None,
+        on_request_committed: Callable[[], None] | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -1135,6 +1137,7 @@ class EngineCore:
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
             suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
+            lifecycle_admission_token=lifecycle_admission_token,
         )
 
         # Throttle requests for hybrid models (GatedDeltaNet + Transformer).
@@ -1294,6 +1297,9 @@ class EngineCore:
         else:
             self.scheduler.add_request(request)
 
+        if on_request_committed is not None:
+            on_request_committed()
+
         # Wake the engine loop if it's blocked on the idle event.
         # asyncio.Event.set() is loop-thread-safe when called from coros
         # running on the same loop (which add_request always is).
@@ -1302,10 +1308,35 @@ class EngineCore:
 
         return request_id
 
-    async def abort_request(self, request_id: str) -> bool:
-        """Abort a request."""
+    async def abort_request(
+        self, request_id: str, *, error_kind: str | None = None
+    ) -> bool:
+        """Abort work, preserving the caller-selected terminal semantics."""
+
         result = self.scheduler.abort_request(request_id)
-        self._cleanup_request(request_id)
+        if result:
+            event = self._finished_events.get(request_id)
+            if event is not None and not event.is_set():
+                collector = self._output_collectors.get(request_id)
+                if collector is not None:
+                    collector.put(
+                        RequestOutput(
+                            request_id=request_id,
+                            finished=True,
+                            finish_reason="length",
+                            error=(
+                                "Inference aborted by a cancellation request"
+                                if error_kind == "lifecycle"
+                                else None
+                            ),
+                            error_kind=(
+                                "lifecycle" if error_kind == "lifecycle" else None
+                            ),
+                        )
+                    )
+                event.set()
+            if self._idle_event is not None:
+                self._idle_event.set()
         return result
 
     def _cleanup_request(self, request_id: str) -> None:
@@ -1465,7 +1496,10 @@ class EngineCore:
                             logger.warning(
                                 f"[stream_outputs] {request_id[:12]} engine aborted: {output.error}"
                             )
-                            raise InferenceAbortedError(output.error)
+                            raise InferenceAbortedError(
+                                output.error,
+                                error_kind=output.error_kind,
+                            )
 
                     yield output
 
@@ -1579,7 +1613,10 @@ class EngineCore:
 
                 from .request import InferenceAbortedError
 
-                raise InferenceAbortedError(final_output.error)
+                raise InferenceAbortedError(
+                    final_output.error,
+                    error_kind=final_output.error_kind,
+                )
 
             return final_output
 
@@ -1896,9 +1933,11 @@ class AsyncEngineCore:
             **kwargs,
         )
 
-    async def abort_request(self, request_id: str) -> bool:
+    async def abort_request(
+        self, request_id: str, *, error_kind: str | None = None
+    ) -> bool:
         """Abort a request."""
-        return await self.engine.abort_request(request_id)
+        return await self.engine.abort_request(request_id, error_kind=error_kind)
 
     async def stream_outputs(
         self,

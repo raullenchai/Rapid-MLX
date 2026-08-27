@@ -4,9 +4,7 @@
 # This deliberately avoids model startup and mutable controls. It validates
 # that the running app exposes stable semantic selectors, opens Settings via
 # the application menu, navigates with AXPress, and records structured trees
-# plus screenshots for diagnosis. Coordinate input is used only for the
-# first-run consent sheet because Peekaboo 3.10 can associate a SwiftUI sheet
-# snapshot with its parent window ID; that fallback is derived from AX bounds.
+# plus screenshots for diagnosis.
 set -euo pipefail
 
 APP="${RAPID_GUI_APP:-Rapid-MLX}"
@@ -63,21 +61,6 @@ MAIN_WINDOW_ID="$(jq -r --arg app "$APP" \
     "$OUT/windows-initial.json" | head -1)"
 [[ -n "$MAIN_WINDOW_ID" ]] || die "main window for $APP not found"
 observe_app "$OUT/main.json" || die "could not inspect main window or modal sheet"
-
-# Fresh installs present a required consent sheet. Prefer AX action. Peekaboo
-# 3.10 currently reports SNAPSHOT_STALE for SwiftUI sheets whose CG window ID
-# is normalized to the parent; use the AX-derived element center as a narrow,
-# explicit fallback and record that it happened.
-if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/main.json" >/dev/null; then
-    if ! press_identifier "$OUT/main.json" "TelemetryConsent.DontShare" "$OUT/consent-action.json"; then
-        read -r X Y < <(jq -r '.data.ui_elements[] | select(.identifier == "TelemetryConsent.DontShare") | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)] | @tsv' "$OUT/main.json")
-        log "Peekaboo sheet snapshot mismatch; using AX-derived coordinate fallback"
-        pb click --coords "$X,$Y" --global-coords --app "$APP" --json \
-            > "$OUT/consent-coordinate-fallback.json"
-    fi
-    sleep 1
-    observe_app "$OUT/main.json" || die "could not inspect app after consent"
-fi
 
 # Fresh-install onboarding is a real release surface, but this smoke is aimed
 # at the steady-state shell. Verify its selector and skip via AX so no model is

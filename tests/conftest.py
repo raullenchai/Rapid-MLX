@@ -52,7 +52,11 @@ def scheduler_config_stub(monkeypatch):
             self.enable_prefix_cache = True
             self.hybrid_cache_entries = 0
             self.non_trimmable_exact_prefix_reuse = False
+            self.enable_mtp = False
+            self.spec_decode = "none"
             self.__dict__.update(kwargs)
+            if self.enable_mtp:
+                self.spec_decode = "mtp"
 
     scheduler.SchedulerConfig = SchedulerConfig
     monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)

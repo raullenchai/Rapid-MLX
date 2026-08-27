@@ -20,8 +20,10 @@ MANIFEST = ROOT / "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml"
 # `chat-depth` requires all five turns to be simultaneously realised in AX.
 # The hosted runner's 1024x681 app window virtualises the oldest messages, so
 # that assertion is valid on larger local displays but false by construction in
-# CI. Keep this exception exact: any additional omission is accidental.
-CI_EXCLUSIONS = {"chat-depth"}
+# CI. The rc2 state-upgrade journey was added during the release window and is
+# verified locally on Studio; hosted dictation-shard gating is tracked in
+# #2365. Keep both exceptions exact: any additional omission is accidental.
+CI_EXCLUSIONS = {"chat-depth", "dictation-rc2-upgrade"}
 
 
 def harness_flows() -> set[str]:
@@ -105,6 +107,7 @@ def test_manifest_fields_are_valid_and_fail_closed():
         "crash-once",
         "delayed-transcription",
         "document",
+        "native-file-drag",
         "fake-sidecar",
         "generated-images",
         "isolated-home",

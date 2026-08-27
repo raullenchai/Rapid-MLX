@@ -388,6 +388,91 @@ class TestInstallSuffixDecoding:
         assert "ft_non_trimmable_cache" in bg._suffix_stats
         assert bg._suffix_stats["ft_non_trimmable_cache"] == 0
 
+    @staticmethod
+    def _install_verify_fixture(
+        monkeypatch, predictions, *, trim_result, source_response=False
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import mlx.core as mx
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.speculative import suffix_decoding
+
+        class Drafter:
+            def __init__(self, **_kwargs):
+                self.max_draft_tokens = 2
+
+            def add_prompt_tokens(self, _tokens):
+                pass
+
+            def add_generated_token(self, _token):
+                pass
+
+            def get_draft(self):
+                return [2, 3]
+
+            def record_acceptance(self, _count):
+                pass
+
+        class Cache:
+            def can_trim(self, _n):
+                return True
+
+            def trim(self, _n):
+                return trim_result
+
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", Drafter)
+        bg, gb = TestInstallSuffixDecoding()._make_fake_bg()
+        gb._next_tokens = mx.array([1], dtype=mx.int32)
+        gb._next_logprobs = [mx.zeros((5,))]
+        gb.uids = [1]
+        gb.tokens = [[]]
+        gb.logits_processors = None
+        gb.prompt_cache = [Cache()]
+        logits = mx.full((1, 3, 5), -10.0)
+        for index, token in enumerate(predictions):
+            logits[0, index, token] = 10.0
+        gb.model = lambda _tokens, cache: logits
+        gb._num_tokens = [0]
+        gb.max_tokens = [1]
+        gb.state_machines = [
+            SimpleNamespace(match=lambda state, _tok: (state, None, None))
+        ]
+        gb._matcher_states = [None]
+        gb.Response = SimpleNamespace
+        gb.extract_cache = lambda _row: gb.prompt_cache
+        if source_response:
+            gb.next = lambda: [SimpleNamespace(uid=1, finish_reason=None)]
+        scheduler._install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=2,
+            max_suffix_len=2,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+        return bg, gb
+
+    def test_verify_rollback_fails_closed_after_rejected_drafts(self, monkeypatch):
+        _bg, gb = self._install_verify_fixture(monkeypatch, [0, 0, 0], trim_result=0)
+        with pytest.raises(RuntimeError, match="rollback violated its preflight"):
+            gb._step()
+
+    def test_terminal_pending_emit_rollback_fails_closed(self, monkeypatch):
+        _bg, gb = self._install_verify_fixture(
+            monkeypatch,
+            [2, 3, 4],
+            trim_result=0,
+            source_response=True,
+        )
+        gb._step()
+        with pytest.raises(RuntimeError, match="terminal cache rollback"):
+            gb.next()
+
     def test_local_stats_have_a_reason_key_for_every_fallthrough(self):
         """``_suffix_stats``'s documented invariant is that the ``ft_*``
         breakdown sums to ``fallthrough_steps``.

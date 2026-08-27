@@ -6,7 +6,7 @@ import Testing
 /// a pinned order:
 ///
 ///   ┌── Quickstart ──────────────────────────────────────┐
-///   │  lfm2.5-1b-4bit · Smallest model — fastest first   │ ← RAM-blind during first run
+///   │  qwen3.5-4b-4bit · Recommended first model          │ ← standard starter
 ///   ├── Recommended for your <RAM> GB Mac ───────────────┤
 ///   │  Recommended <smart pick> · Faster <light pick>     │ ← RAM-tier measured pair
 ///   ├── All models (alphabetical) ───────────────────────┤
@@ -33,7 +33,7 @@ import Testing
 /// the Quickstart section AND the All models section — otherwise
 /// the same row renders twice and the user reads it as a UI bug.
 /// The de-dup gate lives in
-/// ``ModelPickerBar.dedupedAllEntries(filtered:quickstartRowRendered:)``.
+/// ``ModelPickerBar.dedupedAllEntries(filtered:quickstartAlias:)``.
 @MainActor
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
@@ -84,7 +84,7 @@ struct ModelPickerBarSectionOrderTests {
             eligible: true
         )
 
-        #expect(pick == "lfm2.5-1b-4bit")
+        #expect(pick == QuickstartCoordinator.defaultChoice.alias)
         #expect(pick != "bonsai-1.7b-2bit")
     }
 
@@ -219,7 +219,7 @@ struct ModelPickerBarSectionOrderTests {
         let filtered = makeCatalog()
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartRowRendered: true
+            quickstartAlias: QuickstartCoordinator.defaultChoice.alias
         )
         let dedupedAliases = Set(deduped.map { $0.alias })
         #expect(!dedupedAliases.contains(QuickstartCoordinator.defaultChoice.alias),
@@ -236,7 +236,7 @@ struct ModelPickerBarSectionOrderTests {
         let filtered = makeCatalog()
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartRowRendered: false
+            quickstartAlias: nil
         )
         let dedupedAliases = Set(deduped.map { $0.alias })
         #expect(dedupedAliases.contains(QuickstartCoordinator.defaultChoice.alias),
@@ -266,12 +266,50 @@ struct ModelPickerBarSectionOrderTests {
         for filtered in cases {
             let deduped = ModelPickerBar.dedupedAllEntries(
                 filtered: filtered,
-                quickstartRowRendered: true
+                quickstartAlias: qsAlias
             )
             let count = deduped.filter { $0.alias == qsAlias }.count
             #expect(count == 0,
                     "Quickstart alias appeared \(count) times in deduped output of \(filtered.count)-entry input")
         }
+    }
+
+    @Test("Dedup follows the hardware-specific Quickstart alias")
+    func dedupUsesRenderedHardwareStarter() {
+        let compact = QuickstartCoordinator.baselineChoice(
+            hardware: hardware(ramGB: 8)
+        ).alias
+        let standard = QuickstartCoordinator.baselineChoice(
+            hardware: hardware(ramGB: 16)
+        ).alias
+        let filtered = [
+            entry(compact, hfRepo: "mlx-community/LFM2.5-2.6B-MLX-4bit", cached: false),
+            entry(standard, hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit", cached: false),
+        ]
+
+        let compactAliases = Set(ModelPickerBar.dedupedAllEntries(
+            filtered: filtered,
+            quickstartAlias: compact
+        ).map(\.alias))
+        #expect(!compactAliases.contains(compact))
+        #expect(compactAliases.contains(standard))
+
+        let standardAliases = Set(ModelPickerBar.dedupedAllEntries(
+            filtered: filtered,
+            quickstartAlias: standard
+        ).map(\.alias))
+        #expect(!standardAliases.contains(standard))
+        #expect(standardAliases.contains(compact))
+    }
+
+    private func hardware(ramGB: Double) -> MacHardware {
+        MacHardware(
+            brandString: "Test Mac",
+            family: .m3,
+            tier: .base,
+            physicalRAMBytes: UInt64(ramGB * 1_073_741_824),
+            memoryBandwidthGBs: 100
+        )
     }
 
     // MARK: - Quickstart in-flight gate (the Start CTA disabled-state)

@@ -48,6 +48,7 @@ enum DevSnapshot {
         // throwaway instance so the view can be evaluated without trapping.
         let imageGen = ImageGenViewModel(server: server)
         let audio = AudioViewModel(server: server)
+        let dictation = DictationController(server: server, testingEnabled: false)
         // Same rule again, for the connectors stack (issue #1716).
         // ``ContentView`` reads ``MCPCatalog`` and ``MCPToolApprovalStore``
         // for its tool-approval sheet, and ``SettingsConnectorsPanel``
@@ -73,6 +74,11 @@ enum DevSnapshot {
         let snapshotSparkleUpdater = SparkleUpdateController(infoDictionary: [:])
         let snapshotWebSearch = WebSearchConfig()
         let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
+        let snapshotConsent = DeferredTelemetryConsentCoordinator(
+            needsDecision: { false },
+            recordDecision: { _ in },
+            startTelemetrySession: {}
+        )
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
         let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
@@ -96,10 +102,12 @@ enum DevSnapshot {
                     // traps on a missing observable the first time it renders.
                     .environment(snapshotSparkleUpdater)
                     .environment(quickstart)
+                    .environment(snapshotConsent)
                     .environment(dockPromptStore)
                     .environment(browseApproval)
                     .environment(imageGen)
                     .environment(audio)
+                    .environment(dictation)
                     .environment(snapshotMCPCatalog)
                     .environment(snapshotMCPApproval)
                     .frame(width: width, height: height)
@@ -647,6 +655,7 @@ enum DevSnapshot {
                     // debug build includes Developer — and that panel reads
                     // the coordinator.
                     .environment(quickstart)
+                    .environment(snapshotConsent)
                     .environment(downloads)
                     .environment(updater)
                     .environment(snapshotSparkleUpdater)
@@ -860,11 +869,18 @@ enum DevSnapshot {
             to: "\(dir)/connect-tools.png"
         )
 
-        // Scenario 4: the telemetry consent sheet (the privacy "gate").
+        // Scenario 4: the post-value telemetry invitation.
+        let consentBannerCoordinator = DeferredTelemetryConsentCoordinator(
+            needsDecision: { true },
+            recordDecision: { _ in },
+            startTelemetrySession: {}
+        )
+        consentBannerCoordinator.productValueDelivered(.chatReply)
         render(
             AnyView(
-                TelemetryConsentView(onDecision: { _ in })
-                    .frame(width: 460)
+                DeferredTelemetryConsentBanner()
+                    .environment(consentBannerCoordinator)
+                    .frame(width: 720)
                     .background(RapidTheme.canvas)
                     .tint(RapidTheme.brand)
             ),

@@ -31,11 +31,10 @@ import Foundation
 ///
 /// ## Why lfm2.5-1b-4bit (LFM2.5 1.2B Instruct)
 ///
-/// 2026-08-05: swapped from ``bonsai-1.7b-2bit``. Kept in lock-step
-/// with ``QuickstartCoordinator.defaultChoice`` — the two are the same
-/// product decision reached by two paths (bundled vs downloaded), and
-/// letting them drift means an airgapped build ships a first-launch
-/// model the online path has already rejected.
+/// 2026-08-05: swapped from ``bonsai-1.7b-2bit``. It now stays in lock-step
+/// with ``QuickstartCoordinator.lowMemoryChoice``: the hardware-fit automatic
+/// starter is larger, while the bundle remains the explicit low-memory and
+/// airgapped escape hatch.
 ///
 /// Bonsai was chosen (#1092) on a tool-call eval: 6/6 clean
 /// ``tool_calls`` on the 1.7B. That measurement was real but did not

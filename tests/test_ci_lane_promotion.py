@@ -136,7 +136,7 @@ def test_type_check_enforces_shrink_only_error_budget():
     assert "tests/test_check_mypy_error_budget.py" in unit_roster
 
 
-def test_python_311_enforces_changed_lines_coverage_without_repository_baseline():
+def test_combined_platform_job_enforces_changed_lines_coverage_without_baseline():
     test_matrix = _job(ENGINE_WORKFLOW, "test-matrix")
     checkout = next(
         step
@@ -145,23 +145,24 @@ def test_python_311_enforces_changed_lines_coverage_without_repository_baseline(
     )
     assert checkout["with"]["fetch-depth"] == 0
 
+    gate_job = _job(ENGINE_WORKFLOW, "changed-lines-coverage")
     install = next(
         step
-        for step in test_matrix["steps"]
-        if step.get("name") == "Install dependencies"
+        for step in gate_job["steps"]
+        if step.get("name") == "Install coverage tools"
     )
     assert '"diff-cover==8.0.3"' in install["run"]
 
     gate = next(
         step
-        for step in test_matrix["steps"]
-        if step.get("name") == "Enforce changed-lines coverage"
-    )
-    assert gate["if"] == (
-        "github.event_name == 'pull_request' && matrix.python-version == '3.11'"
+        for step in gate_job["steps"]
+        if step.get("name") == "Combine coverage and enforce changed lines"
     )
     assert gate["env"] == {"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}"}
     assert "continue-on-error" not in gate
+    assert "coverage combine" in gate["run"]
+    assert "coverage-data/linux/coverage-linux-3.11.data" in gate["run"]
+    assert "coverage-data/apple/coverage-apple.data" in gate["run"]
     assert "coverage.xml" in gate["run"]
     assert '--compare-branch "$PR_BASE_SHA"' in gate["run"]
     assert "--show-uncovered" in gate["run"]

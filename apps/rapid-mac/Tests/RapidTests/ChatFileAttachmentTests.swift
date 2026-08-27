@@ -261,6 +261,54 @@ struct ChatFileAttachmentTests {
         #expect(!AutosizingTextView.isStandardPasteKeyEquivalent(event))
     }
 
+    @Test("A file dropped on the native text view is imported instead of inserting its path")
+    func nativeTextViewDropUsesAttachmentImporter() {
+        let textView = AutosizingTextView.makeForComposer()
+        #expect(textView.registeredDraggedTypes.contains(.fileURL))
+        let file = URL(fileURLWithPath: "/tmp/chat-drop.txt")
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("rapid.chat.drop.\(UUID().uuidString)")
+        )
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+        var received: [URL] = []
+        textView.onDropAttachments = {
+            received = $0
+            return true
+        }
+
+        #expect(textView.consumeFileDrop(from: pasteboard))
+        #expect(received == [file])
+        #expect(textView.string.isEmpty)
+    }
+
+    @Test("A rejected file drop is still consumed so AppKit cannot insert its path")
+    func rejectedNativeTextViewDropDoesNotBecomeText() {
+        let textView = AutosizingTextView()
+        let file = URL(fileURLWithPath: "/tmp/unsupported.zip")
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("rapid.chat.drop.\(UUID().uuidString)")
+        )
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+        textView.onDropAttachments = { _ in false }
+
+        #expect(textView.consumeFileDrop(from: pasteboard))
+        #expect(textView.string.isEmpty)
+    }
+
+    @Test("A composer without an attachment handler leaves file drops to AppKit")
+    func nativeTextViewWithoutDropHandlerDoesNotInterceptFiles() {
+        let textView = AutosizingTextView.makeForComposer()
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("rapid.chat.drop.no-handler.\(UUID().uuidString)")
+        )
+        pasteboard.clearContents()
+        pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/unhandled.txt") as NSURL])
+
+        #expect(!textView.consumeFileDrop(from: pasteboard))
+    }
+
     @Test("Retry preserves the locally extracted source")
     func retryPreservesAttachment() throws {
         let attachment = try ChatFileAttachment(

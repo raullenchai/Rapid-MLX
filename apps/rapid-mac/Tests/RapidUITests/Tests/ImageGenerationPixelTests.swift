@@ -32,6 +32,9 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
         XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
         let app = XCUIApplication(url: appURL)
+        app.launchArguments += [
+            "-com.rapidmlx.rapid.telemetry.enabled", "false",
+        ]
         app.launchEnvironment = [
             "HOME": testHome.path,
             "CFFIXED_USER_HOME": testHome.path,
@@ -164,8 +167,6 @@ final class ImageGenerationPixelTests: XCTestCase {
     }
 
     private func dismissFirstRunIfNeeded(in app: XCUIApplication) {
-        let decline = element("TelemetryConsent.DontShare", in: app)
-        if decline.waitForExistence(timeout: 5) { decline.click() }
         let skip = element("Quickstart.Skip", in: app)
         if skip.waitForExistence(timeout: 10) { skip.click() }
     }

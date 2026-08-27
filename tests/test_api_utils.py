@@ -7,6 +7,7 @@ from vllm_mlx/api/utils.py. No MLX dependency.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -552,10 +553,13 @@ class TestIsMllmModelWeightsPresenceOverride:
         )
         assert is_mllm_model(str(model_dir)) is False
 
-    def test_qwen35_4b_alias_pin_still_text_only(self):
-        """The aliases.json ``is_text_only`` pin on qwen3.5-4b short-circuits
-        BEFORE weight inspection and must keep returning text (round-3 fix)."""
-        assert is_mllm_model("mlx-community/Qwen3.5-4B-MLX-4bit") is False
+    def test_qwen35_4b_alias_no_longer_forces_text(self):
+        """Runtime capability, not a stale alias pin, now decides this VLM."""
+        from vllm_mlx.model_aliases import resolve_profile
+
+        profile = resolve_profile("qwen3.5-4b-4bit")
+        assert profile.is_text_only is False
+        assert profile.vision_min_memory_gb == 32.0
 
     def test_legacy_weights_probe_wrapper_delegates_to_shared_metadata(self, tmp_path):
         model_dir = self._make_model_dir(
@@ -784,13 +788,28 @@ class TestIsMllmModelCachedMetadata:
 
         assert is_mllm_model("mlx-community/Qwen3.5-4B-MLX-4bit") is False
 
-    def test_curated_text_alias_smoke_qwen35_4b_is_text(self):
-        """End-to-end: the shipped alias registry curates the default smoke
-        model as text, so ``is_mllm_model`` returns False through the REAL
-        ``resolve_profile`` (no monkeypatch).  This is the exact routing the
-        7 previously-red CLI serve tests depend on."""
-        assert is_mllm_model("mlx-community/Qwen3.5-4B-MLX-4bit") is False
-        assert is_mllm_model("qwen3.5-4b-4bit") is False
+    def test_qwen35_4b_positive_checkpoint_evidence_routes_as_vision(self, monkeypatch):
+        """The former text pin no longer masks complete vision weights."""
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(
+            utils_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "architectures": ["Qwen3_5ForConditionalGeneration"],
+                    "vision_config": {"hidden_size": 1024},
+                    "text_config": {"layer_types": ["linear_attention"]},
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            utils_mod,
+            "checkpoint_has_multimodal_weights",
+            lambda snapshot, config: True,
+        )
+
+        assert is_mllm_model("qwen3.5-4b-4bit") is True
 
     def test_inconclusive_verdict_is_not_promoted_by_file_existence(
         self, monkeypatch, tmp_path
@@ -908,8 +927,6 @@ class TestMllmBackboneIsHybrid:
         repo_root = tmp_path / "hub" / "models--mlx-community--Qwen3.5-2B-MLX-4bit"
         snapshot = repo_root / "snapshots" / revision
         snapshot.mkdir(parents=True)
-        (repo_root / "refs").mkdir()
-        (repo_root / "refs" / "main").write_text(revision)
         (snapshot / "config.json").write_text(
             json.dumps(
                 {
@@ -947,6 +964,16 @@ class TestMllmBackboneIsHybrid:
         monkeypatch.setattr(
             huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path / "hub")
         )
+        from vllm_mlx import cli
+
+        def fail_on_network(_name):
+            raise AssertionError("complete singleton snapshot must stay offline")
+
+        monkeypatch.setattr(
+            cli,
+            "_ensure_model_downloaded",
+            fail_on_network,
+        )
 
         class StubEngine:
             is_mllm = False
@@ -971,19 +998,30 @@ class TestMllmBackboneIsHybrid:
         # old process-global alias must not lend its image profile to Qwen.
         monkeypatch.setattr(server, "_model_alias", "z-image-turbo", raising=False)
 
+        from vllm_mlx.model_metadata import read_model_metadata
+        from vllm_mlx.utils.tokenizer import _local_snapshot_if_cached
+
+        metadata = read_model_metadata(repo)
+        assert metadata is not None
+        assert metadata.snapshot_dir == snapshot
+        assert _local_snapshot_if_cached(repo) == str(snapshot)
+
         server.load_model(alias)
 
         assert server._model_path == repo
-        assert server._model_name == alias
+        # Only an explicit ``served_model_name`` replaces the primary served
+        # id. The canonical checkpoint remains primary by default, while the
+        # requested short name is exposed separately as its alias.
+        assert server._model_name == repo
         assert server._model_alias == alias
-        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
 
         # CLI startup arrives with the canonical repo plus a matching saved
         # alias. That same-source identity remains valid and keeps its profile.
         server.load_model(repo)
         assert server._model_alias == alias
-        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
 
         # A removed/corrupt prior identity is stale process state, not a reason
@@ -1002,8 +1040,52 @@ class TestMllmBackboneIsHybrid:
         server._model_alias = "removed-prior-alias"
         server.load_model(repo)
         assert server._model_alias is None
-        assert server._engine.kwargs["model_name"] == repo
+        assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
+
+    def test_unreferenced_snapshot_resolution_fails_closed(self, monkeypatch, tmp_path):
+        """Ambiguous, partial, and malformed cache shapes must stay offline-safe."""
+        import huggingface_hub
+
+        from vllm_mlx import model_metadata
+
+        repo = "publisher/model"
+        repo_root = tmp_path / "models--publisher--model"
+        snapshots = repo_root / "snapshots"
+        snapshot = snapshots / "immutable-revision"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5"}), encoding="utf-8"
+        )
+        (snapshot / "model.safetensors").write_bytes(b"complete")
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+        refs = repo_root / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("missing-revision", encoding="utf-8")
+        assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
+        (refs / "main").unlink()
+
+        second = snapshots / "second-revision"
+        second.mkdir()
+        assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
+        second.rmdir()
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(
+                "vllm_mlx.model_aliases.checkpoint_prefix", lambda _name: "nested/"
+            )
+            assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
+
+        (snapshot / "model.safetensors").unlink()
+        assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
+
+        def fail_to_list(_path):
+            raise OSError("stale cache mount")
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "iterdir", fail_to_list)
+            assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
 
     def test_sliding_and_full_attention_is_not_hybrid(self, monkeypatch):
         from vllm_mlx.api.utils import mllm_backbone_is_hybrid
@@ -1061,11 +1143,23 @@ class TestResolveServingLane:
     """The single lane-decision orchestrator: given the two offline probes and
     the explicit flags, decide the FINAL (is_mllm_lane, auto_text_fallback)."""
 
-    def _patch_probes(self, monkeypatch, *, is_mllm, hybrid):
+    def _patch_probes(
+        self, monkeypatch, *, is_mllm, hybrid, hybrid_runtime_supported=False
+    ):
         from vllm_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(utils_mod, "is_mllm_model", lambda n: is_mllm)
-        monkeypatch.setattr(utils_mod, "mllm_backbone_is_hybrid", lambda n: hybrid)
+        monkeypatch.setattr(
+            utils_mod,
+            "mllm_backbone_cache_mode",
+            lambda n: "arrays" if hybrid else None,
+        )
+        monkeypatch.setattr(
+            utils_mod,
+            "mllm_hybrid_runtime_supported",
+            lambda: hybrid_runtime_supported,
+        )
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 64.0)
 
     def test_hybrid_vlm_auto_downgrades_to_text(self, monkeypatch):
         from vllm_mlx.api.utils import resolve_serving_lane
@@ -1074,6 +1168,172 @@ class TestResolveServingLane:
         # as an AUTOMATIC fallback (Qwen3.6-27B shape).
         self._patch_probes(monkeypatch, is_mllm=True, hybrid=True)
         assert resolve_serving_lane("any/qwen36-27b") == (False, True)
+
+    @pytest.mark.parametrize(
+        ("architecture_unavailable", "cache_mode", "reason"),
+        [
+            (True, None, "vision_architecture_unavailable"),
+            (False, "other", "vision_hybrid_cache_unsupported"),
+        ],
+    )
+    def test_unsupported_vision_contracts_fail_closed(
+        self, monkeypatch, architecture_unavailable, cache_mode, reason
+    ):
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(utils_mod, "is_mllm_model", lambda _name: True)
+        monkeypatch.setattr(
+            utils_mod,
+            "mllm_arch_unsupported_but_text_vendored",
+            lambda _name: architecture_unavailable,
+        )
+        monkeypatch.setattr(
+            utils_mod, "mllm_backbone_cache_mode", lambda _name: cache_mode
+        )
+
+        assert utils_mod.resolve_serving_lane_decision(
+            "local/checkpoint"
+        ) == utils_mod.ServingLaneDecision(False, reason, auto_text_fallback=True)
+
+    def test_hybrid_vlm_uses_vision_when_runtime_supports_it(self, monkeypatch):
+        from vllm_mlx.api.utils import (
+            resolve_serving_lane,
+            resolve_serving_lane_decision,
+        )
+
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        assert resolve_serving_lane("any/qwen35-9b") == (True, False)
+        assert (
+            resolve_serving_lane_decision("any/qwen35-9b").reason
+            == "vision_hybrid_runtime_supported"
+        )
+
+    def test_hybrid_vlm_falls_back_when_measured_vision_floor_does_not_fit(
+        self, monkeypatch
+    ):
+        from vllm_mlx.api import utils as utils_mod
+
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 16.0)
+
+        decision = utils_mod.resolve_serving_lane_decision(
+            "local/qwen35", vision_min_memory_gb=32.0
+        )
+
+        assert decision == utils_mod.ServingLaneDecision(
+            False, "vision_memory_insufficient", auto_text_fallback=True
+        )
+
+    def test_hybrid_vlm_uses_vision_at_measured_memory_floor(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 32.0)
+
+        assert utils_mod.resolve_serving_lane_decision(
+            "local/qwen35", vision_min_memory_gb=32.0
+        ) == utils_mod.ServingLaneDecision(True, "vision_hybrid_runtime_supported")
+
+    def test_explicit_vision_overrides_measured_memory_floor(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 16.0)
+
+        assert utils_mod.resolve_serving_lane_decision(
+            "local/qwen35",
+            force_mllm=True,
+            vision_min_memory_gb=32.0,
+        ) == utils_mod.ServingLaneDecision(True, "vision_lane_forced")
+
+    def test_unknown_physical_memory_does_not_invent_a_fallback(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 0.0)
+
+        assert utils_mod.resolve_serving_lane_decision(
+            "local/qwen35", vision_min_memory_gb=32.0
+        ) == utils_mod.ServingLaneDecision(True, "vision_hybrid_runtime_supported")
+
+    @pytest.mark.parametrize(
+        ("installed", "supported"),
+        [("0.6.15", False), ("0.6.16", True), ("0.7.0", True)],
+    )
+    def test_hybrid_runtime_version_contract(self, monkeypatch, installed, supported):
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(utils_mod, "version", lambda _distribution: installed)
+        assert utils_mod.mllm_hybrid_runtime_supported() is supported
+
+    def test_missing_hybrid_runtime_fails_closed(self, monkeypatch):
+        from importlib.metadata import PackageNotFoundError
+
+        from vllm_mlx.api import utils as utils_mod
+
+        def missing(_distribution):
+            raise PackageNotFoundError
+
+        monkeypatch.setattr(utils_mod, "version", missing)
+        assert utils_mod.mllm_hybrid_runtime_supported() is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"text_config": {"layer_types": ["mamba"]}}, "other"),
+            ({"text_config": {"model_type": "qwen3_next"}}, "arrays"),
+        ],
+    )
+    def test_hybrid_cache_mode_uses_checkpoint_metadata(
+        self, monkeypatch, config, expected
+    ):
+        from types import SimpleNamespace
+
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(
+            utils_mod,
+            "read_model_metadata",
+            lambda _name: SimpleNamespace(config=config),
+        )
+
+        assert utils_mod.mllm_backbone_cache_mode("local/checkpoint") == expected
+
+    def test_missing_vendored_vision_module_fails_closed(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from vllm_mlx.api import utils as utils_mod
+
+        monkeypatch.setattr(
+            utils_mod,
+            "read_model_metadata",
+            lambda _name: SimpleNamespace(config={"model_type": "muse_glimmer"}),
+        )
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda _name: (_ for _ in ()).throw(ImportError("vision extra missing")),
+        )
+
+        assert utils_mod.mllm_arch_unsupported_but_text_vendored("local/model") is True
 
     def test_genuine_vlm_stays_on_mllm_lane(self, monkeypatch):
         from vllm_mlx.api.utils import resolve_serving_lane
@@ -1570,6 +1830,150 @@ class TestContentToText:
 
 
 class TestValidateContentBlocksForCapabilities:
+    @pytest.mark.parametrize(
+        "messages",
+        [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_audio", "input_audio": "not-an-object"}
+                    ],
+                }
+            ],
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "abc", "format": "exe"},
+                        }
+                    ],
+                }
+            ],
+        ],
+    )
+    def test_invalid_input_audio_payload_is_rejected(self, messages):
+        with pytest.raises(ValueError):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
+
+    def test_enabled_image_and_video_capabilities_accept_media(self):
+        validate_content_blocks_for_capabilities(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/image.png"},
+                        },
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": "https://example.com/video.mp4"},
+                        },
+                    ],
+                }
+            ],
+            model_name="vision-model",
+            allow_image=True,
+            allow_video=True,
+        )
+
+    def test_text_lane_image_error_has_stable_machine_readable_code(self):
+        from vllm_mlx.api.utils import UnsupportedContentBlockError
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://x/img"}}
+                ],
+            }
+        ]
+
+        with pytest.raises(UnsupportedContentBlockError) as caught:
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="vision-model",
+                allow_image=False,
+                allow_video=False,
+            )
+
+        assert caught.value.openai_detail(
+            serving_lane_reason="vision_hybrid_runtime_unsupported"
+        ) == {
+            "error": {
+                "message": (
+                    "Model 'vision-model' is serving text-only; image input "
+                    "is unsupported."
+                ),
+                "type": "invalid_request_error",
+                "code": "image_input_unsupported",
+                "param": "messages.content",
+                "serving_lane_reason": "vision_hybrid_runtime_unsupported",
+            }
+        }
+        assert (
+            "serving_lane_reason"
+            not in caught.value.openai_detail(serving_lane_reason=object())["error"]
+        )
+
+    def test_chat_route_preserves_typed_text_lane_image_error(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.routes.chat import router
+
+        class TextLaneEngine:
+            is_mllm = False
+            serving_lane_reason = "vision_hybrid_runtime_unsupported"
+            preserve_native_tool_format = False
+            supports_guided_generation = False
+            tokenizer = None
+
+        cfg = reset_config()
+        cfg.engine = TextLaneEngine()
+        cfg.model_name = "vision-model"
+        cfg.model_registry = None
+        cfg.no_thinking = True
+        cfg.tool_call_parser = None
+        cfg.reasoning_parser_name = None
+        app = FastAPI()
+        app.include_router(router)
+
+        try:
+            response = TestClient(app).post(
+                "/v1/chat/completions",
+                json={
+                    "model": "vision-model",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64,abc"},
+                                }
+                            ],
+                        }
+                    ],
+                    "max_tokens": 8,
+                },
+            )
+        finally:
+            reset_config()
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["error"]["code"] == ("image_input_unsupported")
+
     def test_chat_text_block_rejects_missing_text(self):
         messages = [{"role": "user", "content": [{"type": "text"}]}]
 
@@ -1752,3 +2156,21 @@ class TestGptOssSpecialTokens:
         text = "<|channel|>analysis<|message|>Just thinking <|constrain|>something"
         result = clean_output_text(text)
         assert "<|constrain|>" not in result
+
+
+def test_dflash_runtime_probe_uses_symbol_level_discovery(monkeypatch):
+    """The lightweight probe checks the required drafter package itself."""
+    import importlib.util
+
+    from vllm_mlx.speculative.dflash.eligibility import have_runtime
+
+    probes: list[str] = []
+
+    def find_spec(name: str):
+        probes.append(name)
+        return object()
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+
+    assert have_runtime() is True
+    assert probes == ["mlx_vlm.speculative.drafters"]

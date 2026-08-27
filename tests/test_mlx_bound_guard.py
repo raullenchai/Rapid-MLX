@@ -135,8 +135,8 @@ def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
     # ``--no-deps`` install must not float.  That exact pin must remain inside
     # the project's coherence-gated vision range; it need not copy the range
     # text verbatim.
-    assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.3").specifier
-    assert Version("0.6.3") in vision_specs[0].specifier
+    assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.16").specifier
+    assert Version("0.6.16") in vision_specs[0].specifier
 
 
 def test_image_extra_tracks_mlx_032_compatible_mflux_line():

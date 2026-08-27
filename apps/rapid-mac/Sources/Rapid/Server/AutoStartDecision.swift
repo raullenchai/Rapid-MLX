@@ -147,7 +147,7 @@ enum AutoStartDecision: Equatable {
 
     /// Why a decision came back as ``.skip``. Surfaced as an
     /// associated value so the contract test can pin the precedence
-    /// (user-opt-out beats consent-pending beats onboarding-pending
+    /// (user-opt-out beats onboarding-pending
     /// beats server-busy beats binary-missing beats no-alias) without
     /// inspecting log output, and so a future
     /// telemetry counter can bucket without re-deriving the gate.
@@ -166,16 +166,6 @@ enum AutoStartDecision: Equatable {
         /// or surface a ``promptDownload`` caption that would suggest
         /// they should click Start.
         case userOptedOut
-        /// #1589: the first-run telemetry consent sheet is still up. It
-        /// is a hard modal (``interactiveDismissDisabled`` + swallowed
-        /// external dismisses), so nothing the user can see benefits from
-        /// a model that loads behind it — while the cost is real: on the
-        /// reporter's Mac an 8.4 GB serve was committed before the user
-        /// had answered the first question the app asks them. Deferring
-        /// costs one button-click of latency, once, and only for the
-        /// upgrade cohort that still owes a consent answer while having a
-        /// model to resume. The launch hook re-runs when the answer lands.
-        case firstRunDecisionPending
         /// #1589: Quickstart still owes this user onboarding
         /// (``QuickstartCoordinator.onboardingOwed``). Auto-start exists
         /// to restore *your last-used model*; a user who has never
@@ -265,7 +255,6 @@ enum AutoStartDecision: Equatable {
         catalogAliases: Set<String>? = nil,
         rejectsAlias: (String) -> Bool = { _ in false },
         userOptedIn: Bool = true,
-        firstRunDecisionPending: Bool = false,
         onboardingPending: Bool = false,
         isRetiredStarter: (String) -> Bool = { _ in false }
     ) -> AutoStartDecision {
@@ -294,13 +283,6 @@ enum AutoStartDecision: Equatable {
         // was not new. A gate placed below the switch could only observe
         // the damage, never prevent it.
         //
-        // Consent before onboarding, mirroring the identical ordering
-        // comment in ``ContentView.quickstartVisible`` — the two surfaces
-        // must agree on who asks first or they race for the same
-        // presentation channel.
-        if firstRunDecisionPending {
-            return .skip(reason: .firstRunDecisionPending)
-        }
         if onboardingPending {
             return .skip(reason: .onboardingPending)
         }

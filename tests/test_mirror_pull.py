@@ -1382,6 +1382,75 @@ def test_r2_lfs_sha256_mismatch_falls_back_to_hf(
     assert leftovers == []
 
 
+def test_lfs_blob_probe_oserror_falls_through_to_hf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The per-file LFS blob-locality probe wraps ``is_file()`` in OSError
+    protection (Codex #2392): an exotic FS that raises on ``stat`` must not
+    crash the pull — it degrades to "blob not local" and lets the HF fallback
+    proceed. (pathlib normally swallows OSError in ``is_file``, so this is a
+    defensive branch exercised by making ``is_file`` raise on the probe path.)
+    """
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "11ee" * 10
+    payload_correct = b"x" * 200
+    correct_sha = hashlib.sha256(payload_correct).hexdigest()
+    files = [("model.safetensors", 200, correct_sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(200, b"z" * 200),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.write_bytes(payload_correct)
+        return str(target)
+
+    blob_path_suffix = f"blobs/{correct_sha}"
+    original_is_file = Path.is_file
+
+    def _raising_is_file(self):
+        if str(self).endswith(blob_path_suffix):
+            raise OSError("simulated stat failure on blob probe")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", _raising_is_file)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    # The OSError on the blob probe must not abort the pull — HF still serves
+    # the file and the pull reports success.
+    assert ok
+    assert hf_mock.call_count == 1
+    snap = tmp_path / "models--mlx-community--Qwen3-0.6B-4bit" / "snapshots" / revision
+    assert (snap / "model.safetensors").read_bytes() == payload_correct
+
+
 def test_r2_lfs_sha256_match_accepts_download(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4073,3 +4142,373 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
     assert ok
     assert suppress_seen[".gitattributes"] is True  # metadata → bar muted
     assert suppress_seen["model.safetensors"] is False  # weight → bar kept
+
+
+# ---------------------------------------------------------------------------
+# 8. Subfolder-per-quant repo — allow_patterns narrows the mirror pull to
+#    one quant's directory (regression: the CLI used to hard-decline the
+#    mirror for every subfolder repo, stranding lfm2.5-2.6b-4bit's R2 copy).
+# ---------------------------------------------------------------------------
+
+
+def test_subfolder_allow_patterns_fetches_only_that_quant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``allow_patterns=["4bit/*"]`` pulls ONLY the 4bit dir from R2.
+
+    The repo ships two quants (``4bit/`` + ``8bit/``) plus a root LICENSE;
+    only ``4bit/`` is mirrored. With the filter, the mirror must request and
+    land exactly the two ``4bit/`` files and NEVER touch ``8bit/`` or
+    ``LICENSE`` — proven by leaving those URLs unmocked, so any request for
+    them raises ``AssertionError`` from the router.
+    """
+    repo_id = "LiquidAI/LFM2.5-2.6B-MLX"
+    revision = "b41f2b65" * 5
+    # Full multi-quant sibling set as HF would report it.
+    files = [
+        ("4bit/config.json", 100),
+        ("4bit/model.safetensors", 200),
+        ("8bit/config.json", 110),
+        ("8bit/model.safetensors", 400),
+        ("LICENSE", 50),
+    ]
+    catalog = _catalog_payload([("lfm2.5-2.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # ONLY the 4bit files are routed (mirrored). 8bit/* and LICENSE are left
+    # unmocked on purpose — requesting them would raise from the router.
+    for fname, size in files:
+        if fname.startswith("4bit/"):
+            url = f"https://models.rapidmlx.com/LiquidAI/LFM2.5-2.6B-MLX/{fname}"
+            router.add(url, _FakeResponse(200, b"x" * size))
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        raise AssertionError(f"HF fallback should not fire for {filename}")
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(
+            repo_id, cache_dir=tmp_path, allow_patterns=["4bit/*"]
+        )
+
+    assert ok, "the 4bit quant is fully mirrored — pull must succeed from R2"
+    snap = tmp_path / "models--LiquidAI--LFM2.5-2.6B-MLX" / "snapshots" / revision
+    on_disk = sorted(
+        str(p.relative_to(snap))
+        for p in snap.rglob("*")
+        if p.is_file() and not p.name.endswith(".rapid-mlx-mirror.lock")
+    )
+    assert on_disk == ["4bit/config.json", "4bit/model.safetensors"], (
+        "only the 4bit quant should land — 8bit/ and LICENSE must be filtered out"
+    )
+    # The router recorded every request; assert 8bit/LICENSE were never asked
+    # for (the unmocked-URL guard would already have raised, but pin it).
+    requested = [r["url"] for r in router.requests]
+    assert not any("/8bit/" in u for u in requested)
+    assert not any(u.endswith("/LICENSE") for u in requested)
+
+
+# ---------------------------------------------------------------------------
+# issue #2349 — download_with_mirror_fallback reports its transfer account
+# through ``out`` (out["transferred_bytes"] + out["network_fetch"]).
+# ---------------------------------------------------------------------------
+
+
+def test_mirror_download_reports_transfer_account_via_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing ``out={}`` returns the authoritative transfer account: which
+    bytes crossed the wire this pull and whether anything was fetched at all.
+
+    Drives the REAL ``download_with_mirror_fallback`` R2+HF path (mocked
+    HTTP): one file (config.json) is an R2 hit, another (model.safetensors)
+    misses R2 and falls back to HF. Both arms increment
+    ``transferred_bytes`` (R2 and HF), so ``out["transferred_bytes"]`` and
+    ``out["network_fetch"]`` are fully exercised. Issue #2349: ``pull_command``
+    reads these to tell "already cached" from "download" truthfully.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0badf00d" * 5
+    files = [("config.json", 100), ("model.safetensors", 200)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # config.json is an R2 hit; model.safetensors misses R2 (404) so it
+    # falls back to HF — covering both the R2 and HF transfer arms.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(404, b""),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        expected_size = next(s for n, s in files if n == filename)
+        # A genuine wire fetch materializes a BLOB in ``blobs/`` (HF writes
+        # the blob and links the snapshot to it); the blob diff is the
+        # network_fetch signal, so a real fetch flips it True.
+        repo_root = Path(cache_dir) / f"models--{repo_id.replace('/', '--')}"
+        blob = repo_root / "blobs" / filename.replace(".", "_")
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"h" * expected_size)
+        target.symlink_to(f"../../blobs/{blob.name}")
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path, out=out)
+
+    assert ok is True
+    assert hf_mock.call_count == 1  # model.safetensors fell back to HF
+    assert out["network_fetch"] is True, "bytes fetched -> network_fetch True"
+    assert out["transferred_bytes"] == 300, (
+        "R2 (config.json: 100) + HF (model.safetensors: 200) = 300"
+    )
+
+
+def test_mirror_r2_only_non_lfs_fetch_is_a_transfer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pure R2 fetch of a non-LFS file is still a network transfer (Codex
+    #2392 R4 BLOCKING).
+
+    R2 serves files that carry no catalog sha256 straight into
+    ``snapshots/<rev>/`` WITHOUT writing an HF ``blobs/<sha>`` blob — so the
+    blob-store diff alone would wrongly report ``network_fetch=False`` ("Already
+    cached") for an R2-only cold pull. ``network_fetch`` must also count
+    ``bool(r2_hits)`` (any R2 worker that actually fetched over the wire) to
+    catch this. HF is never invoked, so the blob store stays byte-identical.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0badf00d" * 5
+    # No third element => no lfs sha256 => R2 lands it directly in snapshots/
+    # with no blob write (and no warm-cache blob-name shortcut).
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # config.json is an R2 hit (200) — the ONLY transfer this pull.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(200, b"x" * 100),
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download") as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path, out=out)
+
+    assert ok is True
+    assert hf_mock.call_count == 0  # pure R2 pull — HF never invoked
+    # No blob was written (non-LFS file, no catalog sha256), yet bytes DID
+    # cross the wire from R2 — the boolean must be True.
+    assert out["network_fetch"] is True, "R2-only fetch is still a transfer"
+    assert out["transferred_bytes"] == 100
+
+
+def test_mirror_hf_relink_of_local_blob_is_not_a_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing snapshot link satisfied from HF's LOCAL blob cache is NOT a
+    network fetch (Codex #2392).
+
+    When the blob for a file already exists in the HF cache (``blobs/<sha>``)
+    but the snapshot symlink is absent, ``hf_hub_download`` only re-links it —
+    zero bytes cross the wire. The stable local-file-inventory seam records
+    that the blob was present BEFORE the call, so the file is classified
+    ``cached`` and ``out[\"network_fetch\"]`` stays False — a warm pull is not
+    mislabelled ``Downloaded``. (The old classification treated any
+    ``hf_hub_download`` success as a fetch.)
+    """
+    import hashlib
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0badf00d" * 5
+    sha = hashlib.sha256(b"x" * 100).hexdigest()
+    files = [("model.safetensors", 100, sha)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 misses the file — it falls back to HF.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/model.safetensors",
+        _FakeResponse(404, b""),
+    )
+
+    repo_root = Path(tmp_path) / f"models--{repo_id.replace('/', '--')}"
+    # The blob is ALREADY in HF's local cache before the pull (warm), but the
+    # snapshot symlink is missing — the exact case a re-link must not count
+    # as a fetch.
+    blob_dir = repo_root / "blobs"
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    (blob_dir / sha).write_bytes(b"x" * 100)
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # HF re-link of a local blob creates the snapshot SYMLINK to the
+        # pre-existing blob — it writes no bytes (warm local cache). Real HF
+        # snapshot links are relative ``blobs/<sha>`` symlinks; assert the
+        # blob stays byte-identical and the (unchanged) link is the only
+        # addition.
+        target.symlink_to(f"../../blobs/{sha}")  # HF-style relative symlink
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path, out=out)
+
+    assert ok is True
+    assert hf_mock.call_count == 1  # HF re-linked the local blob
+    assert out["network_fetch"] is False, (
+        "re-linking a locally-cached blob is NOT a fetch (Codex #2392)"
+    )
+    assert out["transferred_bytes"] == 0
+
+
+def test_mirror_nonnfs_relink_is_a_pinned_documented_limitation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-LFS (no catalog sha) warm HF re-link counts as a fetch — the
+    ACCEPTED documented limitation (Atlas decision 2026-08-26, option A).
+
+    For non-LFS files the blob key is unknowable ahead of time, so a warm
+    re-link of an already-local blob is indistinguishable from a real download
+    without huggingface_hub downloader instrumentation. Per Atlas's decision
+    the mirror classifies these ``"hf"`` (a download): a no-sha tiny non-LFS
+    file can show ``Downloaded`` only when (1) R2 misses it AND (2) its blob is
+    already in HF's local cache. The weight bytes — the actual transfer a pull
+    exists for — stay exact via the LFS ``blob_already_local`` probe. This test
+    PINS that behavior so it is a contract, not an accident. Follow-up for full
+    exactness: huggingface_hub downloader instrumentation (post-0.13.1, Vector
+    lane) — https://github.com/raullenchai/Rapid-MLX/issues/2427.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0badf00d" * 5
+    # No sha256 — a non-LFS metadata file. Its blob key lives only in HF's
+    # own cache, not the catalog.
+    files = [("config.json", 100)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 misses the file — it falls back to HF.
+    router.add(
+        "https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/config.json",
+        _FakeResponse(404, b""),
+    )
+
+    repo_root = Path(tmp_path) / f"models--{repo_id.replace('/', '--')}"
+    # A blob for this non-LFS file is ALREADY in HF's local cache before the
+    # pull (warm) — the exact corner the documented limitation covers.
+    blob_dir = repo_root / "blobs"
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    (blob_dir / "already-local-blob").write_bytes(b"x" * 100)
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        target = snap / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # HF re-links the snapshot symlink to the pre-existing local blob; it
+        # writes NO new blob (warm local cache).
+        target.symlink_to("../../blobs/already-local-blob")
+        return str(target)
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    out: dict[str, object] = {}
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf) as hf_mock,
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path, out=out)
+
+    assert ok is True
+    assert hf_mock.call_count == 1  # HF re-linked the local non-LFS blob
+    # PINNED: non-LFS relink counts as a fetch (documented limitation, option A).
+    assert out["network_fetch"] is True, (
+        "non-LFS warm relink shows Downloaded — ACCEPTED documented limitation "
+        "(Atlas 2026-08-26); LFS weights stay exact"
+    )
+    assert out["transferred_bytes"] == 100

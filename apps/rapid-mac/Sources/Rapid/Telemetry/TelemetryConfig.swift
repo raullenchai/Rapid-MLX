@@ -49,8 +49,8 @@ enum TelemetryConfig {
 
     /// UserDefaults key for the explicit telemetry decision. An
     /// absent value means the user has not answered yet and telemetry
-    /// stays OFF. The first-run consent sheet records either ``true``
-    /// or ``false``; Settings updates the same key later.
+    /// stays OFF. The post-value invitation records either ``true`` or
+    /// ``false``; Settings updates the same key later.
     static let enabledKey = "com.rapidmlx.rapid.telemetry.enabled"
 
     /// UserDefaults key for the per-install ``client_id`` UUID.

@@ -392,6 +392,10 @@ async def test_dynamic_residency_preserves_profile_contract_for_local_path(
             pass
 
     monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+    monkeypatch.setattr(
+        server, "resolve_serving_lane", lambda _name, **_kwargs: (False, False)
+    )
 
     await server._load_dynamic_resident_model(
         "gemma-4-e2b-4bit",

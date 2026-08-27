@@ -1149,18 +1149,44 @@ def _rapid_mlx_on_path(path_env: str | None = None) -> list[str]:
     return out
 
 
+def _running_cli_exe() -> str | None:
+    """Resolve the ``rapid-mlx`` executable that launched this process.
+
+    When invoked as a console script, ``sys.argv[0]`` is the path to the
+    ``rapid-mlx`` entry point (``<venv>/bin/rapid-mlx``). Fall back to the
+    interpreter's sibling of the same name (a console script installed in the
+    same bin dir as ``sys.executable``) so ``doctor`` still reports
+    something sensible under unusual launchers (e.g. ``python -m …``).
+    Returns ``None`` only if neither yields a plausible path (not expected).
+    """
+    argv0 = os.path.realpath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+    if argv0 and os.path.basename(argv0) == "rapid-mlx":
+        return argv0
+    sibling = os.path.join(os.path.dirname(sys.executable), "rapid-mlx")
+    if os.path.basename(sys.executable) == "rapid-mlx":
+        return os.path.realpath(sys.executable)
+    return sibling if os.path.exists(sibling) else None
+
+
 def section_shell_integration(
     *,
     which: Callable[[str], str | None] | None = None,
     rcs: list[Path] | None = None,
     find_all: Callable[[], list[str]] | None = None,
+    running_exe: str | None = None,
 ) -> Section:
     """Verify the CLI is on PATH and argcomplete is wired up.
 
-    ``which``, ``rcs`` and ``find_all`` are dependency-injected for tests.
+    ``which``, ``rcs``, ``find_all`` and ``running_exe`` are dependency-injected
+    for tests. ``running_exe`` is the executable that actually launched this
+    doctor; it defaults to the real running CLI so a venv/bin that precedes a
+    global install is surfaced (issue #2352).
     """
     s = Section("Shell Integration")
     which_fn = which or shutil.which
+
+    if running_exe is None:
+        running_exe = _running_cli_exe()
 
     cli_path = which_fn("rapid-mlx")
     if cli_path:
@@ -1169,6 +1195,25 @@ def section_shell_integration(
             CheckStatus.OK,
             detail=f"path={cli_path}",
         )
+        # Issue #2352: the PATH-checked executable can be a different install
+        # from the one actually running this doctor (e.g. inside a venv whose
+        # bin/ precedes a global ~/.local/bin install). Surface the divergence
+        # with both paths and an actionable fix instead of a silently-green
+        # "PATH OK" that points troubleshooting at the wrong install. Compare
+        # with realpath + normcase so a console-script symlink (Homebrew/PyPI)
+        # that resolves to the same binary is NOT a false mismatch — the
+        # running-CLI detector already realpaths sys.argv[0].
+        if running_exe and (
+            os.path.normcase(os.path.realpath(running_exe))
+            != os.path.normcase(os.path.realpath(cli_path))
+        ):
+            s.add(
+                f"running rapid-mlx ({running_exe}) differs from the $PATH "
+                f"rapid-mlx ({cli_path}) — activate this environment or reorder "
+                f"$PATH",
+                CheckStatus.WARN,
+                detail=f"running={running_exe} path={cli_path}",
+            )
         installs = (find_all or _rapid_mlx_on_path)()
         if len(installs) > 1:
             active, shadowed = installs[0], installs[1:]

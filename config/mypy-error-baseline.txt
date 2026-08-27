@@ -25,7 +25,7 @@ vllm_mlx/api/responses_adapter.py 4
 vllm_mlx/api/responses_models.py 2
 vllm_mlx/api/tool_calling.py 22
 vllm_mlx/api/tool_grammar.py 1
-vllm_mlx/api/utils.py 6
+vllm_mlx/api/utils.py 5
 vllm_mlx/audio/processor.py 4
 vllm_mlx/audio/stt.py 10
 vllm_mlx/audio/tts.py 7
@@ -89,7 +89,7 @@ vllm_mlx/reasoning/think_parser.py 2
 vllm_mlx/repetition_guard.py 2
 vllm_mlx/routes/anthropic.py 7
 vllm_mlx/routes/audio.py 6
-vllm_mlx/routes/chat.py 53
+vllm_mlx/routes/chat.py 49
 vllm_mlx/routes/completions.py 1
 vllm_mlx/routes/embeddings.py 4
 vllm_mlx/routes/images.py 4
@@ -112,7 +112,6 @@ vllm_mlx/spec_decode/mtp/quantized_argmax.py 2
 vllm_mlx/spec_decode/mtp/qwen3_5_inject.py 5
 vllm_mlx/speculative/ddtree/runtime.py 2
 vllm_mlx/speculative/ddtree/server.py 3
-vllm_mlx/speculative/dflash/eligibility.py 1
 vllm_mlx/speculative/dflash/server.py 5
 vllm_mlx/telemetry/transport.py 2
 vllm_mlx/tool_parsers/abstract_tool_parser.py 2

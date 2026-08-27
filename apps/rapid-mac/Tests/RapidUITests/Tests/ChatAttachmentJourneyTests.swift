@@ -73,6 +73,19 @@ final class ChatAttachmentJourneyTests: XCTestCase {
             .appendingPathComponent("Tests/RapidTests/__Snapshots__/cheetah-logo-96.png")
         let document = harness.rapidMacRoot
             .appendingPathComponent("Tests/GUIGoldenFlows/Fixtures/chat-document.txt")
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-chat-drop-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: temporaryDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let pdf = temporaryDirectory.appendingPathComponent("drop-document.pdf")
+        let pdfView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        pdfView.string = "Dragged PDF marker"
+        try pdfView.dataWithPDF(inside: pdfView.bounds).write(to: pdf)
+        let unsupported = temporaryDirectory.appendingPathComponent("unsupported.bin")
+        try Data("not an attachment".utf8).write(to: unsupported)
 
         harness.dragFile(image)
         let imageChip = harness.element("ChatView.Attachment.Remove.\(image.lastPathComponent)")
@@ -84,24 +97,44 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         XCTAssertTrue(documentChip.waitForExistence(timeout: 15))
         harness.send("Dragged document", expectedRequestCount: 2)
 
+        harness.dragFile(pdf)
+        let pdfChip = harness.element("ChatView.Attachment.Remove.\(pdf.lastPathComponent)")
+        XCTAssertTrue(pdfChip.waitForExistence(timeout: 15))
+        harness.send("Dragged PDF", expectedRequestCount: 3)
+
+        let compose = harness.element("rapid.chat.compose")
+        XCTAssertTrue(compose.waitForExistence(timeout: 10))
+        compose.click()
+        compose.typeText("Draft stays text")
+        harness.dragFile(unsupported)
+        XCTAssertTrue(harness.waitUntil(timeout: 10) {
+            let value = compose.value as? String ?? ""
+            return value.contains("Draft stays text") && !value.contains(unsupported.path)
+        })
+        harness.send("", expectedRequestCount: 4)
+
         try harness.pasteImage(image)
         let pastedChip = harness.element("ChatView.Attachment.Remove.Pasted image.png")
         XCTAssertTrue(pastedChip.waitForExistence(timeout: 15))
         pastedChip.click()
         XCTAssertTrue(harness.waitUntil(timeout: 10) { !pastedChip.exists })
-        harness.send("Removed before send", expectedRequestCount: 3)
+        harness.send("Removed before send", expectedRequestCount: 5)
 
         try harness.pasteImage(image)
         XCTAssertTrue(pastedChip.waitForExistence(timeout: 15))
-        harness.send("Pasted photo", expectedRequestCount: 4)
+        harness.send("Pasted photo", expectedRequestCount: 6)
 
         let requests = harness.chatRequests()
         XCTAssertEqual(imageHashes(in: requests[0]), [try dataURLHash(image)])
         XCTAssertTrue(text(in: requests[1]).contains("Revenue: 42"))
         XCTAssertTrue(text(in: requests[1]).contains("Region: APAC"))
         XCTAssertTrue(imageHashes(in: requests[1]).isEmpty)
+        XCTAssertTrue(text(in: requests[2]).contains("Dragged PDF marker"))
         XCTAssertTrue(imageHashes(in: requests[2]).isEmpty)
-        XCTAssertEqual(imageHashes(in: requests[3]), [try pastedImageHash(image)])
+        XCTAssertTrue(text(in: requests[3]).contains("Draft stays text"))
+        XCTAssertFalse(text(in: requests[3]).contains(unsupported.path))
+        XCTAssertTrue(imageHashes(in: requests[4]).isEmpty)
+        XCTAssertEqual(imageHashes(in: requests[5]), [try pastedImageHash(image)])
     }
 
     func testRetryAndRelaunchPreserveSentAttachmentIdentity() throws {

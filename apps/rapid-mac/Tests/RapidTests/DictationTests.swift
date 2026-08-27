@@ -391,6 +391,364 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("completed chat-model switch re-prepares enabled dictation before Ready")
+    func chatModelSwitchRepreparesEnabledDictation() async {
+        var warmupContinuation: CheckedContinuation<Bool, Never>?
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            phase: .idle,
+            prewarm: {
+                prewarmCount += 1
+                return await withCheckedContinuation { warmupContinuation = $0 }
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        controller.serverStateDidChange(.starting(alias: "lfm2.5-1b-4bit"))
+        #expect(controller.phase == .preparingModel)
+        #expect(prewarmCount == 0)
+        #expect(hotkeyStartCount == 0)
+
+        controller.serverStateDidChange(.ready(alias: "lfm2.5-1b-4bit"))
+        while warmupContinuation == nil { await Task.yield() }
+        #expect(controller.phase == .preparingModel)
+        #expect(prewarmCount == 1)
+        #expect(hotkeyStartCount == 0)
+
+        warmupContinuation?.resume(returning: true)
+        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
+    }
+
+    @MainActor
+    @Test("chat-model switches keep the enabled feature's event tap armed")
+    func chatModelSwitchKeepsHotkeyRegistration() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        var hotkeyStopCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            },
+            hotkeyStop: { hotkeyStopCount += 1 }
+        )
+
+        await controller.enable()
+        #expect(controller.phase == .idle)
+        #expect(controller.isHotkeyArmed)
+        #expect(hotkeyStartCount == 1)
+
+        // Whole-process replacement publishes the old child stopping before
+        // the new alias starts. That terminal-looking intermediate state was
+        // the exact RC1 vector that destroyed the tap and exposed Arm now.
+        controller.serverStateDidChange(.stopped)
+        #expect(controller.phase == .off)
+        #expect(controller.isHotkeyArmed)
+        #expect(hotkeyStopCount == 0)
+
+        controller.serverStateDidChange(.starting(alias: "qwen3.5-4b-4bit"))
+        #expect(controller.phase == .preparingModel)
+        #expect(controller.isHotkeyArmed)
+        #expect(hotkeyStopCount == 0)
+
+        controller.serverStateDidChange(.ready(alias: "qwen3.5-4b-4bit"))
+        for _ in 0..<40 where controller.phase != .idle { await Task.yield() }
+
+        #expect(controller.phase == .idle)
+        #expect(controller.isHotkeyArmed)
+        #expect(prewarmCount == 2)
+        #expect(hotkeyStartCount == 1)
+        #expect(hotkeyStopCount == 0)
+
+        controller.disable()
+        #expect(!controller.isHotkeyArmed)
+        #expect(hotkeyStopCount == 1)
+    }
+
+    @MainActor
+    @Test("failed chat-model switch leaves enabled dictation retryable")
+    func failedChatModelSwitchIsRetryable() async {
+        var warmupContinuation: CheckedContinuation<Bool, Never>?
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            phase: .idle,
+            prewarm: {
+                await withCheckedContinuation { warmupContinuation = $0 }
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        controller.serverStateDidChange(.starting(alias: "lfm2.5-1b-4bit"))
+        controller.serverStateDidChange(.crashed(
+            alias: "lfm2.5-1b-4bit",
+            message: "fixture failure"
+        ))
+        #expect(controller.isEnabled)
+        #expect(controller.phase == .off)
+        #expect(hotkeyStartCount == 0)
+
+        controller.revalidate()
+        while warmupContinuation == nil { await Task.yield() }
+        #expect(controller.phase == .preparingModel)
+        warmupContinuation?.resume(returning: true)
+        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
+    }
+
+    @MainActor
+    @Test("audio-only fallback transitions do not cancel their owning preparation flight")
+    func audioFallbackDoesNotSelfCancel() async {
+        var warmupContinuation: CheckedContinuation<Bool, Never>?
+        var prewarmCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return await withCheckedContinuation { warmupContinuation = $0 }
+            },
+            hotkeyStart: { true }
+        )
+
+        let enabling = Task { await controller.enable() }
+        while warmupContinuation == nil { await Task.yield() }
+        controller.serverStateDidChange(.starting(alias: "whisper-small"))
+        controller.serverStateDidChange(.ready(alias: "whisper-small"))
+
+        #expect(controller.phase == .preparingModel)
+        #expect(prewarmCount == 1)
+        warmupContinuation?.resume(returning: true)
+        await enabling.value
+        #expect(controller.phase == .idle)
+    }
+
+    @MainActor
+    @Test("audio-only auto-respawn re-arms enabled dictation")
+    func audioFallbackAutoRespawnRearms() async {
+        var warmupContinuation: CheckedContinuation<Bool, Never>?
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            phase: .idle,
+            prewarm: {
+                prewarmCount += 1
+                return await withCheckedContinuation { warmupContinuation = $0 }
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        controller.serverStateDidChange(.crashed(
+            alias: "whisper-small",
+            message: "fixture crash"
+        ))
+        controller.serverStateDidChange(.starting(alias: "whisper-small"))
+        #expect(controller.phase == .preparingModel)
+        controller.serverStateDidChange(.ready(alias: "whisper-small"))
+        while warmupContinuation == nil { await Task.yield() }
+        #expect(prewarmCount == 1)
+        #expect(hotkeyStartCount == 0)
+
+        warmupContinuation?.resume(returning: true)
+        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
+    }
+
+    @MainActor
+    @Test("launch bootstrap arms before deferred model preparation")
+    func launchBootstrapArmsWithoutWaitingForPrimaryHealth() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        await controller.bootstrap(deferModelPreparation: true)
+
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1)
+        #expect(prewarmCount == 0, "audio preparation must not race the primary launch")
+
+        controller.toggleFromUI()
+        await Task.yield()
+        #expect(controller.lastError?.contains("chat model finishes starting") == true)
+        #expect(prewarmCount == 0)
+
+        await controller.finishDeferredBootstrap()
+
+        #expect(controller.phase == .idle)
+        #expect(prewarmCount == 1)
+        #expect(hotkeyStartCount == 1, "finishing launch restore reuses the feature-owned event tap")
+    }
+
+    @MainActor
+    @Test("a cancelled session restore releases its audio barrier without prewarming")
+    func cancelledSessionRestoreReleasesBarrier() async {
+        var prewarmCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: { true }
+        )
+        await controller.bootstrap(deferModelPreparation: true)
+
+        let cancelledFinish = Task { @MainActor in
+            await controller.finishDeferredBootstrap()
+        }
+        cancelledFinish.cancel()
+        await cancelledFinish.value
+        #expect(prewarmCount == 0, "a superseded restore cannot start the audio lane")
+
+        await controller.enable()
+        #expect(prewarmCount == 1, "the replacement flow must not inherit a stranded barrier")
+    }
+
+    @MainActor
+    @Test("cold-start revalidation inherits the synchronous launch barrier")
+    func coldStartRevalidationCannotPrewarmBeforeChatRestore() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            initiallyDeferred: true,
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        controller.revalidate()
+        while hotkeyStartCount == 0 { await Task.yield() }
+        #expect(prewarmCount == 0, "Audio-view revalidation cannot start the audio lane")
+
+        await controller.finishDeferredBootstrap()
+        #expect(prewarmCount == 1)
+    }
+
+    @MainActor
+    @Test("model changes inherit the launch audio-preparation barrier")
+    func modelChangeDuringDeferredBootstrapCannotPrewarm() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        await controller.bootstrap(deferModelPreparation: true)
+        controller.modelAlias = "another-speech-input"
+        for _ in 0..<40 where controller.phase != .idle { await Task.yield() }
+
+        #expect(controller.phase == .idle)
+        #expect(hotkeyStartCount == 1, "the enabled feature keeps one event-tap registration")
+        #expect(prewarmCount == 0, "a model change must not steal the starting chat process")
+    }
+
+    @MainActor
+    @Test("launch barrier exists before catalog refresh suspends")
+    func modelChangeDuringDeferredCatalogRefreshCannotPrewarm() async {
+        var firstCatalogContinuation: CheckedContinuation<[ModelEntry]?, Never>?
+        var catalogLoadCount = 0
+        var prewarmCount = 0
+        let entry = cachedAudioEntry(alias: "whisper-small")
+        let controller = DictationController(
+            server: ServerManager(
+                testingState: .ready(alias: "whisper-small"),
+                binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
+            ),
+            testingEnabled: true,
+            testingModelAlias: "whisper-small",
+            testingReadiness: .init(
+                microphone: true,
+                accessibility: true,
+                modelSelected: true,
+                modelOnDisk: true
+            ),
+            testingPrewarm: {
+                prewarmCount += 1
+                return true
+            },
+            testingHotkeyStart: { true },
+            audioCatalogLoader: { _ in
+                catalogLoadCount += 1
+                if catalogLoadCount == 1 {
+                    return await withCheckedContinuation { firstCatalogContinuation = $0 }
+                }
+                return [entry]
+            }
+        )
+
+        let bootstrap = Task { await controller.bootstrap(deferModelPreparation: true) }
+        while firstCatalogContinuation == nil { await Task.yield() }
+        controller.modelAlias = "another-speech-input"
+        for _ in 0..<30 { await Task.yield() }
+
+        #expect(prewarmCount == 0)
+        firstCatalogContinuation?.resume(returning: [entry])
+        await bootstrap.value
+        #expect(prewarmCount == 0)
+    }
+
+    @MainActor
+    @Test("hotkey failure cannot release the launch barrier")
+    func failedDeferredHotkeyRegistrationCannotEnablePrewarm() async {
+        var hotkeyAttempts = 0
+        var prewarmCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyAttempts += 1
+                return hotkeyAttempts > 1
+            }
+        )
+
+        await controller.bootstrap(deferModelPreparation: true)
+        #expect(controller.phase == .off)
+        #expect(prewarmCount == 0)
+
+        await controller.enable()
+        #expect(controller.phase == .idle)
+        #expect(hotkeyAttempts == 2)
+        #expect(prewarmCount == 0)
+    }
+
+    @MainActor
     @Test("failed model warmup leaves dictation visibly unarmed")
     func failedWarmupDoesNotArmHotkey() async {
         var hotkeyStartCount = 0
@@ -451,6 +809,12 @@ struct DictationTests {
         #expect(controller.phase == .starting)
         #expect(recorderStartCount == 1)
         #expect(server.servingAlias == "qwen3-0.6b-4bit")
+        #expect(controller.testingHasActiveTicker)
+        #expect(!controller.testingHasRecorder)
+
+        controller.disable()
+        #expect(!controller.testingHasActiveTicker)
+        #expect(!controller.testingHasRecorder)
     }
 
     @MainActor
@@ -616,8 +980,10 @@ struct DictationTests {
     @MainActor
     private func readinessController(
         phase: DictationController.Phase = .off,
+        initiallyDeferred: Bool = false,
         prewarm: @escaping @MainActor () async -> Bool,
-        hotkeyStart: @escaping @MainActor () -> Bool
+        hotkeyStart: @escaping @MainActor () -> Bool,
+        hotkeyStop: @escaping @MainActor () -> Void = {}
     ) -> DictationController {
         let entry = ModelEntry(
             alias: "whisper-small",
@@ -644,6 +1010,8 @@ struct DictationTests {
             ),
             testingPrewarm: prewarm,
             testingHotkeyStart: hotkeyStart,
+            testingHotkeyStop: hotkeyStop,
+            testingInitialModelPreparationDeferred: initiallyDeferred,
             audioCatalogLoader: { _ in [entry] }
         )
     }

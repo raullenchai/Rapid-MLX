@@ -50,8 +50,7 @@ import Foundation
 /// logic without duplicating the threshold constant.
 enum DiskSpaceProbe {
 
-    /// The free-space threshold the Quickstart pre-flight uses to
-    /// decide whether to surface the low-disk banner.
+    /// Minimum free-space threshold for a small Quickstart download.
     ///
     /// Sized for the Quickstart default ``lfm2.5-1b-4bit``
     /// (~0.6 GB on disk):
@@ -79,6 +78,17 @@ enum DiskSpaceProbe {
     /// ``QuickstartCoordinator.defaultChoice``) moves again, re-derive this
     /// constant — do not assume 2 GiB still covers it.
     static let quickstartRequiredBytes: Int64 = 2 * 1024 * 1024 * 1024
+
+    /// Selected-model budget: 1.5× transient download peak plus 1 GiB for
+    /// macOS, rounded up to a whole GiB so the warning copy stays legible.
+    /// The historical 2 GiB threshold remains the floor for small models.
+    static func requiredBytes(downloadBytes: Int64) -> Int64 {
+        guard downloadBytes > 0 else { return quickstartRequiredBytes }
+        let gib = Double(1 << 30)
+        let budget = Double(downloadBytes) * 1.5 + gib
+        let rounded = Int64((budget / gib).rounded(.up)) * Int64(1 << 30)
+        return max(quickstartRequiredBytes, rounded)
+    }
 
     /// Outcome of ``decide``. Used to drive both the UI banner and a
     /// future telemetry signal (how often does the warning fire for

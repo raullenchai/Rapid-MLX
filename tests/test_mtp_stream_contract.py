@@ -3,12 +3,10 @@
 
 Background
 ----------
-``vllm_mlx/spec_decode/mtp/generator.py:226`` imports
-``generation_stream`` from ``mlx_lm.generate`` and runs every backbone /
-MTP forward inside ``with mx.stream(generation_stream): ... mx.eval(...)``
-blocks. The module-level ``generation_stream`` is set at
-``mlx_lm.generate`` import time to a ``mx.new_thread_local_stream(...)``
-bound to the importer thread.
+The vendored MTP generator runs every backbone/MTP forward inside
+``with mx.stream(generation_stream): ... mx.eval(...)`` blocks. mlx-lm's
+module-level ``generation_stream`` is mutable process state: each resident
+engine worker binds it to that worker's thread-local default stream.
 
 Production paths route around this via
 ``engine_core._init_mlx_step_thread`` which, when the ``mlx-step``
@@ -25,9 +23,10 @@ runs ``mtp_generate_step`` on the pytest main thread crashes at
 
     RuntimeError: There is no Stream(gpu, N) in current thread.
 
-The fix is in the MTP test autouse fixtures: re-bind
-``mlx_lm.generate.generation_stream`` to **this** thread's default
-stream at setup. This file pins both:
+The production fix binds ``mx.default_stream(mx.default_device())`` when the
+MTP generator begins execution on its scheduler-owned step thread, instead of
+consuming that mutable global. Test fixtures still restore the global for
+older direct mlx-lm paths exercised in the suite. This file pins both:
 
   1. **Static guard** — neither MTP test fixture body is allowed to
      call ``mx.new_stream(...)`` or ``mx.new_thread_local_stream(...)``.
@@ -36,15 +35,10 @@ stream at setup. This file pins both:
      fixture used ``mx.new_stream`` and was the immediate cause of the
      7-test crash cluster).
 
-  2. **Dynamic contract** — manually pollute
-     ``mlx_lm.generate.generation_stream`` from a worker thread
-     (simulating what the ``mlx-step`` initialiser does in the real
-     sweep), then run ``mtp_generate_step`` end-to-end on the main
-     thread and assert it does NOT raise. With the buggy fixture (or
-     no fixture at all) this test reproduces the
-     ``Stream(gpu, N) in current thread`` crash; with the fix it
-     passes cleanly because the autouse fixture re-binds
-     ``generation_stream`` before the test body runs.
+  2. **Dynamic production contract** — manually pollute
+     ``mlx_lm.generate.generation_stream`` from a worker thread (the second
+     resident load), then run ``mtp_generate_step`` directly without a
+     fixture reset. It must ignore the foreign stream and complete cleanly.
 """
 
 from __future__ import annotations
@@ -281,56 +275,25 @@ def test_mtp_fixture_setup_restores_generation_stream_after_worker_pollution(
             pass
 
 
-@pytest.mark.parametrize(
-    "test_module_name",
-    ["tests.test_mtp_spec_decode", "tests.test_mtp_lossless"],
-)
-def test_mtp_generate_step_survives_worker_pollution_via_fixture(
-    test_module_name: str,
-):
-    """End-to-end: pollute ``generation_stream`` from a worker thread,
-    drive the MTP autouse fixture's setup, then run ``mtp_generate_step``
-    and assert it yields tokens cleanly.
+def test_mtp_generate_step_owns_stream_after_second_resident_pollution():
+    """A second resident's worker cannot poison the primary MTP generator.
 
-    This is the highest-confidence regression guard: it exercises the
-    EXACT code path that crashes in the failing sweep (``mtp_generate_step``
-    on the pytest main thread, after a worker re-bound
-    ``generation_stream``) and routes recovery through the fixture
-    function under test. No inline reset.
-
-    Codex r2 BLOCKING defense — codex worried that importing
-    ``mtp_generate_step`` BEFORE pollution would let ``generator.py``
-    capture a pre-pollution stream and mask a broken fixture. The
-    concern is empirically false on the current production code path
-    because ``generator.py:226`` does
-    ``from mlx_lm.generate import generation_stream`` INSIDE
-    ``mtp_generate_step``'s body (function-scope, re-read on every
-    call) — verified by
-    ``test_mtp_generator_reads_generation_stream_at_call_time``
-    below. But we still order the imports defensively (pollute FIRST,
-    then import) so a future move of the import to module scope is
-    caught by THIS test rather than silently masking the regression.
+    Loading another resident engine rebinds mlx-lm's process-global stream on
+    that worker. The original MTP primary still executes on its own scheduler
+    thread, so the generator must ignore the foreign global and bind that
+    execution thread's default stream before any model/cache work.
     """
-    # Pollute BEFORE importing ``mtp_generate_step`` — defends against
-    # any future regression that moves the ``from mlx_lm.generate
-    # import generation_stream`` line out of the function body and
-    # into module scope (see paired
-    # ``test_mtp_generator_reads_generation_stream_at_call_time``).
     _pollute_generation_stream_from_worker()
 
     from tests.test_mtp_spec_decode import _MockedQwen35Model
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
-    mod = __import__(test_module_name, fromlist=["_reset_mtp_module_state"])
-    fixture_func = _unwrap_fixture_func(mod._reset_mtp_module_state)
-
-    gen = fixture_func()
-    next(gen)
+    polluted = sys.modules["mlx_lm.generate"].generation_stream
     try:
-        # ``mtp_generate_step`` runs against ``mlx_lm.generate.generation_stream``
-        # as set up by the fixture. If the fixture is broken, this crashes
-        # at generator.py:420 (``mx.eval(toks)``).
+        with pytest.raises(RuntimeError, match="Stream"), mx.stream(polluted):
+            _ = (mx.array([1.0]) + mx.array([2.0])).item()
+
         backbone = [7, 11, 13]
         mtp_script = [11]
         model = _MockedQwen35Model(backbone, mtp_script)
@@ -344,70 +307,35 @@ def test_mtp_generate_step_survives_worker_pollution_via_fixture(
                 accept_counter=counter,
             )
         )
+        assert sys.modules["mlx_lm.generate"].generation_stream is polluted
         assert len(emitted) == 3, (
             "mtp_generate_step did not yield the expected 3 tokens — "
-            "the autouse fixture's stream restoration logic is likely "
-            f"broken. Got: {emitted}"
+            "the generator did not bind the scheduler thread's stream. "
+            f"Got: {emitted}"
         )
     finally:
-        try:
-            next(gen)
-        except StopIteration:
-            pass
+        sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
+            mx.default_device()
+        )
 
 
 # ---------------------------------------------------------------------------
-# 3. Production-code contract — the function-scope import is load-bearing
+# 3. Production-code contract — stream ownership is established at execution
 # ---------------------------------------------------------------------------
 
 
-def test_mtp_generator_reads_generation_stream_at_call_time():
-    """``mtp_generate_step`` MUST import ``generation_stream`` at
-    function-call time (function-scope import), not at module-import
-    time (module-scope ``from mlx_lm.generate import generation_stream``).
-
-    The fixture's restoration works by rebinding
-    ``sys.modules['mlx_lm.generate'].generation_stream``. That rebind
-    only flows through to ``mtp_generate_step`` if the function looks
-    up the attribute at every call. If a future refactor moves the
-    import to module scope, the rebind no longer affects already-
-    imported modules and the 7-test crash cluster comes back —
-    silently, because the fixture would still LOOK like it's
-    restoring the stream.
-
-    Codex r2 BLOCKING #1 flagged this exact concern. Pin it here so
-    the regression guard fires loudly if anyone hoists the import.
-
-    Implementation:
-
-    1. Module-scope: ``vllm_mlx.spec_decode.mtp.generator.generation_stream``
-       attribute MUST NOT exist.
-    2. Function source: ``mtp_generate_step``'s source MUST contain
-       a ``from mlx_lm.generate import generation_stream`` line.
-
-    Both checks are AST/source-text based — no runtime import order
-    games.
-    """
+def test_mtp_generator_binds_execution_thread_default_stream():
+    """The vendored generator must not consume mlx-lm's mutable global."""
     import vllm_mlx.spec_decode.mtp.generator as generator_mod
 
-    # 1. Module-scope check.
     assert not hasattr(generator_mod, "generation_stream"), (
-        "`vllm_mlx.spec_decode.mtp.generator.generation_stream` exists "
-        "as a module-level attribute. This means someone moved the "
-        "`from mlx_lm.generate import generation_stream` import out of "
-        "`mtp_generate_step`'s body and into module scope. That breaks "
-        "the test fixture's restoration path because rebinding "
-        "`sys.modules['mlx_lm.generate'].generation_stream` no longer "
-        "affects already-imported modules. Move the import back inside "
-        "`mtp_generate_step` (see generator.py:226 baseline)."
+        "the MTP module must not cache a process-global generation stream"
     )
 
-    # 2. Function-source check.
     src = textwrap.dedent(inspect.getsource(generator_mod.mtp_generate_step))
-    assert "from mlx_lm.generate import generation_stream" in src, (
-        "`mtp_generate_step` no longer imports `generation_stream` at "
-        "call time. The function-scope import is load-bearing — the "
-        "test fixture's stream restoration relies on the function "
-        "looking up `mlx_lm.generate.generation_stream` afresh on every "
-        "call. See generator.py:226 baseline."
+    assert "from mlx_lm.generate import maybe_quantize_kv_cache" in src
+    assert "from mlx_lm.generate import generation_stream" not in src
+    assert "generation_stream = mx.default_stream(mx.default_device())" in src, (
+        "mtp_generate_step must bind the scheduler execution thread's default "
+        "stream before model/cache work"
     )

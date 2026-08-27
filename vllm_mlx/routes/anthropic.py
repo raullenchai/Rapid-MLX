@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Anthropic Messages API endpoints — /v1/messages."""
 
+import asyncio
 import json
 import logging
 import time
@@ -48,6 +49,7 @@ from ..service.helpers import (
     _effective_enable_thinking,
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
+    _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
@@ -1131,6 +1133,8 @@ async def create_anthropic_message(
             content=anthropic_response.model_dump_json(exclude_none=True),
             media_type="application/json",
         )
+    except asyncio.CancelledError as exc:
+        _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
         _release_admission_unless_committed(engine, _admission_committed)
 

@@ -305,7 +305,9 @@ class TestResponsesNonStream:
         assert body["usage"]["output_tokens"] == 2
         assert body["usage"]["total_tokens"] == 5
 
-    def test_structured_output_keeps_bare_json_out_of_reasoning(self, responses_client):
+    def test_structured_output_keeps_bare_json_out_of_reasoning(
+        self, responses_client, monkeypatch
+    ):
         from vllm_mlx.reasoning.cohere_command_parser import (
             CohereCommand4ReasoningParser,
         )
@@ -349,6 +351,66 @@ class TestResponsesNonStream:
         body = response.json()
         assert body["output"][0]["content"][0]["text"] == document
         assert all(item["type"] != "reasoning" for item in body["output"])
+
+        # This fixed-list protocol test also guards the typed multimodal
+        # rejection envelope before either path can enter generation.
+        engine.serving_lane_reason = "vision_hybrid_runtime_unsupported"
+        image_response = responses_client.client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            }
+                        ],
+                    }
+                ]
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert image_response.status_code == 400
+        image_body = image_response.json()
+        assert image_body.get("detail", image_body)["error"] == {
+            "message": (
+                "Model 'test-model' is serving text-only; image input is unsupported."
+            ),
+            "type": "invalid_request_error",
+            "code": "image_input_unsupported",
+            "param": "messages.content",
+            "serving_lane_reason": "vision_hybrid_runtime_unsupported",
+        }
+
+        from vllm_mlx.api.utils import UnsupportedContentBlockError
+        from vllm_mlx.routes import responses as responses_route
+
+        def reject_at_route(*_args, **_kwargs):
+            raise UnsupportedContentBlockError(
+                "forced route-boundary rejection",
+                code="image_input_unsupported",
+                param="messages.content",
+            )
+
+        monkeypatch.setattr(
+            responses_route,
+            "validate_content_blocks_for_capabilities",
+            reject_at_route,
+        )
+        route_response = responses_client.client.post(
+            "/v1/responses",
+            json=_payload(input="hello"),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert route_response.status_code == 400
+        route_body = route_response.json()
+        assert route_body.get("detail", route_body)["error"]["code"] == (
+            "image_input_unsupported"
+        )
 
     def test_response_carries_loaded_model_not_request_alias(self, responses_client):
         """The response.model field must be the loaded engine's model
@@ -737,8 +799,9 @@ class TestResponsesNonStream:
 
         assert response.status_code == 400, response.text
         body = response.json()
-        msg = body.get("detail") or body.get("error", {}).get("message", "")
-        assert "image inputs" in msg
+        error = body.get("detail", body)["error"]
+        assert error["code"] == "image_input_unsupported"
+        assert "serving text-only" in error["message"]
         assert engine.calls == []
 
     @pytest.mark.parametrize(

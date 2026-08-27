@@ -564,9 +564,6 @@ class MLLMBatchGenerator:
         ...         print(f"Request {resp.request_id}: token={resp.token}")
     """
 
-    # Generation stream for async eval
-    _stream = None
-
     def __init__(
         self,
         model: nn.Module,
@@ -742,7 +739,7 @@ class MLLMBatchGenerator:
         # That crash path went live the moment PR #716 plumbed
         # ``MLLMBatchResponse.logprobs`` through to the route layer:
         # the per-step logprob slice was produced inside ``with
-        # mx.stream(MLLMBatchGenerator._stream):`` blocks on the
+        # mx.stream(self._stream):`` blocks on the
         # ``mllm-step`` worker, then the route handler (asyncio loop
         # thread) called ``np.array(logprobs_array)`` from
         # ``service.helpers._extract_token_logprob`` — and the loop
@@ -754,16 +751,15 @@ class MLLMBatchGenerator:
         # The text scheduler avoids this by running on a dedicated
         # ``mlx-step`` worker initialised via ``_init_mlx_step_thread``
         # (engine_core.py), which adopts
-        # ``mx.default_stream(mx.default_device())`` — the process-wide
-        # default that every thread can materialise against. Mirror
-        # that here: the MLLM worker (``mllm-step``) was already
-        # initialised by the same ``_init_mlx_step_thread`` callback
-        # at executor construction, so its default stream is the same
-        # process-wide default the model weights / KV cache were
-        # tagged with. Logprob arrays produced under this default
-        # round-trip cleanly to the route handler thread.
-        if MLLMBatchGenerator._stream is None:
-            MLLMBatchGenerator._stream = mx.default_stream(mx.default_device())
+        # ``mx.default_stream(mx.default_device())``. Mirror that here on
+        # every generator lifetime: a resident VLM reload owns a fresh worker,
+        # so retaining the prior generator's stream in class state makes the
+        # new worker fail with ``There is no Stream(gpu, N) in current
+        # thread``. Logprob arrays are evaluated on this worker before they
+        # cross to the route handler, so instance ownership preserves the
+        # existing cross-thread output contract without sharing execution
+        # state between engines.
+        self._stream = mx.default_stream(mx.default_device())
 
         # Memory management
         self._old_wired_limit = None
@@ -782,7 +778,7 @@ class MLLMBatchGenerator:
             # during process exit anyway, and the wired-limit reset still
             # needs to run to free reserved memory.
             try:
-                mx.synchronize(MLLMBatchGenerator._stream)
+                mx.synchronize(self._stream)
             except RuntimeError as e:
                 logger.debug(f"mx.synchronize skipped during close: {e}")
             mx.set_wired_limit(self._old_wired_limit)
@@ -1376,7 +1372,7 @@ class MLLMBatchGenerator:
             # Create a fresh KVCache for this request's language model prefill
             request_cache = make_prompt_cache(self.language_model)
 
-            with mx.stream(MLLMBatchGenerator._stream):
+            with mx.stream(self._stream):
                 # Run VLM forward pass — cache= flows through to language_model
                 logits = self._run_vision_encoding(req, cache=request_cache)
 
@@ -1631,7 +1627,7 @@ class MLLMBatchGenerator:
         # stream rules crashes with ``There is no Stream(...) in current
         # thread``. Pairs with the worker-default-stream adoption in
         # ``__init__`` so logprobs survive a cross-thread ``np.array(...)``
-        # even if ``MLLMBatchGenerator._stream`` is ever re-pointed.
+        # even if another generator lifetime is created.
         mx.eval(outgoing_logprobs)
 
         y = y.tolist()
@@ -1720,7 +1716,7 @@ class MLLMBatchGenerator:
         Returns:
             List of MLLMBatchResponse, one per active request
         """
-        with mx.stream(MLLMBatchGenerator._stream):
+        with mx.stream(self._stream):
             return self._next()
 
     def stats(self) -> MLLMBatchStats:

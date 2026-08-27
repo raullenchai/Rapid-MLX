@@ -90,6 +90,17 @@ def _pulled_audio_aliases():
         return set()
 
 
+def _pulled_model_aliases():
+    state_path = _setting("FAKE_PULL_STATE")
+    if not state_path:
+        return set()
+    try:
+        with open(state_path) as stream:
+            return {line.strip() for line in stream if line.strip()}
+    except OSError:
+        return set()
+
+
 def _parse_args(argv):
     """Match the real rapid-mlx CLI shape closely enough that
     ServerManager's spawn arguments work unmodified.
@@ -300,6 +311,10 @@ FAKE_IMAGE_REPO = "fake-org/fake-image-repo"
 # ``/v1/models/load`` path instead of the legacy stop/start fallback when the
 # GUI asks for a second model while the sidecar is already running (#1838).
 SERVED_ALIAS = ""
+# Lazy audio engines are process-owned in production. The fixture mirrors
+# that lifecycle: a successful transcription materializes the STT lane, while
+# a sidecar replacement starts a fresh process with no resident audio lanes.
+RESIDENT_AUDIO_LANES = {}
 
 # The engine's own, actionable rejection reason. Kept out of the snapshot so a
 # stock persona never changes residency shape; a flow opts in with
@@ -600,6 +615,7 @@ class Handler(BaseHTTPRequestHandler):
                 "loads_total": 0,
                 "evictions_total": 0,
                 "models": [],
+                "audio_lanes": [],
             }
         return {
             "memory_limit_bytes": 34359738368,
@@ -621,6 +637,18 @@ class Handler(BaseHTTPRequestHandler):
                 "measured_bytes": None,
                 "idle_seconds": 0.0,
             }],
+            "audio_lanes": [
+                {
+                    "lane": lane,
+                    "model": model,
+                    "state": "resident",
+                    "active_requests": 0,
+                    "loaded_at": 1.0,
+                    "idle_seconds": 0.0,
+                    "last_error": None,
+                }
+                for lane, model in sorted(RESIDENT_AUDIO_LANES.items())
+            ],
         }
 
     def _models_load(self):
@@ -843,6 +871,7 @@ class Handler(BaseHTTPRequestHandler):
             delay_ms = int(_setting("FAKE_AUDIO_TRANSCRIPTION_DELAY_MS", "0") or "0")
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000)
+            RESIDENT_AUDIO_LANES["stt"] = "fake/whisper-small"
             self._json(200, {
                 "text": "Golden transcription result.",
                 "language": "en",
@@ -1047,7 +1076,7 @@ def _emit_catalog(subcommand, alias):
         if "--json" in sys.argv:
             aliases = []
             if _setting("FAKE_INCLUDE_STARTER") == "1":
-                aliases.append("lfm2.5-1b-4bit")
+                aliases.extend(["lfm2.5-2.6b-4bit", "lfm2.5-1b-4bit"])
             if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
                 aliases.extend([f"a-cached-{index}" for index in range(6)])
                 aliases.append("qwen3.5-4b-4bit")
@@ -1085,10 +1114,12 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Parser           Reasoning        Preset")
         print("---------------------  ---------------  ---------------  --------")
         if _setting("FAKE_INCLUDE_STARTER") == "1":
-            # A production catalog always contains the onboarding starter.
+            # A production catalog contains both the RAM-aware compact starter
+            # and the explicit low-memory alternative.
             # Most flows deliberately keep the compact single-chat-row
             # fixture, but fresh-install must exercise the real default
             # selection contract rather than falling back to fake-alias.
+            print("lfm2.5-2.6b-4bit      hermes           none")
             print("lfm2.5-1b-4bit        hermes           none")
         if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
             for index in range(6):
@@ -1139,6 +1170,11 @@ def _emit_catalog(subcommand, alias):
         print("Cached models")
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
+        pulled_models = _pulled_model_aliases()
+        if "lfm2.5-2.6b-4bit" in pulled_models:
+            print("lfm2.5-2.6b-4bit      fake-org/fake-repo        1.6 GB")
+        if "lfm2.5-1b-4bit" in pulled_models:
+            print("lfm2.5-1b-4bit        fake-org/fake-repo        720 MB")
         if _setting("FAKE_SETTINGS_MTP") != "1":
             if _setting("FAKE_VISION_CHAT") == "1":
                 # This is a behavioural fixture, not a real checkpoint.  Keep
@@ -1252,6 +1288,11 @@ def main():
                 with open(state_path, "a") as stream:
                     stream.write(f"{args.alias}\n")
             sys.exit(0)
+        if args.subcommand == "pull":
+            state_path = _setting("FAKE_PULL_STATE")
+            if state_path:
+                with open(state_path, "a") as stream:
+                    stream.write(f"{args.alias}\n")
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 

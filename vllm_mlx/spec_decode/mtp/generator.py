@@ -280,9 +280,14 @@ def mtp_generate_step(
     """
     import inspect as _inspect
 
-    from mlx_lm.generate import generation_stream, maybe_quantize_kv_cache
+    from mlx_lm.generate import maybe_quantize_kv_cache
     from mlx_lm.models import cache as _cache_module
     from mlx_lm.sample_utils import categorical_sampling
+
+    # The global mlx-lm generation stream can be rebound by a different
+    # resident engine's worker. Bind the stream where this generator actually
+    # begins executing so it always belongs to the scheduler-owned step thread.
+    generation_stream = mx.default_stream(mx.default_device())
 
     xtc_special_tokens = xtc_special_tokens or []
     if accept_counter is None:

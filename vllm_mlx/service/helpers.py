@@ -155,6 +155,19 @@ def _release_admission_unless_committed(engine, committed: bool) -> None:
         )
 
 
+def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> None:
+    """Translate only engine-owned route cancellation into terminal HTTP."""
+
+    task = asyncio.current_task()
+    consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
+    if task is not None and callable(consume_abort) and consume_abort(task):
+        raise HTTPException(
+            status_code=503,
+            detail="Request cancelled by model replacement",
+        ) from exc
+    raise exc
+
+
 def _raise_backpressure_503(exc: Exception) -> None:
     """Convert ``BackpressureError`` from the scheduler into HTTP 503
     with a Retry-After header (RFC 9110 §10.2.4).
@@ -3923,6 +3936,9 @@ async def _disconnect_guard(
             #     existing future. The wait below ignores it.
             if anext_task is None or anext_task.done():
                 anext_task = asyncio.ensure_future(aiter.__anext__())
+                bind_task = getattr(engine, "bind_admission_task", None)
+                if callable(bind_task):
+                    bind_task(anext_task)
             wait_kwargs: dict = {"return_when": asyncio.FIRST_COMPLETED}
             if keepalive_enabled:
                 wait_kwargs["timeout"] = keepalive_seconds
@@ -3992,6 +4008,25 @@ async def _disconnect_guard(
                 # here would only pollute logs.
                 finished_normally = True
                 break
+            except asyncio.CancelledError:
+                consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
+                if not callable(consume_abort) or not consume_abort(anext_task):
+                    raise
+                import json as _json
+
+                error_data = _json.dumps(
+                    {
+                        "error": {
+                            "message": "Request cancelled by model replacement",
+                            "type": "server_error",
+                            "code": "model_replacement",
+                        }
+                    }
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                finished_normally = True
+                break
             except Exception as exc:
                 logger.error(
                     f"[disconnect_guard] generator raised {type(exc).__name__}: "
@@ -4031,24 +4066,38 @@ async def _disconnect_guard(
                 # message substring: arbitrary internal exceptions may contain
                 # caller text or local paths. Every other fault remains under
                 # F-131's generic sanitisation.
-                from ..request import ClientRequestError
+                from ..request import ClientRequestError, InferenceAbortedError
 
-                if isinstance(exc, ClientRequestError):
+                if (
+                    isinstance(exc, InferenceAbortedError)
+                    and exc.error_kind == "lifecycle"
+                ):
+                    _sse_type = "server_error"
+                    _sse_message = "Request cancelled by model replacement"
+                    _sse_code = "model_replacement"
+                elif isinstance(exc, ClientRequestError):
                     _sse_type = "invalid_request_error"
                     _sse_message = str(exc)
+                    _sse_code = None
                 else:
                     _sse_type = "internal_error"
                     _sse_message = "Internal error during streaming"
+                    _sse_code = None
+                error = {
+                    "message": _sse_message,
+                    "type": _sse_type,
+                }
+                if _sse_code is not None:
+                    error["code"] = _sse_code
                 error_data = _json.dumps(
                     {
-                        "error": {
-                            "message": _sse_message,
-                            "type": _sse_type,
-                        }
+                        "error": error,
                     }
                 )
                 yield f"data: {error_data}\n\n"
                 yield "data: [DONE]\n\n"
+                if _sse_code == "model_replacement":
+                    finished_normally = True
                 break
             chunk_count += 1
             if chunk_count == 1:
@@ -4225,7 +4274,13 @@ async def _wait_with_disconnect(
 
     _t0 = _time.monotonic()
 
+    from ..engine.batched import _admission_engine_context
+
+    engine = _admission_engine_context.get()
     task = asyncio.ensure_future(coro)
+    bind_task = getattr(engine, "bind_admission_task", None)
+    if callable(bind_task):
+        bind_task(task)
 
     async def _wait_disconnect():
         poll_count = 0
@@ -4275,6 +4330,14 @@ async def _wait_with_disconnect(
 
         try:
             return task.result()
+        except asyncio.CancelledError:
+            consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
+            if callable(consume_abort) and consume_abort(task):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Request cancelled by model replacement",
+                )
+            raise
         except BackpressureError as exc:
             _raise_backpressure_503(exc)
 

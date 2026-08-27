@@ -126,6 +126,24 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         case transcriptOnly
     }
 
+    /// Whether an image-bearing user turn was accepted by the model lane.
+    /// Stored on the user turn because empty failed assistant rows are omitted
+    /// from later wire history, while a rejected image must not poison every
+    /// subsequent plain-text follow-up. A direct Retry still sends the image.
+    enum ImageDeliveryStatus: String, Codable, Sendable {
+        case pending
+        case accepted
+        case rejected
+
+        /// A newer outcome must fail closed for attachment inheritance rather
+        /// than make one message undecodable and side the whole conversation
+        /// as corrupt. The image remains visible and directly retryable.
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = ImageDeliveryStatus(rawValue: raw) ?? .rejected
+        }
+    }
+
     /// Messages written before ``wireVisibility`` shipped need one narrow
     /// migration: Quickstart's product-authored welcome was persisted as an
     /// ordinary assistant turn. Match only the two stable Rapid copy shapes;
@@ -148,6 +166,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// render it in a collapsed disclosure block.
     var content: String
     var imageAttachments: [ChatImageAttachment]
+    var imageDeliveryStatus: ImageDeliveryStatus?
     /// Locally extracted document text. Kept separate from ``content`` so a
     /// multi-page source does not flood the transcript or copied user prose.
     var fileAttachments: [ChatFileAttachment]
@@ -295,6 +314,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         role: Role,
         content: String = "",
         imageAttachments: [ChatImageAttachment] = [],
+        imageDeliveryStatus: ImageDeliveryStatus? = nil,
         fileAttachments: [ChatFileAttachment] = [],
         reasoning: String = "",
         status: Status = .complete,
@@ -315,6 +335,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.role = role
         self.content = content
         self.imageAttachments = imageAttachments
+        self.imageDeliveryStatus = imageDeliveryStatus
         self.fileAttachments = fileAttachments
         self.reasoning = reasoning
         self.status = status
@@ -339,7 +360,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// for that one key and defers all other fields to the standard
     /// container shape.
     enum CodingKeys: String, CodingKey {
-        case id, role, content, imageAttachments, fileAttachments, reasoning, status
+        case id, role, content, imageAttachments, imageDeliveryStatus
+        case fileAttachments, reasoning, status
         case errorMessage, failureKind, toolCalls, toolCallID
         case stats, reasoningTruncated, contentTruncated
         case toolNotCalledFlagged
@@ -375,6 +397,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
         try c.encode(imageAttachments, forKey: .imageAttachments)
+        try c.encodeIfPresent(imageDeliveryStatus, forKey: .imageDeliveryStatus)
         try c.encode(fileAttachments, forKey: .fileAttachments)
         try c.encode(reasoning, forKey: .reasoning)
         try c.encode(status, forKey: .status)
@@ -403,6 +426,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.role = try c.decode(Role.self, forKey: .role)
         self.content = try c.decode(String.self, forKey: .content)
         self.imageAttachments = try c.decodeIfPresent([ChatImageAttachment].self, forKey: .imageAttachments) ?? []
+        self.imageDeliveryStatus = try c.decodeIfPresent(
+            ImageDeliveryStatus.self,
+            forKey: .imageDeliveryStatus
+        )
         self.fileAttachments = try c.decodeIfPresent([ChatFileAttachment].self, forKey: .fileAttachments) ?? []
         self.reasoning = try c.decode(String.self, forKey: .reasoning)
         self.status = try c.decode(Status.self, forKey: .status)

@@ -23,6 +23,7 @@ This module pins behaviour at three layers:
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import mlx.core as mx
@@ -230,6 +231,11 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
     engine._loaded = True
     engine._is_mllm = True
     engine._mllm_scheduler = MagicMock()
+    engine._mllm_scheduler.config.max_concurrent_requests = 256
+    engine._admission_lock = threading.Lock()
+    engine._admission_reservations = 0
+    engine._admission_tokens = set()
+    engine._admission_tasks = {}
     captured: dict = {}
 
     async def _fake_add(**kw):

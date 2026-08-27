@@ -182,6 +182,30 @@ def test_image_alias_is_cached_so_the_tab_resolves_without_a_download():
     )
 
 
+def test_audio_pull_state_remains_independent_from_chat_pull_state(tmp_path):
+    """The two GUI fixtures persist different lane selections.
+
+    A configured audio state must always return a set; otherwise `ls` crashes
+    while checking membership and the audio-readiness journey loses its fake
+    catalog before it can exercise any Desktop behavior.
+    """
+    audio_state = tmp_path / "pulled-audio.txt"
+    audio_state.write_text("fake-qwen3-tts\n")
+    chat_state = tmp_path / "pulled-chat.txt"
+    chat_state.write_text("lfm2.5-2.6b-4bit\n")
+
+    cached = run_fake(
+        "ls",
+        settings={
+            "FAKE_AUDIO_PULL_STATE": str(audio_state),
+            "FAKE_PULL_STATE": str(chat_state),
+        },
+    )
+
+    assert "fake-qwen3-tts         fake/qwen3-tts" in cached
+    assert "lfm2.5-2.6b-4bit      fake-org/fake-repo" in cached
+
+
 def _has_non_chat_kind_tag(line: str) -> bool:
     """Re-implement ``ModelCatalog.hasNonChatKindTag``.
 

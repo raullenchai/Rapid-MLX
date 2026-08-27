@@ -103,6 +103,11 @@ class _StubMLLMEngine:
         )
 
 
+class _StubTextFallbackEngine(_StubMLLMEngine):
+    is_mllm = False
+    serving_lane_reason = "vision_hybrid_runtime_unsupported"
+
+
 def _make_client(engine: _StubMLLMEngine) -> TestClient:
     cfg = reset_config()
     cfg.engine = engine
@@ -135,6 +140,33 @@ def _multipart_user_message(text: str) -> dict:
             {"type": "image_url", "image_url": {"url": _IMAGE_DATA_URL}},
         ],
     }
+
+
+def test_chat_route_rejects_image_on_text_lane_with_typed_reason():
+    engine = _StubTextFallbackEngine()
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-vl-8b-4bit",
+            "messages": [_multipart_user_message("Describe this")],
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    error = response.json()["detail"]["error"]
+    assert error == {
+        "message": (
+            "Model 'qwen3-vl-8b-4bit' is serving text-only; image input is unsupported."
+        ),
+        "type": "invalid_request_error",
+        "code": "image_input_unsupported",
+        "param": "messages.content",
+        "serving_lane_reason": "vision_hybrid_runtime_unsupported",
+    }
+    assert engine.chat_calls == []
 
 
 def test_chat_route_forwards_image_url_content_to_mllm_engine():

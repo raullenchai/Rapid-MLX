@@ -52,7 +52,9 @@ struct ReadinessRecoveryActionWiringTests {
         }
         let function = String(source[signature.lowerBound...functionEnd])
         #expect(
-            function.contains("awaitserver.stop()_=awaitserver.ensureServing(alias:target,hfPath:hfPath)"),
+            function.contains(
+                "awaitserver.stop()_=awaitserver.ensureServing(alias:target,hfPath:hfPath,estimatedMemoryGB:nil,replacementGroup:.assistant,catalogEntryHint:catalogEntry)"
+            ),
             "Restart must stop the failed engine before bringing the selected model back."
         )
     }

@@ -157,6 +157,7 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Tools.WebSearch.Backend.\(provider.id)""#,
                 #""Settings.Tools.WebSearch.KeyField.\(provider.id)""#,
                 #""Settings.Tools.WebSearch.SaveKey.\(provider.id)""#,
+                #""Settings.Tools.WebSearch.KeyUnavailable.\(provider.id)""#,
                 // The "Get a <provider> key" Link is interactive too — it
                 // opens the provider's dashboard. It was missed on the first
                 // pass precisely because it only renders for a provider that

@@ -10,7 +10,7 @@ import SwiftUI
 /// card can still one-click install the demo model from the picker:
 ///
 ///   ┌── Quickstart ─────────────────────────────────┐
-///   │  lfm2.5-1b-4bit · Smallest model — fastest   │ ← RAM-blind, F-LWT-1
+///   │  qwen3.5-4b-4bit · Recommended first model   │ ← standard starter
 ///   │  first install                                │
 ///   ├── Recommended for your 18 GB Mac ─────────────┤
 ///   │  Recommended qwen3.5-9b-4bit   [amber row     │ ← the RAM tier's
@@ -76,24 +76,21 @@ struct ModelPickerBar: View {
     /// send). All the catalog/recommendation/download/delete logic still
     /// applies; only the surrounding control strip is dropped.
     var composerStyle: Bool = false
-    /// False while a first-launch decision sheet is still pending. Catalog
-    /// refresh shells out to `rapid-mlx models/ls`, which can inspect model
-    /// caches and must not run before the user's first interaction (#1560).
-    var catalogRefreshEnabled: Bool = true
     /// Called only for explicit model-row gestures, never when catalog
     /// initialization fills an empty selection.
     var onUserSelection: (String) -> Void = { _ in }
 
     /// The alias the Quickstart flow is currently aimed at — the wizard's
     /// live selection (#1524) while a coordinator is attached, else the
-    /// fixed starter (lfm2.5-1b-4bit). This is the target the in-flight
+    /// standard starter when no coordinator is attached. This is the target the in-flight
     /// picker breadcrumb mirrors onto so the picker never shows a model
     /// that disagrees with what's downloading. The picker's *own*
     /// persistent "Quickstart" demo row is a separate, always-starter
     /// affordance and
     /// uses ``QuickstartCoordinator.defaultChoice`` directly.
     private var quickstartTargetAlias: String {
-        quickstart?.selection.alias ?? QuickstartCoordinator.defaultChoice.alias
+        quickstart?.selection.alias
+            ?? QuickstartCoordinator.baselineChoice(hardware: hardware).alias
     }
     /// cycle-7: hide sub-1B aliases (qwen3-0.6b-*) from the
     /// alphabetical "All models" list by default — they hallucinate
@@ -304,9 +301,8 @@ struct ModelPickerBar: View {
         .task(id: PickerCatalogKey(
             binaryPath: server.binaryPath,
             cacheGeneration: downloads.cacheGeneration,
-            refreshEnabled: catalogRefreshEnabled
+            refreshEnabled: true
         )) {
-            guard catalogRefreshEnabled else { return }
             await refreshCatalog(force: true)
         }
         // F-LWT-1: mirror the picker selection to the Quickstart
@@ -644,15 +640,14 @@ struct ModelPickerBar: View {
         }
     }
 
-    /// F-LWT-1: dedicated single-row "Quickstart" section above the
-    /// RAM-aware Recommended section. RAM-blind by design — the
-    /// Quickstart alias is the same on every Mac (lfm2.5-1b-4bit is
-    /// the smallest first-impression install). Persists
+    /// Dedicated single-row "Quickstart" section above the RAM-aware
+    /// Recommended section. It exposes the standard starter after onboarding;
+    /// the first-run wizard itself applies the hardware/cache-aware policy. Persists
     /// across all Quickstart phases including ``.dismissed`` so a
     /// user who closed the Quickstart card can still come back and
     /// one-click install the demo model from the picker.
     ///
-    /// Row subtitle ("Smallest model — fastest first install") is
+    /// Row subtitle ("Recommended first model") is
     /// pinned by ``ModelPickerBar.quickstartSubtitle`` so the test
     /// suite catches accidental drift (the section's whole purpose
     /// is to be the bottom-anchored "I just want to try the app"
@@ -667,7 +662,8 @@ struct ModelPickerBar: View {
     /// independent notion of emptiness is exactly how the picker ended up
     /// with a branch that believed it had rows while rendering none.
     private var hasSelectableRows: Bool {
-        if quickstartEntry() != nil { return true }
+        let quickstartAlias = quickstartEntry()?.alias
+        if quickstartAlias != nil { return true }
         if !recommendedPickRows().isEmpty { return true }
         let filtered = ModelPickerVisibility.filter(
             catalog,
@@ -676,7 +672,7 @@ struct ModelPickerBar: View {
         )
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartRowRendered: quickstartEntry() != nil
+            quickstartAlias: quickstartAlias
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         return !partition.fits.isEmpty || !partition.notFit.isEmpty
@@ -699,7 +695,8 @@ struct ModelPickerBar: View {
     /// section is dropped entirely rather than rendering a row that
     /// can't be Started.
     private func quickstartEntry() -> ModelEntry? {
-        return catalog.first(where: { $0.alias == QuickstartCoordinator.defaultChoice.alias })
+        let alias = QuickstartCoordinator.baselineChoice(hardware: hardware).alias
+        return catalog.first(where: { $0.alias == alias })
     }
 
     /// One row for the Quickstart section. Mirrors ``aliasButton``'s
@@ -732,11 +729,9 @@ struct ModelPickerBar: View {
     /// Subtitle pinned to a single short phrase (~30 chars) so the
     /// "Quickstart" section copy stays anchored even if the file is
     /// later edited around it. The two candidates considered in
-    /// F-LWT-1 ("~1.5 min cold install" / "Smallest model — fastest
-    /// first impression") collapse to the second because the timing
-    /// promise depends on link speed — calling out "smallest /
-    /// fastest" is honest regardless of the user's bandwidth.
-    static let quickstartSubtitle: String = "Smallest model — fastest first install"
+    /// The row makes the product recommendation without promising a download
+    /// duration or claiming this quality-floor starter is the smallest model.
+    static let quickstartSubtitle: String = "Recommended first model"
 
     /// Resolve the safe picker default while the current user is still
     /// eligible for Quickstart. Kept pure so the retired-starter regression
@@ -792,10 +787,10 @@ struct ModelPickerBar: View {
     /// invariant directly without standing up a SwiftUI host.
     static func dedupedAllEntries(
         filtered: [ModelEntry],
-        quickstartRowRendered: Bool
+        quickstartAlias: String?
     ) -> [ModelEntry] {
-        guard quickstartRowRendered else { return filtered }
-        return filtered.filter { $0.alias != QuickstartCoordinator.defaultChoice.alias }
+        guard let quickstartAlias else { return filtered }
+        return filtered.filter { $0.alias != quickstartAlias }
     }
 
     /// Order the "All models" list: downloaded (cached) aliases first,
@@ -867,7 +862,7 @@ struct ModelPickerBar: View {
         // "select this alias" semantics.
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartRowRendered: quickstartEntry() != nil
+            quickstartAlias: quickstartEntry()?.alias
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         let sorted = ModelPickerBar.orderedAllModels(partition.fits)
@@ -1567,10 +1562,17 @@ struct ModelPickerBar: View {
             pendingTooBigStart = trimmed
             return
         }
-        let hfPath = catalog.first(where: { $0.alias == trimmed })?.hfRepo
+        let catalogEntry = catalog.first(where: { $0.alias == trimmed })
+        let hfPath = catalogEntry?.hfRepo
         // Launch flags are applied inside ServerManager.start (one choke
         // point for every start path), RAM-gated to the recommended pick.
-        Task { await server.start(alias: trimmed, hfPath: hfPath) }
+        Task {
+            await server.start(
+                alias: trimmed,
+                hfPath: hfPath,
+                catalogEntryHint: catalogEntry
+            )
+        }
     }
 
     /// Alert title shown when the user tries to Start a ``.tooBig``

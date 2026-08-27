@@ -14,6 +14,8 @@ from contextlib import contextmanager
 
 import mlx.core as mx
 
+from ..cache_rollback import can_trim, trim_all  # re-export legacy import surface
+
 _STATE = threading.local()
 
 
@@ -41,6 +43,7 @@ def install_rotating_undo() -> None:
         original_update = cls.update_and_fetch
         original_is_trimmable = cls.is_trimmable
         original_trim = cls.trim
+        original_can_trim = getattr(cls, "can_trim", None)
 
         def update_and_fetch(self, keys, values):
             steps = int(keys.shape[2])
@@ -70,6 +73,32 @@ def install_rotating_undo() -> None:
         def is_trimmable(self):
             return original_is_trimmable(self) or self._rapid_undo is not None
 
+        def can_trim(self, n):
+            if n < 0:
+                return False
+            if original_can_trim is not None and original_can_trim(self, n):
+                return True
+            if original_is_trimmable(self):
+                offset = getattr(self, "_offset", getattr(self, "offset", 0))
+                return int(offset) >= n
+            undo = self._rapid_undo
+            return undo is not None and int(undo[1].shape[2]) >= n
+
+        def trim_checkpoint(self):
+            snapshot = {}
+            for name in (*fields, "_rapid_undo"):
+                value = getattr(self, name)
+                snapshot[name] = (
+                    copy.deepcopy(value)
+                    if isinstance(value, (dict, list, set))
+                    else value
+                )
+            return snapshot
+
+        def restore_trim_checkpoint(self, snapshot):
+            for name, value in snapshot.items():
+                setattr(self, name, value)
+
         def trim(self, n):
             if original_is_trimmable(self):
                 self._rapid_undo = None
@@ -90,6 +119,9 @@ def install_rotating_undo() -> None:
 
         cls.update_and_fetch = update_and_fetch
         cls.is_trimmable = is_trimmable
+        cls.can_trim = can_trim
+        cls.trim_checkpoint = trim_checkpoint
+        cls.restore_trim_checkpoint = restore_trim_checkpoint
         cls.trim = trim
         cls._rapid_undo = None
         cls._rapid_dspark_undo = True
@@ -99,22 +131,3 @@ def install_rotating_undo() -> None:
         BatchRotatingKVCache,
         ("keys", "values", "offset", "left_padding", "_idx", "_offset", "rotated"),
     )
-
-
-def can_trim(cache, n: int) -> bool:
-    children = getattr(cache, "caches", None)
-    if children is not None:
-        return all(can_trim(child, n) for child in children)
-    can_undo = getattr(cache, "_can_undo", None)
-    if callable(can_undo) and can_undo(n):
-        return True
-    check = getattr(cache, "is_trimmable", None)
-    return bool(callable(check) and check())
-
-
-def trim_all(caches, n: int) -> bool:
-    if n <= 0:
-        return True
-    if not all(can_trim(cache, n) for cache in caches):
-        return False
-    return all(cache.trim(n) == n for cache in caches)

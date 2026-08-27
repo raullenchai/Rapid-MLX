@@ -225,7 +225,15 @@ jobs:
     # rounded to 125. Measured on the Studio, dsh solves the task in 17-64s
     # (warm/cold) — the budget is for the pathological retry path, not the
     # expected one.
-    timeout-minutes: 125
+    # 165, not 125: the release-shaped Desktop sidecar build and two-model,
+    # positive/negative real-image checks now follow the agent gate. The agent
+    # path retains its documented ~121-minute worst case; each model is bounded
+    # to 4 minutes of startup plus two 4-minute requests (24 minutes total), and
+    # the measured clean sidecar build gets 15 minutes of fail-closed headroom.
+    # 121 + 24 + 15 = 160, rounded to 165 for setup and cleanup. This outer cap
+    # is not a substitute for the per-request bounds: it only prevents healthy
+    # checks near their individual budgets from being guillotined by the job.
+    timeout-minutes: 165
     # Serialize with the manual agent-gate.yml so two runs never contend for the
     # single runner / the serve port.
     concurrency:
@@ -249,6 +257,14 @@ jobs:
           # floor is set here (RAPID_MLX_PERF_MIN_TPS unset), so it measures and
           # prints a number to review rather than inventing a baseline.
           RAPID_MLX_RELEASE_GATE: "1"
+          # Content-addressed cached checkpoint used by the Desktop sidecar's
+          # real image gate below. The Studio runner is intentionally the only
+          # release host with model weights; offline resolution makes cache
+          # drift or eviction fail closed instead of silently downloading.
+          SIDECAR_VISION_SMOKE_MODEL: mlx-community/Qwen3.5-9B-4bit
+          SIDECAR_VISION_SMOKE_REVISION: 8b2b98c00a6b4d291155e4890773ca8f769aee53
+          SIDECAR_GEMMA_SMOKE_MODEL: mlx-community/gemma-4-e2b-it-8bit
+          SIDECAR_GEMMA_SMOKE_REVISION: 03dcf209f3f549b4075e7191e77cf69b3d48e1b2
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
@@ -263,6 +279,26 @@ jobs:
           echo "gate venv → $("$V/bin/rapid-mlx" --version) (releasing v$VERSION)"
 
           RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
+
+          # Build the exact Desktop sidecar recipe and require a real PNG to
+          # traverse its production scheduler + HTTP route. Every normal
+          # auto-release is blocked by a missing immutable snapshot,
+          # incompatible reduced dependency set, or failed image request.
+          HF_HUB_OFFLINE=1 bash apps/rapid-mac/scripts/build-sidecar.sh \
+            --out "$RUNNER_TEMP/desktop-vision-sidecar-$VERSION"
+
+          # The reduced dependency-set exception covers both Qwen and Gemma
+          # chat-photo families. The build-sidecar invocation proves Qwen;
+          # reuse those exact built bytes for an independent Gemma4 request.
+          SIDE="$RUNNER_TEMP/desktop-vision-sidecar-$VERSION/rapid-mlx"
+          HF_HUB_OFFLINE=1 PYTHONPATH="$SIDE/site-packages" PYTHONNOUSERSITE=1 \
+            "$SIDE/python/bin/python3.12" \
+            apps/rapid-mac/scripts/smoke-sidecar-vision.py \
+            --sidecar-root "$SIDE" \
+            --model "$SIDECAR_GEMMA_SMOKE_MODEL" \
+            --revision "$SIDECAR_GEMMA_SMOKE_REVISION" \
+            --image apps/rapid-mac/Sources/Rapid/Resources/cheetah.png \
+            --negative-image apps/rapid-mac/Sources/Rapid/Resources/Assets.xcassets/RapidLogo.imageset/RapidLogo.png
           rm -rf "$V"
 
   # 2b) Desktop candidate gate (macos-15). Builds + signs + notarises + DMG-

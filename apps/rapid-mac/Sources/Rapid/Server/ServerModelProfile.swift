@@ -54,6 +54,13 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
     /// the alias without grepping server logs.
     let toolCallParser: String?
     let reasoningParser: String?
+    /// Live request capabilities for this exact served id. `nil` means an
+    /// older sidecar omitted the field; an empty array is authoritative.
+    let capabilities: [String]?
+    /// Live lane selected by the engine (`text` or `vision`) and the stable
+    /// machine-readable reason for that decision.
+    let servingLane: String?
+    let servingLaneReason: String?
     /// Inference modality from ``AliasProfile.modality``. Today
     /// only ``"text"`` and ``"text-diffusion"`` are populated by
     /// the server; ``"vision"`` / ``"image-gen"`` are reserved
@@ -95,6 +102,9 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         case isMoe = "is_moe"
         case toolCallParser = "tool_call_parser"
         case reasoningParser = "reasoning_parser"
+        case capabilities
+        case servingLane = "serving_lane"
+        case servingLaneReason = "serving_lane_reason"
         case modality
         // FU-3 — snake_case wire shape matches the rapid-mlx
         // ``AliasProfile`` JSON contract (per-alias SSOT).
@@ -118,6 +128,9 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         isMoe: Bool? = nil,
         toolCallParser: String? = nil,
         reasoningParser: String? = nil,
+        capabilities: [String]? = nil,
+        servingLane: String? = nil,
+        servingLaneReason: String? = nil,
         modality: String? = nil,
         reasoningChatFloor: Int? = nil,
         reasoningToolsFloor: Int? = nil,
@@ -129,10 +142,62 @@ struct ServerModelProfile: Codable, Sendable, Equatable {
         self.isMoe = isMoe
         self.toolCallParser = toolCallParser
         self.reasoningParser = reasoningParser
+        self.capabilities = capabilities
+        self.servingLane = servingLane
+        self.servingLaneReason = servingLaneReason
         self.modality = modality
         self.reasoningChatFloor = reasoningChatFloor
         self.reasoningToolsFloor = reasoningToolsFloor
         self.contextWindow = contextWindow
+    }
+}
+
+/// Resolved photo-input contract for the composer and request builder. Runtime
+/// fields win when present; the catalog/launch fallback keeps compatibility
+/// with sidecars that predate live lane reporting.
+struct ImageInputAvailability: Equatable, Sendable {
+    let isAvailable: Bool
+    let unavailableMessage: String?
+
+    static func resolve(
+        fallbackSupportsImageInput: Bool,
+        profile: ServerModelProfile?
+    ) -> ImageInputAvailability {
+        guard let profile,
+              profile.servingLane != nil || profile.capabilities != nil
+        else {
+            return ImageInputAvailability(
+                isAvailable: fallbackSupportsImageInput,
+                unavailableMessage: fallbackSupportsImageInput
+                    ? nil
+                    : "This model doesn't support photos. Choose a vision-capable model to add one."
+            )
+        }
+
+        let supportsVision = profile.capabilities?.contains("vision")
+            ?? (profile.servingLane == "vision")
+        let isVisionLane = profile.servingLane.map { $0 == "vision" } ?? supportsVision
+        guard supportsVision && isVisionLane else {
+            return ImageInputAvailability(
+                isAvailable: false,
+                unavailableMessage: message(for: profile.servingLaneReason)
+            )
+        }
+        return ImageInputAvailability(isAvailable: true, unavailableMessage: nil)
+    }
+
+    private static func message(for laneReason: String?) -> String {
+        switch laneReason {
+        case "operator_forced_text":
+            return "This model is running text-only because of its current settings. Photos need a vision-capable model."
+        case "vision_architecture_unavailable", "vision_hybrid_cache_unsupported",
+             "vision_weights_unavailable":
+            return "This model is running text-only because its vision features aren't available. Choose a vision-capable model to add photos."
+        case "text_checkpoint":
+            return "This model doesn't support photos. Choose a vision-capable model to add one."
+        default:
+            return "This model is running text-only. Photos need a vision-capable model."
+        }
     }
 }
 
