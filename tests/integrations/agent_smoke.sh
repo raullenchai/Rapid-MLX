@@ -171,17 +171,22 @@ fi
 #       2. Per-step / overall wall-clock budgets bound each load+completion
 #          pair and each sequence, so a stalled generate step fails in
 #          seconds, not at the end of a 12x600s worst case.
-#   * MTP sequences (mtp: first / mtp: second) are driven against a DEDICATED
+#   * MTP sequences (mtp: first only — a "second" ordering is a false claim,
+#     reviewer B3: a dedicated MTP serve boots already carrying spec-decode, so
+#     the primary is resident from step 1 and /v1/models/load cannot re-enable
+#     it) are driven against a DEDICATED
 #     `rapid-mlx serve <serve_alias> --port <own> <serve_extra>` booted on its
 #     OWN port (with its own ssh-localhost / XPC handling and cleanup). A
 #     residency /v1/models/load NEVER carries spec-decode
 #     (requested_spec_decode=none), so an MTP primary / Stream(gpu,3) can only
 #     exist on a serve booted with the speculative config. The driver:
-#       - boots the MTP serve,
+#       - boots the MTP serve (own-PID ownership only; never a port sweep),
 #       - drives the sequence (load + post-load completion per step) against it,
-#       - scrapes /metrics and evaluates the sequence's metrics_expected
-#         (the #2421 MTP-attempts-nonzero + accept_ratio floor),
-#       - tears the serve down.
+#       - issues ONE canonical temp=0 chat on the freshly booted MTP primary and
+#         evaluates the #2421 contract as deltas between a pre- and post-chat
+#         /metrics scrape, for the exact (family, method) label pair
+#         (reviewer B1 — no uncalibrated floor),
+#       - tears the serve down (TERM -> wait -> KILL, own PID only).
 #     On current main these must be GREEN; on a pre-#2441 sha (62a038c7) the
 #     post-load completion of the MTP-primary step must go RED — that red is
 #     the proof the gate reproduces #2438 (0.13.1 SHIPPED WITH the #2441 fix).
@@ -328,39 +333,141 @@ def _parse_series(text):
     return out
 
 
-def _eval_metrics(seq, metrics_map):
+def _series_point(series, want_family, want_method):
+    """Return (labels, value) for the single series that matches the exact
+    ``family`` AND ``method`` label, or None if absent. Any NaN value is
+    returned as-is so callers can fail on it (NaN never matches comparisons)."""
+    for lab, v in series:
+        if lab.get("family") == want_family and lab.get("method") == want_method:
+            return (lab, v)
+    return None
+
+
+def _nan(value) -> bool:
+    """True when a scraped float is NaN (comparisons silently pass on NaN)."""
+    return value != value
+
+
+def _eval_metrics(seq, pre_map, post_map):
+    """Evaluate the #2421 MTP accept-rate contract as deltas between a
+    pre-canonical-chat and post-canonical-chat /metrics scrape, for the exact
+    (family, method) label pair declared in the YAML.
+
+    Vector's reviewed contract (not a performance benchmark — this is an
+    engagement/observability smoke):
+      * delta_attempts      >= 1
+      * delta_accepts       >= 1 and <= delta_attempts
+      * delta_tokens_saved  >= delta_accepts
+      * delta_accepts / delta_attempts > 0.0
+      * the exported accept_ratio gauge is finite and consistent with the
+        exact cumulative accepts/attempts counters (gauge == accepts/attempts).
+    A missing series or NaN anywhere in the measured window is a failure —
+    NaN must never pass a comparison by construction."""
+    name = seq.get("name", "<unnamed>")
     failures = []
     for i, mx in enumerate(seq.get("metrics_expected") or ()):
+        family = mx.get("family")
+        method = mx.get("method")
+        if not family or not method:
+            failures.append(
+                f"{name}.metrics_expected[{i}]: 'family' and 'method' are "
+                "required for the #2421 MTP contract"
+            )
+            continue
         metric = mx.get("metric")
-        series = metrics_map.get(metric, [])
-        want_method = mx.get("method")
-        if want_method:
-            series = [(lab, v) for lab, v in series if lab.get("method") == want_method]
-        if not series:
-            on_absent = mx.get("on_absent", "fail")
-            if on_absent == "fail" or mx.get("require_nonzero"):
+        pre = _series_point(pre_map.get(metric, []), family, method)
+        post = _series_point(post_map.get(metric, []), family, method)
+        if pre is None or post is None:
+            which = "pre" if pre is None else "post"
+            fail_kind = "ABSENT" if pre is None and post is None else "ABSENT pre/post"
+            failures.append(
+                f"{name}.metrics_expected[{i}]: {metric}"
+                f"{{family={family},method={method}}} {which} series "
+                f"{fail_kind} on /metrics"
+            )
+            continue
+        if _nan(pre[1]) or _nan(post[1]):
+            failures.append(
+                f"{name}.metrics_expected[{i}]: {metric}"
+                f"{{family={family},method={method}}} NaN in pre/post scrape "
+                "(NaN must not pass the contract)"
+            )
+            continue
+        if metric.endswith("_accept_ratio"):
+            # Gauge: finite + consistent with the cumulative accepts/attempts.
+            pre_a = _series_point(pre_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+            pre_c = _series_point(pre_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+            post_a = _series_point(post_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+            post_c = _series_point(post_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+            base_a = (post_a[1] if post_a is not None else 0.0) - (pre_a[1] if pre_a is not None else 0.0)
+            base_c = (post_c[1] if post_c is not None else 0.0) - (pre_c[1] if pre_c is not None else 0.0)
+            ratio = post[1]
+            if _nan(ratio):
                 failures.append(
-                    f"{seq['name']}.metrics_expected[{i}]: metric {metric!r}"
-                    + (f" method={want_method!r}" if want_method else "")
-                    + " ABSENT from /metrics"
+                    f"{name}.metrics_expected[{i}]: accept_ratio NaN"
+                )
+                continue
+            # The gauge is cumulative accepts/attempts; check consistency with
+            # the cumulative counters at the post scrape.
+            cum_a = post_a[1] if post_a is not None else None
+            cum_c = post_c[1] if post_c is not None else None
+            if cum_a is not None and cum_a > 0 and cum_c is not None:
+                expect = cum_c / cum_a
+                if abs(expect - ratio) > 1e-6:
+                    failures.append(
+                        f"{name}.metrics_expected[{i}]: accept_ratio={ratio} "
+                        f"inconsistent with cumulative accepts/attempts "
+                        f"({cum_c}/{cum_a}={expect})"
+                    )
+            # The per-window ratio must be strictly positive.
+            if base_a > 0 and base_c / base_a <= 0.0:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: per-window "
+                    f"accepts/attempts={base_c}/{base_a} not > 0.0"
                 )
             continue
-        value = max(v for _lab, v in series)
-        if mx.get("require_nonzero") and value == 0:
-            failures.append(
-                f"{seq['name']}.metrics_expected[{i}]: {metric}={value} but "
-                "require_nonzero"
-            )
-        if "min" in mx and value < mx["min"]:
-            failures.append(
-                f"{seq['name']}.metrics_expected[{i}]: {metric}={value} < "
-                f"min {mx['min']}"
-            )
-        if "max" in mx and value > mx["max"]:
-            failures.append(
-                f"{seq['name']}.metrics_expected[{i}]: {metric}={value} > "
-                f"max {mx['max']}"
-            )
+        if metric.endswith("_attempts_total"):
+            d = post[1] - pre[1]
+            if not d >= 1:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_attempts={d} not >= 1"
+                )
+            continue
+        if metric.endswith("_accepts_total"):
+            d = post[1] - pre[1]
+            try:
+                d_attempts = (post_map.get("rapid_mlx_spec_decode_attempts_total", []))
+                a_post = _series_point(d_attempts, family, method)
+                a_pre = _series_point(pre_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+                d_attempts = (a_post[1] if a_post is not None else 0.0) - (a_pre[1] if a_pre is not None else 0.0)
+            except Exception:
+                d_attempts = None
+            if not d >= 1:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_accepts={d} not >= 1"
+                )
+                continue
+            if d_attempts is not None and d > d_attempts:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_accepts={d} > "
+                    f"delta_attempts={d_attempts}"
+                )
+            continue
+        if metric.endswith("_tokens_saved_total"):
+            d = post[1] - pre[1]
+            try:
+                c_series = post_map.get("rapid_mlx_spec_decode_accepts_total", [])
+                c_post = _series_point(c_series, family, method)
+                c_pre = _series_point(pre_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+                d_accepts = (c_post[1] if c_post is not None else 0.0) - (c_pre[1] if c_pre is not None else 0.0)
+            except Exception:
+                d_accepts = None
+            if d_accepts is not None and d < d_accepts:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_tokens_saved={d} < "
+                    f"delta_accepts={d_accepts}"
+                )
+            continue
     return failures
 
 
@@ -431,16 +538,38 @@ def _drive(spec, args):
             if not (load_ok and chat_ok):
                 failed += 1
         if mode == "mtp":
+            # #2421 contract: one canonical temp=0, HTTP-200, non-empty chat on
+            # the freshly booted MTP primary, bracketed by a pre/post /metrics
+            # scrape, then evaluated as deltas for the exact family+method.
+            scrape_to = int(max(10, seq_deadline - time.time()))
             try:
-                mtext = _scrape_metrics(args["base"], args["auth"], int(max(10, seq_deadline - time.time())))
-                metrics_map = _parse_series(mtext)
+                pre_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
             except Exception as e:
-                print(f"    metrics scrape error: {e} [FAIL]")
+                print(f"    pre-metrics scrape error: {e} [FAIL]")
                 failed += 1
-                metrics_map = {}
-            for mf in _eval_metrics(seq, metrics_map):
+                pre_map = {}
+            canonical_model = seq.get("serve_alias")
+            chat_st, nonempty = _chat(
+                args["base"], canonical_model, args["auth"],
+                int(max(10, seq_deadline - time.time())),
+            )
+            chat_ok = chat_st == 200 and nonempty
+            print(
+                f"    canonical MTP chat {{model={canonical_model}}} -> HTTP "
+                f"{chat_st} content={'OK' if nonempty else 'EMPTY'} "
+                f"[{'PASS' if chat_ok else 'FAIL'}]"
+            )
+            if not chat_ok:
+                failed += 1
+            try:
+                post_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
+            except Exception as e:
+                print(f"    post-metrics scrape error: {e} [FAIL]")
+                failed += 1
+                post_map = {}
+            mm = _eval_metrics(seq, pre_map, post_map)
+            for mf in mm:
                 print(f"    METRIC-FAIL: {mf}")
-            mm = _eval_metrics(seq, metrics_map)
             if mm:
                 failed += len(mm)
     return failed
@@ -554,13 +683,25 @@ pick_free_port() {
 # mtp_serve_boot <alias> <port> [serve_extra args...] ; rc=$?
 # Boots a background `rapid-mlx serve <alias> --port <port> --disable-prefix-cache
 # --no-thinking <serve_extra...>` and waits for /v1/models to flip ready.
-# Returns non-zero if the port was occupied, the process died, or it never
-# became ready in 600s. Leaves MTP_SERVE_PID / MTP_SERVE_PORT set for teardown.
+# Returns non-zero if the port was already occupied, the process died, or it
+# never became ready in 600s.
+#
+# Ownership discipline (Vector B2): this function may only ever terminate the
+# process it itself started. A listener that wins pick_free_port AFTER we chose
+# it but BEFORE our serve binds is REPORTED and left running — never killed.
+# On ANY boot failure the MTP_SERVE_PID / MTP_SERVE_PORT ownership state is
+# cleared so a later teardown cannot act on a process we did not start.
 mtp_serve_boot() {
   local alias="$1" port="$2"; shift 2
-  MTP_SERVE_PORT="$port"
-  if curl -s -m 3 "http://localhost:$port/v1/models" >/dev/null 2>&1; then
-    echo "mtp_serve_boot: port $port already serving — free it first" >&2
+  MTP_SERVE_PID=""
+  MTP_SERVE_PORT=""
+  local occupant
+  occupant=$(command -v lsof >/dev/null 2>&1 \
+    && lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  if [ -n "$occupant" ] \
+     || curl -s -m 3 "http://localhost:$port/v1/models" >/dev/null 2>&1; then
+    echo "mtp_serve_boot: port $port already serving (pid ${occupant:-unknown}) — " \
+         "not ours, leaving it running; free it first" >&2
     return 1
   fi
   local base="http://localhost:$port"
@@ -585,28 +726,46 @@ mtp_serve_boot() {
     MTP_SERVE_PID=$!
   fi
   echo "  mtp serve boot: pid=$MTP_SERVE_PID port=$port ($MTP_SERVE_LOG)"
+  local dead=0
   for i in $(seq 1 120); do
-    curl -s -m 3 "$base/v1/models" 2>/dev/null | grep -q '"id"' && return 0
-    kill -0 "$MTP_SERVE_PID" 2>/dev/null || {
-      tail -20 "$MTP_SERVE_LOG" >&2
-      echo "mtp_serve_boot: serve process died during boot" >&2
-      return 1
+    curl -s -m 3 "$base/v1/models" 2>/dev/null | grep -q '"id"' && {
+      MTP_SERVE_PORT="$port"
+      return 0
     }
+    kill -0 "$MTP_SERVE_PID" 2>/dev/null || { dead=1; break; }
     sleep 5
-    [ "$i" = 120 ] && {
-      tail -20 "$MTP_SERVE_LOG" >&2
-      echo "mtp_serve_boot: serve not ready in 600s" >&2
-      return 1
-    }
   done
+  # Boot failed under OUR pid: stop exactly that process, then clear ownership.
+  MTP_SERVE_PORT="$port"
+  mtp_serve_teardown
+  if [ "$dead" = 1 ]; then
+    tail -20 "$MTP_SERVE_LOG" >&2
+    echo "mtp_serve_boot: serve process died during boot" >&2
+  else
+    tail -20 "$MTP_SERVE_LOG" >&2
+    echo "mtp_serve_boot: serve not ready in 600s" >&2
+  fi
+  return 1
 }
 
-# Idempotent teardown of the MTP serve started most recently.
+# Idempotent teardown of the MTP serve started most recently. Stops ONLY
+# MTP_SERVE_PID (TERM -> bounded wait -> KILL fallback); it never port-sweeps,
+# so a process that won the pick_free_port race is left running (Vector B2).
+# Any unexpected surviving listener on the port is reported, not killed.
 mtp_serve_teardown() {
-  [ -n "$MTP_SERVE_PID" ] && kill -9 "$MTP_SERVE_PID" 2>/dev/null
+  if [ -n "$MTP_SERVE_PID" ]; then
+    kill -TERM "$MTP_SERVE_PID" 2>/dev/null
+    for _i in $(seq 1 10); do
+      kill -0 "$MTP_SERVE_PID" 2>/dev/null || break
+      sleep 0.2
+      [ "$_i" = 10 ] && { kill -KILL "$MTP_SERVE_PID" 2>/dev/null; break; }
+    done
+  fi
   if [ -n "${MTP_SERVE_PORT:-}" ]; then
-    for _p in $(lsof -nP -iTCP:"$MTP_SERVE_PORT" -sTCP:LISTEN -t 2>/dev/null); do
-      kill -9 "$_p" 2>/dev/null
+    for _survivor in $(command -v lsof >/dev/null 2>&1 \
+      && lsof -nP -iTCP:"$MTP_SERVE_PORT" -sTCP:LISTEN -t 2>/dev/null); do
+      echo "mtp_serve_teardown: port $MTP_SERVE_PORT still held by pid " \
+           "$_survivor (not ours — leaving it running)" >&2
     done
   fi
   MTP_SERVE_PID=""

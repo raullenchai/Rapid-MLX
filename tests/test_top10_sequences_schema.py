@@ -16,12 +16,16 @@ What it pins (schema v4):
   * ``top_10_aliases`` is a non-empty ordered list of unique strings.
   * Every sequence has a unique name, an ordered, non-empty ``steps`` list,
     and the required scalar fields with the documented allowed values.
-  * ``mtp`` is one of ``"none" / "first" / "second"``. Any non-"none" sequence
-    must declare a ``serve_alias`` (in top_10_aliases), a ``serve_extra`` that
-    enables spec-decode, and a non-empty ``metrics_expected`` — the MTP serve
-    is the only way a Stream(gpu,3) / MTP accept counters exist.
-  * ``mtp: first`` loads its serve_alias on step 1; ``mtp: second`` must NOT
-    load serve_alias on step 1 (the MTP primary arrives at a later step).
+  * ``mtp`` is ``"none"`` or ``"first"``. Any non-"none" sequence must declare
+    a ``serve_alias`` (in top_10_aliases), a ``serve_extra`` that enables
+    spec-decode, and a non-empty ``metrics_expected`` — the MTP serve is the
+    only way a Stream(gpu,3) / MTP accept counters exist.
+  * ``mtp: first`` loads its serve_alias on step 1 (the MTP-served primary is
+    resident from the boot); every subsequent load is a DIFFERENT model that
+    exercises the load-after-an-MTP-primary #2438 path. There is intentionally
+    NO ``mtp: second``: a dedicated serve already boots with the MTP config, so
+    an MTP primary can never "arrive" at a later residency step, and
+    ``/v1/models/load`` cannot carry spec-decode (reviewer-rejected claim B3).
   * A sequence whose name is ``*-aba`` loads the SAME model first and last,
     and a DIFFERENT model in between (the A->B->A invariant).
   * Every step ``model`` is a top-10 alias (v4 dropped the absolute-path form)
@@ -29,12 +33,13 @@ What it pins (schema v4):
   * Every step carries ``expected_status``; ``replace_group`` constrained to
     ``"assistant"`` or ``null``; ``replace_mode`` constrained to the loader's
     accepted set; optional positive ``timeout_seconds`` on steps and sequences.
-  * ``metrics_expected`` entries are well-formed (metric is a string, method /
-    description optional strings, require_nonzero a bool, on_absent in
-    {"fail","pass"}, min/max numeric when present).
+  * ``metrics_expected`` entries are well-formed: each requires a non-empty
+    ``metric`` plus the exact ``family`` AND ``method`` labels it is measured
+    under (#2421 exact family+method contract, reviewer B1); ``description`` /
+    optional ``on_absent`` are strings/bools as documented.
   * Coverage: gemma-4-26b-4bit and bonsai-27b-2bit are actually LOADED by some
-    sequence step (v3 listed them but never loaded them), and both MTP-first
-    and MTP-second orderings exist.
+    sequence step (v3 listed them but never loaded them), and at least one
+    MTP:first sequence exists.
 """
 
 from __future__ import annotations
@@ -51,7 +56,7 @@ _ALIASES_FILE = _REPO_ROOT / "vllm_mlx" / "aliases.json"
 
 VALID_REPLACE_MODES = frozenset({"reject", "wait", "abort"})
 VALID_ACTIONS = frozenset({"load"})
-VALID_MTP = frozenset({"none", "first", "second"})
+VALID_MTP = frozenset({"none", "first"})
 VALID_ON_ABSENT = frozenset({"fail", "pass"})
 # Aliases that, per the v3->v4 coverage mandate, must actually be LOADED by
 # some sequence step (they were listed in top_10_aliases but never loaded).
@@ -105,19 +110,19 @@ def _assert_metric_expectation_shape(mx, seq_name, idx) -> None:
     assert isinstance(metric, str) and metric, (
         f"{seq_name} metrics_expected[{idx}]: requires a non-empty string 'metric'"
     )
-    if "method" in mx:
-        assert isinstance(mx["method"], str), (
-            f"{seq_name} metrics_expected[{idx}]: 'method' must be a string"
-        )
-    if "require_nonzero" in mx:
-        assert isinstance(mx["require_nonzero"], bool), (
-            f"{seq_name} metrics_expected[{idx}]: 'require_nonzero' must be bool"
-        )
-    for bound in ("min", "max"):
-        if bound in mx and mx[bound] is not None:
-            assert isinstance(mx[bound], (int, float)), (
-                f"{seq_name} metrics_expected[{idx}]: '{bound}' must be numeric"
-            )
+    # #2421 exact family+method contract: every expectation must pin the exact
+    # label pair it is measured under (a broad method-only filter would average
+    # across families and let a missing family pass — reviewer B1).
+    family = mx.get("family")
+    assert isinstance(family, str) and family, (
+        f"{seq_name} metrics_expected[{idx}]: requires a non-empty string 'family' "
+        "(the exact serve_alias family label)"
+    )
+    method = mx.get("method")
+    assert isinstance(method, str) and method, (
+        f"{seq_name} metrics_expected[{idx}]: requires a non-empty string 'method' "
+        "(the MTP label, e.g. 'mtp')"
+    )
     if "on_absent" in mx:
         assert mx["on_absent"] in VALID_ON_ABSENT, (
             f"{seq_name} metrics_expected[{idx}]: on_absent must be one of "
@@ -242,48 +247,48 @@ def test_mtp_first_loads_mtp_primary_on_step1(spec) -> None:
         )
 
 
-def test_mtp_second_does_not_load_primary_on_step1(spec) -> None:
-    """mtp: second => step 1 must be a DIFFERENT model; the MTP-served primary
-    (serve_alias) arrives on a LATER step. Covers the opposite load order that
-    a first-only sequence never visits."""
-    for seq in spec["sequences"]:
-        if seq.get("mtp") != "second":
-            continue
-        serve_alias = seq["serve_alias"]
-        assert seq["steps"][0]["model"] != serve_alias, (
-            f"{seq['name']}: with mtp=second, step 1 must NOT load serve_alias "
-            f"{serve_alias!r}; the MTP primary arrives at a later step"
-        )
-        later_models = [s["model"] for s in seq["steps"][1:]]
-        assert serve_alias in later_models, (
-            f"{seq['name']}: with mtp=second, a LATER step must load "
-            f"serve_alias {serve_alias!r}"
-        )
+def test_mtp_first_exists(spec) -> None:
+    """At least one mtp: first sequence must exist (#2438/#2496 guard).
+    There is intentionally NO mtp: second — reviewer B3: a dedicated serve
+    boots with the MTP config, so the MTP primary is resident from step 1 and
+    can never "arrive second"; /v1/models/load cannot carry spec-decode."""
+    mtp_modes = {seq.get("mtp") for seq in spec["sequences"]}
+    assert "first" in mtp_modes, "at least one mtp: first sequence required"
+    assert "second" not in mtp_modes, (
+        "mtp: second is a false claim — a dedicated MTP serve already boots "
+        "spec-decode, so the primary can never arrive at a later residency step"
+    )
 
 
-def test_mtp_sequences_assert_attempts_and_accept_floor(spec) -> None:
+def test_mtp_sequences_pin_exact_family_method_counters(spec) -> None:
     """Every MTP sequence's metrics_expected must cover BOTH the raw attempts
     counter (proves spec-decode actually ran -> there WAS a Stream(gpu,3)) and
-    the accept-ratio floor (the #2421 assertion)."""
+    the accept_ratio gauge (the #2421 assertion), each with an exact
+    family+method label pair (#2421 exact-family contract, reviewer B1)."""
     for seq in spec["sequences"]:
         if seq.get("mtp") == "none":
             continue
-        metrics = {m.get("metric") for m in seq.get("metrics_expected") or []}
+        metrics = {
+            m.get("metric")
+            for m in seq.get("metrics_expected") or []
+        }
         assert "rapid_mlx_spec_decode_attempts_total" in metrics, (
             f"{seq['name']}: MTP sequence must assert the attempts counter "
             f"(proves MTP ran / Stream(gpu,3) existed)"
         )
         assert "rapid_mlx_spec_decode_accept_ratio" in metrics, (
-            f"{seq['name']}: MTP sequence must assert the #2421 accept_ratio floor"
+            f"{seq['name']}: MTP sequence must assert the #2421 accept_ratio"
         )
-
-
-def test_mtp_second_exists_in_addition_to_mtp_first(spec) -> None:
-    """#2438/#2496 want BOTH orderings: an MTP primary served first AND served
-    second. A repo that only encodes first-forgets the opposite choreography."""
-    mtp_modes = {seq.get("mtp") for seq in spec["sequences"]}
-    assert "first" in mtp_modes, "at least one mtp: first sequence required"
-    assert "second" in mtp_modes, "at least one mtp: second sequence required"
+        for mx in seq.get("metrics_expected") or []:
+            assert mx.get("family") == seq.get("serve_alias"), (
+                f"{seq['name']}: metrics_expected family {mx.get('family')!r} must "
+                f"equal the serve_alias {seq.get('serve_alias')!r} (the exact "
+                "family label the MTP serve reports)"
+            )
+            assert mx.get("method") == "mtp", (
+                f"{seq['name']}: metrics_expected method {mx.get('method')!r} "
+                "must be 'mtp'"
+            )
 
 
 def test_gemma_and_bonsai_actually_load(spec) -> None:

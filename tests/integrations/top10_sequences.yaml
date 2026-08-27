@@ -49,11 +49,17 @@
 # SCOPING
 #   * This is a SPEC + gate HARNESS, not a metric. It makes the gate CAPABLE of
 #     reproducing the #2438 path and of asserting the MTP accept rate.
-#   * The MTP accept-rate floor (#2421, owned by VECTOR) is encoded per-sequence
-#     in `metrics_expected` and evaluated by the gate against the MTP serve's
-#     /metrics scrape. A floor here is a gate-owned baseline; Vector owns the
-#     final number. `metrics_expected` is only enforced on `mtp != none`
-#     sequences (where an MTP serve is actually booted and the counters exist).
+#   * #2421 (reviewer B1): the MTP engagement/observability contract is evaluated
+#     as DELTAS between a pre-canonical-chat and post-canonical-chat /metrics
+#     scrape, for the exact (family, method) label pair declared per expectation.
+#     delta_attempts >= 1; 1 <= delta_accepts <= delta_attempts;
+#     delta_tokens_saved >= delta_accepts; delta_accepts/delta_attempts > 0.0; and
+#     the exported accept_ratio gauge must be finite and consistent with the exact
+#     cumulative accepts/attempts counters. There is NO uncalibrated 0.4 floor —
+#     this is engagement/observability, not a performance benchmark. `family` is
+#     the exact serve_alias the MTP serve reports as its model_alias family label.
+#     `metrics_expected` is only enforced on `mtp != none` sequences (where an MTP
+#     serve is actually booted and the counters exist).
 #   * Nothing in this file loads a model by itself — it is declarative data
 #     consumed by the gate's driver. Nobody may run this spec directly.
 #
@@ -69,17 +75,21 @@
 #   sequence = {
 #     name:            str (unique, kebab-case)
 #     description:     str (free text / rationale — includes the #2438 mande)
-#     mtp:             "none" | "first" | "second"
-#                      * "none"   — driven against the gate's main warm serve.
-#                      * "first"  — the MTP-served primary is the FIRST load of
-#                                   the sequence (step 1 == serve_alias).
-#                      * "second" — the MTP-served primary becomes primary at a
-#                                   LATER step (step 1 is a different model).
+#     mtp:             "none" | "first"
+#                      * "none"  — driven against the gate's main warm serve.
+#                      * "first" — the MTP-served primary is the FIRST load of
+#                                  the sequence (step 1 == serve_alias).
+#                      There is NO "second" (reviewer B3): a dedicated MTP serve
+#                      boots WITH the speculative config, so the MTP primary is
+#                      resident from step 1 — it can never "arrive" at a later
+#                      residency step, and /v1/models/load cannot carry
+#                      spec-decode. A "second" ordering is semantically false.
 #                      Any non-"none" requires the gate to boot a dedicated
 #                      `rapid-mlx serve <serve_alias> ... <serve_extra>` on its
 #                      OWN port, drive the sequence against it, scrape its
-#                      /metrics, then tear it down. The MTP serve is what makes
-#                      a Stream(gpu,3) exist at all (#2438 requires it).
+#                      /metrics around one canonical MTP chat, then tear it
+#                      down (own-PID only — never a port sweep). The MTP serve
+#                      is what makes a Stream(gpu,3) exist at all (#2438).
 #     serve_alias:     str — the alias the gate boots the dedicated MTP serve
 #                      with (required when mtp != "none"). MUST be in
 #                      top_10_aliases.
@@ -100,19 +110,20 @@
 #   metric_expectation = {
 #     metric:            str — Prometheus metric name on the MTP serve's
 #                        /metrics (e.g. rapid_mlx_spec_decode_attempts_total).
-#     method:            str (optional) — value of the `method` label to filter
-#                        by (e.g. "mtp"). Absent => any/all series.
-#     require_nonzero:   bool (optional) — fail if the series value is 0/absent.
-#                        Proves MTP is actually on and generating.
-#     min:               number (optional) — fail if the value < min (e.g. the
-#                        accept_ratio floor).
-#     max:               number (optional) — fail if the value > max.
+#     family:            str (required) — the EXACT `family` label this metric
+#                        is measured under: the serve_alias the MTP serve boots
+#                        with (it reports model_alias as its family label).
+#     method:            str (required) — the EXACT `method` label, "mtp".
 #     on_absent:         "fail"|"pass" (optional, default "fail") — behaviour
-#                        when the metric series is absent from the scrape.
-#                        For an MTP suffix counter an ABSENT series means MTP
-#                        never ran — that must FAIL.
+#                        when the metric series is absent from a scrape. For an
+#                        MTP suffix counter an ABSENT series means MTP never
+#                        ran — that must FAIL.
 #     description:       str (optional).
 #   }
+#   The driver evaluates the #2421 contract as deltas of this exact
+#   (family, method) series between the pre- and post-canonical-chat scrapes
+#   (see "SCOPING"). The per-metric assertions are intrinsic to the contract,
+#   not per-sequence knobs.
 #
 #   step = {
 #     action:             "load"  (only supported action)
@@ -241,20 +252,33 @@ sequences:
       - '{"method":"mtp","num_speculative_tokens":3}'
     metrics_expected:
       - metric: rapid_mlx_spec_decode_attempts_total
+        family: qwen3.8-27b-4bit
         method: mtp
-        require_nonzero: true
         on_absent: fail
         description: >-
-          MTP must actually generate — a 0/absent attempts counter means the
-          MTP serve never went spec-decode (no Stream(gpu,3) was ever torn
-          down, so the sequence silently lost its #2438 value).
+          #2421: the canonical MTP chat must drive delta_attempts >= 1 — a
+          zero/absent delta means the MTP serve never went spec-decode on the
+          freshly booted primary (no Stream(gpu,3) was exercised).
+      - metric: rapid_mlx_spec_decode_accepts_total
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: 1 <= delta_accepts <= delta_attempts on the canonical chat.
+      - metric: rapid_mlx_spec_decode_tokens_saved_total
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: delta_tokens_saved >= delta_accepts on the canonical chat.
       - metric: rapid_mlx_spec_decode_accept_ratio
+        family: qwen3.8-27b-4bit
         method: mtp
-        min: 0.4
         on_absent: fail
         description: >-
-          #2421 accept-rate floor. Gate-owned baseline; Vector owns the final
-          reviewed number. A ratio below the floor is a MTP-speed regression.
+          #2421: the exported ratio gauge is finite and consistent with the
+          exact cumulative accepts/attempts counters; per-window ratio > 0.0.
+          No fixed floor — engagement/observability, not a perf benchmark.
     timeout_seconds: 1500
     steps:
       - action: load
@@ -335,12 +359,20 @@ sequences:
       - '{"method":"mtp","num_speculative_tokens":3}'
     metrics_expected:
       - metric: rapid_mlx_spec_decode_attempts_total
+        family: qwen3.8-27b-mixed-3.5bpw
         method: mtp
-        require_nonzero: true
+        on_absent: fail
+      - metric: rapid_mlx_spec_decode_accepts_total
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
+        on_absent: fail
+      - metric: rapid_mlx_spec_decode_tokens_saved_total
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
         on_absent: fail
       - metric: rapid_mlx_spec_decode_accept_ratio
+        family: qwen3.8-27b-mixed-3.5bpw
         method: mtp
-        min: 0.4
         on_absent: fail
     timeout_seconds: 1500
     steps:
@@ -368,66 +400,7 @@ sequences:
         timeout_seconds: 500
 
   # -------------------------------------------------------------------------
-  # 5. MTP-SECOND, the ordering #2438 / #2496 also demanded. The MTP-served
-  #    model becomes the primary on a LATER step, not the first. The gate boots
-  #    the MTP serve on qwen3.8-27b-4bit, loads a DIFFERENT model first
-  #    (co-resident), then brings the MTP primary in via replace at step 2,
-  #    then tears it down again. This covers the "MTP primary arrival is not
-  #    the first residency event" choreography that a first-only sequence never
-  #    visits.
-  # -------------------------------------------------------------------------
-  - name: mtp-second-load-primary
-    description: >-
-      MTP-second variant: on a dedicated MTP serve (qwen3.8-27b-4bit +
-      spec-decode config), step 1 loads a DIFFERENT model (qwen3.5-9b-4bit) as
-      the initial resident, step 2 loads the MTP primary into "assistant"
-      (MTP primary arriving at residency position 2), step 3 tears it down
-      with another different model. The post-load completion after step 2 is
-      the generate path on the MTP primary — the #2438 surface from the
-      opposite load order. Same metrics_expected floor as the MTP-first lanes.
-    mtp: second
-    serve_alias: qwen3.8-27b-4bit
-    serve_extra:
-      - "--speculative-config"
-      - '{"method":"mtp","num_speculative_tokens":3}'
-    metrics_expected:
-      - metric: rapid_mlx_spec_decode_attempts_total
-        method: mtp
-        require_nonzero: true
-        on_absent: fail
-      - metric: rapid_mlx_spec_decode_accept_ratio
-        method: mtp
-        min: 0.4
-        on_absent: fail
-    timeout_seconds: 1500
-    steps:
-      - action: load
-        model: qwen3.5-9b-4bit
-        replace_group: null
-        replace_mode: reject
-        expected_status: 200
-        timeout_seconds: 500
-        regression_would_be: "MTP-second: initial (different) resident did not load"
-      - action: load
-        model: qwen3.8-27b-4bit
-        replace_group: "assistant"
-        replace_mode: wait
-        expected_status: 200
-        timeout_seconds: 500
-        regression_would_be: >-
-          #2438 PRIME (MTP-second): bringing the MTP primary in at residency
-          position 2 and then generating must not 503 on the per-worker stream
-          teardown created by the step-1 resident. RED pre-fix 62a038c7.
-      - action: load
-        model: qwen3.6-27b-4bit
-        replace_group: "assistant"
-        replace_mode: wait
-        expected_status: 200
-        timeout_seconds: 500
-        regression_would_be: "MTP-second: tearing down the MTP primary regressed"
-
-  # -------------------------------------------------------------------------
-  # 6. Gemma 4-26B — required coverage (v3 listed the alias and never loaded
+  # 5. Gemma 4-26B — required coverage (v3 listed the alias and never loaded
   #    it). A real Gemma-family residency A->B->A on the ordinary path.
   # -------------------------------------------------------------------------
   - name: gemma-primary-aba
@@ -462,7 +435,7 @@ sequences:
         timeout_seconds: 500
 
   # -------------------------------------------------------------------------
-  # 7. Bonsai-27B — required coverage (v3 listed the alias and never loaded
+  # 6. Bonsai-27B — required coverage (v3 listed the alias and never loaded
   #    it). A non-Qwen/Gemma family so the gate is not family-narrow.
   # -------------------------------------------------------------------------
   - name: bonsai-primary-aba
