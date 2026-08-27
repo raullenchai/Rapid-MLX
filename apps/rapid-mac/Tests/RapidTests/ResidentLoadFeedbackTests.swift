@@ -249,10 +249,20 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
 /// slot in opposite directions never race on it, and the ``defer { reset() }``
 /// in each test restores defaults so a failure mid-test cannot leak state
 /// forward (#1838 follow-up).
+///
+/// RAM independence (#2480): every server built by ``makeServer`` injects a
+/// fixed, generous ``MemoryProbe.Snapshot`` (64 GiB / 0 used) through
+/// ``ServerManager.memorySnapshotProvider`` — the same seam
+/// ``SessionModelRestoreTests`` uses. On a low-RAM CI runner the pre-#2478
+/// tests projected >100% memory and ``ensureServing`` parked forever awaiting
+/// a memory-confirmation decision no test responds to. With the injected
+/// snapshot every load projects ``.safe``, so ``requiresMemoryConfirmation``
+/// can never fire and no responder is needed: the suite asserts the resident
+/// rejection/load behaviour on fixtures, not on the host's real RAM.
 @MainActor
-@Suite("Resident-load rejection feedback", .serialized, .disabled("hangs on low-RAM CI awaiting memory confirmation; re-enable with RAM-independent fixtures in #2480"))
+@Suite("Resident-load rejection feedback", .serialized)
 struct ResidentLoadFeedbackTests {
-    @Test("Resident admission publishes alias-scoped working state immediately")
+    @Test("Resident admission publishes alias-scoped working state immediately", .timeLimit(.minutes(1)))
     func publishesResidentLoadInFlightState() async {
         defer { ResidentLoadRejectProtocol.reset() }
         let server = makeServer()
@@ -279,7 +289,7 @@ struct ResidentLoadFeedbackTests {
     /// The per-alias ``residentLoadFailure(for:)`` lookup did not exist before
     /// this fix, so this test does not merely fail — it does not compile
     /// against old `main`, guaranteeing it cannot silently rot into a pass.
-    @Test("A rejected resident load publishes the engine's reason")
+    @Test("A rejected resident load publishes the engine's reason", .timeLimit(.minutes(1)))
     func publishesRejectedLoadFailure() async {
         defer { ResidentLoadRejectProtocol.reset() }
         ResidentLoadRejectProtocol.rejectLoad = true
@@ -297,7 +307,7 @@ struct ResidentLoadFeedbackTests {
 
     /// A successful in-process load clears any prior rejection, so the banner
     /// does not keep showing last round's failure once the model loads.
-    @Test("A successful resident load clears a prior rejection")
+    @Test("A successful resident load clears a prior rejection", .timeLimit(.minutes(1)))
     func successfulLoadClearsRejection() async {
         defer { ResidentLoadRejectProtocol.reset() }
         // First a rejection (sets the published failure)…
@@ -314,7 +324,7 @@ struct ResidentLoadFeedbackTests {
         #expect(server.residentLoadFailure(for: "flux2-klein-4b") == nil)
     }
 
-    @Test("Assistant resident load persists authoritative catalog provenance without a hint")
+    @Test("Assistant resident load persists authoritative catalog provenance without a hint", .timeLimit(.minutes(1)))
     func residentAssistantPersistsProbedChatAlias() async throws {
         defer { ResidentLoadRejectProtocol.reset() }
         ResidentLoadRejectProtocol.rejectLoad = false
@@ -358,7 +368,7 @@ struct ResidentLoadFeedbackTests {
     /// successfully loading, and a rejection for model A must not surface for
     /// model B. Failures are keyed per alias, so concurrent/interleaved loads
     /// of different models each keep their own outcome.
-    @Test("Rejections are independent per alias (no cross-talk)")
+    @Test("Rejections are independent per alias (no cross-talk)", .timeLimit(.minutes(1)))
     func rejectionsArePerAliasIndependent() async {
         defer { ResidentLoadRejectProtocol.reset() }
         // Only model A is rejected; model B and a second attempt at A that
@@ -393,7 +403,7 @@ struct ResidentLoadFeedbackTests {
     /// (in ``startLoading``, steering clear of the main actor) while a second,
     /// newer attempt completes first — reproducing exactly the interleaving
     /// where latest-attempt-wins must hold.
-    @Test("An older rejection cannot clobber a newer success for the same alias")
+    @Test("An older rejection cannot clobber a newer success for the same alias", .timeLimit(.minutes(1)))
     func olderRejectionDoesNotClobberNewerSuccess() async throws {
         defer { ResidentLoadRejectProtocol.reset() }
         let server = makeServer()
@@ -431,7 +441,7 @@ struct ResidentLoadFeedbackTests {
     /// attempt's rejection. The per-alias dictionary allows an old success to
     /// wipe a fresh failure unless the return-time write is also guarded by
     /// which attempt is newest (#1838 follow-up).
-    @Test("An older success cannot clear a newer rejection for the same alias")
+    @Test("An older success cannot clear a newer rejection for the same alias", .timeLimit(.minutes(1)))
     func olderSuccessDoesNotClearNewerRejection() async throws {
         defer { ResidentLoadRejectProtocol.reset() }
         let server = makeServer()
@@ -480,6 +490,15 @@ struct ResidentLoadFeedbackTests {
     /// Build a ``ServerManager`` in the resident-ready state with the stub
     /// transport and a stub child, so ``ensureServing`` takes the in-process
     /// ``/v1/models/load`` path rather than the cold-start fallback.
+    ///
+    /// Every server also gets a fixed, generous memory snapshot so the suite
+    /// is RAM-independent (#2480): on a low-RAM CI runner the host probe can
+    /// project >100% utilisation, which parks ``ensureServing`` on a
+    /// memory-confirmation decision that no test responder answers — hanging
+    /// the whole serial job. Injecting ``safeMemorySnapshot`` (64 GiB / 0 used)
+    /// keeps every load ``.safe``, so no confirmation is ever requested and the
+    /// tests exercise the resident rejection/load contract on fixtures rather
+    /// than on the host's actual memory.
     private func makeServer(
         initialAlias: String = "qwen3.5-4b-4bit",
         binaryPath: URL? = nil,
@@ -494,6 +513,24 @@ struct ResidentLoadFeedbackTests {
         )
         server._testSetResidencyClient(client)
         server._testInstallChild(ProcessGroupChild.testStub())
+        // Capture the Sendable snapshot VALUE on the main actor before the
+        // closure: ``memorySnapshotProvider`` is a ``@Sendable`` closure, and
+        // referencing the ``@MainActor``-isolated static from inside one is a
+        // Swift 6 strict-concurrency error. ``MemoryProbe.Snapshot`` is
+        // ``Sendable``, so capturing the value is safe.
+        let safeSnapshot = Self.safeMemorySnapshot
+        server.memorySnapshotProvider = { safeSnapshot }
         return server
+    }
+
+    /// Plenty of headroom above any model footprint in this suite, so
+    /// ``ModelSizing.memorySafety`` always returns ``.safe`` and the
+    /// `>100%` memory-confirmation path can never be reached. Same shape as
+    /// ``SessionModelRestoreTests.safeMemorySnapshot``.
+    private static var safeMemorySnapshot: MemoryProbe.Snapshot {
+        MemoryProbe.Snapshot(
+            totalBytes: 64 * 1_024 * 1_024 * 1_024,
+            usedBytes: 0
+        )
     }
 }
