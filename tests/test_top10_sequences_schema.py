@@ -268,10 +268,7 @@ def test_mtp_sequences_pin_exact_family_method_counters(spec) -> None:
     for seq in spec["sequences"]:
         if seq.get("mtp") == "none":
             continue
-        metrics = {
-            m.get("metric")
-            for m in seq.get("metrics_expected") or []
-        }
+        metrics = {m.get("metric") for m in seq.get("metrics_expected") or []}
         assert "rapid_mlx_spec_decode_attempts_total" in metrics, (
             f"{seq['name']}: MTP sequence must assert the attempts counter "
             f"(proves MTP ran / Stream(gpu,3) existed)"
