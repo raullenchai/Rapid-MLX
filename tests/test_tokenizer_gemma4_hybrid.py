@@ -42,6 +42,9 @@ download required, runs in CI) AND a real-Gemma-4 reproducer
 
 from __future__ import annotations
 
+import os
+import socket
+
 import pytest
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
@@ -227,8 +230,10 @@ class TestGate2RealGemma4:
     """Pin the issue-#950 reproducer end-to-end on the real Gemma 4
     tokenizer. Tokenizer files only — no model weights, no MLX load."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def gemma4_tokenizer(self):
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        assert getattr(socket.socket.connect, "_hermetic_network_guard", False)
         return AutoTokenizer.from_pretrained(_GEMMA4_ALIAS)
 
     def test_issue_950_reproducer_fixed(self, gemma4_tokenizer) -> None:
