@@ -840,6 +840,15 @@ def _install_mtp_vendored(
     from .spec_decode.mtp.draft_k_controller_v2 import derive_controller_key
     from .spec_decode.mtp.generator import mtp_generate_step
 
+    model_max_k = getattr(mtp_model, "mtp_max_speculative_tokens", max_k)
+    if max_k > model_max_k:
+        logger.warning(
+            "[MTP-vendored] checkpoint caps speculative depth at K=%d (requested K=%d)",
+            model_max_k,
+            max_k,
+        )
+        max_k = model_max_k
+
     # Derive the structural controller key ONCE at install. It walks the model
     # tree to discover quantization, so recomputing it per generation request
     # (the unnamed-model fallback in ``_mtp_step`` below) would put
@@ -1593,7 +1602,7 @@ def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
     narrowly tied to the model families this MTP runtime supports.
     """
 
-    return model_type in {"qwen3_5", "qwen3_5_moe", "hy_v3"}
+    return model_type in {"qwen3_5", "qwen3_5_moe", "hy_v3", "qwen4_exp"}
 
 
 def _replay_dspark_committed(

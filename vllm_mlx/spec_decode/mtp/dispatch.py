@@ -56,6 +56,12 @@ _MTP_INJECT_DISPATCH: dict[str, tuple[str, str]] = {
         "vllm_mlx.spec_decode.mtp.hy3_inject",
         "inject_hy3_mtp_support",
     ),
+    # Qwen3.8 Flash-Next native one-layer MTP head stored in the target
+    # checkpoint's ``mtp.*`` namespace.
+    "qwen4_exp": (
+        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "inject_qwen4_exp_mtp_support",
+    ),
 }
 
 
@@ -75,6 +81,10 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
     "hy_v3": (
         "vllm_mlx.spec_decode.mtp.hy3_inject",
         "validate_hy3_mtp_support",
+    ),
+    "qwen4_exp": (
+        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "validate_qwen4_exp_mtp_support",
     ),
 }
 

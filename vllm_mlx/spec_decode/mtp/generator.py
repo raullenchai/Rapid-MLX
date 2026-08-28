@@ -24,10 +24,9 @@ to make it importable against our installed mlx-lm 0.31.3:
 Everything else — the verify / accept logic, the rollback path, the
 probabilistic-acceptance ``min(1, p_target/p_draft)`` test, the
 residual-distribution sample on rejection — is the upstream code
-unchanged. That is intentional. The lossless contract (byte-identical
-to non-spec-decode for the same prompt + seed at temp=0) lives in the
-verify / accept arithmetic, and rewriting it would risk a divergence
-that a unit test against a single mocked model can't catch.
+unchanged. That is intentional. Target verification preserves the target
+sampling distribution; byte identity with single-token decode additionally
+depends on the model family's multi-token numerical path.
 
 Public signature mirrors upstream so callers can swap
 ``mtp_generate_step(prompt, model, ...)`` for
@@ -432,7 +431,10 @@ def mtp_generate_step(
         entries.
         """
         for c in model_cache:
-            if hasattr(c, "rollback_state") and c.rollback_state is not None:
+            restore = getattr(c, "restore_rollback", None)
+            if callable(restore) and getattr(c, "rollback_state", None) is not None:
+                restore(n_to_drop, verify_size)
+            elif hasattr(c, "rollback_state") and c.rollback_state is not None:
                 snapshots = c.rollback_state
                 if isinstance(snapshots, list):
                     if verify_size is None:

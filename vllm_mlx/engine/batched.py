@@ -455,6 +455,7 @@ def _apply_mtp_dispatch(
     model_name: str,
     scheduler_config: Any,
     executor: Any,
+    checkpoint_source: str | None = None,
 ) -> str:
     """Executor-side MTP dispatch step used by ``_start_llm``.
 
@@ -475,6 +476,12 @@ def _apply_mtp_dispatch(
 
     preferred_mt = getattr(scheduler_config, "mtp_model_type", None)
     sidecar = getattr(scheduler_config, "mtp_sidecar", None)
+    if preferred_mt == "qwen4_exp" and sidecar is None:
+        # Flash-Next stores its native MTP tensors beside the target tensors.
+        # Use the exact immutable snapshot selected by this load rather than
+        # resolving the mutable alias a second time or requiring users to pass
+        # the target checkpoint back as an artificial sidecar.
+        sidecar = checkpoint_source
 
     future = executor.submit(
         _run_dispatch_mtp_inject,
@@ -1720,6 +1727,7 @@ class BatchedEngine(BaseEngine):
                 model_name=self._model_name,
                 scheduler_config=sc,
                 executor=self._model_load_executor,
+                checkpoint_source=checkpoint_source,
             )
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded

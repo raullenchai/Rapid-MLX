@@ -2,8 +2,8 @@
 """Process-local MTP accept-rate counter (R15 task #302).
 
 The Prometheus surface (``rapid_mlx_spec_decode_*``) is the canonical
-external observability for whether the lossless contract is actually
-holding in production. ``MTPAcceptCounter`` is the in-process backing
+external observability for whether speculation is paying for itself in
+production. ``MTPAcceptCounter`` is the in-process backing
 state — both the chain MTP generator and any future tree MTP variant
 write into the SAME counter, with the ``method`` / ``family`` labels
 distinguishing the source.
@@ -30,18 +30,18 @@ Design choices
   doesn't require any schema change here. Counters never reset on
   ``record_*`` calls.
 
-Lossless contract
------------------
+Verification and performance contract
+-------------------------------------
 
-The ``method="mtp"`` accept ratio is the lossless contract surface:
+The ``method="mtp"`` accept ratio is the performance surface:
 
 * ``accept_ratio >= 0.80`` for Qwen3.5-9B-w4 at temp=0 on the bench
   workload (PR #990 reports ~85%).
 * ``accept_ratio`` only equals 1.0 when EVERY draft was accepted; a
-  ratio below 1.0 means at least one rejection fired and the verify
-  step took the corrective path. Both states still produce
-  byte-identical token output to non-spec-decode generation; the
-  acceptance rate is the *speedup* signal, not a correctness one.
+  ratio below 1.0 means at least one rejection fired and the target
+  verify step took the corrective path. The target therefore remains
+  authoritative, but byte identity with ordinary decode depends on the
+  family-specific numerical verify path and is tested separately.
 * ``tokens_saved`` counts the cumulative "bonus tokens emitted from
   draft acceptance" — when a draft is accepted, the generator emits
   both the verified primary token and the accepted draft token in the

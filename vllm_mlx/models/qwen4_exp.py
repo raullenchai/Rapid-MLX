@@ -97,6 +97,7 @@ class TextModelArgs(BaseModelArgs):
     split_ngram_parts: int = 128
     seed: int = 1234
     eos_token_id: int | list[int] | None = None
+    mtp_num_hidden_layers: int = 0
 
     def __post_init__(self):
         rope = dict(self.rope_parameters or {})
@@ -316,13 +317,35 @@ class SparseMoeBlock(nn.Module):
         self.shared_expert_gate = nn.Linear(args.hidden_size, 1, bias=False)
         self.sharding_group = None
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, *, target_verify: bool = False) -> mx.array:
         gates = mx.softmax(self.gate(x), axis=-1, precise=True)
         indices = mx.argpartition(gates, kth=-self.top_k, axis=-1)[..., -self.top_k :]
         scores = mx.take_along_axis(gates, indices, axis=-1)
         if self.norm_topk_prob:
             scores = scores / scores.sum(axis=-1, keepdims=True)
-        routed = self.switch_mlp(x, indices)
+        if target_verify and x.ndim == 3 and x.shape[1] > 1:
+            batch, steps, width = x.shape
+            experts_per_token = indices.shape[-1]
+            flat_x = x.reshape(batch * steps, width)
+            flat_indices = indices.reshape(batch * steps, experts_per_token)
+            flat_x = mx.expand_dims(flat_x, (-2, -3))
+            gate_up_proj = getattr(self.switch_mlp, "gate_up_proj", None)
+            if gate_up_proj is not None:
+                gate_up = gate_up_proj(flat_x, flat_indices, sorted_indices=False)
+                gate, up = mx.split(gate_up, 2, axis=-1)
+            else:
+                up = self.switch_mlp.up_proj(flat_x, flat_indices, sorted_indices=False)
+                gate = self.switch_mlp.gate_proj(
+                    flat_x, flat_indices, sorted_indices=False
+                )
+            routed = self.switch_mlp.down_proj(
+                self.switch_mlp.activation(up, gate),
+                flat_indices,
+                sorted_indices=False,
+            )
+            routed = routed.squeeze(-2).reshape(batch, steps, experts_per_token, -1)
+        else:
+            routed = self.switch_mlp(x, indices)
         routed = (routed * scores[..., None]).sum(axis=-2)
         shared = self.shared_expert(x)
         shared = mx.sigmoid(self.shared_expert_gate(x)) * shared
@@ -370,6 +393,8 @@ class GatedDeltaNet(nn.Module):
         inputs: mx.array,
         mask: mx.array | None = None,
         cache: Any | None = None,
+        *,
+        record_rollback: bool = False,
     ) -> mx.array:
         batch, length, _ = inputs.shape
         mixed = self.in_proj_qkv(inputs)
@@ -397,6 +422,14 @@ class GatedDeltaNet(nn.Module):
                 cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
             else:
                 cache[0] = mx.contiguous(conv_input[:, -keep:, :])
+            if record_rollback:
+                cache.record_slot_snapshots(
+                    0,
+                    [
+                        mx.contiguous(conv_input[:, position : position + keep, :])
+                        for position in range(1, length)
+                    ],
+                )
         convolved = nn.silu(self.conv1d(conv_input))
         query, key, value = [
             item.reshape(batch, length, heads, dim)
@@ -418,18 +451,41 @@ class GatedDeltaNet(nn.Module):
         )
         key = key * mx.rsqrt(mx.sum(mx.square(key), axis=-1, keepdims=True) + 1e-6)
         query = query * inv_scale
-        output, state = gated_delta_update(
-            query,
-            key,
-            value,
-            alpha,
-            beta,
-            self.A_log,
-            self.dt_bias,
-            state,
-            mask,
-            use_kernel=not self.training,
-        )
+        if record_rollback and cache is not None and length > 1:
+            from vllm_mlx.kernels.qwen4_gdn_verify import (
+                gated_delta_verify_with_states,
+            )
+
+            output, state, state_snapshots = gated_delta_verify_with_states(
+                query,
+                key,
+                value,
+                alpha,
+                beta,
+                self.A_log,
+                self.dt_bias,
+                state,
+                mask,
+                use_kernel=not self.training,
+            )
+            cache.record_slot_snapshots(
+                1,
+                [state_snapshots[:, position] for position in range(length - 1)],
+                finalize=True,
+            )
+        else:
+            output, state = gated_delta_update(
+                query,
+                key,
+                value,
+                alpha,
+                beta,
+                self.A_log,
+                self.dt_bias,
+                state,
+                mask,
+                use_kernel=not self.training,
+            )
         if cache is not None:
             cache[1] = state
             cache.advance(length)
@@ -1040,7 +1096,13 @@ class NGramEmbedding(nn.Module):
         valid = (position_in_segment >= shift) & (source_positions[None, :] >= 0)
         return mx.where(valid, shifted, self.eos_token_id)
 
-    def compute_ids(self, input_ids: mx.array, cache: Any | None = None) -> mx.array:
+    def compute_ids(
+        self,
+        input_ids: mx.array,
+        cache: Any | None = None,
+        *,
+        record_rollback: bool = False,
+    ) -> mx.array:
         input_ids = input_ids.astype(mx.int64)
         if cache is not None and cache[3] is not None:
             previous = cache[3]
@@ -1060,6 +1122,16 @@ class NGramEmbedding(nn.Module):
                 ).squeeze(-1)
             else:
                 cache[3] = mx.contiguous(history[:, -self.context_len :])
+            if record_rollback:
+                cache.record_slot_snapshots(
+                    3,
+                    [
+                        mx.contiguous(
+                            history[:, position : position + self.context_len]
+                        )
+                        for position in range(1, input_ids.shape[1])
+                    ],
+                )
         shifted = [
             self._shift_right_ignore_eos(history, shift)
             for shift in range(self.ngram_size)
@@ -1080,8 +1152,18 @@ class NGramEmbedding(nn.Module):
             blocks.append(ids)
         return mx.concatenate(blocks, axis=-1)[:, -input_ids.shape[1] :]
 
-    def __call__(self, input_ids: mx.array, cache: Any | None = None) -> mx.array:
-        ids = self.compute_ids(input_ids, cache)
+    def __call__(
+        self,
+        input_ids: mx.array,
+        cache: Any | None = None,
+        *,
+        record_rollback: bool = False,
+    ) -> mx.array:
+        ids = self.compute_ids(
+            input_ids,
+            cache,
+            record_rollback=record_rollback,
+        )
         return self.ngram_embedding(ids).flatten(-2)
 
 
@@ -1125,7 +1207,13 @@ class PLELayer(nn.Module):
             bias=False,
         )
 
-    def _short_conv(self, x: mx.array, cache: Any | None) -> mx.array:
+    def _short_conv(
+        self,
+        x: mx.array,
+        cache: Any | None,
+        *,
+        record_rollback: bool = False,
+    ) -> mx.array:
         if cache is not None and cache[2] is not None:
             state = cache[2]
         else:
@@ -1140,6 +1228,16 @@ class PLELayer(nn.Module):
                 cache[2] = mx.take_along_axis(conv_input, positions, axis=1)
             else:
                 cache[2] = mx.contiguous(conv_input[:, -self.conv_state_len :, :])
+            if record_rollback:
+                cache.record_slot_snapshots(
+                    2,
+                    [
+                        mx.contiguous(
+                            conv_input[:, position : position + self.conv_state_len, :]
+                        )
+                        for position in range(1, x.shape[1])
+                    ],
+                )
         return nn.silu(self.conv1d(conv_input))
 
     def __call__(
@@ -1148,10 +1246,16 @@ class PLELayer(nn.Module):
         input_ids: mx.array,
         cache: Any | None,
         mask: mx.array | None = None,
+        *,
+        record_rollback: bool = False,
     ) -> mx.array:
         if mask is not None:
             input_ids = mx.where(mask, input_ids, self.ple_embedding.eos_token_id)
-        embeddings = self.ple_embedding(input_ids, cache)
+        embeddings = self.ple_embedding(
+            input_ids,
+            cache,
+            record_rollback=record_rollback,
+        )
         keys = self.norm_key(self.key_proj(embeddings)).reshape(
             *hidden_states.shape[:-1], self.hc_count, self.hidden_size
         )
@@ -1169,7 +1273,11 @@ class PLELayer(nn.Module):
         if mask is not None:
             gated = mx.where(mask[..., None], gated, 0)
             normalized = mx.where(mask[..., None], normalized, 0)
-        return gated + self._short_conv(normalized, cache)
+        return gated + self._short_conv(
+            normalized,
+            cache,
+            record_rollback=record_rollback,
+        )
 
 
 class DecoderLayer(nn.Module):
@@ -1209,6 +1317,7 @@ class DecoderLayer(nn.Module):
         input_ids: mx.array,
         mask: mx.array | None,
         cache: Any | None,
+        record_rollback: bool = False,
     ) -> mx.array:
         if self.ple is not None:
             hidden_states = hidden_states + self.ple(
@@ -1216,16 +1325,22 @@ class DecoderLayer(nn.Module):
                 input_ids,
                 cache,
                 mask,
+                record_rollback=record_rollback,
             )
         mixed, residual, injection = self.attn_hyper_connection(hidden_states)
         if self.is_linear:
-            output = self.linear_attn(mixed, mask=mask, cache=cache)
+            output = self.linear_attn(
+                mixed,
+                mask=mask,
+                cache=cache,
+                record_rollback=record_rollback,
+            )
         else:
             output = self.self_attn(mixed, cache=cache, mask=mask)
         hidden_states = self._combine(output, residual, injection)
 
         mixed, residual, injection = self.mlp_hyper_connection(hidden_states)
-        output = self.mlp(mixed)
+        output = self.mlp(mixed, target_verify=record_rollback)
         return self._combine(output, residual, injection)
 
 
@@ -1245,7 +1360,10 @@ class Qwen4ExpTextModel(nn.Module):
         inputs: mx.array,
         cache: list[Any] | None = None,
         input_embeddings: mx.array | None = None,
-    ) -> mx.array:
+        *,
+        return_hidden: bool = False,
+        record_rollback: bool = False,
+    ) -> mx.array | tuple[mx.array, mx.array]:
         hidden_states = (
             input_embeddings
             if input_embeddings is not None
@@ -1279,8 +1397,67 @@ class Qwen4ExpTextModel(nn.Module):
                 input_ids=inputs,
                 mask=linear_mask if layer.is_linear else attention_mask,
                 cache=layer_cache,
+                record_rollback=record_rollback,
             )
-        return self.hyper_connection_mixer(hidden_states)
+        output = self.hyper_connection_mixer(hidden_states)
+        return (output, hidden_states) if return_hidden else output
+
+
+class Qwen4ExpStateCache(ArraysCache):
+    """Recurrent Qwen4 state with speculative-verify restore points.
+
+    The four-slot PLE layer cache couples GDN convolution/state with PLE
+    convolution/ngram history.  A rejected speculative token must restore all
+    four slots to the same accepted boundary; restoring GDN alone silently
+    desynchronizes later PLE inputs.
+    """
+
+    rollback_state: list[list[mx.array | None]] | None = None
+    _rollback_slots: dict[int, list[mx.array]] | None = None
+
+    def record_slot_snapshots(
+        self,
+        slot: int,
+        snapshots: list[mx.array],
+        *,
+        finalize: bool = False,
+    ) -> None:
+        """Stage per-position recurrent state and publish atomic boundaries."""
+        if not snapshots:
+            return
+        if self._rollback_slots is None:
+            self._rollback_slots = {}
+        self._rollback_slots[slot] = snapshots
+        if not finalize:
+            return
+        expected_slots = set(range(len(self.cache)))
+        if set(self._rollback_slots) != expected_slots:
+            raise AssertionError(
+                "Qwen4 speculative cache snapshots do not cover every state slot"
+            )
+        lengths = {len(items) for items in self._rollback_slots.values()}
+        if len(lengths) != 1:
+            raise AssertionError("Qwen4 speculative cache snapshot lengths diverged")
+        count = lengths.pop()
+        self.rollback_state = [
+            [self._rollback_slots[slot][position] for slot in range(len(self.cache))]
+            for position in range(count)
+        ]
+        self._rollback_slots = None
+
+    def restore_rollback(self, n_to_drop: int, verify_size: int) -> None:
+        snapshots = self.rollback_state
+        if not snapshots:
+            raise AssertionError("Qwen4 verify rollback has no saved boundary")
+        keep = verify_size - n_to_drop
+        if keep < 1 or keep > len(snapshots):
+            raise AssertionError(
+                f"invalid Qwen4 rollback boundary: keep={keep}, "
+                f"snapshots={len(snapshots)}"
+            )
+        self.cache = list(snapshots[keep - 1])
+        self.rollback_state = None
+        self._rollback_slots = None
 
 
 class TextModel(nn.Module):
@@ -1297,11 +1474,25 @@ class TextModel(nn.Module):
         inputs: mx.array,
         cache: list[Any] | None = None,
         input_embeddings: mx.array | None = None,
-    ) -> mx.array:
-        hidden = self.model(inputs, cache, input_embeddings)
+        return_hidden: bool = False,
+        n_confirmed: int = 0,
+    ) -> mx.array | tuple[mx.array, mx.array]:
+        hidden_result = self.model(
+            inputs,
+            cache,
+            input_embeddings,
+            return_hidden=return_hidden,
+            record_rollback=n_confirmed > 0 and inputs.shape[1] > 1,
+        )
+        if return_hidden:
+            hidden, mtp_hidden = cast(tuple[mx.array, mx.array], hidden_result)
+        else:
+            hidden = cast(mx.array, hidden_result)
         if self.args.tie_word_embeddings:
-            return self.model.embed_tokens.as_linear(hidden)
-        return self.lm_head(hidden)
+            logits = self.model.embed_tokens.as_linear(hidden)
+        else:
+            logits = self.lm_head(hidden)
+        return (logits, mtp_hidden) if return_hidden else logits
 
     @property
     def layers(self):
@@ -1311,7 +1502,9 @@ class TextModel(nn.Module):
         caches = []
         for layer in self.layers:
             if layer.is_linear:
-                caches.append(ArraysCache(size=4 if layer.ple is not None else 2))
+                caches.append(
+                    Qwen4ExpStateCache(size=4 if layer.ple is not None else 2)
+                )
             else:
                 caches.append(
                     CacheList(
@@ -1391,8 +1584,21 @@ class Model(nn.Module):
         self.model_type = args.model_type
         self.language_model = TextModel(TextModelArgs.from_dict(args.text_config))
 
-    def __call__(self, inputs: mx.array, cache=None, input_embeddings=None):
-        return self.language_model(inputs, cache, input_embeddings)
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache=None,
+        input_embeddings=None,
+        return_hidden: bool = False,
+        n_confirmed: int = 0,
+    ):
+        return self.language_model(
+            inputs,
+            cache,
+            input_embeddings,
+            return_hidden=return_hidden,
+            n_confirmed=n_confirmed,
+        )
 
     @property
     def model(self):

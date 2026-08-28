@@ -4,6 +4,9 @@ These are post-release correctness and performance results for Rapid-MLX
 0.13.1. Qwen3.8-Flash-Next is an experimental text-only model in this release;
 Flash-Next MTP and vision are outside this measurement.
 
+The later default-off native MTP experiment is documented in
+[Qwen3.8 Flash-Next native MTP on M3 Ultra](qwen38-flash-next-mtp-m3-ultra.md).
+
 > **Hardware boundary:** these results were measured on the 256 GB machine
 > described below. **128 GB hardware was not physically tested.** The catalog's
 > 128 GB minimum is an admission floor, not a benchmark claim for a 128 GB Mac.

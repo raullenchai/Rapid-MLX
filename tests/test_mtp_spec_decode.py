@@ -155,6 +155,23 @@ def test_detect_eligibility_qwen3_5_accepts_text_config_mtp_layers():
     assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
 
 
+def test_detect_eligibility_qwen4_exp_accepts_nested_mtp_layer():
+    """Flash-Next advertises its native MTP head in nested text_config."""
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "mtp_num_hidden_layers": 1,
+        },
+    }
+    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+
+
 def test_detect_eligibility_qwen3_5_tree_reserved():
     """mtp_num_hidden_layers >= 2 → TREE (reserved, not implemented)."""
     from vllm_mlx.spec_decode.mtp import (
@@ -878,6 +895,22 @@ def test_metrics_family_falls_back_to_gemma4_on_model_name():
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
     assert 'family="gemma4"' in body
     assert 'family="qwen3.5"' not in body
+
+
+def test_metrics_family_falls_back_to_flash_next_on_model_path():
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+
+    reset_global_counter_for_tests()
+
+    class _Cfg:
+        model_alias = None
+        model_path = "rapid-mlx/Qwen3.8-Flash-Next-4bit"
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert 'family="qwen3.8-flash-next"' in body
 
 
 def test_metrics_includes_park_and_k_chosen_counters():

@@ -79,6 +79,9 @@ _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
         # ``num_nextn_predict_layers`` (not ``mtp_num_hidden_layers``); the
         # per-family fallback in ``_mtp_num_hidden_layers`` handles that.
         "hy_v3",
+        # Qwen3.8 Flash-Next. The outer checkpoint advertises qwen4_exp;
+        # its nested text_config carries mtp_num_hidden_layers.
+        "qwen4_exp",
     }
 )
 

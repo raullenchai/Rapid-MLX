@@ -433,6 +433,8 @@ def _derive_mtp_family(cfg: Any) -> str:
     _FAMILY_HINTS = (
         ("gemma-4", "gemma4"),
         ("gemma4", "gemma4"),
+        ("qwen3.8-flash-next", "qwen3.8-flash-next"),
+        ("qwen3.8", "qwen3.8"),
         ("qwen3.5", "qwen3.5"),
         ("qwen3_5", "qwen3.5"),
         ("qwen3.6", "qwen3.6"),
@@ -662,10 +664,10 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             (
                 "MTP drafts accepted by the verify backbone pass. "
                 "Always <= rapid_mlx_spec_decode_attempts_total. The "
-                "lossless contract surface — under the chain MTP "
-                "variant a low ratio is a speedup signal, not a "
-                "correctness one (tokens stay byte-identical to the "
-                "non-spec-decode path)."
+                "accept ratio is a speedup signal, not a correctness "
+                "signal: every proposal is checked by the target, while "
+                "byte identity with ordinary decode depends on the "
+                "model family's numerical verify path."
             ),
             int(snapshot.accepts),
             labels=common_labels,

@@ -540,6 +540,7 @@ jobs:
             tests/test_qwen4_exp_reference_parity.py \
             tests/test_routing_groups_0131.py \
             tests/test_qwen4_exp_vendored.py \
+            tests/test_mtp_cli_wiring.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \

@@ -1189,6 +1189,8 @@ def _apply_mtp_cli_model_type_reconciliation(
     scheduler_config,
     hf_cfg_eligibility,
     logger=None,
+    requested_depth: int | None = None,
+    explicit_depth: bool = False,
 ) -> None:
     """Thread the eligibility gate's ``model_type`` down into
     ``SchedulerConfig.mtp_model_type``.
@@ -1270,6 +1272,35 @@ def _apply_mtp_cli_model_type_reconciliation(
         else:
             print(_msg % (_prior, _eligibility_model_type), file=sys.stderr)
     scheduler_config.mtp_model_type = _eligibility_model_type
+    if requested_depth is None:
+        return
+    try:
+        scheduler_config.mtp_max_k = _resolve_mtp_depth_for_model(
+            _eligibility_model_type,
+            requested_depth,
+            explicit=explicit_depth,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _resolve_mtp_depth_for_model(
+    model_type: str | None,
+    requested: int,
+    *,
+    explicit: bool,
+) -> int:
+    """Return the validated native-MTP depth for a checkpoint family."""
+
+    if model_type != "qwen4_exp":
+        return requested
+    if explicit and requested != 1:
+        raise ValueError(
+            "Qwen3.8 Flash-Next native MTP currently supports "
+            "num_speculative_tokens=1 only"
+        )
+    return 1
 
 
 def _check_alias_min_memory(user_typed: str) -> None:
@@ -4221,16 +4252,16 @@ def serve_command(args):
         if eligibility is MTPEligibility.NONE:
             if has_sidecar:
                 print(
-                    "error: MTP speculative-config requires either a Qwen3.5 / "
-                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "error: MTP speculative-config requires a supported "
+                    "checkpoint with mtp_num_hidden_layers >= 1 in "
                     "config.json. Assistant sidecars are reserved for future "
                     "validated support and do not make this model eligible.",
                     file=sys.stderr,
                 )
             else:
                 print(
-                    "error: MTP speculative-config requires a Qwen3.5 / "
-                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "error: MTP speculative-config requires a supported "
+                    "checkpoint with mtp_num_hidden_layers >= 1 in "
                     "config.json. Assistant sidecars are not currently "
                     "supported. The loaded model does not qualify.",
                     file=sys.stderr,
@@ -4249,11 +4280,21 @@ def serve_command(args):
         # block cannot be exercised without spinning up
         # ``serve_command``, which lets the test pass even if the
         # production block is later deleted).
-        _apply_mtp_cli_model_type_reconciliation(
+        _apply_mtp_cli_model_type_reconciliation(  # pragma: no cover - serve boundary
             scheduler_config=scheduler_config,
             hf_cfg_eligibility=hf_cfg_eligibility,
             logger=logger,
+            requested_depth=int(getattr(scheduler_config, "mtp_max_k", 1)),
+            explicit_depth=(
+                getattr(
+                    getattr(args, "_speculative_config", None),
+                    "num_speculative_tokens",
+                    None,
+                )
+                is not None
+            ),
         )
+        args.mtp_max_k = scheduler_config.mtp_max_k  # pragma: no cover - serve boundary
 
         sidecar_note = (
             f" +sidecar={getattr(args, 'mtp_sidecar', None)}" if has_sidecar else ""

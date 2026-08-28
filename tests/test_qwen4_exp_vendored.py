@@ -23,7 +23,9 @@ from vllm_mlx.models.qwen4_exp import (
     PLELayer,
     QSAAttention,
     QSAIndexer,
+    Qwen4ExpStateCache,
     ShardedEmbedding,
+    SparseMoeBlock,
     TextModelArgs,
     ZeroCenteredRMSNorm,
     apply_qwen4_exp_rope,
@@ -245,6 +247,79 @@ def test_gated_residual_matches_reference_equations():
     np.testing.assert_allclose(
         np.array(injection), expected_injection, rtol=3e-5, atol=3e-5
     )
+
+
+def test_qwen4_moe_verify_rows_match_fused_projection_path():
+    from vllm_mlx.moe_fusion import fuse_gate_up
+
+    block = SparseMoeBlock(_args())
+    inputs = mx.array(
+        np.random.default_rng(19).normal(size=(1, 2, 8)).astype(np.float32)
+    )
+    expected = block(inputs)
+    assert fuse_gate_up(block) == 1
+    actual = block(inputs, target_verify=True)
+    mx.eval(expected, actual)
+    np.testing.assert_allclose(
+        np.asarray(actual), np.asarray(expected), rtol=1e-5, atol=1e-6
+    )
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_qwen4_gdn_verify_kernel_matches_reference_and_boundaries(masked):
+    from vllm_mlx.kernels.qwen4_gdn_verify import (
+        gated_delta_verify_with_states,
+    )
+
+    rng = np.random.default_rng(23)
+    batch, steps, key_heads, value_heads = 1, 3, 1, 2
+    key_dim, value_dim = 32, 4
+
+    def array(shape, scale=0.1):
+        return mx.array((rng.normal(size=shape) * scale).astype(np.float32))
+
+    query = array((batch, steps, key_heads, key_dim))
+    key = array((batch, steps, key_heads, key_dim))
+    value = array((batch, steps, value_heads, value_dim))
+    alpha = array((batch, steps, value_heads))
+    beta = array((batch, steps, value_heads))
+    a_log = array((value_heads,), scale=0.01)
+    dt_bias = array((value_heads,), scale=0.01)
+    state = array((batch, value_heads, value_dim, key_dim))
+    mask = mx.array([[True, False, True]]) if masked else None
+
+    expected = gated_delta_verify_with_states(
+        query,
+        key,
+        value,
+        alpha,
+        beta,
+        a_log,
+        dt_bias,
+        state,
+        mask,
+        use_kernel=False,
+    )
+    actual = gated_delta_verify_with_states(
+        query,
+        key,
+        value,
+        alpha,
+        beta,
+        a_log,
+        dt_bias,
+        state,
+        mask,
+        use_kernel=True,
+    )
+    mx.eval(*expected, *actual)
+    for expected_array, actual_array in zip(expected, actual):
+        np.testing.assert_allclose(
+            np.asarray(actual_array),
+            np.asarray(expected_array),
+            rtol=1e-5,
+            atol=1e-6,
+        )
 
 
 def test_gated_residual_shape_guard_and_read_only_variant():
@@ -932,6 +1007,382 @@ def test_complete_synthetic_text_model_prefill_and_decode():
     assert cache[1][1].offset == 4
 
 
+def test_return_hidden_exposes_pre_final_mixer_multistream():
+    args = _ple_args()
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    logits, hidden = model(mx.array([[1, 2, 3]]), return_hidden=True)
+    mx.eval(logits, hidden)
+
+    assert logits.shape == (1, 3, args.vocab_size)
+    assert hidden.shape == (1, 3, args.hc_count * args.hidden_size)
+
+
+def test_speculative_reject_restores_gdn_ple_and_qsa_state():
+    args = _ple_args()
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    baseline_cache = model.make_cache()
+    verify_cache = model.make_cache()
+    prompt = mx.array([[1, 2, 3]])
+    mx.eval(model(prompt, cache=baseline_cache), model(prompt, cache=verify_cache))
+
+    mx.eval(model(mx.array([[4]]), cache=baseline_cache))
+    baseline_logits = model(mx.array([[6]]), cache=baseline_cache)
+
+    verify_logits, verify_hidden = model(
+        mx.array([[4, 5]]),
+        cache=verify_cache,
+        return_hidden=True,
+        n_confirmed=1,
+    )
+    mx.eval(verify_logits, verify_hidden)
+    for layer_cache in verify_cache:
+        if isinstance(layer_cache, Qwen4ExpStateCache):
+            layer_cache.restore_rollback(1, 2)
+        elif layer_cache.is_trimmable():
+            assert layer_cache.trim(1) == 1
+    restored_logits = model(mx.array([[6]]), cache=verify_cache)
+    mx.eval(
+        baseline_logits,
+        restored_logits,
+        [cache.state for cache in baseline_cache],
+        [cache.state for cache in verify_cache],
+    )
+
+    np.testing.assert_array_equal(
+        np.array(mx.argmax(restored_logits, axis=-1)),
+        np.array(mx.argmax(baseline_logits, axis=-1)),
+    )
+    np.testing.assert_allclose(
+        np.array(restored_logits), np.array(baseline_logits), rtol=1e-5, atol=1e-6
+    )
+    for baseline, restored in zip(baseline_cache, verify_cache):
+        if isinstance(baseline, Qwen4ExpStateCache):
+            for expected, actual in zip(baseline.state, restored.state):
+                np.testing.assert_allclose(
+                    np.array(actual), np.array(expected), rtol=1e-5, atol=1e-6
+                )
+        else:
+            assert baseline[0].offset == restored[0].offset
+            assert baseline[1].offset == restored[1].offset
+
+
+def test_qwen4_state_cache_restores_atomic_slot_boundary():
+    cache = Qwen4ExpStateCache(size=2)
+    cache.cache = [mx.array([1]), mx.array([2])]
+    cache.record_slot_snapshots(0, [mx.array([1])])
+    cache.record_slot_snapshots(1, [mx.array([2])], finalize=True)
+    cache.cache = [mx.array([3]), mx.array([4])]
+    cache.restore_rollback(1, 2)
+    np.testing.assert_array_equal(np.array(cache.cache[0]), np.array([1]))
+    np.testing.assert_array_equal(np.array(cache.cache[1]), np.array([2]))
+
+
+def test_qwen4_state_cache_rejects_incomplete_or_invalid_boundaries():
+    cache = Qwen4ExpStateCache(size=2)
+    cache.cache = [mx.array([1]), mx.array([2])]
+
+    cache.record_slot_snapshots(0, [])
+    cache.record_slot_snapshots(0, [mx.array([1])])
+    with pytest.raises(AssertionError, match="every state slot"):
+        cache.record_slot_snapshots(0, [mx.array([1])], finalize=True)
+
+    cache._rollback_slots = None
+    cache.record_slot_snapshots(0, [mx.array([1])])
+    with pytest.raises(AssertionError, match="lengths diverged"):
+        cache.record_slot_snapshots(
+            1,
+            [mx.array([2]), mx.array([3])],
+            finalize=True,
+        )
+
+    cache.rollback_state = None
+    with pytest.raises(AssertionError, match="no saved boundary"):
+        cache.restore_rollback(1, 2)
+
+    cache.rollback_state = [[mx.array([1]), mx.array([2])]]
+    with pytest.raises(AssertionError, match="invalid Qwen4 rollback boundary"):
+        cache.restore_rollback(0, 2)
+
+
+def test_qwen4_verify_block_matches_tokenwise_forward():
+    args = _ple_args()
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    block_cache = model.make_cache()
+    step_cache = model.make_cache()
+    prompt = mx.array([[1, 2, 3]])
+    mx.eval(model(prompt, cache=block_cache), model(prompt, cache=step_cache))
+
+    verify = mx.array([[4, 5, 6]])
+    block_logits = model(verify, cache=block_cache)
+    step_logits = mx.concatenate(
+        [model(verify[:, i : i + 1], cache=step_cache) for i in range(3)],
+        axis=1,
+    )
+    mx.eval(block_logits, step_logits)
+    np.testing.assert_array_equal(
+        np.array(mx.argmax(block_logits, axis=-1)),
+        np.array(mx.argmax(step_logits, axis=-1)),
+    )
+    np.testing.assert_allclose(
+        np.array(block_logits), np.array(step_logits), rtol=1e-5, atol=2e-7
+    )
+
+
+def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch):
+    import importlib
+
+    import mlx.nn as nn
+    from mlx_lm.generate import generate_step
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter, dispatch_mtp_inject
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    # Earlier executor tests may leave MLX's process-global default tagged to
+    # a worker-owned stream. Rebind this real-device test to the current
+    # thread before its random model parameters are allocated.
+    current_stream = mx.new_stream(mx.default_device())
+    mx.set_default_stream(current_stream)
+    importlib.import_module("mlx_lm.generate").generation_stream = current_stream
+    args = _ple_args()
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    prompt = mx.array([1, 2, 3], dtype=mx.uint32)
+    baseline = [int(token) for token, _ in generate_step(prompt, model, max_tokens=12)]
+
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
+    counter = MTPAcceptCounter()
+    speculative = [
+        int(token)
+        for token, _logprobs, _draft in mtp_generate_step(
+            prompt,
+            model.language_model,
+            max_tokens=12,
+            max_k=1,
+            disable_auto_k=True,
+            accept_counter=counter,
+        )
+    ]
+
+    assert speculative == baseline
+    assert counter.snapshot().attempts > 0
+
+
+def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
+    import mlx.nn as nn
+
+    from vllm_mlx.spec_decode.mtp import dispatch_mtp_inject, dispatch_mtp_validate
+    from vllm_mlx.spec_decode.mtp.dispatch import (
+        _MTP_INJECT_DISPATCH,
+        _MTP_VALIDATE_DISPATCH,
+    )
+
+    args = _ple_args(tie_word_embeddings=True)
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    # The tiny fixture's hidden width is below a production q4 group. Weight
+    # quantization is separately covered by the real checkpoint experiment;
+    # this unit test exercises dispatch and protocol attachment only.
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+
+    assert _MTP_INJECT_DISPATCH["qwen4_exp"] == (
+        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "inject_qwen4_exp_mtp_support",
+    )
+    assert _MTP_VALIDATE_DISPATCH["qwen4_exp"] == (
+        "vllm_mlx.spec_decode.mtp.qwen4_exp_inject",
+        "validate_qwen4_exp_mtp_support",
+    )
+    assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
+    assert dispatch_mtp_validate(model, "qwen4_exp") is True
+    assert model.mtp_max_speculative_tokens == 1
+
+    inner = model.language_model
+    cache = inner.make_mtp_cache()
+    logits, hidden = inner(
+        mx.array([[1]]), cache=inner.make_cache(), return_hidden=True
+    )
+    mtp_logits = inner.mtp_forward(hidden, mx.array([[2]]), cache)
+    mx.eval(logits, mtp_logits)
+    assert mtp_logits.shape == (1, 1, args.vocab_size)
+
+
+def test_qwen4_mtp_checkpoint_file_discovery_and_weight_sanitize(tmp_path):
+    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    direct = tmp_path / "direct.safetensors"
+    direct.touch()
+    assert inject._mtp_weight_files(direct) == [direct]
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        inject._mtp_weight_files(tmp_path / "missing")
+
+    indexed = tmp_path / "indexed"
+    indexed.mkdir()
+    (indexed / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "mtp.a": "b.safetensors",
+                    "mtp.b": "a.safetensors",
+                    "model.c": "ignored.safetensors",
+                }
+            }
+        )
+    )
+    assert inject._mtp_weight_files(indexed) == [
+        indexed / "a.safetensors",
+        indexed / "b.safetensors",
+    ]
+
+    single = tmp_path / "single"
+    single.mkdir()
+    (single / "model.safetensors").touch()
+    assert inject._mtp_weight_files(single) == [single / "model.safetensors"]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match=r"No safetensors containing mtp\.\*"):
+        inject._mtp_weight_files(empty)
+
+    gate_up = mx.arange(16).reshape(2, 4, 2)
+    down = mx.ones((2, 2, 2))
+    sanitized = inject._sanitize_mtp_weights(
+        {
+            "model.ignored": mx.zeros((1,)),
+            "mtp.layers.0.mlp.experts.gate_up_proj": gate_up,
+            "mtp.layers.0.mlp.experts.gate_up_proj.unknown": gate_up,
+            "mtp.layers.0.mlp.experts.down_proj": down,
+            "mtp.layers.0.keep": mx.ones((1,)),
+        }
+    )
+    assert set(sanitized) == {
+        "layers.0.mlp.switch_mlp.gate_proj.weight",
+        "layers.0.mlp.switch_mlp.up_proj.weight",
+        "layers.0.mlp.experts.gate_up_proj.unknown",
+        "layers.0.mlp.switch_mlp.down_proj.weight",
+        "layers.0.keep",
+    }
+    np.testing.assert_array_equal(
+        np.asarray(sanitized["layers.0.mlp.switch_mlp.gate_proj.weight"]),
+        np.asarray(gate_up[..., :2, :]),
+    )
+
+
+def test_qwen4_mtp_quantization_predicate_delegates_only_quantizable_modules(
+    monkeypatch,
+):
+    import mlx.nn as nn
+
+    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    args = _ple_args()
+    args.mtp_num_hidden_layers = 1
+    inner = Model(
+        ModelArgs(model_type="qwen4_exp", text_config=asdict(args))
+    ).language_model
+    observed = []
+
+    class Quantizable:
+        to_quantized = object()
+
+    def fake_quantize(_model, *, class_predicate, **_kwargs):
+        observed.append(class_predicate("plain", object()))
+        observed.append(class_predicate("quantized", Quantizable()))
+
+    monkeypatch.setattr(nn, "quantize", fake_quantize)
+    inject._build_mtp(inner)
+    assert observed == [False, True]
+
+
+def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeypatch):
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    args = _ple_args()
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    expected_mtp = inject._build_mtp(model.language_model)
+    checkpoint = tmp_path / "mtp.safetensors"
+    mx.save_safetensors(
+        str(checkpoint),
+        {f"mtp.{key}": value for key, value in tree_flatten(expected_mtp.parameters())},
+    )
+
+    assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is True
+    assert inject.validate_qwen4_exp_mtp_support(model) is True
+
+
+def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import mlx.nn as nn
+
+    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    assert inject._resolve_inner(object()) is None
+    assert inject.validate_qwen4_exp_mtp_support(object()) is False
+    direct = SimpleNamespace(model_type="qwen4_exp_text")
+    assert inject._resolve_inner(direct) is direct
+    assert (
+        inject.inject_qwen4_exp_mtp_support(object(), allow_random_init=True) is False
+    )
+
+    args = _ple_args()
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    assert inject.inject_qwen4_exp_mtp_support(model, allow_random_init=True) is False
+
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    assert inject.inject_qwen4_exp_mtp_support(model) is False
+
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    bad_checkpoint = tmp_path / "bad.safetensors"
+    mx.save_safetensors(str(bad_checkpoint), {"mtp.unexpected": mx.ones((2,))})
+    assert (
+        inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=bad_checkpoint) is False
+    )
+    assert "tensor contract mismatch" in caplog.text
+
+    monkeypatch.setattr(
+        inject,
+        "_build_mtp",
+        lambda _inner: (_ for _ in ()).throw(RuntimeError("injected build failure")),
+    )
+    assert inject.inject_qwen4_exp_mtp_support(model, allow_random_init=True) is False
+    assert "native MTP attachment failed" in caplog.text
+
+
+def test_qwen4_mtp_untied_logits_and_validation_signature_failure(monkeypatch):
+    import mlx.nn as nn
+
+    from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
+
+    args = _ple_args(tie_word_embeddings=False)
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    assert inject.inject_qwen4_exp_mtp_support(model, allow_random_init=True) is True
+
+    inner = model.language_model
+    _, hidden = inner(mx.array([[1]]), cache=inner.make_cache(), return_hidden=True)
+    logits = inner.mtp_forward(hidden, mx.array([[2]]), inner.make_mtp_cache())
+    mx.eval(logits)
+    assert logits.shape == (1, 1, args.vocab_size)
+
+    monkeypatch.setattr(
+        inject.inspect,
+        "signature",
+        lambda _call: (_ for _ in ()).throw(ValueError("injected signature failure")),
+    )
+    assert inject.validate_qwen4_exp_mtp_support(model) is False
+
+
 def test_sanitize_preserves_ple_shards_and_maps_experts_without_concat():
     args = _ple_args()
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
@@ -1314,3 +1765,29 @@ def test_qwen4_registration_probes_native_and_fails_closed(monkeypatch, caplog):
     tokenizer._register_vendored_archs()
     assert "qwen4_exp" not in tokenizer._VENDORED_MODEL_TYPES
     assert "failed to register" in caplog.text
+
+
+def test_qwen4_gdn_verify_single_step_initializes_state_and_empty_boundaries():
+    """Exercise the one-token reference edge after other GPU tests.
+
+    MLX's shapeless compile cache can recycle a thread-local stream after a
+    one-step shape, so keep this edge last in the module while still asserting
+    the production fallback used outside multi-token verification.
+    """
+    from vllm_mlx.kernels.qwen4_gdn_verify import gated_delta_verify_with_states
+
+    output, state, boundaries = gated_delta_verify_with_states(
+        mx.ones((1, 1, 1, 4)),
+        mx.ones((1, 1, 1, 4)),
+        mx.ones((1, 1, 2, 3)),
+        mx.zeros((1, 1, 2)),
+        mx.zeros((1, 1, 2)),
+        mx.zeros((2,)),
+        mx.zeros((2,)),
+        use_kernel=False,
+    )
+    mx.eval(output, state, boundaries)
+
+    assert output.shape == (1, 1, 2, 3)
+    assert state.shape == (1, 2, 3, 4)
+    assert boundaries.shape == (1, 0, 2, 3, 4)
