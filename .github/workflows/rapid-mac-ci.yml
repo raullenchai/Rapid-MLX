@@ -299,17 +299,69 @@ jobs:
       - name: verify chat timeout contract
         run: swift scripts/verify-chat-timeout.swift
 
+  # Resolve the GUI execution host before the artifact build starts. External
+  # heads are unconditionally hosted: public fork code must never reach
+  # project-owned hardware. Same-repository heads may use the logged-in mini
+  # only while the repository runner API reports an exact online label match.
+  # Missing/read-denied credentials and an offline runner fail safe to hosted
+  # macOS.
+  gui-runner:
+    needs: changes
+    if: >-
+      needs.changes.outputs.desktop == 'true' &&
+      needs.changes.outputs.full_gate == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      runs_on: ${{ steps.select.outputs.runs_on }}
+      runner_kind: ${{ steps.select.outputs.runner_kind }}
+    steps:
+      - name: Select GUI runner
+        id: select
+        env:
+          IS_TRUSTED_HEAD: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          MINI_GUI_RUNNER_READ_TOKEN: ${{ secrets.MINI_GUI_RUNNER_READ_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          selected='["macos-15"]'
+          kind=hosted
+
+          if [ "$IS_TRUSTED_HEAD" != true ]; then
+            echo "External head: using hosted macOS"
+          elif [ -z "$MINI_GUI_RUNNER_READ_TOKEN" ]; then
+            echo "::warning::MINI_GUI_RUNNER_READ_TOKEN is unavailable; falling back to hosted macOS"
+          elif ! runners=$(GH_TOKEN="$MINI_GUI_RUNNER_READ_TOKEN" \
+            gh api "repos/${REPO}/actions/runners?per_page=100"); then
+            echo "::warning::Runner status lookup failed; falling back to hosted macOS"
+          elif [ "$(jq '[.runners[] | select(
+              .status == "online" and
+              any(.labels[]; .name == "self-hosted") and
+              any(.labels[]; .name == "macOS") and
+              any(.labels[]; .name == "mini-gui")
+            )] | length' <<< "$runners")" -gt 0 ]; then
+            selected='["self-hosted","macOS","mini-gui"]'
+            kind=mini-gui
+            echo "Online mini-gui runner found"
+          else
+            echo "No online mini-gui runner; falling back to hosted macOS"
+          fi
+
+          echo "runs_on=$selected" >> "$GITHUB_OUTPUT"
+          echo "runner_kind=$kind" >> "$GITHUB_OUTPUT"
+
   # Build the release-shaped, sidecar-free app exactly once for every full
   # Desktop gate. GUI consumers must use this commit-bound artifact instead of
   # compiling their own copy. Keeping this as a dedicated producer makes the
   # next step (parallel journey shards) cheap without trusting a cache as test
   # evidence: the archive and its manifest are immutable outputs of this run.
   gui-app-build:
-    needs: changes
+    needs:
+      - changes
+      - gui-runner
     if: >-
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true'
-    runs-on: macos-15
+    runs-on: ${{ fromJSON(needs.gui-runner.outputs.runs_on) }}
     timeout-minutes: 20
     defaults:
       run:
@@ -367,12 +419,13 @@ jobs:
     needs:
       - changes
       - gui-app-build
+      - gui-runner
     if: >-
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true'
-    # macos-15 for the same reason as the build job: Package.swift is
-    # swift-tools-version 6.0, and macos-14 still defaults to Swift 5.x.
-    runs-on: macos-15
+    # The selector keeps forks on hosted macOS and sends eligible internal
+    # integration heads to the interactive mini when it is online.
+    runs-on: ${{ fromJSON(needs.gui-runner.outputs.runs_on) }}
     strategy:
       # A failure in one product journey must not cancel independent evidence
       # from the other selected groups. The stable desktop-tests facade still
