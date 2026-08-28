@@ -24,9 +24,9 @@ enum ModelSizing {
         case tooBig
     }
 
-    /// Estimate of how many gibibytes the alias needs at run time.
-    /// ``weightsGB`` is the dominant term; the rest is fixed runtime
-    /// floor (rapid-mlx + Python + framework) plus a KV reserve.
+    /// Working-set description for an alias. Known recommended aliases carry
+    /// the catalog's complete measured/curated working set; unknown aliases
+    /// retain the conservative weights + runtime + KV estimate.
     struct Footprint: Sendable, Equatable {
         let alias: String
         /// Parameters in billions parsed from the alias name; ``nil``
@@ -51,9 +51,33 @@ enum ModelSizing {
         /// during generation is a worse UX than declining to load.
         let kvReserveGB: Double
 
-        /// Total RAM needed for a comfortable run.
+        /// Complete serve-process working set from the recommendation catalog.
+        /// This overrides the component heuristic for known aliases so every
+        /// user-facing and admission surface quotes one footprint per model.
+        let authoritativeTotalGB: Double?
+
+        init(
+            alias: String,
+            paramsBillions: Double?,
+            bitsPerWeight: Int,
+            weightsGB: Double,
+            baseOverheadGB: Double,
+            kvReserveGB: Double,
+            authoritativeTotalGB: Double? = nil
+        ) {
+            self.alias = alias
+            self.paramsBillions = paramsBillions
+            self.bitsPerWeight = bitsPerWeight
+            self.weightsGB = weightsGB
+            self.baseOverheadGB = baseOverheadGB
+            self.kvReserveGB = kvReserveGB
+            self.authoritativeTotalGB = authoritativeTotalGB
+        }
+
+        /// Total RAM needed for a run. Prefer the complete measured/curated
+        /// working set when available; otherwise use the conservative estimate.
         var totalGB: Double {
-            weightsGB + baseOverheadGB + kvReserveGB
+            authoritativeTotalGB ?? (weightsGB + baseOverheadGB + kvReserveGB)
         }
     }
 
@@ -99,7 +123,8 @@ enum ModelSizing {
             bitsPerWeight: bits,
             weightsGB: weightsGB,
             baseOverheadGB: 1.2,
-            kvReserveGB: kvReserve(forParams: params)
+            kvReserveGB: kvReserve(forParams: params),
+            authoritativeTotalGB: RAMBucketedDefault.footprintGB(forAlias: alias)
         )
     }
 

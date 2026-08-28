@@ -87,6 +87,39 @@ def recommendation_tier(ram_gb: float) -> RecommendationTier:
     return chosen
 
 
+def recommendation_footprint_gb(alias: str) -> float | None:
+    """Return the one catalog working-set footprint for ``alias``.
+
+    Picks repeat across RAM tiers, but their footprint may not drift by tier:
+    the number describes the model's complete serve-process working set. A
+    custom/unmeasured alias returns ``None`` so the caller can retain its
+    conservative fallback.
+    """
+    wanted = alias.casefold()
+    found: float | None = None
+    for tier in load_recommendation_tiers():
+        for pick in tier.picks:
+            if pick.alias.casefold() != wanted:
+                continue
+            if found is not None and found != pick.footprint_gb:
+                raise ValueError(
+                    f"conflicting recommendation footprints for {alias!r}: "
+                    f"{found} and {pick.footprint_gb}"
+                )
+            found = pick.footprint_gb
+    return found
+
+
+def is_recommended_alias(alias: str, ram_gb: float) -> bool:
+    """Whether ``alias`` is a curated pick supported by this host's RAM."""
+    wanted = alias.casefold()
+    return any(
+        tier.floor_gb <= ram_gb
+        and any(pick.alias.casefold() == wanted for pick in tier.picks)
+        for tier in load_recommendation_tiers()
+    )
+
+
 def recommendation_payload(ram_gb: float) -> dict[str, Any]:
     tier = recommendation_tier(ram_gb)
     return {

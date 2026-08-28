@@ -144,6 +144,53 @@ def test_no_warning_with_comfortable_headroom(monkeypatch, capsys):
     assert out == "", f"comfortable model must not warn; got: {out!r}"
 
 
+def test_32gb_recommendation_uses_catalog_footprint_without_false_hard_warning(
+    monkeypatch, capsys
+):
+    """The engine must not turn Desktop's 20 GB recommendation back into a
+    22.8 GB disk multiplier and call it likely too large on the same 32 GB Mac.
+    """
+    _patch_size_bytes(monkeypatch, size_gb=15.2)
+    with patch.dict("sys.modules", {"psutil": _fake_psutil(32.0, used_gb=8.0)}):
+        _check_memory_capacity("/resolved/qwen3.8", alias="qwen3.8-27b-4bit")
+    assert capsys.readouterr().out == ""
+
+
+def test_32gb_recommendation_warning_quotes_the_same_20gb_when_pressure_is_real(
+    monkeypatch, capsys
+):
+    """At genuine live pressure the advisory remains, but its working-set
+    number is exactly the card/review number and it does not claim the curated
+    pick is inherently too large until projection exceeds physical RAM.
+    """
+    _patch_size_bytes(monkeypatch, size_gb=15.2)
+    with patch.dict("sys.modules", {"psutil": _fake_psutil(32.0, used_gb=11.0)}):
+        _check_memory_capacity("/resolved/qwen3.8", alias="qwen3.8-27b-4bit")
+    out = capsys.readouterr().out
+    assert "Memory pressure note" in out
+    assert "Catalog working set:       20.0 GB" in out
+    assert "likely too large" not in out
+    assert "97% projected utilization" in out
+
+
+def test_below_minimum_tier_keeps_the_conservative_hard_warning(monkeypatch, capsys):
+    """A catalog alias is not a host recommendation below the 8 GB floor."""
+    _patch_size_bytes(monkeypatch, size_gb=2.0)
+    with patch.dict("sys.modules", {"psutil": _fake_psutil(4.0, used_gb=1.0)}):
+        _check_memory_capacity("/resolved/lfm", alias="lfm2.5-2.6b-4bit")
+    out = capsys.readouterr().out
+    assert "likely too large" in out
+    assert "100% projected utilization" in out
+
+
+def test_lower_tier_pick_keeps_measured_policy_on_a_larger_mac(monkeypatch, capsys):
+    """A 24 GB pick remains supported when launched on a 32 GB host."""
+    _patch_size_bytes(monkeypatch, size_gb=8.0)
+    with patch.dict("sys.modules", {"psutil": _fake_psutil(32.0, used_gb=15.0)}):
+        _check_memory_capacity("/resolved/bonsai", alias="bonsai-27b-2bit")
+    assert capsys.readouterr().out == ""
+
+
 def test_silent_when_psutil_unavailable(monkeypatch, capsys):
     """Best-effort: if psutil can't be imported, fall through silently
     rather than blocking startup.
@@ -190,6 +237,19 @@ def test_silent_when_size_lookup_fails(monkeypatch, capsys):
         _check_memory_capacity("mlx-community/Some-Unreachable-Model")
     out = capsys.readouterr().out
     assert out == "", f"unresolvable size must be silent; got: {out!r}"
+
+
+def test_silent_when_size_lookup_returns_an_empty_manifest(monkeypatch, capsys):
+    """A successful metadata lookup with no sized siblings is also unknown."""
+    monkeypatch.setattr("os.path.isdir", lambda _path: False)
+    with (
+        patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+        patch("huggingface_hub.model_info", return_value=MagicMock(siblings=[])),
+        patch.dict("sys.modules", {"psutil": _fake_psutil(24.0)}),
+    ):
+        _check_memory_capacity("mlx-community/Empty-Manifest")
+
+    assert capsys.readouterr().out == ""
 
 
 def test_never_calls_sys_exit(monkeypatch):

@@ -150,11 +150,13 @@ struct OnboardingWontFitReviewTests {
         #expect(!OnboardingModelSelection.isAvailable(
             alias: "bonsai-27b-2bit",
             hardware: Self.hardware(ramGB: lowestTier.floorGB)))
-        // Below the lowest tier's floor a Mac sits in no tier, so even that
-        // tier's own smart pick is not "recommended" and the veto applies.
+        // Below the lowest tier's floor a Mac sits in no tier. Use a 4 GB
+        // fixture where the pick's authoritative 3 GB working set is genuinely
+        // beyond the static headroom ceiling, so this proves the recommendation
+        // exemption does not leak rather than relying on the retired heuristic.
         #expect(!OnboardingModelSelection.isAvailable(
             alias: lowestTier.primary.alias,
-            hardware: Self.hardware(ramGB: lowestTier.floorGB - 2)))
+            hardware: Self.hardware(ramGB: lowestTier.floorGB / 2)))
     }
 
     // MARK: - 1. The fixture is actually incompatible

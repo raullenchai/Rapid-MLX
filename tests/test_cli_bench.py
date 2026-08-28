@@ -24,11 +24,27 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import sys
+from types import ModuleType
 
 import pytest
 
 
 # ---------- shared helpers ---------------------------------------------------
+@pytest.fixture(autouse=True)
+def _stub_apple_only_bench_runtime(monkeypatch):
+    """Keep these CLI-order tests runnable in the Linux no-MLX lane."""
+    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core.AsyncEngineCore = object
+    engine_core.EngineConfig = object
+    engine_core._init_mlx_step_thread = lambda: None
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
+
+    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler.SchedulerConfig = object
+    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+
+
 def _patch_mlx_lm_load(monkeypatch, fake_load) -> None:
     """Patch the loader ``bench`` actually calls.
 
