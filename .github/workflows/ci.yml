@@ -570,13 +570,18 @@ jobs:
     # the expensive Studio gate: garbage-from-first-token (#1234 doubled-norm
     # class, via the #1247 GOLDEN gate) and tool-call parser regressions.
     #
-    # Two GOLDEN models run coherence + the engine contract. The remaining 4B
+    # GOLDEN models run coherence + the engine contract. The 4B
     # aliases run contract-only: forcing a zero-argument call factors model
     # competence out while still covering multi-turn replay, streaming channel
     # routing, and native-marker leaks (#1677).
-    # Each model runs on its own runner (parallel), so ~7GB RAM holds one ~2GB
-    # model comfortably. A 3-4B model is fine for a coherence/parser gate — it
-    # is not a chat-quality eval, which stays on the 35B L2 tier.
+    # Each model runs on its own runner (parallel) so lanes do not share RAM.
+    # The Qwen3.5-9B (#2419 top-telemetry cover) was tried here and relocated off
+    # L1: its runtime footprint is ~8.7 GB (vllm_mlx/model_recommendations.json,
+    # SSOT — bucketed at the 18 GB floor) vs this runner's ~7 GB, and the
+    # coherence serve OOMs (server unreachable, 503) under the gate. It, like the
+    # 26-35B top-telemetry lanes (Qwen3.6-35B-A3B, Qwen3.8/3.6-27B, Gemma-4-26B,
+    # Bonsai-27B, 15-38GB), exceeds this free runner's ~7GB budget — they stay on
+    # the self-hosted 35B Studio tier-1 gate (L2), not on L1.
     #
     # Gemma3 is multimodal but this contract is text/tool-only, so the smoke
     # script forces ``--no-mllm`` and exercises its LM backbone without pulling
