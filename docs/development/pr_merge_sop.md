@@ -233,15 +233,24 @@ Before merge, the PR description must accurately reflect actual current state:
 ## Step 12 — Merge
 
 - Re-run the Step 10 `statusCheckRollup` query after the final push and directly
-  before invoking `gh pr merge`. Stop on `QUEUED`, `IN_PROGRESS`, `PENDING`,
+  before queueing. Stop on `QUEUED`, `IN_PROGRESS`, `PENDING`,
   `FAILURE`, `CANCELLED`, or `TIMED_OUT` for any relevant check.
 
-- **Squash-merge** for clean main history:
+- For an ordinary pull request, apply the integration authorization label and
+  let the managed queue combine and revalidate it. Do not manually rebase after
+  queue entry and do not click GitHub's merge button:
 
   ```bash
-  gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash --delete-branch
+  gh pr edit <PR#> --repo raullenchai/Rapid-MLX --add-label merge-ready
   ```
 
+- The queue waits up to 15 minutes for as many as four merge-ready pull
+  requests, runs the affected full lanes once on their combined tree, and then
+  squash-merges each original pull request. A failed batch is split to identify
+  the blocking member; do not add an independent rerun.
+- Version bumps and human-authorized hotfixes do not enter the general batch.
+  Follow their explicit release/hotfix contract and use a direct squash merge
+  only when that contract authorizes it.
 - If version was bumped: verify `Auto-release on version bump` workflow triggers post-merge.
 - If the squash subject contains `(#NN)` GitHub auto-suffix on a `chore: bump version to X.Y.Z` commit, override with `--subject` — the regex in `auto-release.yml` is strict.
 - After merge, verify `git log raullenchai/main --oneline -1` shows your squash commit.

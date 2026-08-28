@@ -122,7 +122,7 @@ def _workflow_strings(workflow: Path) -> dict[str, object]:
     return yaml.load(workflow.read_text(), Loader=yaml.BaseLoader)
 
 
-def test_product_promotion_keeps_diff_scope_and_accepts_train_heads():
+def test_product_promotion_keeps_diff_scope_and_accepts_integration_heads():
     for workflow, job_name, step_name in (
         (ENGINE_WORKFLOW, "changes", "Classify validation lanes"),
         (DESKTOP_WORKFLOW, "changes", "Classify desktop lane"),
@@ -130,7 +130,9 @@ def test_product_promotion_keeps_diff_scope_and_accepts_train_heads():
         run = _step_run(workflow, job_name, step_name)
         assert 'git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA"' in run
         assert '[ "$FULL_CI" = true ] ||' in run
-        assert '[[ "$HEAD_REF" == train/* ]] && [ "$HEAD_REPO" = "$REPO" ]' in run
+        assert '[ "$HEAD_REPO" = "$REPO" ] &&' in run
+        assert '[[ "$HEAD_REF" == train/* ]] ||' in run
+        assert '[[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]' in run
         assert 'echo "full_gate=$full_gate"' in run
 
 
@@ -183,6 +185,41 @@ def test_fork_cannot_claim_train_branch_promotion(tmp_path):
                 **common,
             )
             == "full_gate=true"
+        )
+
+
+@pytest.mark.parametrize(
+    ("head_ref", "head_repo", "expected"),
+    (
+        ("mergify/merge-queue/a76b1f3d25", "owner/repo", "full_gate=true"),
+        ("mergify/merge-queue/A76B1F3D25", "owner/repo", "full_gate=false"),
+        ("mergify/merge-queue/a76b1f3d2", "owner/repo", "full_gate=false"),
+        ("mergify/merge-queue/a76b1f3d25-extra", "owner/repo", "full_gate=false"),
+        ("tmp-mergify/merge-queue/a76b1f3d25", "owner/repo", "full_gate=false"),
+        ("mergify/merge-queue/a76b1f3d25", "attacker/fork", "full_gate=false"),
+    ),
+)
+def test_only_exact_internal_mergify_batch_heads_promote_full_ci(
+    tmp_path, head_ref, head_repo, expected
+):
+    for index, (workflow, job_name, step_name) in enumerate(
+        (
+            (ENGINE_WORKFLOW, "changes", "Classify validation lanes"),
+            (DESKTOP_WORKFLOW, "changes", "Classify desktop lane"),
+        )
+    ):
+        assert (
+            _execute_promotion(
+                workflow,
+                job_name,
+                step_name,
+                GITHUB_OUTPUT=str(tmp_path / f"mergify-{index}"),
+                FULL_CI="false",
+                HEAD_REF=head_ref,
+                HEAD_REPO=head_repo,
+                REPO="owner/repo",
+            )
+            == expected
         )
 
 

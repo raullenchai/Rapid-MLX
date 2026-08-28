@@ -79,9 +79,20 @@ the threshold is not the normal escape hatch.
 
 ## Merge gate
 
-Adding the `full-ci` label upgrades the lanes selected by the pull request's
-actual diff. Apply it only when the PR is ready to merge; removing it returns
-subsequent commits to the path-aware PR gate.
+Ordinary pull requests run the path-aware PR gate and leave the required
+`tests`, `desktop-tests`, and `version-bump-guard` contexts satisfiable. A pull
+request becomes an integration candidate only when a maintainer applies the
+`merge-ready` label after review and PR validation have converged. The managed
+queue collects up to four such pull requests, waits at most 15 minutes from the
+first entry, and validates their combined tree once.
+
+The queue creates an internal pull request from a branch whose name is exactly
+`mergify/merge-queue/<10 lowercase hex characters>`. The engine and Desktop
+workflows treat only that exact same-repository shape as a promoted head. A fork
+using the same branch name remains on the ordinary PR path.
+
+The optional `full-ci` label provides an exact-head rehearsal before queueing.
+Both that label and a queue batch upgrade the lanes selected by the actual diff:
 
 - Engine changes expand to the full five-model L1 matrix.
 - Desktop changes build the release GUI once, then run every journey group
@@ -103,46 +114,31 @@ preflight, app launch, or artifact creation. The final verdict requires exactly
 the number of result records selected by the classifier, so a selected journey
 cannot silently disappear.
 
-The label never changes lane classification. This prevents an engine-only PR
-from allocating the full Desktop gate, or a Desktop-only PR from allocating
-the full model gate.
+Promotion never changes lane classification. This prevents an engine-only
+batch from allocating the full Desktop gate, or a Desktop-only batch from
+allocating model runners. A mixed or fail-closed batch selects both.
 
-### Pending, not failing, before promotion
+The queue contract lives in `.mergify.yml`:
 
-An unpromoted product PR is a waiting release candidate, not a test failure.
-The aggregate Action check therefore passes after its inexpensive PR checks,
-while `.github/workflows/full-ci-label-gate.yml` publishes a same-name pending
-commit status for each selected product lane. GitHub requires both a check run
-and a commit status when they share a required name, so the pending status keeps
-the merge blocked without showing a false red failure.
+- serial mode with one batch in flight, so speculative checks cannot multiply
+  scarce macOS capacity;
+- up to four pull requests per batch and a 15-minute maximum fill wait;
+- no blind CI retry and no skipped intermediate failures;
+- at most two batch-split attempts to isolate a failing member;
+- a 90-minute check timeout, covering normal hosted macOS queue delay;
+- the three GitHub Actions required checks must pass both before queue entry and
+  again on the combined temporary pull request;
+- successful members are squash-merged individually, preserving one commit per
+  pull request and GitHub's `Fixes #N` issue closure behavior.
 
-The status transition is fail closed:
+Release bump and version-correction pull requests are excluded by title and
+labels. They continue through the separately authorized release transaction;
+they must never be combined with ordinary changes.
 
-1. A trusted `pull_request_target` workflow reads the live PR and immediately
-   posts pending `tests` and `desktop-tests` statuses before classification.
-2. It checks out only the base revision of the policy and classifies filenames
-   obtained from the GitHub API. It never checks out or executes the PR head.
-3. An unselected lane becomes successful immediately. A selected lane remains
-   pending both before and after the `full-ci` label is applied.
-4. Only a successful exact-head full-CI aggregate may replace that selected
-   lane's pending status with success. The aggregate job settles same-repository
-   PRs directly; a trusted `workflow_run` completion hook settles fork PRs.
-5. A stale SHA, removed label, superseded exact-head run, failed/cancelled
-   workflow, missing aggregate job, classifier failure, or metadata mismatch
-   leaves the status pending.
-
-Do not replace this with a job-level `if` condition. GitHub reports a skipped
-job as successful, which would allow a required skipped context to bypass the
-promotion gate. Do not publish success when the label is observed: doing so
-would briefly reuse old exact-SHA check evidence during label churn.
-
-All three required workflows subscribe to GitHub's `merge_group` event. Every
-queue candidate will therefore receive `tests`, `desktop-tests`, and
-`version-bump-guard` on its synthetic candidate commit. Product workflows run
-full combined-tree coverage for merge groups. The version guard emits its
-stable context because the individual PR contract was already validated before
-queue entry. This validates the state that will actually reach `main`, rather
-than repeatedly validating each PR against an obsolete base.
+All three required workflows retain `merge_group` support so an eventual
+organization transfer can use the native queue without another trigger
+migration. The managed queue itself uses ordinary `pull_request` events for its
+temporary batch pull requests.
 
 Pushes to `main` retain the full engine coverage as a post-merge signal.
 
@@ -172,69 +168,54 @@ bundled sidecar and release credentials.
 
 ## Repository configuration
 
-GitHub currently offers merge queues only to public repositories owned by an
-organization, or private repositories owned by an Enterprise Cloud
-organization. Rapid-MLX is a public repository owned by a personal account, so
-the queue cannot be enabled until ownership moves to an organization.
+GitHub's native queue is unavailable while this public repository belongs to a
+personal account. The checked-in managed-queue policy is therefore the
+authoritative integration configuration.
 
-The current `main` protection is strict and requires three GitHub Actions
-contexts from app id `15368`: `tests`, `desktop-tests`, and
-`version-bump-guard`. There are no repository rulesets. Keep that protection
-unchanged until the owner enables a queue.
+Production activation is an owner operation and must happen in this order:
 
-After ownership moves to an eligible organization and these workflows are on
-the default branch, the owner should enable **Require merge queue** in the
-existing non-wildcard `main` branch-protection rule and configure:
+1. Land `.mergify.yml`, the workflow recognition logic, and their contract
+   tests before installing or enabling the app.
+2. Install the GitHub App for this repository only. Do not grant it access to
+   unrelated repositories. Confirm its configuration check validates the
+   default-branch policy.
+3. Create the `merge-ready` label. Applying it is the explicit authorization to
+   enter the queue; removing it dequeues the pull request.
+   Fork pull requests are deliberately ineligible because composing fork code
+   onto an internal queue branch changes GitHub's token and secret boundary.
+   After review, bring an accepted external change onto a same-repository
+   maintainer branch before authorizing it for the batch queue.
+4. In the existing `main` protection, retain required contexts `tests`,
+   `desktop-tests`, and `version-bump-guard`, required conversation resolution,
+   administrator enforcement, and linear history. Disable only **Require
+   branches to be up to date before merging**: temporary batch validation is
+   incompatible with that strict flag because the combined branch, rather than
+   every original head, is the artifact tested by CI.
+5. Keep manual merges limited to the documented version-bump and
+   human-authorized hotfix paths. Normal pull requests enter through the
+   `merge-ready` label and are merged by the queue.
+6. Rehearse with two harmless pull requests that are individually green. Apply
+   `merge-ready` to both within the fill window and verify one temporary batch
+   PR contains both exact heads, runs each affected full lane once, reports all
+   three required checks, and squash-merges both originals in order.
+7. Confirm a fork branch named like a queue branch does not receive promoted
+   lanes. Then remove `merge-ready` from a queued test PR and verify it leaves
+   the queue without merging.
 
-- merge queue required and squash as the allowed merge method;
-- required status checks `tests`, `desktop-tests`, and `version-bump-guard`;
-- the existing strict status-check policy retained; the queue candidate
-  provides the up-to-date combined tree without repeated author rebases;
-- build concurrency `1` initially;
-- merge only non-failing entries enabled;
-- status-check timeout `60 minutes`;
-- minimum and maximum merge group size `1`, with a `0` minute minimum wait.
-
-After five consecutive green merge groups, increase maximum group size to `3`
-and use a `5` minute wait to amortize busy integration trains. Keep concurrency
-at `1` until failure attribution and runner capacity are demonstrated at that
-batch size.
-
-Before changing `main`, rehearse on a scratch target branch in an eligible
-organization-owned repository:
-
-1. Create the scratch branch from the intended `main` SHA and temporarily add
-   that branch to all three workflows' event filters in the sandbox only.
-2. Apply the exact required contexts and queue settings above to the scratch
-   branch.
-3. Queue one documentation-only PR and one harmless cross-cutting workflow PR.
-   Confirm all three contexts appear on both synthetic merge-group SHAs, and
-   confirm the cross-cutting PR runs both product lanes.
-4. Queue two PRs concurrently. Confirm strict protection groups or restacks
-   them without direct pushes, and that deliberately failing the second PR
-   removes only its group.
-5. Remove the sandbox changes and record run URLs before applying the settings
-   to `main`.
-
-A hosted scratch rehearsal cannot be performed in the current personal-account
-repository because GitHub does not expose merge queues there. Local event
-fixtures and workflow contract tests verify the `merge_group` wiring now; the
-organization-owned scratch rehearsal above remains a hard prerequisite to the
-owner's production configuration change.
-
-Do not enable the queue before every required workflow trigger reaches `main`:
-otherwise GitHub creates a merge-group commit whose required check remains
-`Expected` forever. Treat an indefinitely expected
-`version-bump-guard` as a trigger defect and stop; never bypass the required
-context.
+Do not enable batching while strict up-to-date protection remains on, and do
+not weaken or remove any required context to make a batch move. A missing,
+cancelled, or failed aggregate is a queue failure.
 
 ## Rollback
 
-Disable the merge queue first, restore `full-ci` label-based merging, and leave
-the `merge_group` triggers in place. The triggers are harmless while the queue
-is disabled. If path classification is suspect, make its policy select both
-lanes for every PR; this restores the previous validation coverage without
-renaming required checks. For GUI routing specifically, removing the
+Pause the managed queue and remove `merge-ready` from every queued pull request
+first. Wait for the active batch to stop, restore strict up-to-date protection,
+and only then disable or uninstall the app. Keep the batch-head and
+`merge_group` workflow triggers in place; they are inert without a queue and
+make rollback recoverable without weakening CI. If path classification is
+suspect, make its policy select both lanes for every PR; this restores the
+previous validation coverage without renaming required checks. For GUI routing
+specifically, removing the
 `GUI_FLOWS` job environment or making `scripts/select_gui_flows.py` return the
 full manifest roster restores the previous all-journey behavior.
 If GUI matrix execution is suspect, remove the matrix strategy, restore

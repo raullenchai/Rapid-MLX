@@ -89,7 +89,9 @@ jobs:
               --github-output "$GITHUB_OUTPUT"
             full_gate=false
             if [ "$FULL_CI" = true ] || \
-              { [[ "$HEAD_REF" == train/* ]] && [ "$HEAD_REPO" = "$REPO" ]; }; then
+              { [ "$HEAD_REPO" = "$REPO" ] && \
+                { [[ "$HEAD_REF" == train/* ]] || \
+                  [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; }; then
               full_gate=true
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
