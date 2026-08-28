@@ -1,3 +1,4 @@
+import WebKit
 import AppKit
 import Foundation
 import Network
@@ -137,6 +138,11 @@ struct MermaidLibraryTests {
 @Suite("Mermaid network denial")
 struct MermaidNetworkDenialTests {
 
+    /// This suite's own renderer. Swift Testing builds a `struct` suite once
+    /// per test, so every test gets a clean cache, failure budget and web
+    /// view, and no suite can reset another's while it is mid-render.
+    private let renderer = MermaidRenderer()
+
     /// **Runs first, and everything else in this file depends on it.**
     ///
     /// Every other assertion here is of the form `requestCount == 0`, which
@@ -168,7 +174,7 @@ struct MermaidNetworkDenialTests {
             graph TD
               A["<img src='http://127.0.0.1:\(probe.port)/leak.png'>"] --> B[End]
             """
-        _ = await MermaidRenderer.shared.image(source: source, theme: .light)
+        _ = await renderer.image(source: source, theme: .light)
         try await Task.sleep(for: .milliseconds(600))
         #expect(probe.requestCount == 0, "the diagram reached the network")
     }
@@ -212,10 +218,116 @@ struct MermaidNetworkDenialTests {
               A[Start] --> B[End]
               click A href "http://127.0.0.1:\(probe.port)/nav"
             """
-        _ = await MermaidRenderer.shared.image(source: source, theme: .light)
+        _ = await renderer.image(source: source, theme: .light)
         try await Task.sleep(for: .milliseconds(600))
         #expect(probe.requestCount == 0)
     }
+
+    /// The delegate as it is actually installed, refusing a real navigation.
+    ///
+    /// Every other assertion in this suite reaches the policy either
+    /// statically (`policy(for:)`) or through a page that never activates a
+    /// link, so none of them can tell an installed delegate from a deleted
+    /// one. This one loads the real private-scheme page, tells that page to
+    /// navigate itself somewhere else — the only way a diagram could try —
+    /// and asks a listening socket what turned up.
+    ///
+    /// The unguarded pass is not decoration. `requestCount == 0` is also what
+    /// you get when the navigation never happened for reasons of its own, so
+    /// the identical page is made to connect first with no delegate attached.
+    /// Only after that does zero mean the policy stopped it.
+    ///
+    /// Note `withExtendedLifetime`. `navigationDelegate` is weak; a caller
+    /// that assigns a freshly constructed policy without holding it reads back
+    /// nil and allows everything, which from the socket's side is
+    /// indistinguishable from a policy that does not work.
+    @Test("An installed delegate refuses a navigation off the host page")
+    func installedDelegateRefusesNavigation() async throws {
+        let probe = try #require(LocalRequestProbe())
+        defer { probe.stop() }
+        let target = "http://127.0.0.1:\(probe.port)/inpage"
+
+        let unguarded = MermaidNavigationBoundaryHarness(delegate: nil)
+        try await unguarded.loadHostPage()
+        await unguarded.navigate(to: target)
+        #expect(
+            probe.requestCount >= 1,
+            "the page could not reach the socket even unguarded; the assertion below would be vacuous"
+        )
+
+        let baseline = probe.requestCount
+
+        let policy = MermaidNavigationPolicy()
+        let guarded = MermaidNavigationBoundaryHarness(delegate: policy)
+        #expect(guarded.webView.navigationDelegate != nil, "the policy was released before it could decide anything")
+        try await guarded.loadHostPage()
+        await guarded.navigate(to: target)
+
+        #expect(probe.requestCount == baseline, "the installed delegate let a navigation reach the network")
+        #expect(
+            guarded.webView.url == MermaidHostPage.hostPageURL,
+            "the web view left the host page"
+        )
+        withExtendedLifetime(policy) {}
+    }
+}
+
+/// The renderer's web view, minus the rendering.
+///
+/// Built by hand rather than reaching into `renderer` because
+/// the point is to drive navigation on demand, and the renderer deliberately
+/// offers no way to do that.
+@MainActor
+private final class MermaidNavigationBoundaryHarness {
+    let webView: WKWebView
+
+    init(delegate: WKNavigationDelegate?) {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(
+            MermaidBoundaryStubHandler(), forURLScheme: MermaidHostPage.scheme
+        )
+        webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 200, height: 200), configuration: configuration)
+        webView.navigationDelegate = delegate
+    }
+
+    /// Polls rather than waiting on `didFinish`.
+    ///
+    /// An earlier version installed a `MermaidNavigationPolicy` here to await
+    /// the load, which quietly guarded the unguarded control — it connected to
+    /// nothing, and the whole test would have passed for the wrong reason. The
+    /// control caught it. Nothing may be attached to this web view that the
+    /// caller did not ask for.
+    func loadHostPage() async throws {
+        webView.load(URLRequest(url: MermaidHostPage.hostPageURL))
+        for _ in 0..<40 {
+            if webView.url != nil && !webView.isLoading { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// A fixed wait: a refusal produces no event to wait for, and the
+    /// unguarded control has to be given the same budget to succeed in.
+    func navigate(to urlString: String) async {
+        webView.evaluateJavaScript("location.href = '\(urlString)'") { _, _ in }
+        try? await Task.sleep(for: .milliseconds(900))
+    }
+}
+
+/// Serves a bare page. The real handler also serves 3.4 MB of Mermaid, which
+/// this test has no use for.
+private final class MermaidBoundaryStubHandler: NSObject, WKURLSchemeHandler {
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        let html = Data("<html><body>boundary</body></html>".utf8)
+        task.didReceive(URLResponse(
+            url: task.request.url!, mimeType: "text/html",
+            expectedContentLength: html.count, textEncodingName: "utf-8"
+        ))
+        task.didReceive(html)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
 }
 
 /// The rules, read as text. Cheap, and they fail loudly if someone loosens
@@ -268,6 +380,11 @@ struct MermaidHostPagePolicyTests {
 @Suite("Mermaid rendering")
 struct MermaidRenderingTests {
 
+    /// This suite's own renderer. Swift Testing builds a `struct` suite once
+    /// per test, so every test gets a clean cache, failure budget and web
+    /// view, and no suite can reset another's while it is mid-render.
+    private let renderer = MermaidRenderer()
+
     @Test("Diagrams of every common kind render", arguments: [
         ("flowchart", "graph TD\n  A[Start] --> B{Choice}\n  B -->|yes| C[Go]"),
         ("sequence", "sequenceDiagram\n  A->>B: hello\n  B-->>A: hi"),
@@ -277,7 +394,7 @@ struct MermaidRenderingTests {
         ("pie", "pie title Share\n  \"A\" : 40\n  \"B\" : 60"),
     ])
     func diagramsRender(_ name: String, _ source: String) async {
-        let image = await MermaidRenderer.shared.image(source: source, theme: .light)
+        let image = await renderer.image(source: source, theme: .light)
         guard let image else {
             Issue.record("\(name) produced no image")
             return
@@ -305,12 +422,12 @@ struct MermaidRenderingTests {
     @Test("The picture contains its labels")
     func pictureHasInk() async throws {
         let labelled = try #require(
-            await MermaidRenderer.shared.image(
+            await renderer.image(
                 source: "graph TD\n  A[Alphabet] --> B[Beetroot]", theme: .light
             )
         )
         let bare = try #require(
-            await MermaidRenderer.shared.image(
+            await renderer.image(
                 source: "graph TD\n  A[ ] --> B[ ]", theme: .light
             )
         )
@@ -373,11 +490,11 @@ struct MermaidRenderingTests {
         ]
 
         // Alone, from cold — the picture each diagram is entitled to.
-        MermaidRenderer.shared.resetForTesting()
+        renderer.resetForTesting()
         var alone: [String] = []
         for source in diagrams {
             alone.append(fingerprint(try #require(
-                await MermaidRenderer.shared.image(source: source, theme: .light)
+                await renderer.image(source: source, theme: .light)
             )))
         }
         // The premise: these four actually look different. Without it the
@@ -387,10 +504,10 @@ struct MermaidRenderingTests {
 
         // Together, from cold. Unstructured tasks so they are genuinely in
         // flight at once, which a sequential loop would not be.
-        MermaidRenderer.shared.resetForTesting()
+        renderer.resetForTesting()
         let started = diagrams.map { source in
             Task { @MainActor () -> NSImage? in
-                await MermaidRenderer.shared.image(source: source, theme: .light)
+                await renderer.image(source: source, theme: .light)
             }
         }
         var together: [String] = []
@@ -464,10 +581,10 @@ struct MermaidRenderingTests {
     @Test("A malformed diagram renders nothing and is remembered")
     func malformedIsRefusedAndCached() async {
         let bad = "graph TD\n  A --> ((("
-        #expect(await MermaidRenderer.shared.image(source: bad, theme: .light) == nil)
-        #expect(MermaidRenderer.shared.isKnownBad(source: bad, theme: .light))
+        #expect(await renderer.image(source: bad, theme: .light) == nil)
+        #expect(renderer.isKnownBad(source: bad, theme: .light))
         // Remembered, so a rebuilt row does not pay for it again.
-        #expect(MermaidRenderer.shared.cachedImage(source: bad, theme: .light) == nil)
+        #expect(renderer.cachedImage(source: bad, theme: .light) == nil)
     }
 
     /// The theme is part of the cache key. Conflating them is the mistake the
@@ -476,18 +593,26 @@ struct MermaidRenderingTests {
     @Test("Light and dark are cached apart")
     func themesAreCachedApart() async throws {
         let source = "graph TD\n  A[Theme] --> B[Test]"
-        let light = try #require(await MermaidRenderer.shared.image(source: source, theme: .light))
-        let dark = try #require(await MermaidRenderer.shared.image(source: source, theme: .dark))
+        let light = try #require(await renderer.image(source: source, theme: .light))
+        let dark = try #require(await renderer.image(source: source, theme: .dark))
         #expect(light !== dark)
-        #expect(MermaidRenderer.shared.cachedImage(source: source, theme: .light) === light)
-        #expect(MermaidRenderer.shared.cachedImage(source: source, theme: .dark) === dark)
+        #expect(renderer.cachedImage(source: source, theme: .light) === light)
+        #expect(renderer.cachedImage(source: source, theme: .dark) === dark)
     }
 }
 
 /// Auto-reveal, and the two rules that keep it from being annoying.
 @MainActor
-@Suite("Preview auto-reveal")
+@Suite("Preview auto-reveal", .serialized)
 struct PreviewAutoRevealTests {
+
+    /// The shared renderer, deliberately, and the only suite that still uses
+    /// it. These tests drive `MarkdownCodeBlockView`, which reaches for
+    /// ``MermaidRenderer/shared`` itself, so an injected instance would sit
+    /// there unwritten while the assertions read an empty cache. Their
+    /// neighbours own private instances, which leaves nobody to race with;
+    /// `.serialized` covers this suite's own tests, which share the cache.
+    private let renderer = MermaidRenderer.shared
 
     private let svg = """
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100" height="50">
@@ -550,19 +675,19 @@ struct PreviewAutoRevealTests {
     func noRenderWhileStreaming() async {
         // Warm: after this, a render of a *final* block is fast, so a wait
         // that finds nothing means nothing was asked for.
-        _ = await MermaidRenderer.shared.image(
+        _ = await renderer.image(
             source: "graph TD\n  Warm[Warm] --> Up[Up]", theme: .light
         )
         let source = "graph TD\n  A[Streaming] --> B[Partial]"
         _ = block(source, "mermaid", isFinal: false)
         try? await Task.sleep(for: .milliseconds(1_500))
-        #expect(MermaidRenderer.shared.cachedImage(source: source, theme: .light) == nil)
-        #expect(!MermaidRenderer.shared.isKnownBad(source: source, theme: .light))
+        #expect(renderer.cachedImage(source: source, theme: .light) == nil)
+        #expect(!renderer.isKnownBad(source: source, theme: .light))
 
         // And the control: the same block, final, does get drawn.
         _ = block(source, "mermaid", isFinal: true)
         try? await Task.sleep(for: .milliseconds(1_500))
-        #expect(MermaidRenderer.shared.cachedImage(source: source, theme: .light) != nil)
+        #expect(renderer.cachedImage(source: source, theme: .light) != nil)
     }
 }
 
@@ -579,31 +704,36 @@ struct PreviewAutoRevealTests {
 @Suite("Mermaid renderer setup")
 struct MermaidSetupTests {
 
+    /// This suite's own renderer. Swift Testing builds a `struct` suite once
+    /// per test, so every test gets a clean cache, failure budget and web
+    /// view, and no suite can reset another's while it is mid-render.
+    private let renderer = MermaidRenderer()
+
     @Test("Concurrent first renders share one web view")
     func concurrentFirstRendersShareOneWebView() async {
-        MermaidRenderer.shared.resetForTesting()
-        defer { MermaidRenderer.shared.resetForTesting() }
-        #expect(MermaidRenderer.shared.webViewsCreated == 0)
+        renderer.resetForTesting()
+        defer { renderer.resetForTesting() }
+        #expect(renderer.webViewsCreated == 0)
 
         // Distinct sources, so `inFlight` cannot be what dedups them.
         let sources = (1...6).map { "graph TD\n  A\($0)[Node \($0)] --> B\($0)[End \($0)]" }
         // `async let`, not a task group: the group's sending checks reject a
         // `@MainActor` child here, and what matters is only that six requests
         // are outstanding together.
-        async let a: NSImage? = MermaidRenderer.shared.image(source: sources[0], theme: .light)
-        async let b: NSImage? = MermaidRenderer.shared.image(source: sources[1], theme: .light)
-        async let c: NSImage? = MermaidRenderer.shared.image(source: sources[2], theme: .light)
-        async let d: NSImage? = MermaidRenderer.shared.image(source: sources[3], theme: .light)
-        async let e: NSImage? = MermaidRenderer.shared.image(source: sources[4], theme: .light)
-        async let f: NSImage? = MermaidRenderer.shared.image(source: sources[5], theme: .light)
+        async let a: NSImage? = renderer.image(source: sources[0], theme: .light)
+        async let b: NSImage? = renderer.image(source: sources[1], theme: .light)
+        async let c: NSImage? = renderer.image(source: sources[2], theme: .light)
+        async let d: NSImage? = renderer.image(source: sources[3], theme: .light)
+        async let e: NSImage? = renderer.image(source: sources[4], theme: .light)
+        async let f: NSImage? = renderer.image(source: sources[5], theme: .light)
         _ = await (a, b, c, d, e, f)
         #expect(
-            MermaidRenderer.shared.webViewsCreated == 1,
-            "built \(MermaidRenderer.shared.webViewsCreated) web views for six diagrams"
+            renderer.webViewsCreated == 1,
+            "built \(renderer.webViewsCreated) web views for six diagrams"
         )
         // And they all actually rendered.
         for source in sources {
-            #expect(MermaidRenderer.shared.cachedImage(source: source, theme: .light) != nil)
+            #expect(renderer.cachedImage(source: source, theme: .light) != nil)
         }
     }
 }
