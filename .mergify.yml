@@ -4,8 +4,40 @@ merge_queue:
   skip_intermediate_results: false
   status_comments: outcomes
 
+merge_protections_settings:
+  auto_merge_conditions:
+    - or:
+        - label = merge-ready
+        - label = merge-ready-mac
+
 queue_rules:
-  - name: main-batch
+  - name: no-mac-batch
+    queue_branch_prefix: mergify/merge-queue/
+    batch_size: 4
+    batch_max_wait_time: 5 min
+    batch_max_failure_resolution_attempts: 2
+    checks_timeout: 90 min
+    max_checks_retries: 0
+    merge_method: squash
+    branch_protection_injection_mode: queue
+    queue_conditions:
+      - base = main
+      - -draft
+      - -from-fork
+      - label = merge-ready
+      - -label = merge-ready-mac
+      - -label = version-bump
+      - -label = skip-version-bump
+      - "-title ~= ^chore: bump version to "
+      - check-success = @github-actions/tests
+      - check-success = @github-actions/desktop-tests
+      - check-success = @github-actions/version-bump-guard
+    merge_conditions:
+      - check-success = @github-actions/tests
+      - check-success = @github-actions/desktop-tests
+      - check-success = @github-actions/version-bump-guard
+
+  - name: mac-batch
     queue_branch_prefix: mergify/merge-queue/
     batch_size: 4
     batch_max_wait_time: 15 min
@@ -18,7 +50,8 @@ queue_rules:
       - base = main
       - -draft
       - -from-fork
-      - label = merge-ready
+      - label = merge-ready-mac
+      - -label = merge-ready
       - -label = version-bump
       - -label = skip-version-bump
       - "-title ~= ^chore: bump version to "
@@ -29,17 +62,3 @@ queue_rules:
       - check-success = @github-actions/tests
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
-
-pull_request_rules:
-  - name: queue merge-ready pull requests
-    conditions:
-      - base = main
-      - -draft
-      - -from-fork
-      - label = merge-ready
-      - -label = version-bump
-      - -label = skip-version-bump
-      - "-title ~= ^chore: bump version to "
-    actions:
-      queue:
-        name: main-batch

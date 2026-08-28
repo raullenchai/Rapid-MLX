@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   # Merge queue candidates are synthetic commits.  They need their own trigger
   # or GitHub waits forever for the required `tests` check.
   merge_group:
@@ -40,11 +40,10 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO: ${{ github.repository }}
-          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            # Classify the actual diff even during full-ci promotion. Promotion
+            # Classify the actual diff before integration promotion. Promotion
             # broadens coverage inside the affected lane; it must not turn an
             # engine-only PR into a full Desktop run (or vice versa).
             # Disable rename folding so both the removed source path and the
@@ -54,10 +53,9 @@ jobs:
               --paths-file /tmp/changed-paths \
               --github-output "$GITHUB_OUTPUT"
             full_gate=false
-            if [ "$FULL_CI" = true ] || \
-              { [ "$HEAD_REPO" = "$REPO" ] && \
-                { [[ "$HEAD_REF" == train/* ]] || \
-                  [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; }; then
+            if [ "$HEAD_REPO" = "$REPO" ] && \
+              { [[ "$HEAD_REF" == train/* ]] || \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; then
               full_gate=true
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"

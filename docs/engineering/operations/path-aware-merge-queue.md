@@ -81,26 +81,31 @@ the threshold is not the normal escape hatch.
 
 Ordinary pull requests run the path-aware PR gate and leave the required
 `tests`, `desktop-tests`, and `version-bump-guard` contexts satisfiable. A pull
-request becomes an integration candidate only when a maintainer applies the
-`merge-ready` label after review and PR validation have converged. The managed
-queue collects up to four such pull requests, waits at most 15 minutes from the
-first entry, and validates their combined tree once.
+request becomes an integration candidate only when a maintainer applies exactly
+one authorization label after review and PR validation have converged:
+
+- `merge-ready` when the diff does not select the Desktop lane;
+- `merge-ready-mac` when the diff selects the Desktop lane.
+
+The managed queue never mixes the two labels in one batch. It collects up to
+four candidates of the same class and validates their combined tree once. The
+non-Desktop queue waits at most five minutes to favor latency; the Desktop queue
+waits at most 15 minutes to amortize scarce macOS capacity.
 
 The queue creates an internal pull request from a branch whose name is exactly
 `mergify/merge-queue/<10 lowercase hex characters>`. The engine and Desktop
 workflows treat only that exact same-repository shape as a promoted head. A fork
 using the same branch name remains on the ordinary PR path.
 
-The optional `full-ci` label provides an exact-head rehearsal before queueing.
-Both that label and a queue batch upgrade the lanes selected by the actual diff:
+An internal queue batch upgrades the lanes selected by the actual diff:
 
 - Engine changes expand to the full five-model L1 matrix.
 - Desktop changes build the release GUI once, then run every journey group
   mapped to the changed controls and product sources in
   `Tests/GUIGoldenFlows/journeys.yaml`.
 - Cross-cutting or unknown changes expand both lanes.
-- Documentation-only changes require neither product lane and do not need the
-  label.
+- Documentation-only changes require neither product lane and use
+  `merge-ready`.
 
 GUI routing expands a changed source to its complete journey group, so sibling
 flows around the same user workflow remain covered. It fails closed: empty or
@@ -120,9 +125,14 @@ allocating model runners. A mixed or fail-closed batch selects both.
 
 The queue contract lives in `.mergify.yml`:
 
+- label-gated `auto_merge_conditions`, so a ready label automatically enqueues
+  the pull request without a second command or checkbox;
 - serial mode with one batch in flight, so speculative checks cannot multiply
   scarce macOS capacity;
-- up to four pull requests per batch and a 15-minute maximum fill wait;
+- separate non-Desktop and Desktop queues, each with mutually exclusive
+  authorization labels;
+- up to four pull requests per batch, with five-minute and 15-minute maximum
+  fill waits respectively;
 - no blind CI retry and no skipped intermediate failures;
 - at most two batch-split attempts to isolate a failing member;
 - a 90-minute check timeout, covering normal hosted macOS queue delay;
@@ -179,8 +189,9 @@ Production activation is an owner operation and must happen in this order:
 2. Install the GitHub App for this repository only. Do not grant it access to
    unrelated repositories. Confirm its configuration check validates the
    default-branch policy.
-3. Create the `merge-ready` label. Applying it is the explicit authorization to
-   enter the queue; removing it dequeues the pull request.
+3. Create the `merge-ready` and `merge-ready-mac` labels. Applying exactly one
+   is the explicit authorization to enter the matching queue; removing it
+   dequeues the pull request. Applying both fails closed and enters neither.
    Fork pull requests are deliberately ineligible because composing fork code
    onto an internal queue branch changes GitHub's token and secret boundary.
    After review, bring an accepted external change onto a same-repository
@@ -193,14 +204,20 @@ Production activation is an owner operation and must happen in this order:
    every original head, is the artifact tested by CI.
 5. Keep manual merges limited to the documented version-bump and
    human-authorized hotfix paths. Normal pull requests enter through the
-   `merge-ready` label and are merged by the queue.
+   matching merge-ready label and are merged by the queue.
 6. Rehearse with two harmless pull requests that are individually green. Apply
    `merge-ready` to both within the fill window and verify one temporary batch
    PR contains both exact heads, runs each affected full lane once, reports all
    three required checks, and squash-merges both originals in order.
 7. Confirm a fork branch named like a queue branch does not receive promoted
-   lanes. Then remove `merge-ready` from a queued test PR and verify it leaves
-   the queue without merging.
+   lanes. Then remove the applicable ready label from a queued test PR and
+   verify it leaves the queue without merging.
+
+Every `synchronize` event removes either ready label before the updated head can
+be admitted. A new commit therefore requires fresh review and an explicit new
+authorization after its own required checks pass. The revocation workflow uses
+`pull_request_target` without checking out or executing pull-request code, and
+holds only pull-request label write permission.
 
 Do not enable batching while strict up-to-date protection remains on, and do
 not weaken or remove any required context to make a batch move. A missing,
@@ -208,9 +225,10 @@ cancelled, or failed aggregate is a queue failure.
 
 ## Rollback
 
-Pause the managed queue and remove `merge-ready` from every queued pull request
-first. Wait for the active batch to stop, restore strict up-to-date protection,
-and only then disable or uninstall the app. Keep the batch-head and
+Pause the managed queue and remove both merge-ready labels from every queued
+pull request first. Wait for the active batch to stop, restore strict
+up-to-date protection, and only then disable or uninstall the app. Keep the
+batch-head and
 `merge_group` workflow triggers in place; they are inert without a queue and
 make rollback recoverable without weakening CI. If path classification is
 suspect, make its policy select both lanes for every PR; this restores the

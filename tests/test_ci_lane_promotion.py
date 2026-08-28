@@ -3,7 +3,7 @@
 
 These tests intentionally inspect the workflows: ordinary PRs must keep their
 fast product checks while release-grade model/GUI lanes are reserved for a
-``full-ci`` promotion or an integration candidate.
+an integration candidate.
 """
 
 import os
@@ -129,7 +129,6 @@ def test_product_promotion_keeps_diff_scope_and_accepts_integration_heads():
     ):
         run = _step_run(workflow, job_name, step_name)
         assert 'git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA"' in run
-        assert '[ "$FULL_CI" = true ] ||' in run
         assert '[ "$HEAD_REPO" = "$REPO" ] &&' in run
         assert '[[ "$HEAD_REF" == train/* ]] ||' in run
         assert '[[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]' in run
@@ -160,7 +159,6 @@ def test_fork_cannot_claim_train_branch_promotion(tmp_path):
         )
     ):
         common = {
-            "FULL_CI": "false",
             "HEAD_REF": "train/spoofed",
             "REPO": "owner/repo",
         }
@@ -214,7 +212,6 @@ def test_only_exact_internal_mergify_batch_heads_promote_full_ci(
                 job_name,
                 step_name,
                 GITHUB_OUTPUT=str(tmp_path / f"mergify-{index}"),
-                FULL_CI="false",
                 HEAD_REF=head_ref,
                 HEAD_REPO=head_repo,
                 REPO="owner/repo",
@@ -232,6 +229,15 @@ def test_only_promoted_heads_allocate_expensive_lanes():
         condition = str(_job(DESKTOP_WORKFLOW, job_name)["if"])
         assert "needs.changes.outputs.desktop == 'true'" in condition
         assert "needs.changes.outputs.full_gate == 'true'" in condition
+
+
+def test_merge_authorization_labels_do_not_retrigger_product_ci():
+    expected = ["opened", "synchronize", "reopened", "ready_for_review"]
+    for workflow in (ENGINE_WORKFLOW, DESKTOP_WORKFLOW):
+        triggers = _workflow_strings(workflow)["on"]["pull_request"]
+        assert triggers["types"] == expected
+        assert "labeled" not in triggers["types"]
+        assert "unlabeled" not in triggers["types"]
 
 
 def test_unpromoted_engine_aggregate_requires_fast_linux_and_apple_lanes():

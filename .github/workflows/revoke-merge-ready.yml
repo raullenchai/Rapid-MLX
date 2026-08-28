@@ -1,0 +1,36 @@
+name: Revoke merge-ready on head update
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions: {}
+
+jobs:
+  revoke-merge-ready:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'merge-ready') ||
+      contains(github.event.pull_request.labels.*.name, 'merge-ready-mac')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Revoke stale merge authorization
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        with:
+          script: |
+            const readyLabels = ["merge-ready", "merge-ready-mac"];
+            const currentLabels = new Set(
+              context.payload.pull_request.labels.map((label) => label.name),
+            );
+            for (const name of readyLabels.filter((label) => currentLabels.has(label))) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                name,
+              });
+              core.notice(
+                `Removed ${name} from #${context.issue.number} after its head changed.`,
+              );
+            }

@@ -236,18 +236,25 @@ Before merge, the PR description must accurately reflect actual current state:
   before queueing. Stop on `QUEUED`, `IN_PROGRESS`, `PENDING`,
   `FAILURE`, `CANCELLED`, or `TIMED_OUT` for any relevant check.
 
-- For an ordinary pull request, apply the integration authorization label and
-  let the managed queue combine and revalidate it. Do not manually rebase after
-  queue entry and do not click GitHub's merge button:
+- For an ordinary pull request, apply exactly one integration authorization
+  label and let the matching managed queue combine and revalidate it. Use
+  `merge-ready` when the classifier does not select the Desktop lane, or
+  `merge-ready-mac` when it does. Do not manually rebase after queue entry and
+  do not click GitHub's merge button:
 
   ```bash
+  # No Desktop/GUI lane:
   gh pr edit <PR#> --repo raullenchai/Rapid-MLX --add-label merge-ready
+
+  # Desktop/GUI lane required:
+  gh pr edit <PR#> --repo raullenchai/Rapid-MLX --add-label merge-ready-mac
   ```
 
-- The queue waits up to 15 minutes for as many as four merge-ready pull
-  requests, runs the affected full lanes once on their combined tree, and then
-  squash-merges each original pull request. A failed batch is split to identify
-  the blocking member; do not add an independent rerun.
+- The non-Desktop queue waits up to five minutes; the Desktop queue waits up to
+  15 minutes. Each collects as many as four same-class pull requests, runs the
+  affected full lanes once on the combined tree, and then squash-merges each
+  original. A failed batch is split to identify the blocking member; do not add
+  an independent rerun.
 - Version bumps and human-authorized hotfixes do not enter the general batch.
   Follow their explicit release/hotfix contract and use a direct squash merge
   only when that contract authorizes it.

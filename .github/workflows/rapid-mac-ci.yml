@@ -29,7 +29,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
 
@@ -63,7 +63,6 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO: ${{ github.repository }}
-          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
@@ -75,9 +74,9 @@ jobs:
               echo 'full_gate=true'
             } >> "$GITHUB_OUTPUT"
           else
-            # Keep full-ci promotion scoped to the lanes selected by the real
-            # PR diff. An engine-only PR must not allocate a full GUI run, and
-            # a Desktop-only PR must not allocate model runners.
+            # Keep integration promotion scoped to the lanes selected by the
+            # real PR diff. An engine-only PR must not allocate a full GUI run,
+            # and a Desktop-only PR must not allocate model runners.
             # Disable rename folding so both the removed source path and the
             # new destination participate in classification.
             git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA" > /tmp/changed-paths
@@ -88,10 +87,9 @@ jobs:
               --paths-file /tmp/changed-paths \
               --github-output "$GITHUB_OUTPUT"
             full_gate=false
-            if [ "$FULL_CI" = true ] || \
-              { [ "$HEAD_REPO" = "$REPO" ] && \
-                { [[ "$HEAD_REF" == train/* ]] || \
-                  [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; }; then
+            if [ "$HEAD_REPO" = "$REPO" ] && \
+              { [[ "$HEAD_REF" == train/* ]] || \
+                [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; then
               full_gate=true
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
