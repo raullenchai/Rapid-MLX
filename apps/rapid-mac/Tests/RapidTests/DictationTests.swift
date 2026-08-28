@@ -420,7 +420,7 @@ struct DictationTests {
         #expect(hotkeyStartCount == 0)
 
         warmupContinuation?.resume(returning: true)
-        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        await waitUntil { controller.phase == .idle }
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1)
     }
@@ -462,7 +462,7 @@ struct DictationTests {
         #expect(hotkeyStopCount == 0)
 
         controller.serverStateDidChange(.ready(alias: "qwen3.5-4b-4bit"))
-        for _ in 0..<40 where controller.phase != .idle { await Task.yield() }
+        await waitUntil { controller.phase == .idle }
 
         #expect(controller.phase == .idle)
         #expect(controller.isHotkeyArmed)
@@ -504,7 +504,7 @@ struct DictationTests {
         while warmupContinuation == nil { await Task.yield() }
         #expect(controller.phase == .preparingModel)
         warmupContinuation?.resume(returning: true)
-        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        await waitUntil { controller.phase == .idle }
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1)
     }
@@ -564,7 +564,7 @@ struct DictationTests {
         #expect(hotkeyStartCount == 0)
 
         warmupContinuation?.resume(returning: true)
-        for _ in 0..<20 where controller.phase != .idle { await Task.yield() }
+        await waitUntil { controller.phase == .idle }
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1)
     }
@@ -670,7 +670,7 @@ struct DictationTests {
 
         await controller.bootstrap(deferModelPreparation: true)
         controller.modelAlias = "another-speech-input"
-        for _ in 0..<40 where controller.phase != .idle { await Task.yield() }
+        await waitUntil { controller.phase == .idle }
 
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1, "the enabled feature keeps one event-tap registration")
@@ -975,6 +975,23 @@ struct DictationTests {
         #expect(starts == 2)
         secondContinuation?.resume(returning: true)
         await firstEnable.value
+    }
+
+    /// Yields until `condition` holds or a short wall-clock deadline passes.
+    ///
+    /// The readiness/prewarm hand-off is scheduled on the main actor, so a wait
+    /// must bound by time, not by a fixed number of scheduler yields: a
+    /// `for _ in 0..<20 where … { await Task.yield() }` poll flakes when the
+    /// parallel suite on a loaded runner doesn't re-enter the actor within the
+    /// finite yield budget (issue #2537).
+    @MainActor
+    private func waitUntil(
+        timeout: Duration = .seconds(1),
+        _ condition: @MainActor () -> Bool
+    ) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition(), clock.now < deadline { await Task.yield() }
     }
 
     @MainActor
