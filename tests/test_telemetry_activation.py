@@ -56,8 +56,28 @@ def test_kinds_and_surfaces_are_the_allowlist():
         "first_inference",
         "model_pull",
         "agent_setup",
+        "first_chat_reply",
+        "first_vision_reply",
+        "first_dictation",
+        "first_image",
     } == spec.ACTIVATION_KINDS
-    assert {"cli", "api"} == spec.ACTIVATION_SURFACES
+    assert {
+        "first_chat_reply",
+        "first_vision_reply",
+        "first_dictation",
+        "first_image",
+    } == spec.DESKTOP_ACTIVATION_KINDS
+    assert {"cli", "api", "desktop"} == spec.ACTIVATION_SURFACES
+    assert {
+        ("first_inference", "cli"),
+        ("first_inference", "api"),
+        ("model_pull", "cli"),
+        ("agent_setup", "cli"),
+        ("first_chat_reply", "desktop"),
+        ("first_vision_reply", "desktop"),
+        ("first_dictation", "desktop"),
+        ("first_image", "desktop"),
+    } == spec.ACTIVATION_KIND_SURFACE_PAIRS
 
 
 def test_health_and_models_are_not_inference_endpoints():
@@ -458,6 +478,29 @@ def test_activation_drops_unknown_surface(opted_in, stub_queue):
     emit.activation(activation_kind="first_inference", surface="api")
     assert len(stub_queue) == 1
     assert stub_queue[0]["activation"]["surface"] == "api"
+
+
+@pytest.mark.parametrize(
+    "activation_kind,surface",
+    [
+        ("first_inference", "desktop"),
+        ("model_pull", "api"),
+        ("agent_setup", "desktop"),
+        ("first_chat_reply", "cli"),
+        ("first_vision_reply", "api"),
+        ("first_dictation", "cli"),
+        ("first_image", "api"),
+    ],
+)
+def test_activation_drops_invalid_kind_surface_pair(
+    opted_in, stub_queue, activation_kind, surface
+):
+    from vllm_mlx.telemetry import emit, state
+
+    emit.activation(activation_kind=activation_kind, surface=surface)
+
+    assert stub_queue == []
+    assert not state.activation_marker_path(activation_kind).exists()
 
 
 def test_activation_is_not_request_sampled(opted_in, stub_queue, monkeypatch):

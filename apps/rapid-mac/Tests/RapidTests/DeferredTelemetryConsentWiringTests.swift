@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import Rapid
 
 @Suite("Deferred telemetry consent delivery wiring")
 struct DeferredTelemetryConsentWiringTests {
@@ -32,6 +33,41 @@ struct DeferredTelemetryConsentWiringTests {
         #expect(body.contains("delivered.status == .complete"))
         #expect(body.contains("!delivered.content.trimmingCharacters"))
         #expect(body.contains("onProductValueDelivered(.chatReply)"))
+    }
+
+    @Test("A successful vision turn does not claim the text-only chat milestone")
+    @MainActor
+    func visionReplyDoesNotSignalChatReply() async throws {
+        let image = try ChatImageAttachment(
+            filename: "photo.png",
+            mimeType: "image/png",
+            data: Data("image".utf8)
+        )
+        var deliveredKinds: [ProductValueKind] = []
+        let client = ChatStreamClient(
+            baseURL: URL(string: "fake://rapid-mlx")!,
+            session: ActivationVisionReplyProtocol.session()
+        )
+        let model = ChatViewModel(
+            client: client,
+            persistsConversations: false,
+            onProductValueDelivered: { deliveredKinds.append($0) }
+        )
+
+        model.send(
+            "What is in this photo?",
+            alias: "vision-model",
+            supportsImageInput: true,
+            imageAttachments: [image]
+        )
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while model.isStreaming, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!model.isStreaming, "the canned successful stream must finish")
+        #expect(deliveredKinds.isEmpty)
+        #expect(model.messages.last?.content == "ok")
     }
 
     @Test("Dictation signals after transcript delivery and history persistence")
@@ -76,4 +112,54 @@ struct DeferredTelemetryConsentWiringTests {
                 "Escape belongs to the active app interaction; only an explicit click may decline")
         #expect(!banner.contains("@FocusState"))
     }
+
+    @Test("Every consent surface discloses the Desktop activation shape and country derivation")
+    func activationDisclosureContract() throws {
+        let banner = try Self.source("Sources/Rapid/UI/TelemetryConsentView.swift")
+        let settings = try Self.source("Sources/Rapid/UI/SettingsView.swift")
+        let privacy = try Self.source("PRIVACY.md")
+        let normalizedPrivacy = privacy.split(whereSeparator: \Character.isWhitespace).joined(separator: " ")
+
+        for surface in [banner, settings] {
+            #expect(surface.contains("first successful text chat reply, dictation, or generated image"))
+            #expect(surface.contains("does not send a vision-reply milestone"))
+            #expect(surface.contains("only the milestone name and “Desktop”"))
+            #expect(surface.contains("derives a country code but never stores your IP"))
+        }
+        #expect(privacy.contains("`activation` — once per install"))
+        #expect(privacy.contains("vision-reply milestone"))
+        #expect(privacy.contains("is reserved in the event schema but is not sent by this version"))
+        #expect(privacy.contains("`surface: desktop`"))
+        #expect(privacy.contains("two-letter country code"))
+        #expect(normalizedPrivacy.contains("the IP address is never persisted"))
+    }
+}
+
+private final class ActivationVisionReplyProtocol: URLProtocol, @unchecked Sendable {
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ActivationVisionReplyProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let body = """
+        data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n
+        data: [DONE]\n
+        """.data(using: .utf8)!
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-08-18.
+Last updated: 2026-08-27.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -53,6 +53,12 @@ so one Mac is not counted as two installs. We collect:
     locals).
   * App version + macOS version + a short context label (e.g.
     `chat_send`, `download_install`).
+* `activation` — once per install for each first successful text chat reply,
+  delivered dictation transcript, or generated image. A vision-reply milestone
+  is reserved in the event schema but is not sent by this version. The
+  event-specific payload contains only the closed milestone name and
+  `surface: desktop`; it contains no model, timing, count, prompt, response,
+  attachment, transcript, generated image, or path.
 * Embedded-engine `session_start`, `session_end`, `request`, and `error`
   events — only after the same opt-in. Depending on the bundled engine
   version, these can include:
@@ -75,7 +81,9 @@ Anonymous telemetry does **not** collect:
 
 The telemetry endpoint is `https://telemetry.rapidmlx.com/v1/events`.
 The receiving Cloudflare Worker strips client IPs before writing to
-storage. Source is open: `github.com/raullenchai/rapidmlx.com` under
+storage. At ingestion it derives a two-letter country code from Cloudflare's
+connection metadata for aggregate reporting (`XX` when unavailable); the IP
+address is never persisted. Source is open: `github.com/raullenchai/rapidmlx.com` under
 `telemetry-worker/`.
 
 ## Opt out

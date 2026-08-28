@@ -19,6 +19,7 @@ struct TelemetryEvent: Codable, Sendable {
         case sessionStart = "session_start"
         case sessionEnd = "session_end"
         case error
+        case activation
     }
 
     var schema_version: Int
@@ -32,6 +33,26 @@ struct TelemetryEvent: Codable, Sendable {
     var error_message: String?
     var stack_frames: [String]?
     var context: String?
+    var activation: Activation?
+
+    /// Content-free, once-per-install product milestone. The collector already
+    /// accepts the engine's `activation` discriminator; Desktop reuses that
+    /// audited envelope instead of inventing a second transport or an
+    /// open-ended extras dictionary.
+    struct Activation: Codable, Sendable, Equatable {
+        enum Kind: String, Codable, Sendable, CaseIterable, Hashable {
+            case firstChatReply = "first_chat_reply"
+            case firstDictation = "first_dictation"
+            case firstImage = "first_image"
+        }
+
+        enum Surface: String, Codable, Sendable {
+            case desktop
+        }
+
+        var activation_kind: Kind
+        var surface: Surface
+    }
 
     struct Platform: Codable, Sendable {
         var app: String
@@ -82,7 +103,8 @@ struct TelemetryEvent: Codable, Sendable {
             error_type: nil,
             error_message: nil,
             stack_frames: nil,
-            context: nil
+            context: nil,
+            activation: nil
         )
     }
 
@@ -141,7 +163,36 @@ struct TelemetryEvent: Codable, Sendable {
             stack_frames: stackFrames.prefix(30).map {
                 TelemetryEvent.redact($0, cap: 256)
             },
-            context: context.map { TelemetryEvent.redact($0, cap: 128) }
+            context: context.map { TelemetryEvent.redact($0, cap: 128) },
+            activation: nil
+        )
+    }
+
+    /// Build a Desktop activation only after the caller has crossed the
+    /// explicit-consent gate. Keeping that precondition visible at the type's
+    /// sole construction boundary prevents feature code from accidentally
+    /// creating an identity-bearing event while consent is undecided.
+    static func activation(
+        version: String,
+        platform: Platform,
+        kind: Activation.Kind
+    ) -> TelemetryEvent {
+        return TelemetryEvent(
+            schema_version: TelemetryConfig.schemaVersion,
+            client_id: TelemetryIdentity.clientID(),
+            session_id: TelemetryConfig.sessionID,
+            rapid_mlx_version: version,
+            event: .activation,
+            timestamp: ISO8601DateFormatter().string(from: Date()),
+            platform: platform,
+            error_type: nil,
+            error_message: nil,
+            stack_frames: nil,
+            context: nil,
+            activation: Activation(
+                activation_kind: kind,
+                surface: .desktop
+            )
         )
     }
 

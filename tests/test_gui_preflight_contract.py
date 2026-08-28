@@ -99,6 +99,9 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert '"bytes": length' in sink
     assert '"event": event' in sink
     assert '"timestamp": timestamp' in sink
+    assert '"activation_kind": activation_kind' in sink
+    assert '"activation_surface": activation_surface' in sink
+    assert '"activation_keys": activation_keys' in sink
     assert 'RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:' in fresh_install
     expected_stages = (
         "before-onboarding",
@@ -135,6 +138,12 @@ def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     assert 'sleep "$settling_seconds"' in positive_control
     assert "loopback telemetry sink exited while settling" in positive_control
     assert "opt_in_not_before" in fresh_install
+    assert "TelemetryConsent.PostValue.Share" in fresh_install
+    assert (
+        "assert_share_activation_requests share-accepted first_chat_reply"
+        in fresh_install
+    )
+    assert "activation_seen_desktop_first_chat_reply" in fresh_install
 
 
 def test_each_fault_fails_with_its_own_message():

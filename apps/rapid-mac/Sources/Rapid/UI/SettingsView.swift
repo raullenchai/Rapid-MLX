@@ -569,7 +569,7 @@ struct SettingsView: View {
             Toggle(isOn: telemetryEnabledBinding) {
                 SettingsRowLabel(
                     title: "Send anonymous usage data",
-                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
+                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. The collector derives a country code but never stores your IP. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
                 )
             }
             .toggleStyle(TrailingSettingsToggleStyle())

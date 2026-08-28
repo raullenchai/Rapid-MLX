@@ -676,29 +676,26 @@ def activation(*, activation_kind: str, surface: str) -> None:
     DISTINCT ``client_id``, so a rare duplicate collapses to one engaged
     install. This is deliberate; see ``docs/telemetry-activation.md``.
 
-    Consent-gated like every emit. Both ``activation_kind`` AND ``surface`` are
-    validated against the allowlists in ``telemetry.activation_spec``; an
-    off-list value in EITHER drops the event entirely (rather than coercing a
-    bad surface to ``api``, which would silently mislabel data and hide an
-    instrumentation bug). So no caller-controlled free-form text ever reaches
-    the payload. Two enums only: no prompt, no completion, no content. See
-    ``docs/telemetry-activation.md``.
+    Consent-gated like every emit. The ``activation_kind`` / ``surface`` pair
+    is validated against the closed combinations in
+    ``telemetry.activation_spec``; an invalid pair drops the event entirely
+    (rather than coercing a bad surface to ``api``, which would silently
+    mislabel data and hide an instrumentation bug). So no caller-controlled
+    free-form text ever reaches the payload. Two enums only: no prompt, no
+    completion, no content. See ``docs/telemetry-activation.md``.
     """
     from vllm_mlx.telemetry.activation_spec import (
-        ACTIVATION_KINDS,
-        ACTIVATION_SURFACES,
+        is_allowed_activation,
     )
     from vllm_mlx.telemetry.state import (
         activation_marker_path,
         claim_activation_marker,
     )
 
-    if activation_kind not in ACTIVATION_KINDS:
-        return
-    # An off-allowlist surface is an instrumentation bug, not user input; drop
-    # the event (like an unknown kind) so it surfaces as "missing data" rather
-    # than data silently misattributed to ``api``.
-    if surface not in ACTIVATION_SURFACES:
+    # An invalid kind/surface pair is an instrumentation bug, not user input;
+    # drop it so the fault surfaces as missing data rather than a milestone
+    # silently attributed to the wrong product surface.
+    if not is_allowed_activation(activation_kind, surface):
         return
     # Cheap, lock-free short-circuit once this process has resolved the kind.
     # This is the steady-state path: the synchronous marker filesystem work

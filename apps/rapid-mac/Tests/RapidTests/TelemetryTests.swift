@@ -803,6 +803,27 @@ struct TelemetryAuditBatch8Contracts {
         #expect(TelemetryAuditURLProtocol.requestCount == 1)
     }
 
+    @Test("typed batch delivery distinguishes acceptance, rejection, and throttling")
+    func sendBatchDeliveryClassifiesResponses() async {
+        let defaults = TelemetryAuditDefaultsSandbox()
+        defer { defaults.tearDown() }
+        defaults.setTelemetryEnabled(true)
+        var client = TelemetryClient()
+        client.session = TelemetryAuditURLProtocol.session()
+
+        TelemetryAuditURLProtocol.stub(statusCode: 204)
+        #expect(await client.sendBatchDelivery([event()]) == .accepted)
+
+        TelemetryAuditURLProtocol.stub(statusCode: 422)
+        #expect(await client.sendBatchDelivery([event()]) == .discard)
+
+        TelemetryAuditURLProtocol.stub(statusCode: 429)
+        #expect(await client.sendBatchDelivery([event()]) == .retry)
+
+        TelemetryAuditURLProtocol.stub(statusCode: 408)
+        #expect(await client.sendBatchDelivery([event()]) == .retry)
+    }
+
     @Test("sendBatch returns false for transient 5xx response")
     func sendBatchReturnsFalseFor5xx() async {
         let defaults = TelemetryAuditDefaultsSandbox()

@@ -302,6 +302,9 @@ class Sink(BaseHTTPRequestHandler):
         payload = self.rfile.read(length)
         event = None
         timestamp = None
+        activation_kind = None
+        activation_surface = None
+        activation_keys = []
         try:
             envelope = json.loads(payload)
             batch = envelope.get("batch") if isinstance(envelope, dict) else None
@@ -309,6 +312,11 @@ class Sink(BaseHTTPRequestHandler):
             if isinstance(first, dict):
                 event = first.get("event") if isinstance(first.get("event"), str) else None
                 timestamp = first.get("timestamp") if isinstance(first.get("timestamp"), str) else None
+                activation = first.get("activation")
+                if isinstance(activation, dict):
+                    activation_kind = activation.get("activation_kind")
+                    activation_surface = activation.get("surface")
+                    activation_keys = sorted(activation)
         except (UnicodeDecodeError, json.JSONDecodeError):
             pass
         record = {
@@ -317,6 +325,9 @@ class Sink(BaseHTTPRequestHandler):
             "bytes": length,
             "event": event,
             "timestamp": timestamp,
+            "activation_kind": activation_kind,
+            "activation_surface": activation_surface,
+            "activation_keys": activation_keys,
         }
         with write_lock, open(request_log, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
@@ -420,6 +431,45 @@ assert_one_telemetry_request() {
         || die "Settings opt-in did not produce a new session_start during $stage"
 }
 
+assert_share_activation_requests() {
+    local stage="$1"
+    local expected_kind="$2"
+    local evidence="$OUT/telemetry-$stage.json"
+    local count=0
+    for _ in {1..120}; do
+        kill -0 "$TELEMETRY_SINK_PID" 2>/dev/null \
+            || die "loopback telemetry sink exited during $stage"
+        count="$(wc -l < "$TELEMETRY_SINK_LOG" | tr -d '[:space:]')"
+        [[ "$count" -ge 2 ]] && break
+        sleep 0.05
+    done
+    # A short quiet period turns "the two expected requests arrived" into
+    # "exactly those two requests arrived" rather than racing a third send.
+    sleep 0.5
+    count="$(wc -l < "$TELEMETRY_SINK_LOG" | tr -d '[:space:]')"
+    jq -s --arg stage "$stage" --arg log "$TELEMETRY_SINK_LOG" \
+        --arg expected_kind "$expected_kind" \
+        '{stage: $stage, request_count: length, request_log: $log,
+          expected_activation_kind: $expected_kind, requests: .}' \
+        "$TELEMETRY_SINK_LOG" > "$evidence"
+    [[ "$count" == 2 ]] \
+        || die "Share produced $count telemetry requests instead of session_start plus one activation"
+    jq -e '. as $evidence |
+        ([.requests[] | select(.event == "session_start")] | length) == 1
+        and ([.requests[] | select(.event == "activation")] | length) == 1
+        and ([.requests[] | select(
+            .event == "activation"
+            and .method == "POST"
+            and .path == "/v1/events"
+            and .bytes > 0
+            and .activation_kind == $evidence.expected_activation_kind
+            and .activation_surface == "desktop"
+            and .activation_keys == ["activation_kind", "surface"]
+        )] | length) == 1' \
+        "$evidence" >/dev/null \
+        || die "Share did not produce exactly one valid $expected_kind Desktop activation"
+}
+
 finish() {
     local status=$?
     set +e
@@ -503,7 +553,7 @@ start_persona() {
     # opt-out. They test their named feature, not the one-time consent invite;
     # leaving the preference absent would make the first successful result add
     # an unrelated banner midway through dozens of snapshots.
-    if [[ "$name" != "fresh-install" ]]; then
+    if [[ "$name" != "fresh-install" && "$name" != "fresh-install-share" ]]; then
         env HOME="$PERSONA/home" CFFIXED_USER_HOME="$PERSONA/home" \
             /usr/bin/defaults write "$BUNDLE_ID" \
             com.rapidmlx.rapid.telemetry.enabled -bool false
@@ -1586,6 +1636,31 @@ flow_fresh_install() {
         "$OUT/telemetry-settings-opt-in.json" \
         || die "Settings telemetry opt-in is not pressable"
     assert_one_telemetry_request settings-opt-in "$opt_in_not_before"
+    cleanup_persona
+    cleanup_telemetry_sink
+
+    # A second pristine profile takes the affirmative path. Keep it separate
+    # so the decline/no-re-ask contract above remains intact while this lane
+    # proves that a success retained before consent becomes one accepted,
+    # content-free activation only after Share.
+    log "  consent Share emits one accepted first-chat activation"
+    start_telemetry_sink "$OUT_ROOT/fresh-install-share"
+    start_persona fresh-install-share FAKE_INCLUDE_STARTER=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
+        RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
+    dismiss_first_run
+    assert_no_telemetry_requests share-before-first-value
+    start_model
+    send_prompt "Say hello in one short sentence." "share-activation"
+    wait_identifier TelemetryConsent.PostValueBanner "$OUT/share-consent-visible.json"
+    assert_no_telemetry_requests share-before-decision
+    press "$OUT/share-consent-visible.json" TelemetryConsent.PostValue.Share \
+        "$OUT/share-consent-accepted.json" \
+        || die "Share was not actionable after the first successful reply"
+    assert_share_activation_requests share-accepted first_chat_reply
+    [[ -f "$PERSONA/home/.rapid-mlx/activation_seen_desktop_first_chat_reply" ]] \
+        || die "accepted first_chat_reply did not claim its once-per-install marker"
     cleanup_persona
     cleanup_telemetry_sink
 }

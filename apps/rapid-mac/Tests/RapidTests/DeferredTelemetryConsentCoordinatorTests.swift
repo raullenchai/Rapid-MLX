@@ -8,6 +8,7 @@ struct DeferredTelemetryConsentCoordinatorTests {
     final class Recorder {
         var decisions: [Bool] = []
         var sessionStarts = 0
+        var activations: [ProductValueKind] = []
     }
 
     private func makeCoordinator(
@@ -17,7 +18,8 @@ struct DeferredTelemetryConsentCoordinatorTests {
         DeferredTelemetryConsentCoordinator(
             needsDecision: { needsDecision },
             recordDecision: { recorder.decisions.append($0) },
-            startTelemetrySession: { recorder.sessionStarts += 1 }
+            startTelemetrySession: { recorder.sessionStarts += 1 },
+            reportActivation: { recorder.activations.append($0) }
         )
     }
 
@@ -48,6 +50,21 @@ struct DeferredTelemetryConsentCoordinatorTests {
         #expect(coordinator.triggeringValue == .chatReply)
     }
 
+    @Test("Every typed success before the answer is emitted only after Share")
+    func pendingKindsWaitForShare() async {
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(recorder: recorder)
+        coordinator.productValueDelivered(.chatReply)
+        coordinator.productValueDelivered(.generatedImage)
+        coordinator.productValueDelivered(.chatReply)
+        #expect(recorder.activations.isEmpty)
+
+        coordinator.share()
+        await Task.yield()
+
+        #expect(recorder.activations == [.chatReply, .generatedImage])
+    }
+
     @Test("An existing durable decision suppresses the invitation")
     func existingDecisionWins() {
         let coordinator = makeCoordinator(needsDecision: false)
@@ -64,6 +81,7 @@ struct DeferredTelemetryConsentCoordinatorTests {
         coordinator.productValueDelivered(.chatReply)
         #expect(recorder.decisions == [false])
         #expect(recorder.sessionStarts == 0)
+        #expect(recorder.activations.isEmpty)
         #expect(!coordinator.isPresented)
     }
 
@@ -75,6 +93,7 @@ struct DeferredTelemetryConsentCoordinatorTests {
         coordinator.close()
         #expect(recorder.decisions == [false])
         #expect(recorder.sessionStarts == 0)
+        #expect(recorder.activations.isEmpty)
         #expect(!coordinator.isPresented)
     }
 
@@ -88,6 +107,7 @@ struct DeferredTelemetryConsentCoordinatorTests {
         await Task.yield()
         #expect(recorder.decisions == [true])
         #expect(recorder.sessionStarts == 1)
+        #expect(recorder.activations == [.chatReply])
         #expect(!coordinator.isPresented)
     }
 
@@ -100,6 +120,7 @@ struct DeferredTelemetryConsentCoordinatorTests {
         await Task.yield()
         #expect(recorder.decisions == [true])
         #expect(recorder.sessionStarts == 1)
+        #expect(recorder.activations == [.chatReply])
         #expect(!coordinator.isPresented)
     }
 
@@ -114,6 +135,27 @@ struct DeferredTelemetryConsentCoordinatorTests {
 
         #expect(recorder.decisions == [false, true])
         #expect(recorder.sessionStarts == 1)
+        #expect(recorder.activations.isEmpty)
         #expect(!coordinator.isPresented)
+    }
+
+    @Test("An already-consented install reports future product value without showing a banner")
+    func existingOptInReportsActivation() async {
+        let recorder = Recorder()
+        let coordinator = makeCoordinator(needsDecision: false, recorder: recorder)
+
+        coordinator.productValueDelivered(.dictationTranscript)
+        await Task.yield()
+
+        #expect(recorder.decisions.isEmpty)
+        #expect(recorder.activations == [.dictationTranscript])
+        #expect(!coordinator.isPresented)
+    }
+
+    @Test("Product-value kinds map to the deployed closed activation vocabulary")
+    func productValueWireMapping() {
+        #expect(ProductValueKind.chatReply.telemetryActivationKind == .firstChatReply)
+        #expect(ProductValueKind.dictationTranscript.telemetryActivationKind == .firstDictation)
+        #expect(ProductValueKind.generatedImage.telemetryActivationKind == .firstImage)
     }
 }

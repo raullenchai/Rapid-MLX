@@ -11,11 +11,21 @@ enum ProductValueKind: Equatable, Sendable {
     case chatReply
     case dictationTranscript
     case generatedImage
+
+    var telemetryActivationKind: TelemetryEvent.Activation.Kind {
+        switch self {
+        case .chatReply: .firstChatReply
+        case .dictationTranscript: .firstDictation
+        case .generatedImage: .firstImage
+        }
+    }
 }
 
 @MainActor
 @Observable
 final class DeferredTelemetryConsentCoordinator {
+
+    typealias ActivationReporter = @MainActor (ProductValueKind) async -> Void
 
     private(set) var isPresented = false
     private(set) var triggeringValue: ProductValueKind?
@@ -23,18 +33,28 @@ final class DeferredTelemetryConsentCoordinator {
     @ObservationIgnored private let needsDecision: () -> Bool
     @ObservationIgnored private let recordDecision: (Bool) -> Void
     @ObservationIgnored private let startTelemetrySession: () async -> Void
+    @ObservationIgnored private let reportActivation: ActivationReporter
     @ObservationIgnored private var resolvedThisProcess: Bool
+    /// Typed success only — never a built event, identity, payload, or local
+    /// journal before consent. The first value owns the banner copy while the
+    /// tiny array preserves another approved success that may arrive before a
+    /// user answers the nonmodal invitation.
+    @ObservationIgnored private var pendingActivationKinds: [ProductValueKind] = []
 
     init(
         needsDecision: @escaping () -> Bool = { TelemetryConsent.needsDecision() },
         recordDecision: @escaping (Bool) -> Void = { TelemetryConsent.record(enabled: $0) },
         startTelemetrySession: @escaping () async -> Void = {
             await TelemetrySession.sendStartIfNeeded()
-        }
+        },
+        reportActivation: ActivationReporter? = nil
     ) {
         self.needsDecision = needsDecision
         self.recordDecision = recordDecision
         self.startTelemetrySession = startTelemetrySession
+        self.reportActivation = reportActivation ?? { kind in
+            await DesktopActivationReporter.shared.report(kind.telemetryActivationKind)
+        }
         self.resolvedThisProcess = !needsDecision()
     }
 
@@ -42,10 +62,17 @@ final class DeferredTelemetryConsentCoordinator {
     /// converge on one prompt and an existing durable decision always wins.
     func productValueDelivered(_ kind: ProductValueKind) {
         let decisionIsOwed = needsDecision()
-        guard !resolvedThisProcess, !isPresented, decisionIsOwed else {
-            if !decisionIsOwed { resolvedThisProcess = true }
+        guard decisionIsOwed else {
+            resolvedThisProcess = true
+            Task { await reportActivation(kind) }
             return
         }
+
+        guard !resolvedThisProcess else { return }
+        if !pendingActivationKinds.contains(kind) {
+            pendingActivationKinds.append(kind)
+        }
+        guard !isPresented else { return }
         triggeringValue = kind
         isPresented = true
     }
@@ -71,8 +98,15 @@ final class DeferredTelemetryConsentCoordinator {
         resolvedThisProcess = true
         isPresented = false
         recordDecision(enabled)
+        let activations = pendingActivationKinds
+        pendingActivationKinds.removeAll()
         guard enabled else { return }
-        Task { await startTelemetrySession() }
+        Task {
+            await startTelemetrySession()
+            for kind in activations {
+                await reportActivation(kind)
+            }
+        }
     }
 
     private func resolve(enabled: Bool) {
@@ -80,7 +114,14 @@ final class DeferredTelemetryConsentCoordinator {
         resolvedThisProcess = true
         isPresented = false
         recordDecision(enabled)
+        let activations = pendingActivationKinds
+        pendingActivationKinds.removeAll()
         guard enabled else { return }
-        Task { await startTelemetrySession() }
+        Task {
+            await startTelemetrySession()
+            for kind in activations {
+                await reportActivation(kind)
+            }
+        }
     }
 }

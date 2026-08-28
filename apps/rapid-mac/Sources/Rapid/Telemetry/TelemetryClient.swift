@@ -22,6 +22,16 @@ import Foundation
 /// the nonisolated method without tripping Swift 6 region-based
 /// sending diagnostics (issue #530).
 struct TelemetryClient: @unchecked Sendable {
+    enum BatchDelivery: Equatable, Sendable {
+        /// The Worker accepted the payload with a 2xx response.
+        case accepted
+        /// Retrying the same payload cannot make it valid (for example 400 or
+        /// an oversized local envelope), so marker-backed callers may discard it.
+        case discard
+        /// The request may succeed later (transport failure, throttling, or 5xx).
+        case retry
+    }
+
     /// Codex audit batch 8 finding T1 (P2): a 307/308 from
     /// ``telemetry.rapidmlx.com`` would replay the POST body to an
     /// arbitrary host with ``URLSession.shared``'s default redirect
@@ -100,14 +110,20 @@ struct TelemetryClient: @unchecked Sendable {
     /// cleanup path runs (there is nothing meaningful to retry).
     @discardableResult
     func sendBatch(_ events: [TelemetryEvent]) async -> Bool {
-        guard TelemetryConfig.isEnabled(defaults: defaults) else { return true }
-        guard !events.isEmpty else { return true }
+        await sendBatchDelivery(events) != .retry
+    }
+
+    /// The typed delivery result for callers whose once-only state must only
+    /// advance after a real Worker acceptance. ``sendBatch`` retains its
+    /// historical cleanup Boolean for crash-marker compatibility.
+    func sendBatchDelivery(_ events: [TelemetryEvent]) async -> BatchDelivery {
+        guard TelemetryConfig.isEnabled(defaults: defaults) else { return .discard }
+        guard !events.isEmpty else { return .discard }
         let envelope: [String: [TelemetryEvent]] = ["batch": events]
-        guard let body = try? JSONEncoder().encode(envelope) else { return false }
+        guard let body = try? JSONEncoder().encode(envelope) else { return .retry }
         // Codex audit batch 8 T2 (P2): refuse oversized batches.
-        // Returning ``true`` lets the caller retire the markers —
-        // the batch would 413 forever; better to drop than retry.
-        guard body.count <= TelemetryClient.maxBodyBytes else { return true }
+        // The batch would 413 forever; better to discard than retry.
+        guard body.count <= TelemetryClient.maxBodyBytes else { return .discard }
         var req = URLRequest(url: TelemetryConfig.endpoint)
         req.httpMethod = "POST"
         req.timeoutInterval = 8
@@ -115,24 +131,24 @@ struct TelemetryClient: @unchecked Sendable {
         req.httpBody = body
         do {
             let (_, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse else { return false }
+            guard let http = response as? HTTPURLResponse else { return .retry }
             let code = http.statusCode
             if (200..<300).contains(code) {
-                return true
+                return .accepted
             }
-            // Codex audit batch 8 T3 (P2): classify response. 4xx
-            // means the server permanently rejected the payload —
-            // retrying every launch with the same marker just burns
-            // bandwidth and re-pollutes Worker logs with the same
-            // failed schema validation. Treat 4xx as "delete on
-            // disk" by returning ``true``. 5xx and transport errors
-            // (catch branch below) stay retryable.
+            // Codex audit batch 8 T3 (P2): classify response. Most 4xx
+            // responses permanently reject the payload, while timeout and
+            // throttling responses may succeed later. 5xx and transport
+            // errors (catch branch below) also stay retryable.
+            if code == 408 || code == 429 {
+                return .retry
+            }
             if (400..<500).contains(code) {
-                return true
+                return .discard
             }
-            return false
+            return .retry
         } catch {
-            return false
+            return .retry
         }
     }
 

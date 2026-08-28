@@ -1,6 +1,6 @@
 # Telemetry activation / engagement semantics
 
-**Spec version: `1`** (`vllm_mlx.telemetry.activation_spec.ACTIVATION_SPEC_VERSION`)
+**Spec version: `2`** (`vllm_mlx.telemetry.activation_spec.ACTIVATION_SPEC_VERSION`)
 · Status: **active** · Owner: growth
 
 This document is the single, versioned source of truth for what counts as
@@ -39,6 +39,10 @@ below): the client suppresses repeats locally on a best-effort basis, and the
 | CLI `chat` stream completes normally with ≥1 completion token | ✅ engaged | `first_inference` | `surface = cli`. Emitted after the stream drains normally, not at the first token — a partially consumed / client-cancelled stream is conservatively not counted. **Implemented.** |
 | `rapid-mlx pull <alias>` completes successfully | ✅ activation | `model_pull` | `surface = cli`; NOT inference-engaged. **Implemented.** |
 | Agent integration setup completes AND its connection check passes | ✅ activation | `agent_setup` | `surface = cli`; integration activation. **Spec'd; wiring deferred** — `rapid-mlx launch` has no engine connection check today; that check must land first (see below). |
+| Desktop receives its first successful text-only assistant reply | ✅ Desktop activation | `first_chat_reply` | `surface = desktop`. **Implemented.** |
+| Desktop receives its first successful assistant reply to a vision turn | ✅ Desktop activation | `first_vision_reply` | `surface = desktop`. **Spec'd; wiring deferred.** |
+| Desktop delivers its first successful dictation transcript | ✅ Desktop activation | `first_dictation` | `surface = desktop`. **Implemented.** |
+| Desktop generates its first image | ✅ Desktop activation | `first_image` | `surface = desktop`. **Implemented.** Editing an existing image does not count. |
 
 ## What does NOT count
 
@@ -77,12 +81,19 @@ sampled** — unlike `request`). Envelope is the standard telemetry envelope
 the event-specific payload is:
 
 ```json
-{ "activation_kind": "first_inference" | "model_pull" | "agent_setup",
-  "surface":         "cli" | "api" }
+{ "activation_kind": "first_inference" | "model_pull" | "agent_setup"
+                   | "first_chat_reply" | "first_vision_reply"
+                   | "first_dictation" | "first_image",
+  "surface":         "cli" | "api" | "desktop" }
 ```
 
 No prompt, no completion, no content of any kind — two enums only. This is
 the same privacy class as the `first_session` / `auto_selected` booleans.
+Kinds and surfaces are a closed pair contract, not independent allowlists: only
+the combinations listed in the milestone table above are valid. Engine
+`first_inference` may use `cli` or `api`; `model_pull` and `agent_setup` use
+`cli`; every Desktop kind uses `desktop`. Producers drop any other pairing
+before creating a marker or event.
 
 ### Why a dedicated event and not derivation from `request`
 
@@ -99,14 +110,15 @@ it can never become a high-volume stream.
 
 ### Delivery semantics — at-least-once, deduped by `client_id`
 
-Each `activation_kind` is guarded by a local marker file
-`~/.rapid-mlx/activation_seen_<kind>`, created with exclusive
-(`O_CREAT | O_EXCL`) semantics — the same primitive as `mark_first_session`.
-In the common case the first emission claims the marker and every later call
-(this process, via an in-memory latch; other processes, via the marker) is a
-silent no-op.
+Each engine `activation_kind` is guarded by a local marker file
+`~/.rapid-mlx/activation_seen_<kind>`; Desktop uses
+`activation_seen_desktop_<kind>` in the same shared directory. Both are
+created with exclusive (`O_CREAT | O_EXCL`) semantics — the same primitive as
+`mark_first_session`. In the common case the first accepted emission claims
+the marker and every later call (this process, via an in-memory latch; other
+processes, via the marker) is a silent no-op.
 
-The client deliberately does **not** attempt exactly-once across processes.
+The engine client deliberately does **not** attempt exactly-once across processes.
 It **enqueues first, then claims the marker**, so a transient envelope/enqueue
 failure leaves the marker unclaimed and the next successful inference simply
 retries — an install is never permanently dropped from the funnel by one
@@ -120,12 +132,21 @@ harmless, dedup-able duplicate (at-least-once). The marker is a local empty
 file; only the derived enum pair ever leaves the machine, and only when
 telemetry is enabled.
 
+Desktop uses the same at-least-once contract with one stricter transport
+boundary: it sends first and claims its marker only after the collector returns
+`2xx`. Transport errors, `408`, `429`, and `5xx` remain retryable; a permanent
+non-retryable rejection is not reported as accepted. Consent is re-checked
+before the marker is claimed, so an opt-out racing an accepted send can produce
+only a de-duplicable retry, never a burned milestone.
+
 `kind` is validated against the allowlist before it is ever interpolated into
 the marker filename, so no caller-controlled string can escape `~/.rapid-mlx`.
 
 ### `surface` resolution
 
-`surface` distinguishes the CLI REPL from the HTTP API. Because
+`surface` distinguishes the CLI REPL, HTTP API, and native Desktop app.
+Desktop always emits the literal `desktop`; it never derives this label from a
+model, feature name, or request. Because
 `rapid-mlx chat` runs inference by spawning its own ephemeral `serve` and
 looping through `/v1/chat/completions`, the `first_inference` milestone is
 emitted at the **server-side** success chokepoint for both surfaces; the
@@ -175,6 +196,10 @@ until then the enum value is reserved and never emitted.
 - **Activation funnel**: `model_pull` → `first_inference`, and
   `agent_setup` as the integration path, all keyed on the shared
   `client_id`.
+- **Desktop activation**: count only events with `surface = desktop`, grouped
+  by the four Desktop kinds. Never add them to engine `first_inference`
+  (`surface = cli|api`): the shared consent/client ID means one install can
+  legitimately emit both.
 
 Both this document and the repository tests (`tests/test_telemetry_activation.py`)
 reference `ACTIVATION_SPEC_VERSION`. Any change to the rules above bumps

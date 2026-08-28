@@ -18,10 +18,10 @@ struct DeferredTelemetryConsentBanner: View {
                 Text("Help improve Rapid by sharing anonymous usage data?")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(RapidTheme.textPrimary)
-                Text("Prompts, responses, attachments, and API keys are never collected. Change this anytime in Settings → Privacy.")
+                Text("For each first successful text chat reply, dictation, or generated image, only the milestone name and “Desktop” are sent. This version does not send a vision-reply milestone. The collector derives a country code but never stores your IP. Prompts, responses, attachments, and API keys are never collected. Change this anytime in Settings → Privacy.")
                     .font(.system(size: 12))
                     .foregroundStyle(RapidTheme.textSecondary)
-                    .lineLimit(2)
+                    .lineLimit(4)
             }
 
             Spacer(minLength: RapidTheme.Space.md)

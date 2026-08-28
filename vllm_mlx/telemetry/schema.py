@@ -140,16 +140,18 @@ class ActivationPayload:
     once per install per ``activation_kind``.
     """
 
-    activation_kind: str  # "first_inference" | "model_pull" | "agent_setup"
-    surface: str  # "cli" | "api"
+    # Closed allowlists live in activation_spec.py. Spec v2 adds the Desktop
+    # milestone kinds and surface without changing this wire shape.
+    activation_kind: str
+    surface: str
 
 
 @dataclass(frozen=True)
 class TelemetryPayload:
     """The complete on-the-wire envelope.
 
-    Exactly one of ``session`` / ``request`` / ``error`` is populated
-    per payload — the discriminator is the ``event`` field.
+    Exactly one of ``session`` / ``request`` / ``error`` / ``activation`` is
+    populated per payload — the discriminator is the ``event`` field.
     """
 
     schema_version: int

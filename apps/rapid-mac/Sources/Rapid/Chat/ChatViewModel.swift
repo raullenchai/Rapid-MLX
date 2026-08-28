@@ -1853,6 +1853,7 @@ final class ChatViewModel {
         conversationInstruction: String = ""
     ) async {
         var currentPlaceholder = initialPlaceholder
+        var usedImageInput = false
         defer {
             // A stream that outlived a conversation switch must not reset
             // the NEW conversation's streaming state or clear a newer
@@ -1863,6 +1864,7 @@ final class ChatViewModel {
                 if !Task.isCancelled,
                    let delivered = currentMessage(index: currentPlaceholder),
                    delivered.status == .complete,
+                   !usedImageInput,
                    !delivered.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     onProductValueDelivered(.chatReply)
                 }
@@ -1990,6 +1992,11 @@ final class ChatViewModel {
                     supportsImageInput: supportsImageInput
                 )
             }
+            // Classify the delivered value from the authoritative wire
+            // request, not from alias naming or only the newest user row. A
+            // plain-text follow-up can legitimately inherit an accepted image
+            // attachment, and a tool loop can span multiple requests.
+            usedImageInput = usedImageInput || request.imageMessageID != nil
             let outcome = await runOneStream(
                 placeholderIndex: currentPlaceholder,
                 request: request,
