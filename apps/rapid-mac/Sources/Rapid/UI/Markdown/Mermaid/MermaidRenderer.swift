@@ -104,7 +104,13 @@ final class MermaidRenderer {
     private static let failureBudget = 3
     private var failures = 0
 
-    private init() {}
+    /// The app uses ``shared`` and nothing else. This is reachable so tests
+    /// can own an instance outright: the cache, the failure budget and the web
+    /// view are all mutable state on the object, and suites sharing one
+    /// instance under Swift Testing's default parallelism read each other's
+    /// resets. That surfaced as "Light and dark are cached apart" failing only
+    /// when run alongside its neighbours.
+    init() {}
 
     // MARK: - The synchronous half
 
@@ -401,21 +407,21 @@ final class MermaidNavigationPolicy: NSObject, WKNavigationDelegate {
         continuation = nil
     }
 
+    @MainActor
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         decisionHandler(Self.policy(for: navigationAction.request.url))
     }
 
     /// The decision, as a function of the URL.
     ///
-    /// Split out because the delegate itself is not reachable from a test —
-    /// an offscreen page never activates an anchor, so a test that renders a
-    /// `click … href` directive and asserts nothing connected passes whether
-    /// this layer exists or not. Asking the rule directly is the only way to
-    /// know it is there.
+    /// Kept separate so the rule can be asserted directly, cheaply, for every
+    /// scheme. It is not a substitute for exercising the installed delegate —
+    /// `MermaidNavigationBoundaryTests` loads a real loopback URL through a
+    /// real `WKWebView` and asserts a listening server never sees it.
     static func policy(for url: URL?) -> WKNavigationActionPolicy {
         url?.scheme == MermaidHostPage.scheme ? .allow : .cancel
     }
