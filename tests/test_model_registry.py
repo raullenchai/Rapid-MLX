@@ -30,6 +30,17 @@ def _cached_model_and_tokenizer():
     return load(TEST_MODEL)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _release_cached_model_and_tokenizer():
+    """Return model memory when this integration module finishes."""
+    yield
+    _cached_model_and_tokenizer.cache_clear()
+    gc.collect()
+    import mlx.core as mx
+
+    mx.clear_cache()
+
+
 @pytest.fixture
 def model_and_tokenizer():
     """Load once, but only after the function-scoped hermetic guard is armed."""
