@@ -38,6 +38,12 @@ from unittest.mock import patch
 
 import pytest
 
+# These contracts stub every downloader/loader boundary and intentionally
+# exercise the online serve-admission path.  Keep the suite hermetic (the
+# socket guard remains active) while opting out of the default HF offline
+# sentinel that would reject the model before the mocked dispatch is reached.
+pytestmark = pytest.mark.usefixtures("hub_online_env")
+
 # ---------------------------------------------------------------------------
 # A) Registry resolution table
 # ---------------------------------------------------------------------------
