@@ -60,6 +60,8 @@ effect and mask a broken production wiring path.
 4. **Self-validate your PR** (see below) — saves a round trip with maintainers
 5. Open a PR against `main` with a clear description, filling in **all required sections of the PR template** (the six-field contract — Why / Scope / Non-goals / Acceptance / Verification / Behaviour delta — plus the AI assistance disclosure)
 
+The optional `## Author` field in the template (an X handle for external contributors) is purely for crediting contributors publicly when their PR merges — leave it blank if you'd prefer not to be credited.
+
 ### Necessity & AI assistance — what we ask, why
 
 The PR template asks two questions up front: *why is this needed?* and *was AI used?* These aren't gatekeeping for the sake of it.

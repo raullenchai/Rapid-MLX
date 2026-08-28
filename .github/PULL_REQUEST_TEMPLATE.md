@@ -62,3 +62,13 @@ Examples:
 - [ ] If new tests touch a critical code path (parser / scheduler / security), I've spot-checked that they fail when the corresponding production line is broken (see SOP §Step 3)
 - [ ] Updated README/docs if applicable
 - [ ] No breaking changes to existing API
+
+## Author
+
+X handle (optional, external contributors):
+
+<!--
+Leave blank if you prefer not to be credited publicly when this merges.
+This field is optional and only used to thank external contributors on
+our public project account when their PR merges. It is never required.
+-->
