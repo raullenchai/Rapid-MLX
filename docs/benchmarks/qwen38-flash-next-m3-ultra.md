@@ -246,6 +246,48 @@ allocation but made it 1.8x slower because MLX had to materialize the gathered
 rows. A future direct sparse-attention kernel can consume the compact indices
 without that copy; the rejected gather path is not included in the candidate.
 
+## QSA compressed-key cache follow-up
+
+The next 0.13.2 candidate batches QSA compressed-key pooling, normalization,
+RoPE, and cache insertion for aligned single-request prefills containing at
+least two complete compression groups.
+Previously, each QSA layer processed one four-token compression group at a
+time. A 32K request therefore scheduled thousands of small array operations
+before attention began. The candidate performs the same FP32 group mean and
+per-group transforms as one device batch. Decode and one-group speculative
+verification receive no batching benefit, so those paths retain their existing
+cache-update order. Continuous batches, padded rows, and prefills that begin
+inside a compression group likewise retain the lifecycle-compatible path.
+
+The comparison below uses the previous vectorized-mask candidate as its
+baseline, so it measures only the compressed-key cache change. Both sides ran
+the exact Qwen3.8-Flash-Next revision, 2,048-token prefill chunks, MLX 0.32.2,
+three cold-cache runs per length, and 256 decode tokens on the same 256 GB M3
+Ultra. The candidate ran from `eab8e28c` plus the cache experiment.
+
+| Target (reported) | Previous TTFT | Batched-cache TTFT | TTFT reduction | Previous prefill | Batched-cache prefill | Candidate decode |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 (92) | 0.385 s | 0.346 s | 10.1% | 238.9 tok/s | 266.3 tok/s | 25.67 tok/s |
+| 2,048 (2,012) | 3.346 s | 2.262 s | **32.4%** | 601.4 tok/s | **889.4 tok/s** | 24.27 tok/s |
+| 8,192 (8,156) | 13.689 s | 9.236 s | **32.5%** | 595.8 tok/s | **883.1 tok/s** | 23.40 tok/s |
+| 32,768 (32,732) | 62.851 s | 44.659 s | **28.9%** | 520.8 tok/s | **732.9 tok/s** | 21.72 tok/s |
+
+MLX active memory remained approximately 102.8--103.8 GB. The process reported
+the same 148.1 GB allocator peak previously observed during model loading and
+long-context work; peak RSS remained 54.32 GiB and is not a unified-memory
+sizing number.
+
+Five deterministic real-model paths matched the scalar-cache baseline after
+normalizing the generated tool-call ID: exact text, Chinese, strict JSON, a
+forced tool call, and 8K needle recall. The full 45-case battery passed every
+project, tool, JSON, protocol, and 8K/32K long-context case. Eleven thinking
+cases exhausted their intentionally small initial output limits, then all 12
+thinking cases passed with `max_tokens=4096` and again on the user-default
+OpenAI budget path. The palindrome case reproduced the documented scorer false
+negative while returning the same valid implementation as the release
+baseline. After those harness adjudications, the candidate's effective result
+was 45/45.
+
 ## Interpretation
 
 Flash-Next reached the first visible token sooner at the 128- and 2K-target

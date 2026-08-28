@@ -525,6 +525,105 @@ def test_qsa_cache_keeps_only_raw_ring_and_persistent_compressed_keys():
     )
 
 
+@pytest.mark.parametrize("length", [1, 4, 7, 8, 9])
+def test_qsa_cache_vectorized_aligned_prefill_matches_scalar_update(length):
+    values = mx.arange(length, dtype=mx.float32).reshape(1, length, 1)
+
+    def transform(group, start):
+        return group + start
+
+    def transform_many(groups, starts):
+        return groups + starts[None, :, None]
+
+    scalar = QSAIndexCache(compress_ratio=4)
+    vectorized = QSAIndexCache(compress_ratio=4)
+    scalar.update(values, transform)
+    vectorized.update(values, transform, transform_groups=transform_many)
+    mx.eval(scalar.state, vectorized.state)
+
+    assert scalar.meta_state == vectorized.meta_state
+    np.testing.assert_array_equal(
+        np.array(scalar.raw_ring), np.array(vectorized.raw_ring)
+    )
+    if scalar.compressed_keys is None:
+        assert vectorized.compressed_keys is None
+    else:
+        np.testing.assert_array_equal(
+            np.array(scalar.compressed_keys), np.array(vectorized.compressed_keys)
+        )
+
+
+def test_qsa_cache_vectorized_chunks_and_scalar_tail_keep_identical_state():
+    def transform(group, start):
+        return group + start
+
+    def transform_many(groups, starts):
+        return groups + starts[None, :, None]
+
+    scalar = QSAIndexCache(compress_ratio=4)
+    vectorized = QSAIndexCache(compress_ratio=4)
+    # A small allocation step exercises initial allocation, reuse within the
+    # existing capacity, and growth without constructing a synthetic 1K token
+    # input solely for the production step=256 boundary.
+    scalar.step = 4
+    vectorized.step = 4
+    for start, length in ((0, 8), (8, 8), (16, 8), (24, 7), (31, 1), (32, 5)):
+        values = mx.arange(start, start + length, dtype=mx.float32).reshape(
+            1, length, 1
+        )
+        scalar.update(values, transform)
+        vectorized.update(values, transform, transform_groups=transform_many)
+        mx.eval(scalar.state, vectorized.state)
+        assert scalar.meta_state == vectorized.meta_state
+        np.testing.assert_array_equal(
+            np.array(scalar.raw_ring), np.array(vectorized.raw_ring)
+        )
+        np.testing.assert_array_equal(
+            np.array(scalar.compressed_keys), np.array(vectorized.compressed_keys)
+        )
+
+
+def test_qsa_vectorized_cache_matches_architecture_reference():
+    args = _args(
+        indexer_budget=4,
+        indexer_compress_ratio=2,
+        rope_parameters={"rope_theta": 10_000_000, "partial_rotary_factor": 0.5},
+    )
+    attention = QSAAttention(args)
+    prompt = mx.arange(9 * args.hidden_size, dtype=mx.float32).reshape(
+        1, 9, args.hidden_size
+    )
+    projected = attention.indexer.index_qk_proj(prompt)
+    query_width = args.indexer_n_heads * args.indexer_head_dim
+    _, raw_keys = mx.split(projected, [query_width], axis=-1)
+    raw_keys = raw_keys.reshape(1, 9, 1, args.indexer_head_dim).squeeze(2)
+    pooled = mx.mean(
+        raw_keys[:, :8, :].reshape(1, 4, 2, args.indexer_head_dim).astype(mx.float32),
+        axis=2,
+    ).astype(raw_keys.dtype)
+    normalized = attention.indexer.k_layernorm(pooled)
+    expected = apply_qwen4_exp_rope(
+        normalized[:, None, :, :],
+        mx.arange(0, 8, 2, dtype=mx.int64)[None, :],
+        rotary_dim=attention.indexer.rotary_dim,
+        base=attention.indexer.rope_theta,
+    )[:, 0, :, :]
+    mx.eval(expected, raw_keys)
+
+    cache = QSAIndexCache(compress_ratio=2)
+    attention.indexer(prompt, cache, physical_kv_length=9)
+    mx.eval(expected, cache.state)
+
+    assert cache._compressed_count == 4
+    np.testing.assert_array_equal(
+        np.array(cache.compressed_keys[:, :4, :]), np.array(expected)
+    )
+    np.testing.assert_array_equal(
+        np.array(cache.raw_ring),
+        np.array(mx.concatenate([raw_keys[:, 8:9, :], raw_keys[:, 7:8, :]], axis=1)),
+    )
+
+
 @pytest.mark.parametrize("length", [8, 9])
 def test_qsa_cache_rewinds_recoverable_group_and_recomputes_divergence(length):
     def transform(group, start):

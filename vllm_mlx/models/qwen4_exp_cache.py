@@ -127,6 +127,7 @@ class QSAIndexCache(ArraysCache):
         self,
         raw_keys: mx.array,
         transform_group: Callable[[mx.array, int], mx.array],
+        transform_groups: Callable[[mx.array, mx.array], mx.array] | None = None,
     ) -> mx.array:
         """Commit valid raw rows and cache every newly completed group.
 
@@ -138,6 +139,15 @@ class QSAIndexCache(ArraysCache):
 
         batch, length, dim = raw_keys.shape
         self._ensure_batch(batch)
+        valid_spans = self.valid_spans(length)
+        if (
+            transform_groups is not None
+            and batch == 1
+            and valid_spans == [(0, length)]
+            and self._offsets[0] % self.compress_ratio == 0
+            and length // self.compress_ratio >= 2
+        ):
+            return self._update_aligned_single_row(raw_keys, transform_groups)
         if self.raw_ring is None:
             self.raw_ring = mx.zeros(
                 (batch, self.compress_ratio, dim), dtype=raw_keys.dtype
@@ -146,7 +156,6 @@ class QSAIndexCache(ArraysCache):
             raise ValueError("QSA raw-key cache shape changed within one request")
 
         completed: list[list[mx.array]] = [[] for _ in range(batch)]
-        valid_spans = self.valid_spans(length)
         for row, (input_start, valid_length) in enumerate(valid_spans):
             for token in range(valid_length):
                 position = self._offsets[row] + token
@@ -188,6 +197,54 @@ class QSAIndexCache(ArraysCache):
         if self.compressed_keys is None:
             return mx.zeros((batch, 0, dim), dtype=raw_keys.dtype)
         return self.compressed_keys[:, :max_count, :]
+
+    def _update_aligned_single_row(
+        self,
+        raw_keys: mx.array,
+        transform_groups: Callable[[mx.array, mx.array], mx.array],
+    ) -> mx.array:
+        """Batch complete ratio-sized groups for the common B=1 prefill path."""
+        _, length, dim = raw_keys.shape
+        ratio = self.compress_ratio
+        complete_length = length // ratio * ratio
+        group_count = complete_length // ratio
+        # ``update`` enters this fast path only with at least two complete
+        # groups, so keep the implementation free of unreachable empty-group
+        # branches and make every cache transition explicit.
+        groups = raw_keys[:, :complete_length, :].reshape(1, group_count, ratio, dim)
+        pooled = mx.mean(groups.astype(mx.float32), axis=2).astype(raw_keys.dtype)
+        starts = self._offsets[0] + mx.arange(group_count) * ratio
+        transformed = transform_groups(pooled, starts)
+
+        ring = raw_keys[:, complete_length - ratio : complete_length, :]
+        remainder = length - complete_length
+        if remainder:
+            ring = mx.concatenate(
+                [
+                    raw_keys[:, complete_length:, :],
+                    ring[:, remainder:, :],
+                ],
+                axis=1,
+            )
+        self.raw_ring = ring
+
+        old_count = self._compressed_counts[0]
+        new_count = old_count + group_count
+        capacity = ((new_count + self.step - 1) // self.step) * self.step
+        if self.compressed_keys is None:
+            expanded = mx.zeros((1, capacity, dim), dtype=raw_keys.dtype)
+        elif capacity > self.compressed_keys.shape[1]:
+            expanded = mx.zeros((1, capacity, dim), dtype=self.compressed_keys.dtype)
+            expanded[:, : self.compressed_keys.shape[1], :] = self.compressed_keys
+        else:
+            expanded = self.compressed_keys
+        expanded[:, old_count:new_count, :] = transformed
+        self.compressed_keys = expanded
+
+        self._offsets[0] += length
+        self._pending_left_padding[0] = 0
+        self._compressed_counts[0] = new_count
+        return self.compressed_keys[:, :new_count, :]
 
     def keys_for_blocks(self, row: int, block_count: int) -> mx.array:
         if block_count < 0 or block_count > self._compressed_counts[row]:
