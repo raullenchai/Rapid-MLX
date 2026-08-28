@@ -76,9 +76,7 @@ def test_runner_selector_fails_safe_to_hosted_for_external_heads_and_api_failure
     step = next(step for step in job["steps"] if step["name"] == "Select GUI runner")
     run = step["run"]
 
-    assert "head.repo.full_name == github.repository" in step["env"][
-        "IS_TRUSTED_HEAD"
-    ]
+    assert "head.repo.full_name == github.repository" in step["env"]["IS_TRUSTED_HEAD"]
     assert "selected='[\"macos-15\"]'" in run
     assert 'if [ "$IS_TRUSTED_HEAD" != true ]' in run
     assert 'if [ -z "$MINI_GUI_RUNNER_READ_TOKEN" ]' in run

@@ -211,6 +211,7 @@ jobs:
             tests/test_gui_app_artifact.py \
             tests/test_gui_golden_ci_coverage.py \
             tests/test_gui_flow_routing.py \
+            tests/test_self_hosted_mac_runner.py \
             -q
 
       - name: Fake sidecar catalog contract
