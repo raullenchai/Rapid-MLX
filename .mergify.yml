@@ -29,6 +29,7 @@ queue_rules:
       - -label = version-bump
       - -label = skip-version-bump
       - "-title ~= ^chore: bump version to "
+      - check-success = merge-ready-head
       - check-success = @github-actions/tests
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
@@ -55,6 +56,7 @@ queue_rules:
       - -label = version-bump
       - -label = skip-version-bump
       - "-title ~= ^chore: bump version to "
+      - check-success = merge-ready-head
       - check-success = @github-actions/tests
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard

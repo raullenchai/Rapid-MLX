@@ -1,0 +1,45 @@
+name: Bind merge-ready to head
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  authorize-ready-head:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.label.name == 'merge-ready' ||
+       github.event.label.name == 'merge-ready-mac')
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Bind ready authorization to the current head
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        with:
+          script: |
+            const readyLabels = new Set(["merge-ready", "merge-ready-mac"]);
+            const present = context.payload.pull_request.labels
+              .map((label) => label.name)
+              .filter((label) => readyLabels.has(label));
+            const authorized = present.length === 1;
+            const state = authorized ? "success" : "failure";
+            const description = authorized
+              ? `Authorized ${present[0]} on this exact head`
+              : "Apply exactly one merge-ready label";
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state,
+              context: "merge-ready-head",
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+            });
+
+            if (!authorized) {
+              core.setFailed(description);
+            }

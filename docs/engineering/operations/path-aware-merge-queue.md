@@ -92,6 +92,11 @@ four candidates of the same class and validates their combined tree once. The
 non-Desktop queue waits at most five minutes to favor latency; the Desktop queue
 waits at most 15 minutes to amortize scarce macOS capacity.
 
+Labeling writes a `merge-ready-head` success status onto that exact pull-request
+head. Both queues require the status before admission, while their synthetic
+combined heads do not. A later push has a different SHA and therefore cannot
+reuse the authorization even if asynchronous label cleanup has not run yet.
+
 The queue creates an internal pull request from a branch whose name is exactly
 `mergify/merge-queue/<10 lowercase hex characters>`. The engine and Desktop
 workflows treat only that exact same-repository shape as a promoted head. A fork
@@ -127,6 +132,8 @@ The queue contract lives in `.mergify.yml`:
 
 - label-gated `auto_merge_conditions`, so a ready label automatically enqueues
   the pull request without a second command or checkbox;
+- an exact-head authorization status in both queue conditions, preventing a
+  newly pushed head from racing asynchronous label revocation;
 - serial mode with one batch in flight, so speculative checks cannot multiply
   scarce macOS capacity;
 - separate non-Desktop and Desktop queues, each with mutually exclusive

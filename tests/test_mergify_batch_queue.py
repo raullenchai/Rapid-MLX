@@ -12,6 +12,7 @@ REQUIRED_CHECKS = {
     "check-success = @github-actions/desktop-tests",
     "check-success = @github-actions/version-bump-guard",
 }
+HEAD_AUTHORIZATION = "check-success = merge-ready-head"
 
 
 def _config() -> dict[str, object]:
@@ -43,7 +44,9 @@ def test_queue_revalidates_every_required_check_on_the_combined_batch():
 
     for rule in rules.values():
         assert set(rule["queue_conditions"]) >= REQUIRED_CHECKS
+        assert HEAD_AUTHORIZATION in rule["queue_conditions"]
         assert set(rule["merge_conditions"]) == REQUIRED_CHECKS
+        assert HEAD_AUTHORIZATION not in rule["merge_conditions"]
         assert rule["branch_protection_injection_mode"] == "queue"
         assert rule["queue_branch_prefix"] == "mergify/merge-queue/"
 
@@ -108,4 +111,29 @@ def test_head_updates_revoke_both_merge_ready_authorizations():
     script = step["with"]["script"]
     assert '["merge-ready", "merge-ready-mac"]' in script
     assert "github.rest.issues.removeLabel" in script
+    assert "checkout" not in script.lower()
+
+
+def test_ready_authorization_is_bound_to_the_exact_head_commit():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/authorize-merge-ready.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+
+    assert workflow["on"] == {"pull_request_target": {"types": ["labeled"]}}
+    assert workflow["permissions"] == {}
+
+    job = workflow["jobs"]["authorize-ready-head"]
+    assert "head.repo.full_name == github.repository" in job["if"]
+    assert "merge-ready" in job["if"]
+    assert "merge-ready-mac" in job["if"]
+    assert job["permissions"] == {"statuses": "write"}
+
+    (step,) = job["steps"]
+    assert step["uses"].startswith("actions/github-script@")
+    script = step["with"]["script"]
+    assert "github.rest.repos.createCommitStatus" in script
+    assert "sha: context.payload.pull_request.head.sha" in script
+    assert 'context: "merge-ready-head"' in script
+    assert "present.length === 1" in script
     assert "checkout" not in script.lower()
