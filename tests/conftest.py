@@ -249,6 +249,12 @@ def _hermetic_hf_and_config_dirs(tmp_path, monkeypatch, request):
         _install_hf_offline(monkeypatch, request)
         _install_network_guard(monkeypatch, request.node.nodeid)
 
+    # Application state is independent of the HF cache opt-in. A test that
+    # reads real cached weights must still never read or mutate the developer's
+    # first-run/config/bench state under ~/.rapid-mlx.
+    for var in _RAPID_MLX_DIR_ENV_VARS:
+        monkeypatch.setenv(var, str(tmp_path / var.lower()))
+
     if request.node.get_closest_marker("real_hf_cache"):
         yield
         return
@@ -272,9 +278,6 @@ def _hermetic_hf_and_config_dirs(tmp_path, monkeypatch, request):
             monkeypatch.setenv(var, str(hf_hub_cache))
         else:  # TRANSFORMERS_CACHE
             monkeypatch.setenv(var, str(hf_hub_cache))
-
-    for var in _RAPID_MLX_DIR_ENV_VARS:
-        monkeypatch.setenv(var, str(tmp_path / var.lower()))
 
     # Hermeticity for hub *readers*, not just env readers. huggingface_hub
     # snapshots several of these paths into module constants at import time

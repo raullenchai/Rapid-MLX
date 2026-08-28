@@ -127,11 +127,18 @@ def test_leaked_prefetch_cannot_download_under_default_fixture(capsys):
 
 
 @pytest.mark.real_hf_cache
-def test_real_hf_cache_alone_does_not_grant_network():
+def test_real_hf_cache_only_opts_out_of_hf_cache_redirection(tmp_path):
     hf_constants = pytest.importorskip("huggingface_hub.constants")
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert hf_constants.is_offline_mode() is True
     assert _guard_armed()
+    for var in (
+        "RAPID_MLX_STATE_DIR",
+        "RAPID_MLX_HOME",
+        "RAPID_MLX_DDTREE_PATCH_CACHE",
+        "RAPID_MLX_CONFIG_HOME",
+    ):
+        assert Path(os.environ[var]).is_relative_to(tmp_path)
 
 
 @pytest.mark.requires_network
