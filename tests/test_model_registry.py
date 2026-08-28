@@ -5,8 +5,6 @@ import gc
 
 import pytest
 
-pytestmark = pytest.mark.real_hf_cache
-
 from vllm_mlx import (
     EngineConfig,
     EngineCore,
@@ -15,6 +13,8 @@ from vllm_mlx import (
     SchedulerConfig,
     get_registry,
 )
+
+pytestmark = pytest.mark.real_hf_cache
 
 # Use a small model for fast tests
 TEST_MODEL = "mlx-community/Qwen3-0.6B-8bit"
