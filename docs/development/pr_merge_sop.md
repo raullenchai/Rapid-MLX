@@ -245,10 +245,10 @@ Before merge, the PR description must accurately reflect actual current state:
   click GitHub's merge button:
 
   ```bash
-  # No Desktop/GUI lane:
+  # No macOS lane:
   gh pr edit <PR#> --repo raullenchai/Rapid-MLX --add-label merge-ready
 
-  # Desktop/GUI lane required:
+  # Any macOS lane required:
   gh pr edit <PR#> --repo raullenchai/Rapid-MLX --add-label merge-ready-mac
   ```
 
@@ -257,6 +257,11 @@ Before merge, the PR description must accurately reflect actual current state:
   affected full lanes once on the combined tree, and then squash-merges each
   original. A failed batch is split to identify the blocking member; do not add
   an independent rerun.
+- After labeling, leave the candidate head untouched. Follow the temporary
+  queue pull request for integration evidence; do not rebase, force-push, or
+  manually merge an original while it is queued. To withdraw authorization,
+  remove whichever ready label is present and confirm that the queue removes
+  the candidate before changing its branch.
 - Version bumps and human-authorized hotfixes do not enter the general batch.
   Follow their explicit release/hotfix contract and use a direct squash merge
   only when that contract authorizes it.
