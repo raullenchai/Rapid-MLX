@@ -41,32 +41,19 @@ struct ImagesView: View {
         .task(id: ImageCatalogRefreshKey(cacheGeneration: downloads.cacheGeneration)) {
             await viewModel.refreshCatalog()
         }
-        .confirmationDialog(
-            "Delete this image?",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingDeletion
-        ) { image in
-            Button("Delete Image", role: .destructive) {
-                viewModel.delete(image)
-                pendingDeletion = nil
-            }
-            .accessibilityIdentifier("Images.Result.Delete.Confirm")
-            // SwiftUI re-hosts confirmation actions in an AppKit alert. On a
-            // headless Mac the cancel-role proxy can publish an enabled
-            // AXButton while rejecting AXPress. Keep this as an ordinary
-            // button and assign the safe default explicitly so Return keeps
-            // the image and automation receives a real press action.
-            Button("Keep") {
-                pendingDeletion = nil
-            }
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("Images.Result.Delete.Keep")
-        } message: { _ in
-            Text("This removes it from this session. Copies you've saved stay on disk.")
+        // `confirmationDialog` re-hosts its actions inside an AppKit alert on
+        // macOS. That proxy can expose an enabled AXButton while rejecting the
+        // button's press action. A plain SwiftUI sheet keeps the confirmation
+        // controls in the app's own accessibility tree, matching the proven
+        // tool-approval and folder-prompt patterns elsewhere in the app.
+        .sheet(item: $pendingDeletion) { image in
+            ImageDeletionConfirmationSheet(
+                onKeep: { pendingDeletion = nil },
+                onDelete: {
+                    viewModel.delete(image)
+                    pendingDeletion = nil
+                }
+            )
         }
     }
 
@@ -1095,6 +1082,39 @@ enum EditImageImporter {
             throw ImportedEditImageError.tooLarge
         }
         return png
+    }
+}
+
+/// A session-local destructive confirmation whose controls stay as ordinary
+/// SwiftUI buttons on macOS. Escape takes the safe Keep path; Return is not
+/// bound to deletion, so a stray keypress can never remove an image.
+private struct ImageDeletionConfirmationSheet: View {
+    let onKeep: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+            Text("Delete this image?")
+                .font(RapidFont.bodyEmphasis)
+            Text("This removes it from this session. Copies you've saved stay on disk.")
+                .font(RapidFont.body)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: RapidTheme.Space.sm) {
+                Spacer()
+                Button("Keep", role: .cancel, action: onKeep)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("Images.Result.Delete.Keep")
+                Button("Delete Image", role: .destructive, action: onDelete)
+                    .buttonStyle(.borderedProminent)
+                    .tint(RapidTheme.destructiveActionFill)
+                    .accessibilityHint("Removes this image from the current session. Saved copies stay on disk.")
+                    .accessibilityIdentifier("Images.Result.Delete.Confirm")
+            }
+        }
+        .padding(RapidTheme.Space.xl)
+        .frame(width: 420)
     }
 }
 

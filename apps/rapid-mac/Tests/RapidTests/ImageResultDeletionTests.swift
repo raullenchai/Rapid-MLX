@@ -4,17 +4,22 @@ import Testing
 
 @Suite("Image result deletion")
 struct ImageResultDeletionTests {
-    @Test("The native Keep action remains pressable through AppKit re-hosting")
-    func keepActionUsesAnOrdinaryDefaultButton() throws {
+    @Test("The delete confirmation keeps both actions in a SwiftUI sheet")
+    func deleteConfirmationUsesPressableSheetControls() throws {
         let source = try String(
             contentsOf: packageRoot.appendingPathComponent("Sources/Rapid/UI/ImagesView.swift"),
             encoding: .utf8
         )
 
-        #expect(source.contains("Button(\"Keep\")"))
-        #expect(source.contains(".keyboardShortcut(.defaultAction)"))
+        #expect(source.contains(".sheet(item: $pendingDeletion)"))
+        #expect(source.contains("private struct ImageDeletionConfirmationSheet: View"))
+        #expect(!source.contains(".confirmationDialog("))
+        #expect(source.contains("Button(\"Keep\", role: .cancel"))
+        #expect(source.contains(".keyboardShortcut(.cancelAction)"))
         #expect(source.contains(".accessibilityIdentifier(\"Images.Result.Delete.Keep\")"))
-        #expect(!source.contains("Button(\"Keep\", role: .cancel)"))
+        #expect(source.contains("Button(\"Delete Image\", role: .destructive"))
+        #expect(source.contains(".accessibilityIdentifier(\"Images.Result.Delete.Confirm\")"))
+        #expect(!source.contains(".keyboardShortcut(.defaultAction)"))
     }
 
     @Test("Deleting the active result selects the adjacent older image")
