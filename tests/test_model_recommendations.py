@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 import shutil
 from argparse import Namespace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from vllm_mlx import cli
 from vllm_mlx.model_aliases import list_aliases
-from vllm_mlx.recommendations import load_recommendation_tiers, recommendation_tier
+from vllm_mlx.recommendations import (
+    is_recommended_alias,
+    load_recommendation_tiers,
+    recommendation_footprint_gb,
+    recommendation_tier,
+)
 
 
 def test_every_tier_has_exactly_smart_and_fast() -> None:
@@ -25,6 +33,43 @@ def test_tier_rounds_down_and_clamps() -> None:
     assert recommendation_tier(4).floor_gb == 8
     assert recommendation_tier(20).floor_gb == 18
     assert recommendation_tier(256).floor_gb == 96
+
+
+def test_recommended_alias_requires_the_host_to_reach_the_minimum_tier() -> None:
+    assert not is_recommended_alias("lfm2.5-2.6b-4bit", 4)
+    assert is_recommended_alias("lfm2.5-2.6b-4bit", 8)
+    assert not is_recommended_alias("bonsai-27b-2bit", 18)
+    assert is_recommended_alias("bonsai-27b-2bit", 24)
+    assert is_recommended_alias("bonsai-27b-2bit", 32)
+
+
+def test_repeated_aliases_have_one_working_set_footprint() -> None:
+    expected: dict[str, float] = {}
+    for tier in load_recommendation_tiers():
+        for pick in tier.picks:
+            assert (
+                expected.setdefault(pick.alias, pick.footprint_gb) == pick.footprint_gb
+            )
+            assert recommendation_footprint_gb(pick.alias) == pick.footprint_gb
+    assert recommendation_footprint_gb("qwen3.8-27b-4bit") == 20.0
+    assert recommendation_footprint_gb("private/model") is None
+
+
+def test_conflicting_repeated_footprints_fail_closed(monkeypatch) -> None:
+    from vllm_mlx import recommendations
+
+    tiers = list(load_recommendation_tiers())
+    repeated = tiers[0].picks[1]
+    conflicting_pick = replace(repeated, footprint_gb=repeated.footprint_gb + 0.1)
+    conflicting_tier = replace(tiers[1], picks=(conflicting_pick, *tiers[1].picks[1:]))
+    monkeypatch.setattr(
+        recommendations,
+        "load_recommendation_tiers",
+        lambda: (tiers[0], conflicting_tier),
+    )
+
+    with pytest.raises(ValueError, match="conflicting recommendation footprints"):
+        recommendation_footprint_gb(repeated.alias)
 
 
 def test_recipe_json_is_stable_and_has_two_picks(monkeypatch, capsys) -> None:

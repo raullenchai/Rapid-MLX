@@ -19,11 +19,10 @@ import Testing
 ///   64 GB  → qwen3.8-27b-4bit  (+ fast qwen3.6-35b-4bit)
 ///   96 GB+ → qwen3.8-27b-4bit  (+ fast qwen3.6-35b-4bit)
 ///
-/// Note: the picks trust the maintainer's MEASURED footprints, which are
-/// smaller than ``ModelSizing``'s heuristic estimate for low-bit / MoE
-/// models — so there is deliberately NO ``ModelSizing.classify`` fit
-/// assertion here (that gate over-states these picks; the picker bypasses
-/// it for recommended picks via ``isRecommendedPick``).
+/// Known picks use the table's measured/curated footprint everywhere.
+/// Fit-policy invariants are covered separately because the static headroom
+/// band can still reject a bottom-edge tier pick even when both surfaces now
+/// agree on its working-set number.
 @Suite("RAMBucketedDefault — RAM tier → recommended pick")
 struct RAMBucketedDefaultTests {
 
@@ -109,6 +108,22 @@ struct RAMBucketedDefaultTests {
                         "\(pick.alias) must load on its own \(tier.floorGB) GB tier")
             }
         }
+    }
+
+    @Test("Every repeated pick has one footprint across cards, review, and admission")
+    func oneFootprintPerRecommendedAlias() {
+        var seen: [String: Double] = [:]
+        for pick in RAMBucketedDefault.tiers.flatMap(\.picks) {
+            if let previous = seen[pick.alias] {
+                #expect(previous == pick.footprintGB,
+                        "\(pick.alias) changes footprint between RAM tiers")
+            }
+            seen[pick.alias] = pick.footprintGB
+            #expect(RAMBucketedDefault.footprintGB(forAlias: pick.alias) == pick.footprintGB)
+            #expect(ModelSizing.estimate(alias: pick.alias).totalGB == pick.footprintGB,
+                    "\(pick.alias) must not regain a second heuristic footprint")
+        }
+        #expect(RAMBucketedDefault.footprintGB(forAlias: "private-model") == nil)
     }
 
     // MARK: - Launch flags travel with the recommendation, gated by RAM

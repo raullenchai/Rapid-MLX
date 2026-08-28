@@ -57,8 +57,10 @@ private final class RecommendationBundleFinder: NSObject {}
 ///
 /// These figures must be measured THROUGH serve: a bare ``mlx_lm`` probe
 /// does not exercise the product's cache configuration or full process
-/// tree. The column is display-only (``pickStatsLine``); safety gates still
-/// apply independently at launch.
+/// tree. The same per-alias footprint drives recommendation cards, fit copy,
+/// and load admission; known models must not acquire a second estimate on
+/// the next screen. Aliases without a catalog footprint retain the conservative
+/// ``ModelSizing`` fallback.
 ///
 /// The capability column is monotonic non-decreasing by RAM, and every
 /// smart pick reads at or above its own fast alt — e.g. the 64 GB smart
@@ -108,6 +110,27 @@ enum RAMBucketedDefault {
     /// silently inventing a fallback would recreate the cross-surface drift this
     /// catalog exists to prevent.
     static let tiers: [Tier] = loadTiers()
+
+    /// One authoritative working-set footprint per catalogued alias.
+    ///
+    /// An alias can intentionally appear in several RAM tiers. Repeated rows
+    /// must carry the same value: a model's working set is a property of the
+    /// model and launch recipe, not of the Mac currently viewing it.
+    private static let footprintsByAlias: [String: Double] = {
+        var result: [String: Double] = [:]
+        for pick in tiers.flatMap(\.picks) {
+            let key = pick.alias.lowercased()
+            if let existing = result[key] {
+                precondition(
+                    existing == pick.footprintGB,
+                    "recommendation catalog has conflicting footprints for \(pick.alias)"
+                )
+            } else {
+                result[key] = pick.footprintGB
+            }
+        }
+        return result
+    }()
 
     private struct Payload: Decodable {
         let schemaVersion: Int
@@ -227,6 +250,13 @@ enum RAMBucketedDefault {
     /// "Recommended for your N GB Mac" section.
     static func picks(forPhysicalRAMGB physicalRAMGB: Double) -> [Pick] {
         tier(forPhysicalRAMGB: physicalRAMGB).picks
+    }
+
+    /// Measured/curated working set for a known alias, independent of RAM tier.
+    /// Unknown and custom aliases return ``nil`` so callers can use their
+    /// existing conservative estimate.
+    static func footprintGB(forAlias alias: String) -> Double? {
+        footprintsByAlias[alias.lowercased()]
     }
 
     /// Quality-aware order for choosing among models that are already on

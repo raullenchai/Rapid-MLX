@@ -889,6 +889,27 @@ struct OnboardingDirectionDTests {
                 == QuickstartView.sizeText(for: starter))
     }
 
+    @Test("The 32 GB recommendation card and Review quote the same 20 GB footprint")
+    func recommendedFootprintDoesNotChangeOnReview() throws {
+        let pick = try #require(
+            RAMBucketedDefault.picks(forPhysicalRAMGB: 32)
+                .first { $0.alias == "qwen3.8-27b-4bit" }
+        )
+        let card = QuickstartView.recommendationSizeText(from: pick)
+        let rows = QuickstartView.reviewFacts(
+            alias: pick.alias,
+            cached: nil,
+            cachedModels: [],
+            hardware: hardware32,
+            freeBytes: nil
+        )
+        let review = try #require(rows.first { $0.identifier == "Quickstart.Review.Memory" })
+
+        #expect(card.hasPrefix("20 GB"))
+        #expect(review.value == "≈ 20.0 GB of 32 GB")
+        #expect(ModelSizing.estimate(alias: pick.alias).totalGB == 20)
+    }
+
     @Test("A probe with no signal removes the free-space row rather than guessing")
     func reviewOmitsFreeSpaceWithoutAProbe() {
         let rows = QuickstartView.reviewFacts(

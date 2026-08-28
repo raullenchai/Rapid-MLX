@@ -21,6 +21,7 @@ These tests pin the public CLI contract:
 from __future__ import annotations
 
 import sys
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -349,6 +350,35 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     assert cfg.bind_listen_fd == 7
     assert cfg.bind_host is None
     assert cfg.bind_port is None
+
+
+def test_dflash_memory_check_receives_original_alias(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """The DFlash branch sizes the alias, not only its resolved HF path."""
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        cli,
+        "_check_memory_capacity",
+        lambda model, *, alias=None: calls.append((model, alias)),
+    )
+
+    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server.run_dflash_server = lambda **_kwargs: None
+    monkeypatch.setitem(
+        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+    )
+
+    ns = _minimal_serve_ns()
+    ns.enable_dflash = True
+    ns._original_alias = "qwen3.5-27b-8bit"
+    from vllm_mlx.speculative.dflash import eligibility
+
+    monkeypatch.setattr(eligibility, "have_runtime", lambda: True)
+
+    cli.serve_command(ns)
+
+    assert calls == [(ns.model, ns._original_alias)]
 
 
 def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(

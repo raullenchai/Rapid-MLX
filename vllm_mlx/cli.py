@@ -1367,7 +1367,7 @@ def _check_alias_min_memory(user_typed: str) -> None:
     )
 
 
-def _check_memory_capacity(model_name: str) -> None:
+def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None:
     """Pre-flight memory check — warn loudly if loading this model is
     likely to push unified memory past the danger threshold.
 
@@ -1381,8 +1381,10 @@ def _check_memory_capacity(model_name: str) -> None:
     importable, fall through silently — the existing loader paths still
     surface real failures.
 
-    Working-set estimate is ``model_size * 1.5`` for a typical short
-    chat workload — covers KV cache, activations, and OS reserve.
+    A catalogued alias uses the same complete working-set footprint shown by
+    Desktop and ``rapid-mlx recipe``. Unknown models fall back to
+    ``model_size * 1.5`` for a typical short chat workload — covering KV
+    cache, activations, and OS reserve.
     Long-context (32k+) or high-concurrency serving pushes the
     multiplier higher; the warning under-predicts in those modes
     rather than over-predicts, so a user who configures aggressively
@@ -1399,6 +1401,14 @@ def _check_memory_capacity(model_name: str) -> None:
         import psutil
     except Exception:
         return
+
+    from vllm_mlx.recommendations import (
+        is_recommended_alias,
+        recommendation_footprint_gb,
+    )
+
+    display_alias = alias or model_name
+    catalog_working_gb = recommendation_footprint_gb(display_alias)
 
     # Resolve model size in bytes — local path, then HF cache, then HF API.
     model_size_bytes = 0
@@ -1439,9 +1449,10 @@ def _check_memory_capacity(model_name: str) -> None:
                     and (not prefix or s.rfilename.startswith(prefix))
                 )
     except Exception:
-        return  # Network / auth failure — fall through.
+        if catalog_working_gb is None:
+            return  # Network / auth failure and no catalog footprint.
 
-    if model_size_bytes <= 0:
+    if model_size_bytes <= 0 and catalog_working_gb is None:
         return
 
     try:
@@ -1459,17 +1470,30 @@ def _check_memory_capacity(model_name: str) -> None:
     # swapping," which on macOS includes inactive + cached pages that the
     # kernel will reclaim under pressure. ``total - available`` is therefore
     # a tighter "currently-pinned" floor than ``total - free``.
-    estimated_working = int(model_size_bytes * 1.5)
+    if catalog_working_gb is not None:
+        estimated_working = int(catalog_working_gb * (1024**3))
+    else:
+        estimated_working = int(model_size_bytes * 1.5)
     used_ram_bytes = max(0, total_ram_bytes - available_ram_bytes)
     projected_use = used_ram_bytes + estimated_working
     ratio = projected_use / total_ram_bytes
-    if ratio < 0.65:
+    total_gb = total_ram_bytes / (1024**3)
+    host_pick = catalog_working_gb is not None and is_recommended_alias(
+        display_alias, total_gb
+    )
+    # A measured tier pick follows the same live policy as Desktop: remain
+    # silent below 95%, advise at 95–100%, and use the blocking-strength copy
+    # only beyond physical memory. Unknown models retain the earlier,
+    # conservative warning bands because their disk-derived x1.5 value is the
+    # only evidence available.
+    warning_floor = 0.95 if host_pick else 0.65
+    is_hard_warning = ratio > 1.0 if host_pick else ratio >= 0.85
+    if ratio < warning_floor:
         return  # Comfortable headroom — no warning.
 
     model_gb = model_size_bytes / (1024**3)
     working_gb = estimated_working / (1024**3)
     used_gb = used_ram_bytes / (1024**3)
-    total_gb = total_ram_bytes / (1024**3)
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     YELLOW = "\x1b[33m" if is_tty else ""
@@ -1479,7 +1503,7 @@ def _check_memory_capacity(model_name: str) -> None:
     RESET = "\x1b[0m" if is_tty else ""
 
     print()
-    if ratio >= 0.85:
+    if is_hard_warning:
         print(
             f"  {RED}{BOLD}!! Memory pressure warning:{RESET} "
             f"this model is likely too large for your hardware."
@@ -1494,18 +1518,22 @@ def _check_memory_capacity(model_name: str) -> None:
             f"this model uses a large fraction of system RAM."
         )
     print()
-    print(f"    Model on disk:           {model_gb:>6.1f} GB")
-    print(
-        f"    Est. working set:        {working_gb:>6.1f} GB  "
-        f"{DIM}(model x 1.5 — short-chat workload; long-context serving will use more){RESET}"
-    )
+    if model_size_bytes > 0:
+        print(f"    Model on disk:           {model_gb:>6.1f} GB")
+    if catalog_working_gb is not None:
+        print(f"    Catalog working set:     {working_gb:>6.1f} GB")
+    else:
+        print(
+            f"    Est. working set:        {working_gb:>6.1f} GB  "
+            f"{DIM}(model x 1.5 — short-chat workload; long-context serving will use more){RESET}"
+        )
     print(f"    Currently used by OS:    {used_gb:>6.1f} GB")
     print(
         f"    Total system RAM:        {total_gb:>6.1f} GB  "
         f"({ratio * 100:.0f}% projected utilization)"
     )
     print()
-    if ratio >= 0.85:
+    if is_hard_warning:
         print("  Apple Silicon firmware can panic the whole system rather than")
         print("  raise an OOM error when unified-memory pressure exceeds the")
         print("  iBoot AMCC threshold. Recommended actions:")
@@ -3876,7 +3904,7 @@ def serve_command(args):
         )
 
         _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
-        _check_memory_capacity(args.model)
+        _check_memory_capacity(args.model, alias=_alias_name)
         server._sync_config()
         run_dflash_server(
             main_model_repo=_profile.hf_path if _profile else args.model,
@@ -4380,7 +4408,10 @@ def serve_command(args):
 
     # Pre-flight memory check — warn (don't abort) if model + working set
     # would push unified memory past the kernel-panic threshold (issue #324).
-    _check_memory_capacity(args.model)
+    _check_memory_capacity(
+        args.model,
+        alias=getattr(args, "_original_alias", None) or args.model,
+    )
 
     # DDTree fork: same blast-radius boundary as DFlash. It is a
     # speculative-decode mode, but the MVP runs through the external
@@ -4852,7 +4883,7 @@ def _run_submit_flow(
             return 2
 
     _check_disk_space(hf_path, force=getattr(args, "force_disk_check", False))
-    _check_memory_capacity(hf_path)
+    _check_memory_capacity(hf_path, alias=alias)
 
     # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
     # thread executor spins up. Without this, ``mlx_lm.load`` runs inside
@@ -5144,7 +5175,10 @@ def bench_command(args):
     from .utils.tokenizer import load_model_with_fallback as load
 
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
-    _check_memory_capacity(args.model)
+    _check_memory_capacity(
+        args.model,
+        alias=getattr(args, "_original_alias", None) or args.model,
+    )
 
     # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
     # heavy bench boot. Without this, ``bench`` falls into ``mlx_lm.load``

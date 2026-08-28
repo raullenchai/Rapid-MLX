@@ -556,7 +556,7 @@ struct QuickstartViewTests {
             isAutoRespawn: false,
             severity: .unsafe,
             footprintGB: recoverable.footprintGB,
-            freeGB: 3.0,
+            freeGB: 1.0,
             totalGB: 18
         )
         #expect(QuickstartView.lowMemoryRecoveryChoice(for: noSafeEscape) == nil)

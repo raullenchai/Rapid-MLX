@@ -421,6 +421,10 @@ jobs:
             tests/test_alias_subfolder.py \
             tests/test_download_gate.py \
             tests/test_cli_models.py \
+            tests/test_cli_bench.py \
+            tests/test_memory_capacity_check.py \
+            tests/test_model_recommendations.py \
+            tests/test_serve_listen_fd.py::test_dflash_memory_check_receives_original_alias \
             tests/test_first_run_guide.py \
             tests/test_mirror_pull.py \
             tests/test_pull_summary.py \
