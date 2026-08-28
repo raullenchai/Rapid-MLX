@@ -334,17 +334,15 @@ jobs:
           elif ! runners=$(GH_TOKEN="$MINI_GUI_RUNNER_READ_TOKEN" \
             gh api "repos/${REPO}/actions/runners?per_page=100"); then
             echo "::warning::Runner status lookup failed; falling back to hosted macOS"
-          elif [ "$(jq '[.runners[] | select(
-              .status == "online" and
-              any(.labels[]; .name == "self-hosted") and
-              any(.labels[]; .name == "macOS") and
-              any(.labels[]; .name == "mini-gui")
-            )] | length' <<< "$runners")" -gt 0 ]; then
-            selected='["self-hosted","macOS","mini-gui"]'
-            kind=mini-gui
-            echo "Online mini-gui runner found"
           else
-            echo "No online mini-gui runner; falling back to hosted macOS"
+            online_count=$(jq '[.runners[] | select(.status == "online" and any(.labels[]; .name == "self-hosted") and any(.labels[]; .name == "macOS") and any(.labels[]; .name == "mini-gui"))] | length' <<< "$runners")
+            if [ "$online_count" -gt 0 ]; then
+              selected='["self-hosted","macOS","mini-gui"]'
+              kind=mini-gui
+              echo "Online mini-gui runner found"
+            else
+              echo "No online mini-gui runner; falling back to hosted macOS"
+            fi
           fi
 
           echo "runs_on=$selected" >> "$GITHUB_OUTPUT"
