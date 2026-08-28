@@ -201,6 +201,10 @@ def _run_main(argv, *, stdout_tty=True, stdin_tty=True, env=None):
     saved_env = dict(os.environ)
     os.environ.clear()
     os.environ.update(saved_env)
+    # The no-override path models a user who did not set NO_COLOR. Do not let
+    # the developer/CI host's preference silently turn that control case mono;
+    # tests that exercise the opt-out add it back through ``env`` below.
+    os.environ.pop("NO_COLOR", None)
     if env:
         os.environ.update(env)
     try:

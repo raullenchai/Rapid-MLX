@@ -5,6 +5,8 @@ import gc
 
 import pytest
 
+pytestmark = pytest.mark.real_hf_cache
+
 from vllm_mlx import (
     EngineConfig,
     EngineCore,

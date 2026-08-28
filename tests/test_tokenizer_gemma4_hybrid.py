@@ -43,6 +43,8 @@ download required, runs in CI) AND a real-Gemma-4 reproducer
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.real_hf_cache
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 

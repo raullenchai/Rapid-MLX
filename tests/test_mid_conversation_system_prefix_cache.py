@@ -32,6 +32,8 @@ import textwrap
 
 import pytest
 
+pytestmark = pytest.mark.real_hf_cache
+
 from vllm_mlx.api.models import Message
 from vllm_mlx.api.responses_adapter import _merge_system_messages as _merge_raw
 
