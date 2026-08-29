@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "models": [
+    {"repository": "mlx-community/Qwen3.5-9B-4bit", "revision": "8b2b98c00a6b4d291155e4890773ca8f769aee53", "sources": ["sidecar", "telemetry_top10"]},
+    {"repository": "mlx-community/gemma-4-e2b-it-8bit", "revision": "03dcf209f3f549b4075e7191e77cf69b3d48e1b2", "sources": ["sidecar"]},
+    {"repository": "mlx-community/Qwen3.5-4B-MLX-4bit", "sources": ["release_fleet", "telemetry_top10"]},
+    {"repository": "mlx-community/Qwen3.5-35B-A3B-4bit", "sources": ["release_fleet"]},
+    {"repository": "mlx-community/Qwen3.6-27B-4bit", "sources": ["release_fleet", "telemetry_top10"]},
+    {"repository": "mlx-community/Qwen3.6-35B-A3B-4bit", "sources": ["telemetry_top10"]},
+    {"repository": "mlx-community/Qwen3.6-35B-A3B-8bit", "sources": ["telemetry_top10"]},
+    {"repository": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX", "sources": ["telemetry_top10"]},
+    {"repository": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX", "sources": ["telemetry_top10"]},
+    {"repository": "mlx-community/gemma-4-26b-a4b-it-4bit", "sources": ["telemetry_top10"]},
+    {"repository": "prism-ml/Ternary-Bonsai-27B-mlx-2bit", "sources": ["telemetry_top10"]},
+    {"repository": "mlx-community/gemma-4-12B-it-4bit", "sources": ["release_fleet"]},
+    {"repository": "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit", "sources": ["release_fleet"]},
+    {"repository": "mlx-community/gpt-oss-20b-MXFP4-Q8", "sources": ["release_fleet"]},
+    {"repository": "mlx-community/Hy3-preview-4bit", "sources": ["release_fleet"]}
+  ]
+}

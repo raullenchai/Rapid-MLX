@@ -6,6 +6,8 @@
 # fake sidecar keeps the suite deterministic and prevents model-related OOMs.
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SOURCE="${RAPID_GUI_SOURCE_APP:-$ROOT/build/Rapid-MLX Desktop.app}"
 OUT_ROOT="${RAPID_GUI_GOLDEN_OUT:-/tmp/rapid-gui-golden-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -106,6 +108,11 @@ if [[ -n "${GUI_FLOWS:-}" && "$FLOW" != all ]]; then
     else
         printf '[gui-golden] WARN: invalid GUI_FLOWS; running %s fail-closed\n' "$FLOW" >&2
     fi
+fi
+
+if [[ "${RAPID_HOST_PRECHECK_HELD:-0}" != "1" && "${CI:-}" != "true" ]]; then
+    export RAPID_HOST_PRECHECK_HELD=1
+    exec "$ROOT/scripts/dogfood-host-precheck.sh" -- "$0" "${ORIGINAL_ARGS[@]}"
 fi
 
 log() { printf '[gui-golden] %s\n' "$*"; }
@@ -575,6 +582,7 @@ start_persona() {
         mv "$updated" "$config"
     done
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+        DOGFOOD_WORKING_SET_GB=0.1 \
         FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
         "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
         "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
@@ -590,6 +598,7 @@ relaunch_persona() {
     # killing the old fake (and potentially an operator's real server too).
     cleanup_fake_sidecars
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+        DOGFOOD_WORKING_SET_GB=0.1 \
         FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
         "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
         "$PERSONA/launch.sh" >> "$OUT/app.log" 2>&1 &
