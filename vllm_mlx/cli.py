@@ -6767,12 +6767,14 @@ def _print_pull_summary(
             f"{_format_pull_duration(elapsed)}"
         )
 
+
+def _emit_pull_activation() -> None:
+    """Record one successful user pull, regardless of artifact count."""
+
     # Activation funnel (docs/telemetry-activation.md): a successful pull is
     # the ``model_pull`` milestone (an activation, NOT inference-engaged).
-    # This helper is only reached on the two success exits of ``pull_command``,
-    # so it is the single "pull succeeded" chokepoint. Fired once per install,
-    # consent-gated + ``@_safe``, so it is a no-op when telemetry is off and
-    # can never affect the pull.
+    # Runtime assets are part of the same user command, so emit only after the
+    # primary checkpoint and every declared asset have completed.
     from vllm_mlx.telemetry import emit as _telemetry_emit
     from vllm_mlx.telemetry.activation_spec import ACTIVATION_MODEL_PULL, SURFACE_CLI
 
@@ -6860,8 +6862,8 @@ class VariantNotFoundError(Exception):
         super().__init__(f"no '{requested}' variant in {repo_id}")
 
 
-def pull_command(args):
-    """Download a model to the HuggingFace cache without serving."""
+def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
+    """Download one repository through the normal mirror/HF pipeline."""
     import time
 
     from huggingface_hub import snapshot_download
@@ -6885,7 +6887,11 @@ def pull_command(args):
     _bits = getattr(args, "bits", None)
     _fmt = getattr(args, "format", None)
     try:
-        variant_allow = _resolve_variant_allow_patterns(repo_id, _bits, _fmt)
+        variant_allow = (
+            list(allow_patterns_override)
+            if allow_patterns_override is not None
+            else _resolve_variant_allow_patterns(repo_id, _bits, _fmt)
+        )
     except ValueError as e:
         print(f"\n  Error: {e}")
         sys.exit(1)
@@ -6992,7 +6998,10 @@ def pull_command(args):
         # An explicit --bits/--format selection (variant_allow) always wins over
         # the catalog-driven subfolder narrowing; otherwise fall back to the
         # catalog subfolder (one checkpoint per quantization).
-        if variant_allow is not None:
+        if allow_patterns_override is not None:
+            _allow = variant_allow
+            print("  Fetching only the runtime assets declared by the audio catalog.")
+        elif variant_allow is not None:
             _allow = variant_allow
             # Literal folder name the user asked for (e.g. "4bit"). Derived
             # from the raw selectors, NOT from the (glob-escaped) pattern, so
@@ -7080,6 +7089,31 @@ def pull_command(args):
         time.monotonic() - t0,
         was_cached=_was_cached,
     )
+
+
+def pull_command(args):
+    """Download a model and every catalog-declared runtime repository."""
+
+    import copy
+
+    from vllm_mlx.audio.registry import runtime_assets_for
+
+    primary_repo = args.model
+    _pull_repository(args)
+    for asset in runtime_assets_for(primary_repo):
+        if asset.repo_id == primary_repo:
+            continue
+        print(f"\n  Runtime assets: {asset.repo_id}")
+        dependency_args = copy.copy(args)
+        dependency_args.model = asset.repo_id
+        dependency_args._original_alias = asset.repo_id
+        dependency_args.bits = None
+        dependency_args.format = None
+        _pull_repository(
+            dependency_args,
+            allow_patterns_override=list(asset.allow_patterns),
+        )
+    _emit_pull_activation()
 
 
 def rm_command(args):

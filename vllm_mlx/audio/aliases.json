@@ -1,6 +1,15 @@
 {
   "_comment": "R10-C1 audio alias registry. Single source of truth for short alias -> HuggingFace repo id mapping. Every entry's hf_id has been verified resolvable on https://huggingface.co/api/models/<id> at registry-introduction time. Add new entries by hand, then run tests/test_audio_alias_registry.py::test_every_hf_id_resolves locally (network-gated) to confirm before merging.",
 
+  "_runtime_assets": {
+    "kokoro": [
+      {
+        "repo_id": "prince-canuma/Kokoro-82M",
+        "allow_patterns": ["voices/*.safetensors"]
+      }
+    ]
+  },
+
   "kokoro": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-bf16",
