@@ -154,6 +154,7 @@ async def test_chat_stream_cancellation_has_no_successful_finish_frame(
 async def test_completion_stream_cancellation_has_no_successful_finish_frame():
     from vllm_mlx.routes.completions import stream_completion
 
+    pytest.importorskip("mlx")
     cfg = reset_config()
     cfg.model_name = "test-model"
     request = CompletionRequest(model="test-model", prompt="hi", stream=True)
@@ -182,15 +183,18 @@ def test_responses_status_does_not_treat_cancellation_as_truncation():
 
 
 @pytest.mark.asyncio
-async def test_chat_non_stream_cancellation_returns_client_closed():
-    from vllm_mlx.routes.chat import _create_chat_completion_impl
+async def test_chat_non_stream_cancellation_returns_client_closed(monkeypatch):
+    from vllm_mlx.routes import chat
+
+    monkeypatch.setattr(chat, "_check_admission_or_503", lambda *_: None)
+    monkeypatch.setattr(chat, "_wait_with_disconnect", _await_direct)
 
     _test_config()
     request = ChatCompletionRequest(
         model="test-model", messages=[{"role": "user", "content": "hi"}]
     )
 
-    response = await _create_chat_completion_impl(
+    response = await chat._create_chat_completion_impl(
         request,
         _RawRequest(),
         _CancelledChatEngine(before_first_token=False),
@@ -250,9 +254,11 @@ async def test_anthropic_non_stream_cancellation_returns_client_closed(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_responses_non_stream_cancellation_returns_client_closed():
+async def test_responses_non_stream_cancellation_returns_client_closed(monkeypatch):
     from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _non_stream
+    from vllm_mlx.routes import responses
+
+    monkeypatch.setattr(responses, "_wait_with_disconnect", _await_direct)
 
     _test_config()
     openai_request = ChatCompletionRequest(
@@ -263,7 +269,7 @@ async def test_responses_non_stream_cancellation_returns_client_closed():
         input=[{"type": "message", "role": "user", "content": "hi"}],
     )
 
-    response = await _non_stream(
+    response = await responses._non_stream(
         _CancelledChatEngine(before_first_token=False),
         openai_request,
         responses_request,
@@ -361,6 +367,7 @@ async def test_completion_json_stream_cancellation_has_no_terminal_chunk():
 
 
 def test_text_scheduler_abort_marks_terminal_cancelled():
+    pytest.importorskip("mlx")
     from vllm_mlx.scheduler import Scheduler
 
     tokenizer = SimpleNamespace(
@@ -376,6 +383,7 @@ def test_text_scheduler_abort_marks_terminal_cancelled():
 
 
 def test_mllm_scheduler_abort_marks_terminal_cancelled():
+    pytest.importorskip("mlx")
     from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
