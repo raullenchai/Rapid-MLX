@@ -1201,7 +1201,8 @@ class TestStreamingModels:
         async def _stream_generate(**kwargs):
             kwargs["request_admitted_event"].set()
             await asyncio.sleep(0)
-            yield None  # pragma: no cover
+            if False:
+                yield None  # pragma: no cover
 
         engine.stream_generate = _stream_generate
         stream = engine.stream_chat(
@@ -1247,6 +1248,124 @@ class TestStreamingModels:
 
         with pytest.raises(RuntimeError, match="engine failed"):
             await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_preserves_output_before_admission_fallback(
+        self,
+    ):
+        """A legacy engine output does not come after the synthetic prefix."""
+        import asyncio
+
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = asyncio.Event()
+
+        async def _stream_generate(**kwargs):
+            yield GenerationOutput(
+                text="answer",
+                new_text="answer",
+                prompt_tokens=1,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+            kwargs["request_admitted_event"].set()
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
+        )
+
+        outputs = [output async for output in stream]
+
+        assert [output.new_text for output in outputs] == ["<tool_call>", "answer"]
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_without_prefix_yields_nothing(self):
+        """Non-forced streams retain their empty-engine behavior."""
+        import asyncio
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            await asyncio.sleep(0)
+            if False:
+                yield None  # pragma: no cover
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            request_admitted_event=asyncio.Event(),
+        )
+
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_stream_without_prefix_preserves_all_engine_outputs(self):
+        """Non-forced streams retain engine output and continuation order."""
+        import asyncio
+
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            for index, new_text in enumerate(("one", "two")):
+                yield GenerationOutput(
+                    text=new_text,
+                    new_text=new_text,
+                    prompt_tokens=1,
+                    completion_tokens=index + 1,
+                    finished=index == 1,
+                    finish_reason="stop" if index == 1 else None,
+                )
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            request_admitted_event=asyncio.Event(),
+        )
+
+        outputs = [output async for output in stream]
+
+        assert [output.new_text for output in outputs] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_forced_prefix_stream_close_cancels_pending_output(self):
