@@ -5236,23 +5236,25 @@ flow_model_switch_active_request() {
     [[ "$busy" == 1 ]] || die "fake residency never reported the active stream"
 
     see_main "$OUT/busy.json"
-    # SwiftUI bridges these rows into a transient native NSMenu, outside the
-    # window-only AX tree used for evidence dumps. Exercise the standard macOS
-    # type-to-select interaction, then let the switch guard prove it resolved
-    # the requested alternate alias.
-    "$AX_DRIVER" select-menu-title "$APP_PID" ModelPickerBar.ModelMenu \
-        fake-external-alias > "$OUT/switch-requested.json" \
+    # SwiftUI creates these rows only after the native menu opens. Resolve the
+    # requested row from that fresh AX tree and press its stable identifier;
+    # the driver fails closed if opening the menu did not expose the row.
+    "$AX_DRIVER" select-menu-item "$APP_PID" ModelPickerBar.ModelMenu \
+        ModelPickerBar.Alias.fake-external-alias > "$OUT/switch-requested.json" \
         || die "alternate cached model could not be selected during an active stream"
     wait_identifier ModelSwitchGuard.Cancel "$OUT/switch-guard.json"
     jq -e '.data.ui_elements[]?
            | select(.identifier == "ModelSwitchGuard.Cancel")' \
         "$OUT/switch-guard.json" >/dev/null \
         || die "active stream did not present the native switch guard"
-    # This is a native confirmation dialog, whose cancel role maps to Escape.
-    # Hosted SwiftUI exposes the enabled Cancel button in AX but may reject
-    # AXPress for that transient element. Exercise the platform cancel action
-    # and let the state assertions below prove that it took effect.
-    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/switch-cancelled.json" \
+    # Click the semantic Cancel button's bounds directly. Posting Escape can
+    # succeed at the CoreGraphics boundary while the hosted confirmation
+    # dialog ignores it, and hosted macOS can expose a native dialog button
+    # while returning kAXErrorActionUnsupported for AXPress. A bounds click is
+    # the same explicit user action and still fails closed unless the stable
+    # product-owned identifier resolves to a visible control.
+    "$AX_DRIVER" click-center "$APP_PID" ModelSwitchGuard.Cancel \
+        > "$OUT/switch-cancelled.json" \
         || die "switch guard did not honor the native Cancel action"
 
     # Cancellation occurs before /v1/models/load or process teardown. The
