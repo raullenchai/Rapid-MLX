@@ -2231,7 +2231,7 @@ def _install_suffix_decoding(
     requests: dict[str, Any],
     uid_to_request_id: dict[int, str],
     min_draft_len: int = 2,
-) -> None:
+) -> bool:
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
     Drafter-free spec-decode: a suffix-tree index over prompt + emitted
@@ -2276,7 +2276,7 @@ def _install_suffix_decoding(
             "to step-update on recurrent layers. See "
             "evals/results/SUFFIX_POC_REPORT.md."
         )
-        return
+        return False
 
     # mlx-lm 0.31+ moved the actual generation step from BatchGenerator
     # to GenerationBatch. The _generation_batch instance is created once
@@ -2288,7 +2288,7 @@ def _install_suffix_decoding(
             "[SuffixDecoding] disabled: BatchGenerator has no _generation_batch "
             "attribute (mlx-lm version mismatch — expected ≥0.31)."
         )
-        return
+        return False
 
     _orig_step = gb._step
     _orig_next = gb.next
@@ -3019,6 +3019,7 @@ def _install_suffix_decoding(
         max_suffix_len,
         min_confidence,
     )
+    return True
 
 
 class Scheduler:
@@ -3199,6 +3200,16 @@ class Scheduler:
         # BatchGenerator - the actual batching engine
         self.batch_generator: BatchGenerator | None = None
         self._current_sampler_params: tuple | None = None
+        # Successfully installed speculative runtime for the current
+        # BatchGenerator. The configured selector alone is not proof that the
+        # model/runtime hooks passed their install gates. Model-profile clients
+        # read this live value so they never advertise an acceleration path that
+        # silently fell back to ordinary decoding.
+        self.spec_decode_runtime_method: str | None = None
+        # False until the current BatchGenerator has run the configured
+        # install gate. This distinguishes a lazy generator that has not been
+        # created yet from a definitive gate miss on an incompatible runtime.
+        self.spec_decode_runtime_attempted = False
 
         # Sampler cache: interns ``make_sampler`` results keyed on
         # ``(temp, top_p, min_p, top_k)``. Homogeneous concurrent
@@ -3752,6 +3763,10 @@ class Scheduler:
         self, sampling_params: SamplingParams
     ) -> BatchGenerator:
         """Create a BatchGenerator with the given sampling parameters."""
+        # Publish nothing until one installer below has successfully attached
+        # its runtime hooks to this exact generator.
+        self.spec_decode_runtime_method = None
+        self.spec_decode_runtime_attempted = False
         sampler = make_sampler(
             temp=sampling_params.temperature,
             top_p=sampling_params.top_p,
@@ -3855,7 +3870,7 @@ class Scheduler:
                     mtp_model_type,
                 )
             else:
-                _install_mtp_vendored(
+                mtp_installed = _install_mtp_vendored(
                     bg,
                     model=self.model,
                     requests=self.requests,
@@ -3879,19 +3894,24 @@ class Scheduler:
                         getattr(self.config, "mtp_sidecar", None),
                     ),
                 )
+                if mtp_installed:
+                    self.spec_decode_runtime_method = "mtp"
+            self.spec_decode_runtime_attempted = True
 
         if getattr(self.config, "spec_decode", "none") == "dspark":
-            _install_dspark(
+            if _install_dspark(
                 bg,
                 model=self.model,
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
                 max_draft=getattr(self.config, "dspark_num_speculative_tokens", 5),
-            )
+            ):
+                self.spec_decode_runtime_method = "dspark"
+            self.spec_decode_runtime_attempted = True
 
         # Install SuffixDecoding (drafter-free spec-decode).
         if self.config.enable_suffix_decoding:
-            _install_suffix_decoding(
+            if _install_suffix_decoding(
                 bg,
                 model=self.model,
                 profile=self.model_config,
@@ -3901,7 +3921,9 @@ class Scheduler:
                 min_draft_len=self.config.suffix_min_draft_len,
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
-            )
+            ):
+                self.spec_decode_runtime_method = "suffix"
+            self.spec_decode_runtime_attempted = True
 
         # Install batched-sampler fast path. Must run AFTER MTP /
         # SuffixDecoding since they may replace _step on the
@@ -4194,6 +4216,11 @@ class Scheduler:
             except Exception as e:
                 logger.debug(f"Error closing BatchGenerator: {e}")
             self.batch_generator = None
+        # The hook lives on the closed generator. Clear its published runtime
+        # state even when close() raised; a replacement will republish only
+        # after its own installer succeeds.
+        self.spec_decode_runtime_method = None
+        self.spec_decode_runtime_attempted = False
 
     def _ensure_batch_generator(self, sampling_params: SamplingParams) -> bool:
         """Ensure BatchGenerator exists with compatible stop token configuration.
