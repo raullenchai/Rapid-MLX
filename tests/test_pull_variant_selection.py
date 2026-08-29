@@ -75,14 +75,10 @@ def _pull_capturing(**flags):
     return side
 
 
-def test_bits_narrows_snapshot_and_bypasses_mirror(capsys):
+def test_bits_narrows_snapshot_and_uses_mirror(capsys):
     side = _pull_capturing(bits="4", format=None)
     assert side["allow"] == ["4bit/*"]
-    # An explicit variant bypasses the whole-repo mirror prefetch (option B).
-    assert side["mirror_calls"] == 0
-    # Refinement (1): a clear line explains that the mirror was skipped.
-    out = capsys.readouterr().out
-    assert "R2 mirror skipped" in out
+    assert side["mirror_calls"] == 1
 
 
 def test_format_narrows_snapshot_by_folder_name():
@@ -253,6 +249,68 @@ def test_no_selector_still_consults_mirror():
     ):
         cli.pull_command(args)
     assert mirror.call_count == 1
+
+
+@pytest.mark.parametrize("bits,fmt", [("4", None), (None, "4bit")])
+def test_user_variant_consults_mirror_first(bits, fmt):
+    """Explicit bits/format selection keeps the mirror-first path enabled."""
+    requested = f"{bits}bit" if bits else fmt
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=bits, format=fmt)
+    with (
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree",
+            return_value=_multi_variant_tree(),
+        ),
+        patch.object(cli, "_try_mirror_prefetch", return_value=True) as mirror,
+        patch("huggingface_hub.snapshot_download") as snapshot,
+    ):
+        cli.pull_command(args)
+
+    assert mirror.call_count == 1
+    assert mirror.call_args.kwargs["allow_patterns"] == [f"{requested}/*"]
+    snapshot.assert_not_called()
+
+
+def test_mirror_variant_miss_falls_back_with_same_pattern(capsys):
+    """A mirror miss falls back upstream with the identical allow pattern."""
+    args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits="4", format=None)
+    with (
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree",
+            return_value=_multi_variant_tree(),
+        ),
+        patch.object(cli, "_try_mirror_prefetch", return_value=False),
+        patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
+    ):
+        cli.pull_command(args)
+
+    assert snap.call_args.kwargs["allow_patterns"] == ["4bit/*"]
+
+
+def test_mirror_prefetch_forwards_explicit_variant_allow():
+    """The mirror adapter passes an explicit variant override unchanged."""
+    with patch(
+        "vllm_mlx._mirror.download_with_mirror_fallback", return_value=True
+    ) as download:
+        assert cli._try_mirror_prefetch("org/repo", allow_patterns=["4bit/*"]) is True
+
+    assert download.call_args.kwargs["allow_patterns"] == ["4bit/*"]
+
+
+def test_mirror_prefetch_keeps_catalog_subfolder_default():
+    """The existing subfolder narrowing stays the default mirror filter."""
+    with (
+        patch(
+            "vllm_mlx.model_aliases.subfolder_allow_patterns",
+            return_value=["catalog/*"],
+        ),
+        patch(
+            "vllm_mlx._mirror.download_with_mirror_fallback", return_value=True
+        ) as download,
+    ):
+        assert cli._try_mirror_prefetch("org/repo") is True
+
+    assert download.call_args.kwargs["allow_patterns"] == ["catalog/*"]
 
 
 def test_orphan_reap_announces_cleaned_files(capsys):

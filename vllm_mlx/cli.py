@@ -1658,6 +1658,7 @@ def _try_mirror_prefetch(
     model_name: str,
     on_pull_start: Callable[[], None] | None = None,
     *,
+    allow_patterns: list[str] | None = None,
     out: dict | None = None,
 ) -> bool:
     """Pre-fetch a HuggingFace repo via R2-first / HF-fallback (per file).
@@ -1693,7 +1694,8 @@ def _try_mirror_prefetch(
     # assumption that none were mirrored; ``lfm2.5-2.6b-4bit`` is, and the
     # decline stranded its R2 copy while the HF path could hang the desktop
     # at "Starting…".)
-    allow_patterns = subfolder_allow_patterns(model_name)
+    if allow_patterns is None:
+        allow_patterns = subfolder_allow_patterns(model_name)
     try:
         from vllm_mlx._mirror import download_with_mirror_fallback
     except ImportError:
@@ -6928,18 +6930,7 @@ def pull_command(args):
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
-    # #2145: when the user explicitly selected a variant (--bits/--format), the
-    # mirror prefetch has no narrow-to-variant mode yet (Vector's #2279 adds
-    # allow_patterns there, unlanded) — it would pull the WHOLE (or catalog
-    # subfolder) repo and defeat the selection. So a requested variant bypasses
-    # the mirror and goes straight to the narrowed HF snapshot_download below.
-    # Revisit once #2279 lands allow_patterns in the mirror path.
-    if variant_allow is not None:
-        print(
-            "  R2 mirror skipped: a --bits/--format variant was requested "
-            "(the mirror cannot narrow to one variant yet)."
-        )
-    if variant_allow is None and _try_mirror_prefetch(repo_id, out=_mirror_out):
+    if _try_mirror_prefetch(repo_id, allow_patterns=variant_allow, out=_mirror_out):
         from pathlib import Path
 
         try:
