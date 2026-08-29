@@ -7,6 +7,12 @@
 # plus screenshots for diagnosis.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${RAPID_HOST_PRECHECK_HELD:-0}" != "1" && "${CI:-}" != "true" ]]; then
+    export RAPID_HOST_PRECHECK_HELD=1
+    exec "$SCRIPT_DIR/dogfood-host-precheck.sh" -- "$0" "$@"
+fi
+
 APP="${RAPID_GUI_APP:-Rapid-MLX}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${RAPID_GUI_OUT:-/tmp/rapid-gui-ax-${STAMP}}"
