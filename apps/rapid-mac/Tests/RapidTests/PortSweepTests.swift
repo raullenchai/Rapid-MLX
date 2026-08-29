@@ -27,6 +27,17 @@ struct PortSweepTests {
         #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 0).isEmpty)
     }
 
+    @Test("Current socket-table parser includes dual-stack tcp46 listeners")
+    func currentSocketTableParserIncludesDualStackListeners() {
+        let output = """
+        Active Internet connections (including servers)
+        Proto Recv-Q Send-Q  Local Address Foreign Address (state) rxbytes txbytes rhiwat shiwat process:pid state
+        tcp46 0 0 *.48844 *.* LISTEN 0 0 131072 131072 Python:77187 00000
+        """
+
+        #expect(PortSweep.parseListeningPIDs(Data(output.utf8), port: 48_844) == [77_187])
+    }
+
     @Test("Legacy socket-table parser reads the separate numeric pid column")
     func legacySocketTableParserReadsNumericPIDColumn() {
         let output = """

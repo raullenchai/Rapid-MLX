@@ -389,7 +389,7 @@ enum PortSweep {
 
             guard let ownerColumn,
                   fields.count > 5,
-                  fields[0] == "tcp4" || fields[0] == "tcp6",
+                  fields[0] == "tcp4" || fields[0] == "tcp6" || fields[0] == "tcp46",
                   fields[5] == "LISTEN",
                   fields[3].hasSuffix(portSuffix) else { continue }
 
