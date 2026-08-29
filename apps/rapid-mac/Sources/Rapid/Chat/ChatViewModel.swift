@@ -589,10 +589,11 @@ final class ChatViewModel {
 
             let (title, suggestions) = await (titleReply, followUpReply)
             guard !Task.isCancelled, epoch == self.conversationEpoch else {
-                // Cancelled after the rail reserved its space. Without this it
-                // stays `.pending` — a blank band with no way out but a new
-                // turn.
-                self.clearFollowUps()
+                // Cancelled after this assist reserved its space. Clear only
+                // the rail it owns: an older request can take time to observe
+                // cancellation and must not erase a newer turn's pending or
+                // ready suggestions after it finally resumes.
+                self.clearFollowUps(anchoredTo: turn.assistantID)
                 return
             }
 
@@ -647,6 +648,17 @@ final class ChatViewModel {
     func clearFollowUps() {
         followUp = .idle
         followUpAnchorID = nil
+    }
+
+    /// Clear a rail only while it still belongs to the finishing assist.
+    ///
+    /// Cancellation is cooperative. A superseded request may resume after a
+    /// newer turn has already installed its own rail, so task-local cleanup
+    /// must compare ownership rather than clearing shared presentation state
+    /// unconditionally.
+    func clearFollowUps(anchoredTo anchorID: UUID) {
+        guard followUpAnchorID == anchorID else { return }
+        clearFollowUps()
     }
 
     /// Land a machine-generated title. Silent on every rejection.
