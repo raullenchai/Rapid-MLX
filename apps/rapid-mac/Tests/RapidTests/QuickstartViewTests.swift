@@ -41,6 +41,8 @@ struct QuickstartViewTests {
         let copy = makeCoordinator().seedMessage
         #expect(copy.contains(QuickstartCoordinator.defaultChoice.displayName))
         #expect(copy.lowercased().contains("picker"))
+        #expect(copy.contains("ready for your first message"))
+        #expect(!copy.localizedCaseInsensitiveContains("minute"))
     }
 
     @Test("F-LWT-1: welcome message does NOT promise tool calling on 0.6B")
