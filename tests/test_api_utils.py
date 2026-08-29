@@ -1249,16 +1249,50 @@ class TestResolveServingLane:
             "local/qwen35", vision_min_memory_gb=32.0
         ) == utils_mod.ServingLaneDecision(True, "vision_hybrid_runtime_supported")
 
-    def test_explicit_vision_overrides_measured_memory_floor(self, monkeypatch):
+    def test_explicit_vision_honors_measured_memory_floor(self, monkeypatch):
         from vllm_mlx.api import utils as utils_mod
 
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
         monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 16.0)
 
         assert utils_mod.resolve_serving_lane_decision(
             "local/qwen35",
             force_mllm=True,
             vision_min_memory_gb=32.0,
-        ) == utils_mod.ServingLaneDecision(True, "vision_lane_forced")
+        ) == utils_mod.ServingLaneDecision(
+            False, "vision_memory_insufficient", auto_text_fallback=True
+        )
+
+    def test_forced_and_auto_vision_share_the_memory_gate(self, monkeypatch):
+        from vllm_mlx.api import utils as utils_mod
+
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 16.0)
+
+        forced = utils_mod.resolve_serving_lane_decision(
+            "qwen3.5-4b-4bit",
+            force_mllm=True,
+            vision_min_memory_gb=32.0,
+        )
+        auto = utils_mod.resolve_serving_lane_decision(
+            "qwen3.5-4b-4bit",
+            vision_min_memory_gb=32.0,
+        )
+
+        assert forced == auto
+        assert forced == utils_mod.ServingLaneDecision(
+            False, "vision_memory_insufficient", auto_text_fallback=True
+        )
 
     def test_unknown_physical_memory_does_not_invent_a_fallback(self, monkeypatch):
         from vllm_mlx.api import utils as utils_mod
@@ -1365,7 +1399,16 @@ class TestResolveServingLane:
 
         # Explicit --mllm on a hybrid VLM keeps the MLLM lane (the engine will
         # raise its own #352 error naming --mllm — the flag the user set).
-        self._patch_probes(monkeypatch, is_mllm=True, hybrid=True)
+        self._patch_probes(
+            monkeypatch,
+            is_mllm=True,
+            hybrid=True,
+            hybrid_runtime_supported=True,
+        )
+        monkeypatch.setattr(
+            "vllm_mlx.api.utils.physical_ram_gb",
+            lambda: 64.0,
+        )
         assert resolve_serving_lane("any/qwen36-27b", force_mllm=True) == (
             True,
             False,

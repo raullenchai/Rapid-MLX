@@ -640,6 +640,20 @@ def test_vision_memory_floor_requires_a_positive_number(bad_floor) -> None:
         )
 
 
+def test_qwen35_and_qwen36_vision_aliases_carry_the_same_memory_floor() -> None:
+    """Cold start and residency must make the same lane choice for a family."""
+
+    aliases = _raw_aliases()
+    gated_aliases = {
+        name: profile
+        for name, profile in aliases.items()
+        if ("qwen3.5" in name.lower() or "qwen3.6" in name.lower())
+    }
+    assert gated_aliases
+    for name, profile in gated_aliases.items():
+        assert profile.get("vision_min_memory_gb") == 32, name
+
+
 def test_mtp_preset_requires_a_valid_drafter_and_positive_token_count() -> None:
     """MTP capability metadata is consumed by both CLI and macOS Settings."""
     from vllm_mlx.model_aliases import _coerce

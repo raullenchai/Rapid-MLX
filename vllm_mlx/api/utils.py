@@ -1505,9 +1505,9 @@ def resolve_serving_lane_decision(
         return ServingLaneDecision(
             False, "text_lane_speculative_decode", auto_text_fallback=True
         )
-    if force_mllm:
-        return ServingLaneDecision(True, "vision_lane_forced")
     if not is_mllm_model(model_name):
+        if force_mllm:
+            return ServingLaneDecision(True, "vision_lane_forced")
         return ServingLaneDecision(False, "text_checkpoint")
     if mllm_arch_unsupported_but_text_vendored(model_name):
         return ServingLaneDecision(
@@ -1535,10 +1535,14 @@ def resolve_serving_lane_decision(
                 return ServingLaneDecision(
                     False, "vision_memory_insufficient", auto_text_fallback=True
                 )
+            if force_mllm:
+                return ServingLaneDecision(True, "vision_lane_forced")
             return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
         return ServingLaneDecision(
             False, "vision_hybrid_runtime_unsupported", auto_text_fallback=True
         )
+    if force_mllm:
+        return ServingLaneDecision(True, "vision_lane_forced")
     return ServingLaneDecision(True, "vision_supported")
 
 
