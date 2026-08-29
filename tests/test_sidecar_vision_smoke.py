@@ -32,7 +32,7 @@ def test_release_workflow_runs_content_addressed_real_image_gate() -> None:
     workflow = (
         Path(__file__).parents[1] / ".github/workflows/auto-release.yml"
     ).read_text()
-    assert "timeout-minutes: 165" in workflow
+    assert "timeout-minutes: 175" in workflow
     manifest = json.loads(
         (
             Path(__file__).parents[1]
@@ -43,8 +43,13 @@ def test_release_workflow_runs_content_addressed_real_image_gate() -> None:
     assert (
         manifest["models"]["gemma"]["repository"] == "mlx-community/gemma-4-e2b-it-8bit"
     )
+    assert (
+        manifest["models"]["flux"]["repository"] == "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    )
     assert "steps.sidecar-pins.outputs.qwen_model" in workflow
     assert "steps.sidecar-pins.outputs.gemma_revision" in workflow
+    assert "steps.sidecar-pins.outputs.flux_model" in workflow
+    assert "steps.sidecar-pins.outputs.flux_revision" in workflow
     assert "HF_HUB_OFFLINE=1 bash apps/rapid-mac/scripts/build-sidecar.sh" in workflow
     assert '"$SIDE/python/bin/python3.12"' in workflow
     assert '--model "$SIDECAR_GEMMA_SMOKE_MODEL"' in workflow

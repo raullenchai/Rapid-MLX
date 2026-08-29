@@ -1072,6 +1072,7 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
 #: behavior; one present here is refused unless the resolved snapshot
 #: matches exactly (see the check in ``_mflux_snapshot_dir``).
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
+    "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
 }
 
