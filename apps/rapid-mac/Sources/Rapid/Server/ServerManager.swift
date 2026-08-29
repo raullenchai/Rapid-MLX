@@ -596,6 +596,26 @@ final class ServerManager {
     /// first into spawning a duplicate child.
     private(set) var isOperating: Bool = false
 
+    /// Owns the cancellable `serve --help` capability probe between catalog
+    /// resolution and the atomic spawn section. `start()` is MainActor-
+    /// reentrant across the probe await, so this token prevents a second
+    /// caller from launching another probe and later racing toward a duplicate
+    /// child. Stop and app shutdown cancel the task even though no serve child
+    /// exists yet.
+    private struct RuntimeProbeOperation {
+        let id: UUID
+        let task: Task<ServerRuntimeCapabilities, Never>
+    }
+
+    @ObservationIgnored
+    private var runtimeProbeOperation: RuntimeProbeOperation?
+
+    @ObservationIgnored
+    internal var runtimeCapabilitiesProvider: @MainActor @Sendable (URL) async
+        -> ServerRuntimeCapabilities = { binary in
+            await ServerRuntimeCapabilities.probe(binary: binary)
+        }
+
     /// Live download / load progress derived from the child's stderr
     /// tqdm output. ``.idle`` until the first tqdm line lands; flips to
     /// ``.fetching`` / ``.downloading`` while HuggingFace pulls files,
@@ -1325,6 +1345,19 @@ final class ServerManager {
     /// is created fresh in ``init``.
     internal func _testSetResidencyClient(_ client: ServerResidencyClient) {
         self.residencyClient = client
+    }
+
+    /// Exercise the same startup reservation used by `start()` without
+    /// spawning a serve child. The wrapper releases a successful reservation;
+    /// production instead transfers it atomically into `isOperating`.
+    internal func _testProbeRuntimeCapabilitiesForStart(
+        binary: URL
+    ) async -> ServerRuntimeCapabilities? {
+        guard let result = await claimRuntimeCapabilitiesForStart(binary: binary) else {
+            return nil
+        }
+        releaseRuntimeProbe(result.id)
+        return result.capabilities
     }
 
     /// Issue #270 test seam — observe the current auto-respawn attempt
@@ -2254,7 +2287,7 @@ final class ServerManager {
         if !isAutoRespawn {
             autoRespawnAttempts = 0
         }
-        guard !isOperating else { return }
+        guard !isOperating, runtimeProbeOperation == nil else { return }
         guard child == nil else { return }
         // App termination is irreversible. `beginShutdown()` latches this
         // even when no child exists yet, so a start suspended in any probe
@@ -2454,6 +2487,14 @@ final class ServerManager {
             isBuiltinProfile: catalogEntry?.isBuiltinProfile,
             isTextOnly: catalogEntry?.isTextOnly
         )
+        guard let runtimeProbe = await claimRuntimeCapabilitiesForStart(binary: binary) else {
+            return
+        }
+        guard !Task.isCancelled, !didSignalShutdown,
+              !isOperating, child == nil else {
+            releaseRuntimeProbe(runtimeProbe.id)
+            return
+        }
 
         // Codex round 1-4 finding (all 4 rounds): the previous shape
         // held ``isOperating = true`` for the entire health/download
@@ -2470,6 +2511,10 @@ final class ServerManager {
         //     is false here; ``stop()`` can preempt by terminating
         //     ``child`` and the polling loop notices ``child == nil``
         //     and returns.
+        // Transfer probe ownership into the spawn critical section without an
+        // actor suspension or an unowned gap between the two reservations.
+        let runtimeCapabilities = runtimeProbe.capabilities
+        releaseRuntimeProbe(runtimeProbe.id)
         isOperating = true
 
         // Clear the log tail from any previous run so the user only
@@ -2638,11 +2683,10 @@ final class ServerManager {
             userOverrides: safeUserOverrides
         )
         var extraFlags = performanceFlags
-        extraFlags.append(contentsOf: [
-            "--resident-memory-limit-gb",
-            String(format: "%.0f", ModelSizing.residentMemoryCeilingGB(on: hardware)),
-            "--resident-model-idle-ttl", "1800",
-        ])
+        extraFlags.append(contentsOf: Self.residentLaunchFlags(
+            memoryCeilingGB: ModelSizing.residentMemoryCeilingGB(on: hardware),
+            capabilities: runtimeCapabilities
+        ))
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
             host: host,
@@ -2667,6 +2711,14 @@ final class ServerManager {
         if modelsFolderOverride == nil, ModelsFolderPreference.hasCustomFolder() {
             appendLogLines([
                 "Your chosen models folder isn't available right now — Rapid is using its default location until it's back."
+            ])
+        }
+        let unsupportedResidentFlags = Self.unsupportedResidentLaunchFlagNames(
+            capabilities: runtimeCapabilities
+        )
+        if !unsupportedResidentFlags.isEmpty {
+            appendLogLines([
+                "Rapid could not confirm that this engine runtime supports \(unsupportedResidentFlags.joined(separator: ", ")); starting without those residency flags."
             ])
         }
         let stdoutPipe = Pipe()
@@ -2979,6 +3031,7 @@ final class ServerManager {
         // Stop intent applies even from ``.crashed`` (no live child but
         // a queued respawn would still race a subsequent state change).
         cancelAutoRespawn()
+        cancelRuntimeProbe()
         guard !isOperating else { return }
         guard child != nil else { return }
         isOperating = true
@@ -3009,6 +3062,7 @@ final class ServerManager {
         // the process actually exits, spawning a child that gets
         // orphaned. Cancel unconditionally here, before the child guard.
         cancelAutoRespawn()
+        cancelRuntimeProbe()
         // Actually idempotent, not merely "cheap to call twice".
         // ``shutdownSync`` calls this again at the start of the reap
         // phase, so without this latch the child receives a SECOND
@@ -3082,6 +3136,39 @@ final class ServerManager {
     }
 
     // MARK: - Internals
+
+    private func claimRuntimeCapabilitiesForStart(
+        binary: URL
+    ) async -> (id: UUID, capabilities: ServerRuntimeCapabilities)? {
+        guard runtimeProbeOperation == nil, !isOperating, child == nil,
+              !didSignalShutdown else { return nil }
+        let id = UUID()
+        let provider = runtimeCapabilitiesProvider
+        let task = Task { @MainActor in
+            await provider(binary)
+        }
+        runtimeProbeOperation = RuntimeProbeOperation(id: id, task: task)
+        let capabilities = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard !Task.isCancelled, runtimeProbeOperation?.id == id else {
+            releaseRuntimeProbe(id)
+            return nil
+        }
+        return (id, capabilities)
+    }
+
+    private func releaseRuntimeProbe(_ id: UUID) {
+        guard runtimeProbeOperation?.id == id else { return }
+        runtimeProbeOperation = nil
+    }
+
+    private func cancelRuntimeProbe() {
+        runtimeProbeOperation?.task.cancel()
+        runtimeProbeOperation = nil
+    }
 
     /// Common SIGTERM-then-SIGKILL teardown shared by `stop()` and the
     /// health-deadline path. `reason` is non-nil when called from the
@@ -4055,6 +4142,39 @@ final class ServerManager {
             args.append(contentsOf: ["--mcp-config", mcpConfigPath])
         }
         return args
+    }
+
+    nonisolated internal static func residentLaunchFlags(
+        memoryCeilingGB: Double,
+        capabilities: ServerRuntimeCapabilities
+    ) -> [String] {
+        var flags: [String] = []
+        if capabilities.supportsResidentMemoryLimitGB {
+            flags.append(contentsOf: [
+                "--resident-memory-limit-gb",
+                String(format: "%.0f", memoryCeilingGB),
+            ])
+        }
+        if capabilities.supportsResidentModelIdleTTL {
+            flags.append(contentsOf: [
+                "--resident-model-idle-ttl",
+                "1800",
+            ])
+        }
+        return flags
+    }
+
+    nonisolated private static func unsupportedResidentLaunchFlagNames(
+        capabilities: ServerRuntimeCapabilities
+    ) -> [String] {
+        var names: [String] = []
+        if !capabilities.supportsResidentMemoryLimitGB {
+            names.append("--resident-memory-limit-gb")
+        }
+        if !capabilities.supportsResidentModelIdleTTL {
+            names.append("--resident-model-idle-ttl")
+        }
+        return names
     }
 
     /// Issue #272: the env we hand the bundled ``rapid-mlx`` child is
