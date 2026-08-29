@@ -275,10 +275,10 @@ struct ChatImageAttachmentTests {
             ),
         ]
 
-        ChatViewModel.updateImageDeliveryStatus(
+        ChatViewModel.applyImageDeliveryEvent(
             in: &messages,
             messageID: firstID,
-            status: .rejected
+            event: .terminalRejection
         )
 
         #expect(messages[0].imageDeliveryStatus == .rejected)
@@ -293,34 +293,139 @@ struct ChatImageAttachmentTests {
             ChatMessage(id: id, role: .user, imageDeliveryStatus: .pending)
         ]
 
-        ChatViewModel.updateImageDeliveryStatus(
-            in: &messages, messageID: id, status: .accepted
+        ChatViewModel.applyImageDeliveryEvent(
+            in: &messages, messageID: id, event: .accepted
         )
-        ChatViewModel.updateImageDeliveryStatus(
-            in: &messages, messageID: id, status: .rejected
+        ChatViewModel.applyImageDeliveryEvent(
+            in: &messages, messageID: id, event: .terminalRejection
         )
         #expect(messages[0].imageDeliveryStatus == .accepted)
 
         messages[0].imageDeliveryStatus = .rejected
-        ChatViewModel.updateImageDeliveryStatus(
-            in: &messages, messageID: id, status: .accepted
+        ChatViewModel.applyImageDeliveryEvent(
+            in: &messages, messageID: id, event: .accepted
         )
         #expect(messages[0].imageDeliveryStatus == .accepted)
     }
 
-    @Test("transient pre-token failure leaves an image eligible for a later follow-up")
+    @Test("first transient failure leaves one bounded image retry")
     @MainActor
-    func transientFailureRestoresUnknownDelivery() {
+    func firstTransientFailureAllowsOneRetry() {
         let id = UUID()
         var messages = [
             ChatMessage(id: id, role: .user, imageDeliveryStatus: .pending)
         ]
 
-        ChatViewModel.updateImageDeliveryStatus(
-            in: &messages, messageID: id, status: nil
+        ChatViewModel.applyImageDeliveryEvent(
+            in: &messages, messageID: id, event: .transientFailure
         )
 
-        #expect(messages[0].imageDeliveryStatus == nil)
+        #expect(messages[0].imageDeliveryStatus == .retryable)
+    }
+
+    @Test("cancellation does not spend an image retry")
+    @MainActor
+    func cancellationPreservesRetryableDelivery() {
+        let id = UUID()
+        var messages = [
+            ChatMessage(id: id, role: .user, imageDeliveryStatus: .retryable)
+        ]
+
+        ChatViewModel.applyImageDeliveryEvent(
+            in: &messages, messageID: id, event: .abandoned
+        )
+
+        #expect(messages[0].imageDeliveryStatus == .retryable)
+    }
+
+    @Test("stopping an in-flight image request restores its unused retry")
+    @MainActor
+    func streamCancellationClearsPendingDelivery() async throws {
+        ImageCancellationProtocol.reset()
+        let image = try ChatImageAttachment(
+            filename: "photo.png",
+            mimeType: "image/png",
+            data: Data("cancelled-photo".utf8)
+        )
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://image-cancellation")!,
+                session: ImageCancellationProtocol.session()
+            ),
+            persistsConversations: false
+        )
+
+        model.send(
+            "Describe this",
+            alias: "vision-model",
+            supportsImageInput: true,
+            imageAttachments: [image]
+        )
+        try await Self.waitUntil { ImageCancellationProtocol.didStart }
+        #expect(model.messages.first?.imageDeliveryStatus == .pending)
+
+        model.stop()
+        try await Self.waitForStream(model)
+
+        #expect(ImageCancellationProtocol.didStop)
+        #expect(model.messages.first?.imageDeliveryStatus == nil)
+        #expect(model.messages.last?.status == .complete)
+    }
+
+    @Test("a second terminal image failure quarantines only that image turn")
+    @MainActor
+    func secondTerminalFailureQuarantinesImage() async throws {
+        ImageFailureQuarantineProtocol.reset()
+        let image = try ChatImageAttachment(
+            filename: "photo.png",
+            mimeType: "image/png",
+            data: Data("persistent-failure-photo".utf8)
+        )
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://image-failure")!,
+                session: ImageFailureQuarantineProtocol.session()
+            ),
+            persistsConversations: false
+        )
+
+        model.send(
+            "Describe this",
+            alias: "vision-model",
+            supportsImageInput: true,
+            imageAttachments: [image]
+        )
+        try await Self.waitForStream(model)
+        #expect(model.messages.first?.imageDeliveryStatus != .rejected)
+
+        model.send(
+            "Try that image once more",
+            alias: "vision-model",
+            supportsImageInput: true
+        )
+        try await Self.waitForStream(model)
+        #expect(model.messages.first?.imageDeliveryStatus == .rejected)
+        let secondFailure = try #require(model.messages.last)
+        #expect(secondFailure.status == .failed)
+        #expect(!(secondFailure.errorMessage ?? "").isEmpty)
+        #expect(!(secondFailure.errorMessage ?? "").contains("temporary runtime failure"))
+        #expect(!(secondFailure.errorMessage ?? "").contains("HTTP 500"))
+
+        model.send(
+            "Continue without the image",
+            alias: "vision-model",
+            supportsImageInput: true
+        )
+        try await Self.waitForStream(model)
+
+        let requestBodies = ImageFailureQuarantineProtocol.capturedBodies()
+        try #require(requestBodies.count == 3)
+        let encodedImage = image.data.base64EncodedString()
+        #expect(String(decoding: requestBodies[0], as: UTF8.self).contains(encodedImage))
+        #expect(String(decoding: requestBodies[1], as: UTF8.self).contains(encodedImage))
+        #expect(!String(decoding: requestBodies[2], as: UTF8.self).contains(encodedImage))
+        #expect(model.messages.last?.content == "recovered")
+        #expect(model.messages.last?.status == .complete)
     }
 
     @Test("model-start failure clears pending image delivery before persistence")
@@ -425,6 +530,19 @@ struct ChatImageAttachmentTests {
             from: JSONEncoder().encode(rejected)
         )
         #expect(restored.imageDeliveryStatus == .rejected)
+
+        let retryable = ChatMessage(
+            role: .user,
+            content: "look",
+            imageAttachments: [attachment],
+            imageDeliveryStatus: .retryable
+        )
+        #expect(
+            try JSONDecoder().decode(
+                ChatMessage.self,
+                from: JSONEncoder().encode(retryable)
+            ).imageDeliveryStatus == .retryable
+        )
 
         var legacyObject = try #require(
             JSONSerialization.jsonObject(with: JSONEncoder().encode(rejected)) as? [String: Any]
@@ -712,5 +830,146 @@ struct ChatImageAttachmentTests {
         CGImageDestinationAddImage(destination, image, nil)
         #expect(CGImageDestinationFinalize(destination))
         try (output as Data).write(to: url)
+    }
+
+    @MainActor
+    private static func waitForStream(_ model: ChatViewModel) async throws {
+        // The full Swift suite runs hundreds of MainActor tests in parallel.
+        // Keep a hard bound, but leave enough room for actor scheduling under
+        // that load so this transport test measures behavior, not queue delay.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while model.isStreaming, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(!model.isStreaming, "the canned chat request must finish")
+    }
+
+    @MainActor
+    private static func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(condition(), "the canned transport event must arrive")
+    }
+}
+
+private final class ImageCancellationProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var started = false
+    nonisolated(unsafe) private static var stopped = false
+
+    static var didStart: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return started
+    }
+
+    static var didStop: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    static func reset() {
+        lock.lock()
+        started = false
+        stopped = false
+        lock.unlock()
+    }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageCancellationProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.started = true
+        Self.lock.unlock()
+        // Intentionally never answer. Cancelling ChatViewModel's in-flight
+        // task must cancel URLSession and route through the real catch path.
+    }
+
+    override func stopLoading() {
+        Self.lock.lock()
+        Self.stopped = true
+        Self.lock.unlock()
+    }
+}
+
+private final class ImageFailureQuarantineProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var bodies: [Data] = []
+
+    static func reset() {
+        lock.lock()
+        bodies = []
+        lock.unlock()
+    }
+
+    static func capturedBodies() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return bodies
+    }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageFailureQuarantineProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let body = Self.requestBody(from: request)
+        Self.lock.lock()
+        Self.bodies.append(body)
+        let requestNumber = Self.bodies.count
+        Self.lock.unlock()
+
+        let statusCode = requestNumber <= 2 ? 500 : 200
+        let contentType = requestNumber <= 2 ? "application/json" : "text/event-stream"
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": contentType]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let responseBody = requestNumber <= 2
+            ? Data(#"{"error":{"message":"temporary runtime failure","type":"server_error"}}"#.utf8)
+            : Data("""
+                data: {"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}
+
+                data: [DONE]
+
+                """.utf8)
+        client?.urlProtocol(self, didLoad: responseBody)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func requestBody(from request: URLRequest) -> Data {
+        guard let stream = request.httpBodyStream else { return request.httpBody ?? Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = buffer.withUnsafeMutableBufferPointer { pointer in
+                stream.read(pointer.baseAddress!, maxLength: pointer.count)
+            }
+            if count > 0 { data.append(buffer, count: count) }
+            if count == 0 { return data }
+            if count < 0 { return Data() }
+        }
     }
 }

@@ -397,8 +397,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// subsequent plain-text follow-up. A direct Retry still sends the image.
     enum ImageDeliveryStatus: String, Codable, Sendable {
         case pending
+        /// One pre-token failure has already been allowed to retry through a
+        /// later plain-text turn. Persisting this state on the image-bearing
+        /// message keeps the retry budget tied to that exact turn.
+        case retryable
         case accepted
         case rejected
+
+        var permitsFollowUpInheritance: Bool {
+            self == .retryable || self == .accepted
+        }
 
         /// A newer outcome must fail closed for attachment inheritance rather
         /// than make one message undecodable and side the whole conversation
