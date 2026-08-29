@@ -99,6 +99,9 @@ struct RapidApp: App {
     /// App-owned owner of the one-time invitation that follows the first
     /// successful product outcome. Feature models only publish typed success.
     @State private var deferredTelemetryConsent: DeferredTelemetryConsentCoordinator
+    /// Local-only post-value GitHub invitation. It shares the typed success
+    /// seam above but owns independent quiet-window and backoff policy.
+    @State private var githubStarPrompt: GitHubStarPromptCoordinator
     /// Side-car downloader — spawns ``rapid-mlx pull <alias>`` jobs.
     @State private var downloads: DownloadManager
     /// Detects the "Finder Replace into /Applications silently failed
@@ -143,6 +146,7 @@ struct RapidApp: App {
         // handled by the post-value consent coordinator.
         TelemetryConsent.synchronizeExistingDecision()
         let consentCoordinator = DeferredTelemetryConsentCoordinator()
+        let starPromptCoordinator = GitHubStarPromptCoordinator()
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
         //
@@ -260,8 +264,9 @@ struct RapidApp: App {
             sampling: samplingConfig,
             customInstructions: customInstructionsConfig,
             server: manager,
-            onProductValueDelivered: { [weak consentCoordinator] kind in
+            onProductValueDelivered: { [weak consentCoordinator, weak starPromptCoordinator] kind in
                 consentCoordinator?.productValueDelivered(kind)
+                starPromptCoordinator?.productValueDelivered(kind)
             }
         )
         // Deterministic AX fixture for the otherwise release-only state where
@@ -308,8 +313,9 @@ struct RapidApp: App {
             server: manager,
             testingReadiness: fixtureReadiness,
             testingHotkeyStart: fixtureHotkeyStart,
-            onProductValueDelivered: { [weak consentCoordinator] kind in
+            onProductValueDelivered: { [weak consentCoordinator, weak starPromptCoordinator] kind in
                 consentCoordinator?.productValueDelivered(kind)
+                starPromptCoordinator?.productValueDelivered(kind)
             }
         )
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
@@ -324,8 +330,9 @@ struct RapidApp: App {
         AppDelegate.shared.dockPromptStore = dockPrompt
         _chatViewModel = State(initialValue: chat)
         let imageGenViewModel = ImageGenViewModel(server: manager)
-        imageGenViewModel.observeProductValue { [weak consentCoordinator] kind in
+        imageGenViewModel.observeProductValue { [weak consentCoordinator, weak starPromptCoordinator] kind in
             consentCoordinator?.productValueDelivered(kind)
+            starPromptCoordinator?.productValueDelivered(kind)
         }
         _imageGen = State(initialValue: imageGenViewModel)
         _audio = State(initialValue: AudioViewModel(server: manager))
@@ -337,6 +344,7 @@ struct RapidApp: App {
         _appearance = State(initialValue: appearanceConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
         _deferredTelemetryConsent = State(initialValue: consentCoordinator)
+        _githubStarPrompt = State(initialValue: starPromptCoordinator)
         // Hand the live singletons to the delegate so the shutdown hook
         // and the AppKit menu-bar tray can reach them without rebuilding
         // the SwiftUI environment.
@@ -369,6 +377,7 @@ struct RapidApp: App {
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(deferredTelemetryConsent)
+                .environment(githubStarPrompt)
                 .environment(installTracker)
                 .environment(quickstart)
                 .environment(dockPromptStore)
