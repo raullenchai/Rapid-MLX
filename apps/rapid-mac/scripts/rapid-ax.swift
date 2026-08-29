@@ -112,7 +112,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|select-menu-title|key|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|select-menu-item|key|click-center|set-scroll-value|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -427,15 +427,15 @@ case "click-center":
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
     usleep(150_000)
-case "select-menu-title":
+case "select-menu-item":
     guard CommandLine.arguments.count > 4 else {
-        fail("select-menu-title requires the exact searchable menu title")
+        fail("select-menu-item requires the menu item's accessibility identifier")
     }
-    let searchText = CommandLine.arguments[4]
+    let itemIdentifier = CommandLine.arguments[4]
     guard let origin = point(target, kAXPositionAttribute as CFString),
           let extent = size(target, kAXSizeAttribute as CFString),
           extent.width > 0, extent.height > 0
-    else { fail("select-menu-title \(identifier) has no usable AX bounds") }
+    else { fail("select-menu-item \(identifier) has no usable AX bounds") }
     let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
     guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                                   mouseCursorPosition: center, mouseButton: .left),
@@ -444,29 +444,64 @@ case "select-menu-title":
     else { fail("could not create menu click events for \(identifier)") }
     mouseDown.post(tap: .cghidEventTap)
     mouseUp.post(tap: .cghidEventTap)
-    usleep(200_000)
 
-    let utf16 = Array(searchText.utf16)
-    guard let typeDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-          let typeUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false),
-          let returnDown = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: true),
-          let returnUp = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: false)
-    else { fail("could not create menu keyboard events for \(identifier)") }
-    utf16.withUnsafeBufferPointer { buffer in
-        guard let base = buffer.baseAddress else { return }
-        typeDown.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
-        typeUp.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+    // The menu does not exist in the AX tree until the click above opens it.
+    // Resolve the row from the fresh tree and press that exact semantic item.
+    // Typing a title and Return can be accepted by CoreGraphics while the
+    // native menu ignores both events, which makes a driver claim success even
+    // though no product action ran. The identifier + AXPress path fails closed
+    // when the requested row never appears or cannot be activated.
+    func findFreshElement(identifier wantedIdentifier: String) -> AXUIElement? {
+        var seen = Set<AXUIElement>()
+        var visitedCount = 0
+
+        func visit(_ element: AXUIElement, depth: Int) -> AXUIElement? {
+            guard depth <= 40, visitedCount < 12_000 else { return nil }
+            guard seen.insert(element).inserted else { return nil }
+            visitedCount += 1
+            if string(element, kAXIdentifierAttribute as CFString) == wantedIdentifier {
+                return element
+            }
+            guard let children = attribute(
+                element, kAXChildrenAttribute as CFString
+            ) as? [AXUIElement] else { return nil }
+            for child in children {
+                if let found = visit(child, depth: depth + 1) { return found }
+            }
+            return nil
+        }
+
+        // Re-read every application root after opening the menu. Depending on
+        // the AppKit/SwiftUI host version, a transient NSMenu can be exposed as
+        // a window descendant or as a separate application child; the initial
+        // window-only snapshot cannot represent both shapes.
+        guard let freshRoots = attribute(
+            application, kAXChildrenAttribute as CFString
+        ) as? [AXUIElement] else { return nil }
+        for root in freshRoots {
+            if let found = visit(root, depth: 0) { return found }
+        }
+        return nil
     }
-    typeDown.postToPid(pid)
-    typeUp.postToPid(pid)
-    usleep(150_000)
-    returnDown.postToPid(pid)
-    returnUp.postToPid(pid)
+
+    var menuItem: AXUIElement?
+    for _ in 0..<20 {
+        menuItem = findFreshElement(identifier: itemIdentifier)
+        if menuItem != nil { break }
+        usleep(50_000)
+    }
+    guard let menuItem else {
+        fail("menu item identifier not found after opening \(identifier): \(itemIdentifier)")
+    }
+    let result = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
+    guard result == .success else {
+        fail("AXPress menu item \(itemIdentifier) failed: \(result.rawValue)")
+    }
     usleep(150_000)
     let payload: [String: Any] = [
         "success": true,
-        "identifier": identifier,
-        "selected_title": searchText,
+        "menu_identifier": identifier,
+        "item_identifier": itemIdentifier,
         "action": command,
     ]
     let data = try! JSONSerialization.data(
