@@ -1,5 +1,11 @@
 """Long-context adaptive prefill policy regression tests."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

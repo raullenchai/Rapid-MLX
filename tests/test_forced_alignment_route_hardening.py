@@ -41,10 +41,13 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="requires the MLX runtime available on Apple Silicon",
-)
+pytestmark = [
+    pytest.mark.requires_mlx,
+    pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="requires the MLX runtime available on Apple Silicon",
+    ),
+]
 
 _ALIGNER_ID = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 

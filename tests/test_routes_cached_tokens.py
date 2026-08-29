@@ -13,6 +13,10 @@ the helper tests stay green. The Anthropic streaming counterpart of
 this coverage is in ``test_anthropic_route_streaming.py``.
 """
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import json
 
 from fastapi import FastAPI

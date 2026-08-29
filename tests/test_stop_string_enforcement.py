@@ -18,9 +18,13 @@ a real model.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+from unittest.mock import MagicMock
 
 from vllm_mlx.request import Request, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

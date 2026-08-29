@@ -60,7 +60,7 @@
 #      install verbatim (`pip install -e . --no-deps` + the synced
 #      config/requirements-ci-linux.txt), assert `import mlx` FAILS, then run
 #      the parsed Linux pytest invocations (one process per `pytest` block in
-#      ci.yml — the broad roster and the engine-lifecycle seam set run in
+#      ci.yml — automatic unit discovery and the fake-MLX lifecycle set run in
 #      separate processes, mirroring the hosted split, with the second
 #      `--cov-append`ing into the same data).
 #   2. mypy error budget     (ci.yml type-check)    — `pip install -r
@@ -352,7 +352,7 @@ gate1_linux() {
   # never an ad hoc package list here (a pin change there also changes the
   # gates-hash). Remaining, documented divergence from hosted: this runs on
   # the local OS/arch with the control interpreter's version, not on
-  # ubuntu-latest x86-64 across the 3.10/3.11/3.12 matrix; the roster, flags
+  # ubuntu-latest x86-64 across the 3.10/3.11/3.12 matrix; discovery, flags
   # and the coverage data name (coverage-linux-3.11.data — the leg the hosted
   # union consumes) are identical.
   "$py" -m pip install --quiet -e "$ROOT" --no-deps \
@@ -366,8 +366,8 @@ gate1_linux() {
   fi
   note "mlx correctly absent from fresh --no-deps venv"
 
-  # ci.yml runs TWO separate pytest processes in this step (the broad roster
-  # and the engine-lifecycle seam set — see scripts/train_gates_parser.py).
+  # ci.yml runs TWO separate pytest processes in this step (automatic unit
+  # discovery and the fake-MLX lifecycle set — see train_gates_parser.py).
   # Reproduce that split: run each parsed invocation in its OWN pytest process,
   # in ci.yml's order, each writing into the SAME coverage file with the
   # declared --cov-append semantics so the union equals the hosted combined
@@ -377,7 +377,7 @@ gate1_linux() {
   echo "  running $n_inv Linux pytest process(es) parsed from ci.yml"
   local covfile="$COV_DIR/coverage-linux-3.11.data"
   for (( i=0; i<n_inv; i++ )); do
-    local n_files cov_append paths_str deselect_str marker_str
+    local n_files cov_append paths_str ignore_str deselect_str marker_str m_str
     n_files="$("$PYTHON_BIN" - "$LINUX_JSON" "$i" <<'PY'
 import sys, json
 inv = json.loads(sys.argv[1])[int(sys.argv[2])]
@@ -400,6 +400,12 @@ inv = json.loads(sys.argv[1])[int(sys.argv[2])]
 print(" ".join(inv["paths"]))
 PY
 )"
+    ignore_str="$("$PYTHON_BIN" - "$LINUX_JSON" "$i" <<'PY'
+import sys, json
+inv = json.loads(sys.argv[1])[int(sys.argv[2])]
+print(" ".join("--ignore=%s" % d for d in inv["ignore"]))
+PY
+)"
     deselect_str="$("$PYTHON_BIN" - "$LINUX_JSON" "$i" <<'PY'
 import sys, json
 inv = json.loads(sys.argv[1])[int(sys.argv[2])]
@@ -412,6 +418,12 @@ inv = json.loads(sys.argv[1])[int(sys.argv[2])]
 print(inv["marker"] or "")
 PY
 )"
+    m_str="$("$PYTHON_BIN" - "$LINUX_JSON" "$i" <<'PY'
+import sys, json
+inv = json.loads(sys.argv[1])[int(sys.argv[2])]
+print(inv["m"] or "")
+PY
+)"
 
     # Split the parsed space-joined strings into arrays so no accidental
     # word-splitting/globbing ever occurs when they are passed to pytest.
@@ -419,17 +431,20 @@ PY
     # unbound, and `${arr[@]}` on an unbound array errors under `set -u`. So
     # every array expansion below uses the `${arr[@]+"${arr[@]}"}` guard, which
     # is a no-op when the array holds no elements.
-    local -a pytest_args=() deselect_args=()
+    local -a pytest_args=() ignore_args=() deselect_args=()
     read -r -a pytest_args <<<"$paths_str"
+    read -r -a ignore_args <<<"$ignore_str"
     read -r -a deselect_args <<<"$deselect_str"
     local -a aux_args=()
     if [[ "$cov_append" == "1" ]]; then aux_args+=(--cov-append); fi
     if [[ -n "$marker_str" ]]; then aux_args+=(-k "$marker_str"); fi
+    if [[ -n "$m_str" ]]; then aux_args+=(-m "$m_str"); fi
 
     if ! ( cd "$ROOT" \
         && COVERAGE_FILE="$covfile" \
         "$py" -m pytest \
           ${pytest_args[@]+"${pytest_args[@]}"} \
+          ${ignore_args[@]+"${ignore_args[@]}"} \
           ${deselect_args[@]+"${deselect_args[@]}"} \
           ${aux_args[@]+"${aux_args[@]}"} \
           -v --tb=short \
@@ -626,8 +641,8 @@ PY
   if [[ -n "$k_str" ]]; then k_args=(-k "$k_str"); fi
   if ! ( cd "$ROOT" \
       && COVERAGE_FILE="$COV_DIR/coverage-apple.data" \
-      "$apple_py" -m pytest \
-        ${apple_args[@]+"${apple_args[@]}"} \
+        "$apple_py" -m pytest \
+          ${apple_args[@]+"${apple_args[@]}"} \
         -v --tb=short \
         ${m_args[@]+"${m_args[@]}"} \
         ${k_args[@]+"${k_args[@]}"} \

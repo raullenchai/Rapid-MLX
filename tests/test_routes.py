@@ -8,6 +8,8 @@ in isolation without needing a real model or server running.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

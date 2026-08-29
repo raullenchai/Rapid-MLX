@@ -55,6 +55,7 @@ from ..api.utils import (
 )
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
+from ..errors import BackpressureError
 from ..tool_parsers import ToolParserManager
 
 logger = logging.getLogger(__name__)
@@ -109,8 +110,6 @@ def _check_admission_or_503(engine) -> None:
     Engines without a ``check_admission`` attribute (test stubs)
     silently no-op.
     """
-    from ..scheduler import BackpressureError
-
     check = getattr(engine, "check_admission", None)
     if check is None:
         # Engine doesn't implement admission control (e.g. test stub) —
@@ -4269,8 +4268,6 @@ async def _wait_with_disconnect(
     finishes, briefly under-counting in-flight requests.
     """
     import time as _time
-
-    from ..scheduler import BackpressureError
 
     _t0 = _time.monotonic()
 

@@ -55,6 +55,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # ---------------------------------------------------------------------------
 # 1. Flags reach server.load_model as enable_disk_stream/disk_stream_cache_gb
 # ---------------------------------------------------------------------------

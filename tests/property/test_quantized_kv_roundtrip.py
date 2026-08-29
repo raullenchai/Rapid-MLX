@@ -22,9 +22,13 @@ All tensors are tiny and in-memory: the suite is fully hermetic.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+
+
 import mlx.core as mx
 import numpy as np
-import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
@@ -36,7 +40,7 @@ from vllm_mlx.quantized_batch_cache import (
 
 from .strategies import QUANT_GROUP_SIZES, mlx_kv_tensors
 
-pytestmark = pytest.mark.property
+pytestmark = [pytest.mark.property, pytest.mark.requires_mlx]
 
 
 def _raw(a) -> tuple:

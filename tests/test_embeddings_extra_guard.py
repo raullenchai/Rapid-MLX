@@ -26,6 +26,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -45,6 +45,8 @@ import json
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 _HAS_LLGUIDANCE = importlib.util.find_spec("llguidance") is not None
 _requires_llguidance = pytest.mark.skipif(
     not _HAS_LLGUIDANCE, reason="llguidance ([guided] extra) not installed"

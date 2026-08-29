@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # ---------------------------------------------------------------------------
 # 1. detect_mtp_eligibility(has_external_sidecar=...) contract
 # ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.runtime import ubc_evict as ubc_module
 from vllm_mlx.runtime.ubc_evict import (
     render_prometheus_lines,

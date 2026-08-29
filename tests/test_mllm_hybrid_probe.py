@@ -11,11 +11,16 @@ The user-facing contract:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import builtins
 from unittest.mock import MagicMock
 
 import mlx.core as mx
-import pytest
 from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
 
 from vllm_mlx.engine.batched import _probe_mllm_cache_type, _resolve_mllm_cache_policy

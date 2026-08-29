@@ -30,6 +30,12 @@ on ``gemma-4-e2b-4bit`` post-merge.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import mlx.core as mx
 
 from vllm_mlx.models.gemma4_text import (

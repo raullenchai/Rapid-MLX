@@ -11,6 +11,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # Model to use for tests - small model for fast testing
 TEST_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
 

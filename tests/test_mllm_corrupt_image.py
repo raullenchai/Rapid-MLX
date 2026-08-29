@@ -43,6 +43,10 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from vllm_mlx.mllm_batch_generator import (
     MLLMBatchGenerator,
     MLLMBatchRequest,

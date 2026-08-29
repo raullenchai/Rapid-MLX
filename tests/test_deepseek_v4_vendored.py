@@ -17,6 +17,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 @pytest.fixture(autouse=True)
 def _clear_vendored_register():

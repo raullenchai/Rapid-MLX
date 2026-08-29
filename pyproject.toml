@@ -328,41 +328,48 @@ test = [
 #     closed if they fall out of step).
 #
 # `ci-linux` = the exact dependency set the Linux `test-matrix` lane needs to
-# import the no-MLX unit suite and run those tests with coverage. It is the
-# union of the old ad hoc line PLUS the *undeclared-optional* `jinja2` that
-# made #2445 / #2446 red on that lane: the reasoning/template tests render
-# chat templates via ``transformers.utils.chat_template_utils._compile_jinja_template``
-# which requires jinja2 at runtime, and neither transformers nor pandas pulls
-# it transitively. Declared explicitly, so the two tests below are un-deselected:
-#   * tests/test_cohere_command_reasoning_parser.py::test_prompt_priming_detects_command_markers_and_mixed_templates
-#   * tests/test_postprocessor.py::TestStreamingPostProcessorReasoning::test_1570_distill_parser_stays_active_when_thinking_flag_is_false
+# discover and run the complete no-MLX unit suite with coverage. It mirrors the
+# pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
+# then adds test-only packages required by automatically discovered modules.
 ci-linux = [
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "hypothesis>=6.100.0",
+    "prometheus_client>=0.16.0",
     # App runtime surface the Linux (no-MLX) lane imports at module load.
     # Pin the floors identical to the core `dependencies` block so the
     # no-MLX lane resolves against the same minimum the shipped engine is
     # validated on — a bare, unpinned name here could resolve a newer minor
     # and silently diverge from what macOS is shipping (the drift test in
-    # tests/test_ci_apple_coverage_union.py fails closed on any gap). jinja2
-    # is the one deliberate extra: the reasoning/template tests render chat
-    # templates via ``transformers.utils.chat_template_utils`` which requires
-    # jinja2 at runtime, and neither transformers nor pandas pulls it
-    # transitively (#2445 / #2446).
+    # tests/test_ci_apple_coverage_union.py fails closed on any gap).
     "pydantic",
     "fastapi>=0.100.0",
     "jsonschema>=4.0.0",
     "httpx",
     "psutil>=5.9.0",
-    "transformers>=5.0.0,<5.13",
+    "transformers>=5.0.0,!=5.13.0,<5.16",
+    "tokenizers>=0.19.0",
+    "huggingface-hub>=0.23.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.66.0",
     "requests>=2.28.0",
     "pyyaml>=6.0",
+    "tomli-w>=1.0.0",
+    'tomli>=2.0.1; python_version < "3.11"',
+    "rich>=13.8.0",
+    "tabulate>=0.9.0",
     "python-multipart",
     "uvicorn>=0.23.0",
+    "mcp>=1.9.3",
+    "argcomplete>=3.6",
     "websockets>=12.0",
+    "openai-harmony>=0.0.8",
+    "llguidance>=1.7.6",
     "jinja2",
+    "aiohttp>=3.9.0",
+    "pillow>=10.0.0",
 ]
 # `ci-apple` = the pytest + coverage set the `test-apple-silicon` lane installs
 # on top of `[vision]`. Same test-infra floors as `[ci-linux]`; the lane's MLX

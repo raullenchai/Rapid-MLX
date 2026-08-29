@@ -15,8 +15,13 @@ so two invariants are checked:
    comparison is bit-exact (max-abs-diff == 0), not merely "close".
 """
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import mlx.core as mx
 from mlx_lm.models.cache import BatchKVCache
 
 from vllm_mlx.quantized_batch_cache import (

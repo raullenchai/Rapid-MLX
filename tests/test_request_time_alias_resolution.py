@@ -33,6 +33,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # All tests run cross-platform. The route-level integration tests below
 # import ``vllm_mlx.routes.embeddings`` + ``vllm_mlx.routes.audio``
 # directly (which do NOT pull in MLX at module load), and inject a fake

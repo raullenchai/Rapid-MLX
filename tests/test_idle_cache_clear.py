@@ -1,9 +1,13 @@
 """Focused tests for idle prefix-cache release configuration and behavior."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 from unittest.mock import patch
-
-import pytest
 
 from vllm_mlx.engine_core import EngineCore
 from vllm_mlx.memory_cache import (

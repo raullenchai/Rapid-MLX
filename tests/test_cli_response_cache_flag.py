@@ -19,10 +19,14 @@ network / version-check boundaries are mocked, and construction raises
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import sys
 from unittest import mock
-
-import pytest
 
 import vllm_mlx.cli as cli
 

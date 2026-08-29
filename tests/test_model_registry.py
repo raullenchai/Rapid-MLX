@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for model registry and multi-engine scenarios."""
 
+import pytest
+
+pytest.importorskip("mlx")
+
+
 import functools
 import gc
 import os
 import socket
-
-import pytest
 
 from vllm_mlx import (
     EngineConfig,
@@ -17,7 +20,7 @@ from vllm_mlx import (
     get_registry,
 )
 
-pytestmark = pytest.mark.real_hf_cache
+pytestmark = [pytest.mark.real_hf_cache, pytest.mark.requires_mlx]
 
 # Use a small model for fast tests
 TEST_MODEL = "mlx-community/Qwen3-0.6B-8bit"

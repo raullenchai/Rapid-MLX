@@ -6,11 +6,15 @@ These tests verify that continuous batching properly handles
 multiple concurrent requests with improved throughput.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 import time
 from unittest.mock import MagicMock
-
-import pytest
 
 from vllm_mlx.request import Request, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

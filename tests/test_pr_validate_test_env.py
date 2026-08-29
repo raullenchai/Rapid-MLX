@@ -227,7 +227,7 @@ class TestCheckTestEnv:
             "  File '<string>', line 1, in <module>\n"
             "RuntimeError: simulated plugin-order collision\n"
         )
-        n_packages = len(mod.REQUIRED_TEST_PACKAGES)
+        n_packages = len(mod.required_test_packages_for_platform())
         results = [
             subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="", stderr=batch_stderr

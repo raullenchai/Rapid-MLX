@@ -95,6 +95,7 @@ def test_wan_wraps_non_utf8_config(monkeypatch, tmp_path) -> None:
 
 def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
     checked = []
+    monkeypatch.setattr(sys, "version_info", (3, 11))
 
     def fake_find_spec(module):
         checked.append(module)
@@ -109,6 +110,8 @@ def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
 
 
 def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "version_info", (3, 11))
+
     def fake_find_spec(module):
         if module == "mlx_video":
             return None
@@ -167,6 +170,9 @@ def test_wan_lane_crops_aligned_generation_to_requested_size(
         captured["command"] = command
         Path(command[-1]).write_bytes(b"cropped")
 
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/usr/bin/ffmpeg"
+    )
     monkeypatch.setattr(subprocess, "run", fake_run)
     lane.generate(
         prompt="test",

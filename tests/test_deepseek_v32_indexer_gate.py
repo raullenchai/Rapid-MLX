@@ -25,12 +25,17 @@ configs (e.g. ``mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit``):
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import json
 from collections.abc import Iterable
 from pathlib import Path
 
 import mlx.core as mx
-import pytest
 
 # ----------------------------------------------------------------------
 # Synthetic glm_moe_dsa config + weight forge (no GLM-5.2 download)

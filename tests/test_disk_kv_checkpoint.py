@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
 from mlx_lm.models.cache import KVCache, QuantizedKVCache  # noqa: E402
 
 from vllm_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402

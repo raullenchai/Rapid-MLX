@@ -397,10 +397,11 @@ def test_type_check_enforces_shrink_only_error_budget():
         "starlette",
         "typing_extensions",
     }
-    unit_roster = _step_run(
+    unit_discovery = _step_run(
         ENGINE_WORKFLOW, "test-matrix", "Run unit tests (no MLX required)"
     )
-    assert "tests/test_check_mypy_error_budget.py" in unit_roster
+    assert "tests" in unit_discovery
+    assert "tests/test_check_mypy_error_budget.py" not in unit_discovery
 
 
 def test_combined_platform_job_enforces_changed_lines_coverage_without_baseline():

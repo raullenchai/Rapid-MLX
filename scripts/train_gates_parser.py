@@ -13,10 +13,9 @@ Gate surface parsed here (see ``scripts/train_gates.sh`` for the full gate
 list):
   * Linux no-MLX pytest blocks (ci.yml test-matrix, "Run unit tests (no MLX
     required)" step) — a LIST of invocations, one per distinct ``pytest``
-    process in the step, because ci.yml deliberately runs the broad roster and
-    the engine-lifecycle tests in TWO separate processes (the latter install a
-    MagicMock ``mlx`` shim into ``sys.modules`` at import and must not pollute
-    the broad roster).
+    process in the step, because ci.yml deliberately runs the automatically
+    discovered unit directory and the isolated fake-MLX lifecycle directory in
+    TWO separate processes.
   * Apple-MLX pytest roster + ``-m``/``-k`` filters (ci.yml test-apple-silicon,
     "Run MLX-dependent tests" step)
   * mypy budget invocation (ci.yml type-check job)
@@ -41,11 +40,12 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 MAC_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rapid-mac-ci.yml"
 MYPY_BUDGET_SCRIPT = "scripts/check_mypy_error_budget.py"
 
-# A single test path token: `tests/test_*.py` with any number of `::X` segments
-# (e.g. ``tests/test_responses_route.py::TestResponsesNonStream::test_...``).
-_TEST_PATH = re.compile(r"tests/[A-Za-z0-9_]+\.py(::[A-Za-z0-9_]+)*")
+# A pytest target can be a directory, a file, or a selected node.
+_TEST_TARGET = re.compile(r"^tests(?:/[A-Za-z0-9_.-]+)*(?:::[A-Za-z0-9_]+)*$")
 
 _DESELECT = re.compile(r"--deselect=([^ \t\\]+)")
+
+_IGNORE = re.compile(r"--ignore=([^ \t\\]+)")
 
 _K_FILTER = re.compile(r'-k\s+"([^"]+)"')
 
@@ -70,9 +70,9 @@ def _split_pytest_blocks(run_text: str) -> list[list[str]]:
     comments) are collected into the block until the next ``pytest`` line. This
     mirrors the fact that ci.yml runs each ``pytest <args>`` block in its own
     separate process (the engine-lifecycle tests MUST be isolated: their
-    ``tests/_headless_mlx.py`` seam installs MagicMock ``mlx`` modules into
-    ``sys.modules`` at import, which would leak into the broad roster if they
-    shared a process).
+    ``tests/headless_mlx`` conftest installs MagicMock ``mlx`` modules into
+    ``sys.modules``, which would leak into ordinary discovery if they shared a
+    process).
     """
     blocks: list[list[str]] = []
     current: list[str] | None = None
@@ -90,14 +90,16 @@ def _split_pytest_blocks(run_text: str) -> list[list[str]]:
 def _parse_block(block: list[str]) -> dict[str, Any]:
     """Parse ONE pytest block (a list of lines) into an invocation dict.
 
-    Returns ``{paths, deselect, marker, cov_declaration}`` where
+    Returns ``{paths, ignore, deselect, marker, m, cov_declaration}`` where
     ``cov_declaration`` captures the ``--cov-append`` / ``--cov-report=xml``
     flags the block declares (the script mirrors them so the per-process
     coverage union equals the hosted combined coverage).
     """
     paths: list[str] = []
+    ignore: list[str] = []
     deselect: list[str] = []
     marker: str | None = None
+    m_filter: str | None = None
     cov_append = False
     cov_report_xml = False
 
@@ -113,9 +115,13 @@ def _parse_block(block: list[str]) -> dict[str, Any]:
         if "--cov-report=xml" in line:
             cov_report_xml = True
 
-        path_match = _TEST_PATH.search(line)
-        if path_match and "--deselect=" not in line:
-            paths.append(path_match.group(0))
+        target = line.strip().rstrip("\\").strip()
+        if _TEST_TARGET.fullmatch(target):
+            paths.append(target)
+
+        ignore_match = _IGNORE.search(line)
+        if ignore_match:
+            ignore.append(ignore_match.group(1))
 
         deselect_match = _DESELECT.search(line)
         if deselect_match:
@@ -125,10 +131,16 @@ def _parse_block(block: list[str]) -> dict[str, Any]:
         if k_match:
             marker = k_match.group(1)
 
+        m_match = _M_FILTER.search(line)
+        if m_match:
+            m_filter = m_match.group(1)
+
     return {
         "paths": paths,
+        "ignore": ignore,
         "deselect": deselect,
         "marker": marker,
+        "m": m_filter,
         "cov_declaration": {
             "cov_append": cov_append,
             "cov_report_xml": cov_report_xml,
@@ -141,7 +153,8 @@ def parse_linux_pytest_args() -> list[dict[str, Any]]:
 
     Returns a LIST of invocation dicts, one per distinct ``pytest`` process in
     the "Run unit tests (no MLX required)" step (currently 2), each
-    ``{paths, deselect, marker, cov_declaration}`` in ci.yml's run order.
+    ``{paths, ignore, deselect, marker, m, cov_declaration}`` in ci.yml's run
+    order.
     """
     workflow = _load_workflow()
     job = workflow["jobs"]["test-matrix"]
@@ -185,9 +198,9 @@ def parse_apple_pytest_args() -> dict[str, Any]:
     for line in run_text.splitlines():
         if line.strip().startswith("#"):
             continue
-        path_match = _TEST_PATH.search(line)
-        if path_match and "--deselect=" not in line:
-            paths.append(path_match.group(0))
+        target = line.strip().rstrip("\\").strip()
+        if _TEST_TARGET.fullmatch(target) and target.endswith(".py"):
+            paths.append(target)
 
         m_match = _M_FILTER.search(line)
         if m_match:

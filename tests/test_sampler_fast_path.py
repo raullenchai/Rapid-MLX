@@ -22,8 +22,13 @@ Pins three properties of ``vllm_mlx._sampler_fast_path``:
 
 from __future__ import annotations
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import mlx.core as mx
 from mlx_lm.sample_utils import make_sampler
 
 from vllm_mlx._sampler_fast_path import (

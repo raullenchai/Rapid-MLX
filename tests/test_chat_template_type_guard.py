@@ -23,6 +23,10 @@ PRESENT as a tool parser, so it must be neutralized on the former path and
 preserved on the latter.
 """
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import json
 
 from vllm_mlx.utils.tokenizer import (

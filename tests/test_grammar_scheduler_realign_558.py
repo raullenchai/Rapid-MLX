@@ -23,6 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 class _FakeBatchGen:
     """Minimal stand-in for mlx-lm's BatchGenerator + its _generation_batch."""

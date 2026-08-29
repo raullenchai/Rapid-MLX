@@ -185,6 +185,7 @@ def _run_server_main_capturing_scheduler(
     return captured.get("scheduler_config"), detect.call_count
 
 
+@pytest.mark.requires_mlx
 def test_server_module_applies_per_alias_keep_ratio_override():
     # bonsai-27b-2bit pins pflash_tier=verified + pflash_keep_ratio=0.50.
     # Text lane (is_mllm False) → verified tier auto-enables PFlash "always".
@@ -198,6 +199,7 @@ def test_server_module_applies_per_alias_keep_ratio_override():
     assert captured["is_mllm"] is False
 
 
+@pytest.mark.requires_mlx
 def test_server_module_explicit_keep_ratio_flag_still_wins():
     captured = _run_server_main_capturing_config(
         ["--model", "bonsai-27b-2bit", "--pflash-keep-ratio", "0.33"]
@@ -207,6 +209,7 @@ def test_server_module_explicit_keep_ratio_flag_still_wins():
     assert cfg.keep_ratio == pytest.approx(0.33)
 
 
+@pytest.mark.requires_mlx
 def test_server_module_forwards_multimodal_lane_verdict():
     # MLLM lane → server must forward is_multimodal=True so the verified-tier
     # auto-ON is suppressed (PFlash cannot serve the MLLM lane). If server

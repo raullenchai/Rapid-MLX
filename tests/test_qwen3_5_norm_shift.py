@@ -20,10 +20,15 @@ Covered:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import types
 
 import mlx.core as mx
-import pytest
 
 from vllm_mlx.patches import qwen3_5_norm_shift as nsf
 

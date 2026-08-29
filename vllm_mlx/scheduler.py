@@ -48,6 +48,7 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
+from .errors import BackpressureError  # noqa: E402
 from .kv_estimation import (  # noqa: E402
     _cfg_get,
     _valid_layer_types,
@@ -621,16 +622,6 @@ class SchedulerConfig:
         # validated copy. Done in __post_init__ to keep callers from
         # threading .validate() through every construction site.
         self.pflash_config = self.pflash_config.validate()
-
-
-class BackpressureError(Exception):
-    """Raised when admission control rejects a new request.
-
-    Caught by route handlers and converted to HTTP 503 with a
-    Retry-After header so well-behaved clients back off and retry.
-    Distinguished from ``ValueError`` so the scheduler's narrow
-    batch-error catch path doesn't swallow it.
-    """
 
 
 @dataclass

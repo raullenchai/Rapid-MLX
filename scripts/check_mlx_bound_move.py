@@ -41,7 +41,10 @@ import re
 import subprocess
 import sys
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 

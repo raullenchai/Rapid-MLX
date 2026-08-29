@@ -49,6 +49,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
 

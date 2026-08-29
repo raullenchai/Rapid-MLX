@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "community-benchmarks" / "scripts"
 SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"

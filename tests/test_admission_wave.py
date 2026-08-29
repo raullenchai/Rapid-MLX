@@ -21,10 +21,14 @@ ticks and drive submissions without real waiting.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 import contextlib
-
-import pytest
 
 import vllm_mlx.engine_core as engine_core
 from vllm_mlx.engine_core import EngineCore, _resolve_hybrid_throttle

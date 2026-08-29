@@ -30,6 +30,8 @@ import threading
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.response_cache import (
     UNCACHEABLE,
     ResponseCache,

@@ -6,6 +6,8 @@ import wave
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from pydantic import ValidationError
 
 from vllm_mlx.api.models import AudioMusicRequest, AudioSpeechRequest

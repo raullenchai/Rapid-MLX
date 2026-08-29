@@ -17,10 +17,15 @@ join produces identical tokens) was verified by the bench A/B
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import importlib
 
 import mlx.core as mx
-import pytest
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 from vllm_mlx.singleton_cache_fastpath import (

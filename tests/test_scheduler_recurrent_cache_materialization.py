@@ -3,6 +3,12 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 
 from vllm_mlx import scheduler as scheduler_module

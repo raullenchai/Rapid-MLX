@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 

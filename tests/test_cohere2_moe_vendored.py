@@ -8,6 +8,12 @@ key seams that make the model reachable through the mlx-lm loader.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import sys
 from types import SimpleNamespace
 

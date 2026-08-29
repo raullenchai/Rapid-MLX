@@ -20,10 +20,15 @@ and assert the properties the reuse path depends on:
    fetches, exactly as it does for hybrid recurrent-state entries.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import copy
 
 import mlx.core as mx
-import pytest
 from mlx_lm.models.cache import (
     ChunkedKVCache,
     KVCache,

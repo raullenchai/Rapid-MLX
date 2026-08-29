@@ -16,6 +16,10 @@ a path-parity assertion: anything the streaming path does for the
 boundary handoff, the non-streaming path must do too.
 """
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import asyncio
 from types import SimpleNamespace
 from typing import Any

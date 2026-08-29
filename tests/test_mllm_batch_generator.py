@@ -9,12 +9,17 @@ text-only request to those models, so ``_run_vision_encoding`` must always
 pass it through — including when it's ``None``.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import base64
 import io
 
 import mlx.core as mx
 import mlx.nn as nn
-import pytest
 
 from vllm_mlx.mllm_batch_generator import (
     MLLMBatchGenerator,
@@ -662,8 +667,6 @@ def test_close_propagates_non_runtime_errors_from_set_wired_limit(monkeypatch):
         raise OSError("metal API call failed")
 
     monkeypatch.setattr(mx, "set_wired_limit", _boom)
-
-    import pytest
 
     with pytest.raises(OSError, match="metal API call failed"):
         gen.close()

@@ -8,6 +8,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 pytest.importorskip("mlx_lm")
+pytestmark = pytest.mark.requires_mlx
 
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, CacheList, KVCache
 

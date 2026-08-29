@@ -25,11 +25,15 @@ alike) and doesn't depend on the actual GPU pressure at test time.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from vllm_mlx.request import Request, SamplingParams
 from vllm_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig

@@ -37,6 +37,10 @@ machine without spinning up a model load.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import threading
 from unittest.mock import patch
 

@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.api.models import FunctionCall, ToolCall
 from vllm_mlx.engine.base import GenerationOutput
 

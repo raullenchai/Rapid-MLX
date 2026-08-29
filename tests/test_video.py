@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for video support in MLLM chat/stream_chat."""
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.models.mllm import (
     FRAME_FACTOR,
     MIN_FRAMES,

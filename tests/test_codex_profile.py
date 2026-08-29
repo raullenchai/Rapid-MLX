@@ -7,7 +7,11 @@ catches refactor-time breakage of `rapid-mlx agents codex --setup`.
 """
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from vllm_mlx.agents import get_profile, list_profiles
 

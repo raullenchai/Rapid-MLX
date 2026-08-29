@@ -35,8 +35,13 @@ cannot provide.
 
 from __future__ import annotations
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import mlx.core as mx
 from pydantic import ValidationError
 
 from vllm_mlx._seeded_sampler import make_seeded_sampler

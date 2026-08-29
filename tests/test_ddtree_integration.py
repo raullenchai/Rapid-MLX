@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 
 def test_serve_parser_exposes_ddtree_speculative_config() -> None:
     import subprocess
@@ -118,8 +122,6 @@ def test_unknown_4bit_target_can_explicitly_opt_in(monkeypatch, capsys) -> None:
 def test_unverified_ddtree_requires_all_fields_even_with_residual_profile(
     monkeypatch,
 ) -> None:
-    import pytest
-
     from vllm_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_ddtree_or_exit,

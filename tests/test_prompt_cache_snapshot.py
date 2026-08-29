@@ -12,10 +12,14 @@ These tests exercise that scheduler-level glue without needing a real
 mlx-lm runtime.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-
-import pytest
 
 from vllm_mlx.request import Request, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

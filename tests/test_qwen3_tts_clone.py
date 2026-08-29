@@ -7,6 +7,10 @@ call ONLY when supplied — so one family serves both CustomVoice (named speaker
 and Base (cloning) without cross-contaminating the call surface.
 """
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import types
 
 import numpy as np

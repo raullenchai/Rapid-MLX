@@ -59,6 +59,12 @@ The current revision walks the function body with ``ast`` and:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import ast
 import inspect
 import textwrap

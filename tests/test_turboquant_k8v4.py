@@ -18,6 +18,12 @@ skipped + fused gauges.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import argparse
 import copy
 import subprocess
@@ -27,7 +33,6 @@ from unittest.mock import patch
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from vllm_mlx.turboquant import (
     MODELS_INCOMPATIBLE_WITH_TURBOQUANT,

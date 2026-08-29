@@ -37,8 +37,13 @@ weights, no inference.
 
 from __future__ import annotations
 
-import mlx.nn as nn
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import mlx.nn as nn
 
 from vllm_mlx.models.gemma4_vendored.config import TextConfig
 from vllm_mlx.models.gemma4_vendored.language import LanguageModel

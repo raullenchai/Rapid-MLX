@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.model_aliases import AliasProfile
 from vllm_mlx.speculative.ddtree.eligibility import (
     DDTreeUnavailable,

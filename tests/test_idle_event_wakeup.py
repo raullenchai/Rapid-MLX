@@ -12,10 +12,14 @@ The engine loop must:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 import time
-
-import pytest
 
 from vllm_mlx.engine_core import EngineConfig
 

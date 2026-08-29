@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression coverage for the agent repetition-loop safety stop."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from unittest.mock import MagicMock
 
 import mlx.core as mx

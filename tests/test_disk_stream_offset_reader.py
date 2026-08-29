@@ -30,12 +30,17 @@ contract for a genuinely unrecognized third layout value) plus real
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import json
 import struct
 from pathlib import Path
 
 import mlx.core as mx
-import pytest
 
 from vllm_mlx.offset_reader import fetch_expert_bundle
 from vllm_mlx.registry import (

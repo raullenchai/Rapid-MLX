@@ -15,6 +15,7 @@ Each test checks both the streaming content AND the final assembled output.
 """
 
 # Mirror SPECIAL_TOKENS_PATTERN from server.py
+
 from vllm_mlx.api.utils import SPECIAL_TOKENS_PATTERN
 from vllm_mlx.reasoning import get_parser
 

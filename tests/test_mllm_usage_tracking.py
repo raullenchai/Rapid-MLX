@@ -25,6 +25,12 @@ These unit tests pin the plumbing without needing a real model load.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from unittest.mock import MagicMock
 
 import mlx.core as mx

@@ -46,6 +46,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 @pytest.mark.asyncio
 async def test_wrap_future_cancels_asyncio_side_within_100ms():

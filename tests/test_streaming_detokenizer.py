@@ -2,6 +2,10 @@
 """Tests for streaming detokenizer optimization in scheduler."""
 
 import pytest
+
+pytest.importorskip("mlx")
+
+
 from mlx_lm.tokenizer_utils import (
     BPEStreamingDetokenizer,
     NaiveStreamingDetokenizer,
@@ -13,7 +17,7 @@ from transformers import AutoTokenizer
 # per-test cache. Reviewed opt-in (#2518, PR #2525): the hermetic default pins
 # the Hub offline and refuses non-loopback sockets, which would fail these
 # fixtures at setup on the Apple lane.
-pytestmark = pytest.mark.requires_network
+pytestmark = [pytest.mark.requires_network, pytest.mark.requires_mlx]
 
 
 class TestStreamingDetokenizer:

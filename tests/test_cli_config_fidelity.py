@@ -13,6 +13,10 @@ imports no mlx/vllm_mlx runtime — it must work on plain Linux CI.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 import ast
 import subprocess
 import sys

@@ -55,8 +55,6 @@ from vllm_mlx.utils.tokenizer import (
     repair_byte_level_decoder,
 )
 
-pytestmark = pytest.mark.real_hf_cache
-
 # Real Gemma 4 alias the bug reporter used. The model weights are NOT
 # downloaded — ``AutoTokenizer.from_pretrained`` only fetches the
 # tokenizer files (tokenizer.json + tokenizer_config.json + sidecars),
@@ -226,6 +224,7 @@ class TestGate2SyntheticHybrid:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_hf_cache
 class TestGate2RealGemma4:
     """Pin the issue-#950 reproducer end-to-end on the real Gemma 4
     tokenizer. Tokenizer files only — no model weights, no MLX load."""
@@ -301,6 +300,7 @@ class TestPR793PathStillRepairs:
     decoder over a pure GPT-2-byte-level vocab — must STILL get its
     decoder swapped. Locks that gate 2's disambiguator works."""
 
+    @pytest.mark.real_hf_cache
     def test_simulated_deepseek_r1_distill_still_repairs(self) -> None:
         """Take a real GPT-2-byte-level tokenizer (Qwen3 — same shape as
         DeepSeek-R1 distills) and force-replace its decoder with the

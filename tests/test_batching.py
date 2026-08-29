@@ -6,14 +6,18 @@ These tests verify the scheduler, engine, and request handling
 for the vLLM-style continuous batching implementation.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 import sys
 import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-
-import pytest
 
 from vllm_mlx.request import (
     Request,
