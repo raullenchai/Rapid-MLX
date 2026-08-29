@@ -368,3 +368,47 @@ def test_normalize_caller_agent_unmatched_is_other_never_raw():
     # The raw UA (with its embedded token) must never be the return value.
     assert "leak-me" not in out
     assert "9.9" not in out
+
+
+def test_claude_code_bucketed_on_anthropic_surface():
+    """Task C (caller attribution): claude-code agents hit ``/v1/messages``
+    (previously zero-telemetry, so they fell into ``other``). The red-line
+    contract is that a named agent, however it reaches the wire (chat,
+    messages, or completions), still resolves to its fixed label — not
+    ``other``, and never with the raw UA surfaced. This is the attribution
+    fix the instrumentation-release drop depends on for the agent-strategy
+    decision.
+    """
+    # Real-world claude-code UA spellings (the ``claude-code`` / ``claude-cli``
+    # markers already match) — pinned so the Anthropic surface can't regress
+    # them back to ``other``.
+    for ua in (
+        "claude-code/1.0.3",
+        "Claude-Code/2.0 (macOS) Anthropic/API",
+        "claude-cli/1.4.2",
+    ):
+        assert normalize_caller_agent(ua) == "claude-code"
+
+
+def test_agent_riding_openai_python_stays_openai_python():
+    """Task C (caller attribution): an agent that sends openai-python's
+    User-Agent (verbatim, or with its own name prepended) is
+    INDISTINGUISHABLE at the UA layer — the ``openai-python`` substring
+    legitimately matches and it stays bucketed to ``openai-python``. We
+    never read the request body to guess the real product, so this pinned
+    the documented limitation: ride-through traffic always lands on the
+    SDK, not a fabricated product label.
+    """
+    ua = "OpenAI/Python 1.30.1"
+    assert normalize_caller_agent(ua) == "openai-python"
+    # An agent that prepends its own name but keeps openai-python's UA is
+    # still bucketed to the SDK transport — not the (unverifiable) product.
+    assert normalize_caller_agent("SomeAgent/1.0 (OpenAI/Python 1.30.1)") == (
+        "openai-python"
+    )
+    # A UA with NO known marker is never guessed into a product label — the
+    # raw string is dropped and it falls to "other".
+    out = normalize_caller_agent("HypotheticalProprietaryAgent/9.9")
+    assert out == "other"
+    # And the raw branded token never leaks into the returned label.
+    assert "HypotheticalProprietaryAgent" not in out
