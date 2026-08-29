@@ -420,7 +420,7 @@ struct DictationTests {
         #expect(hotkeyStartCount == 0)
 
         warmupContinuation?.resume(returning: true)
-        await waitUntil { controller.phase == .idle }
+        await controller._testingWaitForLifecycleTask()
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1)
     }
@@ -462,7 +462,7 @@ struct DictationTests {
         #expect(hotkeyStopCount == 0)
 
         controller.serverStateDidChange(.ready(alias: "qwen3.5-4b-4bit"))
-        await waitUntil { controller.phase == .idle }
+        await controller._testingWaitForLifecycleTask()
 
         #expect(controller.phase == .idle)
         #expect(controller.isHotkeyArmed)
@@ -518,7 +518,7 @@ struct DictationTests {
             #expect(controller.isHotkeyArmed)
 
             controller.toggleFromUI()
-            await waitUntil { controller.phase == .idle }
+            await controller._testingWaitForLifecycleTask()
             #expect(prewarmCount == beforeForeground + 1)
             #expect(controller.phase == .idle)
             #expect(controller.isHotkeyArmed)
@@ -606,7 +606,7 @@ struct DictationTests {
         #expect(hotkeyStartCount == 0)
 
         warmupContinuation?.resume(returning: true)
-        await waitUntil { controller.phase == .idle }
+        await controller._testingWaitForLifecycleTask()
         #expect(controller.phase == .idle)
         #expect(hotkeyStartCount == 1)
     }

@@ -198,14 +198,7 @@ struct SidecarShimHardeningTests {
     /// Invoke the bundled shim with the given args from ``cwd``,
     /// returning stdout+stderr concatenated. Throws on spawn failure
     /// or non-zero exit (caller inspects output).
-    private static func runShim(_ shim: URL, cwd: URL, args: [String]) throws -> (output: String, exitCode: Int32) {
-        let proc = Process()
-        proc.executableURL = shim
-        proc.arguments = args
-        proc.currentDirectoryURL = cwd
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
+    private static func runShim(_ shim: URL, cwd: URL, args: [String]) async throws -> (output: String, exitCode: Int32) {
         // Strip any inherited PYTHONPATH/PYTHONSAFEPATH from the test
         // host so we exercise the shim's OWN env-pinning behaviour
         // rather than accidentally inheriting it from the parent.
@@ -213,12 +206,14 @@ struct SidecarShimHardeningTests {
         env.removeValue(forKey: "PYTHONPATH")
         env.removeValue(forKey: "PYTHONSAFEPATH")
         env.removeValue(forKey: "PYTHONHOME")
-        proc.environment = env
-        try proc.run()
-        proc.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let out = String(data: data, encoding: .utf8) ?? ""
-        return (out, proc.terminationStatus)
+        let result = try await TestSubprocess.run(
+            executableURL: shim,
+            arguments: args,
+            currentDirectoryURL: cwd,
+            environment: env
+        )
+        let data = result.standardOutput + result.standardError
+        return (String(decoding: data, as: UTF8.self), result.terminationStatus)
     }
 
     /// Construct the #361 reproducer (poison ``vllm_mlx/cli.py`` in a
@@ -230,7 +225,7 @@ struct SidecarShimHardeningTests {
     /// fail the suite. CI nightly that runs after build-sidecar.sh
     /// will exercise the real path.
     @Test("Bundled shim invoked from poison cwd returns real version, not poison")
-    func bundledShimResistsPoisonCwd() throws {
+    func bundledShimResistsPoisonCwd() async throws {
         guard let shim = Self.locateBundledShim() else {
             // No bundle present — skip (dev machine without a fresh build).
             return
@@ -255,7 +250,7 @@ struct SidecarShimHardeningTests {
             encoding: .utf8
         )
 
-        let result = try Self.runShim(shim, cwd: tmp, args: ["--version"])
+        let result = try await Self.runShim(shim, cwd: tmp, args: ["--version"])
         #expect(
             !result.output.contains("9.9.9-cwd-poison"),
             "Bundled sidecar shim at \(shim.path) loaded the poison ``vllm_mlx/cli.py`` from the caller's cwd (\(tmp.path)). The #361 cwd-hijack fix (``-P`` + PYTHONSAFEPATH=1 in sidecar-shim.sh) is not effective in the installed bundle. Output:\n\(result.output)"
@@ -277,12 +272,12 @@ struct SidecarShimHardeningTests {
     /// being found at all) would slip through bundledShimResistsPoisonCwd
     /// by virtue of the assertion being satisfied trivially.
     @Test("Bundled shim invoked from clean cwd still reads real version")
-    func bundledShimHappyPathFromCleanCwd() throws {
+    func bundledShimHappyPathFromCleanCwd() async throws {
         guard let shim = Self.locateBundledShim() else {
             return
         }
         let cleanCwd = URL(fileURLWithPath: "/tmp")
-        let result = try Self.runShim(shim, cwd: cleanCwd, args: ["--version"])
+        let result = try await Self.runShim(shim, cwd: cleanCwd, args: ["--version"])
         #expect(
             result.exitCode == 0,
             "Bundled sidecar shim at \(shim.path) exited \(result.exitCode) on a clean ``--version`` from /tmp. ``-P`` may have over-isolated the import path. Output:\n\(result.output)"

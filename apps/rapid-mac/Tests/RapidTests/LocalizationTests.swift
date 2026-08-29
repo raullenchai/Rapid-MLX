@@ -159,22 +159,24 @@ struct LocalizationTests {
     }
 
     @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")
-    func compiledCatalogLocalizesPhotoHints() throws {
+    func compiledCatalogLocalizesPhotoHints() async throws {
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: output) }
 
-        let compiler = Process()
-        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        compiler.arguments = [
-            "xcstringstool", "compile", try catalogURL().path,
-            "--output-directory", output.path,
-            "--serialization-format", "binary"
-        ]
-        try compiler.run()
-        compiler.waitUntilExit()
-        #expect(compiler.terminationStatus == 0)
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: [
+                "xcstringstool", "compile", try catalogURL().path,
+                "--output-directory", output.path,
+                "--serialization-format", "binary"
+            ]
+        )
+        #expect(
+            compiler.terminationStatus == 0,
+            "xcstringstool failed: \(String(decoding: compiler.standardError, as: UTF8.self))"
+        )
 
         let zhBundle = try #require(
             Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)),

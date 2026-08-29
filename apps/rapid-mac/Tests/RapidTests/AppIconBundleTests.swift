@@ -39,7 +39,7 @@ struct AppIconBundleTests {
     private static let baseSizes: [Int] = [16, 32, 128, 256, 512]
 
     @Test("icns container ships all 5 base sizes + their @2x retina siblings")
-    func icnsContainsEveryRequiredSize() throws {
+    func icnsContainsEveryRequiredSize() async throws {
         let url = try #require(Self.icnsURL(), "AppIcon.icns not found under Resources/")
         try #require(FileManager.default.fileExists(atPath: url.path))
 
@@ -52,18 +52,14 @@ struct AppIconBundleTests {
             .appendingPathComponent("rapid-iconset-\(UUID().uuidString).iconset")
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-        proc.arguments = [
-            "--convert", "iconset",
-            url.path,
-            "-o", tmpDir.path,
-        ]
-        let errPipe = Pipe()
-        proc.standardError = errPipe
-        try proc.run()
-        proc.waitUntilExit()
-        try #require(proc.terminationStatus == 0, "iconutil failed: \(String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "?")")
+        let result = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/iconutil"),
+            arguments: ["--convert", "iconset", url.path, "-o", tmpDir.path]
+        )
+        try #require(
+            result.terminationStatus == 0,
+            "iconutil failed: \(String(decoding: result.standardError, as: UTF8.self))"
+        )
 
         for size in Self.baseSizes {
             let base = tmpDir.appendingPathComponent("icon_\(size)x\(size).png")

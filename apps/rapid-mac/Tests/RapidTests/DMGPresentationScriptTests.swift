@@ -94,8 +94,8 @@ struct DMGPresentationScriptTests {
     }
 
     @Test("Structural parser accepts the active icvp background alias")
-    func structuralBackgroundAliasPasses() throws {
-        let result = try Self.runBackgroundVerifier(
+    func structuralBackgroundAliasPasses() async throws {
+        let result = try await Self.runBackgroundVerifier(
             alias: Self.makeFinderAlias()
         )
 
@@ -104,8 +104,8 @@ struct DMGPresentationScriptTests {
     }
 
     @Test("Structural parser rejects unrelated matching strings")
-    func unrelatedBackgroundStringsFail() throws {
-        let result = try Self.runBackgroundVerifier(
+    func unrelatedBackgroundStringsFail() async throws {
+        let result = try await Self.runBackgroundVerifier(
             alias: Self.makeFinderAlias(posixPath: "/wrong/background.png"),
             trailingData: Data("Rapid-MLX Desktop:.background:/backgroundImageAlias/.background/background.png".utf8)
         )
@@ -115,8 +115,8 @@ struct DMGPresentationScriptTests {
     }
 
     @Test("Structural parser rejects non-image icvp records")
-    func nonImageBackgroundTypeFails() throws {
-        let result = try Self.runBackgroundVerifier(
+    func nonImageBackgroundTypeFails() async throws {
+        let result = try await Self.runBackgroundVerifier(
             alias: Self.makeFinderAlias(),
             backgroundType: 0
         )
@@ -126,11 +126,11 @@ struct DMGPresentationScriptTests {
     }
 
     @Test("Structural parser reports a truncated icvp length without traceback")
-    func truncatedICVPLengthFailsCleanly() throws {
+    func truncatedICVPLengthFailsCleanly() async throws {
         var fixture = Data("prefix-icvpblob".utf8)
         fixture.append(contentsOf: [0, 0, 0, 32])
         fixture.append(contentsOf: Data("short".utf8))
-        let result = try Self.runVerifier(fixture: fixture)
+        let result = try await Self.runVerifier(fixture: fixture)
 
         #expect(result.status == 1)
         #expect(result.output.contains("icvp blob payload is truncated"))
@@ -146,7 +146,7 @@ struct DMGPresentationScriptTests {
         alias: Data,
         backgroundType: Int = 2,
         trailingData: Data = Data()
-    ) throws -> (status: Int32, output: String) {
+    ) async throws -> (status: Int32, output: String) {
         let plist = try PropertyListSerialization.data(
             fromPropertyList: [
                 "backgroundImageAlias": alias,
@@ -161,10 +161,10 @@ struct DMGPresentationScriptTests {
         fixture.append(plist)
         fixture.append(trailingData)
 
-        return try runVerifier(fixture: fixture)
+        return try await runVerifier(fixture: fixture)
     }
 
-    private static func runVerifier(fixture: Data) throws -> (status: Int32, output: String) {
+    private static func runVerifier(fixture: Data) async throws -> (status: Int32, output: String) {
         let fixtureDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-dmg-ds-store-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: true)
@@ -172,19 +172,15 @@ struct DMGPresentationScriptTests {
         let fixtureURL = fixtureDirectory.appendingPathComponent(".DS_Store")
         try fixture.write(to: fixtureURL)
 
-        let output = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "python3",
-            sourceRoot.appendingPathComponent("scripts/verify-dmg-background.py").path,
-            fixtureURL.path,
-        ]
-        process.standardOutput = output
-        process.standardError = output
-        try process.run()
-        process.waitUntilExit()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [
+                "python3",
+                sourceRoot.appendingPathComponent("scripts/verify-dmg-background.py").path,
+                fixtureURL.path,
+            ]
+        )
+        let data = process.standardOutput + process.standardError
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
