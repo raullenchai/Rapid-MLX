@@ -92,6 +92,27 @@ if packageSrc.contains("Localizable.xcstrings") {
         FileHandle.standardError.write(Data("FAIL: Localizable.xcstrings NOT found or unreadable in bundle\n".utf8))
         ok = false
     }
+
+    // The catalog is build input. Bundle.localizedString reads the compiled
+    // .lproj product, so a copied JSON catalog alone is not a localized app.
+    if let url = bundle.url(
+        forResource: "Localizable",
+        withExtension: "strings",
+        subdirectory: nil,
+        localization: "zh-Hans"
+    ),
+       let data = try? Data(contentsOf: url),
+       let strings = (try? PropertyListSerialization.propertyList(from: data, format: nil))
+           as? [String: String],
+       strings["Settings"] == "设置",
+       strings["image_input.unavailable.generic_text_lane"] != nil {
+        print("OK: compiled zh-Hans Localizable.strings keys=\(strings.count) at \(url.path)")
+    } else {
+        FileHandle.standardError.write(Data(
+            "FAIL: compiled zh-Hans Localizable.strings missing or incomplete\n".utf8
+        ))
+        ok = false
+    }
 }
 
 // SwiftMath must resolve from the assembled app itself. A development build

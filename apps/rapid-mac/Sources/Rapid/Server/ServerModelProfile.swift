@@ -159,9 +159,56 @@ struct ImageInputAvailability: Equatable, Sendable {
     let isAvailable: Bool
     let unavailableMessage: String?
 
+    /// Stable String Catalog identities for every photo-unavailable remedy.
+    ///
+    /// The engine reason remains machine-readable; this enum is the single
+    /// bridge from that wire contract to user-facing language. Keeping a
+    /// reviewed English fallback beside each key means an incomplete bundle
+    /// fails legibly instead of showing a catalog identifier to the user.
+    enum PhotoHint: String, CaseIterable, Sendable {
+        case legacyModel = "image_input.unavailable.legacy_model"
+        case textLaneForced = "image_input.unavailable.text_lane_forced"
+        case speculativeDecode = "image_input.unavailable.speculative_decode"
+        case visionMemoryInsufficient = "image_input.unavailable.vision_memory_insufficient"
+        case visionRuntimeUnsupported = "image_input.unavailable.vision_runtime_unsupported"
+        case visionFeaturesUnavailable = "image_input.unavailable.vision_features_unavailable"
+        case textCheckpoint = "image_input.unavailable.text_checkpoint"
+        case genericTextLane = "image_input.unavailable.generic_text_lane"
+
+        var englishValue: String {
+            switch self {
+            case .legacyModel:
+                "This model doesn't support photos. Choose a vision-capable model to add one."
+            case .textLaneForced:
+                "This model runs text-only; its vision path isn't available. Choose a vision-capable model to add photos."
+            case .speculativeDecode:
+                "This model is running text-only because speculative decoding is on. Turn it off in Settings → Performance to add photos."
+            case .visionMemoryInsufficient:
+                "This model's vision mode needs more memory than this Mac has. Choose a different vision-capable model to add photos."
+            case .visionRuntimeUnsupported:
+                "This model is running text-only because its vision runtime isn't supported here. Choose a different vision-capable model to add photos."
+            case .visionFeaturesUnavailable:
+                "This model is running text-only because its vision features aren't available. Choose a different vision-capable model to add photos."
+            case .textCheckpoint:
+                "This model doesn't support photos. Choose a vision-capable model to add photos."
+            case .genericTextLane:
+                "This model is running text-only. Photos need a vision-capable model."
+            }
+        }
+
+        func localized(in bundle: Bundle) -> String {
+            bundle.localizedString(
+                forKey: rawValue,
+                value: englishValue,
+                table: nil
+            )
+        }
+    }
+
     static func resolve(
         fallbackSupportsImageInput: Bool,
-        profile: ServerModelProfile?
+        profile: ServerModelProfile?,
+        localizationBundle: Bundle = .main
     ) -> ImageInputAvailability {
         guard let profile,
               profile.servingLane != nil || profile.capabilities != nil
@@ -170,7 +217,7 @@ struct ImageInputAvailability: Equatable, Sendable {
                 isAvailable: fallbackSupportsImageInput,
                 unavailableMessage: fallbackSupportsImageInput
                     ? nil
-                    : "This model doesn't support photos. Choose a vision-capable model to add one."
+                    : PhotoHint.legacyModel.localized(in: localizationBundle)
             )
         }
 
@@ -180,7 +227,8 @@ struct ImageInputAvailability: Equatable, Sendable {
         guard supportsVision && isVisionLane else {
             return ImageInputAvailability(
                 isAvailable: false,
-                unavailableMessage: message(for: profile.servingLaneReason)
+                unavailableMessage: photoHint(for: profile.servingLaneReason)
+                    .localized(in: localizationBundle)
             )
         }
         return ImageInputAvailability(isAvailable: true, unavailableMessage: nil)
@@ -199,32 +247,32 @@ struct ImageInputAvailability: Equatable, Sendable {
     /// engine's CLI has escape hatches the GUI does not expose, so a reason
     /// that is operator-reversible on the command line can still be fixed
     /// here only by choosing a different model.
-    private static func message(for laneReason: String?) -> String {
+    static func photoHint(for laneReason: String?) -> PhotoHint {
         switch laneReason {
         case "text_lane_forced":
             // In the app this only arrives from an alias pinned `is_text_only`
             // in the registry — a vision-config checkpoint deliberately served
             // through the text lane. There is no switch to flip, so the model
             // picker is the only way out.
-            return "This model runs text-only; its vision path isn't available. Choose a vision-capable model to add photos."
+            return .textLaneForced
         case "text_lane_speculative_decode":
-            return "This model is running text-only because speculative decoding is on. Turn it off in Settings → Performance to add photos."
+            return .speculativeDecode
         case "vision_memory_insufficient":
             // The engine gates on physical RAM against a per-alias floor
             // (`vision_min_memory_gb`), not on free RAM or model size: quitting
             // apps cannot lift this, and a smaller quant of the same model
             // carries the same floor. Only a different vision-capable model
             // is a remedy the user can actually apply.
-            return "This model's vision mode needs more memory than this Mac has. Choose a different vision-capable model to add photos."
+            return .visionMemoryInsufficient
         case "vision_hybrid_runtime_unsupported":
-            return "This model is running text-only because its vision runtime isn't supported here. Choose a different vision-capable model to add photos."
+            return .visionRuntimeUnsupported
         case "vision_architecture_unavailable", "vision_hybrid_cache_unsupported",
              "vision_weights_unavailable":
-            return "This model is running text-only because its vision features aren't available. Choose a different vision-capable model to add photos."
+            return .visionFeaturesUnavailable
         case "text_checkpoint":
-            return "This model doesn't support photos. Choose a vision-capable model to add photos."
+            return .textCheckpoint
         default:
-            return "This model is running text-only. Photos need a vision-capable model."
+            return .genericTextLane
         }
     }
 }

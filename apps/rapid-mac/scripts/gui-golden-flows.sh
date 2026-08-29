@@ -574,22 +574,34 @@ start_persona() {
         --arg event_log "$OUT/fake-events.jsonl" \
         --arg pull_state "$OUT/pulled-models" \
         '{FAKE_EVENT_LOG: $event_log, FAKE_PULL_STATE: $pull_state}' > "$config"
-    local assignment key value updated
+    local assignment key value updated app_language=""
     # macOS ships Bash 3.2, where expanding a declared-but-empty array under
     # `set -u` raises "unbound variable". The `+` form expands to nothing
     # when the array has no elements and preserves argv boundaries otherwise.
     for assignment in "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}"; do
         key="${assignment%%=*}"
         value="${assignment#*=}"
+        if [[ "$key" == "RAPID_GUI_APP_LANGUAGE" ]]; then
+            app_language="$value"
+        fi
         updated="$config.next"
         jq --arg key "$key" --arg value "$value" '.[$key] = $value' "$config" > "$updated"
         mv "$updated" "$config"
     done
-    env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-        DOGFOOD_WORKING_SET_GB=0.1 \
-        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
-        "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
-        "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
+    if [[ -n "$app_language" ]]; then
+        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            DOGFOOD_WORKING_SET_GB=0.1 \
+            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
+            "$PERSONA/launch.sh" -AppleLanguages "($app_language)" \
+            > "$OUT/app.log" 2>&1 &
+    else
+        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            DOGFOOD_WORKING_SET_GB=0.1 \
+            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
+            "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
+    fi
     APP_PID=$!
     wait_for_window
 }
@@ -3858,6 +3870,42 @@ PY
                  and contains("Region: APAC"))
     ' "$OUT/fake-events.jsonl" >/dev/null \
         || die "the document request retained historical images or omitted extracted text"
+
+    cleanup_persona
+    flow_localized_photo_hint
+}
+
+flow_localized_photo_hint() {
+    start_persona localized-photo-hint \
+        RAPID_GUI_APP_LANGUAGE=zh-Hans \
+        FAKE_SERVING_LANE_REASON=vision_memory_insufficient
+    dismiss_first_run
+    start_model
+
+    local expected="此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+    local localized=0
+    for _ in {1..40}; do
+        see_main "$OUT/zh-main.json"
+        press "$OUT/zh-main.json" ChatView.AddAttachments "$OUT/zh-menu-press.json"
+        wait_identifier ChatView.Attachments.UploadPhoto "$OUT/zh-menu.json"
+        if jq -e --arg expected "$expected" '
+            .data.ui_elements[]?
+            | select(.identifier == "ChatView.Attachments.UploadPhoto"
+                     and .enabled == false
+                     and .help == $expected)
+        ' "$OUT/zh-menu.json" >/dev/null; then
+            localized=1
+            break
+        fi
+        press "$OUT/zh-menu.json" ChatView.AddAttachments "$OUT/zh-menu-close.json"
+        sleep 0.25
+    done
+    [[ "$localized" == 1 ]] \
+        || die "the disabled photo action never exposed its zh-Hans memory remedy"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ContentView.Settings" and .description == "设置")' \
+        "$OUT/zh-menu.json" >/dev/null \
+        || die "the release-shaped app did not load its compiled zh-Hans resources"
 
     cleanup_persona
 }

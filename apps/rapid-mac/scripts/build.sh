@@ -138,19 +138,26 @@ for asset in cheetah.png cheetah-sm.png; do
     fi
 done
 
-# Localizable.xcstrings: same Bundle.main vs Bundle.module story as
-# the PNGs above. SPM compiles the catalog into Rapid_Rapid.bundle
-# for tests, but the production .app uses Bundle.main and ships
-# without the SPM bundle wrapper (codesign --deep --strict rejects
-# the SPM bundle directory at the .app root). Copy the catalog as
-# a flat file into Contents/Resources/ so macOS 14+'s
-# NSLocalizedString / SwiftUI String catalog reader resolves it.
-# Without this, zh-Hans users see English strings in the shipped
-# DMG even though `swift test` reports a fully translated catalog.
+# Localizable.xcstrings: same Bundle.main vs Bundle.module story as the PNGs
+# above. A String Catalog is build input, not a runtime localization resource:
+# copying only the JSON file leaves Bundle.main with no .lproj strings to
+# resolve. Compile it exactly as Xcode does, directly into Contents/Resources,
+# and retain the source catalog beside the products for the bundle-integrity
+# verifier and support diagnostics.
 if [[ -f "$ROOT/Sources/Rapid/Resources/Localizable.xcstrings" ]]; then
-    cp "$ROOT/Sources/Rapid/Resources/Localizable.xcstrings" "$CONTENTS/Resources/Localizable.xcstrings"
+    LOCALIZABLE_CATALOG="$ROOT/Sources/Rapid/Resources/Localizable.xcstrings"
+    XCSTRINGSTOOL="$(xcrun --find xcstringstool 2>/dev/null || true)"
+    if [[ -z "$XCSTRINGSTOOL" ]]; then
+        echo "ERR: xcstringstool is required to compile Desktop localizations" >&2
+        exit 1
+    fi
+    "$XCSTRINGSTOOL" compile "$LOCALIZABLE_CATALOG" \
+        --output-directory "$CONTENTS/Resources" \
+        --serialization-format binary
+    cp "$LOCALIZABLE_CATALOG" "$CONTENTS/Resources/Localizable.xcstrings"
 else
-    echo "warning: Localizable.xcstrings missing — shipped .app will fall back to English only" >&2
+    echo "ERR: Localizable.xcstrings missing — refusing to ship an English-only app" >&2
+    exit 1
 fi
 
 # v0.7.16: benchmark-scores.json drives the picker hover tooltip.

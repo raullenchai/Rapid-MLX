@@ -210,8 +210,8 @@ journeys:
     risk: high
     driver: hybrid
     ci_tier: pr
-    fixtures: [fake-sidecar, two-images, document, native-file-drag, isolated-home]
-    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
+    fixtures: [fake-sidecar, two-images, document, native-file-drag, zh-Hans, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/Server/ServerModelProfile.swift, apps/rapid-mac/Sources/Rapid/Resources/, apps/rapid-mac/scripts/build.sh]
     owns_baseline: false
   - name: image-generation
     group: images

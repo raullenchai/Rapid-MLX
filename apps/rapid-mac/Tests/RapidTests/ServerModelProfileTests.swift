@@ -251,6 +251,29 @@ final class ServerModelProfileTests {
         #expect(availability.unavailableMessage == Self.genericLaneCopy)
     }
 
+    @Test("Every serving-lane reason maps to its stable photo-hint catalog key")
+    func laneReasonsMapToCatalogKeys() {
+        let cases: [(String?, ImageInputAvailability.PhotoHint)] = [
+            ("text_lane_forced", .textLaneForced),
+            ("text_lane_speculative_decode", .speculativeDecode),
+            ("vision_memory_insufficient", .visionMemoryInsufficient),
+            ("vision_hybrid_runtime_unsupported", .visionRuntimeUnsupported),
+            ("vision_architecture_unavailable", .visionFeaturesUnavailable),
+            ("vision_hybrid_cache_unsupported", .visionFeaturesUnavailable),
+            ("vision_weights_unavailable", .visionFeaturesUnavailable),
+            ("text_checkpoint", .textCheckpoint),
+            ("reason_from_a_future_sidecar", .genericTextLane),
+            (nil, .genericTextLane)
+        ]
+
+        for (reason, expected) in cases {
+            #expect(
+                ImageInputAvailability.photoHint(for: reason) == expected,
+                "Unexpected catalog key for serving-lane reason \(reason ?? "nil")"
+            )
+        }
+    }
+
     @Test("A replacement sidecar invalidates the selected-model profile task")
     func selectedProfileTracksServerSession() {
         let first = SelectedModelProfileKey(

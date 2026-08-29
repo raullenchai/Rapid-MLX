@@ -121,6 +121,7 @@ def test_manifest_fields_are_valid_and_fail_closed():
         "two-images",
         "update-busy",
         "update-state",
+        "zh-Hans",
     }
     expected_keys = {
         "name",

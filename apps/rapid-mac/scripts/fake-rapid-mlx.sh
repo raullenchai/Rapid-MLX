@@ -608,10 +608,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._owns_active_chat_request = False
 
     def do_GET(self):
-        if self.path == "/healthz":
+        path = urlsplit(self.path).path
+        if path == "/healthz":
             self._json(200, {"ok": True})
             return
-        if self.path == "/v1/models":
+        if path == "/v1/models":
             # ModelPickerBar reads this on real rapid-mlx — return
             # one canned entry so the picker isn't empty.
             self._json(200, {
@@ -620,17 +621,29 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             })
             return
-        if self.path == "/v1/models/residency":
+        if path == "/v1/models/residency":
             self._json(200, self._residency_snapshot())
             return
-        if self.path.partition("?")[0] == "/v1/images/progress":
+        if path.startswith("/v1/models/"):
+            lane_reason = _setting("FAKE_SERVING_LANE_REASON")
+            if lane_reason:
+                self._json(200, {
+                    "id": path.rsplit("/", 1)[-1],
+                    "object": "model",
+                    "owned_by": "rapid-mlx",
+                    "capabilities": ["text", "vision"],
+                    "serving_lane": "text",
+                    "serving_lane_reason": lane_reason,
+                })
+                return
+        if path == "/v1/images/progress":
             # Polled every few hundred ms while a render is in flight. Answer
             # it even when nothing is running: the client treats a transport
             # failure and "idle" identically, so a 404 here would be
             # indistinguishable from the daemon being down.
             self._json(200, RENDERS.snapshot())
             return
-        if self.path.partition("?")[0] == "/v1/audio/voices":
+        if path == "/v1/audio/voices":
             _event("audio_voices")
             self._json(200, {"voices": ["Golden", "Harbor"]})
             return

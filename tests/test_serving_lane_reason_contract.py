@@ -548,11 +548,13 @@ def _engine_reasons() -> dict[str, bool]:
 
 
 def _swift_case_labels() -> set[str]:
-    """Every string matched by ``ImageInputAvailability.message(for:)``."""
+    """Every string matched by ``ImageInputAvailability.photoHint(for:)``."""
     text = PROFILE_SWIFT.read_text()
-    marker = "private static func message(for laneReason: String?) -> String"
+    marker = "static func photoHint(for laneReason: String?) -> PhotoHint"
     start = text.find(marker)
-    assert start != -1, f"message(for:) not found in {PROFILE_SWIFT} — parser is stale"
+    assert start != -1, (
+        f"photoHint(for:) not found in {PROFILE_SWIFT} — parser is stale"
+    )
 
     depth, body_start = 0, text.index("{", start)
     body = ""
@@ -564,14 +566,14 @@ def _swift_case_labels() -> set[str]:
             if depth == 0:
                 body = text[body_start : i + 1]
                 break
-    assert body, f"unbalanced message(for:) body in {PROFILE_SWIFT}"
+    assert body, f"unbalanced photoHint(for:) body in {PROFILE_SWIFT}"
 
     # Only quoted strings between `case` and its `:` are matched values; the
     # rest of the body is user-facing copy.
     labels: set[str] = set()
     for arm in re.finditer(r"case\s+((?:\"[^\"]+\"\s*,?\s*)+):", body):
         labels.update(re.findall(r'"([^"]+)"', arm.group(1)))
-    assert labels, "no case labels parsed out of message(for:) — parser is stale"
+    assert labels, "no case labels parsed out of photoHint(for:) — parser is stale"
     return labels
 
 

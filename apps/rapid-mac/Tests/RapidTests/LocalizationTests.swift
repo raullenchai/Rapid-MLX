@@ -9,13 +9,24 @@ import Testing
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
 
+    private static let photoHintCatalogKeys = [
+        "image_input.unavailable.legacy_model",
+        "image_input.unavailable.text_lane_forced",
+        "image_input.unavailable.speculative_decode",
+        "image_input.unavailable.vision_memory_insufficient",
+        "image_input.unavailable.vision_runtime_unsupported",
+        "image_input.unavailable.vision_features_unavailable",
+        "image_input.unavailable.text_checkpoint",
+        "image_input.unavailable.generic_text_lane"
+    ]
+
     /// Look up the catalog from the test bundle. The .xcstrings file
     /// is declared as a resource on the Rapid executable target, so
     /// at test time it lives next to the test bundle's bundleURL
     /// under the host process's resource lookup chain. We probe the
     /// known SPM bundle path first, then fall back to the source
     /// tree path which is always present in a CI checkout.
-    private func loadCatalog() throws -> [String: Any] {
+    private func catalogURL() throws -> URL {
         let candidates: [URL] = [
             Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings"),
             URL(fileURLWithPath: #filePath)
@@ -25,10 +36,14 @@ struct LocalizationTests {
                 .appendingPathComponent("Sources/Rapid/Resources/Localizable.xcstrings")
         ].compactMap { $0 }
 
-        let url = try #require(
+        return try #require(
             candidates.first { FileManager.default.fileExists(atPath: $0.path) },
             "Localizable.xcstrings not found on any candidate path"
         )
+    }
+
+    private func loadCatalog() throws -> [String: Any] {
+        let url = try catalogURL()
         let data = try Data(contentsOf: url)
         let any = try JSONSerialization.jsonObject(with: data)
         return try #require(any as? [String: Any])
@@ -105,5 +120,86 @@ struct LocalizationTests {
                 "zh-Hans not marked translated for key: \(key)"
             )
         }
+    }
+
+    @Test("Every photo-unavailable remedy has reviewed English and zh-Hans catalog values")
+    func localizedPhotoHintsUseStableCatalogKeys() throws {
+        let json = try loadCatalog()
+        let strings = try #require(json["strings"] as? [String: Any])
+
+        #expect(
+            Set(ImageInputAvailability.PhotoHint.allCases.map(\.rawValue))
+                == Set(Self.photoHintCatalogKeys),
+            "The production photo-hint key set and the reviewed catalog contract must move together."
+        )
+
+        for hint in ImageInputAvailability.PhotoHint.allCases {
+            let key = hint.rawValue
+            let entry = try #require(
+                strings[key] as? [String: Any],
+                "Missing photo-hint catalog entry for key: \(key)"
+            )
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            for language in ["en", "zh-Hans"] {
+                let localization = try #require(
+                    localizations[language] as? [String: Any],
+                    "Missing \(language) photo-hint value for key: \(key)"
+                )
+                let unit = try #require(localization["stringUnit"] as? [String: Any])
+                #expect(unit["state"] as? String == "translated")
+                #expect(!(unit["value"] as? String ?? "").isEmpty)
+                if language == "en" {
+                    #expect(
+                        unit["value"] as? String == hint.englishValue,
+                        "The catalog's source copy and the fail-safe English value diverged for \(key)."
+                    )
+                }
+            }
+        }
+    }
+
+    @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")
+    func compiledCatalogLocalizesPhotoHints() throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        compiler.arguments = [
+            "xcstringstool", "compile", try catalogURL().path,
+            "--output-directory", output.path,
+            "--serialization-format", "binary"
+        ]
+        try compiler.run()
+        compiler.waitUntilExit()
+        #expect(compiler.terminationStatus == 0)
+
+        let zhBundle = try #require(
+            Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)),
+            "xcstringstool did not emit a loadable zh-Hans localization bundle"
+        )
+        let memory = ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: true,
+            profile: ServerModelProfile(
+                id: "model",
+                capabilities: ["text", "vision"],
+                servingLane: "text",
+                servingLaneReason: "vision_memory_insufficient"
+            ),
+            localizationBundle: zhBundle
+        )
+        #expect(
+            memory.unavailableMessage
+                == "此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+        )
+
+        let legacy = ImageInputAvailability.resolve(
+            fallbackSupportsImageInput: false,
+            profile: nil,
+            localizationBundle: zhBundle
+        )
+        #expect(legacy.unavailableMessage == "此模型不支持照片。要添加照片，请选择支持视觉的模型。")
     }
 }

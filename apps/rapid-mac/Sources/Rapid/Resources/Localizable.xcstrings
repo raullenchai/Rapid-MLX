@@ -511,6 +511,134 @@
           }
         }
       }
+    },
+    "image_input.unavailable.legacy_model" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model doesn't support photos. Choose a vision-capable model to add one."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型不支持照片。要添加照片，请选择支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.text_lane_forced" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model runs text-only; its vision path isn't available. Choose a vision-capable model to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型当前只能处理文字，视觉功能不可用。要添加照片，请选择支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.speculative_decode" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model is running text-only because speculative decoding is on. Turn it off in Settings → Performance to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由于已开启推测解码，此模型当前只能处理文字。请在设置中的“Performance”里将其关闭，然后再添加照片。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.vision_memory_insufficient" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model's vision mode needs more memory than this Mac has. Choose a different vision-capable model to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.vision_runtime_unsupported" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model is running text-only because its vision runtime isn't supported here. Choose a different vision-capable model to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由于这台 Mac 不支持此模型的视觉运行环境，它当前只能处理文字。要添加照片，请选择另一个支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.vision_features_unavailable" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model is running text-only because its vision features aren't available. Choose a different vision-capable model to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型当前只能处理文字，因为其视觉功能不可用。要添加照片，请选择另一个支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.text_checkpoint" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model doesn't support photos. Choose a vision-capable model to add photos."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型不支持照片。要添加照片，请选择支持视觉的模型。"
+          }
+        }
+      }
+    },
+    "image_input.unavailable.generic_text_lane" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model is running text-only. Photos need a vision-capable model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型当前只能处理文字。要添加照片，请选择支持视觉的模型。"
+          }
+        }
+      }
     }
   }
 }
