@@ -5871,7 +5871,7 @@ def _cache_runnability(repo: str) -> bool | None:
             or _snapshot_is_complete_wan_model(repo)
             or resolve_unreferenced_cached_snapshot(repo) is not None
         )
-    except (OSError, KeyError, ValueError) as exc:
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as exc:
         import logging
 
         logging.getLogger(__name__).warning(

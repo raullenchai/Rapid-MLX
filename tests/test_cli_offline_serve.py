@@ -412,7 +412,10 @@ def test_offline_hub_mode_flags_parsed_independently(monkeypatch):
     assert cli._offline_hub_mode_active() is False
 
 
-def test_cache_probe_fault_fails_open_for_offline(monkeypatch):
+@pytest.mark.parametrize(
+    "exc", [TypeError("bad metadata"), AttributeError("bad header")]
+)
+def test_cache_probe_fault_fails_open_for_offline(monkeypatch, exc):
     """A typed cachedness-probe fault (permission / malformed) is INCONCLUSIVE.
 
     It must NOT conclude "runnable" (would skip a needed download / show a
@@ -425,7 +428,7 @@ def test_cache_probe_fault_fails_open_for_offline(monkeypatch):
     # Induce an expected probe fault in resolve_audio_alias.
     monkeypatch.setattr(
         "vllm_mlx.audio.registry.resolve_audio_alias",
-        lambda repo: (_ for _ in ()).throw(OSError("denied")),
+        lambda repo: (_ for _ in ()).throw(exc),
     )
     # Tri-state core: inconclusive, not a baked True (regression) nor False.
     assert cli._cache_runnability("any/repo") is None
@@ -434,23 +437,120 @@ def test_cache_probe_fault_fails_open_for_offline(monkeypatch):
     # broken entry as runnable).
     assert cli._cache_entry_is_runnable("any/repo") is False
 
-    # Same for a malformed-cache KeyError / structural ValueError.
-    monkeypatch.setattr(
-        "vllm_mlx.audio.registry.resolve_audio_alias",
-        lambda repo: (_ for _ in ()).throw(KeyError("hdr")),
-    )
-    assert cli._cache_runnability("any/repo") is None
-    assert cli._cache_entry_is_runnable("any/repo") is False
-
-    # The offline-refusal caller equates a verdict with established-uncached
-    # ONLY via ``is False``; on ``None`` it must NOT refuse. Simulate the B2
-    # serve gate's condition for an offline + probe-faulting model.
-    monkeypatch.setattr(
-        "vllm_mlx.audio.registry.resolve_audio_alias",
-        lambda repo: (_ for _ in ()).throw(ValueError("bad index")),
-    )
     assert cli._cache_runnability("any/repo") is None
     assert cli._cache_runnability("any/repo") is not False
+
+
+@pytest.mark.parametrize("exc", [TypeError("bad index"), AttributeError("bad header")])
+def test_cached_models_survives_probe_fault(monkeypatch, capsys, exc):
+    """Malformed cache metadata cannot break the cached inventory view."""
+    monkeypatch.setattr(
+        cli, "_scan_hf_cache_models", lambda: [("some/repo", 1024, 0.0)]
+    )
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(
+        "vllm_mlx.audio.registry.resolve_audio_alias",
+        lambda _repo: (_ for _ in ()).throw(exc),
+    )
+
+    cli._print_cached_models()
+
+    assert "some/repo" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("exc", [TypeError("bad reference"), AttributeError("bad ref")])
+def test_pull_prefetch_gate_survives_probe_fault(monkeypatch, capsys, exc):
+    """A faulty cache entry is treated as not runnable and pulls normally."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(
+        "vllm_mlx.audio.registry.resolve_audio_alias",
+        lambda _repo: (_ for _ in ()).throw(exc),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda repo, **_kwargs: seen.setdefault("repo", repo),
+    )
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_args, **_kwargs: True)
+
+    cli._ensure_model_downloaded("some/repo")
+
+    assert seen == {"repo": "some/repo"}
+
+
+@pytest.mark.parametrize("exc", [TypeError("bad index"), AttributeError("bad header")])
+def test_chat_model_switch_survives_probe_fault(monkeypatch, capsys, exc):
+    """A chat /model switch treats a probe fault as inconclusive, not uncached."""
+    spawned: list[object] = []
+
+    class _FakeProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(
+        model, _log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
+        del model, served_name
+        proc = _FakeProc()
+        spawned.append(proc)
+        if register_in is not None:
+            register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
+        return proc, "http://127.0.0.1:1"
+
+    confirmed = False
+
+    def _confirm_or_abort(*_args, **_kwargs):
+        nonlocal confirmed
+        confirmed = True
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model", lambda alias: f"org/{alias}"
+    )
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _repo: False)
+    monkeypatch.setattr(
+        "vllm_mlx.audio.registry.resolve_audio_alias",
+        lambda _repo: (_ for _ in ()).throw(exc),
+    )
+    monkeypatch.setattr("vllm_mlx._download_gate.confirm_or_abort", _confirm_or_abort)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+
+    ns = Namespace(
+        base_url=None,
+        port=None,
+        system=None,
+        think=False,
+        max_tokens=50,
+        temperature=0,
+        ready_timeout=1,
+        response_timeout=1,
+        model="starter",
+    )
+    inputs = iter(["/model target", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    cli.chat_command(ns)
+
+    assert confirmed, "a probe fault must not be treated as established-uncached"
+    assert len(spawned) == 2
 
 
 def test_ensure_model_downloaded_does_not_refuse_offline_on_probe_fault(
