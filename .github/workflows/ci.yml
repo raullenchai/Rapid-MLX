@@ -394,6 +394,7 @@ jobs:
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
             tests/test_mllm_batch_generator.py \
+            tests/test_mllm_corrupt_image.py \
             tests/test_mllm_penalty_passthrough.py \
             tests/test_guided.py \
             tests/test_chat_streaming_guided.py \
