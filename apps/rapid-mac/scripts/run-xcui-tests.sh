@@ -33,4 +33,8 @@ xcodebuild test \
     -destination 'platform=macOS' \
     -resultBundlePath "$RESULT_BUNDLE" \
     "${test_selection[@]}" \
-    CODE_SIGNING_ALLOWED=NO
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGNING_ALLOWED=YES \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGN_IDENTITY=- \
+    DEVELOPMENT_TEAM=
