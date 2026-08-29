@@ -4676,6 +4676,25 @@ flow_launch_integrations() {
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
     wait_tree_text "Connect your agents" "$OUT/launch.json" 40
 
+    # ``ConnectToolsView`` renders the three-entry compatibility fallback
+    # first, then replaces it with the sidecar's authoritative integration
+    # registry. The heading appears before that asynchronous load completes,
+    # so capturing immediately makes the baseline race between two valid UI
+    # states. Settle on the fake sidecar's complete 14-entry registry before
+    # asserting or recording the stopped-state structure.
+    local i count=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/launch.json"
+        count="$(jq '[.data.ui_elements[]?
+                      | (.identifier // "")
+                      | select(startswith("Launch.Integration.Copy."))]
+                     | unique | length' "$OUT/launch.json")"
+        [[ "$count" == 14 ]] && break
+        sleep 0.1
+    done
+    [[ "$count" == 14 ]] \
+        || die "Cold Launch did not settle on the 14-entry integration registry (got $count)"
+
     # Cold Launch is a beginner path, not a wall of live (copyable) commands.
     # The stopped state now stays a useful setup destination (#2297): the
     # endpoint shape and integration rows are shown as documentation, the
@@ -4685,8 +4704,6 @@ flow_launch_integrations() {
     # `Launch.Integration.Copy.*` button must be present but `.enabled == false`
     # until the endpoint/key actually exist (Copy on a placeholder is the
     # silent-failure defect the disabled-Copy gate exists to prevent).
-    count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
-    [[ "$count" -gt 0 ]] || die "Cold Launch hid the integration setup rows entirely"
     enabled_count="$(jq '[.data.ui_elements[]? | select(((.identifier // "") | startswith("Launch.Integration.Copy.")) and .enabled == true)] | length' "$OUT/launch.json")"
     [[ "$enabled_count" == 0 ]] || die "Cold Launch offered $enabled_count copyable commands before the endpoint/key existed"
     jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' "$OUT/launch.json" >/dev/null \
@@ -4719,7 +4736,6 @@ flow_launch_integrations() {
     press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
         "$OUT/launch-more-press.json" \
         || die "More integrations disclosure is not pressable"
-    local i
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch-ready.json"
         ready_copies="$(jq '[.data.ui_elements[]?

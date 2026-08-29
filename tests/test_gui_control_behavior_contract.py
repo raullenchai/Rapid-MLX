@@ -353,6 +353,16 @@ BASELINED_AUDIT_FLOWS = ["update-state", "launch-integrations"]
 SNAPSHOT_LESS_AUDIT_FLOWS = ["no-dead-controls", "catalog-integrity"]
 
 
+def test_launch_baseline_waits_for_the_authoritative_integration_registry():
+    flow = _harness_flow_body("flow_launch_integrations")
+    settle = flow.index('[[ "$count" == 14 ]] && break')
+    require_settled = flow.index('|| die "Cold Launch did not settle')
+    capture = flow.index("baseline launch-integrations.complete")
+
+    assert settle < require_settled < capture
+    assert 'see_main "$OUT/launch.json"' in flow[:settle]
+
+
 @pytest.mark.parametrize("flow", SNAP_AUDIT_FLOWS)
 def test_semantic_control_audits_are_blocking_gui_ci(flow: str):
     """Each semantic audit is gated, and its failure leaves usable evidence.
