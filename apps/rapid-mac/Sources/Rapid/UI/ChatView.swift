@@ -769,6 +769,16 @@ struct ChatView: View {
                 .id(viewModel.activeConversationID)
             }
             Spacer(minLength: 0)
+            if let speculativeAvailability {
+                MetricChip(
+                    label: speculativeAvailability.label(),
+                    level: speculativeAvailability.state == .ready ? .ok : .warning
+                )
+                .help(speculativeAvailability.help())
+                .accessibilityLabel(speculativeAvailability.label())
+                .accessibilityHint(speculativeAvailability.help())
+                .accessibilityIdentifier("ChatView.SpeculativeDecodingStatus")
+            }
             ModelPickerBar(
                 server: server,
                 downloads: downloads,
@@ -779,6 +789,25 @@ struct ChatView: View {
             )
             sendOrStopButton
         }
+    }
+
+    /// Resolve status from the engine's live policy and the exact tool list the
+    /// request builder will put on the wire. This intentionally shares
+    /// ``wireDefinitions`` with ``runToolLoop`` so a catalog-level tool quirk
+    /// cannot make the badge and the request disagree.
+    private var speculativeAvailability: SpeculativeDecodingAvailability? {
+        let profile = server.activeModelProfile
+        guard profile?.id.caseInsensitiveCompare(alias) == .orderedSame else {
+            return nil
+        }
+        let sendsTools = !ChatViewModel.wireDefinitions(
+            forAlias: alias,
+            enabled: viewModel.enabledDefinitions
+        ).isEmpty
+        return SpeculativeDecodingAvailability.resolve(
+            profile: profile,
+            sendsTools: sendsTools
+        )
     }
 
     /// Send / stop. v1.0 gives the send action the amber hierarchy:

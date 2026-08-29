@@ -12,11 +12,12 @@ on ``qwen3.5-9b-4bit`` doesn't have to hand-tune sliders.
 """
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..agents.codex_catalog import build_codex_model_info
-from ..api.models import ModelInfo, ModelsResponse
+from ..api.models import ModelInfo, ModelsResponse, SpeculativeDecodingInfo
 from ..api.utils import is_mllm_model
 from ..config import get_config
 from ..middleware.auth import verify_api_key
@@ -123,6 +124,64 @@ def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | N
     if isinstance(native_context, int) and native_context > 0:
         value = min(value, native_context)
     return value
+
+
+def _resolve_speculative_decoding(
+    model_id: str,
+) -> SpeculativeDecodingInfo | None:
+    """Return configured speculative policy and its live runtime state.
+
+    The matching scheduler is the source of truth. Its configured method says
+    what the operator requested; the runtime method is published only after
+    the current BatchGenerator's installer succeeds. Discovery-only aliases
+    and engines whose scheduler is not yet attached return ``None``. Any
+    malformed or future value degrades to ``None`` rather than making model
+    discovery fail.
+    """
+
+    engine = _engine_for(model_id)
+    if engine is None:
+        return None
+    scheduler = _scheduler_of(engine)
+    if scheduler is None:
+        return None
+    try:
+        from ..speculative.request_policy import (
+            resolve_speculative_request_policy,
+        )
+
+        config = getattr(scheduler, "config", None)
+        configured_method = getattr(config, "spec_decode", None)
+        if configured_method in (None, "none") and getattr(
+            config, "enable_suffix_decoding", False
+        ):
+            configured_method = "suffix"
+        policy = resolve_speculative_request_policy(configured_method)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "speculative request policy probe failed for %s: %s",
+            model_id,
+            exc,
+            exc_info=False,
+        )
+        return None
+    if policy is None:
+        return None
+    runtime_method = getattr(scheduler, "spec_decode_runtime_method", None)
+    attempted = getattr(scheduler, "spec_decode_runtime_attempted", False)
+    runtime_state: Literal["pending", "active", "unavailable"]
+    if runtime_method == policy.method:
+        runtime_state = "active"
+    elif attempted:
+        runtime_state = "unavailable"
+    else:
+        runtime_state = "pending"
+    return SpeculativeDecodingInfo(
+        configured=True,
+        method=policy.method,
+        runtime_state=runtime_state,
+        request_fallback_features=list(policy.request_fallback_features),
+    )
 
 
 def _resolve_context_window(model_id: str) -> int | None:
@@ -927,6 +986,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # (which would require a separate dry-run per audio alias).
     audio_lanes = _audio_lane_snapshot()
     serving_lane, serving_lane_reason = _served_lane_fields(model_id)
+    speculative_decoding = _resolve_speculative_decoding(model_id)
 
     # R11-B-F4 (Bo 0.8.12 dogfood): audio aliases get an audio-shaped
     # ModelInfo regardless of whether the registry has a text profile
@@ -952,6 +1012,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             modality="audio",
             capabilities=audio_caps,
             audio_lanes=audio_lanes,
+            speculative_decoding=speculative_decoding,
         )
 
     locked = _locked_embedding_id()
@@ -971,6 +1032,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                 context_window=context_window,
                 max_model_len=max_model_len,
                 audio_lanes=audio_lanes,
+                speculative_decoding=speculative_decoding,
             )
         sampling = (
             dict(profile.recommended_sampling)
@@ -992,6 +1054,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             context_window=context_window,
             max_model_len=max_model_len,
             audio_lanes=audio_lanes,
+            speculative_decoding=speculative_decoding,
         )
 
     if profile is None:
@@ -1038,6 +1101,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     audio_lanes=audio_lanes,
                     serving_lane=serving_lane,
                     serving_lane_reason=serving_lane_reason,
+                    speculative_decoding=speculative_decoding,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -1052,6 +1116,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             audio_lanes=audio_lanes,
             serving_lane=serving_lane,
             serving_lane_reason=serving_lane_reason,
+            speculative_decoding=speculative_decoding,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
@@ -1096,6 +1161,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         audio_lanes=audio_lanes,
         serving_lane=serving_lane,
         serving_lane_reason=serving_lane_reason,
+        speculative_decoding=speculative_decoding,
     )
 
 

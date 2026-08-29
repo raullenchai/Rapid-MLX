@@ -2,6 +2,86 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "speculative_status.ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 可用"
+          }
+        }
+      }
+    },
+    "speculative_status.ready.help" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 可以加速本次请求。"
+          }
+        }
+      }
+    },
+    "speculative_status.paused_tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已暂停"
+          }
+        }
+      }
+    },
+    "speculative_status.paused_tools.help" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已配置，但工具请求需要使用普通解码。请在“设置”→“工具”中关闭工具以使用它。"
+          }
+        }
+      }
+    },
+    "speculative_status.pending" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 正在启动"
+          }
+        }
+      }
+    },
+    "speculative_status.pending.help" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已配置。Rapid-MLX 将在生成开始时确认运行状态。"
+          }
+        }
+      }
+    },
+    "speculative_status.unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 不可用"
+          }
+        }
+      }
+    },
+    "speculative_status.unavailable.help" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已被请求，但无法安装其运行时挂钩。此模型正使用普通解码。"
+          }
+        }
+      }
+    },
     "Send a message…" : {
       "localizations" : {
         "zh-Hans" : {
