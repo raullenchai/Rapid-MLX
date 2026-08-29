@@ -68,7 +68,7 @@ struct ThirdPartyLicenseStagingTests {
         vendorLicense: String? = "SwiftMath MIT license text",
         createCheckoutsDir: Bool = true,
         populate: ((URL) throws -> Void)? = nil
-    ) throws -> StagingResult {
+    ) async throws -> StagingResult {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
             .appendingPathComponent("lic-fixture-\(UUID().uuidString)", isDirectory: true)
@@ -109,22 +109,16 @@ struct ThirdPartyLicenseStagingTests {
 
         let out = root.appendingPathComponent("Licenses", isDirectory: true)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [
-            stagingScript.path,
-            resolved.path,
-            checkouts.path,
-            vendorLicensePath,
-            out.path,
-        ]
-        let errPipe = Pipe()
-        process.standardError = errPipe
-        process.standardOutput = Pipe()
-        try process.run()
-        process.waitUntilExit()
-
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let process = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [
+                stagingScript.path,
+                resolved.path,
+                checkouts.path,
+                vendorLicensePath,
+                out.path,
+            ]
+        )
         var staged: [String: String] = [:]
         for name in (try? fm.contentsOfDirectory(atPath: out.path)) ?? [] {
             staged[name] =
@@ -135,7 +129,7 @@ struct ThirdPartyLicenseStagingTests {
         return StagingResult(
             exitCode: process.terminationStatus,
             staged: staged,
-            stderr: String(data: errData, encoding: .utf8) ?? ""
+            stderr: String(decoding: process.standardError, as: UTF8.self)
         )
     }
 
@@ -164,8 +158,8 @@ struct ThirdPartyLicenseStagingTests {
     // MARK: - Fixture-driven behavior
 
     @Test("staging copies each linked package's license plus the vendored one")
-    func stagesEveryDeclaredLicense() throws {
-        let result = try Self.runStaging(
+    func stagesEveryDeclaredLicense() async throws {
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/FakePkg",
                 "https://github.com/example/OtherPkg.git",
@@ -197,10 +191,10 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging copies every notice file when a package splits its terms")
-    func stagesAllNoticeFilesPerPackage() throws {
+    func stagesAllNoticeFilesPerPackage() async throws {
         // An Apache-2.0-style package ships LICENSE *and* a required NOTICE;
         // both must travel, not just the first match.
-        let result = try Self.runStaging(
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/ApachePkg"
             ]),
@@ -226,8 +220,8 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging fails closed when a linked package has no license file")
-    func failsWhenPackageHasNoLicense() throws {
-        let result = try Self.runStaging(
+    func failsWhenPackageHasNoLicense() async throws {
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/FakePkg"
             ]),
@@ -243,12 +237,12 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging refuses a symlinked notice rather than dereferencing it")
-    func refusesSymlinkedNotice() throws {
+    func refusesSymlinkedNotice() async throws {
         // A remote package could point LICENSE at a secret outside the checkout;
         // cp would dereference it into the signed bundle. The only notice here
         // is a symlink, so staging must fail closed rather than copy through it.
         let secretName = "attacker-secret.txt"
-        let result = try Self.runStaging(
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/EvilPkg"
             ]),
@@ -282,8 +276,8 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging fails closed when a resolved pin has no checkout")
-    func failsWhenPinHasNoCheckout() throws {
-        let result = try Self.runStaging(
+    func failsWhenPinHasNoCheckout() async throws {
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/FakePkg"
             ]),
@@ -296,8 +290,8 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging fails closed when no remote pins are present")
-    func failsWhenNoPins() throws {
-        let result = try Self.runStaging(
+    func failsWhenNoPins() async throws {
+        let result = try await Self.runStaging(
             resolvedBody: #"{ "pins" : [], "version" : 3 }"#,
             checkoutLicenses: [:]
         )
@@ -311,8 +305,8 @@ struct ThirdPartyLicenseStagingTests {
     }
 
     @Test("staging fails closed when the vendored SwiftMath notice is missing")
-    func failsWhenVendoredNoticeMissing() throws {
-        let result = try Self.runStaging(
+    func failsWhenVendoredNoticeMissing() async throws {
+        let result = try await Self.runStaging(
             resolvedBody: Self.resolved(locations: [
                 "https://github.com/example/FakePkg"
             ]),

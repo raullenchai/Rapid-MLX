@@ -856,6 +856,13 @@ final class ChatViewModel {
         )
     }
 
+    /// Test seam for lifecycle assertions that need the current turn to be
+    /// fully drained. Awaiting the owned task is deterministic under runner
+    /// load; polling ``isStreaming`` with a wall-clock deadline is not.
+    func _testingWaitForCurrentTurn() async {
+        await inflight?.value
+    }
+
     /// Open a streaming assistant turn under whatever currently ends the
     /// visible path, and drive it to completion.
     ///

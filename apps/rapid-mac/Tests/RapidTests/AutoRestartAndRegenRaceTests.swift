@@ -19,30 +19,39 @@ import Testing
 /// happy-path lifecycle; these tests pin the bookkeeping around it.
 @MainActor
 @Suite("v0.5.3 — auto-restart + ensureServing contracts")
-struct AutoRestartAndRegenRaceTests {
+final class AutoRestartAndRegenRaceTests {
+    nonisolated(unsafe) private var createdSuiteNames: [String] = []
+    deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
+
+    private func freshDefaults() -> UserDefaults {
+        let name = TestDefaultsScope.mintSuiteName(prefix: "rapid-last-alias-test-")
+        createdSuiteNames.append(name)
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
     @Test("lastServedAlias returns nil on fresh install")
     func freshInstallNoResume() {
-        // The ServerManager API reads from .standard; verify the
-        // fresh-install case explicitly: if no key is set, nil.
-        UserDefaults.standard.removeObject(forKey: "rapid.serve.lastAlias")
-        #expect(ServerManager.lastServedAlias() == nil)
+        let defaults = freshDefaults()
+        #expect(ServerManager.lastServedAlias(defaults: defaults) == nil)
     }
 
     @Test("lastServedAlias trims whitespace and rejects empty strings")
     func emptyStringRejected() {
-        UserDefaults.standard.set("   ", forKey: "rapid.serve.lastAlias")
-        defer { UserDefaults.standard.removeObject(forKey: "rapid.serve.lastAlias") }
-        #expect(ServerManager.lastServedAlias() == nil)
+        let defaults = freshDefaults()
+        defaults.set("   ", forKey: "rapid.serve.lastAlias")
+        #expect(ServerManager.lastServedAlias(defaults: defaults) == nil)
 
-        UserDefaults.standard.set("", forKey: "rapid.serve.lastAlias")
-        #expect(ServerManager.lastServedAlias() == nil)
+        defaults.set("", forKey: "rapid.serve.lastAlias")
+        #expect(ServerManager.lastServedAlias(defaults: defaults) == nil)
     }
 
     @Test("lastServedAlias returns the trimmed value when set")
     func roundTripAlias() {
-        UserDefaults.standard.set("  qwen3.6-27b-4bit  ", forKey: "rapid.serve.lastAlias")
-        defer { UserDefaults.standard.removeObject(forKey: "rapid.serve.lastAlias") }
-        #expect(ServerManager.lastServedAlias() == "qwen3.6-27b-4bit")
+        let defaults = freshDefaults()
+        defaults.set("  qwen3.6-27b-4bit  ", forKey: "rapid.serve.lastAlias")
+        #expect(ServerManager.lastServedAlias(defaults: defaults) == "qwen3.6-27b-4bit")
     }
 
     @Test("ensureServing is a noop when the server is already on the requested alias")
