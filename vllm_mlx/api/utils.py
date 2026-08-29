@@ -1520,23 +1520,23 @@ def resolve_serving_lane_decision(
             False, "vision_hybrid_cache_unsupported", auto_text_fallback=True
         )
     if cache_mode == "arrays":
+        if vision_min_memory_gb is None:
+            profile = resolve_profile(model_name)
+            vision_min_memory_gb = (
+                profile.vision_min_memory_gb if profile is not None else None
+            )
+        available_gb = physical_ram_gb()
+        if (
+            vision_min_memory_gb is not None
+            and available_gb > 0
+            and available_gb < vision_min_memory_gb
+        ):
+            return ServingLaneDecision(
+                False, "vision_memory_insufficient", auto_text_fallback=True
+            )
+        if force_mllm:
+            return ServingLaneDecision(True, "vision_lane_forced")
         if mllm_hybrid_runtime_supported():
-            if vision_min_memory_gb is None:
-                profile = resolve_profile(model_name)
-                vision_min_memory_gb = (
-                    profile.vision_min_memory_gb if profile is not None else None
-                )
-            available_gb = physical_ram_gb()
-            if (
-                vision_min_memory_gb is not None
-                and available_gb > 0
-                and available_gb < vision_min_memory_gb
-            ):
-                return ServingLaneDecision(
-                    False, "vision_memory_insufficient", auto_text_fallback=True
-                )
-            if force_mllm:
-                return ServingLaneDecision(True, "vision_lane_forced")
             return ServingLaneDecision(True, "vision_hybrid_runtime_supported")
         return ServingLaneDecision(
             False, "vision_hybrid_runtime_unsupported", auto_text_fallback=True
