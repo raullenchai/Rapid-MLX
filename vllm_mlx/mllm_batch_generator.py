@@ -136,6 +136,30 @@ def _temporary_vision_pixel_bounds(processor: Any, min_pixels: int, max_pixels: 
         image_processor.size = original
 
 
+def _vision_patch_unit(config: Any, processor: Any) -> int:
+    vision_config = getattr(config, "vision_config", None)
+    for source in (vision_config, config, getattr(processor, "image_processor", None)):
+        patch_size = getattr(source, "patch_size", None)
+        if isinstance(patch_size, int) and patch_size > 0:
+            merge_size = getattr(source, "spatial_merge_size", None)
+            if not (isinstance(merge_size, int) and merge_size > 0):
+                merge_size = getattr(source, "merge_size", None)
+            if not (isinstance(merge_size, int) and merge_size > 0):
+                merge_size = 1
+            return patch_size * merge_size
+    return 0
+
+
+def _vision_pixel_ceiling(
+    config: Any, processor: Any, token_budget: int, image_count: int
+) -> int:
+    patch_unit = _vision_patch_unit(config, processor)
+    if patch_unit <= 0 or token_budget <= 0:
+        return 0
+    budget_per_image = max(1, token_budget // max(image_count, 1))
+    return max(patch_unit**2, budget_per_image * patch_unit**2)
+
+
 # Upper bound on the per-forward chunk size used when prefilling a long
 # text-only prompt on the MLLM path (issue #1187, Problem B). The actual
 # chunk is ``min(prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)`` so an
@@ -1056,17 +1080,63 @@ class MLLMBatchGenerator:
         # ``RuntimeError`` / arbitrary ``Exception``) MUST keep
         # propagating as server errors so the caller sees HTTP 500
         # instead of a misleading HTTP 400 "Failed to process image".
-        try:
-            with _temporary_vision_pixel_bounds(
+        auto_pixel_cap = (
+            _vision_pixel_ceiling(
+                getattr(self.model, "config", None),
                 self.processor,
-                self.vision_min_pixels,
-                self.vision_max_pixels,
-            ):
-                inputs = prepare_inputs(
+                self.vision_prefill_token_budget,
+                len(all_images),
+            )
+            if all_images
+            else 0
+        )
+        pixel_cap = self.vision_max_pixels
+        if auto_pixel_cap:
+            pixel_cap = min(pixel_cap, auto_pixel_cap) if pixel_cap else auto_pixel_cap
+        if pixel_cap and self.vision_min_pixels and self.vision_min_pixels > pixel_cap:
+            raise ClientRequestError(
+                "Failed to process image: --vision-min-pixels exceeds the "
+                "vision token budget"
+            )
+
+        patch_unit = _vision_patch_unit(
+            getattr(self.model, "config", None), self.processor
+        )
+        try:
+            for _ in range(2):
+                with _temporary_vision_pixel_bounds(
                     self.processor,
-                    images=all_images if all_images else None,
-                    prompts=request.prompt,
-                    image_token_index=image_token_index,
+                    self.vision_min_pixels,
+                    pixel_cap,
+                ):
+                    inputs = prepare_inputs(
+                        self.processor,
+                        images=all_images if all_images else None,
+                        prompts=request.prompt,
+                        image_token_index=image_token_index,
+                    )
+                token_count = getattr(inputs.get("input_ids"), "size", None)
+                if (
+                    not pixel_cap
+                    or not isinstance(token_count, int)
+                    or token_count <= self.vision_prefill_token_budget
+                ):
+                    break
+                reduced_cap = int(
+                    pixel_cap * self.vision_prefill_token_budget / token_count
+                )
+                if reduced_cap < patch_unit**2:
+                    break
+                pixel_cap = reduced_cap
+            token_count = getattr(inputs.get("input_ids"), "size", None)
+            if isinstance(token_count, int) and (
+                token_count > self.vision_prefill_token_budget
+            ):
+                logger.warning(
+                    "Vision request %s remained over its %d-token budget after "
+                    "automatic downscaling",
+                    request.request_id,
+                    self.vision_prefill_token_budget,
                 )
         except (OSError, ValueError) as e:
             # Do not reflect decoder text: PIL / mlx-vlm messages can contain

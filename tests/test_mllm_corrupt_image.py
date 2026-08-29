@@ -46,11 +46,15 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
+import mlx.core as mx
 
 from vllm_mlx.mllm_batch_generator import (
+    ClientRequestError,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     _temporary_vision_pixel_bounds,
+    _vision_patch_unit,
+    _vision_pixel_ceiling,
 )
 
 
@@ -92,6 +96,21 @@ def _make_request(images: list[str] | None) -> MLLMBatchRequest:
     )
 
 
+class _QwenLikeModel:
+    def __init__(self):
+        self.language_model = object()
+
+        class VisionConfig:
+            patch_size = 14
+            spatial_merge_size = 2
+
+        class Config:
+            image_token_index = None
+            vision_config = VisionConfig()
+
+        self.config = Config()
+
+
 def _bypass_process_image(monkeypatch):
     """Skip the base64/url decode step so the test exercises
     ``prepare_inputs`` directly without hitting tempfile I/O.
@@ -122,6 +141,170 @@ def _install_prepare_inputs_stub(monkeypatch, raiser):
     monkeypatch.setattr(mlx_vlm_utils, "prepare_inputs", raiser)
     if hasattr(gen_mod, "prepare_inputs"):
         monkeypatch.setattr(gen_mod, "prepare_inputs", raiser)
+
+
+def test_vision_pixel_ceiling_uses_patch_geometry():
+    processor = type("Processor", (), {})()
+    assert _vision_pixel_ceiling(_QwenLikeModel().config, processor, 8192, 1) == (
+        8192 * (14 * 2) ** 2
+    )
+    assert _vision_pixel_ceiling(_QwenLikeModel().config, processor, 8192, 2) == (
+        4096 * (14 * 2) ** 2
+    )
+
+
+def test_vision_patch_unit_supports_merge_size_and_missing_geometry():
+    class MergeSize:
+        patch_size = 14
+        merge_size = 2
+
+    class NoGeometry:
+        pass
+
+    class NoMerge:
+        patch_size = 14
+
+    assert _vision_patch_unit(MergeSize(), object()) == 28
+    assert _vision_patch_unit(NoMerge(), object()) == 14
+    assert _vision_patch_unit(NoGeometry(), object()) == 0
+
+
+def test_preprocess_request_applies_budget_pixel_cap(monkeypatch, tmp_path):
+    image_path = tmp_path / "image.png"
+    from PIL import Image
+
+    Image.new("RGB", (16, 16), "red").save(image_path)
+
+    class ImageProcessor:
+        min_pixels = 4
+        max_pixels = 20_000_000
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = ImageProcessor()
+
+    processor = Processor()
+    observed = []
+
+    def prepare_inputs(current_processor, **_kwargs):
+        observed.append(current_processor.image_processor.max_pixels)
+        return {
+            "input_ids": mx.zeros((1, 100)),
+            "pixel_values": mx.zeros((1, 3, 4, 4)),
+        }
+
+    _bypass_process_image(monkeypatch)
+    _install_prepare_inputs_stub(monkeypatch, prepare_inputs)
+    gen = _make_generator(processor=processor)
+    gen.model = _QwenLikeModel()
+
+    gen._preprocess_request(_make_request([str(image_path)]))
+
+    assert observed == [8192 * (14 * 2) ** 2]
+    assert processor.image_processor.min_pixels == 4
+    assert processor.image_processor.max_pixels == 20_000_000
+
+
+def test_preprocess_request_retries_with_measured_token_ratio(monkeypatch, tmp_path):
+    image_path = tmp_path / "image.png"
+    from PIL import Image
+
+    Image.new("RGB", (16, 16), "red").save(image_path)
+
+    class ImageProcessor:
+        min_pixels = 4
+        max_pixels = 20_000_000
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = ImageProcessor()
+
+    processor = Processor()
+    observed = []
+
+    def prepare_inputs(current_processor, **_kwargs):
+        observed.append(current_processor.image_processor.max_pixels)
+        token_count = 9000 if len(observed) == 1 else 8000
+        return {
+            "input_ids": mx.zeros((1, token_count)),
+            "pixel_values": mx.zeros((1, 3, 4, 4)),
+        }
+
+    _bypass_process_image(monkeypatch)
+    _install_prepare_inputs_stub(monkeypatch, prepare_inputs)
+    gen = _make_generator(processor=processor)
+    gen.model = _QwenLikeModel()
+
+    gen._preprocess_request(_make_request([str(image_path)]))
+
+    initial = 8192 * (14 * 2) ** 2
+    assert observed == [initial, int(initial * 8192 / 9000)]
+
+
+def test_preprocess_request_rejects_minimum_pixels_over_budget(monkeypatch, tmp_path):
+    image_path = tmp_path / "image.png"
+    from PIL import Image
+
+    Image.new("RGB", (16, 16), "red").save(image_path)
+
+    class ImageProcessor:
+        min_pixels = 4
+        max_pixels = 20_000_000
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = ImageProcessor()
+
+    _bypass_process_image(monkeypatch)
+    _install_prepare_inputs_stub(
+        monkeypatch, lambda *args, **kwargs: {"input_ids": mx.zeros((1, 100))}
+    )
+    gen = _make_generator(vision_min_pixels=20_000_000, processor=Processor())
+    gen.model = _QwenLikeModel()
+
+    with pytest.raises(ClientRequestError, match="exceeds the vision token budget"):
+        gen._preprocess_request(_make_request([str(image_path)]))
+
+
+def test_preprocess_request_warns_when_minimum_patch_does_not_fit(
+    monkeypatch, tmp_path, caplog
+):
+    image_path = tmp_path / "image.png"
+    from PIL import Image
+
+    Image.new("RGB", (16, 16), "red").save(image_path)
+
+    class ImageProcessor:
+        min_pixels = 4
+        max_pixels = 20_000_000
+
+    class Processor:
+        def __init__(self):
+            self.image_processor = ImageProcessor()
+
+    class OnePixelPatchModel:
+        def __init__(self):
+            self.language_model = object()
+
+            class Config:
+                image_token_index = None
+                patch_size = 1
+                spatial_merge_size = 1
+
+            self.config = Config()
+
+    _bypass_process_image(monkeypatch)
+    _install_prepare_inputs_stub(
+        monkeypatch, lambda *args, **kwargs: {"input_ids": mx.zeros((1, 2))}
+    )
+    gen = _make_generator(processor=Processor())
+    gen.model = OnePixelPatchModel()
+    gen.vision_prefill_token_budget = 1
+
+    with caplog.at_level("WARNING"):
+        gen._preprocess_request(_make_request([str(image_path)]))
+
+    assert "remained over its 1-token budget" in caplog.text
 
 
 def test_preprocess_forwards_opt_in_dynamic_resolution_bounds(monkeypatch):
