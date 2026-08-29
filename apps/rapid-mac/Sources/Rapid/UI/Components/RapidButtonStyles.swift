@@ -43,6 +43,7 @@ struct RapidPrimaryButtonStyle: ButtonStyle {
     /// Fill the available width — for full-width CTAs in cards/sheets.
     var expands: Bool
     var height: CGFloat
+    var font: Font
 
     /// Default height is ``ControlHeight/medium`` (32) — the SAME
     /// regular-command height as ``RapidSecondaryButtonStyle`` and
@@ -53,9 +54,14 @@ struct RapidPrimaryButtonStyle: ButtonStyle {
     /// out 32/36 and visibly stepped. Emphasis is carried by the FILL,
     /// not by being 4pt taller. The hero, full-width case keeps 36 via
     /// ``rapidPrimaryWide``.
-    init(expands: Bool = false, height: CGFloat = RapidTheme.ControlHeight.medium) {
+    init(
+        expands: Bool = false,
+        height: CGFloat = RapidTheme.ControlHeight.medium,
+        font: Font = RapidFont.bodyEmphasis
+    ) {
         self.expands = expands
         self.height = height
+        self.font = font
     }
 
     func makeBody(configuration: Configuration) -> some View {
@@ -64,6 +70,7 @@ struct RapidPrimaryButtonStyle: ButtonStyle {
             isEnabled: isEnabled,
             expands: expands,
             height: height,
+            font: font,
             foreground: RapidTheme.primaryActionLabel,
             fill: RapidTheme.primaryActionFill,
             stroke: nil
@@ -86,6 +93,7 @@ struct RapidSecondaryButtonStyle: ButtonStyle {
     var utility: Bool
     var expands: Bool
     var height: CGFloat
+    var font: Font
     /// Explicit label colour, overriding every default. Needed where a
     /// button signals transient state through colour (Copy → Copied
     /// flips to the ready green) — an outer `.foregroundStyle` can't
@@ -96,11 +104,13 @@ struct RapidSecondaryButtonStyle: ButtonStyle {
         utility: Bool = false,
         expands: Bool = false,
         height: CGFloat = RapidTheme.ControlHeight.medium,
+        font: Font = RapidFont.bodyEmphasis,
         foreground: Color? = nil
     ) {
         self.utility = utility
         self.expands = expands
         self.height = height
+        self.font = font
         self.foreground = foreground
     }
 
@@ -110,6 +120,7 @@ struct RapidSecondaryButtonStyle: ButtonStyle {
             isEnabled: isEnabled,
             expands: expands,
             height: height,
+            font: font,
             foreground: foreground ?? RapidTheme.secondaryActionLabel,
             hoverForeground: (foreground == nil && utility)
                 ? RapidTheme.utilityActionHover
@@ -141,6 +152,7 @@ struct RapidTertiaryButtonStyle: ButtonStyle {
             isEnabled: isEnabled,
             expands: false,
             height: height,
+            font: RapidFont.bodyEmphasis,
             foreground: link ? RapidTheme.linkLabel : .primary,
             hoverForeground: link ? nil : RapidTheme.utilityActionHover,
             fill: .clear,
@@ -168,6 +180,7 @@ struct RapidDestructiveButtonStyle: ButtonStyle {
             isEnabled: isEnabled,
             expands: expands,
             height: height,
+            font: RapidFont.bodyEmphasis,
             foreground: RapidTheme.destructiveActionLabel,
             fill: RapidTheme.destructiveActionFill,
             stroke: nil
@@ -185,6 +198,7 @@ private struct RapidButtonSurface: View {
     let isEnabled: Bool
     let expands: Bool
     let height: CGFloat
+    let font: Font
     let foreground: Color
     /// Label colour under the pointer. ``nil`` keeps ``foreground``.
     /// This is how utility controls earn steel blue on hover without
@@ -203,7 +217,7 @@ private struct RapidButtonSurface: View {
 
     var body: some View {
         configuration.label
-            .font(RapidFont.bodyEmphasis)
+            .font(font)
             .foregroundStyle(resolvedForeground)
             // Icons inside a Label track the text size rather than the
             // SF Symbol default, so a `Label("Copy", systemImage:)`
