@@ -2031,6 +2031,23 @@ flow_cached_curated_tradeup() {
             | select(((.description // "") | contains("Download 2.9 GB")) | not)' \
         "$OUT/chooser.json" >/dev/null \
         || die "cached hardware-fit starter is hidden or advertises a download"
+    # Finish the exact 16 GB starter journey without a network pull. The
+    # welcome is shown only after the model is ready, so it must describe that
+    # achieved state instead of promising a network-dependent duration.
+    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
+    wait_fake_event \
+        '.event == "server_started" and .alias == "qwen3.5-4b-4bit"' \
+        "cached 16 GB starter did not start"
+    wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json"
+    press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
+        "$OUT/start-chatting.json"
+    wait_identifier rapid.chat.compose "$OUT/ready.json"
+    assert_tree_text "$OUT/ready.json" "selected to fit this Mac."
+    assert_tree_text "$OUT/ready.json" "ready for your first message."
+    if jq -e '.. | strings | select(test("about a minute"; "i"))' \
+        "$OUT/ready.json" >/dev/null; then
+        die "16 GB starter welcome still promises a fixed download time"
+    fi
     cleanup_persona
 }
 
