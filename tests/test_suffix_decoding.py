@@ -477,6 +477,20 @@ class TestInstallSuffixDecoding:
         assert cache._offset == 5
         assert gb._suffix_stats["ft_non_trimmable_cache"] == 1
 
+    @pytest.mark.parametrize("bad_size", ["not-an-int", "0x10"])
+    def test_advance_rejects_unconvertible_cache_size(self, bad_size):
+        from types import SimpleNamespace
+
+        from vllm_mlx.cache_rollback import can_advance
+
+        cache = SimpleNamespace(
+            can_trim=lambda _n: True,
+            max_size=8,
+            size=lambda: bad_size,
+        )
+
+        assert not can_advance(cache, 2)
+
     def test_terminal_pending_emit_rollback_fails_closed(self, monkeypatch):
         _bg, gb = self._install_verify_fixture(
             monkeypatch,
