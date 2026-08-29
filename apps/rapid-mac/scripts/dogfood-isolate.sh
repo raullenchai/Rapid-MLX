@@ -39,6 +39,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 print_help() {
     cat <<'EOF'
 dogfood-isolate.sh — CFPreferences-isolated copy of a built .app
@@ -61,6 +64,10 @@ ENVIRONMENT:
     DOGFOOD_PORT=<49152-65535>
                    Pin the isolated app to this port. By default the helper
                    chooses a free high port from the persona's random suffix.
+    DOGFOOD_WORKING_SET_GB=<number>
+                   Estimated model working set for host admission. Defaults
+                   conservatively to 21 GiB, which serializes real Desktop
+                   dogfood on the shared large-model lock.
 
 OUTPUT:
     Progress and diagnostics are written to STDERR.
@@ -336,6 +343,18 @@ fi
 mkdir -p "$HOME_DIR/Library/Application Support"
 printf 'Created by dogfood-isolate.sh. Safe to delete with the target dir.\n' \
     > "$HOME_MARKER"
+printf 'Created by dogfood-isolate.sh. Cleanup requires .dogfood-finished.\n' \
+    > "$TARGET_ABS/.dogfood-owned"
+
+# Keep the generated persona runnable after its source worktree is retired.
+# Both helpers are small and immutable for the persona's lifetime.
+SAFETY_DIR="$TARGET_ABS/.rapid-host-safety"
+mkdir -p "$SAFETY_DIR"
+cp "$SCRIPT_DIR/dogfood-host-precheck.sh" "$SAFETY_DIR/"
+cp "$REPO_ROOT/scripts/large-model-run.py" "$SAFETY_DIR/"
+cp "$REPO_ROOT/vllm_mlx/aliases.json" "$SAFETY_DIR/"
+cp "$REPO_ROOT/vllm_mlx/model_sizes.json" "$SAFETY_DIR/"
+chmod +x "$SAFETY_DIR/dogfood-host-precheck.sh" "$SAFETY_DIR/large-model-run.py"
 
 # The model cache is the one thing worth SHARING by default: it is tens of
 # gigabytes and mostly read, and re-downloading it per run makes isolation
@@ -387,9 +406,30 @@ export RAPID_DESKTOP_NO_PORT_SWEEP=1
 # would quietly point the run back at their real cache — including under
 # DOGFOOD_COLD_MODEL_CACHE=1, where the whole point is that there isn't one.
 unset HF_HUB_CACHE
-exec "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "\$@"
+rm -f "$TARGET_ABS/.dogfood-finished"
+if [[ "\${CI:-}" == "true" ]]; then
+    exec "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "\$@"
+fi
+working_set_gb="\${DOGFOOD_WORKING_SET_GB:-21}"
+exec "$SAFETY_DIR/dogfood-host-precheck.sh" -- \
+    python3 "$SAFETY_DIR/large-model-run.py" \
+        --working-set-gb "\$working_set_gb" -- \
+        "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "\$@"
 LAUNCHEOF
 chmod +x "$LAUNCHER"
+
+FINISHER="$TARGET_ABS/finish.sh"
+cat > "$FINISHER" <<FINISHEOF
+#!/usr/bin/env bash
+set -euo pipefail
+if pgrep -f "$TARGET_APP" >/dev/null 2>&1; then
+    echo "finish.sh: isolated app is still running: $TARGET_APP" >&2
+    exit 1
+fi
+touch "$TARGET_ABS/.dogfood-finished"
+echo "finish.sh: marked finished: $TARGET_ABS"
+FINISHEOF
+chmod +x "$FINISHER"
 
 # --- done --------------------------------------------------------------------
 log "isolated .app ready: $TARGET_APP"
@@ -399,6 +439,8 @@ log "  model cache:    $HF_HOME_FOR_RUN"
 log "  isolated port:  $ISOLATED_PORT (launch sweep disabled)"
 log "  LAUNCH WITH:   $LAUNCHER &          # NOT 'open -n' — that drops \$HOME"
 log "  cleanup later: defaults delete '$NEW_ID' && rm -rf '$TARGET_ABS'"
+log "  shared cleanup: run '$FINISHER' after the app exits; hygiene will then"
+log "                  consider this directory after its minimum age"
 log "  shutdown:      pkill -f '$TARGET_APP'    # path-qualified, do NOT use bare 'pkill -f Rapid'"
 log ""
 log "  STILL SHARED (not isolated by this script):"
