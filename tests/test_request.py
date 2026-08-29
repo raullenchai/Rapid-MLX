@@ -54,6 +54,12 @@ class TestRequestStatus:
             RequestStatus.get_finish_reason(RequestStatus.FINISHED_ABORTED) == "abort"
         )
 
+    def test_get_finish_reason_cancelled(self):
+        assert (
+            RequestStatus.get_finish_reason(RequestStatus.FINISHED_CANCELLED)
+            == "cancelled"
+        )
+
     def test_get_finish_reason_waiting(self):
         assert RequestStatus.get_finish_reason(RequestStatus.WAITING) is None
 

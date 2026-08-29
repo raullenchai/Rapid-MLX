@@ -1323,7 +1323,7 @@ class EngineCore:
                         RequestOutput(
                             request_id=request_id,
                             finished=True,
-                            finish_reason="length",
+                            finish_reason="cancelled",
                             error=(
                                 "Inference aborted by a cancellation request"
                                 if error_kind == "lifecycle"

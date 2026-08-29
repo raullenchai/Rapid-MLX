@@ -34,6 +34,7 @@ from ..api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
+from ..api.protocol_mapping import cancellation_error, is_cancellation_finish_reason
 from ..api.response_format_metrics import (
     incr_strict_repair_attempt,
     incr_strict_repair_skipped_context_overflow,
@@ -2194,6 +2195,8 @@ async def _non_stream(
             final_content = extract_json_from_response(final_content)
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
+    if is_cancellation_finish_reason(finish_reason):
+        return Response(status_code=499)
 
     # Issue #858: /v1/responses mirror of the cutoff sentinel.
     # Default-on (PR #802 / H-01 semantics restored) — clients that only
@@ -4828,6 +4831,19 @@ async def _stream_responses(
         # regardless of the underlying truncation, so a mid-think
         # ``max_output_tokens`` cutoff was indistinguishable from a
         # clean finish on the wire.
+        if is_cancellation_finish_reason(last_finish_reason):
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": _stream_response_payload(
+                        "failed",
+                        error=cancellation_error(),
+                    ),
+                },
+            )
+            return
+
         if last_finish_reason == "length":
             completed_status = "incomplete"
             incomplete_details: dict | None = {"reason": "max_output_tokens"}

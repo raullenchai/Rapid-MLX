@@ -1431,10 +1431,12 @@ def _convert_text_format(text: dict | None) -> ResponseFormat | None:
 def _convert_status(openai_finish_reason: str | None) -> str:
     """Map OpenAI ``finish_reason`` to Responses ``status``.
 
-    ``"length"`` is the only one Codex CLI reads specially — it
-    surfaces as a follow-up prompt to extend. The rest are folded
-    into ``"completed"``.
+    ``"length"`` is the one Codex CLI reads specially — it surfaces as a
+    follow-up prompt to extend. Engine cancellations become ``"failed"``;
+    the rest are folded into ``"completed"``.
     """
+    if openai_finish_reason == "cancelled":
+        return "failed"
     if openai_finish_reason == "length":
         return "incomplete"
     return "completed"

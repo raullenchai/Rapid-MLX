@@ -6606,7 +6606,7 @@ class Scheduler:
             self.total_prompt_tokens += request.num_prompt_tokens
 
         if request is not None:
-            request.set_finished(RequestStatus.FINISHED_ABORTED)
+            request.set_finished(RequestStatus.FINISHED_CANCELLED)
             # Release cache references so Metal buffers can be freed
             request.prompt_cache = None
             request._extracted_cache = None

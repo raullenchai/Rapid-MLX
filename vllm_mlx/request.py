@@ -30,6 +30,9 @@ class RequestStatus(enum.IntEnum):
     FINISHED_LENGTH_CAPPED = enum.auto()
     # Request was aborted by user
     FINISHED_ABORTED = enum.auto()
+    # Request was cancelled before or during inference. This is distinct
+    # from a genuine max-token truncation and must not leak as "length".
+    FINISHED_CANCELLED = enum.auto()
 
     @staticmethod
     def is_finished(status: "RequestStatus") -> bool:
@@ -45,6 +48,8 @@ class RequestStatus(enum.IntEnum):
             return "length"
         elif status == RequestStatus.FINISHED_ABORTED:
             return "abort"
+        elif status == RequestStatus.FINISHED_CANCELLED:
+            return "cancelled"
         return None
 
 

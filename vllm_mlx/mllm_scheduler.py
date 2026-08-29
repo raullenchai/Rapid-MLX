@@ -833,7 +833,7 @@ class MLLMScheduler:
 
         # Mark as aborted
         if request is not None:
-            request.status = RequestStatus.FINISHED_ABORTED
+            request.status = RequestStatus.FINISHED_CANCELLED
         self.finished_req_ids.add(request_id)
 
         # D-M01-2X + D-M01-DEAD (0.8.2 dogfood): do NOT discard the
@@ -1416,7 +1416,7 @@ class MLLMScheduler:
                         RequestOutput(
                             request_id=request_id,
                             finished=True,
-                            finish_reason="length",
+                            finish_reason="cancelled",
                             error="Inference aborted by a cancellation request",
                             error_kind="lifecycle",
                         )
@@ -1431,7 +1431,7 @@ class MLLMScheduler:
                         RequestOutput(
                             request_id=request_id,
                             finished=True,
-                            finish_reason="length",
+                            finish_reason="cancelled",
                             error="Inference aborted by a cancellation request",
                             error_kind="lifecycle",
                         )

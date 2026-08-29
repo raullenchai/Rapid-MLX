@@ -24,6 +24,7 @@ from ..api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
+from ..api.protocol_mapping import cancellation_error, is_cancellation_finish_reason
 from ..api.tool_calling import (
     convert_tools_for_template,
     extract_json_schema_for_guided,
@@ -912,6 +913,9 @@ async def create_anthropic_message(
                 raise HTTPException(status_code=400, detail=err_msg)
             raise
         if output is None:
+            return Response(status_code=499)
+
+        if is_cancellation_finish_reason(output.finish_reason):
             return Response(status_code=499)
 
         elapsed = time.perf_counter() - start_time
@@ -3065,6 +3069,16 @@ async def _stream_anthropic_messages(
                 )
 
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
+
+    if is_cancellation_finish_reason(stream_finish_reason):
+        cancellation_event = {
+            "type": "error",
+            "error": cancellation_error(
+                type_="api_error", message="The request was cancelled."
+            ),
+        }
+        yield f"event: error\ndata: {json.dumps(cancellation_event)}\n\n"
+        return
 
     # R-07 (r5-A bundle): synthesize a zero-text ``content_block`` pair
     # ONLY for the malformed-message case the dogfood actually caught

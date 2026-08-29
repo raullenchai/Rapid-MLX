@@ -30,6 +30,7 @@ from ..api.models import (
     TokenLogProb,
     Usage,
 )
+from ..api.protocol_mapping import is_cancellation_finish_reason
 from ..api.response_format_metrics import (
     incr_strict_repair_attempt,
     incr_strict_repair_skipped_context_overflow,
@@ -6037,6 +6038,8 @@ async def _create_chat_completion_impl(
 
     # Determine finish reason
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
+    if is_cancellation_finish_reason(finish_reason):
+        return Response(status_code=499)
 
     # Clean and strip thinking tags from content
     final_content = None
@@ -6849,6 +6852,11 @@ async def stream_chat_completion(
         # it here as ordinary exhaustion, so cancellation alone is not enough
         # to distinguish this path.
         if _client_disconnect_state and _client_disconnect_state[0]:
+            return
+
+        if buffered_finish is not None and is_cancellation_finish_reason(
+            buffered_finish[1].finish_reason
+        ):
             return
 
         # Fallback tool call detection (post-stream). Collect ALL fallback

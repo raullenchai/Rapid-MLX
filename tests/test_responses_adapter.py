@@ -44,6 +44,9 @@ from vllm_mlx.api.responses_models import (
 
 
 class TestConvertStatus:
+    def test_cancelled_to_failed(self):
+        assert _convert_status("cancelled") == "failed"
+
     def test_length_to_incomplete(self):
         assert _convert_status("length") == "incomplete"
 

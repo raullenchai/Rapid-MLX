@@ -20,6 +20,7 @@ from ..api.models import (
     PromptTokensDetails,
     Usage,
 )
+from ..api.protocol_mapping import is_cancellation_finish_reason
 from ..api.utils import extract_json_from_response
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
@@ -633,6 +634,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             )
             total_cached_tokens += getattr(output, "cached_tokens", 0) or 0
 
+        if is_cancellation_finish_reason(output.finish_reason):
+            return Response(status_code=499)
+
         elapsed = time.perf_counter() - start_time
         tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
         logger.info(
@@ -832,6 +836,8 @@ async def stream_completion(
                 _final_usage = get_usage(output)
                 _buffered_finish_reason = output.finish_reason
             continue
+        if output.finished and is_cancellation_finish_reason(output.finish_reason):
+            return
         choice = {
             "index": 0,
             "text": output.new_text,
@@ -915,6 +921,8 @@ async def stream_completion(
     # and clients consuming json-mode don't expect partial-JSON
     # streaming anyway.
     if _json_mode:
+        if is_cancellation_finish_reason(_buffered_finish_reason):
+            return
         cleaned = extract_json_from_response(_buffered_text) if _buffered_text else ""
         # Emit content + finish in a single chunk for symmetry with
         # the non-stream sync path; if the buffer is empty (model
