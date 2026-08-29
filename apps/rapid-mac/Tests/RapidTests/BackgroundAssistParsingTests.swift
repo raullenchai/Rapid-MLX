@@ -111,6 +111,35 @@ struct ConversationTitleSuggestionTests {
         ]) == nil)
     }
 
+    @Test("A title retry skips failed and stopped attempts")
+    func retryUsesFirstCompletedExchange() {
+        let transcript = [
+            ChatMessage(role: .user, content: "failed question"),
+            ChatMessage(
+                role: .assistant,
+                content: "Couldn't start the model",
+                status: .failed
+            ),
+            ChatMessage(role: .user, content: "stopped question"),
+            ChatMessage(
+                role: .assistant,
+                content: "partial abandoned answer",
+                errorMessage: "Stopped."
+            ),
+            ChatMessage(role: .user, content: "successful question"),
+            ChatMessage(role: .assistant, content: "complete useful answer"),
+        ]
+
+        let prompt = ConversationTitleSuggestion.messages(forFirstExchange: transcript)?
+            .last?.content ?? ""
+        #expect(prompt.contains("successful question"))
+        #expect(prompt.contains("complete useful answer"))
+        #expect(!prompt.contains("failed question"))
+        #expect(!prompt.contains("Couldn't start"))
+        #expect(!prompt.contains("stopped question"))
+        #expect(!prompt.contains("partial abandoned"))
+    }
+
     // MARK: - Parsing what a small model actually returns
 
     @Test("Wrapped and labelled titles are unwrapped", arguments: [
