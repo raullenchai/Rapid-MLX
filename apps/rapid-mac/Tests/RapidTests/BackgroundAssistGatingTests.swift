@@ -294,6 +294,40 @@ struct BackgroundAssistGatingTests {
         #expect(ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "text", active: 0), alias: "other"))
     }
 
+    @Test("A server transition invalidates the scheduled background target")
+    func serverTransitionInvalidatesTarget() {
+        let scheduled = BackgroundCompletionClient.Target(
+            port: 8_000,
+            bearer: "old-bearer",
+            alias: "old-model"
+        )
+
+        #expect(ChatViewModel.revalidatedBackgroundTarget(
+            scheduled,
+            state: .ready(alias: "old-model"),
+            activePort: 8_000,
+            activeBearer: "old-bearer"
+        ) == scheduled)
+
+        // The transition happened after scheduling but before the task ran.
+        // A stale alias must not be paired with the replacement endpoint.
+        #expect(ChatViewModel.revalidatedBackgroundTarget(
+            scheduled,
+            state: .ready(alias: "new-model"),
+            activePort: 8_001,
+            activeBearer: "new-bearer"
+        ) == nil)
+
+        // A restart of the same alias still invalidates a changed endpoint or
+        // credential; the task cannot silently retarget itself.
+        #expect(ChatViewModel.revalidatedBackgroundTarget(
+            scheduled,
+            state: .ready(alias: "old-model"),
+            activePort: 8_001,
+            activeBearer: "new-bearer"
+        ) == nil)
+    }
+
     // MARK: - Late replies
 
     @Test("Suggestions for a turn that is no longer last are dropped")

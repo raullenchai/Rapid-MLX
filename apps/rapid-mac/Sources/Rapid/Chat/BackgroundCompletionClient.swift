@@ -31,15 +31,14 @@ import Foundation
 @MainActor
 struct BackgroundCompletionClient {
 
-    /// Where to send, resolved at call time.
+    /// Where to send, captured as one coherent schedule-time snapshot.
     ///
-    /// Never cached: ``ServerManager/activeBearer`` rotates on every `start()`
-    /// and is cleared on stop and on crash, so a handle held across a restart
-    /// is a guaranteed 401. The alias comes from the `.ready(alias:)` state
-    /// for the same reason it must not be chosen freely — naming a model that
-    /// is not resident would issue a real `/v1/models/load`, and with the
-    /// assistant replacement group that evicts the model the reader is using.
-    struct Target {
+    /// The caller revalidates this snapshot immediately before sending. It is
+    /// never held across a turn: ``ServerManager/activeBearer`` can rotate on
+    /// every `start()`, and the alias must stay paired with the same endpoint
+    /// because naming a nonresident model would issue a real
+    /// `/v1/models/load` and could evict the model the reader is using.
+    struct Target: Equatable {
         let port: Int
         let bearer: String?
         let alias: String

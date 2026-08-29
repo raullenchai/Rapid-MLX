@@ -554,14 +554,26 @@ final class ChatViewModel {
 
         followUp = .pending
         followUpAnchorID = turn.assistantID
+        // Alias, endpoint, and credential are one lifecycle snapshot. Reading
+        // port/bearer later from inside the task could pair a stale alias with
+        // a replacement server after a model switch.
+        let scheduledTarget = BackgroundCompletionClient.Target(
+            port: server.activePort,
+            bearer: server.activeBearer,
+            alias: alias
+        )
 
         backgroundAssist = Task { [weak self] in
             guard let self else { return }
-            let target = BackgroundCompletionClient.Target(
-                port: server.activePort,
-                bearer: server.activeBearer,
-                alias: alias
-            )
+            guard let target = Self.revalidatedBackgroundTarget(
+                scheduledTarget,
+                state: server.state,
+                activePort: server.activePort,
+                activeBearer: server.activeBearer
+            ) else {
+                self.clearFollowUps(anchoredTo: turn.assistantID)
+                return
+            }
             let client = BackgroundCompletionClient()
 
             // Concurrent rather than sequential: the title happens once per
@@ -603,6 +615,27 @@ final class ChatViewModel {
                 excluding: turn.lastUserText, reference: turn.assistantText
             )
         }
+    }
+
+    /// Keep a background request bound to the server generation that
+    /// scheduled it.
+    ///
+    /// The task starts cooperatively, so a stop, restart, or model switch can
+    /// occur after ``scheduleBackgroundAssist`` captures `.ready` but before
+    /// this check executes. Returning the original snapshot only when all
+    /// lifecycle-facing fields still agree prevents a stale alias from being
+    /// sent to a replacement endpoint.
+    static func revalidatedBackgroundTarget(
+        _ scheduled: BackgroundCompletionClient.Target,
+        state: ServerState,
+        activePort: Int,
+        activeBearer: String?
+    ) -> BackgroundCompletionClient.Target? {
+        guard state == .ready(alias: scheduled.alias),
+              activePort == scheduled.port,
+              activeBearer == scheduled.bearer
+        else { return nil }
+        return scheduled
     }
 
     /// Show the chips, if they are still about the answer on screen.
