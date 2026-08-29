@@ -377,11 +377,10 @@ final class WebSearchConfig {
 
     // MARK: - Lazy async lookup
     //
-    // Settings must not touch Keychain merely because its Tools page opened.
-    // A required-key backend selection or an API-key field focus calls the
-    // single-provider helper below; actual tool dispatch can also resolve its
-    // selected provider through ``apiKey(for:)``. Both routes use the same
-    // no-authentication-UI storage contract.
+    // Settings resolves only the selected backend when its visible key row
+    // appears; it never scans every provider or blocks rendering. Actual tool
+    // dispatch can also resolve its selected provider through ``apiKey(for:)``.
+    // Both routes use the same no-authentication-UI storage contract.
     //
     // The pre-existing positive/negative cache contracts in
     // ``WebSearchKeyCacheTests`` are preserved verbatim: ``apiKey(for:)``
@@ -394,7 +393,7 @@ final class WebSearchConfig {
     // into the @State initializer would re-introduce a synchronous
     // Keychain read on the first construction of ``WebSearchConfig``,
     // which happens on the main actor during ``RapidApp`` boot. The
-    // caller decides when to warm.
+    // caller decides which visible account to warm.
 
     /// Cache-only read. Returns ``.unknown`` when this provider has
     /// not been probed yet, ``.present(value)`` when the cache holds

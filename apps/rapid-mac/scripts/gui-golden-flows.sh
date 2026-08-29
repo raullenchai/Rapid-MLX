@@ -3160,6 +3160,21 @@ flow_no_dead_controls() {
 
     press "$OUT/dead-actions-models-favorite-restored.json" Settings.Category.tools \
         "$OUT/dead-actions-tools-open.json"
+    # The selected backend owns the visible key row. Opening Tools must resolve
+    # its cached Keychain state on its own; making users re-select the already
+    # selected radio or focus the secret field is the regression from #2462.
+    local key_status=""
+    for _ in {1..40}; do
+        see_main "$OUT/dead-actions-tools-key-status.json"
+        key_status="$(element_field \
+            "$OUT/dead-actions-tools-key-status.json" \
+            Settings.Tools.WebSearch.KeyStatus.keenable value)"
+        [[ -n "$key_status" && "$key_status" != "Checking saved key…" ]] && break
+        sleep 0.1
+    done
+    [[ -n "$key_status" && "$key_status" != "Checking saved key…" ]] \
+        || die "Tools left the active backend's saved-key status unresolved"
+    log "  active web-search backend resolves its saved-key status on appearance"
     local tool_name
     for tool_name in web_search browse weather; do
         round_trip_toggle "Settings.Tools.Toggle.$tool_name" "dead-actions-tool-$tool_name"

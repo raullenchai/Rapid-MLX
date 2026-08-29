@@ -22,7 +22,6 @@ struct SettingsToolsPanel: View {
     @State private var keyDraftEdited: Bool = false
     @State private var saveFeedback: SettingsView.WebSearchKeySaveFeedback?
     @State private var feedbackGeneration: Int = 0
-    @FocusState private var focusedKeyProvider: WebSearchProvider?
     /// Which tool rows have their technical detail open. Session state:
     /// a disclosure is a reading aid, not a preference, so it
     /// deliberately does not persist.
@@ -273,13 +272,8 @@ struct SettingsToolsPanel: View {
                     .controlSize(.small)
                     .tint(nil)
                     .accessibilityIdentifier("Settings.Tools.WebSearch.Backend")
-                    .onChange(of: config.provider) { _, provider in
+                    .onChange(of: config.provider) { _, _ in
                         resetKeyDraft()
-                        // This is a user-driven provider selection, not view
-                        // appearance. Required-key backends may now inspect
-                        // their one account without presenting auth UI.
-                        guard provider.requiresKey else { return }
-                        Task { await webSearch.prefetchAPIKey(for: provider) }
                     }
 
                     Text(config.provider.subtitle)
@@ -309,13 +303,6 @@ struct SettingsToolsPanel: View {
                     .textFieldStyle(.roundedBorder)
                     .font(RapidFont.body)
                     .frame(minHeight: RapidTheme.ControlHeight.small)
-                    .focused($focusedKeyProvider, equals: provider)
-                    .onChange(of: focusedKeyProvider) { _, focused in
-                        guard focused == provider else { return }
-                        // Optional-key providers (notably Keenable) stay truly
-                        // zero-touch until the user enters their key field.
-                        Task { await webSearch.prefetchAPIKey(for: provider) }
-                    }
                     .onChange(of: keyDraft) { _, _ in keyDraftEdited = true }
                     .onSubmit { commitKey(for: provider) }
                     .accessibilityIdentifier(
@@ -348,33 +335,48 @@ struct SettingsToolsPanel: View {
                             : RapidTheme.textSecondary
                     )
                     .fixedSize(horizontal: false, vertical: true)
-            } else if webSearch.cachedKeyState(for: provider) == .unavailable {
-                Text("The saved key can’t be accessed. Enter it again and save to replace it.")
+            } else {
+                let state = webSearch.cachedKeyState(for: provider)
+                Text(Self.keyStatusCaption(for: provider, state: state))
                     .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.statusError)
+                    .foregroundStyle(
+                        state == .unavailable
+                            ? RapidTheme.statusError
+                            : RapidTheme.textSecondary
+                    )
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier(
-                        "Settings.Tools.WebSearch.KeyUnavailable.\(provider.id)"
+                        "Settings.Tools.WebSearch.KeyStatus.\(provider.id)"
                     )
-            } else if webSearch.cachedKeyState(for: provider) == .unknown {
-                Text("Saved key status hasn’t been checked. Select this backend or focus the field to check it.")
-                    .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if webSearch.cachedKeyState(for: provider).hasKey {
-                Text("A key is stored for \(provider.displayName).")
-                    .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text(Self.noKeyCaption(for: provider))
-                    .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { resetKeyDraft() }
+        // Resolve the one account whose status is visible. The Keychain read
+        // is asynchronous and explicitly forbids authentication UI, so opening
+        // Settings stays responsive and never prompts. Keying the task by the
+        // selected provider also cancels a stale read when the user switches.
+        .task(id: provider) {
+            await webSearch.prefetchAPIKey(for: provider)
+        }
+    }
+
+    /// User-facing state for the selected backend's saved key. Kept pure so
+    /// every cache outcome is pinned without inspecting SwiftUI source text.
+    static func keyStatusCaption(
+        for provider: WebSearchProvider,
+        state: CachedKeyState
+    ) -> String {
+        switch state {
+        case .unknown:
+            return "Checking saved key…"
+        case .unavailable:
+            return "The saved key can’t be accessed. Enter it again and save to replace it."
+        case .present:
+            return "A key is stored for \(provider.displayName)."
+        case .absent:
+            return noKeyCaption(for: provider)
+        }
     }
 
     /// What an empty key slot means depends on the provider: a
