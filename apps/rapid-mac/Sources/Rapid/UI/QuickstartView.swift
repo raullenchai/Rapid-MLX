@@ -30,11 +30,12 @@ import SwiftUI
 ///
 /// ## Starter policy
 ///
-/// Below 16 GB, onboarding starts from LFM2.5 2.6B; at 16 GB and above,
+/// Below 16 GB, onboarding starts from LFM2.5 1.2B; at 16 GB and above,
 /// it starts from Qwen 3.5 4B. An eligible cached chat model takes priority
-/// so an existing installation does not force another download. LFM2.5 1.2B
-/// remains visible as an explicit low-memory alternative, but is never chosen
-/// automatically. The policy is pure and covered by the starter matrix tests.
+/// so an existing installation does not force another download. LFM2.5 2.6B
+/// remains available as a more capable step-up for a lower-memory Mac, while
+/// 1.2B remains the explicit low-memory alternative on larger Macs. The policy
+/// is pure and covered by the starter matrix tests.
 ///
 /// ### What this means for the empty state
 ///
@@ -396,10 +397,9 @@ final class QuickstartCoordinator {
     var seedMessage: String {
         if selection.alias == baselineStarterAlias {
             return """
-You're chatting with \(selection.displayName) — a model picked so you can start \
-chatting in about a minute. Open the picker any time to trade up to a larger \
-model: the Recommended row is chosen for this Mac's RAM, and a bigger pick is a \
-great first upgrade when you want more.
+You're chatting with \(selection.displayName), selected to fit this Mac. You're \
+ready for your first message. Open the picker any time to choose a different \
+model; the Recommended row is tailored to this Mac's memory.
 """
         }
         return """
