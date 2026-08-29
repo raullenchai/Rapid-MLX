@@ -5128,6 +5128,15 @@ def bench_command(args):
 
     _mlx_compat.install()
 
+    # Always surface the staleness nudge before any bench work, matching
+    # the serve/models pattern. bench has no ``--json`` form, so there is
+    # no machine-readable mode whose stderr must stay clean (the models
+    # ``--json`` skip lives in its own call site above).
+    if not getattr(args, "json", False):
+        from vllm_mlx._version_check import print_staleness_warning_if_any
+
+        print_staleness_warning_if_any()
+
     # --tier routes through the user-facing tier dispatcher (PR #2 of
     # the bench-consolidation series). PR #5 unified --tier with
     # --submit: when both flags are set the dispatcher runs the
@@ -6860,6 +6869,13 @@ def pull_command(args):
     repo_id = args.model  # already alias-resolved by main()
     t0 = time.monotonic()
 
+    # Surface the staleness nudge up front. pull has no ``--json`` form,
+    # so there is no machine-readable mode whose stderr must stay clean.
+    if not getattr(args, "json", False):
+        from vllm_mlx._version_check import print_staleness_warning_if_any
+
+        print_staleness_warning_if_any()
+
     # #2145: resolve an explicit ``--bits``/``--format`` variant up front via a
     # cheap file listing (no weight download). A requested variant that the
     # repo does not ship fails here with the available folders listed, before
@@ -7175,6 +7191,13 @@ def ps_command(_args):
     import time
 
     import psutil
+
+    # Surface the staleness nudge up front. ps has no ``--json`` form, so
+    # there is no machine-readable mode whose stderr must stay clean.
+    if not getattr(_args, "json", False):
+        from vllm_mlx._version_check import print_staleness_warning_if_any
+
+        print_staleness_warning_if_any()
 
     rows: list[tuple[int, str, str, str]] = []
     for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
@@ -8941,6 +8964,13 @@ def info_command(args):
         detect_model_config,
         format_profile_table,
     )
+
+    # Surface the staleness nudge up front. info has no ``--json`` form, so
+    # there is no machine-readable mode whose stderr must stay clean.
+    if not getattr(args, "json", False):
+        from vllm_mlx._version_check import print_staleness_warning_if_any
+
+        print_staleness_warning_if_any()
 
     # ``main()`` (cli.py:~3400) pre-resolves ``args.model`` from alias →
     # HF path before dispatch, stashing the user-typed alias on

@@ -79,6 +79,12 @@ CACHE_TTL_SECONDS = 24 * 3600  # 24h
 NETWORK_TIMEOUT_SECONDS = 2  # tight — staleness check is best-effort
 _REMOTE_ENGINE_TAG_RE = re.compile(r"^v(\d{1,6})\.(\d{1,6})\.(\d{1,6})$")
 _CACHED_VERSION_RE = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}$")
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+# ``X.Y.Z.devN`` (and other dotted-suffix builds like ``.postN``) keep the
+# old ``major.minor.patch``-only behavior: they parse to the base tuple so
+# dev builds compare exactly as before. Attached ``rc`` is handled below.
+_DOTTED_SUFFIX_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)\.\S+$")
+_RC_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)rc(\d+)$")
 
 
 def _cache_path() -> Path:
@@ -109,19 +115,44 @@ def _disabled() -> bool:
         return True
 
 
-def _parse_version(s: str) -> tuple[int, int, int] | None:
-    """Strict-ish ``major.minor.patch`` parse; returns None for anything
-    weirder. We deliberately don't try to handle dev/rc suffixes —
-    if a user is running a dev build, ``pkg_version`` returns
-    ``X.Y.Z.devN`` and we just stay silent.
+def _parse_version(
+    s: str,
+) -> tuple[int, int, int, int | float] | None:
+    """Parse a version into a comparison-capable tuple, or None.
+
+    Returns ``(major, minor, patch, prerelease)`` where ``prerelease`` is
+    the release-candidate number for an attached ``X.Y.ZrcN`` (e.g.
+    ``0.13.0rc1`` → ``(0, 13, 0, 1)``) or ``inf`` for everything else that
+    parses to a clean base version — a final release (``0.13.0``) or a
+    dotted-suffix build (``0.13.0.dev1`` / ``0.13.0.post1``), which keep
+    their historical ``major.minor.patch``-only behavior. The
+    ``prerelease`` element makes any ``X.Y.ZrcN`` sort BELOW the matching
+    ``X.Y.Z`` final, so an rc user reports as behind once the final ships,
+    while a `devN` build stays exactly as it always was (equal to its base
+    final, no new warning / no regression). Completely malformed strings
+    (``0.13``, ``abc``, attached alpha/beta/``+local``) return None — those
+    releases stay silent. Stdlib only (no packaging dependency); a leading
+    ``v`` is tolerated.
     """
-    parts = s.strip().lstrip("v").split(".")
-    if len(parts) < 3:
-        return None
-    try:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    except ValueError:
-        return None
+    s = s.strip()
+    m = _RC_VERSION_RE.match(s)
+    if m is not None:
+        return (
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            int(m.group(4)),
+        )
+    # Final, or dotted-suffix (dev/post) build → base tuple + inf.
+    m = _VERSION_RE.match(s) or _DOTTED_SUFFIX_RE.match(s)
+    if m is not None:
+        return (
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            float("inf"),
+        )
+    return None
 
 
 def _read_cache() -> dict | None:
@@ -349,15 +380,16 @@ def prompt_upgrade_if_available() -> bool:
         installed_str = _installed_version()
         if not installed_str:
             return False
-        # Skip pre-release / dev / local-version builds. ``_parse_version``
-        # tolerates ``0.6.62.dev1`` → ``(0, 6, 62)`` so the tuple can be
-        # compared at all, but for an interactive prompt the dev-base case
-        # can fire a false "newer release available" against the dev's
-        # own in-progress branch (installed ``0.6.61.dev1`` vs latest
+        # Skip pre-release / dev / local-version builds entirely, before
+        # even parsing. For an interactive prompt the dev-base case can
+        # fire a false "newer release available" against the dev's own
+        # in-progress branch (installed ``0.6.61.dev1`` vs latest
         # ``0.6.62`` → prompt). A clean PEP 440 final release is digits
         # and dots only; anything else (``dev``/``a``/``b``/``rc``/
         # ``post``/``+local``) is non-final and gets the dev-build skip
-        # path. DeepSeek finding #1 on PR #428.
+        # path. This keeps ``rc``/``dev`` builds silent here even though
+        # ``_parse_version`` now parses ``X.Y.ZrcN`` for the staleness
+        # banner. DeepSeek finding #1 on PR #428.
         if any(c.isalpha() or c == "+" for c in installed_str.lstrip("v")):
             return False
         installed = _parse_version(installed_str)

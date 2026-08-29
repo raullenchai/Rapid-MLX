@@ -1437,3 +1437,45 @@ def test_external_repo_identifier_is_never_truncated(tmp_path, monkeypatch, caps
 
     assert f"mlx-community/{repo}" in row
     assert "..." not in row
+
+
+# --- version-convergence: staleness call sites are wired -------------
+
+
+class _ReachedStalenessCallError(Exception):
+    """Sentinel raised by the patched helper to stop a command right at its
+    staleness call, so the smoke test never has to stub the heavy command
+    body (download, psutil scan, MLX boot, env-health run)."""
+
+
+@pytest.mark.parametrize(
+    "command_factory,args_factory",
+    [
+        (lambda: cli.bench_command, lambda: SimpleNamespace(model="x")),
+        (lambda: cli.pull_command, lambda: SimpleNamespace(model="x")),
+        (lambda: cli.ps_command, lambda: SimpleNamespace()),
+        (lambda: cli.info_command, lambda: SimpleNamespace(model="x")),
+    ],
+    ids=["bench", "pull", "ps", "info"],
+)
+def test_staleness_call_site_is_invoked(command_factory, args_factory):
+    """Each version-convergence command surfaces the staleness nudge by
+    actually invoking ``print_staleness_warning_if_any()``. The helper is
+    patched to raise a sentinel on call, so execution stops exactly at the
+    call site — covering the changed lines without pulling in the command's
+    real work (network / MLX / psutil). Hermetic: no host state."""
+    from unittest.mock import patch
+
+    calls = []
+
+    def _fake(*_args, **_kwargs):
+        calls.append(1)
+        raise _ReachedStalenessCallError
+
+    with (
+        patch("vllm_mlx._version_check.print_staleness_warning_if_any", _fake),
+        pytest.raises(_ReachedStalenessCallError),
+    ):
+        command_factory()(args_factory())
+
+    assert calls == [1], "staleness helper must fire exactly once"

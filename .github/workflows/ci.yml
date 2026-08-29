@@ -431,6 +431,7 @@ jobs:
             tests/test_ram_tier_recommendations_agree.py \
             tests/test_serving_lane_reason_contract.py \
             tests/test_version_sync.py \
+            tests/test_version_check.py \
             tests/test_pull_variant_selection.py \
             tests/test_share_cli.py \
             tests/test_doctor_env_health.py \

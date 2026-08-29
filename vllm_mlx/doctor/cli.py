@@ -55,6 +55,7 @@ def doctor_command(args: Any) -> None:
         sys.exit(2)
 
     verbose = bool(getattr(args, "verbose", False))
+
     report = run_all()
     render(report, verbose=verbose)
     sys.exit(report.exit_code)

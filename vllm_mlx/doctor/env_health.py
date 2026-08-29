@@ -743,11 +743,11 @@ def section_updates(
 
     pc, pl = vc._parse_version(cur), vc._parse_version(latest)
     if pc is None or pl is None:
-        # One side is a dev/rc/git-describe build ``_parse_version`` won't
-        # touch (e.g. ``0.10.15.dev3``, ``0.11.0rc1``, ``0.10``). We can't
-        # order them, so DON'T fall through to a green "up to date" — that
-        # would falsely reassure a user who might well be behind. Downgrade
-        # to ⚠ like every other uncertain branch in this section.
+        # One side is an unsupported alpha/beta/local/git-describe build
+        # (e.g. ``0.11.0a1``, ``0.10.15+local``, ``0.10``). We can't order
+        # it, so DON'T fall through to a green "up to date" — that would
+        # falsely reassure a user who might well be behind. Downgrade to ⚠
+        # like every other uncertain branch in this section.
         s.add(
             f"rapid-mlx {cur} — can't compare against latest {latest} "
             "(unrecognized version format); freshness check skipped",

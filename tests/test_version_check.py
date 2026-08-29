@@ -22,18 +22,44 @@ from vllm_mlx import _version_check as vc
 
 # --- _parse_version ---------------------------------------------------
 
+INF = float("inf")
+
 
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("0.6.14", (0, 6, 14)),
-        ("v0.6.14", (0, 6, 14)),  # leading v stripped
-        ("1.0.0", (1, 0, 0)),
-        ("0.6.14.dev3", (0, 6, 14)),  # dev suffix tolerated, takes patch
+        ("0.6.14", (0, 6, 14, INF)),  # final
+        ("v0.6.14", (0, 6, 14, INF)),  # leading v stripped
+        ("1.0.0", (1, 0, 0, INF)),
+        ("0.6.14.dev3", (0, 6, 14, INF)),  # dev: base tuple, unchanged
+        ("0.6.14.post1", (0, 6, 14, INF)),  # dotted suffix: base tuple
     ],
 )
 def test_parse_version_accepts_typical(raw, expected):
     assert vc._parse_version(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Attached rcN parses to its rc ordinal, so it sorts BELOW the
+        # matching final (which carries ``inf``).
+        ("0.13.0rc1", (0, 13, 0, 1)),
+        ("0.13.0rc2", (0, 13, 0, 2)),
+        ("0.6.62rc1", (0, 6, 62, 1)),
+    ],
+)
+def test_parse_version_accepts_release_candidates(raw, expected):
+    assert vc._parse_version(raw) == expected
+
+
+def test_rc_sorts_below_its_final():
+    """An rc of X.Y.Z must compare less than the X.Y.Z final, so once the
+    final ships an rc user reports as behind (staleness warning fires)."""
+    rc = vc._parse_version("0.13.0rc1")
+    final = vc._parse_version("0.13.0")
+    assert rc is not None and final is not None
+    assert rc < final
 
 
 @pytest.mark.parametrize(
@@ -43,6 +69,8 @@ def test_parse_version_accepts_typical(raw, expected):
         "0.6",  # missing patch
         "abc",
         "0.6.x",
+        "0.6.62a1",  # attached alpha stays unparseable
+        "0.6.62+local.build",  # local-version metadata stays unparseable
     ],
 )
 def test_parse_version_rejects_garbage(raw):
@@ -370,6 +398,37 @@ def test_silent_when_dev_ahead(isolated_cache, monkeypatch):
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.7.0")
     _seed_cache(isolated_cache, "0.6.16")
 
+    assert vc.staleness_warning() is None
+
+
+def test_rc_user_sees_warning_once_final_ships(isolated_cache, monkeypatch):
+    """The 0.13.1 behaviour: a user on ``0.13.0rc1`` must be told they are
+    behind now that final ``0.13.0`` is out. Previously rc parsed to None
+    and stayed silent forever."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.13.0rc1")
+    _seed_cache(isolated_cache, "0.13.0")
+
+    msg = vc.staleness_warning()
+    assert msg is not None
+    assert "0.13.0rc1" in msg
+    assert "0.13.0" in msg
+    assert "rapid-mlx upgrade" in msg
+
+
+def test_dev_build_behavior_unchanged(isolated_cache, monkeypatch):
+    """A ``X.Y.Z.devN`` build keeps its exact historical comparison: behind
+    a released final it warns (old ``_parse_version`` gave ``(0, 6, 15)``),
+    on/equal to final it is silent — the rc change must not alter devN."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.15.dev1")
+    _seed_cache(isolated_cache, "0.6.16")
+
+    msg = vc.staleness_warning()
+    assert msg is not None
+    assert "0.6.15.dev1" in msg
+    assert "0.6.16" in msg
+
+    # And on the same base final, a dev build is not treated as ahead.
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.16.dev1")
     assert vc.staleness_warning() is None
 
 

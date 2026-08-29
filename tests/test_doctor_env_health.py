@@ -1078,6 +1078,22 @@ def test_update_available_marks_warn_with_upgrade_command():
     assert "brew upgrade rapid-mlx" in row.label
 
 
+def test_update_available_from_rc_to_final_marks_warn():
+    """Doctor reuses the shared parser, so its existing Updates section is
+    the single user-visible RC-to-final notice; the command entry point must
+    not perform a duplicate network fetch before ``run_all()``."""
+    info = mock.Mock(upgrade_command="rapid-mlx upgrade", method="pip")
+    section = eh.section_updates(
+        installed=lambda: "0.13.2rc2",
+        fetch_latest=lambda: "0.13.2",
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 0.13.2" in row.label
+    assert "installed 0.13.2rc2" in row.label
+
+
 def test_updates_offline_marks_warn_never_fail():
     section = eh.section_updates(
         installed=lambda: "0.10.15",
@@ -1103,14 +1119,14 @@ def test_updates_unknown_installed_version_marks_warn():
     "installed,latest",
     [
         ("0.10", "0.10.15"),  # installed unparseable (too few components)
-        ("0.10.15", "0.11.0rc1"),  # latest unparseable (rc suffix)
-        ("0.10.15.dev3", "0.10.16.dev1"),  # both dev builds
+        ("0.10.15", "0.11.0a1"),  # latest alpha remains unsupported
+        ("0.10.15+local", "0.10.16"),  # local version remains unsupported
     ],
 )
 def test_updates_unparseable_version_marks_warn_not_up_to_date(installed, latest):
-    """A version ``_parse_version`` can't order (dev/rc/short) must NOT
-    silently green-light "up to date" — that falsely reassures a user who
-    may well be behind. It downgrades to ⚠ like every other uncertain
+    """A version ``_parse_version`` can't order (alpha/local/short) must
+    NOT silently green-light "up to date" — that falsely reassures a user
+    who may well be behind. It downgrades to ⚠ like every other uncertain
     branch, and never to a hard fail."""
     section = eh.section_updates(
         installed=lambda: installed,
