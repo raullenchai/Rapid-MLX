@@ -207,7 +207,8 @@ struct ChatStreamClient {
                     if let attachmentTurn,
                         !modelMessages[attachmentTurn].imageAttachments.isEmpty,
                         modelMessages[attachmentTurn].imageDeliveryStatus == nil
-                            || modelMessages[attachmentTurn].imageDeliveryStatus == .accepted
+                            || modelMessages[attachmentTurn]
+                                .imageDeliveryStatus?.permitsFollowUpInheritance == true
                     {
                         imageMessageIndex = attachmentTurn
                     } else {

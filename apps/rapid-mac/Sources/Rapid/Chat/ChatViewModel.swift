@@ -690,41 +690,68 @@ final class ChatViewModel {
         return messages[index]
     }
 
-    /// Persist attachment acceptance on the user turn itself. Failed empty
-    /// assistant placeholders are intentionally removed from later wire
-    /// history, so they cannot safely own this focus state.
-    private func setImageDeliveryStatus(
+    /// Persist attachment delivery progress on the user turn itself. Failed
+    /// empty assistant placeholders are intentionally removed from later wire
+    /// history, so they cannot safely own this focus state or retry budget.
+    private func applyImageDeliveryEvent(
         messageID: UUID?,
-        status: ChatMessage.ImageDeliveryStatus?,
+        event: ImageDeliveryEvent,
         epoch: Int
     ) {
         guard epoch == conversationEpoch else { return }
-        Self.updateImageDeliveryStatus(
+        Self.applyImageDeliveryEvent(
             in: &messages,
             messageID: messageID,
-            status: status
+            event: event
         )
     }
 
-    /// Pure state-layer seam for the request lifecycle. Matching by persisted
+    enum ImageDeliveryEvent: Sendable {
+        case accepted
+        case terminalRejection
+        case transientFailure
+        case abandoned
+    }
+
+    /// Pure state machine for the request lifecycle. Matching by persisted
     /// message identity prevents a late response from changing a newer image
-    /// turn after conversation branching or editing.
-    static func updateImageDeliveryStatus(
+    /// turn after conversation branching or editing. A first pre-token failure
+    /// remains eligible for one implicit retry; the second quarantines that
+    /// image. Cancellation or startup failure does not spend the retry budget.
+    static func applyImageDeliveryEvent(
         in messages: inout [ChatMessage],
         messageID: UUID?,
-        status: ChatMessage.ImageDeliveryStatus?
+        event: ImageDeliveryEvent
     ) {
         guard let messageID,
               let index = messages.firstIndex(where: { $0.id == messageID })
         else { return }
-        // Acceptance is monotonic for one request: once the server emits a
-        // token, a later transport failure means the response was interrupted,
-        // not that the image was rejected. An explicit retry may still move a
-        // previously rejected image to accepted when its own first token lands.
-        if messages[index].imageDeliveryStatus == .accepted, status != .accepted {
-            return
+
+        switch event {
+        case .accepted:
+            // An explicit Retry may prove a previously rejected image works.
+            messages[index].imageDeliveryStatus = .accepted
+        case .terminalRejection:
+            // Once the server emits a token, a later transport failure means
+            // the response was interrupted, not that the image was rejected.
+            guard messages[index].imageDeliveryStatus != .accepted else { return }
+            messages[index].imageDeliveryStatus = .rejected
+        case .transientFailure:
+            switch messages[index].imageDeliveryStatus {
+            case .accepted, .rejected:
+                return
+            case .retryable:
+                messages[index].imageDeliveryStatus = .rejected
+            case .pending, nil:
+                messages[index].imageDeliveryStatus = .retryable
+            }
+        case .abandoned:
+            // Only a newly-created request owns `.pending`. A cancelled retry
+            // preserves its prior retryable/rejected state by identity.
+            if messages[index].imageDeliveryStatus == .pending {
+                messages[index].imageDeliveryStatus = nil
+            }
         }
-        messages[index].imageDeliveryStatus = status
     }
 
     /// Start a fresh conversation — drops the transcript and any stale
@@ -996,9 +1023,9 @@ final class ChatViewModel {
         epoch: Int? = nil
     ) {
         if let epoch, epoch != conversationEpoch { return }
-        setImageDeliveryStatus(
+        applyImageDeliveryEvent(
             messageID: imageMessageID,
-            status: nil,
+            event: .abandoned,
             epoch: conversationEpoch
         )
         let message = "Couldn't start \(alias). Try again, or pick a different model in the box below."
@@ -1046,9 +1073,9 @@ final class ChatViewModel {
         epoch: Int? = nil
     ) {
         if let epoch, epoch != conversationEpoch { return }
-        setImageDeliveryStatus(
+        applyImageDeliveryEvent(
             messageID: imageMessageID,
-            status: nil,
+            event: .abandoned,
             epoch: conversationEpoch
         )
         if var placeholder = currentMessage(index: placeholderIndex) {
@@ -1078,6 +1105,13 @@ final class ChatViewModel {
     func stopAndPersist() {
         inflight?.cancel()
         guard isStreaming else { return }
+        // App termination snapshots synchronously, before the cancelled
+        // stream task can reach its catch block. No request remains live, so
+        // every `.pending` image delivery is abandoned rather than persisted
+        // as an attachment that can never be inherited again.
+        for index in messages.indices where messages[index].imageDeliveryStatus == .pending {
+            messages[index].imageDeliveryStatus = nil
+        }
         // Finalise through the SHARED cancellation contract before snapshotting.
         // Persisting a message still marked ``.streaming`` writes a turn that
         // reopens after relaunch as a permanent typing indicator, with no live
@@ -2649,9 +2683,9 @@ Your previous draft refused the question by claiming you lack real-time access o
                 guard let self else { return }
                 switch event {
                 case .firstToken(let at):
-                    self.setImageDeliveryStatus(
+                    self.applyImageDeliveryEvent(
                         messageID: request.imageMessageID,
-                        status: .accepted,
+                        event: .accepted,
                         epoch: epoch
                     )
                     // The stream says the first generated token landed, on
@@ -2687,9 +2721,9 @@ Your previous draft refused the question by claiming you lack real-time access o
                     capturedPromptTokens = prompt
                     capturedCompletionTokens = completion
                 case .finished(let reason):
-                    self.setImageDeliveryStatus(
+                    self.applyImageDeliveryEvent(
                         messageID: request.imageMessageID,
-                        status: .accepted,
+                        event: .accepted,
                         epoch: epoch
                     )
                     capturedFinish = reason
@@ -2857,6 +2891,11 @@ Your previous draft refused the question by claiming you lack real-time access o
                 self.writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
             }
         } catch where Self.isCancellation(error) {
+            applyImageDeliveryEvent(
+                messageID: request.imageMessageID,
+                event: .abandoned,
+                epoch: epoch
+            )
             // v0.4.29 pin: cancel MUST land as .complete (not .failed)
             // so the half-streamed content the user already saw stays
             // in the transcript with normal styling. Flipping to
@@ -2874,12 +2913,11 @@ Your previous draft refused the question by claiming you lack real-time access o
             let imageRejection = request.imageMessageID == nil
                 ? nil
                 : (error as? ChatStreamError)?.attachmentFailureMessage
-            setImageDeliveryStatus(
+            applyImageDeliveryEvent(
                 messageID: request.imageMessageID,
-                // A transient transport/busy/runtime failure does not prove
-                // the attachment was unsupported. Return it to the legacy
-                // unknown state so a later plain follow-up can retry it.
-                status: imageRejection == nil ? nil : .rejected,
+                // A transient transport/busy/runtime failure gets one bounded
+                // implicit retry. A typed rejection is terminal immediately.
+                event: imageRejection == nil ? .transientFailure : .terminalRejection,
                 epoch: epoch
             )
             current.status = .failed
