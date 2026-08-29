@@ -5416,7 +5416,92 @@ flow_dictation() {
     [[ "$(element_field "$OUT/dictation-relaunch-audio.json" Dictation.Enable value)" == "1" ]] \
         || die "Relaunch disabled the user's persisted Dictation intent"
 
-    log "  setup controls, privacy toggle, vocabulary, co-loaded warmup, relaunch, and preserved chat produced effects"
+    # A crashed process releases its mounted speech lane. Moving away from
+    # Rapid and returning must repair only the global input tap; app activation
+    # must not race the server's bounded crash recovery by launching an
+    # audio-only sidecar. The pane stays honest about the next user action.
+    local listening_after_relaunch=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/dictation-relaunch-ready.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Listening — press")))' \
+                 "$OUT/dictation-relaunch-ready.json" >/dev/null; then
+            listening_after_relaunch=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$listening_after_relaunch" == 1 ]] \
+        || die "Dictation did not finish restoring after relaunch"
+    local crash_pid crash_command audio_starts_before_foreground
+    crash_pid="$(jq -rs 'map(select(.event == "server_started" and .alias == "fake-alias"))
+                         | last | .pid // empty' "$OUT/fake-events.jsonl")"
+    [[ "$crash_pid" =~ ^[0-9]+$ ]] || die "Dictation crash fixture has no owned sidecar pid"
+    crash_command="$(ps -p "$crash_pid" -o command= 2>/dev/null || true)"
+    [[ "$crash_command" == *"serve fake-alias"* ]] \
+        || die "Dictation crash fixture refused to signal an unowned process"
+    local terminal_seen=0 paused_seen=0
+    audio_starts_before_foreground="$(jq -rs \
+        'map(select(.event == "server_started" and .alias == "fake-whisper-small")) | length' \
+        "$OUT/fake-events.jsonl")"
+    osascript - "$APP_PID" > "$OUT/dictation-background.json" <<'APPLESCRIPT'
+on run argv
+    tell application "Finder" to activate
+    delay 0.2
+    return "{\"success\":true,\"method\":\"finder\"}"
+end run
+APPLESCRIPT
+    kill "$crash_pid"
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/dictation-crashed-background.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Listening paused — press")))' \
+                 "$OUT/dictation-crashed-background.json" >/dev/null; then
+            terminal_seen=1; break
+        fi
+        sleep 0.05
+    done
+    [[ "$terminal_seen" == 1 ]] \
+        || die "Dictation did not observe the crashed sidecar before foreground activation"
+    osascript - "$APP_PID" > "$OUT/dictation-foreground.json" <<'APPLESCRIPT'
+on run argv
+    set targetPID to (item 1 of argv) as integer
+    tell application "System Events"
+        set frontmost of first application process whose unix id is targetPID to true
+    end tell
+    delay 0.5
+    return "{\"success\":true,\"method\":\"frontmost-after-crash\"}"
+end run
+APPLESCRIPT
+    for ((i=0; i<10; i++)); do
+        see_main "$OUT/dictation-after-foreground.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Dictation.Status"
+                           and (((.description // .value // .label // "") | tostring)
+                                | startswith("Listening paused — press")))' \
+                 "$OUT/dictation-after-foreground.json" >/dev/null; then
+            paused_seen=1; break
+        fi
+        sleep 0.05
+    done
+    [[ "$paused_seen" == 1 ]] \
+        || die "Foreground activation hid the explicit Dictation reconnect action"
+    # Observe beyond the activation itself instead of taking one instant
+    # sample. The expected chat auto-respawn may start fake-alias during this
+    # window; only a transcription-owned process proves the foreground path
+    # restarted Dictation behind the user's back.
+    for ((i=0; i<60; i++)); do
+        [[ "$(jq -rs \
+                'map(select(.event == "server_started" and .alias == "fake-whisper-small")) | length' \
+                "$OUT/fake-events.jsonl")" == "$audio_starts_before_foreground" ]] \
+            || die "Foreground activation silently restarted a Dictation sidecar"
+        sleep 0.05
+    done
+
+    log "  setup controls, privacy toggle, vocabulary, co-loaded warmup, relaunch, preserved chat, and foreground-after-crash produced effects"
     log "  dictation OK"
     cleanup_persona
 }

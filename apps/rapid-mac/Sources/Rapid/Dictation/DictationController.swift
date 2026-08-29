@@ -356,8 +356,8 @@ final class DictationController {
             cancelModelPreparation()
             // Preserve the user's Enabled intent, but publish a terminal
             // non-ready phase. Keep the feature-owned event tap registered:
-            // foreground revalidation or a later server transition can retry
-            // the model without asking the user to arm dictation by hand.
+            // the next explicit hotkey press or a later server transition can
+            // retry the model without asking the user to arm dictation again.
             phase = .off
         }
     }
@@ -447,10 +447,10 @@ final class DictationController {
     }
 
     @discardableResult
-    private func registerHotkey() -> Bool {
+    private func registerHotkey(phaseOnSuccess: Phase = .idle) -> Bool {
         guard !isHotkeyArmed else {
             lastError = nil
-            phase = .idle
+            phase = phaseOnSuccess
             return true
         }
         guard testingHotkeyStart?() ?? hotkey.start() else {
@@ -468,7 +468,7 @@ final class DictationController {
         accessibilityNeedsRelaunch = false
         isHotkeyArmed = true
         lastError = nil
-        phase = .idle
+        phase = phaseOnSuccess
         return true
     }
 
@@ -561,10 +561,15 @@ final class DictationController {
             return
         }
         // Returning to the app is also when a permission granted elsewhere
-        // becomes usable, so a session that failed to arm gets another try
-        // rather than staying dead until the switch is cycled by hand.
-        guard phase != .off else {
-            Task { await enable() }
+        // becomes usable, so a session that failed to arm gets another try.
+        // Keep that repair separate from model residency: foregrounding Rapid
+        // after Stop or a crash is not consent to launch an audio sidecar.
+        if phase == .off {
+            if isHotkeyArmed {
+                hotkey.reEnableIfDisabled()
+            } else {
+                _ = registerHotkey(phaseOnSuccess: .off)
+            }
             return
         }
         // A foreground activation must never sneak the event tap back in
@@ -803,7 +808,16 @@ final class DictationController {
                 self.beginRecordingRequestID = nil
             }
         case .starting, .recording: finishRecording()
-        case .preparingModel, .transcribing, .off: break
+        case .off:
+            // A terminal server state leaves the user's shortcut armed but
+            // releases its model. Only this explicit action owns loading it
+            // again; app activation merely repairs the event tap.
+            guard isEnabled else { return }
+            phase = .preparingModel
+            Task { [weak self] in
+                await self?.enable(replacingCurrentPrewarm: true)
+            }
+        case .preparingModel, .transcribing: break
         }
     }
 

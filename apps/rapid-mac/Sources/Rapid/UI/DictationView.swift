@@ -134,7 +134,7 @@ struct DictationView: View {
         }
         if controller.phase == .off {
             return controller.isHotkeyArmed
-                ? "Listening paused — reconnecting the speech model"
+                ? "Listening paused — press \(controller.trigger.label) to reconnect"
                 : "Not listening — the hotkey isn't armed"
         }
         return "Listening — press \(controller.trigger.label) in any app"
@@ -151,7 +151,7 @@ struct DictationView: View {
         }
         if controller.phase == .off {
             return controller.lastError
-                ?? "Rapid will reconnect the speech model automatically."
+                ?? "Rapid will load \(controller.modelAlias) when you next use dictation."
         }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {

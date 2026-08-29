@@ -288,10 +288,11 @@ def test_dictation_journey_proves_loading_before_ready():
 
     The fixture keeps a fake STT probe open long enough to observe both
     state transitions. Previously the two `die` message strings were pinned;
-    the stable guarantee is that the flow asserts *two* independent
+    the stable guarantee is that the flow asserts at least two independent
     `Dictation.Status` outcome predicates — a Loading phase and a
     Listening/ready phase — via the shared ``.description // .value // .label``
-    status filter, plus the behavioural warmup probe.
+    status filter, plus the behavioural warmup probe. Later lifecycle checks
+    may add more status predicates without weakening that guarantee.
     """
     flow = _harness_flow_body("flow_dictation")
 
@@ -301,8 +302,10 @@ def test_dictation_journey_proves_loading_before_ready():
     assert '.event == "audio_transcription"' in flow
     # The status filter used to read readiness text off a control description.
     assert '(.description // .value // .label // "")' in flow
-    # Two distinct observed states feed the executable failure helper.
-    assert flow.count('select(.identifier == "Dictation.Status"') == 2
+    # Pin the two required predicates themselves. A later lifecycle assertion
+    # cannot keep this contract green if either loading or ready disappears.
+    assert 'contains("Loading fake-whisper-small into memory")' in flow
+    assert 'startswith("Listening — press")' in flow
     assert 'require_observed_phase "$loading_seen" loading' in flow
     assert 'require_observed_phase "$ready_seen" listening' in flow
 

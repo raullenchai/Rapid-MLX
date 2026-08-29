@@ -182,8 +182,8 @@ struct AudioCatalogTests {
         #expect(!source.contains("Dictation.Arm"))
         #expect(source.contains("controller.isHotkeyArmed"))
         #expect(source.contains("Listening — press"))
-        #expect(source.contains("Listening paused — reconnecting the speech model"))
-        #expect(source.contains("Rapid will reconnect the speech model automatically."))
+        #expect(source.contains("Listening paused — press \\(controller.trigger.label) to reconnect"))
+        #expect(source.contains("Rapid will load \\(controller.modelAlias) when you next use dictation."))
     }
 
     @Test("parser extracts audio rows and preserves subtype, family, size, and repo")

@@ -476,14 +476,14 @@ struct DictationTests {
     }
 
     @MainActor
-    @Test("failed chat-model switch leaves enabled dictation retryable")
-    func failedChatModelSwitchIsRetryable() async {
-        var warmupContinuation: CheckedContinuation<Bool, Never>?
+    @Test("foreground after a terminal server state waits for the next dictation hotkey")
+    func terminalServerStateDoesNotPrewarmOnForeground() async {
+        var prewarmCount = 0
         var hotkeyStartCount = 0
         let controller = readinessController(
-            phase: .idle,
             prewarm: {
-                await withCheckedContinuation { warmupContinuation = $0 }
+                prewarmCount += 1
+                return true
             },
             hotkeyStart: {
                 hotkeyStartCount += 1
@@ -491,22 +491,64 @@ struct DictationTests {
             }
         )
 
-        controller.serverStateDidChange(.starting(alias: "lfm2.5-1b-4bit"))
-        controller.serverStateDidChange(.crashed(
-            alias: "lfm2.5-1b-4bit",
-            message: "fixture failure"
-        ))
-        #expect(controller.isEnabled)
-        #expect(controller.phase == .off)
-        #expect(hotkeyStartCount == 0)
+        await controller.enable()
+        #expect(controller.phase == .idle)
+        #expect(controller.isHotkeyArmed)
+        #expect(prewarmCount == 1)
+        #expect(hotkeyStartCount == 1)
+
+        let terminalStates: [ServerState] = [
+            .stopped,
+            .crashed(alias: "lfm2.5-1b-4bit", message: "fixture failure"),
+        ]
+        for state in terminalStates {
+            controller.serverStateDidChange(state)
+            #expect(controller.isEnabled)
+            #expect(controller.phase == .off)
+            #expect(controller.isHotkeyArmed)
+
+            let beforeForeground = prewarmCount
+            controller.revalidate()
+            await waitUntil(timeout: .milliseconds(100)) {
+                prewarmCount > beforeForeground
+            }
+
+            #expect(prewarmCount == beforeForeground)
+            #expect(controller.phase == .off)
+            #expect(controller.isHotkeyArmed)
+
+            controller.toggleFromUI()
+            await waitUntil { controller.phase == .idle }
+            #expect(prewarmCount == beforeForeground + 1)
+            #expect(controller.phase == .idle)
+            #expect(controller.isHotkeyArmed)
+            #expect(hotkeyStartCount == 1)
+        }
+    }
+
+    @MainActor
+    @Test("foreground permission recovery arms only the hotkey")
+    func foregroundPermissionRecoveryDoesNotPrewarm() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
 
         controller.revalidate()
-        while warmupContinuation == nil { await Task.yield() }
-        #expect(controller.phase == .preparingModel)
-        warmupContinuation?.resume(returning: true)
-        await waitUntil { controller.phase == .idle }
-        #expect(controller.phase == .idle)
+        await waitUntil(timeout: .milliseconds(100)) { prewarmCount > 0 }
+
+        #expect(prewarmCount == 0)
         #expect(hotkeyStartCount == 1)
+        #expect(controller.phase == .off)
+        #expect(controller.isHotkeyArmed)
     }
 
     @MainActor
