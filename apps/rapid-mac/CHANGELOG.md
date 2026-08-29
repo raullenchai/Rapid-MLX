@@ -157,8 +157,9 @@ can actually understand.
 ### Known issues
 
 - Suffix decoding with sliding-window models such as Gemma 4 and GPT-OSS can
-  abort a request at a window boundary. Disable suffix decoding for these
-  models as a workaround. ([#2463](https://github.com/raullenchai/Rapid-MLX/issues/2463))
+  abort a request at a window boundary. Remove `--suffix-decoding`, or start
+  the server with `--no-spec-decode`, for these models as a workaround.
+  ([#2463](https://github.com/raullenchai/Rapid-MLX/issues/2463))
 
 ## [0.13.1] — 2026-08-26
 
