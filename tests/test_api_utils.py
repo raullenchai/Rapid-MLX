@@ -1414,6 +1414,18 @@ class TestResolveServingLane:
             False,
         )
 
+    def test_force_mllm_on_text_checkpoint_stays_text_forced(self, monkeypatch):
+        from vllm_mlx.api.utils import (
+            ServingLaneDecision,
+            resolve_serving_lane_decision,
+        )
+
+        self._patch_probes(monkeypatch, is_mllm=False, hybrid=False)
+
+        assert resolve_serving_lane_decision(
+            "local/text-model", force_mllm=True
+        ) == ServingLaneDecision(True, "vision_lane_forced")
+
 
 class TestServingLaneDecisionValidation:
     """The SSOT membership checks on ``ServingLaneDecision`` fail fast."""
