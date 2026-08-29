@@ -103,10 +103,12 @@ can actually understand.
   [#2543](https://github.com/raullenchai/Rapid-MLX/pull/2543),
   [#2619](https://github.com/raullenchai/Rapid-MLX/pull/2619))
 - **Desktop lifecycle recovery no longer blocks shared workers.** Exited server
-  leaders are reaped after the kernel exit event, and a stopped dictation model
-  reloads on the next hotkey instead of during foreground activation.
+  leaders are reaped after the kernel exit event, dual-stack `tcp46` listeners
+  are recognized when clearing a stale server port, and a stopped dictation
+  model reloads on the next hotkey instead of during foreground activation.
   ([#2562](https://github.com/raullenchai/Rapid-MLX/pull/2562),
-  [#2593](https://github.com/raullenchai/Rapid-MLX/pull/2593))
+  [#2593](https://github.com/raullenchai/Rapid-MLX/pull/2593),
+  [#2663](https://github.com/raullenchai/Rapid-MLX/pull/2663))
 - **Settings and photo guidance describe the actual state.** Tools shows
   whether the selected search key is present without exposing it; dictation no
   longer guesses that every preparation failure is a memory problem; photo
