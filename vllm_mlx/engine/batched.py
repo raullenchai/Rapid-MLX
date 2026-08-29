@@ -3586,26 +3586,73 @@ class BatchedEngine(BaseEngine):
         # forced prefix were yielded first, an immediate cancel could race the
         # scheduler registration and return 404 for a live request.
         routed_stream = self._stream_with_output_router(stream, router)
+
+        async def _first_engine_output() -> GenerationOutput | None:
+            try:
+                return await anext(routed_stream)
+            except StopAsyncIteration:
+                return None
+
+        first_output: GenerationOutput | None = None
+        engine_output_task: asyncio.Task[GenerationOutput | None] | None = None
+        admission_task: asyncio.Task[None] | None = None
         try:
-            first_output = await anext(routed_stream)
-        except StopAsyncIteration:
-            first_output = None
-        # On the streaming path inject the forced prefix as a synthetic
-        # first chunk so the route layer's streaming tool-call parser
-        # sees the wire envelope opener from the very first delta.
-        if forced_assistant_prefix:
-            yield GenerationOutput(
-                text=forced_assistant_prefix,
-                new_text=forced_assistant_prefix,
-                prompt_tokens=0,
-                completion_tokens=0,
-                finished=False,
-                finish_reason=None,
-            )
-        if first_output is not None:
-            yield first_output
-        async for output in routed_stream:
-            yield output
+            if forced_assistant_prefix:
+                admitted_event = kwargs.get("request_admitted_event")
+                if admitted_event is not None:
+                    # Start the engine generator so the scheduler can admit
+                    # the request, but do not wait for the first decoded
+                    # token. The prefix is valid as soon as the public ID is
+                    # addressable.
+                    engine_output_task = asyncio.create_task(_first_engine_output())
+                    admission_task = asyncio.create_task(admitted_event.wait())
+
+                    done, _ = await asyncio.wait(
+                        {engine_output_task, admission_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if engine_output_task in done:
+                        first_output = engine_output_task.result()
+                    if admission_task not in done:
+                        # The generator reached its first output without a
+                        # late admission notification. That is still
+                        # sufficient evidence that it was admitted, and the
+                        # synthetic prefix must not reorder model output.
+                        admission_task.cancel()
+            else:
+                try:
+                    first_output = await anext(routed_stream)
+                except StopAsyncIteration:
+                    first_output = None
+
+            if forced_assistant_prefix:
+                # On the streaming path inject the forced prefix as a synthetic
+                # first chunk so the route layer's streaming tool-call parser
+                # sees the wire envelope opener from the very first delta.
+                yield GenerationOutput(
+                    text=forced_assistant_prefix,
+                    new_text=forced_assistant_prefix,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    finished=False,
+                    finish_reason=None,
+                )
+                if first_output is None and engine_output_task is not None:
+                    first_output = await engine_output_task
+                if first_output is not None:
+                    yield first_output
+            elif first_output is not None:
+                yield first_output
+
+            async for output in routed_stream:
+                yield output
+        finally:
+            # A failed, empty, or cancelled stream must not leave priming
+            # tasks attached to the current event loop.
+            if engine_output_task is not None and not engine_output_task.done():
+                engine_output_task.cancel()
+            if admission_task is not None and not admission_task.done():
+                admission_task.cancel()
 
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics."""

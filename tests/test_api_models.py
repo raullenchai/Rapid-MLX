@@ -1087,6 +1087,8 @@ class TestStreamingModels:
     @pytest.mark.asyncio
     async def test_forced_prefix_waits_for_scheduler_admission(self):
         """Synthetic tool prefixes cannot expose an unadmitted request id."""
+        import asyncio
+
         from vllm_mlx.engine.base import GenerationOutput
         from vllm_mlx.engine.batched import BatchedEngine
 
@@ -1100,11 +1102,10 @@ class TestStreamingModels:
         )
         engine._needs_prefix_boundary_snapshot = lambda: False
         engine._create_output_router = lambda: None
-        admitted = False
+        admitted = asyncio.Event()
 
-        async def _stream_generate(**_kwargs):
-            nonlocal admitted
-            admitted = True
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
             yield GenerationOutput(
                 text="answer",
                 new_text="answer",
@@ -1118,13 +1119,175 @@ class TestStreamingModels:
         stream = engine.stream_chat(
             [{"role": "user", "content": "hi"}],
             forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
         )
 
         first = await anext(stream)
 
-        assert admitted is True
+        assert admitted.is_set()
         assert first.new_text == "<tool_call>"
         await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_yields_after_admission_before_first_decode(self):
+        """A blocked first decode cannot delay the forced tool-call envelope."""
+        import asyncio
+
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = asyncio.Event()
+        release_first_output = asyncio.Event()
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            await release_first_output.wait()
+            yield GenerationOutput(
+                text="answer",
+                new_text="answer",
+                prompt_tokens=1,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
+        )
+
+        first = await asyncio.wait_for(anext(stream), timeout=0.2)
+
+        assert admitted.is_set()
+        assert first.new_text == "<tool_call>"
+        assert not release_first_output.is_set()
+
+        release_first_output.set()
+        second = await anext(stream)
+        assert second.new_text == "answer"
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_empty_stream_after_admission_completes(self):
+        """Exhaustion after admission emits only the synthetic prefix."""
+        import asyncio
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = asyncio.Event()
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            await asyncio.sleep(0)
+            yield None  # pragma: no cover
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
+        )
+
+        assert (await anext(stream)).new_text == "<tool_call>"
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_failed_stream_after_admission_propagates(self):
+        """Engine failures after admission do not swallow the prefix or error."""
+        import asyncio
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = asyncio.Event()
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            raise RuntimeError("engine failed")
+            yield  # pragma: no cover
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
+        )
+
+        with pytest.raises(RuntimeError, match="engine failed"):
+            await anext(stream)
+
+    @pytest.mark.asyncio
+    async def test_forced_prefix_stream_close_cancels_pending_output(self):
+        """Closing after the prefix retires the still-pending decode task."""
+        import asyncio
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._prepare_cache_stable_messages = lambda messages: (messages, None)
+        engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
+        engine._prepare_harmony_no_thinking_prompt = lambda prompt, **_kwargs: (
+            prompt,
+            None,
+        )
+        engine._needs_prefix_boundary_snapshot = lambda: False
+        engine._create_output_router = lambda: None
+        admitted = asyncio.Event()
+        output_cancelled = asyncio.Event()
+
+        async def _stream_generate(**kwargs):
+            kwargs["request_admitted_event"].set()
+            try:
+                await asyncio.Event().wait()
+                yield None  # pragma: no cover
+            except asyncio.CancelledError:
+                output_cancelled.set()
+                raise
+
+        engine.stream_generate = _stream_generate
+        stream = engine.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            forced_assistant_prefix="<tool_call>",
+            request_admitted_event=admitted,
+        )
+
+        first = await asyncio.wait_for(anext(stream), timeout=0.2)
+        assert first.new_text == "<tool_call>"
+        await stream.aclose()
+        await asyncio.wait_for(output_cancelled.wait(), timeout=0.2)
 
     @pytest.mark.asyncio
     async def test_role_frame_waits_for_admission_not_first_token(self):
