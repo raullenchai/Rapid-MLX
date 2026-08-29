@@ -950,14 +950,16 @@ def mtp_generate_step(
                 xtc_draw=first_xtc_draw,
             )
 
-            # One shared uniform for all positions' probabilistic
-            # accept tests. Ollama uses a per-position Bernoulli draw;
-            # at greedy temp=0 the draw is ignored (accept iff argmax
-            # match), so this only matters for temp>0 where the same
-            # ``u`` biases all positions the same way — closer to
-            # Ollama's per-position draw than reusing the sampler
-            # chain's XTC cell would be.
-            u = mx.random.uniform()
+            # One INDEPENDENT uniform per draft position. Speculative
+            # sampling requires an iid Bernoulli(min(1, p/q)) draw at
+            # every proposed position: sharing a single scalar across
+            # positions correlates the accept/reject events, so even
+            # though each position's marginal accept probability stays
+            # correct, the joint distribution of the emitted sequence
+            # no longer matches plain autoregressive sampling from the
+            # target. At greedy temp=0 the draw is skipped entirely
+            # (accept iff argmax match), so this only affects temp>0.
+            # See tests/test_mtp_nongreedy_distribution.py.
             drafts_i32 = drafts_arr.astype(mx.int32)
 
             # --------------------------------------------------------
@@ -976,6 +978,7 @@ def mtp_generate_step(
             else:
                 # Vectorized per-position log-accept over the K draft
                 # positions with a shared draw ``u``.
+                u = mx.random.uniform(shape=(k_len,))
                 v_alps = accept_lps[:k_len]  # (K, V)
                 idx = drafts_i32.reshape(-1, 1)  # (K, 1)
                 v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
@@ -1009,7 +1012,7 @@ def mtp_generate_step(
             accepted_count = 0
             try:
                 _verify_sync_started = time.perf_counter()
-                mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
+                mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr)
                 _timing_add(
                     "verify_sync_seconds",
                     time.perf_counter() - _verify_sync_started,

@@ -2463,6 +2463,30 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.tokens_saved == 1
 
 
+def test_generator_greedy_skips_probabilistic_acceptance_draw(monkeypatch):
+    """Greedy verification must not create the sampling-only uniform draw."""
+    from vllm_mlx.spec_decode.mtp import generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+
+    def _unexpected_uniform(*_args, **_kwargs):
+        raise AssertionError("greedy MTP must not draw a sampling acceptance uniform")
+
+    monkeypatch.setattr(generator_mod.mx.random, "uniform", _unexpected_uniform)
+    emitted = [
+        token
+        for token, _logprobs, _from_draft in generator_mod.mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, 11, 13], [11]),
+            max_tokens=3,
+            max_k=1,
+            accept_counter=MTPAcceptCounter(),
+            disable_auto_k=True,
+        )
+    ]
+
+    assert emitted == [7, 11, 13]
+
+
 def test_prompt_lookup_point_mass_residual_removes_proposed_token():
     from vllm_mlx.spec_decode.mtp.generator import (
         _point_mass_residual_distribution,

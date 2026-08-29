@@ -777,10 +777,23 @@ def _install_mtp_vendored(
       batch=1-only (``mtp_forward`` raises on B>1) and the vendored
       generator maintains its own per-request state.
 
-    * Greedy sampling only (temperature == 0). Non-greedy falls through
-      to ``_orig_step`` — the byte-lossless verify contract lives in the
-      generator's residual-distribution sampling on reject, which the
-      MVP does not exercise. Non-greedy support is a follow-up.
+    * Greedy AND non-greedy sampling (issue #1013). The request's
+      ``(temperature, top_p, top_k, min_p)`` is forwarded to
+      ``mtp_generate_step``, which drives the draft and the verify step
+      from one shared filter chain: at ``temperature == 0`` it
+      short-circuits to argmax (the pre-existing, unchanged fast path);
+      above it the accept test is ``min(1, p_target/p_draft)`` with a
+      resample from the normalized residual
+      ``max(p_target - p_draft, 0)`` on reject, which preserves the sampling
+      marginal for the target distribution produced by the verification
+      forward. Equivalence between that batched target forward and sequential
+      one-token AR is a separate model/cache invariant;
+      ``bench/repro_mtp_forced_k_parity.py`` checks it on real weights. This
+      route is unoptimized — a batched/sparse top-k variant is a follow-up.
+      Requests whose
+      sampler cannot be reproduced inside the generator (unresolvable
+      bookkeeping, ``temperature is None``, or a per-request PRNG
+      ``seed``) still fall through to ``_orig_step``.
 
     * No logits processors. If any position of ``gb.logits_processors``
       is truthy we fall through — the generator has its own logits-
@@ -898,7 +911,17 @@ def _install_mtp_vendored(
         "vendored_steps": 0,
         "fallthrough_steps": 0,
         "ft_batch_size": 0,
-        "ft_non_greedy": 0,
+        # Request bookkeeping could not be resolved (or carried a
+        # ``None`` temperature), so we cannot reproduce the request's
+        # sampler inside the generator. Fail closed to plain decode.
+        "ft_unresolved_sampling": 0,
+        # Per-request PRNG seed set: the vendored generator samples from
+        # the global MLX PRNG stream, so it cannot honour the seeded
+        # sampler's reproducibility contract. Fail closed.
+        "ft_seeded_sampling": 0,
+        # Sampling params changed mid-stream. The generator's sampler
+        # chain is fixed at construction, so hand off to plain decode.
+        "ft_sampling_changed": 0,
         "ft_logits_processors": 0,
         "ft_disabled": 0,
         "gen_exhausted": 0,
@@ -984,45 +1007,75 @@ def _install_mtp_vendored(
             except Exception:  # noqa: BLE001
                 pass
 
-    def _is_greedy_for_uid(uid: int) -> bool:
-        """Return True when the request behind ``uid`` sampled at temp=0.
+    def _sampling_for_uid(
+        uid: int,
+    ) -> tuple[tuple[float, float, int, float] | None, str]:
+        """Resolve the sampler config to hand the vendored generator.
 
-        Matches the greedy contract that
-        ``vllm_mlx/spec_decode/mtp/generator.py::mtp_generate_step``
-        implements with ``temp=0.0``. Under temp>0, the vendored
-        generator can still preserve the lossless marginal via its
-        residual-distribution sample on reject — but the MVP install
-        hard-codes ``temp=0.0`` into the generator constructor, so any
-        request with temperature>0 would silently receive a
-        different sampled marginal.
+        Returns ``((temp, top_p, top_k, min_p), "")`` for the request
+        behind ``uid``, or ``(None, reason)`` when MTP must fall
+        through to plain decode. ``reason`` names the ``_stats``
+        counter suffix the caller should bump.
 
-        Codex round-A blocker #1: fail closed on unresolvable metadata.
-        Prior revision returned ``True`` when ``uid_to_request_id`` or
-        ``requests`` were ``None`` (or the request lookup failed) —
-        that would silently apply greedy sampling to a temp>0 request
-        whose bookkeeping had just been evicted. Return ``False`` here
-        so the caller falls through to ``_orig_step()`` (which reads
-        the real sampler from ``gb.samplers[0]``) instead of applying
-        the MTP-hardcoded greedy path.
+        Issue #1013 ("Non-greedy fall-through"): the install used to
+        answer a BINARY question — "is this request greedy?" — and
+        routed every ``temperature > 0`` request away from speculative
+        decoding entirely, because it hard-coded ``temp=0.0`` into the
+        generator constructor. That made MTP a no-op for essentially
+        all real traffic (rapid-desktop defaults to ``temp=0.7,
+        top_p=0.95``). The speculative-sampling math for temp>0 —
+        accept with ``min(1, p_target/p_draft)``, resample from the
+        normalized residual ``max(p_target - p_draft, 0)`` on reject —
+        already exists in ``mtp_generate_step``; it was simply never
+        reachable. This helper now answers "WHICH sampler?" instead,
+        and the caller forwards the answer to the generator so the
+        exact same filter chain (top_p / top_k / min_p, then
+        temperature-scaled categorical) drives BOTH the draft and the
+        verify step. That shared chain keeps the accepted marginal equal to
+        the verification target's sampling distribution. Whether a batched
+        verify forward is numerically equivalent to sequential AR is a
+        separate model/cache invariant;
+        it is the same nucleus math the scheduler's
+        ``make_fused_top_p_temp_sampler`` fast path implements for
+        plain decode, expressed as a distribution rather than a bare
+        token because the accept/reject test needs ``p`` and ``q``,
+        not just a sample.
 
-        Codex round-B blocker: also fail closed when ``temperature is
-        None``. ``vllm_mlx.request.SamplingParams`` defaults
-        ``temperature=0.7`` (not zero) and ``None`` is not a normal
-        value — it typically signals "use the server / OpenAI-route
-        default," which is likewise nonzero. Treating a bare ``None``
-        as greedy would silently apply the MTP-hardcoded ``temp=0.0``
-        marginal to a request the operator meant to sample stochast-
-        ically. Only an EXPLICIT ``0.0`` passes the gate; every other
-        shape falls through to plain decode.
+        Fail-closed cases (return ``None``):
+
+        * Codex round-A blocker #1: unresolvable metadata
+          (``uid_to_request_id`` / ``requests`` is ``None``, or the
+          lookup misses). We cannot know what the caller asked for, so
+          delegate to ``_orig_step()``, which reads the real sampler
+          from ``gb.samplers[0]``.
+        * Codex round-B blocker: ``temperature is None``. That is not a
+          normal value — it signals "use the server / OpenAI-route
+          default" — and guessing one would silently change the
+          request's marginal.
+        * A per-request PRNG ``seed`` (H-11). The seeded sampler splits
+          a dedicated ``mx.random.key(seed)`` per step; the vendored
+          generator draws from the global MLX stream for its accept
+          test and residual sample, so it cannot reproduce that
+          contract. Reproducibility beats speculation here.
         """
         if uid_to_request_id is None or requests is None:
-            return False
+            return None, "unresolved_sampling"
         req_id = uid_to_request_id.get(uid)
         req = requests.get(req_id) if req_id else None
-        if req is None or getattr(req, "sampling_params", None) is None:
-            return False
-        temp = getattr(req.sampling_params, "temperature", None)
-        return temp == 0.0
+        sp = getattr(req, "sampling_params", None) if req is not None else None
+        if sp is None:
+            return None, "unresolved_sampling"
+        temp = getattr(sp, "temperature", None)
+        if temp is None:
+            return None, "unresolved_sampling"
+        if getattr(sp, "seed", None) is not None:
+            return None, "seeded_sampling"
+        return (
+            float(temp),
+            float(getattr(sp, "top_p", 0.0) or 0.0),
+            int(getattr(sp, "top_k", 0) or 0),
+            float(getattr(sp, "min_p", 0.0) or 0.0),
+        ), ""
 
     def _mtp_step():
         """Wrapped ``GenerationBatch._step`` for MTP speculative decoding.
@@ -1223,13 +1276,19 @@ def _install_mtp_vendored(
                 _stats["ft_disabled"] += 1
                 return _orig_step()
 
-        if not _is_greedy_for_uid(uid):
+        # Issue #1013: this gate no longer asks "is the request
+        # greedy?" — non-greedy requests stay on the speculative path
+        # and the resolved sampler is forwarded to the generator (see
+        # :func:`_sampling_for_uid`). It only fails closed when the
+        # sampler cannot be reproduced inside the generator at all.
+        sampling_sig, _sampling_reason = _sampling_for_uid(uid)
+        if sampling_sig is None:
             _stats["fallthrough_steps"] += 1
-            _stats["ft_non_greedy"] += 1
+            _stats[f"ft_{_sampling_reason}"] += 1
             # Codex round-L BLOCKING #3: prior round-H revision raised
-            # ``RuntimeError`` here when sampling switched to non-
-            # greedy after MTP had already emitted. That killed the
-            # request on a legitimate runtime sampling-param change.
+            # ``RuntimeError`` here when the sampler became
+            # unreproducible after MTP had already emitted. That killed
+            # the request on a legitimate runtime sampling-param change.
             #
             # Round-L fix: hand off to ``_orig_step`` regardless of
             # state. The MTP generator is closed and the uid is
@@ -1241,8 +1300,8 @@ def _install_mtp_vendored(
                 _stats["ft_mid_stream_handoff"] += 1
                 _log_mtp_mid_stream_handoff_once(
                     uid,
-                    "non_greedy",
-                    "sampling switched to temperature > 0 mid-stream",
+                    _sampling_reason,
+                    "request sampler became unreproducible mid-stream",
                 )
                 _record_terminal_disable(uid)
             else:
@@ -1308,6 +1367,27 @@ def _install_mtp_vendored(
                 _cleanup_uid(uid)
                 state = None
 
+        # Issue #1013: the generator's sampler chain (top_p / top_k /
+        # min_p filters + temperature) is fixed at construction, so a
+        # mid-stream sampling change cannot be honoured by the running
+        # generator. Hand off to plain decode rather than silently
+        # continuing to sample from the OLD distribution. Placed AFTER
+        # the uid-reuse check above so a recycled uid carrying different
+        # sampling params re-arms MTP for the new request (round-K)
+        # instead of tripping this handoff.
+        if state is not None and state.get("sampling") != sampling_sig:
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_sampling_changed"] += 1
+            _stats["ft_mid_stream_handoff"] += 1
+            _log_mtp_mid_stream_handoff_once(
+                uid,
+                "sampling_changed",
+                "sampling params changed mid-stream "
+                f"({state.get('sampling')} -> {sampling_sig})",
+            )
+            _record_terminal_disable(uid)
+            return _orig_step()
+
         if state is None:
             # --- FIRST call for this uid ---
             # mlx-lm's fresh ``GenerationBatch.__init__`` ran its
@@ -1364,13 +1444,28 @@ def _install_mtp_vendored(
             # exactly as it would be under baseline. Mark the uid as
             # permanently disabled so we don't retry construction on
             # every subsequent step.
+            _temp, _top_p, _top_k, _min_p = sampling_sig
             try:
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
                     model=mtp_model,
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
-                    temp=0.0,
+                    # Issue #1013: forward the REQUEST's sampler rather
+                    # than hard-coding greedy. ``mtp_generate_step``
+                    # builds one filter chain from these and applies it
+                    # to both the draft and the verify distribution, so
+                    # the accept test ``min(1, p_target/p_draft)`` and
+                    # the residual resample on reject operate on the
+                    # same nucleus the request asked for. At
+                    # ``temp == 0.0`` the generator short-circuits to
+                    # argmax and every value below is inert — the
+                    # existing greedy fast path is bit-for-bit
+                    # unchanged.
+                    temp=_temp,
+                    top_p=_top_p,
+                    top_k=_top_k,
+                    min_p=_min_p,
                     # 0.9.13 PR-B: EV depth controller.
                     # Fallback key derived from the model's SHAPE, not
                     # its address. ``SchedulerConfig`` carries no model
@@ -1439,6 +1534,11 @@ def _install_mtp_vendored(
                 "queue": [],
                 "primed": True,
                 "request_id": _first_call_req_id,
+                # Issue #1013: the sampler the generator was built with.
+                # Compared on every subsequent step so a mid-stream
+                # sampling change hands off instead of silently
+                # sampling from the stale distribution.
+                "sampling": sampling_sig,
             }
             _stats["vendored_steps"] += 1
             # Codex round-I BLOCKING #2 / round-J BLOCKING #2+#3:
