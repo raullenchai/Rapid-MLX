@@ -4371,12 +4371,27 @@ final class ProcessGroupChild: @unchecked Sendable {
     /// ``signalProcessGroup`` call becomes a no-op.
     let isStub: Bool
 
+    /// Process exit observation is event-driven. A blocking `waitpid` parked
+    /// on a shared GCD pool can starve on small hosted runners; the resulting
+    /// unreaped group leader makes `terminateChild` burn its entire SIGTERM
+    /// grace and can strand the next launch behind the old port. The source
+    /// wakes this dedicated serial queue only after the kernel reports exit.
+    private static let exitMonitorQueue = DispatchQueue(
+        label: "com.rapidmlx.desktop.process-exit-monitor",
+        qos: .userInitiated
+    )
+
     private let lock = NSLock()
+    /// Serializes the event-source reaper with the non-blocking liveness
+    /// fallback. The fallback can race the exit event on hosted runners; one
+    /// waiter must reap and publish the lifecycle transition exactly once.
+    private let reapLock = NSLock()
     private var running: Bool = true
     private var monitorStarted: Bool = false
     private var rawTerminationStatus: Int32 = 0
     private var rawTerminationReason: Process.TerminationReason = .exit
     private var terminationHandler: (@Sendable (ProcessGroupChild) -> Void)?
+    private var exitSource: (any DispatchSourceProcess)?
 
     var isRunning: Bool {
         lock.lock()
@@ -4398,6 +4413,12 @@ final class ProcessGroupChild: @unchecked Sendable {
 
     var isProcessGroupAlive: Bool {
         if isStub { return false }
+        // DispatchSourceProcess delivery has occasionally been deferred on a
+        // saturated hosted runner. Reap an already-exited leader without
+        // blocking before asking whether anything remains in its process
+        // group; otherwise the zombie leader makes kill(-pgid, 0) report a
+        // false live group through the entire shutdown grace period.
+        _ = reapExitedProcess(waitOptions: WNOHANG)
         if kill(-processGroupID, 0) == 0 { return true }
         return errno == EPERM
     }
@@ -4575,20 +4596,67 @@ final class ProcessGroupChild: @unchecked Sendable {
         }
         monitorStarted = true
         lock.unlock()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            var waitStatus: Int32 = 0
-            let waited = waitpid(self.processIdentifier, &waitStatus, 0)
-            guard waited == self.processIdentifier else { return }
-            let decoded = Self.decode(waitStatus: waitStatus)
-            self.lock.lock()
-            self.running = false
-            self.rawTerminationStatus = decoded.status
-            self.rawTerminationReason = decoded.reason
-            let handler = self.terminationHandler
-            self.lock.unlock()
-            handler?(self)
+
+        let source = DispatchSource.makeProcessSource(
+            identifier: processIdentifier,
+            eventMask: .exit,
+            queue: Self.exitMonitorQueue
+        )
+        source.setEventHandler { [weak self] in
+            self?.reapExitedProcess(waitOptions: 0)
         }
+        lock.lock()
+        exitSource = source
+        lock.unlock()
+        source.activate()
+
+        // Process sources are armed asynchronously. A very short-lived child
+        // can exit before the source begins observing it, so close that race
+        // with the same non-blocking reap used by the liveness probe. If the
+        // source won the race, `reapLock` makes this an exactly-once no-op.
+        _ = reapExitedProcess(waitOptions: WNOHANG)
+    }
+
+    /// Reap only after the process-exit source fires, so `waitpid` is no
+    /// longer a blocking worker-pool reservation. Retry EINTR, then publish
+    /// the same once-only lifecycle callback as the prior monitor. The
+    /// liveness fallback (``isProcessGroupAlive``) calls this with `WNOHANG`
+    /// so an already-exited leader is reaped without blocking; `reapLock`
+    /// ensures exactly one waiter publishes the transition.
+    @discardableResult
+    private func reapExitedProcess(waitOptions: Int32) -> Bool {
+        reapLock.lock()
+        lock.lock()
+        guard running else {
+            lock.unlock()
+            reapLock.unlock()
+            return true
+        }
+        lock.unlock()
+
+        var waitStatus: Int32 = 0
+        var waited: pid_t
+        repeat {
+            waited = waitpid(processIdentifier, &waitStatus, waitOptions)
+        } while waited == -1 && errno == EINTR
+        guard waited == processIdentifier else {
+            reapLock.unlock()
+            return false
+        }
+
+        let decoded = Self.decode(waitStatus: waitStatus)
+        lock.lock()
+        running = false
+        rawTerminationStatus = decoded.status
+        rawTerminationReason = decoded.reason
+        let handler = terminationHandler
+        let source = exitSource
+        exitSource = nil
+        lock.unlock()
+        reapLock.unlock()
+        source?.cancel()
+        handler?(self)
+        return true
     }
 
     private static func dup(
