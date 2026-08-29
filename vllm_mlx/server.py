@@ -2091,6 +2091,9 @@ def load_model(
         _serving_lane_reason = _serving_checkpoint.lane_reason
     if _auto_text_fallback:
         fallback_detail = {
+            "text_lane_speculative_decode": (
+                "the requested speculative decoder is not honored by its vision lane"
+            ),
             "vision_hybrid_runtime_unsupported": (
                 "the installed vision runtime does not support its hybrid "
                 "language backbone"
