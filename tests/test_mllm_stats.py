@@ -144,8 +144,8 @@ def test_mllm_completed_request_adds_prompt_and_completion_tokens():
     assert scheduler.num_requests_processed == 1
 
 
-def test_mllm_aborted_request_adds_prompt_tokens_without_completion_tokens():
-    """Aborted requests still account for their already-prefilled prompt."""
+def test_mllm_cancelled_request_adds_prompt_tokens_without_completion_tokens():
+    """Cancelled requests still account for their already-prefilled prompt."""
     scheduler = _bare_scheduler()
     request = MLLMRequest(request_id="req-2", prompt="hello")
     request.status = RequestStatus.RUNNING
@@ -164,4 +164,4 @@ def test_mllm_aborted_request_adds_prompt_tokens_without_completion_tokens():
 
     assert scheduler.total_prompt_tokens == 23
     assert scheduler.total_completion_tokens == 0
-    assert request.status is RequestStatus.FINISHED_ABORTED
+    assert request.status is RequestStatus.FINISHED_CANCELLED
