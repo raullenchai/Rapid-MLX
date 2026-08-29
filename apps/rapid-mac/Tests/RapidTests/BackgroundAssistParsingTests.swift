@@ -424,6 +424,16 @@ struct SmallModelBehaviourTests {
         #expect(FollowUpSuggestion.parse(chinese, excluding: "explain euler's theorem").isEmpty)
     }
 
+    @Test("A quoted CJK term does not change an English answer's script")
+    func mixedLanguageReferenceUsesPredominantScript() {
+        let english = "What does it mean?\nCan you show usage?\nHow is it pronounced?"
+        let chinese = "它是什么意思？\n能展示用法吗？\n应该怎么发音？"
+        let reference = "The Chinese word 你好 means hello in English."
+
+        #expect(FollowUpSuggestion.parse(english, reference: reference).count == 3)
+        #expect(FollowUpSuggestion.parse(chinese, reference: reference).isEmpty)
+    }
+
     /// With nothing to compare against, the check must not veto.
     @Test("An empty reference cannot veto")
     func emptyReferenceDoesNotVeto() {

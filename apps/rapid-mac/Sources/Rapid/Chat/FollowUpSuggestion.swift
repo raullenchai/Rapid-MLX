@@ -148,10 +148,18 @@ enum FollowUpSuggestion {
     }
 
     private nonisolated static func usesCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x4E00...0x9FFF).contains(scalar.value)      // unified ideographs
-                || (0x3040...0x30FF).contains(scalar.value)  // kana
-                || (0xAC00...0xD7AF).contains(scalar.value)  // hangul
+        var cjkLetters = 0
+        var otherLetters = 0
+        for scalar in text.unicodeScalars where CharacterSet.letters.contains(scalar) {
+            if (0x4E00...0x9FFF).contains(scalar.value)         // unified ideographs
+                || (0x3040...0x30FF).contains(scalar.value)     // kana
+                || (0xAC00...0xD7AF).contains(scalar.value)     // hangul
+            {
+                cjkLetters += 1
+            } else {
+                otherLetters += 1
+            }
         }
+        return cjkLetters > otherLetters
     }
 }
