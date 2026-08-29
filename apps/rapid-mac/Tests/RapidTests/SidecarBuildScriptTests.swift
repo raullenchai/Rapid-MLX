@@ -150,8 +150,20 @@ struct SidecarBuildScriptTests {
                 "Only model-family directories outside Qwen3 TTS may be removed.")
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
-        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-174}""#),
-                "The signing baseline must match the measured post-audio bundle.")
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-172}""#),
+                "The signing baseline must match the measured post-audio bundle, less the orphaned libpython dylib dropped in step 3.")
+    }
+
+    /// The shared libpython optimization must stay behind the tested guard.
+    @Test("The unreferenced libpython dylib uses the fail-closed guard")
+    func guardsOrphanedLibpythonRemoval() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+
+        #expect(script.contains(#""$REPO_ROOT/scripts/prune-unused-libpython.sh" "$STAGE""#))
+        #expect(!script.contains(#"rm -f "$STAGE/python/lib/libpython3.12.dylib""#),
+                "build-sidecar must not bypass the consumer scan with an unconditional deletion.")
+        #expect(!script.contains(#"strip -x "$STAGE/python/bin/python3.12""#),
+                "Local CPython symbols are required for useful native crash frames.")
     }
 
     private static var scriptURL: URL {

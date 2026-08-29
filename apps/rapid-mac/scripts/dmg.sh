@@ -76,8 +76,21 @@ hdiutil detach "$MOUNT" -quiet || hdiutil detach "$MOUNT" -force -quiet
 rmdir "$MOUNT" 2>/dev/null || true
 MOUNT=""
 
-echo "==> hdiutil convert UDRW -> UDZO ($DMG)"
-hdiutil convert "$UDRW" -format UDZO -ov -o "$DMG" >/dev/null
+echo "==> hdiutil convert UDRW -> ULMO ($DMG)"
+# ULMO (LZMA) over the historical UDZO (zlib): same .app measures 181 MB as
+# UDZO vs 111 MB as ULMO — the bundle is dominated by mlx.metallib, which is
+# highly compressible (130 MB raw → 34 MB zlib → 8 MB LZMA). ULFO (LZFSE)
+# sits in between at 149 MB. Decompression is slower than zlib, but it is
+# paid once while copying the .app out of the mounted volume.
+#
+# ULMO needs macOS 10.15+ to mount, far below the app's own 14.0 deployment
+# target, so this cannot strand a Mac that could otherwise run the app.
+#
+# The UDRW -> convert 2-step above is unrelated and load-bearing for a
+# different reason (rapid-desktop#427: the 1-step
+# `hdiutil create -srcfolder -format <compressed>` path produced an
+# unreadable BLKX table on a stapled .app) — keep it regardless of format.
+hdiutil convert "$UDRW" -format ULMO -ov -o "$DMG" >/dev/null
 rm -f "$UDRW"
 
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
