@@ -328,6 +328,41 @@ struct BackgroundAssistGatingTests {
         ) == nil)
     }
 
+    @Test("Follow-ups publish without waiting for a stalled title")
+    func followUpsPublishBeforeTitle() async {
+        let titleGate = BackgroundAssistTestGate()
+        var publications: [String] = []
+
+        let delivery = Task { @MainActor in
+            await ChatViewModel.deliverBackgroundReplies(
+                title: {
+                    await titleGate.wait()
+                    return "A generated title"
+                },
+                followUp: { "One?\nTwo?\nThree?" },
+                onFollowUp: { reply in
+                    publications.append("follow-up:\(reply ?? "nil")")
+                    return true
+                },
+                onTitle: { reply in
+                    publications.append("title:\(reply ?? "nil")")
+                }
+            )
+        }
+
+        // Give the immediately-completing follow-up child repeated chances
+        // to publish while the title child remains deliberately suspended.
+        for _ in 0..<100 where publications.isEmpty { await Task.yield() }
+        #expect(publications == ["follow-up:One?\nTwo?\nThree?"])
+
+        await titleGate.open()
+        await delivery.value
+        #expect(publications == [
+            "follow-up:One?\nTwo?\nThree?",
+            "title:A generated title",
+        ])
+    }
+
     // MARK: - Late replies
 
     @Test("Suggestions for a turn that is no longer last are dropped")
@@ -447,6 +482,22 @@ struct BackgroundAssistGatingTests {
         model.clearFollowUps(anchoredTo: currentAnswer.id)
         #expect(model.followUp == .idle)
         #expect(model.followUpAnchorID == nil)
+    }
+}
+
+private actor BackgroundAssistTestGate {
+    private var isOpen = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func open() {
+        isOpen = true
+        waiter?.resume()
+        waiter = nil
     }
 }
 

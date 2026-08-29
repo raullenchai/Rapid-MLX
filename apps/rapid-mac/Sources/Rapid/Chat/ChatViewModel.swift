@@ -576,45 +576,67 @@ final class ChatViewModel {
             }
             let client = BackgroundCompletionClient()
 
-            // Concurrent rather than sequential: the title happens once per
-            // conversation, so its double occupancy of the engine is a
-            // once-ever event, while the chips are what the reader is waiting
-            // to see on every turn.
+            // Run both requests concurrently, but publish each one as soon as
+            // its own deadline completes. The title may wait for 15 seconds;
+            // it must not hold an already-ready follow-up rail hostage.
             let titlePrompt = needsTitle
                 ? ConversationTitleSuggestion.messages(forFirstExchange: transcript)
                 : nil
-            async let titleReply: String? = {
-                guard let titlePrompt else { return nil }
-                return await client.complete(
-                    titlePrompt, target: target, maxTokens: 24,
-                    temperature: 0.2, deadline: .seconds(15)
-                )
-            }()
             let followUpPrompt = FollowUpSuggestion.messages(forTurn: transcript)
-            async let followUpReply: String? = {
-                guard let followUpPrompt else { return nil }
-                return await client.complete(
-                    followUpPrompt, target: target, maxTokens: 96,
-                    temperature: 0.6, topP: 0.95, deadline: .seconds(8)
-                )
-            }()
-
-            let (title, suggestions) = await (titleReply, followUpReply)
-            guard !Task.isCancelled, epoch == self.conversationEpoch else {
-                // Cancelled after this assist reserved its space. Clear only
-                // the rail it owns: an older request can take time to observe
-                // cancellation and must not erase a newer turn's pending or
-                // ready suggestions after it finally resumes.
-                self.clearFollowUps(anchoredTo: turn.assistantID)
-                return
-            }
-
-            if let title { self.applyGeneratedTitle(title, to: conversationID) }
-            self.publishFollowUps(
-                suggestions, anchoredTo: turn.assistantID,
-                excluding: turn.lastUserText, reference: turn.assistantText
+            await Self.deliverBackgroundReplies(
+                title: {
+                    guard let titlePrompt else { return nil }
+                    return await client.complete(
+                        titlePrompt, target: target, maxTokens: 24,
+                        temperature: 0.2, deadline: .seconds(15)
+                    )
+                },
+                followUp: {
+                    guard let followUpPrompt else { return nil }
+                    return await client.complete(
+                        followUpPrompt, target: target, maxTokens: 96,
+                        temperature: 0.6, topP: 0.95, deadline: .seconds(8)
+                    )
+                },
+                onFollowUp: { suggestions in
+                    guard !Task.isCancelled, epoch == self.conversationEpoch else {
+                        // Cancelled after this assist reserved its space.
+                        // Clear only the rail generation this task owns.
+                        self.clearFollowUps(anchoredTo: turn.assistantID)
+                        return false
+                    }
+                    self.publishFollowUps(
+                        suggestions, anchoredTo: turn.assistantID,
+                        excluding: turn.lastUserText, reference: turn.assistantText
+                    )
+                    return true
+                },
+                onTitle: { title in
+                    guard !Task.isCancelled, epoch == self.conversationEpoch else { return }
+                    if let title { self.applyGeneratedTitle(title, to: conversationID) }
+                }
             )
         }
+    }
+
+    /// Start both optional completions together, while letting the
+    /// turn-scoped follow-up result reach the UI before the longer title
+    /// deadline. Returning `false` after the follow-up cancels the structured
+    /// title child when the owning conversation or turn is already stale.
+    static func deliverBackgroundReplies(
+        title: @escaping @Sendable () async -> String?,
+        followUp: @escaping @Sendable () async -> String?,
+        onFollowUp: (String?) -> Bool,
+        onTitle: (String?) -> Void
+    ) async {
+        async let titleReply = title()
+        async let followUpReply = followUp()
+
+        let suggestions = await followUpReply
+        guard onFollowUp(suggestions) else { return }
+
+        let generatedTitle = await titleReply
+        onTitle(generatedTitle)
     }
 
     /// Keep a background request bound to the server generation that
