@@ -4620,6 +4620,7 @@ def _build_prompt_with_thinking_compat(
     *,
     tools: list | None,
     enable_thinking: bool | None,
+    chat_template_kwargs: dict | None = None,
 ):
     """Call ``engine.build_prompt`` with ``enable_thinking=...``,
     falling back to the pre-#280 two-argument shape when the callable
@@ -4655,6 +4656,18 @@ def _build_prompt_with_thinking_compat(
     only fires on the first call for an engine with the legacy
     signature.
     """
+    if chat_template_kwargs is not None:
+        signature = inspect.signature(build_prompt)
+        if signature is not None and ("chat_template_kwargs" in signature.parameters):
+            return build_prompt(
+                messages,
+                tools=tools,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+
+        return build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
+
     try:
         return build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
     except TypeError as exc:
@@ -4680,6 +4693,7 @@ def enforce_context_length_for_messages(
     tools: list | None = None,
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
+    chat_template_kwargs: dict | None = None,
 ) -> int | None:
     """Run the context-length gate for a chat-style request and return
     the rendered prompt's token count (``None`` on permissive-skip paths).
@@ -4747,6 +4761,7 @@ def enforce_context_length_for_messages(
             messages,
             tools=tools,
             enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
         )
     except HTTPException:
         raise

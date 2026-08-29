@@ -89,7 +89,7 @@ vllm_mlx/reasoning/think_parser.py 2
 vllm_mlx/repetition_guard.py 2
 vllm_mlx/routes/anthropic.py 7
 vllm_mlx/routes/audio.py 6
-vllm_mlx/routes/chat.py 49
+vllm_mlx/routes/chat.py 39
 vllm_mlx/routes/completions.py 1
 vllm_mlx/routes/embeddings.py 4
 vllm_mlx/routes/images.py 4

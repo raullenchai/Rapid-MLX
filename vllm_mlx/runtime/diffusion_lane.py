@@ -817,6 +817,7 @@ class DiffusionEngine(BaseEngine):
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        chat_template_kwargs: dict | None = None,
     ) -> str:
         self._ensure_loaded()
         template_kwargs: dict[str, Any] = {
