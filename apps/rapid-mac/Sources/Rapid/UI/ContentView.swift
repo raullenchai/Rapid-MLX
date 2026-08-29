@@ -354,10 +354,16 @@ struct ContentView: View {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
                 // Reuse the existing local residency cadence as recovery for
-                // a transient profile timeout/non-2xx. A successful profile
-                // remains authoritative for this bearer session; only a
-                // missing/mismatched profile needs another request.
-                if server.activeModelProfile?.id.caseInsensitiveCompare(alias) != .orderedSame {
+                // a transient profile timeout/non-2xx. A pending speculative
+                // runtime is also intentionally refreshed: the BatchGenerator
+                // is lazy, so its install gate may finish only when the first
+                // request starts. Active/unavailable are terminal for this
+                // generator; a replacement clears the whole profile via the
+                // existing bearer/session lifecycle.
+                let profile = server.activeModelProfile
+                let mismatched = profile?.id.caseInsensitiveCompare(alias) != .orderedSame
+                let speculativePending = profile?.needsLiveProfileRefresh == true
+                if mismatched || speculativePending {
                     await refreshSelectedModelProfile(for: alias)
                 }
             }
