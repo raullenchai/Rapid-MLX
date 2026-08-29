@@ -30,7 +30,7 @@ def _populate(cache: Path, repository: str, revision: str) -> None:
         target.write_text("stub")
 
 
-def test_manifest_is_the_exact_two_pin_source_of_truth() -> None:
+def test_manifest_is_the_exact_three_pin_source_of_truth() -> None:
     pins = _MODULE.load_pins(_MANIFEST)
     assert pins["qwen"][:2] == (
         "mlx-community/Qwen3.5-9B-4bit",
@@ -40,12 +40,23 @@ def test_manifest_is_the_exact_two_pin_source_of_truth() -> None:
         "mlx-community/gemma-4-e2b-it-8bit",
         "03dcf209f3f549b4075e7191e77cf69b3d48e1b2",
     )
-    for _, _, files in pins.values():
+    assert pins["flux"][:2] == (
+        "Runpod/FLUX.2-klein-4B-mflux-4bit",
+        "7ee1b3aa8178a1240050490072196a57da2bf2a9",
+    )
+    for key in ("qwen", "gemma"):
+        files = pins[key][2]
         assert "config.json" in files
         assert "tokenizer.json" in files
         assert "model.safetensors.index.json" in files
         assert "model-00001-of-00002.safetensors" in files
         assert "model-00002-of-00002.safetensors" in files
+    flux_files = pins["flux"][2]
+    assert "config.json" in flux_files
+    assert "tokenizer/tokenizer.json" in flux_files
+    assert "text_encoder/model.safetensors.index.json" in flux_files
+    assert "transformer/model.safetensors.index.json" in flux_files
+    assert "vae/model.safetensors.index.json" in flux_files
 
 
 def test_cache_root_matches_hugging_face_environment_precedence(
@@ -66,7 +77,7 @@ def test_cache_root_matches_hugging_face_environment_precedence(
     assert _MODULE.default_cache_root() == xdg_cache / "huggingface" / "hub"
 
 
-@pytest.mark.parametrize("missing_key", ["qwen", "gemma"])
+@pytest.mark.parametrize("missing_key", ["qwen", "gemma", "flux"])
 def test_one_missing_pin_fails_and_names_exact_recovery(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], missing_key: str
 ) -> None:
@@ -84,19 +95,19 @@ def test_one_missing_pin_fails_and_names_exact_recovery(
     assert "No download was attempted" in error
 
 
-def test_both_missing_are_reported_together(
+def test_all_missing_are_reported_together(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert (
         _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
     )
     error = capsys.readouterr().err
-    assert "2 immutable snapshot(s)" in error
+    assert "3 immutable snapshot(s)" in error
     for repository, revision, _ in _MODULE.load_pins(_MANIFEST).values():
         assert f"{repository}@{revision}" in error
 
 
-def test_both_present_pass_without_reading_model_files(tmp_path: Path) -> None:
+def test_all_present_pass_without_reading_model_files(tmp_path: Path) -> None:
     for repository, revision, _ in _MODULE.load_pins(_MANIFEST).values():
         _populate(tmp_path, repository, revision)
     assert (
@@ -160,13 +171,15 @@ def test_present_pins_emit_workflow_outputs(tmp_path: Path) -> None:
         f"qwen_revision={pins['qwen'][1]}",
         f"gemma_model={pins['gemma'][0]}",
         f"gemma_revision={pins['gemma'][1]}",
+        f"flux_model={pins['flux'][0]}",
+        f"flux_revision={pins['flux'][1]}",
     ]
 
 
 def test_malformed_manifest_fails_closed(tmp_path: Path) -> None:
     manifest = tmp_path / "pins.json"
     manifest.write_text(json.dumps({"schema": 1, "models": {}}))
-    with pytest.raises(_MODULE.PreflightError, match="exactly qwen and gemma"):
+    with pytest.raises(_MODULE.PreflightError, match="exactly qwen, gemma, and flux"):
         _MODULE.load_pins(manifest)
 
 
@@ -199,6 +212,8 @@ def test_workflow_preflight_precedes_every_expensive_command() -> None:
         assert preflight < workflow.index(expensive)
     assert "steps.sidecar-pins.outputs.qwen_model" in workflow
     assert "steps.sidecar-pins.outputs.gemma_revision" in workflow
+    assert "steps.sidecar-pins.outputs.flux_model" in workflow
+    assert "steps.sidecar-pins.outputs.flux_revision" in workflow
     assert (
         "/opt/homebrew/opt/python@3.12/bin/python3.12 \\\n"
         "            apps/rapid-mac/scripts/check-sidecar-smoke-cache.py" in workflow

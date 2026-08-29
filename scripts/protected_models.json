@@ -3,6 +3,7 @@
   "models": [
     {"repository": "mlx-community/Qwen3.5-9B-4bit", "revision": "8b2b98c00a6b4d291155e4890773ca8f769aee53", "sources": ["sidecar", "telemetry_top10"]},
     {"repository": "mlx-community/gemma-4-e2b-it-8bit", "revision": "03dcf209f3f549b4075e7191e77cf69b3d48e1b2", "sources": ["sidecar"]},
+    {"repository": "Runpod/FLUX.2-klein-4B-mflux-4bit", "revision": "7ee1b3aa8178a1240050490072196a57da2bf2a9", "sources": ["sidecar"]},
     {"repository": "mlx-community/Qwen3.5-4B-MLX-4bit", "sources": ["release_fleet", "telemetry_top10"]},
     {"repository": "mlx-community/Qwen3.5-35B-A3B-4bit", "sources": ["release_fleet"]},
     {"repository": "mlx-community/Qwen3.6-27B-4bit", "sources": ["release_fleet", "telemetry_top10"]},
