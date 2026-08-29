@@ -16,6 +16,7 @@ import importlib
 import pytest
 
 mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
 
 if not mx.metal.is_available():  # pragma: no cover - CI runners have Metal
     pytest.skip("Metal GPU required for GDN kernel tests", allow_module_level=True)

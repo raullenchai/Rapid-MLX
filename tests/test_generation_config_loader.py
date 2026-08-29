@@ -8,6 +8,8 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.utils.generation_config import (
     load_generation_config_eos_ids,
     load_generation_config_sampling,

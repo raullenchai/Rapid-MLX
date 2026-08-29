@@ -12,9 +12,13 @@ host GPU.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+from types import SimpleNamespace
 
 from vllm_mlx.scheduler import Scheduler, _read_kv_dims
 

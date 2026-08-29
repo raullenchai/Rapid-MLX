@@ -19,6 +19,12 @@ authoritative streaming surface.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from unittest.mock import MagicMock
 
 from vllm_mlx.request import Request, RequestStatus, SamplingParams

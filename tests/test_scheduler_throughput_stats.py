@@ -1,5 +1,11 @@
 """Regression coverage for text-model throughput in ``/v1/status``."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import time
 from unittest.mock import MagicMock
 

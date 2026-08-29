@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import json
 import sys
 from pathlib import Path
-
-import pytest
 
 from vllm_mlx.models.gemma4_text import load_gemma4_text
 

@@ -29,6 +29,8 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 CUSTOMVOICE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
 
 

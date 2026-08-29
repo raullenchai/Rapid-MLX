@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 import requests
 
 apple_silicon_only = pytest.mark.skipif(

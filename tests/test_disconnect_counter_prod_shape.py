@@ -19,7 +19,7 @@ hop deep). The real production shape is ``BatchedEngine._engine`` →
 ``AsyncEngineCore.engine`` → ``EngineCore.scheduler`` — TWO hops past
 ``_engine``, where ``AsyncEngineCore`` does NOT expose ``.scheduler``
 directly. The previous tests under
-``tests/test_disconnect_guard_aborts_scheduler.py`` and
+``tests/headless_mlx/test_disconnect_guard_aborts_scheduler.py`` and
 ``tests/test_cancelled_requests_metric.py`` did NOT reproduce this
 shape, so the resolvers + dedupe-ledger race went uncaught.
 
@@ -52,9 +52,13 @@ mlx-step internals and pin both invariants.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import asyncio
 
 from vllm_mlx.request import Request, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

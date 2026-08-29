@@ -19,6 +19,12 @@ These tests pin both halves of the contract: ``.config`` is now consulted,
 and ``.args`` still wins wherever it exists so no other model moves.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 
 from vllm_mlx.quantized_batch_cache import (

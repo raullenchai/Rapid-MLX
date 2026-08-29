@@ -24,9 +24,13 @@ have to load a model. They lock in the four behaviors that matter:
 
 from __future__ import annotations
 
-import types
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import types
 
 from vllm_mlx.scheduler import _install_dense_sampler_fastpath
 

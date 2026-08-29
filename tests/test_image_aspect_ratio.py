@@ -34,9 +34,14 @@ reported.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator, MLLMBatchRequest

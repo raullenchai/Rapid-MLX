@@ -35,11 +35,15 @@ unknown-sibling discrimination assertions; the fixed implementation PASSES.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import json
 import sys
 from pathlib import Path
-
-import pytest
 
 from vllm_mlx.models import gemma4_text
 

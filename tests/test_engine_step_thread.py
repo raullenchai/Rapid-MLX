@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 @pytest.fixture
 def engine_core(monkeypatch):

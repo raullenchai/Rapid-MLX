@@ -65,6 +65,7 @@ def test_ltx25_direct_engine_rejects_conditioning_without_image() -> None:
 def test_ltx25_runtime_preflight_fails_before_download(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
     monkeypatch.setattr(
         video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
@@ -82,6 +83,7 @@ def test_ltx25_runtime_preflight_fails_before_download(
 def test_ltx25_runtime_preflight_requires_uv(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(video_lane.shutil, "which", lambda name: None)
@@ -98,6 +100,7 @@ def test_ltx25_runtime_preflight_requires_uv(
 def test_ltx25_missing_runtime_prints_setup_walkthrough(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: None)
     monkeypatch.setattr(
         video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
@@ -133,6 +136,7 @@ def test_ltx25_missing_runtime_prints_setup_walkthrough(
 def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "resolve_ltx25_runtime", lambda: "/runtime/ltx-2-mlx")
 
     def boom(executable: str) -> None:

@@ -43,6 +43,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version

@@ -1,5 +1,11 @@
 """Focused math test for Qwen3-Next's disk-streaming MoE forward."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 
 import mlx.core as mx

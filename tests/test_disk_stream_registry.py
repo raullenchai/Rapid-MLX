@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.registry import get_adapter
 
 

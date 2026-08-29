@@ -6,10 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests._headless_mlx import install_headless_mlx_import_stubs
-
-install_headless_mlx_import_stubs()
-
 from vllm_mlx.engine.batched import (  # noqa: E402
     BatchedEngine,
     _admission_token_context,

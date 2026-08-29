@@ -28,9 +28,13 @@ slabs (the bug was that the allocator held them in the free pool with
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+from unittest.mock import MagicMock, patch
 
 from vllm_mlx.prefix_cache import BlockCacheEntry
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig

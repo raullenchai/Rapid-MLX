@@ -41,6 +41,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

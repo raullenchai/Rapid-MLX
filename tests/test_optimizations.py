@@ -8,6 +8,8 @@ Usage:
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 class TestHardwareDetection:
     """Tests for hardware detection functionality."""

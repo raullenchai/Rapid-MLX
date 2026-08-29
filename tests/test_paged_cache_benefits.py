@@ -14,10 +14,14 @@ Usage:
 import platform
 import sys
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
 # Skip if not on Apple Silicon
 if sys.platform != "darwin" or platform.machine() != "arm64":
-    print("This test requires Apple Silicon")
-    sys.exit(0)
+    pytest.skip("This test requires Apple Silicon", allow_module_level=True)
 
 
 def print_header(title: str) -> None:

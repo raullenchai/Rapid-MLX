@@ -42,7 +42,10 @@ import pytest
 # exercise the online serve-admission path.  Keep the suite hermetic (the
 # socket guard remains active) while opting out of the default HF offline
 # sentinel that would reject the model before the mocked dispatch is reached.
-pytestmark = pytest.mark.usefixtures("hub_online_env")
+pytestmark = [
+    pytest.mark.usefixtures("hub_online_env"),
+    pytest.mark.requires_mlx,
+]
 
 # ---------------------------------------------------------------------------
 # A) Registry resolution table

@@ -32,6 +32,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # BEFORE importing mlx_lm.generate, not after. That module captures

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from vllm_mlx.cli import _DEFAULT_HYBRID_CACHE_ENTRIES, _resolve_hybrid_cache_entries
 from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 from vllm_mlx.model_auto_config import detect_model_config
@@ -86,6 +88,7 @@ class TestHybridCacheAutoDefault:
         stored = cache.store(list(range(100)), _hybrid_cache())
         assert stored is False, "hybrid entry should be dropped when limit=0"
 
+    @pytest.mark.requires_mlx
     def test_hybrid_entry_stored_when_nonzero(self):
         """With hybrid_reuse_max_entries=8, hybrid entries are stored."""
         config = MemoryCacheConfig(max_memory_mb=10, hybrid_reuse_max_entries=8)
@@ -94,6 +97,7 @@ class TestHybridCacheAutoDefault:
         stored = cache.store(list(range(100)), _hybrid_cache())
         assert stored is True, "hybrid entry should be stored when limit>0"
 
+    @pytest.mark.requires_mlx
     def test_hybrid_entry_fetchable_after_store(self):
         """Stored hybrid entry can be fetched on exact match."""
         config = MemoryCacheConfig(max_memory_mb=10, hybrid_reuse_max_entries=8)
@@ -105,6 +109,7 @@ class TestHybridCacheAutoDefault:
         result = cache.fetch(tokens)
         assert result is not None, "exact-match fetch should hit stored hybrid entry"
 
+    @pytest.mark.requires_mlx
     def test_dense_cache_unaffected(self):
         """Dense (non-hybrid) entries are stored regardless of the flag."""
         config = MemoryCacheConfig(max_memory_mb=10, hybrid_reuse_max_entries=0)

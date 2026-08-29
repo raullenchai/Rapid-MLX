@@ -8,6 +8,12 @@ Verifies that:
 3. Metal memory stats are reported in get_stats()
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import time
 from unittest.mock import MagicMock, patch
 

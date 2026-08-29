@@ -41,10 +41,14 @@ legitimate — and the common case — for those dense sizes.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import json
 import logging
-
-import pytest
 
 from vllm_mlx.models.gemma4_text import _check_kv_share_config
 from vllm_mlx.models.gemma4_vendored.config import TextConfig

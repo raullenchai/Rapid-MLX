@@ -18,6 +18,12 @@ logic is isolated from tokenizer specifics.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import math
 
 import mlx.core as mx

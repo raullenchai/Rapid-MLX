@@ -31,6 +31,8 @@ import importlib.util
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # NOTE: llguidance is only needed by the grammar-BUILD and enforcement tests
 # below (they compile a Lark grammar / build an LLTokenizer). The ABC-contract
 # and pure-Lark-string tests need NOTHING optional, so we do NOT skip at module

@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
 
 import mlx.nn as nn
 from mlx_lm.models.cache import ArraysCache

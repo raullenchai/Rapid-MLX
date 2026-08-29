@@ -51,11 +51,16 @@ The tests below cover four behavioural surfaces:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -23,12 +23,17 @@ This module pins behaviour at three layers:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import mlx.core as mx
-import pytest
 
 from vllm_mlx.mllm_batch_generator import (
     MLLMBatchRequest,

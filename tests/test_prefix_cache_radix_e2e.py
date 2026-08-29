@@ -20,6 +20,10 @@ This keeps the test under a second and lets it run in CI.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 from unittest.mock import MagicMock
 
 from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig

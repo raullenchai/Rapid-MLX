@@ -148,6 +148,7 @@ def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
 def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) -> None:
     import vllm_mlx.runtime.video_lane as lane
 
+    monkeypatch.setattr(lane.sys, "version_info", (3, 11))
     missing = {"mlx_arsenal", "imageio", "PIL"}
     monkeypatch.setattr(
         lane.importlib.util,

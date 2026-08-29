@@ -20,7 +20,6 @@ explicitly pinned in pr-validate.yml, not in ``[ci-linux]``.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -42,23 +41,18 @@ TEMPLATE = """\
 
 
 def _ci_linux_extra() -> list[str]:
-    """Read the canonical ``[ci-linux]`` extra without a hard 3.11+ dep.
+    """Read the canonical ``[ci-linux]`` extra on every supported Python.
 
     ``tomllib`` is stdlib on 3.11+ only; this script also runs on 3.10 (the
-    test-matrix includes it), so fall back to a quote scan, exactly like
-    tests/test_ci_apple_coverage_union.py's ``_ci_linux_extra``.
+    test-matrix includes it), where the declared CI dependency set installs
+    the API-compatible ``tomli`` backport.
     """
-    text = PYPROJECT.read_text()
     try:
         import tomllib
-
-        with PYPROJECT.open("rb") as fh:
-            return tomllib.load(fh)["project"]["optional-dependencies"]["ci-linux"]
-    except ImportError:  # Python 3.10
-        block = re.search(r"^ci-linux\s*=\s*\[(.*?)\]\s*$", text, re.S | re.M)
-        if block is None:
-            raise AssertionError("[ci-linux] array not found in pyproject.toml")
-        return [d for d in re.findall(r'"([^"]+)"', block.group(1)) if d.strip()]
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
+    with PYPROJECT.open("rb") as fh:
+        return tomllib.load(fh)["project"]["optional-dependencies"]["ci-linux"]
 
 
 def render() -> str:

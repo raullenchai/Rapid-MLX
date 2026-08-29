@@ -10,6 +10,12 @@ must still receive — codex r1 on #1878).
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 
 from vllm_mlx.engine_core import EngineCore

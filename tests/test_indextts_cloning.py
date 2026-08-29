@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 INDEXTTS_REPO = "mlx-community/IndexTTS-1.5"
 _REF_AUDIO = base64.b64encode(b"RIFF----WAVEfake-reference").decode()
 _UNSET = object()

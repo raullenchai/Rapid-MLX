@@ -23,9 +23,13 @@ Pure Pydantic construction — no server, fully hermetic.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+
+
 import math
 
-import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
@@ -39,7 +43,7 @@ from .strategies import (
     out_of_range_finite_floats,
 )
 
-pytestmark = pytest.mark.property
+pytestmark = [pytest.mark.property, pytest.mark.requires_mlx]
 
 
 # --- minimal valid constructors -----------------------------------------

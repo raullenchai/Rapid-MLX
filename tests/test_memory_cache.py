@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 try:
     import mlx_lm  # noqa: F401
 

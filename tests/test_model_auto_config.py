@@ -824,6 +824,7 @@ class TestEnrichModelConfig:
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
+    @pytest.mark.requires_mlx
     def test_enrich_arrayscache_flips_to_hybrid(self):
         # Stub the import: any cache element identified as ArraysCache
         # should flip is_hybrid → True.
@@ -838,6 +839,7 @@ class TestEnrichModelConfig:
         assert cfg.is_hybrid is True
         assert cfg.supports_spec_decode is False
 
+    @pytest.mark.requires_mlx
     def test_enrich_pure_kvcache_stays_supported(self):
         from mlx_lm.models.cache import KVCache
 
@@ -849,6 +851,7 @@ class TestEnrichModelConfig:
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
+    @pytest.mark.requires_mlx
     def test_enrich_mixed_cache_still_flags_hybrid(self):
         # Even one ArraysCache in the layer list → hybrid.
         from mlx_lm.models.cache import ArraysCache, KVCache
@@ -861,6 +864,7 @@ class TestEnrichModelConfig:
         assert cfg.is_hybrid is True
         assert cfg.supports_spec_decode is False
 
+    @pytest.mark.requires_mlx
     def test_enrich_does_not_mutate_input(self):
         # Input cfg must not be modified — return a fresh dataclass.
         from mlx_lm.models.cache import ArraysCache
@@ -1318,6 +1322,7 @@ class TestGetProfile:
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
+    @pytest.mark.requires_mlx
     def test_get_profile_with_model_runs_enrichment(self):
         from mlx_lm.models.cache import ArraysCache
 

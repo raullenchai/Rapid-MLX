@@ -35,6 +35,12 @@ Reference: https://github.com/raullenchai/Rapid-MLX/issues/1049
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from unittest.mock import MagicMock
 
 from vllm_mlx.reasoning.harmony_stop import (

@@ -22,6 +22,10 @@ These tests pin the contract at each of the three layers.
 
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
 from vllm_mlx.request import SamplingParams
 

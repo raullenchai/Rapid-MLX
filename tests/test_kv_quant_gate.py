@@ -14,6 +14,8 @@ import math
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 from vllm_mlx.kv_quant_gate import (
     FAIL,
     NA,

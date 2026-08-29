@@ -10,9 +10,13 @@ policies, and mixed-length batches.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
+import logging
 
 from vllm_mlx.embedding import (
     _FALLBACK_MAX_LENGTH,

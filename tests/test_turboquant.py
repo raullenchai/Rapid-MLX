@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for TurboQuant KV cache compression."""
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from vllm_mlx.turboquant import (
     LLOYD_MAX_BOUNDARIES,

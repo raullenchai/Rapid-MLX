@@ -171,8 +171,9 @@ def test_preflight_rejects_wildcard_when_loopback_already_bound(capsys):
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
     assert "already in use" in err_out
-    assert "127.0.0.1" in err_out, (
-        f"pre-flight error must name the colliding host 127.0.0.1, got: {err_out!r}"
+    expected_host = "127.0.0.1" if sys.platform == "darwin" else "0.0.0.0"
+    assert expected_host in err_out, (
+        f"pre-flight error must name the host whose bind collided, got: {err_out!r}"
     )
 
 
@@ -192,7 +193,8 @@ def test_preflight_rejects_empty_host_when_loopback_already_bound(capsys):
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
     assert "already in use" in err_out
-    assert "127.0.0.1" in err_out
+    expected_host = "127.0.0.1" if sys.platform == "darwin" else "0.0.0.0"
+    assert expected_host in err_out
 
 
 def test_preflight_rejects_loopback_when_loopback_already_bound(capsys):

@@ -18,6 +18,8 @@ model load, no GPU, no port — they live in the same file family as
 from unittest.mock import MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

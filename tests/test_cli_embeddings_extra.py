@@ -33,6 +33,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 
 def test_load_embedding_helper_exits_2_when_extra_missing(monkeypatch, capsys):
     """``_load_embedding_model_or_exit`` MUST short-circuit via

@@ -10,6 +10,12 @@ Usage:
     python tests/test_paged_cache_real_model.py --model mlx-community/Qwen3-0.6B-8bit
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import argparse
 import platform
 import sys
@@ -17,8 +23,7 @@ import time
 
 # Skip if not on Apple Silicon
 if sys.platform != "darwin" or platform.machine() != "arm64":
-    print("This test requires Apple Silicon")
-    sys.exit(0)
+    pytest.skip("This test requires Apple Silicon", allow_module_level=True)
 
 import mlx.core as mx
 

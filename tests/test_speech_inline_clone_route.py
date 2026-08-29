@@ -33,6 +33,8 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 CLONE_BASE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
 CUSTOMVOICE_BF16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
 

@@ -293,11 +293,10 @@ jobs:
         # The lane's test surface is declared in pyproject.toml as the
         # `ci-linux` extra (see its comment for why jinja2 lives there —
         # reasoning-template tests #2445/#2446 render chat templates with it).
-        # This lane MUST stay no-MLX (Apple-Silicon-only; the roster below
-        # states "tests ... MUST not import mlx"), so `--no-deps` installs the
-        # package without pulling mlx/mlx-lm, and we add only the extra's test
-        # deps via a synced requirements file instead of `-e ".[ci-linux]"`
-        # (which would drag the base deps' mlx onto Linux).
+        # This lane MUST stay no-MLX (Apple-Silicon-only), so `--no-deps`
+        # installs the package without pulling mlx/mlx-lm. The synced
+        # requirements file supplies the complete cross-platform unit-test
+        # surface without `-e ".[ci-linux]"` dragging MLX onto Linux.
         run: |
           python -m pip install --upgrade pip
           pip install -e . --no-deps
@@ -306,150 +305,27 @@ jobs:
       - name: Run unit tests (no MLX required)
         env:
           COVERAGE_FILE: coverage-linux-${{ matrix.python-version }}.data
-        # NOTE: tests in this list MUST not import mlx / mlx_lm at module
-        # load time — Linux CI doesn't have MLX (it's Apple-Silicon only).
-        # Tests that need mlx live in the test-apple-silicon job below.
-        # Tests include the #2301 release-contract checks (test_release_version,
-        # test_check_main_head, test_check_release_blockers,
-        # test_check_release_environment, test_check_desktop_publish,
-        # test_desktop_manifest) — pure stdlib,
-        # no MLX. The separate engine-contracts job runs the shell release
-        # scripts under tests/release/.
+        # Ordinary unit tests are discovered by directory. MLX-bound modules
+        # own a requires_mlx marker + collection guard. Tests that deliberately
+        # consume a real HF cache or network are non-hermetic and stay outside
+        # this hosted lane; live/integration tests and the isolated fake-MLX
+        # process have stable directory boundaries.
         run: |
           pytest \
-            tests/test_cli_connect.py \
-            tests/test_cli_offline_serve.py \
-            tests/test_cli_chat.py \
-            tests/test_cli_cheetah_banner.py \
-            tests/test_mcp_security.py \
-            tests/test_structured_output.py \
-            tests/test_reasoning_parser.py \
-            tests/test_cohere_command_reasoning_parser.py \
-            tests/test_responses_route.py::TestResponsesNonStream::test_structured_output_keeps_bare_json_out_of_reasoning \
-            tests/test_responses_route.py::TestResponsesStream::test_structured_output_streams_bare_json_as_output_text \
-            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_uses_command_protocol_boundary \
-            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_injects_boundary_on_following_chunk \
-            tests/test_responses_route.py::TestResponsesStream::test_reasoning_cap_exact_terminal_boundary_finishes_cleanly \
-            tests/test_postprocessor.py \
-            tests/test_reasoning_parser_truncation_finalize.py \
-            tests/test_reasoning_finalize_stop_in_think.py \
-            tests/test_per_request_thinking_budget.py \
-            tests/test_tool_parsers.py \
-            tests/test_native_tool_format.py \
-            tests/test_prefix_cache.py \
-            tests/test_mllm_cache.py \
-            tests/test_api_models.py \
-            tests/test_api_utils.py \
-            tests/test_request.py \
-            tests/test_anthropic_models.py \
-            tests/test_anthropic_adapter.py \
-            tests/test_harmony_parsers.py \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_auto_detected_hybrid_metadata_defaults_entries \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_auto_detected_hybrid_metadata_respects_explicit_zero \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_direct_hf_metadata_detection_reaches_admission \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_direct_local_metadata_detection_reaches_admission \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_linear_attention_wrapper_reuses_model_config_contract \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_turboquant_lazy_default_remains_available \
-            tests/test_hybrid_prefix_cache_auto_default.py::TestResolveHybridCacheEntries::test_turboquant_missing_auto_config_module_degrades_to_off \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_unknown_linear_attention_checkpoint_is_hybrid \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_metadata_detection_logs_when_called_directly \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_pattern_match_preserves_authoritative_hybrid_metadata \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_pattern_match_preserves_dense_nonhybrid_safety_pin \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_known_family_parser_has_priority_over_metadata_template \
-            tests/test_model_auto_config.py::TestCheckpointMetadataFallback::test_qwen38_local_snapshot_is_not_mislabeled_dense_qwen35 \
-            tests/test_model_auto_config.py::TestDetectModelConfig::test_deepseek_coder_v2_routes_to_v3_parser \
-            tests/test_model_auto_config.py::TestDetectModelConfig::test_deepseek_r1_distill_does_not_advertise_tool_calls \
-            tests/test_model_auto_config.py::TestMistralFamilyToolParser::test_auto_detect_resolves_to_mistral_parser \
-            tests/test_pflash_cli_wiring.py::test_serve_command_routes_pflash_through_resolve_pflash_config \
-            tests/test_pflash_server_module_wiring.py::test_server_module_applies_detected_hybrid_cache_default \
-            tests/test_pflash_server_module_wiring.py::test_server_module_keeps_dense_cache_default_zero \
-            tests/test_pflash_server_module_wiring.py::test_server_module_lazy_metadata_consumers_share_one_result \
-            tests/test_pflash_server_module_wiring.py::test_server_module_strict_metadata_failure_propagates \
-            tests/test_pflash_server_module_wiring.py::test_server_module_cache_metadata_failure_is_nonfatal \
-            tests/test_pflash_server_module_wiring.py::test_server_module_missing_auto_config_module_degrades_to_no_default \
-            tests/test_resident_models.py \
-            tests/test_residency_load_field_names.py \
-            tests/test_serve_listen_fd.py::test_serve_command_threads_auto_detected_hybrid_into_cache_admission \
-            tests/test_serve_listen_fd.py::test_serve_command_cache_is_first_metadata_consumer \
-            tests/test_serve_listen_fd.py::test_serve_command_missing_auto_config_module_degrades_to_no_default \
-            tests/test_serve_listen_fd.py::test_serve_command_explicit_zero_wins_over_auto_detected_hybrid \
-            tests/test_serve_listen_fd.py::test_serve_command_all_explicit_defaults_skip_model_detection \
-            tests/test_serve_listen_fd.py::test_strict_auto_default_retries_failed_nonfatal_parser_detection \
-            tests/test_tool_calling.py \
-            tests/test_tool_injection.py \
-            tests/test_streaming_latency.py \
-            tests/test_streaming_newlines.py \
-            tests/test_minimax_reasoning_parser.py \
-            tests/test_pr_validate_runner.py \
-            tests/test_pr_validate_merge_base.py \
-            tests/test_pr_validate_diff_coverage.py \
-            tests/test_pr_validate_codex.py \
-            tests/test_pr_validate_cl_description_quality.py \
-            tests/test_release_baselines.py \
-            tests/test_sidecar_distribution_constraints.py \
-            tests/test_sidecar_vision_smoke.py \
-            tests/test_sidecar_smoke_cache_preflight.py \
-            tests/test_validate_release_subject.py \
-            tests/test_check_release_notes.py \
-            tests/test_check_gha_pinning.py \
-            tests/test_check_mypy_error_budget.py \
-            tests/test_release_version.py \
-            tests/test_check_main_head.py \
-            tests/test_check_release_blockers.py \
-            tests/test_check_release_environment.py \
-            tests/test_check_desktop_publish.py \
-            tests/test_desktop_manifest.py \
-            tests/test_classify_ci_changes.py \
-            tests/test_ci_lane_promotion.py \
-            tests/test_mergify_batch_queue.py \
-            tests/test_ci_apple_coverage_union.py \
-            tests/test_check_mlx_upstream_calls.py \
-            tests/test_no_out_of_band_routing.py \
-            tests/test_microbench_parsers.py \
-            tests/test_telemetry_emit.py \
-            tests/test_telemetry_consent.py \
-            tests/test_community_bench_upload.py \
-            tests/test_music_engine.py \
-            tests/test_audio_model_worker.py \
-            tests/test_server_load_model_order.py \
-            tests/test_hermetic_network_off.py \
-            tests/test_routing_groups_0131.py \
-            tests/test_ready_banner_timing.py \
-            tests/test_api_validation_bundle.py \
-            tests/test_aliases_contract.py \
-            tests/test_chat_template_registry.py \
-            tests/test_alias_subfolder.py \
-            tests/test_download_gate.py \
-            tests/test_cli_models.py \
-            tests/test_cli_bench.py \
-            tests/test_memory_capacity_check.py \
-            tests/test_model_recommendations.py \
-            tests/test_serve_listen_fd.py::test_dflash_memory_check_receives_original_alias \
-            tests/test_first_run_guide.py \
-            tests/test_mirror_pull.py \
-            tests/test_pull_summary.py \
-            tests/test_ram_tier_recommendations_agree.py \
-            tests/test_serving_lane_reason_contract.py \
-            tests/test_version_sync.py \
-            tests/test_version_check.py \
-            tests/test_pull_variant_selection.py \
-            tests/test_share_cli.py \
-            tests/test_doctor_env_health.py \
-            tests/test_train_gates_matches_ci.py \
+            tests \
+            --ignore=tests/integrations \
+            --ignore=tests/headless_mlx \
+            -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
             -v --tb=short \
-            -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
             --cov-report=term-missing \
             --cov-report=xml
 
-          # Engine lifecycle contracts execute real engine methods but no tensor
-          # operations. Keep their inert MLX import seam in a separate process
-          # so optional-runtime discovery in the broader Linux suite stays real.
+          # These lifecycle contracts install inert MLX modules before import.
+          # A separate process prevents those fakes from contaminating normal
+          # no-MLX discovery while preserving automatic enrollment by folder.
           pytest \
-            tests/test_engine_lifecycle.py \
-            tests/test_mllm_process_loop_errors.py \
-            tests/test_disconnect_guard_aborts_scheduler.py \
-            tests/test_rst_mid_sse_zombie_kv.py \
+            tests/headless_mlx \
             -v --tb=short \
             --cov=vllm_mlx \
             --cov-append \

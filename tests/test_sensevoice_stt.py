@@ -6,6 +6,8 @@ from __future__ import annotations
 import types
 
 import pytest
+
+pytestmark = pytest.mark.requires_mlx
 from fastapi import HTTPException
 
 from vllm_mlx.audio.registry import resolve_audio_alias, stt_aliases

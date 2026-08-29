@@ -43,6 +43,8 @@ import importlib.util
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # llguidance is only needed by the grammar-BUILD / enforcement tests (they
 # compile a Lark grammar / build an LLTokenizer). The structure-triple and
 # pure-Lark-string tests need NOTHING optional, so we do NOT skip at module

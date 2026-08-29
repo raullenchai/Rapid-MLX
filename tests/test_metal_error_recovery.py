@@ -18,10 +18,14 @@ relies on is what we exercise here.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import asyncio
 from unittest.mock import MagicMock
-
-import pytest
 
 from vllm_mlx.engine_core import EngineConfig, EngineCore
 from vllm_mlx.output_collector import RequestOutputCollector

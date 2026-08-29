@@ -82,6 +82,7 @@ def test_serve_command_routes_pflash_through_resolve_pflash_config(
     assert seen.get("detected_config") is not None
 
 
+@pytest.mark.requires_mlx
 def test_serve_command_forwards_multimodal_lane_verdict():
     # When the serving-lane resolver flags an MLLM lane, serve must forward
     # is_multimodal=True so resolve_pflash_config can suppress the verified
@@ -116,6 +117,7 @@ def _run_bench_capturing_pflash(argv: list[str]) -> dict:
     return seen
 
 
+@pytest.mark.requires_mlx
 def test_bench_command_routes_pflash_through_resolve_pflash_config():
     from vllm_mlx.model_aliases import resolve_model
 

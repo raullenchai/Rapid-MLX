@@ -15,10 +15,14 @@ architecture-aware auto-derivation (and the OOM cliff it prevents) is
 untouched for everyone who does not set the flag.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import sys
 from unittest import mock
-
-import pytest
 
 import vllm_mlx.cli as cli
 

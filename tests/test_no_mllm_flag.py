@@ -33,6 +33,8 @@ from dataclasses import dataclass
 
 import pytest
 
+pytestmark = pytest.mark.requires_mlx
+
 # ---------------------------------------------------------------------------
 # SOP §10 routing registry — single source of truth.
 #

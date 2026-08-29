@@ -13,6 +13,12 @@ namespacing regression test that fakes a populated ``MemoryAwarePrefix
 Cache`` to confirm the compressed-request path never calls into it.
 """
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from unittest.mock import MagicMock
 
 from vllm_mlx.pflash import PFlashConfig

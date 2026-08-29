@@ -32,11 +32,15 @@ Tiers, per the PRD's testing decision:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 import gc
 import inspect
 from pathlib import Path
-
-import pytest
 
 from vllm_mlx import registry
 from vllm_mlx.disk_stream_patch import (

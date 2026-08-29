@@ -32,10 +32,15 @@ unit-test speed and avoids the 2.5 GB Qwen3.5-4B download.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
