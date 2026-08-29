@@ -77,8 +77,18 @@ started, and `caffeinate` must hold display/system assertions. The workflow's
 Accessibility preflight remains fail-closed: a locked/missing GUI session or a
 missing TCC grant is a host failure, not an application failure.
 
-Grant Accessibility to the runner's interactive parent only through macOS
-System Settings. Do not edit the TCC database directly.
+Grant Accessibility only through macOS System Settings to every executable in
+the Actions responsibility chain:
+
+- `~/actions-runner-mini-gui/bin/Runner.Listener`
+- `~/actions-runner-mini-gui/bin/Runner.Worker`
+- `/bin/bash`
+- `~/actions-runner-mini-gui/externals/node20/bin/node`
+
+Restart the idle runner service after changing a grant, then rely on the
+workflow preflight as the authoritative end-to-end check. An SSH-launched AX
+probe does not exercise the same process chain. Do not edit the TCC database
+directly.
 
 ## Dogfood coexistence
 

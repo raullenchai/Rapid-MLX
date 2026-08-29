@@ -392,16 +392,32 @@ if command == "dump" {
 
 // Keyboard shortcuts are interaction contracts, not AXPress aliases. Post the
 // real key to the activated app so unattended golden flows can prove native
-// cancel semantics without taking a dependency on a screen-recording bridge.
+// keyboard behavior without taking a dependency on a screen-recording bridge
+// or on System Events Automation permission.
 if command == "key" {
-    guard wanted == "escape" else { fail("key supports only escape") }
-    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true),
-          let up = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)
-    else { fail("could not create Escape key events") }
+    let virtualKey: CGKeyCode
+    let flags: CGEventFlags
+    switch wanted {
+    case "escape":
+        virtualKey = 53
+        flags = []
+    case "command-comma":
+        virtualKey = 43
+        flags = .maskCommand
+    default:
+        fail("key supports only escape and command-comma")
+    }
+    guard let down = CGEvent(
+              keyboardEventSource: nil, virtualKey: virtualKey, keyDown: true),
+          let up = CGEvent(
+              keyboardEventSource: nil, virtualKey: virtualKey, keyDown: false)
+    else { fail("could not create \(wanted ?? "requested") key events") }
+    down.flags = flags
+    up.flags = flags
     down.postToPid(pid)
     up.postToPid(pid)
     usleep(150_000)
-    print("{\"success\":true,\"key\":\"escape\",\"action\":\"key\"}")
+    print("{\"success\":true,\"key\":\"\(wanted ?? "")\",\"action\":\"key\"}")
     exit(0)
 }
 

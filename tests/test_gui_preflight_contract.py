@@ -67,8 +67,8 @@ def test_ax_dump_omits_non_finite_numbers_before_json_serialization():
 def test_ax_escape_posts_a_real_key_without_answering_nonmodal_consent():
     source = DRIVER.read_text()
     key = source.split('if command == "key" {', 1)[1].split("\n}", 1)[0]
-    assert 'wanted == "escape"' in key
-    assert "virtualKey: 53" in key
+    assert 'case "escape"' in key
+    assert "virtualKey = 53" in key
     assert "down.postToPid(pid)" in key
     assert "up.postToPid(pid)" in key
 
@@ -85,6 +85,19 @@ def test_ax_escape_posts_a_real_key_without_answering_nonmodal_consent():
         "explicit No thanks did not dismiss the telemetry invitation" in fresh_install
     )
     assert "dismissed telemetry invitation returned after relaunch" in fresh_install
+
+
+def test_settings_shortcut_uses_ax_driver_without_system_events_automation():
+    driver = DRIVER.read_text()
+    key = driver.split('if command == "key" {', 1)[1].split("\n}", 1)[0]
+    assert 'case "command-comma"' in key
+    assert "virtualKey = 43" in key
+    assert "flags = .maskCommand" in key
+
+    settings = HARNESS.read_text().split("open_settings() {", 1)[1].split("\n}", 1)[0]
+    assert '"$AX_DRIVER" key "$APP_PID" command-comma' in settings
+    assert "osascript" not in settings
+    assert 'tell application "System Events"' not in settings
 
 
 def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():

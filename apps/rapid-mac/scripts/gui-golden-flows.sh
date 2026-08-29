@@ -1165,18 +1165,10 @@ open_settings() {
         pb menu click --app "PID:$APP_PID" --item 'Settings…' --json > "$OUT/open-settings.json"
     else
         # Settings persistence is deliberately part of the unattended,
-        # AX-only suite. Use the standard macOS shortcut so that flow does
-        # not quietly depend on Peekaboo just to open the window.
-        osascript - "$APP_PID" > "$OUT/open-settings.json" <<'APPLESCRIPT'
-on run argv
-    set targetPID to (item 1 of argv) as integer
-    tell application "System Events"
-        set frontmost of first application process whose unix id is targetPID to true
-        keystroke "," using command down
-    end tell
-    return "{\"success\":true,\"method\":\"command-comma\"}"
-end run
-APPLESCRIPT
+        # AX-only suite. Send the standard macOS shortcut directly to the
+        # activated target app so the flow does not quietly depend on Peekaboo
+        # or a separate System Events Automation grant.
+        "$AX_DRIVER" key "$APP_PID" command-comma > "$OUT/open-settings.json"
     fi
     local probe=2 opened=0
     for _ in {1..40}; do
