@@ -36,8 +36,9 @@ enum ConversationTitleSuggestion {
         the chat.
         """
 
-    /// The first user turn and the answer it drew, or nil when the transcript
-    /// does not yet hold both.
+    /// The first completed exchange, or nil when the transcript does not yet
+    /// hold one. Failed and stopped attempts are skipped so the promised
+    /// retry names the first answer the reader could actually use.
     ///
     /// ## Why the instruction reads the way it does
     ///
@@ -57,17 +58,25 @@ enum ConversationTitleSuggestion {
     nonisolated static func messages(
         forFirstExchange transcript: [ChatMessage]
     ) -> [ChatMessage]? {
-        guard let user = transcript.first(where: { $0.role == .user }),
-              let assistant = transcript.first(where: {
-                  $0.role == .assistant
-                      && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-              })
-        else { return nil }
+        var exchange: (user: ChatMessage, assistant: ChatMessage)?
+        for assistantIndex in transcript.indices {
+            let candidate = transcript[assistantIndex]
+            guard candidate.role == .assistant,
+                  candidate.status == .complete,
+                  candidate.errorMessage != "Stopped.",
+                  !candidate.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  candidate.toolCalls?.isEmpty ?? true,
+                  let user = transcript[..<assistantIndex].last(where: { $0.role == .user })
+            else { continue }
+            exchange = (user, candidate)
+            break
+        }
+        guard let exchange else { return nil }
 
         let prompt = """
             Chat:
-            User: \(excerpt(user.content))
-            Assistant: \(excerpt(assistant.content))
+            User: \(excerpt(exchange.user.content))
+            Assistant: \(excerpt(exchange.assistant.content))
 
             Name it in 2 to 5 words:
             """
