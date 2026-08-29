@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/Tests/RapidUITests/RapidUITests.xcodeproj"
 APP="$ROOT/build/Rapid-MLX Desktop.app"
 RESULT_BUNDLE="${RAPID_XCUI_RESULT_BUNDLE:-$ROOT/build/RapidUITests-$(date +%s)-$$.xcresult}"
+DERIVED_DATA="${RAPID_XCUI_DERIVED_DATA:-${RESULT_BUNDLE%.xcresult}-DerivedData}"
 ONLY_TESTING="${RAPID_XCUI_ONLY_TESTING:-}"
 
 [[ -d "$APP" ]] || { echo "error: build the app first: $APP" >&2; exit 1; }
@@ -31,6 +32,7 @@ xcodebuild test \
     -project "$PROJECT" \
     -scheme RapidUITests \
     -destination 'platform=macOS' \
+    -derivedDataPath "$DERIVED_DATA" \
     -resultBundlePath "$RESULT_BUNDLE" \
     "${test_selection[@]}" \
     CODE_SIGN_STYLE=Manual \

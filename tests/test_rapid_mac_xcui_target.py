@@ -83,6 +83,9 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
     assert "xcodebuild -version" in runner
+    assert 'DERIVED_DATA="${RAPID_XCUI_DERIVED_DATA:' in runner
+    assert "${RESULT_BUNDLE%.xcresult}-DerivedData" in runner
+    assert '-derivedDataPath "$DERIVED_DATA"' in runner
     assert "CODE_SIGN_STYLE=Manual" in runner
     assert "CODE_SIGNING_ALLOWED=YES" in runner
     assert "CODE_SIGNING_REQUIRED=YES" in runner
