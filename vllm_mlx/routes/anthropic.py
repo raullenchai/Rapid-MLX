@@ -813,6 +813,11 @@ async def create_anthropic_message(
                     prepared_messages=messages,
                     prepared_images=images,
                     prepared_videos=videos,
+                    caller_agent=(
+                        request.headers.get("user-agent")
+                        if request is not None
+                        else None
+                    ),
                 ),
                 request,
                 engine=engine,
@@ -1158,6 +1163,32 @@ async def create_anthropic_message(
             # haven't been rebuilt against the new ``GenerationOutput``
             # field (None → legacy ``stop`` → ``end_turn`` mapping).
             matched_stop=getattr(output, "matched_stop", None),
+        )
+
+        # Opt-in telemetry (caller attribution, task C): record a bucketed
+        # ``request`` event for this completed non-streaming /v1/messages
+        # completion. ``caller_agent`` comes from the inbound User-Agent
+        # (bucketed to an allowlist in ``redact`` — never stored raw); every
+        # perf number is bucketed. ``emit.request`` is sampled +
+        # ``is_enabled()``-gated + ``@_safe``, so this is a cheap no-op when
+        # telemetry is off / not sampled and can never affect the response.
+        # TTFT == total latency here (a non-streaming response is delivered
+        # in one shot); the streaming path reports true TTFT.
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _telemetry_emit.request(
+            endpoint="/v1/messages",
+            model_alias=anthropic_request.model,
+            stream=False,
+            tool_call_used=bool(tool_calls),
+            prompt_tokens=output.prompt_tokens,
+            completion_tokens=output.completion_tokens,
+            ttft_ms=elapsed * 1000.0,
+            tps=tokens_per_sec,
+            status=200,
+            caller_agent=(
+                request.headers.get("user-agent") if request is not None else None
+            ),
         )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
@@ -1548,6 +1579,7 @@ async def _stream_anthropic_messages(
     prepared_messages: list | None = None,
     prepared_images: list | None = None,
     prepared_videos: list | None = None,
+    caller_agent: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -1584,9 +1616,16 @@ async def _stream_anthropic_messages(
             Pre-r5 the streaming helper discarded these to ``[]``
             when ``prepared_messages`` was supplied, silently
             dropping every multimodal stream's media inputs.
+        caller_agent: inbound HTTP ``User-Agent`` from the route request,
+            passed straight to ``emit.request`` (bucketed to an allowlist
+            in ``redact`` — never stored raw). Task C caller attribution.
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
+    # First client-visible output timestamp so the task-C streaming emit can
+    # report true TTFT. Raw engine deltas may be held or suppressed by the
+    # reasoning/tool routers, so this is latched only at an SSE output yield.
+    _first_token_ts: float | None = None
 
     if prepared_messages is not None:
         # Caller (the route entry-point) already extracted +
@@ -1891,6 +1930,11 @@ async def _stream_anthropic_messages(
     )
     pre_filter_buffer: list[str] = []
 
+    def _latch_first_visible_output() -> None:
+        nonlocal _first_token_ts
+        if _first_token_ts is None:
+            _first_token_ts = time.perf_counter()
+
     def _capture(event: str) -> str | None:
         """Either buffer ``event`` and return ``None``, or return
         ``event`` unchanged.
@@ -1904,10 +1948,21 @@ async def _stream_anthropic_messages(
         streaming semantics. ``async for`` constructs in Python 3.12
         don't allow ``yield from`` against a sync generator helper,
         so this returns a scalar rather than an iterator.
+
+        Content-block start/delta events are client-visible output. Their TTFT
+        timestamp is taken only when the event actually reaches the wire;
+        buffered forced-tool events therefore latch during replay, not while
+        the model is still being validated. Keeping this classification here
+        prevents individual yield sites from accidentally forgetting the
+        telemetry latch when a new streaming branch is added.
         """
         if _buffer_for_pinned_tool:
             pre_filter_buffer.append(event)
             return None
+        if event.startswith(
+            ("event: content_block_start", "event: content_block_delta")
+        ):
+            _latch_first_visible_output()
         return event
 
     accumulated_text = ""
@@ -2889,6 +2944,10 @@ async def _stream_anthropic_messages(
         tool_choice_error or tool_validation_error or synthesized_pinned_call
     ):
         for buffered_event in pre_filter_buffer:
+            if buffered_event.startswith(
+                ("event: content_block_start", "event: content_block_delta")
+            ):
+                _latch_first_visible_output()
             yield buffered_event
         pre_filter_buffer.clear()
 
@@ -2974,6 +3033,7 @@ async def _stream_anthropic_messages(
                     "input": {},
                 },
             }
+            _latch_first_visible_output()
             yield f"event: content_block_start\ndata: {json.dumps(tool_block_start)}\n\n"
             # R-07 tracking: tool_use blocks count as content_blocks
             # for the malformed-message guard below.
@@ -3108,3 +3168,41 @@ async def _stream_anthropic_messages(
     )
 
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+
+    # Opt-in telemetry (caller attribution, task C): record a bucketed
+    # ``request`` event for this completed /v1/messages stream. Fired only
+    # AFTER the terminal ``message_stop`` marker is yielded + the generator
+    # resumes cleanly — matching the chat lane's documented emit-after-
+    # terminal-marker placement. A stream the client cancels or that raises
+    # while delivering that final marker raises out before this line and is
+    # deliberately NOT counted (under-counting is conservative; emitting
+    # before ``message_stop`` would record a false status-200 success).
+    # ``caller_agent`` is the inbound User-Agent bucketed to an allowlist in
+    # ``redact`` (never stored raw); ``ttft_ms`` is true first-token latency.
+    # ``emit.request`` is sampled + ``is_enabled()``-gated + ``@_safe``, so
+    # this is a cheap no-op when telemetry is off / not sampled.
+    if _first_token_ts is not None:
+        _ttft_seconds = max(0.0, _first_token_ts - start_time)
+    else:
+        _ttft_seconds = elapsed
+    _decode_seconds = elapsed - _ttft_seconds
+    _decode_tps = (
+        completion_tokens / _decode_seconds if _decode_seconds > 0 else tokens_per_sec
+    )
+    from vllm_mlx.telemetry import emit as _telemetry_emit
+
+    _telemetry_emit.request(
+        endpoint="/v1/messages",
+        model_alias=anthropic_request.model,
+        stream=True,
+        tool_call_used=bool(tool_calls),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        # TTFT == true first-token latency when a text token was produced;
+        # on a stream with no text delta (tool-only / empty completion) fall
+        # back to total stream time rather than reporting a false 0.0ms.
+        ttft_ms=_ttft_seconds * 1000.0,
+        tps=_decode_tps,
+        status=200,
+        caller_agent=caller_agent,
+    )

@@ -143,6 +143,20 @@ def normalize_model_path(path: str) -> str:
 # Order matters: more specific agent markers are checked before the generic
 # HTTP-client fallbacks so e.g. an agent that rides ``python-httpx`` still
 # resolves to the agent, not ``python-httpx``.
+#
+# Task C (instrumentation-release) audit: candidate product UAs (kimi, codex,
+# opencode, gemini-cli, zed) were evaluated and intentionally NOT added — none
+# is provable, i.e. none sets a recognizable ``User-Agent`` substring; codex /
+# opencode (verified against the installed binaries) carry no product UA and
+# ride the underlying SDK (openai-rust, undici, ...) which the allowlist below
+# already buckets. Adding a marker here without a verified substring would be
+# body-based guessing, which the ``no caller free-text`` red-line forbids.
+# Documented limitation: an agent that passes openai-python (or another SDK)
+# UA through verbatim is indistinguishable at the UA layer and correctly stays
+# bucketed to that SDK — we never fabricate product attribution from the body.
+# The attribution fix for those agents is the /v1/messages (anthropic.py) +
+# /v1/completions wiring (task C), which surfaces the ALREADY-listed markers
+# (claude-code, anthropic-sdk, openai-python, ...) instead of ``other``.
 _CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
     ("claude-code", "claude-code"),
     ("claudecode", "claude-code"),

@@ -739,6 +739,33 @@ def test_request_endpoint_normalizes_full_url_to_path(opted_in, stub_queue):
     assert "host" not in blob
 
 
+def test_request_endpoints_anthropic_and_completions_allowlisted(opted_in, stub_queue):
+    """Task C (caller attribution): the newly-wired ``/v1/messages`` and
+    ``/v1/completions`` routes emit ``request`` events through
+    ``emit.request``; those endpoints must round-trip verbatim past
+    ``_normalize_endpoint`` (they are in ``_ALLOWED_ENDPOINTS``), not
+    collapse to ``other``. This pins the schema-side readiness the
+    instrumentation-release drop calls out — claude-code traffic over the
+    Anthropic surface now lands in the ``claude-code`` bucket instead of
+    ``other``.
+    """
+    from vllm_mlx.telemetry import emit
+
+    for endpoint in ("/v1/messages", "/v1/completions"):
+        emit.request(
+            endpoint=endpoint,
+            model_alias="qwen3.5-9b-4bit",
+            stream=True,
+            tool_call_used=False,
+            prompt_tokens=10,
+            completion_tokens=10,
+            ttft_ms=100.0,
+            tps=10.0,
+            status=200,
+        )
+        assert stub_queue[-1]["request"]["endpoint"] == endpoint
+
+
 def test_session_models_loaded_does_not_materialize_full_input(opted_in, stub_queue):
     """Round 13 codex review: the helper sliced after building a tuple
     of the entire input, which contradicted the documented "slice
