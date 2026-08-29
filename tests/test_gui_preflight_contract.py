@@ -87,6 +87,30 @@ def test_ax_escape_posts_a_real_key_without_answering_nonmodal_consent():
     assert "dismissed telemetry invitation returned after relaunch" in fresh_install
 
 
+def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
+    """The driver must not report success merely because key events posted."""
+    driver = DRIVER.read_text()
+    selection = driver.split('case "select-menu-item":', 1)[1].split(
+        'case "set-scroll-value":', 1
+    )[0]
+    assert "findFreshElement(identifier: itemIdentifier)" in selection
+    assert "AXUIElementPerformAction(menuItem, kAXPressAction" in selection
+    assert "menu item identifier not found after opening" in selection
+    assert "selected_title" not in selection
+
+    flow = (
+        HARNESS.read_text()
+        .split("flow_model_switch_active_request() {", 1)[1]
+        .split("\n}", 1)[0]
+    )
+    assert (
+        'select-menu-item "$APP_PID" ModelPickerBar.ModelMenu '
+        "\\\n        ModelPickerBar.Alias.fake-external-alias"
+    ) in flow
+    assert '"$AX_DRIVER" press "$APP_PID" ModelSwitchGuard.Cancel' in flow
+    assert '"$AX_DRIVER" key "$APP_PID" escape' not in flow
+
+
 def test_fresh_install_proves_the_telemetry_boundary_with_a_loopback_sink():
     source = HARNESS.read_text()
     sink = source.split("start_telemetry_sink() {", 1)[1].split("\n}", 1)[0]
