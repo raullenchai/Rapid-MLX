@@ -43,6 +43,7 @@ can silently drift from production.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -739,6 +740,84 @@ def test_t3_chat_route_recovers_args_when_possible():
         assert leak not in reasoning, (
             f"recoverable-args path leaked {leak!r} into reasoning: {reasoning!r}"
         )
+
+
+_REQUIRED_ADD_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_numbers",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+                "required": ["a", "b"],
+            },
+        },
+    }
+]
+
+
+def test_required_named_xml_call_returns_schema_valid_arguments():
+    """The Qwen3.8 native wire reaches clients as ordinary JSON arguments."""
+    raw = (
+        "<tool_call>\n"
+        "<function=add_numbers>\n"
+        "<parameter=a>\n2\n</parameter>\n"
+        "<parameter=b>\n3\n</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+
+    class _ValidNamedXmlEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    client = _make_client(_ValidNamedXmlEngine(), tool_call_parser="qwen3_coder_xml")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add two numbers"}],
+            "tools": _REQUIRED_ADD_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    call = resp.json()["choices"][0]["message"]["tool_calls"][0]["function"]
+    assert call["name"] == "add_numbers"
+    assert json.loads(call["arguments"]) == {"a": 2, "b": 3}
+
+
+def test_required_named_xml_call_with_missing_required_arg_fails_closed():
+    """A parser drift must not surface an executable-looking malformed 200."""
+
+    raw = "<tool_call>\n<function=add_numbers>\n</function>\n</tool_call>"
+
+    class _MissingRequiredArgEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    client = _make_client(
+        _MissingRequiredArgEngine(), tool_call_parser="qwen3_coder_xml"
+    )
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add two numbers"}],
+            "tools": _REQUIRED_ADD_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "missing required argument" in resp.text
 
 
 # ──────────────────────────────────────────────────────────────────

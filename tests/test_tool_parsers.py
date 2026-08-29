@@ -1603,6 +1603,39 @@ class TestQwen3XmlAlias:
             "qwen3_coder_xml must remain bound to the Coder parser"
         )
 
+    def test_qwen38_native_named_xml_round_trips_arguments(self):
+        """Qwen3.8's template emits the same named XML parameter body."""
+        parser = ToolParserManager.get_tool_parser("qwen3_coder_xml")(tokenizer=None)
+        text = (
+            "<tool_call>\n"
+            "<function=get_weather>\n"
+            "<parameter=city>\nParis\n</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ]
+        }
+
+        result = parser.extract_tool_calls(text, request)
+
+        assert result.tools_called
+        assert result.content in (None, "")
+        assert result.tool_calls[0]["name"] == "get_weather"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {"city": "Paris"}
+
     def test_qwen3_xml_streaming_emits_tool_call(self):
         """Streaming path: feed reasoning-model output token-by-token through qwen3_xml.
 

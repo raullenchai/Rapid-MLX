@@ -5868,9 +5868,23 @@ async def _create_chat_completion_impl(
                     if _repair_err:
                         raise HTTPException(status_code=422, detail=_repair_err)
 
+    # Required and named tool choices are executable contracts, not best-effort
+    # extraction. Decoder constraints normally make these calls schema-valid;
+    # fail closed if a future template/parser mismatch still reaches this
+    # boundary instead of returning malformed arguments as a successful call.
+    _normalized_tool_choice = _normalize_tool_choice_for_grammar(request.tool_choice)
+    _is_forced_choice = bool(
+        _normalized_tool_choice
+        and _normalized_tool_choice.get("mode") in ("required", "named")
+    )
+
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:
-        _validate_tool_call_params(tool_calls, request.tools)
+        _validate_tool_call_params(
+            tool_calls,
+            request.tools,
+            enforce_required=_is_forced_choice,
+        )
 
     # D-TOOLCHOICE-R1 T3: scrub wire-marker leftovers from the
     # response text. Two trigger conditions:
@@ -5913,11 +5927,6 @@ async def _create_chat_completion_impl(
     # model ignores ``tool_choice="required"`` and emits ordinary
     # prose. Scrub only when the visible text contains STRUCTURAL
     # parser-wire residue, not merely a literal token mention.
-    _normalized_tool_choice = _normalize_tool_choice_for_grammar(request.tool_choice)
-    _is_forced_choice = bool(
-        _normalized_tool_choice
-        and _normalized_tool_choice.get("mode") in ("required", "named")
-    )
     _raw_text_for_reasoning = output.raw_text or output.text
     _raw_has_structural_wire = _contains_structural_tool_wire_leak(
         _raw_text_for_reasoning

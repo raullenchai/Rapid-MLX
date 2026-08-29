@@ -135,10 +135,12 @@ def _convert_param_value(
 @ToolParserManager.register_module(["qwen3_coder_xml"])
 class Qwen3CoderToolParser(ToolParser):
     """
-    Tool call parser for Qwen3-Coder models using XML format.
+    Tool call parser for Qwen3-family models using named XML format.
 
     Supports the XML-based tool call format with <tool_call>/<function=...>
-    tags and type conversion from tool schema.
+    tags and type conversion from tool schema. The parser name is retained for
+    CLI compatibility; routing is based on the checkpoint's wire format, which
+    is also used by Qwen3.8 27B.
 
     Used when --enable-auto-tool-choice --tool-call-parser qwen3_coder_xml are set.
     """
