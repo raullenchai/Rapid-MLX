@@ -388,6 +388,32 @@ struct BackgroundAssistGatingTests {
         #expect(model.followUp == .idle, "\(route) left the rail showing")
         #expect(model.followUpAnchorID == nil, "\(route) left the anchor set")
     }
+
+    @Test("A stale cancellation cannot clear a newer turn's rail")
+    func staleCancellationPreservesNewerRail() {
+        let model = ChatViewModel()
+        let staleAnswer = answer()
+        let currentAnswer = answer()
+        model.devSeedMessages([ask, currentAnswer])
+        model.publishFollowUps(
+            "Current one?\nCurrent two?\nCurrent three?",
+            anchoredTo: currentAnswer.id,
+            excluding: ""
+        )
+
+        // The older assist finally observes cancellation after the current
+        // turn has already published. Its cleanup no longer owns this rail.
+        model.clearFollowUps(anchoredTo: staleAnswer.id)
+        #expect(model.followUp == .ready([
+            "Current one?", "Current two?", "Current three?",
+        ]))
+        #expect(model.followUpAnchorID == currentAnswer.id)
+
+        // The matching assist still tears down its own rail.
+        model.clearFollowUps(anchoredTo: currentAnswer.id)
+        #expect(model.followUp == .idle)
+        #expect(model.followUpAnchorID == nil)
+    }
 }
 
 /// Shape rules a SwiftUI body cannot be asked about from this target
