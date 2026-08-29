@@ -76,7 +76,7 @@ struct SidecarVersionGateTests {
     }
 
     @Test("scripts/build.sh accepts dotted-digit/RC and rejects malformed versions (#411 layer 2 — empirical)")
-    func buildScriptRegexEmpiricalBehaviour() throws {
+    func buildScriptRegexEmpiricalBehaviour() async throws {
         // Codex #412 r2 MINOR: source-substring assertions catch
         // accidental deletions but not subtle regex breakage (e.g. a
         // future edit that over-escapes the dot, or accidentally
@@ -114,11 +114,10 @@ struct SidecarVersionGateTests {
         ] {
             let bash = "/bin/bash"
             let script = "re=\(Self.shellSingleQuote(regex)); if [[ \"$1\" =~ $re ]]; then exit 0; else exit 1; fi"
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: bash)
-            proc.arguments = ["-c", script, "_test", input]
-            try proc.run()
-            proc.waitUntilExit()
+            let proc = try await TestSubprocess.run(
+                executableURL: URL(fileURLWithPath: bash),
+                arguments: ["-c", script, "_test", input]
+            )
             let matched = proc.terminationStatus == 0
             #expect(
                 matched == shouldMatch,
