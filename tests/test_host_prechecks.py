@@ -197,5 +197,8 @@ def test_real_dogfood_entrypoints_share_the_host_guards() -> None:
     assert 'size_args=(--model "$MODEL")' in mvp
     assert 'exec "$SCRIPT_DIR/dogfood-host-precheck.sh"' in ax
     assert 'exec "$ROOT/scripts/dogfood-host-precheck.sh"' in golden
-    # Localized, default, and restart launches must all keep the host guard.
-    assert golden.count("DOGFOOD_WORKING_SET_GB=0.1") == 3
+    # The launch helper centralizes the host guard for localized, default,
+    # and restart launches.
+    assert golden.count("DOGFOOD_WORKING_SET_GB=0.1") == 2
+    assert golden.count("launch_persona_app ") == 3
+    assert "launch_persona_app append" in golden
