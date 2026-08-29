@@ -94,7 +94,7 @@ def _build_engine(
     monkeypatch.setattr(
         engine,
         "_compute_prefix_boundary",
-        lambda messages, tools=None: _SENTINEL_BOUNDARY,
+        lambda messages, tools=None, **kwargs: _SENTINEL_BOUNDARY,
     )
     monkeypatch.setattr(engine, "_is_hybrid_model", lambda: is_hybrid)
     return engine, stub
@@ -146,6 +146,45 @@ def test_stream_chat_forwards_prefix_boundary(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_chat_boundary_receives_submitted_prompt_options(monkeypatch, streaming):
+    """Both chat paths calculate against the exact prompt sent downstream."""
+    engine, _ = _build_engine(monkeypatch)
+    captured = {}
+
+    def compute(messages, tools=None, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(engine, "_compute_prefix_boundary", compute)
+    messages = [{"role": "user", "content": "hello"}]
+    options = {"request_scope": "kept"}
+
+    if streaming:
+
+        async def _drain():
+            async for _ in engine.stream_chat(
+                messages=messages,
+                enable_thinking=True,
+                chat_template_kwargs=options,
+            ):
+                break
+
+        asyncio.run(_drain())
+    else:
+        asyncio.run(
+            engine.chat(
+                messages=messages,
+                enable_thinking=True,
+                chat_template_kwargs=options,
+            )
+        )
+
+    assert captured["generation_prompt"] == "prompt-stub"
+    assert captured["enable_thinking"] is True
+    assert captured["chat_template_kwargs"] is options
+
+
 def test_single_message_zero_boundary_both_paths(monkeypatch):
     """When ``_compute_prefix_boundary`` returns 0 (single-turn request),
     BOTH paths must end up at the downstream layer with the same value
@@ -160,7 +199,7 @@ def test_single_message_zero_boundary_both_paths(monkeypatch):
     engine._engine = stub
     monkeypatch.setattr(engine, "_apply_chat_template", lambda *a, **k: "prompt-stub")
     monkeypatch.setattr(
-        engine, "_compute_prefix_boundary", lambda messages, tools=None: 0
+        engine, "_compute_prefix_boundary", lambda messages, tools=None, **kwargs: 0
     )
     monkeypatch.setattr(engine, "_is_hybrid_model", lambda: True)
     messages = [{"role": "user", "content": "single"}]
@@ -296,6 +335,52 @@ def test_first_turn_saves_stable_boundary_before_generation_suffix(monkeypatch):
 
     assert boundary == len(stable) - 8
     assert 0 < boundary < len(render(messages, add_generation_prompt=True)) - 1
+
+
+def test_prefix_boundary_uses_exact_submitted_prompt_options(monkeypatch):
+    """Request-scoped template options must not produce an impossible boundary.
+
+    The Qwen4 no-thinking path exposed this with a boundary 23 tokens beyond
+    the actual scheduler prompt: the helper re-rendered with the tokenizer's
+    thinking default instead of using the prompt already submitted by chat().
+    """
+    engine, _ = _build_engine(monkeypatch)
+    engine._compute_prefix_boundary = BatchedEngine._compute_prefix_boundary.__get__(
+        engine, BatchedEngine
+    )
+    engine._tokenizer = _CharacterTokenizer()
+
+    def render(
+        messages,
+        tools=None,
+        *,
+        add_generation_prompt=True,
+        enable_thinking=None,
+        chat_template_kwargs=None,
+        **kwargs,
+    ):
+        body = "|".join(str(message.get("content", "")) for message in messages)
+        option = "|THINKING-DEFAULT-LONG-SUFFIX" if enable_thinking is not False else ""
+        return option + body + ("|GEN" if add_generation_prompt else "")
+
+    monkeypatch.setattr(engine, "_apply_chat_template", render)
+    messages = [{"role": "user", "content": "first turn"}]
+    submitted = render(messages, enable_thinking=False)
+
+    # Pin the repro shape: a default re-render would yield a boundary beyond
+    # the shorter no-thinking prompt actually sent to the scheduler.
+    assert engine._compute_prefix_boundary(messages) > len(submitted)
+
+    boundary = engine._compute_prefix_boundary(
+        messages,
+        generation_prompt=submitted,
+        enable_thinking=False,
+        chat_template_kwargs={"request_scope": "preserved"},
+    )
+
+    stable = render(messages, add_generation_prompt=False, enable_thinking=False)
+    assert boundary == len(stable) - 8
+    assert 0 < boundary < len(submitted)
 
 
 def test_prefix_boundary_stops_before_transient_server_priming(monkeypatch):

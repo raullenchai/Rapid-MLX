@@ -2781,12 +2781,21 @@ class BatchedEngine(BaseEngine):
         # active where it's needed and inert where it broke things.
         if self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
-                prefix_boundary = self._compute_prefix_boundary(messages, tools)
+                prefix_boundary = self._compute_prefix_boundary(
+                    messages,
+                    tools,
+                    generation_prompt=prompt,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                )
             else:
                 prefix_boundary = self._compute_prefix_boundary(
                     messages,
                     tools,
                     transient_message_start=transient_message_start,
+                    generation_prompt=prompt,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
                 )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
@@ -2860,6 +2869,9 @@ class BatchedEngine(BaseEngine):
         tools: list[dict] | None = None,
         *,
         transient_message_start: int | None = None,
+        generation_prompt: str | list[int] | None = None,
+        enable_thinking: bool | None = None,
+        chat_template_kwargs: dict | None = None,
     ) -> int:
         """Compute the latest prefix that is stable across the next turn.
 
@@ -2884,16 +2896,28 @@ class BatchedEngine(BaseEngine):
         try:
             template_tools = convert_tools_for_template(tools) if tools else None
 
-            # Tokenize the real generation prompt and the same conversation
-            # before its transient assistant-generation marker is appended.
-            real_prompt = self._apply_chat_template(
-                messages, template_tools, add_generation_prompt=True
-            )
+            # The submitted generation prompt is the source of truth. Re-
+            # rendering it here can change tokenization when request-scoped
+            # template options (for example ``enable_thinking=False``) are in
+            # effect, producing a boundary beyond the actual scheduler prompt.
+            real_prompt = generation_prompt
+            if real_prompt is None:
+                real_prompt = self._apply_chat_template(
+                    messages,
+                    template_tools,
+                    add_generation_prompt=True,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                )
             tokenizer = self.tokenizer
             if hasattr(tokenizer, "tokenizer"):
                 tokenizer = tokenizer.tokenizer
 
-            real_tokens = tokenizer.encode(real_prompt)
+            real_tokens = (
+                list(real_prompt)
+                if isinstance(real_prompt, list)
+                else tokenizer.encode(real_prompt)
+            )
 
             if transient_message_start is not None:
                 future_prompt = self._apply_chat_template(
@@ -2906,6 +2930,8 @@ class BatchedEngine(BaseEngine):
                     ],
                     template_tools,
                     add_generation_prompt=False,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
                 )
                 future_tokens = tokenizer.encode(future_prompt)
                 transient_lcp = 0
@@ -2916,7 +2942,11 @@ class BatchedEngine(BaseEngine):
                 return max(0, transient_lcp - _PREFIX_BOUNDARY_REPLAY_TOKENS)
 
             stable_prompt = self._apply_chat_template(
-                messages, template_tools, add_generation_prompt=False
+                messages,
+                template_tools,
+                add_generation_prompt=False,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
             )
             next_turn_prompt = self._apply_chat_template(
                 [
@@ -2928,6 +2958,8 @@ class BatchedEngine(BaseEngine):
                 ],
                 template_tools,
                 add_generation_prompt=False,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
             )
 
             stable_tokens = tokenizer.encode(stable_prompt)
@@ -2959,7 +2991,12 @@ class BatchedEngine(BaseEngine):
                 **messages[last_user_idx],
                 "content": "XXXXXXXXXX",
             }
-            dummy_prompt = self._apply_chat_template(dummy_messages, template_tools)
+            dummy_prompt = self._apply_chat_template(
+                dummy_messages,
+                template_tools,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
 
             dummy_tokens = tokenizer.encode(dummy_prompt)
 
@@ -3498,12 +3535,21 @@ class BatchedEngine(BaseEngine):
         # silently regress one path while keeping the other green.
         if self._needs_prefix_boundary_snapshot():
             if transient_message_start is None:
-                prefix_boundary = self._compute_prefix_boundary(messages, tools)
+                prefix_boundary = self._compute_prefix_boundary(
+                    messages,
+                    tools,
+                    generation_prompt=prompt,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
+                )
             else:
                 prefix_boundary = self._compute_prefix_boundary(
                     messages,
                     tools,
                     transient_message_start=transient_message_start,
+                    generation_prompt=prompt,
+                    enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
                 )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary

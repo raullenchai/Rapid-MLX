@@ -62,6 +62,40 @@ class TestPromptCacheSnapshot:
         )
         assert scheduler._prompt_cache_save_cb is None
 
+    @pytest.mark.parametrize("invalid_boundary", [4, 9])
+    def test_out_of_range_boundary_arms_internal_n_minus_one(self, invalid_boundary):
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        request = Request(
+            request_id="req-invalid-boundary",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.prefix_boundary = invalid_boundary
+
+        boundary = scheduler._resolve_snapshot_boundary(request)
+
+        assert boundary == 3
+        assert request._cache_snapshot_boundary == 3
+        assert request._cache_snapshot_is_internal is True
+
+    def test_valid_semantic_boundary_is_preserved(self):
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        request = Request(
+            request_id="req-valid-boundary",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.prefix_boundary = 2
+
+        assert scheduler._resolve_snapshot_boundary(request) == 2
+        assert not hasattr(request, "_cache_snapshot_is_internal")
+
     def test_snapshot_stores_promoted_prompt_only(self):
         scheduler = _make_scheduler_with_cache()
         prompt_tokens = [10, 20, 30, 40]
@@ -646,6 +680,35 @@ class TestScheduleWaitingInsertDispatch:
     exercise the dispatch contract by stubbing the BatchGenerator and
     invoking the same boundary-split branch.
     """
+
+    def test_real_schedule_uses_n_minus_one_for_impossible_boundary(self):
+        """An impossible semantic boundary must not suppress safe exact reuse."""
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        request = Request(
+            request_id="req-real-dispatch",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [101]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        scheduled = scheduler._schedule_waiting()
+
+        assert scheduled == [request]
+        assert request._cache_snapshot_boundary == 3
+        segments = batch_generator.insert_segments.call_args.args[0]
+        assert segments == [[[10, 20, 30], [40]]]
+        batch_generator.insert.assert_not_called()
 
     def _build_dispatch_args(
         self,

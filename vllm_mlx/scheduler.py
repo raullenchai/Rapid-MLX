@@ -6714,6 +6714,45 @@ class Scheduler:
             return request.prompt_token_ids
         return tokens_to_process
 
+    def _resolve_snapshot_boundary(self, request: Request) -> int:
+        """Return a usable prompt boundary, arming N-1 reuse when needed.
+
+        A caller-provided boundary must lie strictly inside the scheduler's
+        actual tokenized prompt.  Treat an out-of-range value as absent so it
+        cannot suppress the bounded N-1 fallback for non-trimmable caches.
+        """
+        prompt_tokens = request.prompt_token_ids or []
+        snapshot_boundary = int(getattr(request, "prefix_boundary", 0) or 0)
+        if snapshot_boundary >= len(prompt_tokens):
+            logger.debug(
+                "[boundary_snapshot] ignoring out-of-range boundary "
+                "request=%s boundary=%d prompt_tokens=%d",
+                request.request_id[:12],
+                snapshot_boundary,
+                len(prompt_tokens),
+            )
+            snapshot_boundary = 0
+
+        if (
+            snapshot_boundary <= 0
+            and self.memory_aware_cache is not None
+            and getattr(self.config, "hybrid_cache_entries", 0) > 0
+            and getattr(self.config, "non_trimmable_exact_prefix_reuse", False)
+            and not request.prompt_cache
+            and len(prompt_tokens) > 1
+        ):
+            snapshot_boundary = len(prompt_tokens) - 1
+            request._cache_snapshot_boundary = snapshot_boundary
+            request._cache_snapshot_is_internal = True
+            logger.debug(
+                "[boundary_snapshot] armed internal N-1 boundary request=%s "
+                "boundary=%d prompt_tokens=%d",
+                request.request_id[:12],
+                snapshot_boundary,
+                len(prompt_tokens),
+            )
+        return snapshot_boundary
+
     def _schedule_waiting(self) -> list[Request]:
         """
         Move requests from waiting queue to running.
@@ -6910,21 +6949,10 @@ class Scheduler:
             # lies strictly inside the tokens we're about to process —
             # otherwise there's nothing new to capture at the boundary.
             boundary_local_split: int | None = None
-            snapshot_boundary = getattr(request, "prefix_boundary", 0)
             # A non-trimmable exact hit cannot use the usual trim-one then
             # re-forward-last-token kickoff. Capture the cold prompt at N-1;
             # an identical repeat becomes a safe one-token prefix extension.
-            if (
-                snapshot_boundary <= 0
-                and self.memory_aware_cache is not None
-                and getattr(self.config, "hybrid_cache_entries", 0) > 0
-                and getattr(self.config, "non_trimmable_exact_prefix_reuse", False)
-                and not request.prompt_cache
-                and len(request.prompt_token_ids) > 1
-            ):
-                snapshot_boundary = len(request.prompt_token_ids) - 1
-                request._cache_snapshot_boundary = snapshot_boundary
-                request._cache_snapshot_is_internal = True
+            snapshot_boundary = self._resolve_snapshot_boundary(request)
             if (
                 self.memory_aware_cache is not None
                 and snapshot_boundary > 0

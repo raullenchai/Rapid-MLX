@@ -419,6 +419,8 @@ jobs:
             tests/test_deepseek_v4_vendored.py \
             tests/test_dspark_scheduler.py \
             tests/test_prefix_cache_persistence.py \
+            tests/test_prefix_boundary_path_parity.py \
+            tests/test_prompt_cache_snapshot.py \
             tests/test_suffix_decoding.py \
             tests/test_qwen4_exp_artifact_parity.py \
             tests/test_qwen4_exp_reference_parity.py \

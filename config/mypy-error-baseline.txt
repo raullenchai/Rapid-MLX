@@ -100,7 +100,7 @@ vllm_mlx/runtime/disk_kv_checkpoint.py 1
 vllm_mlx/runtime/radix_index.py 2
 vllm_mlx/runtime/ubc_evict.py 1
 vllm_mlx/runtime/video_lane.py 4
-vllm_mlx/scheduler.py 37
+vllm_mlx/scheduler.py 35
 vllm_mlx/server.py 21
 vllm_mlx/service/helpers.py 4
 vllm_mlx/service/postprocessor.py 6
