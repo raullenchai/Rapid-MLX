@@ -288,6 +288,10 @@ class QSAIndexCache(ArraysCache):
         pooled = mx.mean(groups.astype(mx.float32), axis=2).astype(raw_keys.dtype)
         starts = self._offsets[0] + mx.arange(group_count) * ratio
         transformed = transform_groups(pooled, starts)
+        # The batched Metal transform is lazy.  Materialize it before the
+        # persistent cache's in-place commit so its request-owned graph cannot
+        # outlive cache teardown and corrupt a subsequent generation (#2591).
+        mx.eval(transformed)
 
         ring = raw_keys[:, complete_length - ratio : complete_length, :]
         remainder = length - complete_length

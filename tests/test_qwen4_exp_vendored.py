@@ -12,6 +12,7 @@ pytest.importorskip("mlx_lm")
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, CacheList, KVCache
 
 import vllm_mlx.models.qwen4_exp as qwen4_exp
+import vllm_mlx.models.qwen4_exp_cache as qwen4_exp_cache
 from scripts import qwen38_streaming_convert as converter
 from scripts.qwen38_streaming_convert import quantized_tensor_names
 from vllm_mlx.models.qwen4_exp import (
@@ -581,6 +582,35 @@ def test_qsa_cache_vectorized_chunks_and_scalar_tail_keep_identical_state():
         np.testing.assert_array_equal(
             np.array(scalar.compressed_keys), np.array(vectorized.compressed_keys)
         )
+
+
+def test_qsa_cache_materializes_vector_transform_before_persistent_write(monkeypatch):
+    evaluated = []
+    produced = []
+    real_eval = mx.eval
+
+    def recording_eval(*arrays):
+        evaluated.append(arrays)
+        return real_eval(*arrays)
+
+    def transform(group, start):
+        return group + start
+
+    def transform_many(groups, starts):
+        transformed = groups + starts[None, :, None]
+        produced.append(transformed)
+        return transformed
+
+    monkeypatch.setattr(qwen4_exp_cache.mx, "eval", recording_eval)
+    cache = QSAIndexCache(compress_ratio=2)
+    cache.update(
+        mx.arange(8, dtype=mx.float32).reshape(1, 8, 1),
+        transform,
+        transform_groups=transform_many,
+    )
+
+    assert len(evaluated) == 1
+    assert evaluated[0][0] is produced[0]
 
 
 def test_qsa_vectorized_cache_matches_architecture_reference():
