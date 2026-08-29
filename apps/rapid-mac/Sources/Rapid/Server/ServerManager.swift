@@ -1424,8 +1424,8 @@ final class ServerManager {
     /// method so ``RapidApp.init`` can probe it before constructing
     /// the manager — the auto-restart decision happens on the main
     /// scene's ``.task``, not inside the init.
-    nonisolated static func lastServedAlias() -> String? {
-        guard let raw = UserDefaults.standard.string(forKey: lastServedAliasKey) else {
+    nonisolated static func lastServedAlias(defaults: UserDefaults = .standard) -> String? {
+        guard let raw = defaults.string(forKey: lastServedAliasKey) else {
             return nil
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

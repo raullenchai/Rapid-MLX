@@ -63,7 +63,11 @@ final class DictationController {
         didSet {
             guard isEnabled != oldValue else { return }
             UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
-            Task { isEnabled ? await enable() : disable() }
+            if isEnabled {
+                scheduleModelPreparation()
+            } else {
+                disable()
+            }
         }
     }
 
@@ -87,10 +91,10 @@ final class DictationController {
                 cancelActiveSessionForModelChange()
                 phase = .preparingModel
             }
-            Task {
-                await refreshModelCacheState()
-                if isEnabled {
-                    await enable(replacingCurrentPrewarm: true)
+            scheduleLifecycleTask { controller in
+                await controller.refreshModelCacheState()
+                if controller.isEnabled {
+                    await controller.enable(replacingCurrentPrewarm: true)
                 }
             }
         }
@@ -180,6 +184,10 @@ final class DictationController {
     /// instead of stacking probes in the engine's serial STT lane.
     private var prewarmTask: Task<Bool, Never>?
     private var prewarmRequestID: UUID?
+    /// Own the reconciliation launched by a server-ready notification so a
+    /// superseding transition can cancel it and tests can await the exact
+    /// lifecycle boundary instead of racing a polling deadline.
+    private var lifecycleTask: Task<Void, Never>?
     /// Invalidates stale `enable()` continuations when the model changes, the
     /// feature is disabled, or another enable attempt supersedes them.
     private var enableRequestID: UUID?
@@ -334,6 +342,8 @@ final class DictationController {
     /// the latter and restores the former without inventing another lifecycle.
     func serverStateDidChange(_ newState: ServerState) {
         guard isEnabled, !modelPreparationDeferred else { return }
+        lifecycleTask?.cancel()
+        lifecycleTask = nil
         switch newState {
         case .starting(let alias):
             // `prewarmModel` owns an audio-only fallback while its flight is
@@ -348,9 +358,7 @@ final class DictationController {
             guard alias != modelAlias || prewarmTask == nil else { break }
             cancelActiveSessionForModelChange()
             phase = .preparingModel
-            Task { [weak self] in
-                await self?.enable(replacingCurrentPrewarm: true)
-            }
+            scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .crashed, .stopped, .idle, .missing:
             cancelActiveSessionForModelChange()
             cancelModelPreparation()
@@ -359,6 +367,27 @@ final class DictationController {
             // the next explicit hotkey press or a later server transition can
             // retry the model without asking the user to arm dictation again.
             phase = .off
+        }
+    }
+
+    /// Test seam for the owned server-state reconciliation task.
+    func _testingWaitForLifecycleTask() async {
+        await lifecycleTask?.value
+    }
+
+    private func scheduleModelPreparation(replacingCurrentPrewarm: Bool = false) {
+        scheduleLifecycleTask { controller in
+            await controller.enable(replacingCurrentPrewarm: replacingCurrentPrewarm)
+        }
+    }
+
+    private func scheduleLifecycleTask(
+        _ operation: @escaping @MainActor (DictationController) async -> Void
+    ) {
+        lifecycleTask?.cancel()
+        lifecycleTask = Task { [weak self] in
+            guard let self else { return }
+            await operation(self)
         }
     }
 
@@ -499,6 +528,8 @@ final class DictationController {
         prewarmTask = nil
         prewarmRequestID = nil
         enableRequestID = nil
+        lifecycleTask?.cancel()
+        lifecycleTask = nil
         modelPreparationDeferred = false
         stopTicking()
         recorderStorage?.shutdown()
@@ -814,9 +845,7 @@ final class DictationController {
             // again; app activation merely repairs the event tap.
             guard isEnabled else { return }
             phase = .preparingModel
-            Task { [weak self] in
-                await self?.enable(replacingCurrentPrewarm: true)
-            }
+            scheduleModelPreparation(replacingCurrentPrewarm: true)
         case .preparingModel, .transcribing: break
         }
     }
@@ -838,7 +867,7 @@ final class DictationController {
             phase = .preparingModel
             beginRecordingTask = nil
             beginRecordingRequestID = nil
-            Task { await enable(replacingCurrentPrewarm: true) }
+            scheduleModelPreparation(replacingCurrentPrewarm: true)
             return
         }
         // Model Management changes the cache out of process from this

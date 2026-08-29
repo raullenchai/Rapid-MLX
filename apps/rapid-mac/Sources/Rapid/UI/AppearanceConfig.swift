@@ -19,12 +19,14 @@ import Observation
 @MainActor
 @Observable
 final class AppearanceConfig {
+    private let defaults: UserDefaults
+
     /// One of "system" / "light" / "dark". Mutating this triggers the
     /// AppKit appearance swap via the `didSet`-like observer below
     /// (Observation framework dispatches the setter, then we re-apply).
     var mode: AppearanceMode {
         didSet {
-            UserDefaults.standard.set(mode.rawValue, forKey: Self.storageKey)
+            defaults.set(mode.rawValue, forKey: Self.storageKey)
             apply()
         }
     }
@@ -34,14 +36,15 @@ final class AppearanceConfig {
     /// without colliding with the old stored value.
     static let storageKey = "rapid.appearance.v1"
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         // v0.5: light-first default. When the user has an explicit
         // saved choice — including "Auto (follow system)", whose stored
         // value is "system" — we honour it. Only a *fresh install* with
         // no persisted value at all falls back to Light (was ``.system``),
         // so the app opens light-first the first time it's launched
         // without removing the Auto / Dark options from Settings.
-        if let raw = UserDefaults.standard.string(forKey: Self.storageKey),
+        if let raw = defaults.string(forKey: Self.storageKey),
            let saved = AppearanceMode(rawValue: raw) {
             self.mode = saved
         } else {

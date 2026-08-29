@@ -14,13 +14,16 @@ import Testing
 ///   - displayName text covers the three cases
 @MainActor
 @Suite("AppearanceConfig + AppearanceMode — v0.4.25")
-struct AppearanceConfigTests {
-    /// Wipe the live UserDefaults key before each test so writes from
-    /// one test don't leak into the next. Run in a non-parallel
-    /// scheduler bucket by being inside the @Suite (Testing's default
-    /// is serial within a struct, which is what we want here).
-    private func freshDefaults() {
-        UserDefaults.standard.removeObject(forKey: AppearanceConfig.storageKey)
+final class AppearanceConfigTests {
+    nonisolated(unsafe) private var createdSuiteNames: [String] = []
+    deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
+
+    private func freshDefaults() -> UserDefaults {
+        let name = TestDefaultsScope.mintSuiteName(prefix: "rapid-appearance-test-")
+        createdSuiteNames.append(name)
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
     }
 
     @Test("AppearanceMode → NSAppearance mapping")
@@ -44,36 +47,36 @@ struct AppearanceConfigTests {
 
     @Test("Default mode is .light when no value is stored — v0.5 light-first brand decision")
     func defaultIsLight() {
-        freshDefaults()
-        let cfg = AppearanceConfig()
+        let defaults = freshDefaults()
+        let cfg = AppearanceConfig(defaults: defaults)
         #expect(cfg.mode == .light)
     }
 
     @Test("Mutating mode persists to UserDefaults")
     func mutationPersists() {
-        freshDefaults()
-        let cfg = AppearanceConfig()
+        let defaults = freshDefaults()
+        let cfg = AppearanceConfig(defaults: defaults)
         cfg.mode = .dark
-        let raw = UserDefaults.standard.string(forKey: AppearanceConfig.storageKey)
+        let raw = defaults.string(forKey: AppearanceConfig.storageKey)
         #expect(raw == "dark")
         cfg.mode = .light
-        #expect(UserDefaults.standard.string(forKey: AppearanceConfig.storageKey) == "light")
+        #expect(defaults.string(forKey: AppearanceConfig.storageKey) == "light")
     }
 
     @Test("Fresh instance reads back the stored value")
     func roundTrips() {
-        freshDefaults()
-        let writer = AppearanceConfig()
+        let defaults = freshDefaults()
+        let writer = AppearanceConfig(defaults: defaults)
         writer.mode = .light
-        let reader = AppearanceConfig()
+        let reader = AppearanceConfig(defaults: defaults)
         #expect(reader.mode == .light)
     }
 
     @Test("Garbage stored value falls back to the v0.5 light-first default — defensive against future schema bumps")
     func garbageFallback() {
-        freshDefaults()
-        UserDefaults.standard.set("midnight-blue", forKey: AppearanceConfig.storageKey)
-        let cfg = AppearanceConfig()
+        let defaults = freshDefaults()
+        defaults.set("midnight-blue", forKey: AppearanceConfig.storageKey)
+        let cfg = AppearanceConfig(defaults: defaults)
         #expect(cfg.mode == .light)
     }
 }
