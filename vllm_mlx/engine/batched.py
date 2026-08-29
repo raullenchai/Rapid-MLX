@@ -35,6 +35,8 @@ from ..output_router import Channel, OutputRouter
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
+ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
+
 logger = logging.getLogger(__name__)
 
 # Tokenization can change across a message boundary once the following turn is
@@ -925,6 +927,7 @@ class BatchedEngine(BaseEngine):
         self._admission_reservations = 0
         self._admission_tokens: set[str] = set()
         self._admission_tasks: dict[str, asyncio.Task] = {}
+        self._admission_owner_done_at: dict[str, float] = {}
         self._lifecycle_aborted_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
         self._generation_paused = False
         self._generation_pause_mode: str | None = None
@@ -1021,6 +1024,7 @@ class BatchedEngine(BaseEngine):
                 cap = getattr(scheduler.config, "max_concurrent_requests", None)
 
         with self._admission_lock:
+            self._reconcile_orphaned_reservations_locked()
             if getattr(self, "_generation_paused", False):
                 raise BackpressureError(
                     "generation is paused for a model lifecycle operation"
@@ -1054,6 +1058,11 @@ class BatchedEngine(BaseEngine):
                     tasks = {}
                     self._admission_tasks = tasks
                 tasks[token] = owner
+
+                def on_owner_done(_task: asyncio.Task) -> None:
+                    self._mark_owner_done(token, owner)
+
+                owner.add_done_callback(on_owner_done)
             context = _admission_token_context.get()
             stack = context[1] if context is not None and context[0] == id(self) else ()
             _admission_token_context.set((id(self), (*stack, token)))
@@ -1098,6 +1107,7 @@ class BatchedEngine(BaseEngine):
             self._admission_reservations -= 1
         if consumed_token is not None:
             getattr(self, "_admission_tasks", {}).pop(consumed_token, None)
+            getattr(self, "_admission_owner_done_at", {}).pop(consumed_token, None)
         if clear_context and token is not None and token in context_stack:
             remaining = tuple(value for value in context_stack if value != token)
             _admission_token_context.set((id(self), remaining) if remaining else None)
@@ -1132,6 +1142,31 @@ class BatchedEngine(BaseEngine):
         with self._admission_lock:
             if token in getattr(self, "_admission_tokens", set()):
                 self._admission_tasks[token] = task
+                getattr(self, "_admission_owner_done_at", {}).pop(token, None)
+
+    def _mark_owner_done(self, token: str, owner: asyncio.Task) -> None:
+        """Record when an unbound route-task reservation lost its owner."""
+
+        with self._admission_lock:
+            if getattr(self, "_admission_tasks", {}).get(token) is owner:
+                done_at = getattr(self, "_admission_owner_done_at", None)
+                if done_at is None:
+                    done_at = {}
+                    self._admission_owner_done_at = done_at
+                done_at[token] = time.monotonic()
+
+    def _reconcile_orphaned_reservations_locked(self) -> None:
+        """Release route reservations orphaned after the ownership handoff."""
+
+        now = time.monotonic()
+        done_at = getattr(self, "_admission_owner_done_at", {})
+        for token in list(getattr(self, "_admission_tokens", set())):
+            orphaned_since = done_at.get(token)
+            if (
+                orphaned_since is not None
+                and now - orphaned_since >= ADMISSION_ORPHAN_GRACE_SECONDS
+            ):
+                self._consume_admission_token_locked(token, ())
 
     def consume_lifecycle_task_abort(self, task: asyncio.Task) -> bool:
         """Return whether ``task`` was cancelled by lifecycle replacement."""
@@ -1212,6 +1247,7 @@ class BatchedEngine(BaseEngine):
         scheduler = self._lifecycle_scheduler()
         admitted_tasks: tuple[asyncio.Task, ...] = ()
         with self._admission_lock:
+            self._reconcile_orphaned_reservations_locked()
             self._generation_paused = True
             self._generation_pause_mode = mode
             admitted_tokens = set(getattr(self, "_admission_tokens", set()))

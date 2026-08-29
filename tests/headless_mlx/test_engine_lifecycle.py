@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from vllm_mlx.engine.batched import (  # noqa: E402
+    ADMISSION_ORPHAN_GRACE_SECONDS,
     BatchedEngine,
     _admission_token_context,
 )
@@ -80,6 +82,7 @@ def _engine(*, reservations: int = 0, running: dict | None = None):
     engine._admission_reservations = reservations
     engine._admission_tokens = {f"reserved-{index}" for index in range(reservations)}
     engine._admission_tasks = {}
+    engine._admission_owner_done_at = {}
     engine._lifecycle_aborted_tasks = set()
     _admission_token_context.set(
         (id(engine), ("reserved-0",)) if reservations else None
@@ -602,6 +605,61 @@ def test_unlimited_cap_still_tracks_lifecycle_reservation():
     assert engine._admission_reservations == 1
     engine.release_admission_reservation()
     assert engine._admission_reservations == 0
+
+
+@pytest.mark.asyncio
+async def test_orphaned_stream_reservation_releases_after_grace():
+    engine, scheduler = _engine()
+    scheduler.config.max_concurrent_requests = 1
+
+    async def reserve():
+        engine.check_admission()
+
+    reserve_task = asyncio.create_task(reserve())
+    await reserve_task
+    await asyncio.sleep(0)
+
+    assert engine._admission_reservations == 1
+    assert engine._admission_owner_done_at
+    with pytest.raises(BackpressureError, match="max_concurrent_requests"):
+        engine.check_admission()
+
+    token = next(iter(engine._admission_tokens))
+    engine._admission_owner_done_at[token] -= ADMISSION_ORPHAN_GRACE_SECONDS + 0.01
+    engine.check_admission()
+
+    assert engine._admission_reservations == 1
+    assert token not in engine._admission_tokens
+    assert token not in engine._admission_owner_done_at
+
+
+@pytest.mark.asyncio
+async def test_binding_body_task_clears_orphan_deadline():
+    engine, _ = _engine()
+    engine.check_admission()
+    token = engine._current_admission_token()
+    engine._admission_tasks[token] = asyncio.current_task()
+    engine._admission_owner_done_at[token] = time.monotonic() - (
+        ADMISSION_ORPHAN_GRACE_SECONDS + 0.01
+    )
+
+    engine.bind_admission_task(asyncio.create_task(asyncio.sleep(0)))
+
+    assert token not in engine._admission_owner_done_at
+
+
+@pytest.mark.asyncio
+async def test_pause_does_not_wait_for_orphaned_stream_reservation():
+    engine, _ = _engine(reservations=1)
+    token = next(iter(engine._admission_tokens))
+    engine._admission_owner_done_at[token] = time.monotonic() - (
+        ADMISSION_ORPHAN_GRACE_SECONDS + 0.01
+    )
+
+    status = await engine.pause_generation("wait", timeout=0)
+
+    assert status["admitted_requests"] == 0
+    assert engine._admission_tokens == set()
 
 
 def test_lifecycle_status_reports_each_owned_stage_and_total():
