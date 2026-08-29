@@ -81,6 +81,7 @@ struct ContentView: View {
     @Environment(MCPCatalog.self) private var mcpCatalog
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
     @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
+    @Environment(GitHubStarPromptCoordinator.self) private var githubStarPrompt
     @Environment(\.openWindow) private var openWindow
 
     @State private var alias: String = ""
@@ -312,6 +313,14 @@ struct ContentView: View {
         // the browse sheet above — an MCP server is an arbitrary local process,
         // so "may the model run this" is a decision that belongs on screen.
         .modifier(MCPToolApprovalDialog(store: mcpApproval))
+        .onAppear {
+            githubStarPrompt.startMonitoringUserActivity()
+            githubStarPrompt.updatePresentationContext(starPromptPresentationContext)
+        }
+        .onDisappear { githubStarPrompt.stopMonitoringUserActivity() }
+        .onChange(of: starPromptPresentationContext) { _, context in
+            githubStarPrompt.updatePresentationContext(context)
+        }
         .task { await restorePersistedSession() }
         // Keyed exactly as the picker's own catalog task: re-fetch when
         // the engine binary appears and whenever the set of models on
@@ -525,6 +534,36 @@ struct ContentView: View {
             }
             statusFooter
         }
+        .overlay(alignment: .bottomTrailing) {
+            if githubStarPrompt.isPresented {
+                GitHubStarPromptCard()
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 40)
+                    .zIndex(20)
+            }
+        }
+    }
+
+    private var starPromptPresentationContext: GitHubStarPromptCoordinator.PresentationContext {
+        let dictationIsBusy: Bool = switch dictation.phase {
+        case .preparingModel, .starting, .recording, .transcribing: true
+        case .off, .idle: false
+        }
+        let campaignIsVisible = campaign.map {
+            !UserDefaults.standard.bool(forKey: $0.dismissalKey)
+        } ?? false
+
+        return .init(
+            isBusy: chat.isStreaming || imageGen.isGenerating || dictationIsBusy,
+            hasBlockingSurface: quickstartVisible
+                || deferredTelemetryConsent.isPresented
+                || campaignIsVisible
+                || showConversationSearch
+                || server.pendingMemoryWarning != nil
+                || server.pendingModelSwitch != nil
+                || browseApproval.pendingRequest != nil
+                || mcpApproval.pendingRequest != nil
+        )
     }
 
     private var conversationSearchOverlay: some View {
