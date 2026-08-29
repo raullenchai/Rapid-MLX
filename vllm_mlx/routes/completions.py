@@ -850,7 +850,7 @@ async def stream_completion(
             if entries:
                 tokens_arr = []
                 token_lps = []
-                top_lps = []
+                top_lps: list[dict[str, float]] = []
                 text_offsets = []
                 for entry in entries:
                     tokens_arr.append(entry.token)
