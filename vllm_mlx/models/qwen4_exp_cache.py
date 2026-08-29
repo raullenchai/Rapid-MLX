@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen4-Exp QSA side cache for the MLX text decoder.
+"""Qwen4-Exp cache types for the MLX text decoder.
 
 The cache follows the engine request-lifecycle contract: a fixed raw-key ring
 feeds one compressed key per complete group, while the compressed cache is
@@ -20,6 +20,79 @@ from .. import _mlx_compat as _mlx_compat
 _mlx_compat.install()
 
 from mlx_lm.models.cache import ArraysCache  # noqa: E402
+
+
+class Qwen4ExpStateCache(ArraysCache):
+    """Recurrent Qwen4 state with speculative-verify restore points.
+
+    The four-slot PLE layer cache couples GDN convolution/state with PLE
+    convolution/ngram history. A rejected speculative token must restore all
+    four slots to the same accepted boundary; restoring GDN alone silently
+    desynchronizes later PLE inputs.
+
+    ``ArraysCache.extract`` constructs the base class explicitly. Override it
+    here so continuous batching and prefix-cache reuse retain this cache's
+    atomic rollback contract when a single request leaves a batch.
+    """
+
+    rollback_state: list[list[mx.array | None]] | None = None
+    _rollback_slots: dict[int, list[mx.array]] | None = None
+
+    def extract(self, idx):
+        cache = type(self)(len(self.cache))
+        cache.cache = [
+            None if item is None else mx.contiguous(item[idx : idx + 1])
+            for item in self.cache
+        ]
+        if self.left_padding is not None:
+            cache.left_padding = mx.contiguous(self.left_padding[idx : idx + 1])
+        if self.lengths is not None:
+            cache.lengths = mx.contiguous(self.lengths[idx : idx + 1])
+        return cache
+
+    def record_slot_snapshots(
+        self,
+        slot: int,
+        snapshots: list[mx.array],
+        *,
+        finalize: bool = False,
+    ) -> None:
+        """Stage per-position recurrent state and publish atomic boundaries."""
+        if not snapshots:
+            return
+        if self._rollback_slots is None:
+            self._rollback_slots = {}
+        self._rollback_slots[slot] = snapshots
+        if not finalize:
+            return
+        expected_slots = set(range(len(self.cache)))
+        if set(self._rollback_slots) != expected_slots:
+            raise AssertionError(
+                "Qwen4 speculative cache snapshots do not cover every state slot"
+            )
+        lengths = {len(items) for items in self._rollback_slots.values()}
+        if len(lengths) != 1:
+            raise AssertionError("Qwen4 speculative cache snapshot lengths diverged")
+        count = lengths.pop()
+        self.rollback_state = [
+            [self._rollback_slots[slot][position] for slot in range(len(self.cache))]
+            for position in range(count)
+        ]
+        self._rollback_slots = None
+
+    def restore_rollback(self, n_to_drop: int, verify_size: int) -> None:
+        snapshots = self.rollback_state
+        if not snapshots:
+            raise AssertionError("Qwen4 verify rollback has no saved boundary")
+        keep = verify_size - n_to_drop
+        if keep < 1 or keep > len(snapshots):
+            raise AssertionError(
+                f"invalid Qwen4 rollback boundary: keep={keep}, "
+                f"snapshots={len(snapshots)}"
+            )
+        self.cache = list(snapshots[keep - 1])
+        self.rollback_state = None
+        self._rollback_slots = None
 
 
 class QSAIndexCache(ArraysCache):

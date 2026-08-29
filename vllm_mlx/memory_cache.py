@@ -69,7 +69,7 @@ def _vendored_cache_registry() -> dict[str, type]:
         DeepseekV4PoolingCache,
         PoolingCache,
     )
-    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache
+    from vllm_mlx.models.qwen4_exp_cache import QSAIndexCache, Qwen4ExpStateCache
 
     classes = (
         PoolingCache,
@@ -77,6 +77,7 @@ def _vendored_cache_registry() -> dict[str, type]:
         DeepseekV4PoolingCache,
         BatchDeepseekV4PoolingCache,
         QSAIndexCache,
+        Qwen4ExpStateCache,
     )
     return {cls.__name__: cls for cls in classes}
 

@@ -1176,6 +1176,60 @@ def test_qwen4_state_cache_restores_atomic_slot_boundary():
     np.testing.assert_array_equal(np.array(cache.cache[1]), np.array([2]))
 
 
+def test_qwen4_state_cache_preserves_type_across_prefix_cache_lifecycle(tmp_path):
+    """A cache hit must retain the rollback API required by native MTP."""
+    from vllm_mlx.memory_cache import (
+        MemoryAwarePrefixCache,
+        MemoryCacheConfig,
+        _load_prompt_cache_compat,
+        _save_prompt_cache_compat,
+    )
+    from vllm_mlx.scheduler import Scheduler
+
+    first = Qwen4ExpStateCache(size=2)
+    first.cache = [mx.array([[1.0]]), mx.array([[2.0]])]
+    second = Qwen4ExpStateCache(size=2)
+    second.cache = [mx.array([[3.0]]), mx.array([[4.0]])]
+
+    batched = Qwen4ExpStateCache.merge([first, second])
+    batched.left_padding = mx.array([0, 3])
+    batched.lengths = mx.array([5, 2])
+    extracted = batched.extract(0)
+    assert isinstance(extracted, Qwen4ExpStateCache)
+    np.testing.assert_array_equal(np.array(extracted.left_padding), np.array([0]))
+    np.testing.assert_array_equal(np.array(extracted.lengths), np.array([5]))
+    extracted.record_slot_snapshots(0, [mx.array([1.0])])
+    extracted.record_slot_snapshots(1, [mx.array([2.0])], finalize=True)
+    extracted.rollback_state = None
+
+    memory_cache = MemoryAwarePrefixCache(
+        model=object(),
+        config=MemoryCacheConfig(
+            max_memory_mb=64,
+            max_entries=4,
+            hybrid_reuse_max_entries=4,
+        ),
+    )
+    assert memory_cache.store([1, 2], [extracted])
+    fetched, remaining = memory_cache.fetch([1, 2, 3])
+    assert remaining == [3]
+    assert fetched is not None
+    assert isinstance(fetched[0], Qwen4ExpStateCache)
+
+    scheduler = Scheduler.__new__(Scheduler)
+    states = scheduler._extract_cache_states(fetched)
+    reconstructed = scheduler._reconstruct_cache_from_states(states)
+    assert reconstructed is not None
+    assert isinstance(reconstructed[0], Qwen4ExpStateCache)
+
+    path = tmp_path / "qwen4-state.safetensors"
+    _save_prompt_cache_compat(str(path), reconstructed, metadata={})
+    persisted = _load_prompt_cache_compat(str(path))
+    assert isinstance(persisted[0], Qwen4ExpStateCache)
+    persisted[0].record_slot_snapshots(0, [mx.array([1.0])])
+    persisted[0].record_slot_snapshots(1, [mx.array([2.0])], finalize=True)
+
+
 def test_qwen4_state_cache_rejects_incomplete_or_invalid_boundaries():
     cache = Qwen4ExpStateCache(size=2)
     cache.cache = [mx.array([1]), mx.array([2])]

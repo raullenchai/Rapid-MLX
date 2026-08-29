@@ -30,12 +30,12 @@ from mlx_lm.models.base import (  # noqa: E402
     create_ssm_mask,
     scaled_dot_product_attention,
 )
-from mlx_lm.models.cache import ArraysCache, CacheList, KVCache  # noqa: E402
+from mlx_lm.models.cache import CacheList, KVCache  # noqa: E402
 from mlx_lm.models.gated_delta import gated_delta_update  # noqa: E402
 from mlx_lm.models.rope_utils import initialize_rope  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
-from .qwen4_exp_cache import QSAIndexCache  # noqa: E402
+from .qwen4_exp_cache import QSAIndexCache, Qwen4ExpStateCache  # noqa: E402
 
 
 @dataclass
@@ -1414,63 +1414,6 @@ class Qwen4ExpTextModel(nn.Module):
             )
         output = self.hyper_connection_mixer(hidden_states)
         return (output, hidden_states) if return_hidden else output
-
-
-class Qwen4ExpStateCache(ArraysCache):
-    """Recurrent Qwen4 state with speculative-verify restore points.
-
-    The four-slot PLE layer cache couples GDN convolution/state with PLE
-    convolution/ngram history.  A rejected speculative token must restore all
-    four slots to the same accepted boundary; restoring GDN alone silently
-    desynchronizes later PLE inputs.
-    """
-
-    rollback_state: list[list[mx.array | None]] | None = None
-    _rollback_slots: dict[int, list[mx.array]] | None = None
-
-    def record_slot_snapshots(
-        self,
-        slot: int,
-        snapshots: list[mx.array],
-        *,
-        finalize: bool = False,
-    ) -> None:
-        """Stage per-position recurrent state and publish atomic boundaries."""
-        if not snapshots:
-            return
-        if self._rollback_slots is None:
-            self._rollback_slots = {}
-        self._rollback_slots[slot] = snapshots
-        if not finalize:
-            return
-        expected_slots = set(range(len(self.cache)))
-        if set(self._rollback_slots) != expected_slots:
-            raise AssertionError(
-                "Qwen4 speculative cache snapshots do not cover every state slot"
-            )
-        lengths = {len(items) for items in self._rollback_slots.values()}
-        if len(lengths) != 1:
-            raise AssertionError("Qwen4 speculative cache snapshot lengths diverged")
-        count = lengths.pop()
-        self.rollback_state = [
-            [self._rollback_slots[slot][position] for slot in range(len(self.cache))]
-            for position in range(count)
-        ]
-        self._rollback_slots = None
-
-    def restore_rollback(self, n_to_drop: int, verify_size: int) -> None:
-        snapshots = self.rollback_state
-        if not snapshots:
-            raise AssertionError("Qwen4 verify rollback has no saved boundary")
-        keep = verify_size - n_to_drop
-        if keep < 1 or keep > len(snapshots):
-            raise AssertionError(
-                f"invalid Qwen4 rollback boundary: keep={keep}, "
-                f"snapshots={len(snapshots)}"
-            )
-        self.cache = list(snapshots[keep - 1])
-        self.rollback_state = None
-        self._rollback_slots = None
 
 
 class TextModel(nn.Module):
