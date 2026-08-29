@@ -62,10 +62,7 @@ struct DeferredTelemetryConsentWiringTests {
             supportsImageInput: true,
             imageAttachments: [image]
         )
-        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while model.isStreaming, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await model._testingWaitForCurrentTurn()
 
         #expect(!model.isStreaming, "the canned successful stream must finish")
         #expect(deliveredKinds.isEmpty)

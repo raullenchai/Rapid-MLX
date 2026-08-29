@@ -28,12 +28,23 @@ import Testing
 /// claim about a previous launch, never evidence about this one.
 @MainActor
 @Suite("Onboarding V3 — four steps, persistent Ready, confirmed completion")
-struct OnboardingCompletionBehaviorTests {
+final class OnboardingCompletionBehaviorTests {
+    private let suiteName: String
+    private let defaults: UserDefaults
+
+    init() {
+        let name = TestDefaultsScope.mintSuiteName(prefix: "rapid-onboarding-completion-test-")
+        suiteName = name
+        defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+    }
+
+    deinit { TestDefaultsScope.cleanup(suiteNames: [suiteName]) }
 
     /// A coordinator with every persisted key cleared, so a case never
     /// inherits another case's flags through ``UserDefaults``.
     private func makeCoordinator() -> QuickstartCoordinator {
-        let coord = QuickstartCoordinator()
+        let coord = QuickstartCoordinator(defaults: defaults)
         coord._testingReset()
         return coord
     }
@@ -41,7 +52,7 @@ struct OnboardingCompletionBehaviorTests {
     /// Drop every key this suite can write, including the ones a
     /// deliberately "relaunched" coordinator leaves behind.
     private func clearPersistedState() {
-        let coord = QuickstartCoordinator()
+        let coord = QuickstartCoordinator(defaults: defaults)
         coord._testingReset()
     }
 
@@ -238,7 +249,7 @@ struct OnboardingCompletionBehaviorTests {
         #expect(coord.phase == .ready)
         #expect(!coord.done, "readiness must not write the completion flag")
         #expect(
-            !UserDefaults.standard.bool(forKey: QuickstartCoordinator.storageKey),
+            !defaults.bool(forKey: QuickstartCoordinator.storageKey),
             "readiness must not persist completion"
         )
         #expect(!coord.hasSeededWelcome, "readiness must not seed the welcome message")
@@ -343,10 +354,10 @@ struct OnboardingCompletionBehaviorTests {
         _ = coord.confirmStartChatting { true }
 
         #expect(coord.done)
-        #expect(UserDefaults.standard.bool(forKey: QuickstartCoordinator.storageKey))
+        #expect(defaults.bool(forKey: QuickstartCoordinator.storageKey))
         #expect(!coord.hasPendingReady, "a confirmed flow owes no confirmation")
         #expect(
-            UserDefaults.standard.string(forKey: QuickstartCoordinator.pendingReadyAliasKey) == nil,
+            defaults.string(forKey: QuickstartCoordinator.pendingReadyAliasKey) == nil,
             "the pending record must be erased from disk, not just from memory"
         )
         clearPersistedState()
@@ -363,7 +374,7 @@ struct OnboardingCompletionBehaviorTests {
 
         // Same shape as a relaunch, and also as a SwiftUI re-mount that
         // rebuilds the coordinator: the record must come from disk.
-        let next = QuickstartCoordinator()
+        let next = QuickstartCoordinator(defaults: defaults)
         #expect(next.hasPendingReady, "an unconfirmed Ready flow must survive")
         #expect(next.pendingReadyAlias == coord.selection.alias)
         #expect(next.selection.alias == coord.selection.alias,
@@ -379,7 +390,7 @@ struct OnboardingCompletionBehaviorTests {
         coord.enterStarting()
         coord.enterReady()
 
-        let next = QuickstartCoordinator()
+        let next = QuickstartCoordinator(defaults: defaults)
         // The claim survived; the STATE did not. Nothing on this launch has
         // yet said the model is up, so claiming Ready here would be the
         // app inventing a readiness it has not observed.
@@ -400,7 +411,7 @@ struct OnboardingCompletionBehaviorTests {
         coord.enterReady()
         let alias = coord.selection.alias
 
-        let next = QuickstartCoordinator()
+        let next = QuickstartCoordinator(defaults: defaults)
         #expect(next.phase == .idle)
         // This is the step the live server observer performs once
         // ``ServerManager`` genuinely reports ``.ready`` for this alias on
@@ -451,7 +462,7 @@ struct OnboardingCompletionBehaviorTests {
         #expect(coord.selection.alias == other.alias)
         #expect(!coord.hasPendingReady, "a different model retires the old Ready record")
         #expect(
-            UserDefaults.standard.string(forKey: QuickstartCoordinator.pendingReadyAliasKey) == nil
+            defaults.string(forKey: QuickstartCoordinator.pendingReadyAliasKey) == nil
         )
         clearPersistedState()
     }
@@ -480,7 +491,7 @@ struct OnboardingCompletionBehaviorTests {
         #expect(!coord.hasPendingReady, "walking away answers the question Ready was asking")
         #expect(!coord.done, "Skip must keep its existing meaning — onboarding is still owed")
         #expect(
-            !UserDefaults.standard.bool(forKey: QuickstartCoordinator.storageKey)
+            !defaults.bool(forKey: QuickstartCoordinator.storageKey)
         )
         clearPersistedState()
     }
