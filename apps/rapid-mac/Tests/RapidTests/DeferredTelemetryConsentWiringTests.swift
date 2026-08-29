@@ -20,7 +20,9 @@ struct DeferredTelemetryConsentWiringTests {
         let app = try Self.source("Sources/Rapid/RapidApp.swift")
 
         #expect(app.contains("let consentCoordinator = DeferredTelemetryConsentCoordinator()"))
+        #expect(app.contains("let starPromptCoordinator = GitHubStarPromptCoordinator()"))
         #expect(app.components(separatedBy: "consentCoordinator?.productValueDelivered(kind)").count - 1 == 3)
+        #expect(app.components(separatedBy: "starPromptCoordinator?.productValueDelivered(kind)").count - 1 == 3)
     }
 
     @Test("Chat signals only a nonempty completed final turn")
