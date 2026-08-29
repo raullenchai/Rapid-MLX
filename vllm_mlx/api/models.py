@@ -2465,6 +2465,23 @@ class CompletionResponse(BaseModel):
 # =============================================================================
 
 
+class SpeculativeDecodingInfo(BaseModel):
+    """Live speculative-decoding state for one served model.
+
+    ``configured`` describes the engine session. ``runtime_state`` separates
+    a lazy generator that has not run its install gate from a successfully
+    attached hook and a definitive gate miss. Request features in
+    ``request_fallback_features`` remain fully supported, but use ordinary
+    decoding because their stateful generation constraints cannot yet cross
+    speculative verification safely.
+    """
+
+    configured: bool
+    method: str | None = None
+    runtime_state: Literal["pending", "active", "unavailable"]
+    request_fallback_features: list[Literal["tools"]] = Field(default_factory=list)
+
+
 class ModelInfo(BaseModel):
     """Information about an available model.
 
@@ -2584,6 +2601,11 @@ class ModelInfo(BaseModel):
     # install missing ``misaki``, etc.). Values:
     # ``"ok"``, ``"degraded"``, ``"missing"``, ``"unknown"``.
     audio_lanes: dict[str, str] | None = None
+    # Live engine speculative-decoding state. ``None`` means no matching
+    # resident engine is configured for speculative decoding. A non-null value
+    # separates process configuration from request eligibility so clients do
+    # not infer "active for this request" from a launch flag alone.
+    speculative_decoding: SpeculativeDecodingInfo | None = None
 
 
 class ModelsResponse(BaseModel):

@@ -417,6 +417,7 @@ jobs:
             tests/test_muse_glimmer_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_mtp_spec_decode.py \
+            tests/test_speculative_request_policy.py \
             tests/test_deepseek_v4_vendored.py \
             tests/test_dspark_scheduler.py \
             tests/test_prefix_cache_persistence.py \
