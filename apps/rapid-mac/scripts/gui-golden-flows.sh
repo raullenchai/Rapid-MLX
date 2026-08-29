@@ -154,14 +154,159 @@ require_observed_phase() {
     [[ "$observed" == 1 ]] || die "required $phase phase was not observed"
 }
 
-# When sourced, expose only the executable contract helpers above. Return
-# before cleanup traps, app launch, filesystem mutation, or tool preflight.
-# Direct execution cannot be bypassed with an environment variable.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-    return 0
-fi
+recorded_process_has_argv_pair() {
+    local fake_pid="$1" first="$2" second="$3" command
+    command="$(ps -ww -p "$fake_pid" -o command= 2>/dev/null || true)"
+    [[ -n "$command" ]] || return 1
 
-pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
+    # `ps` has no structured argv output on macOS. Split its untruncated
+    # rendering with glob expansion disabled and require two adjacent exact
+    # tokens rather than a substring.
+    (
+        set -f
+        local previous="" token
+        for token in $command; do
+            if [[ "$previous" == "$first" && "$token" == "$second" ]]; then
+                return 0
+            fi
+            previous="$token"
+        done
+        return 1
+    )
+}
+
+recorded_fake_sidecar_is_live() {
+    recorded_process_has_argv_pair "$1" serve "$2"
+}
+
+stop_recorded_fake_sidecar() {
+    local fake_pid="$1" fake_alias="$2"
+    recorded_fake_sidecar_is_live "$fake_pid" "$fake_alias" || return 0
+
+    # Follow the server lifecycle used by the engine: request a graceful stop,
+    # wait for it to finish releasing its resources, then force only the exact
+    # recorded process if it ignores the deadline. Merely sending SIGTERM and
+    # immediately deleting the persona races Python's final cache writes.
+    kill "$fake_pid" 2>/dev/null || true
+    local attempt
+    for attempt in {1..40}; do
+        recorded_fake_sidecar_is_live "$fake_pid" "$fake_alias" || return 0
+        sleep 0.05
+    done
+
+    # Re-check the command immediately before SIGKILL. A recycled pid or a
+    # process whose argv no longer names the recorded alias is not ours.
+    recorded_fake_sidecar_is_live "$fake_pid" "$fake_alias" || return 0
+    kill -KILL "$fake_pid" 2>/dev/null || true
+    for attempt in {1..40}; do
+        recorded_fake_sidecar_is_live "$fake_pid" "$fake_alias" || return 0
+        sleep 0.05
+    done
+
+    printf '[gui-golden] owned fake sidecar pid=%s alias=%s did not exit\n' \
+        "$fake_pid" "$fake_alias" >&2
+    return 1
+}
+
+cleanup_fake_sidecars() {
+    local status=0 fake_pid fake_alias records
+    if [[ -n "$OUT" && -f "$OUT/fake-events.jsonl" ]]; then
+        if ! records="$(jq -r 'select(.event == "server_started")
+                                | "\(.pid)\t\(.alias // "-")"' \
+                             "$OUT/fake-events.jsonl")"; then
+            printf '[gui-golden] could not parse fake sidecar ownership log: %s\n' \
+                "$OUT/fake-events.jsonl" >&2
+            return 1
+        fi
+        # Long-lived serves that intentionally detach from the app's process
+        # group are stopped through their exact PID+alias argv identity.
+        while IFS=$'\t' read -r fake_pid fake_alias; do
+            [[ "$fake_pid" =~ ^[0-9]+$ ]] || continue
+            [[ "$fake_alias" != "-" ]] || { status=1; continue; }
+            stop_recorded_fake_sidecar "$fake_pid" "$fake_alias" || status=1
+        done < <(printf '%s\n' "$records" | sort -u)
+    fi
+    return "$status"
+}
+
+process_is_running() {
+    local state
+    state="$(ps -p "$1" -o stat= 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$state" && "$state" != Z* ]]
+}
+
+process_group_has_live_members() {
+    local expected_group="$1" group state
+    while read -r group state; do
+        if [[ "$group" == "$expected_group" && "$state" != Z* ]]; then
+            return 0
+        fi
+    done < <(ps -axo pgid=,stat= 2>/dev/null || true)
+    return 1
+}
+
+stop_app() {
+    [[ -n "$APP_PID" ]] || return 0
+    local app_pid="$APP_PID" app_group="" attempt
+    if ! process_is_running "$app_pid"; then
+        wait "$app_pid" 2>/dev/null || true
+        APP_PID=""
+        return 0
+    fi
+
+    app_group="$(ps -p "$app_pid" -o pgid= 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$app_group" != "$app_pid" ]]; then
+        # Never signal a shared or unknown process group. The launcher below
+        # establishes a session whose pgid equals the app pid; a mismatch is a
+        # broken ownership boundary, so stop only the known pid and preserve
+        # the persona for diagnosis.
+        kill "$app_pid" 2>/dev/null || true
+        for attempt in {1..20}; do
+            process_is_running "$app_pid" || break
+            sleep 0.1
+        done
+        kill -KILL "$app_pid" 2>/dev/null || true
+        wait "$app_pid" 2>/dev/null || true
+        printf '[gui-golden] app pid=%s did not own its process group (pgid=%s)\n' \
+            "$app_pid" "${app_group:-unknown}" >&2
+        return 1
+    fi
+
+    # The isolated app is the leader of a harness-owned session. Signal the
+    # whole group so catalogue probes that have not written lifecycle events
+    # yet cannot outlive their profile and recreate Python cache files during
+    # deletion.
+    kill -TERM -- "-$app_group" 2>/dev/null || true
+    for attempt in {1..20}; do
+        process_is_running "$app_pid" || break
+        sleep 0.1
+    done
+    if process_is_running "$app_pid"; then
+        kill -KILL -- "-$app_group" 2>/dev/null || true
+    fi
+    wait "$app_pid" 2>/dev/null || true
+
+    # Reaping the leader does not prove its descendants are gone. Give the
+    # remaining group a second bounded drain, then force only that owned group.
+    for attempt in {1..20}; do
+        process_group_has_live_members "$app_group" || break
+        sleep 0.1
+    done
+    if process_group_has_live_members "$app_group"; then
+        kill -KILL -- "-$app_group" 2>/dev/null || true
+        for attempt in {1..20}; do
+            process_group_has_live_members "$app_group" || break
+            sleep 0.1
+        done
+    fi
+    if process_group_has_live_members "$app_group"; then
+        printf '[gui-golden] owned app process group %s did not exit\n' \
+            "$app_group" >&2
+        return 1
+    fi
+    APP_PID=""
+}
+
 write_result() {
     local status="$1" exit_code="$2" finished_epoch duration_seconds
     finished_epoch="$(date +%s)"
@@ -174,6 +319,37 @@ write_result() {
           duration_seconds: $duration_seconds, artifact_path: $artifact_path,
           exit_code: $exit_code}' > "$OUT_ROOT/result.json"
 }
+
+finish() {
+    local status=$? cleanup_failed=0
+    set +e
+    cleanup_persona || cleanup_failed=1
+    cleanup_operator_server || cleanup_failed=1
+    cleanup_telemetry_sink || cleanup_failed=1
+    if [[ "$status" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
+        status=1
+    fi
+    if [[ "$status" -ne 0 ]]; then
+        mkdir -p "$OUT_ROOT" 2>/dev/null || true
+        if [[ -d "$OUT_ROOT" ]]; then
+            # Cleanup failure overrides an earlier PASS result. A retained
+            # process/profile is a failed journey, never green evidence.
+            write_result fail "$status" 2>/dev/null || true
+            RESULT_WRITTEN=1
+        fi
+    fi
+    trap - EXIT
+    exit "$status"
+}
+
+# When sourced, expose only the executable contract helpers above. Return
+# before cleanup traps, app launch, filesystem mutation, or tool preflight.
+# Direct execution cannot be bypassed with an environment variable.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
+pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
 flow_requires_screen_recording() {
     case "$FLOW" in
         all) return 0 ;;
@@ -217,58 +393,64 @@ pb_click_coords() {
 }
 
 cleanup_persona() {
-    if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-        kill "$APP_PID" 2>/dev/null || true
-        wait "$APP_PID" 2>/dev/null || true
-    fi
-    APP_PID=""
-    cleanup_fake_sidecars
+    local app_stopped=1 sidecars_stopped=1
+    stop_app || app_stopped=0
+    cleanup_fake_sidecars || sidecars_stopped=0
     if [[ "$KEEP" == 0 && -n "$BUNDLE_ID" ]]; then
         defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
     fi
+    if [[ "$app_stopped" == 0 || "$sidecars_stopped" == 0 ]]; then
+        printf '[gui-golden] preserving persona because an owned process is still live: %s\n' \
+            "$PERSONA" >&2
+        return 1
+    fi
     if [[ "$KEEP" == 0 && -n "$PERSONA" && -d "$PERSONA" ]]; then
-        rm -rf "$PERSONA"
+        if ! rm -rf "$PERSONA"; then
+            # Keep the surviving tree available for ownership diagnosis and
+            # prevent the EXIT trap from turning a failed cleanup into a
+            # second, unobserved delete attempt.
+            KEEP=1
+            printf '[gui-golden] persona cleanup failed; preserving evidence: %s\n' \
+                "$PERSONA" >&2
+            return 1
+        fi
     fi
     PERSONA=""
     BUNDLE_ID=""
     PERSONA_ENV=()
 }
 
-cleanup_fake_sidecars() {
-    if [[ -n "$OUT" && -f "$OUT/fake-events.jsonl" ]]; then
-        # Pair each pid with the alias it was started for, and require the
-        # live command to still name THAT alias. A bare `serve fake-alias`
-        # match missed `serve fake-image-alias` entirely and left the image
-        # flow's sidecar listening after the run — an orphan that then
-        # contaminates the next local run. Matching the recorded alias keeps
-        # the recycled-pid guard the substring test was there for, without
-        # having to remember to extend it for every new fixture alias.
-        while IFS=$'\t' read -r fake_pid fake_alias; do
-            [[ "$fake_pid" =~ ^[0-9]+$ ]] || continue
-            [[ -n "$fake_alias" && "$fake_alias" != "null" ]] || continue
-            local command
-            command="$(ps -p "$fake_pid" -o command= 2>/dev/null || true)"
-            if [[ "$command" == *"serve $fake_alias"* ]]; then
-                kill "$fake_pid" 2>/dev/null || true
-            fi
-        done < <(jq -r 'select(.event == "server_started")
-                        | "\(.pid)\t\(.alias // "")"' \
-                     "$OUT/fake-events.jsonl" 2>/dev/null | sort -u)
+stop_tracked_child() {
+    local label="$1" child_pid="$2" attempt
+    if ! process_is_running "$child_pid"; then
+        wait "$child_pid" 2>/dev/null || true
+        return 0
+    fi
+    kill "$child_pid" 2>/dev/null || true
+    for attempt in {1..20}; do
+        process_is_running "$child_pid" || break
+        sleep 0.1
+    done
+    if process_is_running "$child_pid"; then
+        kill -KILL "$child_pid" 2>/dev/null || true
+    fi
+    wait "$child_pid" 2>/dev/null || true
+    if process_is_running "$child_pid"; then
+        printf '[gui-golden] owned %s pid=%s did not exit\n' \
+            "$label" "$child_pid" >&2
+        return 1
     fi
 }
 
 cleanup_operator_server() {
-    if [[ -n "$OPERATOR_SERVER_PID" ]] && kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
-        kill "$OPERATOR_SERVER_PID" 2>/dev/null || true
-        wait "$OPERATOR_SERVER_PID" 2>/dev/null || true
-    fi
+    [[ -n "$OPERATOR_SERVER_PID" ]] || return 0
+    stop_tracked_child operator-server "$OPERATOR_SERVER_PID" || return 1
     OPERATOR_SERVER_PID=""
 }
 
 cleanup_telemetry_sink() {
-    if [[ -n "$TELEMETRY_SINK_PID" ]] && kill -0 "$TELEMETRY_SINK_PID" 2>/dev/null; then
-        kill "$TELEMETRY_SINK_PID" 2>/dev/null || true
-        wait "$TELEMETRY_SINK_PID" 2>/dev/null || true
+    if [[ -n "$TELEMETRY_SINK_PID" ]]; then
+        stop_tracked_child telemetry-sink "$TELEMETRY_SINK_PID" || return 1
     fi
     TELEMETRY_SINK_PID=""
     TELEMETRY_SINK_PORT=""
@@ -481,19 +663,6 @@ assert_share_activation_requests() {
         || die "Share did not produce exactly one valid $expected_kind Desktop activation"
 }
 
-finish() {
-    local status=$?
-    set +e
-    cleanup_persona
-    cleanup_operator_server
-    cleanup_telemetry_sink
-    if [[ "$status" -ne 0 && "$RESULT_WRITTEN" == 0 ]]; then
-        mkdir -p "$OUT_ROOT" 2>/dev/null || true
-        if [[ -d "$OUT_ROOT" ]]; then
-            write_result fail "$status" 2>/dev/null || true
-        fi
-    fi
-}
 trap finish EXIT
 # Signal handlers only select the conventional exit code. The EXIT handler is
 # the single owner of cleanup and final evidence, avoiding double-cleanup and
@@ -547,6 +716,42 @@ require_tools() {
     fi
 }
 
+launch_persona_app() {
+    local log_mode="$1"
+    shift
+    if [[ "$log_mode" == "append" ]]; then
+        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            DOGFOOD_WORKING_SET_GB=0.1 \
+            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
+            /usr/bin/python3 -c \
+            'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+            "$PERSONA/launch.sh" "$@" >> "$OUT/app.log" 2>&1 &
+    else
+        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
+            DOGFOOD_WORKING_SET_GB=0.1 \
+            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
+            /usr/bin/python3 -c \
+            'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+            "$PERSONA/launch.sh" "$@" > "$OUT/app.log" 2>&1 &
+    fi
+    APP_PID=$!
+
+    local app_group="" attempt
+    for attempt in {1..40}; do
+        app_group="$(ps -p "$APP_PID" -o pgid= 2>/dev/null | tr -d '[:space:]')"
+        [[ "$app_group" == "$APP_PID" ]] && return 0
+        kill -0 "$APP_PID" 2>/dev/null || break
+        sleep 0.05
+    done
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+    printf '[gui-golden] isolated app failed to establish its owned process group\n' >&2
+    APP_PID=""
+    return 1
+}
+
 start_persona() {
     local name="$1"
     shift
@@ -589,20 +794,10 @@ start_persona() {
         mv "$updated" "$config"
     done
     if [[ -n "$app_language" ]]; then
-        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-            DOGFOOD_WORKING_SET_GB=0.1 \
-            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
-            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
-            "$PERSONA/launch.sh" -AppleLanguages "($app_language)" \
-            > "$OUT/app.log" 2>&1 &
+        launch_persona_app truncate -AppleLanguages "($app_language)"
     else
-        env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-            DOGFOOD_WORKING_SET_GB=0.1 \
-            FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
-            "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
-            "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
+        launch_persona_app truncate
     fi
-    APP_PID=$!
     wait_for_window
 }
 
@@ -613,26 +808,8 @@ relaunch_persona() {
     # #1618 the app's unsafe global port sweep hid this ownership leak by
     # killing the old fake (and potentially an operator's real server too).
     cleanup_fake_sidecars
-    env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-        DOGFOOD_WORKING_SET_GB=0.1 \
-        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
-        "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
-        "$PERSONA/launch.sh" >> "$OUT/app.log" 2>&1 &
-    APP_PID=$!
+    launch_persona_app append
     wait_for_window
-}
-
-stop_app() {
-    if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-        kill "$APP_PID" 2>/dev/null || true
-        for _ in {1..20}; do
-            kill -0 "$APP_PID" 2>/dev/null || break
-            sleep 0.1
-        done
-        kill -9 "$APP_PID" 2>/dev/null || true
-        wait "$APP_PID" 2>/dev/null || true
-    fi
-    APP_PID=""
 }
 
 refresh_main_window_id() {

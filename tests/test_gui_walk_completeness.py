@@ -42,10 +42,10 @@ def test_catalog_absence_checks_require_complete_walks():
 def test_empty_persona_environment_is_safe_on_macos_bash3():
     source = (ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh").read_text()
     safe = '${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}'
-    # start_persona has two mutually exclusive launch branches so a localized
-    # persona can pass -AppleLanguages, while relaunch_persona has one. The
-    # loop that persists persona config is the fourth safe expansion.
-    assert source.count(safe) == 4
+    # launch_persona_app owns the two mutually exclusive log redirections for
+    # both initial launch and relaunch. The config-persistence loop is the
+    # third safe expansion.
+    assert source.count(safe) == 3
 
     program = r"""
 set -u

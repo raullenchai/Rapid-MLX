@@ -18,6 +18,11 @@ machine — it would only quietly restore the misdiagnosis on an unhealthy one.
 
 from __future__ import annotations
 
+import json
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -279,8 +284,254 @@ def test_harness_reaps_its_own_fake_before_relaunch_without_global_sweep():
     relaunch = source.split("relaunch_persona() {", 1)[1].split("\n}", 1)[0]
     assert relaunch.index("stop_app") < relaunch.index("cleanup_fake_sidecars")
     assert relaunch.index("cleanup_fake_sidecars") < relaunch.index(
-        '"$PERSONA/launch.sh"'
+        "launch_persona_app append"
     )
+
+
+def test_fake_sidecar_cleanup_waits_then_escalates_without_touching_operator(tmp_path):
+    """Regression for #2676: cleanup must finish before persona deletion."""
+    graceful_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+Path(sys.argv[1]).touch()
+while True:
+    time.sleep(0.05)
+"""
+    stubborn_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(sys.argv[1]).touch()
+while True:
+    time.sleep(0.05)
+"""
+    ready_paths = [tmp_path / name for name in ("graceful", "stubborn", "operator")]
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                graceful_code,
+                str(ready_paths[0]),
+                "serve",
+                "fake-graceful",
+            ]
+        ),
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                stubborn_code,
+                str(ready_paths[1]),
+                "serve",
+                "fake-stubborn",
+            ]
+        ),
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                graceful_code,
+                str(ready_paths[2]),
+                "serve",
+                "fake-graceful-backup",
+            ]
+        ),
+    ]
+    graceful, stubborn, operator = processes
+    for _ in range(100):
+        if all(path.exists() for path in ready_paths):
+            break
+        time.sleep(0.01)
+    assert all(path.exists() for path in ready_paths)
+    events = tmp_path / "fake-events.jsonl"
+    events.write_text(
+        "\n".join(
+            json.dumps({"event": "server_started", "pid": proc.pid, "alias": alias})
+            for proc, alias in (
+                (graceful, "fake-graceful"),
+                (stubborn, "fake-stubborn"),
+                # Simulate a recycled pid whose new alias merely shares the
+                # recorded alias prefix. It is not owned by this harness run.
+                (operator, "fake-graceful"),
+            )
+        )
+        + "\n"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'harness="$1"; event_out="$2"; set --; '
+                'source "$harness"; OUT="$event_out"; cleanup_fake_sidecars',
+                "cleanup-test",
+                str(HARNESS),
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert graceful.wait(timeout=1) == 0
+        assert stubborn.wait(timeout=1) == -signal.SIGKILL
+        assert operator.poll() is None
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1)
+
+
+def test_fake_sidecar_cleanup_fails_closed_on_partial_ownership_log(tmp_path):
+    ready = tmp_path / "ready"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            """
+import signal
+import sys
+import time
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+Path(sys.argv[1]).touch()
+while True:
+    time.sleep(0.05)
+""",
+            str(ready),
+            "serve",
+            "fake-partial",
+        ]
+    )
+    for _ in range(100):
+        if ready.exists():
+            break
+        time.sleep(0.01)
+    assert ready.exists()
+    (tmp_path / "fake-events.jsonl").write_text(
+        json.dumps(
+            {"event": "server_started", "pid": process.pid, "alias": "fake-partial"}
+        )
+        + '\n{"event":"server_started"'
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'harness="$1"; event_out="$2"; set --; '
+                'source "$harness"; OUT="$event_out"; cleanup_fake_sidecars',
+                "cleanup-test",
+                str(HARNESS),
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode != 0
+        assert "could not parse fake sidecar ownership log" in result.stderr
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=1)
+
+
+def test_stop_app_drains_its_owned_process_group(tmp_path):
+    """Unreported catalogue children must exit before their HOME is deleted."""
+    leader = tmp_path / "leader.py"
+    child_pid_file = tmp_path / "child.pid"
+    child_ready = tmp_path / "child.ready"
+    leader.write_text(
+        """
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+os.setsid()
+child = subprocess.Popen([
+    sys.argv[3],
+    "-c",
+    "import signal,sys,time; from pathlib import Path; "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "Path(sys.argv[1]).touch(); time.sleep(60)",
+    sys.argv[2],
+])
+for _ in range(100):
+    if Path(sys.argv[2]).exists():
+        break
+    time.sleep(0.01)
+Path(sys.argv[1]).write_text(str(child.pid))
+while True:
+    time.sleep(1)
+"""
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'harness="$1"; leader="$2"; pid_file="$3"; ready="$4"; python="$5"; '
+            'set --; source "$harness"; '
+            '"$python" "$leader" "$pid_file" "$ready" "$python" & APP_PID=$!; '
+            'for _ in {1..100}; do test -s "$pid_file" && break; sleep 0.01; done; '
+            'test -s "$pid_file"; child_pid="$(cat "$pid_file")"; '
+            'stop_app; child_state="$(ps -p "$child_pid" -o stat= 2>/dev/null '
+            '| tr -d "[:space:]" || true)"; '
+            'test -z "$child_state" || test "${child_state#Z}" != "$child_state"',
+            "process-group-test",
+            str(HARNESS),
+            str(leader),
+            str(child_pid_file),
+            str(child_ready),
+            sys.executable,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_exit_trap_turns_cleanup_failure_into_failed_result(tmp_path):
+    """A passing journey cannot hide a retained process or persona."""
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps({"status": "pass", "exit_code": 0}))
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'harness="$1"; out="$2"; set --; source "$harness"; '
+            'OUT_ROOT="$out"; FLOW="cleanup-contract"; APP_SOURCE="fixture.app"; '
+            "RESULT_WRITTEN=1; cleanup_persona() { return 1; }; "
+            "cleanup_operator_server() { return 0; }; "
+            "cleanup_telemetry_sink() { return 0; }; "
+            "trap finish EXIT; exit 0",
+            "finish-test",
+            str(HARNESS),
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    evidence = json.loads(result_path.read_text())
+    assert evidence["status"] == "fail"
+    assert evidence["exit_code"] != 0
 
 
 def test_fresh_install_fixture_contains_the_real_starter():
