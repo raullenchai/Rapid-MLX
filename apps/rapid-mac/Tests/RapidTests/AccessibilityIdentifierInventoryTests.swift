@@ -24,6 +24,20 @@ import Testing
 @Suite("Accessibility identifier inventory")
 struct AccessibilityIdentifierInventoryTests {
 
+    @Test("The GitHub value-moment card names every control")
+    func githubStarValueMomentIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""GitHub.Star.ValueMoment.Card""#,
+                #""GitHub.Star.ValueMoment.Open""#,
+                #""GitHub.Star.ValueMoment.Later""#,
+                #""GitHub.Star.ValueMoment.Close""#,
+            ],
+            in: "Sources/Rapid/UI/GitHubStarPrompt.swift",
+            surface: "GitHub value-moment card"
+        )
+    }
+
     @Test("Model switch guard names its destructive and cancel controls")
     func modelSwitchGuardIdentifiers() throws {
         try assertDeclared(

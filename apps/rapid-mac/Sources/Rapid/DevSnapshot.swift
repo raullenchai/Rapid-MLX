@@ -79,6 +79,13 @@ enum DevSnapshot {
             recordDecision: { _ in },
             startTelemetrySession: {}
         )
+        let snapshotStarDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.github-star")!
+        snapshotStarDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.github-star")
+        let snapshotStarPrompt = GitHubStarPromptCoordinator(
+            defaults: snapshotStarDefaults,
+            quietWindow: .zero,
+            presentationActive: true
+        )
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
         let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
@@ -103,6 +110,7 @@ enum DevSnapshot {
                     .environment(snapshotSparkleUpdater)
                     .environment(quickstart)
                     .environment(snapshotConsent)
+                    .environment(snapshotStarPrompt)
                     .environment(dockPromptStore)
                     .environment(browseApproval)
                     .environment(imageGen)
@@ -240,6 +248,31 @@ enum DevSnapshot {
         // ViewThatFits rather than squeezing them to ellipses, and the version
         // pill must stay on one line. Only a width this small exercises it.
         render(contentView(width: 380, height: 560), to: "\(dir)/content-narrow.png")
+
+        // Focused proof of the post-value card at the minimum supported
+        // window. Drive the real workload gate, then complete it immediately
+        // after capture so it cannot leak into the rest of the snapshot
+        // matrix below.
+        snapshotStarDefaults.set(
+            GitHubStarPromptCoordinator.initialWorkloadThreshold - 1,
+            forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions
+        )
+        snapshotStarPrompt.productValueDelivered(.chatReply)
+        render(
+            AnyView(
+                ZStack(alignment: .bottomTrailing) {
+                    RapidTheme.surfaceCanvas
+                    GitHubStarPromptCard()
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 40)
+                }
+                .environment(snapshotStarPrompt)
+                .frame(width: 720, height: 560)
+            ),
+            to: "\(dir)/github-star-value-moment.png"
+        )
+        snapshotStarPrompt.repositoryOpened()
+
         // Images tab (empty state — no results, catalog not yet resolved).
         render(imagesView(width: 700, height: 640), to: "\(dir)/images-empty.png")
         // Narrow composer: the canvas controls wrap to the two-row
