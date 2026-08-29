@@ -163,6 +163,13 @@ def test_gui_jobs_use_selector_output_and_generic_build_stays_hosted():
     assert jobs["build"]["runs-on"] == "macos-15"
 
 
+def test_gui_artifact_helpers_use_system_python3():
+    workflow_text = WORKFLOW.read_text()
+
+    assert "python ../../scripts/gui_app_artifact.py" not in workflow_text
+    assert workflow_text.count("python3 ../../scripts/gui_app_artifact.py") == 2
+
+
 def test_launchagent_template_is_interactive_and_holds_awake_assertions():
     text = PLIST.read_text()
     assert "{{RunnerRoot}}/runsvc.sh" in text
