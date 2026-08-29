@@ -437,7 +437,7 @@ final class DictationController {
             voiceLaneReady: voiceLaneReady
         )) else {
             if isEnabled, enableRequestID == requestID, modelAlias == preparingAlias {
-                lastError = "\(preparingAlias) couldn't load. There may not be enough memory to start dictation."
+                lastError = "\(preparingAlias) couldn't finish preparing for dictation. Try again."
                 phase = .off
             }
             return
@@ -962,12 +962,12 @@ final class DictationController {
             } else if facts?.cached != true {
                 lastError = "\(alias) isn't downloaded. Open Rapid → Audio to download it."
             } else {
-                lastError = "\(alias) couldn't start. There may not be enough memory to load it alongside the conversation model."
+                lastError = "\(alias) couldn't finish preparing for dictation. Try again."
             }
             // The user is mid-flow in another app with only the HUD visible.
             // Leaving "Transcribing…" up while silently failing reads as a
             // hang; name the problem there before the capsule goes away.
-            hud.update(.failed(message: facts?.cached != true ? "Model not downloaded" : "Couldn't start the model"))
+            hud.update(.failed(message: facts?.cached != true ? "Model not downloaded" : "Couldn't prepare the model"))
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             return
         }

@@ -791,7 +791,7 @@ struct DictationTests {
     }
 
     @MainActor
-    @Test("failed model warmup leaves dictation visibly unarmed")
+    @Test("unknown preparation failure stays retryable without guessing memory pressure")
     func failedWarmupDoesNotArmHotkey() async {
         var hotkeyStartCount = 0
         let controller = readinessController(
@@ -806,7 +806,11 @@ struct DictationTests {
 
         #expect(controller.phase == .off)
         #expect(hotkeyStartCount == 0)
-        #expect(controller.lastError?.contains("couldn't load") == true)
+        #expect(
+            controller.lastError
+                == "whisper-small couldn't finish preparing for dictation. Try again."
+        )
+        #expect(controller.lastError?.localizedCaseInsensitiveContains("memory") == false)
     }
 
     @MainActor

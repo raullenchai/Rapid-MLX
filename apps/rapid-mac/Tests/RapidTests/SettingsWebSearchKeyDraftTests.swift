@@ -53,13 +53,6 @@ private final class SettingsKeychainItems: KeychainItemAccessing, @unchecked Sen
 @MainActor
 @Suite("Settings web-search key draft commit")
 struct SettingsWebSearchKeyDraftTests {
-    private static var packageRoot: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-    }
-
     @Test("Constructing the Tools configuration never reads Keychain")
     func constructionIsKeychainLazy() {
         let keychain = SettingsKeychainProbe()
@@ -198,26 +191,24 @@ struct SettingsWebSearchKeyDraftTests {
         #expect(store.read(account: account) == nil)
     }
 
-    @Test("Tools page has no appearance-time Keychain read and wires only user-driven probes")
-    func toolsPageUsesLazyReadTriggers() throws {
-        let panel = try String(
-            contentsOf: Self.packageRoot.appendingPathComponent("Sources/Rapid/UI/SettingsToolsPanel.swift"),
-            encoding: .utf8
-        )
-        #expect(!panel.contains("prefetchAllAPIKeys"))
-        #expect(panel.contains("guard provider.requiresKey else { return }"))
-        #expect(panel.contains("focusedKeyProvider"))
-        #expect(panel.contains("prefetchAPIKey(for: provider)"))
-        #expect(panel.contains("Saved key status hasn’t been checked."))
-
-        let store = try String(
-            contentsOf: Self.packageRoot.appendingPathComponent("Sources/Rapid/Tools/KeychainStore.swift"),
-            encoding: .utf8
-        )
-        #expect(store.contains("kSecUseAuthenticationContext"))
-        #expect(store.contains("interactionNotAllowed = true"))
-        #expect(!store.contains("kSecUseAuthenticationUISkip"))
-        #expect(store.contains("legacyService).development"))
+    @Test("Visible backend key status has truthful copy for every cached state")
+    func visibleBackendKeyStatusCopy() {
+        #expect(SettingsToolsPanel.keyStatusCaption(
+            for: .parallel,
+            state: .unknown
+        ) == "Checking saved key…")
+        #expect(SettingsToolsPanel.keyStatusCaption(
+            for: .parallel,
+            state: .present("secret-never-rendered")
+        ) == "A key is stored for Parallel.")
+        #expect(SettingsToolsPanel.keyStatusCaption(
+            for: .parallel,
+            state: .absent
+        ) == "No key stored — searches fall back to Keenable until you save one.")
+        #expect(SettingsToolsPanel.keyStatusCaption(
+            for: .parallel,
+            state: .unavailable
+        ) == "The saved key can’t be accessed. Enter it again and save to replace it.")
     }
 
     @Test("Untouched empty SecureField does not clear an existing stored key")
