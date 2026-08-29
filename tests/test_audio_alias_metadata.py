@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-
-ALIASES_PATH = Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "aliases.json"
+ALIASES_PATH = (
+    Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "aliases.json"
+)
 
 
 @pytest.mark.parametrize(
