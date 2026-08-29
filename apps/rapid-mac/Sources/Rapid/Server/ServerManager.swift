@@ -643,8 +643,8 @@ final class ServerManager {
     /// client URL.
     private(set) var activePort: Int = PortSweep.defaultPort
 
-    /// Issue #17 desktop-half: per-launch bearer secret. Generated
-    /// fresh by ``start()`` and handed to the child via the
+    /// Issue #17 desktop-half: active bearer secret. Generated or restored
+    /// by ``start()`` under the user's lifetime policy and handed to the child via the
     /// ``RAPID_MLX_API_KEY`` env (NOT argv); cleared by
     /// ``handleChildExit`` / ``terminateChild`` so a stale value
     /// can't survive into the next launch.
@@ -656,6 +656,15 @@ final class ServerManager {
     /// or in the (rare) RNG-failure case "we refused to start
     /// without auth", which surfaces as ``.crashed`` to the user.
     private(set) var activeBearer: String?
+
+    /// Issue #2599: how the next ``start()`` materializes the embedded
+    /// bearer. The default deliberately remains per-launch rotation.
+    private(set) var embeddedBearerLifetime: EmbeddedBearerLifetime = .perLaunch
+
+    /// Non-secret presentation state for the last materialized credential.
+    /// The bearer itself stays in ``activeBearer`` and, when persisted, in
+    /// the Keychain—not in UserDefaults or this struct.
+    private(set) var embeddedBearerStatus = EmbeddedBearerStatus.notMaterialized
 
     /// Supplies the `--mcp-config` path for the next spawn, or `nil` to launch
     /// with the MCP subsystem entirely absent.
@@ -1026,6 +1035,9 @@ final class ServerManager {
     @ObservationIgnored
     private weak var downloads: DownloadManager?
 
+    @ObservationIgnored
+    private let bearerCredentialStore: any EmbeddedBearerCredentialStoring
+
     // MARK: - Construction
 
     init() {
@@ -1034,6 +1046,11 @@ final class ServerManager {
         self.binaryPath = resolution?.binary
         self.state = (resolution == nil) ? .missing : .idle
         self.sessionDefaults = .standard
+        self.bearerCredentialStore = EmbeddedBearerCredentialStore(
+            defaults: .standard,
+            keychain: SystemKeychain()
+        )
+        self.embeddedBearerLifetime = Self.loadBearerLifetime(from: .standard)
     }
 
     /// Wire the app's ``DownloadManager`` so ``start(alias:)`` can
@@ -1058,16 +1075,73 @@ final class ServerManager {
         binaryPath: URL? = nil,
         residency: ModelResidencySnapshot = .empty,
         activeBearer: String? = nil,
-        sessionDefaults: UserDefaults? = nil
+        sessionDefaults: UserDefaults? = nil,
+        bearerCredentialStore: (any EmbeddedBearerCredentialStoring)? = nil
     ) {
         self.state = testingState
         self.activeBearer = activeBearer
         self.binaryPath = binaryPath
         self.residency = residency
         self.sessionDefaults = sessionDefaults
+        self.bearerCredentialStore = bearerCredentialStore ?? EmbeddedBearerCredentialStore(
+            defaults: UserDefaults(),
+            keychain: InMemoryKeychain()
+        )
+        self.embeddedBearerLifetime = Self.loadBearerLifetime(
+            from: sessionDefaults ?? UserDefaults()
+        )
         self.binaryResolution = binaryPath.map {
             ServerLocator.Resolution(binary: $0, source: .unknown, version: nil)
         }
+    }
+
+    private static func loadBearerLifetime(
+        from defaults: UserDefaults
+    ) -> EmbeddedBearerLifetime {
+        guard let raw = defaults.string(forKey: "rapid.embeddedBearer.lifetime.v1"),
+              let lifetime = EmbeddedBearerLifetime(rawValue: raw) else {
+            return .perLaunch
+        }
+        return lifetime
+    }
+
+    func setEmbeddedBearerLifetime(_ lifetime: EmbeddedBearerLifetime) {
+        embeddedBearerLifetime = lifetime
+        sessionDefaults?.set(lifetime.rawValue, forKey: "rapid.embeddedBearer.lifetime.v1")
+    }
+
+    /// Persist a replacement under the current lifetime. A running child
+    /// continues accepting its old bearer until restart; the UI must say so.
+    @discardableResult
+    func rotateEmbeddedBearerNow(now: Date = Date()) -> Bool {
+        guard let secret = BearerSecret.generate() else {
+            embeddedBearerStatus = .materialized(
+                rotatedAt: now,
+                isPersisted: false,
+                issue: .unavailableKeychain
+            )
+            return false
+        }
+        let credential = EmbeddedBearerCredential(
+            secret: secret,
+            rotatedAt: now,
+            lifetime: embeddedBearerLifetime
+        )
+        guard embeddedBearerLifetime != .perLaunch,
+              bearerCredentialStore.save(credential) else {
+            embeddedBearerStatus = .materialized(
+                rotatedAt: now,
+                isPersisted: false,
+                issue: embeddedBearerLifetime == .perLaunch ? nil : .writeFailed
+            )
+            return false
+        }
+        embeddedBearerStatus = .materialized(
+            rotatedAt: now,
+            isPersisted: true,
+            issue: nil
+        )
+        return true
     }
 
     /// codex r1 BLOCKING #3 test seam — install a stub
@@ -2491,7 +2565,13 @@ final class ServerManager {
         // Authorization header. SecRandomCopyBytes failing is
         // pathological (kernel-level RNG starvation); we surface as
         // .crashed rather than silently spawning unauthenticated.
-        guard let bearer = BearerSecret.generate() else {
+        let bearerMaterial = EmbeddedBearerMaterialResolver.resolve(
+            lifetime: embeddedBearerLifetime,
+            store: bearerCredentialStore,
+            now: Date(),
+            generateSecret: BearerSecret.generate
+        )
+        guard !bearerMaterial.secret.isEmpty else {
             isOperating = false
             state = .crashed(
                 alias: trimmedAlias,
@@ -2499,6 +2579,11 @@ final class ServerManager {
             )
             return
         }
+        embeddedBearerStatus = .materialized(
+            rotatedAt: bearerMaterial.rotatedAt,
+            isPersisted: bearerMaterial.isPersisted,
+            issue: bearerMaterial.issue
+        )
         // Codex r1 P3 (#17): hold the bearer in a local until the
         // spawn succeeds, then publish to ``activeBearer``. The
         // previous shape published BEFORE the spawn, so a thrown
@@ -2650,7 +2735,7 @@ final class ServerManager {
                 // exported in their shell (ANTHROPIC_API_KEY etc.)
                 // never enter the sidecar's address space.
                 environmentAdditions: Self.serveEnvironmentAdditions(
-                    bearer: bearer,
+                    bearer: bearerMaterial.secret,
                     ambient: ProcessInfo.processInfo.environment,
                     // Issue #1412: the engine's server-oriented default may
                     // retain up to 20% of RAM in prefix-cache entries. The
@@ -2713,7 +2798,7 @@ final class ServerManager {
         self.launchedPerformanceFlags = performanceFlags
         // Codex r1 P3 (#17): only publish the bearer after the spawn
         // has succeeded — see comment at the bearer guard above.
-        setActiveServerSession(bearer: bearer)
+        setActiveServerSession(bearer: bearerMaterial.secret)
         self.stdoutPipe = stdoutPipe
         self.stderrPipe = stderrPipe
         // #20: persist ownership before startMonitor() so a crash

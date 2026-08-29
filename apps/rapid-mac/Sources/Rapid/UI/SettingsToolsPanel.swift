@@ -15,6 +15,7 @@ struct SettingsToolsPanel: View {
     @Environment(ChatViewModel.self) private var chat
     @Environment(WebSearchConfig.self) private var webSearch
     @Environment(BrowseApprovalStore.self) private var browseApproval
+    @Environment(ServerManager.self) private var server
 
     /// Draft of the API key field. Committed on Return or Save so we don't
     /// write to the Keychain on every keystroke.
@@ -45,6 +46,7 @@ struct SettingsToolsPanel: View {
             toolsSection
             webSearchSection
             browseSection
+            embeddedAPISection
         }
     }
 
@@ -461,6 +463,105 @@ struct SettingsToolsPanel: View {
             get: { browseApproval.mode == .autoApproveAll },
             set: { browseApproval.mode = $0 ? .autoApproveAll : .ask }
         )
+    }
+
+    // MARK: - Embedded API security
+
+    private var embeddedAPISection: some View {
+        SettingsSection(
+            "Embedded API security",
+            subtitle: "The Desktop engine always requires a bearer key and stays bound to 127.0.0.1. Choose when that key rotates."
+        ) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                RapidSegmentedControl(
+                    selection: Binding(
+                        get: { server.embeddedBearerLifetime },
+                        set: { server.setEmbeddedBearerLifetime($0) }
+                    ),
+                    options: [
+                        .init(
+                            value: .perLaunch,
+                            title: "Every start",
+                            identifier: "Settings.Tools.EmbeddedAPI.PerLaunch"
+                        ),
+                        .init(
+                            value: .daily,
+                            title: "Daily",
+                            identifier: "Settings.Tools.EmbeddedAPI.Daily"
+                        ),
+                        .init(
+                            value: .explicit,
+                            title: "Until I rotate",
+                            identifier: "Settings.Tools.EmbeddedAPI.Explicit"
+                        ),
+                    ],
+                    accessibilityLabel: "Embedded API key rotation"
+                )
+                .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.Lifetime")
+
+                Text(server.embeddedBearerLifetime.summary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                statusCopy
+
+                if server.embeddedBearerLifetime != .perLaunch {
+                    Button("Rotate now") {
+                        server.rotateEmbeddedBearerNow()
+                    }
+                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.RotateNow")
+
+                    if case .ready = server.state {
+                        Text("Restart the model to make a newly rotated key active.")
+                            .font(RapidFont.caption)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.RestartNotice")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusCopy: some View {
+        switch server.embeddedBearerStatus {
+        case .notMaterialized:
+            EmptyView()
+        case .materialized(_, let isPersisted, let issue):
+            if let issue {
+                Text(Self.issueCopy(issue))
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.statusError)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.DegradedNotice")
+            } else if isPersisted {
+                Text("The current key is stored in your Keychain.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.PersistedNotice")
+            } else {
+                Text("This model is using a one-time key.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.OneTimeNotice")
+            }
+        }
+    }
+
+    private static func issueCopy(_ issue: EmbeddedBearerStorageIssue) -> String {
+        switch issue {
+        case .generationFailed:
+            return "Secure key generation failed, so the model was not started."
+        case .missingSecret:
+            return "No usable saved key was found, so this model started with a one-time key."
+        case .corruptedCredential:
+            return "The saved credential was malformed, so this model started with a one-time key."
+        case .unavailableKeychain:
+            return "The Keychain is unavailable, so this model started with a one-time key."
+        case .writeFailed:
+            return "The Keychain couldn’t store a new key, so this model started with a one-time key. Restart the model to try again."
+        }
     }
 
     // MARK: - Shared layout

@@ -49,8 +49,10 @@ import Security
 /// stdin / a unix-socket pair instead of leaking it through the
 /// process environment) or NSXPC. Tracked in issue #303 / #305.
 ///
-/// The secret rotates on every launch / restart, so a leak via
-/// memory dump or log scrub miss is bounded to the current session.
+/// By default the secret rotates on every launch / restart, so a leak via
+/// memory dump or log scrub miss is bounded to the current session. The user
+/// may opt into a Keychain-backed daily or explicit lifetime; unavailable or
+/// malformed persisted credentials always fall back to a one-time secret.
 /// ``LogScrubber`` already redacts ``Authorization: Bearer`` and
 /// ``--api-key=`` shapes before they reach the log tail.
 enum BearerSecret {
