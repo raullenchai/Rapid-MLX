@@ -807,7 +807,7 @@ class TestKokoroMisakiGate:
 
         Drives the REAL create_speech → require_kokoro_runtime →
         _ensure_kokoro_g2p_model_ready chain through the FastAPI route (only the
-        subprocess-installing probe is stubbed to a deterministic failure), so
+        local-only readiness probe is stubbed to a deterministic failure), so
         the test breaks if the route ever stops invoking the gate or downgrades
         its 503 to a 500.
         """
@@ -830,7 +830,7 @@ class TestKokoroMisakiGate:
         monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
         _install_fake_mlx_audio(monkeypatch)
         # espeak gate passes (it runs first); the spaCy-model probe then fails
-        # deterministically (no real subprocess) — its 503 must reach the client.
+        # deterministically — its 503 must reach the client.
         monkeypatch.setattr(probe_mod, "_ensure_kokoro_g2p_ready", lambda: None)
         monkeypatch.setattr(
             probe_mod,

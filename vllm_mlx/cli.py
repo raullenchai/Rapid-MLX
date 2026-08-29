@@ -7092,11 +7092,15 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
 
 
 def pull_command(args):
-    """Download a model and every catalog-declared runtime repository."""
+    """Download a model and prepare every catalog-declared requirement."""
 
     import copy
 
-    from vllm_mlx.audio.registry import runtime_assets_for
+    from vllm_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
+    from vllm_mlx.audio.runtime_requirements import (
+        AudioRuntimePreparationError,
+        prepare_runtime_requirement,
+    )
 
     primary_repo = args.model
     _pull_repository(args)
@@ -7113,6 +7117,19 @@ def pull_command(args):
             dependency_args,
             allow_patterns_override=list(asset.allow_patterns),
         )
+    for requirement in runtime_requirements_for(primary_repo):
+        print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")
+        try:
+            prepare_runtime_requirement(requirement)
+        except AudioRuntimePreparationError as exc:
+            shown = getattr(args, "_original_alias", primary_repo)
+            print(f"\n  Error: Could not prepare audio runtime for '{shown}'.")
+            print(f"  {exc}")
+            print(
+                "  Install 'rapid-mlx[audio]' in this environment, then rerun "
+                f"'rapid-mlx pull {shown}'."
+            )
+            sys.exit(1)
     _emit_pull_activation()
 
 

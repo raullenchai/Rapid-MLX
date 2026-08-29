@@ -10,6 +10,15 @@
     ]
   },
 
+  "_runtime_requirements": {
+    "kokoro": [
+      {
+        "kind": "spacy_pipeline",
+        "name": "en_core_web_sm"
+      }
+    ]
+  },
+
   "kokoro": {
     "type": "tts",
     "hf_id": "mlx-community/Kokoro-82M-bf16",
