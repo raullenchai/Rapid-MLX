@@ -271,15 +271,18 @@ jobs:
     # rounded to 125. Measured on the Studio, dsh solves the task in 17-64s
     # (warm/cold) — the budget is for the pathological retry path, not the
     # expected one.
-    # 165, not 125: the release-shaped Desktop sidecar build and two-model,
-    # positive/negative real-image checks now follow the agent gate. The agent
-    # path retains its documented ~121-minute worst case; each model is bounded
-    # to 4 minutes of startup plus two 4-minute requests (24 minutes total), and
-    # the measured clean sidecar build gets 15 minutes of fail-closed headroom.
-    # 121 + 24 + 15 = 160, rounded to 165 for setup and cleanup. This outer cap
-    # is not a substitute for the per-request bounds: it only prevents healthy
-    # checks near their individual budgets from being guillotined by the job.
-    timeout-minutes: 165
+    # 175, not 125: the release-shaped Desktop sidecar build, two-model
+    # positive/negative chat-photo checks, and FLUX image-generation check now
+    # follow the agent gate. The agent
+    # path retains its documented ~121-minute worst case. The two chat-photo
+    # models each get 4 minutes of startup plus two 4-minute requests (24
+    # minutes total); FLUX gets 4 minutes of startup plus one 5-minute render;
+    # and the measured clean sidecar build gets 15 minutes of fail-closed
+    # headroom. 121 + 24 + 9 + 15 = 169, rounded to 175 for setup and cleanup.
+    # This outer cap is not a substitute for the per-request bounds: it only
+    # prevents healthy checks near their individual budgets from being
+    # guillotined by the job.
+    timeout-minutes: 175
     # Serialize with the manual agent-gate.yml so two runs never contend for the
     # single runner / the serve port.
     concurrency:
@@ -319,6 +322,8 @@ jobs:
           SIDECAR_VISION_SMOKE_REVISION: ${{ steps.sidecar-pins.outputs.qwen_revision }}
           SIDECAR_GEMMA_SMOKE_MODEL: ${{ steps.sidecar-pins.outputs.gemma_model }}
           SIDECAR_GEMMA_SMOKE_REVISION: ${{ steps.sidecar-pins.outputs.gemma_revision }}
+          SIDECAR_IMAGE_SMOKE_MODEL: ${{ steps.sidecar-pins.outputs.flux_model }}
+          SIDECAR_IMAGE_SMOKE_REVISION: ${{ steps.sidecar-pins.outputs.flux_revision }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
@@ -334,10 +339,11 @@ jobs:
 
           RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
 
-          # Build the exact Desktop sidecar recipe and require a real PNG to
-          # traverse its production scheduler + HTTP route. Every normal
-          # auto-release is blocked by a missing immutable snapshot,
-          # incompatible reduced dependency set, or failed image request.
+          # Build the exact Desktop sidecar recipe and require real chat-photo
+          # classification plus a real generated PNG to traverse their separate
+          # production schedulers and HTTP routes. Every normal auto-release is
+          # blocked by a missing immutable snapshot, incompatible reduced
+          # dependency set, or failed media request.
           HF_HUB_OFFLINE=1 bash apps/rapid-mac/scripts/build-sidecar.sh \
             --out "$RUNNER_TEMP/desktop-vision-sidecar-$VERSION"
 

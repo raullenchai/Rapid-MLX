@@ -145,12 +145,13 @@ def test_warm_cache_hands_mflux_a_local_directory(monkeypatch):
 
 def test_unresolvable_cache_still_hands_mflux_the_repo_id(monkeypatch):
     """No local verdict → today's behavior, so a cold pull still happens."""
-    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    repo = "filipstrand/Z-Image-Turbo-mflux-4bit"
+    engine = ImageGenerationEngine(repo)
     monkeypatch.setattr(
         "vllm_mlx._download_gate.mflux_local_snapshot", lambda repo: None
     )
 
-    assert engine._model_path_for_mflux() == "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    assert engine._model_path_for_mflux() == repo
 
 
 def test_canonical_repo_still_defers_to_model_config(monkeypatch):
@@ -202,7 +203,10 @@ def _seed_mflux_cache(tmp_path, monkeypatch, *, omit=None):
     multi-gigabyte shard absent.
     """
     repo_root = tmp_path / "hf-cache" / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
-    snap = repo_root / "snapshots" / ("e" * 40)
+    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    pinned_sha = IMAGE_MODEL_REVISIONS[_MFLUX_REPO]
+    snap = repo_root / "snapshots" / pinned_sha
     (snap / "tokenizer").mkdir(parents=True)
     (snap / "tokenizer" / "tokenizer.json").write_text("{}")
     for component in ("transformer", "text_encoder", "vae"):
@@ -215,6 +219,7 @@ def _seed_mflux_cache(tmp_path, monkeypatch, *, omit=None):
             if omit != (component, shard):
                 (component_dir / shard).write_bytes(b"weights")
     (repo_root / "refs").mkdir(parents=True)
+    # Deliberately stale: pinned resolution must ignore refs/main entirely.
     (repo_root / "refs" / "main").write_text("e" * 40)
     monkeypatch.setattr(
         "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hf-cache")

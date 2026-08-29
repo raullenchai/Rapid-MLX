@@ -46,8 +46,11 @@ def load_pins(path: Path) -> dict[str, tuple[str, str, tuple[str, ...]]]:
     if not isinstance(payload, dict) or payload.get("schema") != 1:
         raise PreflightError("sidecar pin manifest must be an object with schema 1")
     models = payload.get("models")
-    if not isinstance(models, dict) or set(models) != {"qwen", "gemma"}:
-        raise PreflightError("sidecar pin manifest must define exactly qwen and gemma")
+    required_models = {"qwen", "gemma", "flux"}
+    if not isinstance(models, dict) or set(models) != required_models:
+        raise PreflightError(
+            "sidecar pin manifest must define exactly qwen, gemma, and flux"
+        )
 
     result: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     for key, entry in models.items():

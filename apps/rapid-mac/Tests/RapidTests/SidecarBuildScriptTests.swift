@@ -119,6 +119,18 @@ struct SidecarBuildScriptTests {
                 "The Qwen Image import path must defer PiD's optional torch checkpoint converter.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")"#),
                 "The bundle build must prove qwen-image itself imports without torch.")
+        #expect(script.contains("SIDECAR_IMAGE_SMOKE_MODEL"),
+                "Release-candidate builds must opt into a real image-generation model.")
+        #expect(script.contains("$REPO_ROOT/scripts/smoke-sidecar-image.py"),
+                "The image runtime needs a real generated-PNG gate, not only an import probe.")
+        let visionSmoke = script.range(of: "smoke-sidecar-vision.py")?.lowerBound
+        let imageSmoke = script.range(of: "smoke-sidecar-image.py")?.lowerBound
+        #expect(visionSmoke != nil)
+        #expect(imageSmoke != nil)
+        if let visionSmoke, let imageSmoke {
+            #expect(visionSmoke < imageSmoke,
+                    "Real Metal model loads must remain serialized on the release host.")
+        }
     }
 
     @Test("Desktop sidecar bundles and smokes both audio lanes")

@@ -1010,11 +1010,11 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
     fi
 fi
 
-# Release-candidate builds can opt into a real image request against a cached
-# checkpoint. Once configured, this gate is fail-closed: a missing model/image,
-# failed server start, non-200 response, or implausible description aborts the
-# build. Hosted package builders do not download multi-GB model weights, so the
-# release operator supplies the immutable local snapshot explicitly.
+# Release-candidate builds can opt into a real chat-photo request against a
+# cached checkpoint. Once configured, this gate is fail-closed: a missing
+# model/image, failed server start, non-200 response, or implausible description
+# aborts the build. Hosted package builders do not download multi-GB model
+# weights, so the release operator supplies the immutable local snapshot.
 if [[ -n "${SIDECAR_VISION_SMOKE_MODEL:-}" ]]; then
     SIDECAR_VISION_SMOKE_IMAGE="${SIDECAR_VISION_SMOKE_IMAGE:-$REPO_ROOT/Sources/Rapid/Resources/cheetah.png}"
     SIDECAR_VISION_SMOKE_NEGATIVE_IMAGE="${SIDECAR_VISION_SMOKE_NEGATIVE_IMAGE:-$REPO_ROOT/Sources/Rapid/Resources/Assets.xcassets/RapidLogo.imageset/RapidLogo.png}"
@@ -1032,7 +1032,27 @@ if [[ -n "${SIDECAR_VISION_SMOKE_MODEL:-}" ]]; then
         "$REPO_ROOT/scripts/smoke-sidecar-vision.py" \
         "${SIDECAR_VISION_SMOKE_ARGS[@]}"
 else
-    echo "==> real image smoke: not configured (set SIDECAR_VISION_SMOKE_MODEL for release candidates)"
+    echo "==> real chat-photo smoke: not configured (set SIDECAR_VISION_SMOKE_MODEL for release candidates)"
+fi
+
+# Image generation is a separate runtime and route from chat-photo vision.
+# Importing mflux above cannot prove that its reduced dependency set can load
+# the component-layout checkpoint or return a real PNG. Release candidates run
+# this after the vision process has exited, keeping Metal model loads serialized.
+if [[ -n "${SIDECAR_IMAGE_SMOKE_MODEL:-}" ]]; then
+    SIDECAR_IMAGE_SMOKE_ARGS=(
+        --sidecar-root "$STAGE"
+        --model "$SIDECAR_IMAGE_SMOKE_MODEL"
+    )
+    if [[ -n "${SIDECAR_IMAGE_SMOKE_REVISION:-}" ]]; then
+        SIDECAR_IMAGE_SMOKE_ARGS+=(--revision "$SIDECAR_IMAGE_SMOKE_REVISION")
+    fi
+    PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+        "$STAGE/python/bin/python3.12" \
+        "$REPO_ROOT/scripts/smoke-sidecar-image.py" \
+        "${SIDECAR_IMAGE_SMOKE_ARGS[@]}"
+else
+    echo "==> real image-generation smoke: not configured (set SIDECAR_IMAGE_SMOKE_MODEL for release candidates)"
 fi
 
 # ----- step 7: package --------------------------------------------------

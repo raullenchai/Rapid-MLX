@@ -36,6 +36,24 @@
         "tokenizer.json",
         "tokenizer_config.json"
       ]
+    },
+    "flux": {
+      "repository": "Runpod/FLUX.2-klein-4B-mflux-4bit",
+      "revision": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
+      "files": [
+        "config.json",
+        "text_encoder/0.safetensors",
+        "text_encoder/1.safetensors",
+        "text_encoder/model.safetensors.index.json",
+        "tokenizer/chat_template.jinja",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "transformer/0.safetensors",
+        "transformer/1.safetensors",
+        "transformer/model.safetensors.index.json",
+        "vae/0.safetensors",
+        "vae/model.safetensors.index.json"
+      ]
     }
   }
 }

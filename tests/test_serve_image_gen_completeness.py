@@ -29,8 +29,12 @@ def _seed_cache(tmp_path, monkeypatch, *, omit=None):
     ``omit`` drops one ``(component, shard)`` so the layout matches what an
     interrupted pull leaves: every small file present, one big shard absent.
     """
+    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    pinned_sha = IMAGE_MODEL_REVISIONS[repo]
     repo_root = tmp_path / "hf-cache" / _REPO_DIR
-    snap = repo_root / "snapshots" / ("f" * 40)
+    snap = repo_root / "snapshots" / pinned_sha
     (snap / "tokenizer").mkdir(parents=True)
     (snap / "tokenizer" / "tokenizer.json").write_text("{}")
     for component in ("transformer", "text_encoder", "vae"):
@@ -43,6 +47,8 @@ def _seed_cache(tmp_path, monkeypatch, *, omit=None):
             if omit != (component, shard):
                 (component_dir / shard).write_bytes(b"weights")
     (repo_root / "refs").mkdir(parents=True)
+    # Pinned image aliases resolve snapshots/<revision> directly, even when a
+    # stale branch ref or additional cached snapshot exists.
     (repo_root / "refs" / "main").write_text("f" * 40)
     monkeypatch.setattr(
         "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hf-cache")

@@ -1842,11 +1842,18 @@ def _seed_mflux_snapshot(repo_root, sha: str, *, omit: tuple[str, str] | None = 
     _seed_refs_main(repo_root, sha)
 
 
+_UNPINNED_MFLUX_REPO = "filipstrand/Z-Image-Turbo-mflux-4bit"
+
+
+def _mflux_repo_root(cache_root, repo: str):
+    return cache_root / f"models--{repo.replace('/', '--')}"
+
+
 def test_complete_mflux_snapshot_is_runnable(tmp_path, monkeypatch):
     """A complete image-gen component layout is a cached runnable model."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "a" * 40)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1859,8 +1866,8 @@ def test_complete_mflux_snapshot_is_runnable(tmp_path, monkeypatch):
 def test_partial_mflux_snapshot_is_not_runnable(tmp_path, monkeypatch):
     """Every shard from every required mflux component must be present."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "b" * 40, omit=("transformer", "1.safetensors"))
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1873,8 +1880,8 @@ def test_mflux_missing_weights_checks_single_partial_snapshot_without_ref(
 ):
     """Interrupted first pulls can leave indexes before refs/main is written."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "e" * 40, omit=("text_encoder", "1.safetensors"))
     (repo_root / "refs" / "main").unlink()
 
@@ -1888,8 +1895,8 @@ def test_mflux_missing_weights_no_verdict_for_multiple_unpinned_snapshots(
 ):
     """Never let an old complete snapshot mask a newer partial snapshot."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "f" * 40)
     _seed_mflux_snapshot(repo_root, "0" * 40, omit=("transformer", "0.safetensors"))
     (repo_root / "refs" / "main").unlink()
@@ -1902,8 +1909,8 @@ def test_mflux_missing_weights_no_verdict_for_multiple_unpinned_snapshots(
 def test_mflux_missing_weights_names_the_absent_shard(tmp_path, monkeypatch):
     """The gate reports WHICH file is missing, so the error can be acted on."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "c" * 40, omit=("transformer", "0.safetensors"))
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1914,8 +1921,8 @@ def test_mflux_missing_weights_names_the_absent_shard(tmp_path, monkeypatch):
 def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
     """Complete is ``[]``, not ``None`` — the two must stay distinguishable."""
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "d" * 40)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1979,8 +1986,8 @@ def test_mflux_missing_weights_reports_non_string_index_without_raising(
     strings is treated as missing, exactly like a corrupt one.
     """
     cache_root = tmp_path / "hf-cache"
-    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    repo = _UNPINNED_MFLUX_REPO
+    repo_root = _mflux_repo_root(cache_root, repo)
     _seed_mflux_snapshot(repo_root, "9" * 40)
     # Corrupt one component index with a non-string (unhashable) shard value.
     bad_index = (
@@ -2065,6 +2072,25 @@ def test_mflux_local_snapshot_accepts_pinned_revision_without_refs_main(
     resolved = gate.mflux_local_snapshot(repo)
     assert resolved is not None
     assert resolved.endswith(pinned_sha)
+    assert gate.mflux_missing_weights(repo) == []
+
+
+def test_flux_smoke_pin_ignores_stale_ref_and_extra_cached_revision(
+    tmp_path, monkeypatch
+):
+    """The release FLUX alias always resolves the manifest-pinned checkpoint."""
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    pinned_sha = gate.IMAGE_MODEL_REVISIONS[repo]
+    stale_sha = "6" * 40
+    cache_root = tmp_path / "hf-cache"
+    repo_root = _mflux_repo_root(cache_root, repo)
+    _seed_mflux_snapshot(repo_root, pinned_sha)
+    _seed_mflux_snapshot(repo_root, stale_sha)
+    (repo_root / "refs" / "main").write_text(stale_sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_local_snapshot(repo) == str(repo_root / "snapshots" / pinned_sha)
     assert gate.mflux_missing_weights(repo) == []
 
 
@@ -2235,7 +2261,7 @@ def test_mflux_local_snapshot_resolves_a_complete_checkpoint(tmp_path, monkeypat
     cache_root = tmp_path / "hf-cache"
     repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
-    sha = "e" * 40
+    sha = gate.IMAGE_MODEL_REVISIONS[repo]
     _seed_mflux_snapshot(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -2253,7 +2279,8 @@ def test_mflux_local_snapshot_declines_a_partial_checkpoint(tmp_path, monkeypatc
     cache_root = tmp_path / "hf-cache"
     repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
-    _seed_mflux_snapshot(repo_root, "f" * 40, omit=("transformer", "1.safetensors"))
+    sha = gate.IMAGE_MODEL_REVISIONS[repo]
+    _seed_mflux_snapshot(repo_root, sha, omit=("transformer", "1.safetensors"))
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
