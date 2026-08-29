@@ -110,9 +110,13 @@ if [[ -n "${GUI_FLOWS:-}" && "$FLOW" != all ]]; then
     fi
 fi
 
-if [[ "${RAPID_HOST_PRECHECK_HELD:-0}" != "1" && "${CI:-}" != "true" ]]; then
+# The helper-contract tests source this file to exercise the shell guards. Host
+# admission belongs to the executable entry point, not to library-style use.
+if [[ "${BASH_SOURCE[0]}" == "$0" && "${RAPID_HOST_PRECHECK_HELD:-0}" != "1" && "${CI:-}" != "true" ]]; then
     export RAPID_HOST_PRECHECK_HELD=1
-    exec "$ROOT/scripts/dogfood-host-precheck.sh" -- "$0" "${ORIGINAL_ARGS[@]}"
+    # macOS Bash 3.2 treats an empty array expansion as unbound under `set -u`.
+    exec "$ROOT/scripts/dogfood-host-precheck.sh" -- "$0" \
+        ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
 fi
 
 log() { printf '[gui-golden] %s\n' "$*"; }

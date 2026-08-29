@@ -14,9 +14,9 @@ behavioural reason (#2494). Each guard below now asserts the structural
   (`pull` lifecycle, machine aliases, watchdog events);
 * the flow is gated in CI and its failures leave usable evidence (parsed
   structurally from the workflow YAML, mirroring ``test_gui_golden_ci_coverage``);
-* the only deliberately retained single-anchor source checks are the two sides
-  of a cross-language request-body contract (Swift default <-> shell request),
-  where no behavioural proxy exists — see ``test_image_generation_...``.
+* the deliberately retained source anchors cover contracts with no portable
+  behavioural proxy: the two sides of a cross-language request body and the
+  Bash 3.2 empty-array syntax that Ubuntu's newer Bash accepts either way.
 
 The guarantees here are behaviour; the anchors are precise and loud about why
 they exist when they break.
@@ -102,6 +102,67 @@ def _run_harness_helper(tmp_path: Path, helper: str, *args: str):
         text=True,
         check=False,
     )
+
+
+def test_host_precheck_uses_bash32_safe_empty_array_expansion():
+    """Ubuntu must reject syntax that would regress macOS Bash 3.2."""
+    source = HARNESS.read_text()
+    precheck_block = source.split("dogfood-host-precheck.sh", 1)[1].split("fi", 1)[0]
+    argument_lines = {line.strip() for line in precheck_block.splitlines()}
+
+    assert '${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}' in argument_lines
+    assert '"${ORIGINAL_ARGS[@]}"' not in argument_lines
+
+
+@pytest.mark.parametrize(
+    "original_args",
+    [(), ("--flow", "fresh install", "--keep")],
+)
+def test_host_precheck_preserves_original_argv_on_system_bash(
+    tmp_path: Path, original_args: tuple[str, ...]
+):
+    """Direct execution preserves zero args and whitespace on macOS Bash 3.2."""
+    rapid_root = tmp_path / "rapid-mac"
+    scripts = rapid_root / "scripts"
+    scripts.mkdir(parents=True)
+
+    copied_harness = scripts / HARNESS.name
+    copied_harness.write_bytes(HARNESS.read_bytes())
+    copied_harness.chmod(0o755)
+
+    captured_argv = tmp_path / "precheck-argv.json"
+    precheck = scripts / "dogfood-host-precheck.sh"
+    precheck.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['RAPID_PRECHECK_ARGV_OUT'], 'w') as handle:\n"
+        "    json.dump(sys.argv[1:], handle)\n"
+    )
+    precheck.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "CI": "false",
+            "RAPID_HOST_PRECHECK_HELD": "0",
+            "RAPID_PRECHECK_ARGV_OUT": str(captured_argv),
+        }
+    )
+    result = subprocess.run(
+        ["/bin/bash", str(copied_harness), *original_args],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured_argv.read_text()) == [
+        "--",
+        str(copied_harness),
+        *original_args,
+    ]
 
 
 def _assert_in_order(body: str, *anchors: str) -> None:
