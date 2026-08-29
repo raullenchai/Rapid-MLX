@@ -94,6 +94,8 @@ def test_active_switch_selects_the_fresh_native_menu_item_by_identifier():
         'case "set-scroll-value":', 1
     )[0]
     assert "findFreshElement(identifier: itemIdentifier)" in selection
+    assert "freshRoots = attribute(" in selection
+    assert "application, kAXChildrenAttribute" in selection
     assert "AXUIElementPerformAction(menuItem, kAXPressAction" in selection
     assert "menu item identifier not found after opening" in selection
     assert "selected_title" not in selection

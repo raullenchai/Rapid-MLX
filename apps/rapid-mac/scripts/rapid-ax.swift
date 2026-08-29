@@ -471,8 +471,15 @@ case "select-menu-item":
             return nil
         }
 
-        for window in windowElements {
-            if let found = visit(window, depth: 0) { return found }
+        // Re-read every application root after opening the menu. Depending on
+        // the AppKit/SwiftUI host version, a transient NSMenu can be exposed as
+        // a window descendant or as a separate application child; the initial
+        // window-only snapshot cannot represent both shapes.
+        guard let freshRoots = attribute(
+            application, kAXChildrenAttribute as CFString
+        ) as? [AXUIElement] else { return nil }
+        for root in freshRoots {
+            if let found = visit(root, depth: 0) { return found }
         }
         return nil
     }
