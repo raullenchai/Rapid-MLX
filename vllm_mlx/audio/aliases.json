@@ -291,15 +291,15 @@
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
     "family": "parakeet",
-    "languages": "en",
-    "notes": "Parakeet TDT 0.6B v3."
+    "languages": "25 European languages",
+    "notes": "Parakeet TDT 0.6B v3 with automatic language detection. Chinese is not supported."
   },
   "parakeet-tdt-0.6b-v3": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
     "family": "parakeet",
-    "languages": "en",
-    "notes": "Parakeet TDT 0.6B v3."
+    "languages": "25 European languages",
+    "notes": "Parakeet TDT 0.6B v3 with automatic language detection. Chinese is not supported."
   },
   "qwen3-asr": {
     "type": "stt",

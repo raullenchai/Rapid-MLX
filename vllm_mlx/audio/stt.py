@@ -4,7 +4,7 @@ Speech-to-Text (STT) engine using mlx-audio.
 
 Supports:
 - Whisper (multilingual, 99+ languages)
-- Parakeet (English-focused, fast)
+- Parakeet (v2 English; v3 supports 25 European languages, fast)
 - SenseVoice (FunAudioLLM; Chinese/Cantonese/Japanese/Korean/English, very
   fast non-autoregressive CTC — a dedicated Asian-language ASR option)
 """
@@ -764,7 +764,8 @@ class STTEngine:
         # Whisper engines the value flows through to ``model.generate``
         # so the underlying decoder emits English when translating
         # and source-language text when transcribing. Parakeet engines
-        # ignore the kwarg (English-only). This kwarg was present
+        # ignore the kwarg and always transcribe in the source language.
+        # This kwarg was present
         # pre-bundle; the comment is here so the call sites are
         # discoverable from the function definition.
         task: str = "transcribe",
@@ -797,7 +798,8 @@ class STTEngine:
             language: Language code (e.g., "en", "es"). Auto-detected if None.
             task: "transcribe" or "translate" (translate to English).
                 Forwarded to ``model.generate`` for Whisper engines;
-                ignored by Parakeet (which is English-only).
+                ignored by Parakeet (v2 is English-only; v3 transcribes its
+                supported European languages without translation).
             timestamp_granularities: OpenAI ``timestamp_granularities[]``
                 values (subset of ``{"word", "segment"}``). ``"word"``
                 requests per-word timings on Whisper engines; ignored by

@@ -337,12 +337,13 @@ stem removed. Add `--play` to audition the result without writing files.
 | `mlx-community/whisper-medium-mlx` | `whisper-medium` | 99+ | Fast | Good |
 | `mlx-community/whisper-small-mlx` | `whisper-small` | 99+ | Very Fast | OK |
 | `mlx-community/parakeet-tdt-0.6b-v2` | `parakeet` | English | Fastest | Great |
-| `mlx-community/parakeet-tdt-0.6b-v3` | `parakeet-v3` | English | Fastest | Best |
+| `mlx-community/parakeet-tdt-0.6b-v3` | `parakeet-v3` | 25 European languages | Fastest | Best |
 | `mlx-community/SenseVoiceSmall` | `sensevoice` | zh, yue, ja, ko, en | Fastest | Great (Asian) |
 
 **Recommendation:**
 - Multilingual: `whisper-large-v3`
 - English only: `parakeet` (3x faster)
+- European languages with automatic language detection: `parakeet-v3` (no Chinese)
 - Chinese / Cantonese / Japanese / Korean: `sensevoice`
 - You already have the transcript and need timings: `qwen3-aligner` (see Forced alignment below)
 
