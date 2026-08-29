@@ -510,7 +510,9 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
 
         captured: dict = {}
 
-        def _fake_render(tok, messages, *, tools, enable_thinking, model_name):
+        def _fake_render(
+            tok, messages, *, tools, enable_thinking, model_name, **kwargs
+        ):
             captured["enable_thinking"] = enable_thinking
             return "PROMPT"
 

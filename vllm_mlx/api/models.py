@@ -1631,8 +1631,8 @@ class ChatCompletionRequest(BaseModel):
     # Thinking/reasoning control (Qwen3 style).  None = server default.
     enable_thinking: bool | None = None
     # OpenAI extended spec: arbitrary kwargs forwarded to the chat template.
-    # We currently honor the ``enable_thinking`` key here; other keys are
-    # accepted (no Pydantic drop) but not yet forwarded — see
+    # ``enable_thinking`` remains the server-resolved control; other
+    # keys are passed through for model-specific template variables. See
     # ``_resolve_enable_thinking`` in service/helpers.py for precedence.
     chat_template_kwargs: dict | None = None
     # reasoning_max_tokens — caps the THINKING portion only (tokens inside

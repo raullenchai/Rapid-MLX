@@ -315,8 +315,8 @@ class ResponsesRequest(BaseModel):
     # to /v1/chat/completions.
     #
     # ``chat_template_kwargs`` is intentionally typed as a dict — the
-    # only key rapid-mlx consumes today is ``enable_thinking`` (other
-    # keys round-trip but no-op), and the chat surface uses the same
+    # only server-resolved key is ``enable_thinking`` (other
+    # keys are model-specific template variables), and the chat surface
     # unconstrained ``dict`` shape (api/models.py line 1511) so the
     # two routes share one contract.
     chat_template_kwargs: dict | None = None
