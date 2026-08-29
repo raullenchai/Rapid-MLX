@@ -2600,9 +2600,9 @@ def _install_suffix_decoding(
         # Preflight the maximum possible rollback amount before the verify
         # forward mutates anything. Composite caches are checked recursively,
         # so one side-cache cannot refuse after its sibling already trimmed.
-        from .cache_rollback import can_trim
+        from .cache_rollback import can_advance
 
-        if not all(can_trim(c, K) for c in gb.prompt_cache):
+        if not all(can_advance(c, K) for c in gb.prompt_cache):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_trimmable_cache"] += 1
             _counter.record_fallthrough("non_trimmable_cache")

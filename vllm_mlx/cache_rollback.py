@@ -68,6 +68,23 @@ def can_trim(cache: Any, n: int) -> bool:
         return False
 
 
+def can_advance(cache: Any, n: int) -> bool:
+    """Return whether a forward can append ``n + 1`` tokens and still roll back."""
+    if not can_trim(cache, n):
+        return False
+    for leaf in _leaf_caches(cache):
+        max_size = getattr(leaf, "max_size", None)
+        size = getattr(leaf, "size", None)
+        if max_size is None or not callable(size):
+            continue
+        try:
+            if int(size()) + n + 1 >= int(max_size):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def trim_all(caches: Iterable[Any], n: int) -> bool:
     """Preflight and transactionally trim every composite cache leaf."""
     if n <= 0:

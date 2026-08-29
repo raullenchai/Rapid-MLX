@@ -464,6 +464,19 @@ class TestInstallSuffixDecoding:
         with pytest.raises(RuntimeError, match="rollback violated its preflight"):
             gb._step()
 
+    def test_sliding_window_boundary_falls_through_before_verify(self, monkeypatch):
+        """A rejected verify cannot push a rotating cache past rollback safety."""
+        from mlx_lm.models.cache import BatchRotatingKVCache
+
+        _bg, gb = self._install_verify_fixture(monkeypatch, [0, 0, 0], trim_result=2)
+        cache = BatchRotatingKVCache(max_size=8, left_padding=[0])
+        cache._offset = 5
+        gb.prompt_cache = [cache]
+
+        assert gb._step() == ([], [])
+        assert cache._offset == 5
+        assert gb._suffix_stats["ft_non_trimmable_cache"] == 1
+
     def test_terminal_pending_emit_rollback_fails_closed(self, monkeypatch):
         _bg, gb = self._install_verify_fixture(
             monkeypatch,
