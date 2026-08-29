@@ -225,6 +225,7 @@ private final class ResponseReader: @unchecked Sendable {
     private let queue = DispatchQueue(label: "rapid.mlx.browse.ip-pinned")
     private let lock = NSLock()
     private var isFinished = false
+    private var activeCompletion: (@Sendable (Result<(Data, HTTPURLResponse), Error>) -> Void)?
     private var bufferedData = Data()
 
     init(connection: NWConnection, request: Data, url: URL, byteLimit: Int) {
@@ -239,6 +240,9 @@ private final class ResponseReader: @unchecked Sendable {
     ) {
         lock.lock()
         let wasCancelledBeforeStart = isFinished
+        if !wasCancelledBeforeStart {
+            activeCompletion = completion
+        }
         lock.unlock()
         if wasCancelledBeforeStart {
             completion(.failure(CancellationError()))
@@ -253,15 +257,15 @@ private final class ResponseReader: @unchecked Sendable {
                     content: self.request,
                     completion: .contentProcessed { error in
                         if let error {
-                            self.finish(.failure(error), completion: completion)
+                            self.finish(.failure(error))
                         }
                     }
                 )
-                self.receive(completion: completion)
+                self.receive()
             case .failed(let error):
-                self.finish(.failure(error), completion: completion)
+                self.finish(.failure(error))
             case .cancelled:
-                self.finish(.failure(CancellationError()), completion: completion)
+                self.finish(.failure(CancellationError()))
             default:
                 break
             }
@@ -270,31 +274,30 @@ private final class ResponseReader: @unchecked Sendable {
     }
 
     func cancel() {
-        finish(.failure(CancellationError())) { _ in }
+        finish(.failure(CancellationError()))
     }
 
     private func receive(
-        completion: @escaping @Sendable (Result<(Data, HTTPURLResponse), Error>) -> Void
     ) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let error {
-                self.finish(.failure(error), completion: completion)
+                self.finish(.failure(error))
                 return
             }
             if let data {
                 do {
                     try self.append(data)
                 } catch {
-                    self.finish(.failure(error), completion: completion)
+                    self.finish(.failure(error))
                     return
                 }
             }
             if isComplete {
-                self.finish(self.parse(), completion: completion)
+                self.finish(self.parse())
                 return
             }
-            self.receive(completion: completion)
+            self.receive()
         }
     }
 
@@ -315,7 +318,6 @@ private final class ResponseReader: @unchecked Sendable {
 
     private func finish(
         _ result: Result<(Data, HTTPURLResponse), Error>,
-        completion: @escaping @Sendable (Result<(Data, HTTPURLResponse), Error>) -> Void
     ) {
         lock.lock()
         guard !isFinished else {
@@ -323,8 +325,10 @@ private final class ResponseReader: @unchecked Sendable {
             return
         }
         isFinished = true
+        let pendingCompletion = activeCompletion
+        activeCompletion = nil
         lock.unlock()
         connection.cancel()
-        completion(result)
+        pendingCompletion?(result)
     }
 }
