@@ -196,6 +196,15 @@ class Request:
     # parser state after the prompt has explicitly closed it.
     suppressed_tokens_logits_processor: Any | None = None
 
+    # Exact standard-penalty processors installed for this request. The MTP
+    # handoff accepts a processor row only when every live object is identical
+    # to this tuple; grammar, tool, reasoning, and arbitrary custom processors
+    # therefore fail closed instead of entering speculative execution without
+    # a rollback contract. Populated by Scheduler at batch admission.
+    _mtp_safe_logits_processors: tuple[Any, ...] = field(
+        default_factory=tuple, init=False, repr=False
+    )
+
     # PFlash prompt compression state. When pflash_metadata["compressed"]
     # is True, prompt_token_ids is the compressed list and
     # original_prompt_token_ids holds the pre-compression sequence so

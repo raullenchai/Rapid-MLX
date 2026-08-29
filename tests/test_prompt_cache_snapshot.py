@@ -710,6 +710,49 @@ class TestScheduleWaitingInsertDispatch:
         assert segments == [[[10, 20, 30], [40]]]
         batch_generator.insert.assert_not_called()
 
+    def test_real_schedule_registers_standard_penalties_for_mtp_handoff(self):
+        """Admission keeps one exact penalty list for mlx-lm and MTP."""
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        request = Request(
+            request_id="req-penalty-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(
+                max_tokens=4,
+                repetition_penalty=1.1,
+                presence_penalty=0.2,
+                frequency_penalty=0.3,
+            ),
+        )
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [102]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted
+        assert tuple(admitted) == request._mtp_safe_logits_processors
+        scheduler._register_uid_processors.assert_called_once()
+        registered = scheduler._register_uid_processors.call_args.args[2]
+        assert registered == admitted
+        assert all(
+            actual is safe
+            for actual, safe in zip(
+                registered, request._mtp_safe_logits_processors, strict=True
+            )
+        )
+
     def _build_dispatch_args(
         self,
         prefix_boundary: int,

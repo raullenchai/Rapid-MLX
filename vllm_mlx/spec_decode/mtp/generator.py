@@ -208,6 +208,7 @@ def mtp_generate_step(
     kv_group_size: int = 64,
     quantized_kv_start: int = 0,
     input_embeddings: mx.array | None = None,
+    initial_tokens: list[int] | mx.array | None = None,
     temp: float = 0.0,
     top_p: float = 0.0,
     top_k: int = 0,
@@ -335,7 +336,21 @@ def mtp_generate_step(
         if _prompt_lookup_enabled:
             generated_token_ids.append(token_id)
 
-    prev_tokens: mx.array | None = None
+    # ``BatchGenerator`` has already sampled the first generated token before
+    # the MTP wrapper takes over. Stateful-by-context processors (the standard
+    # repetition / presence / frequency penalties) must therefore start from
+    # the exact token history that mlx-lm's ``TokenBuffer`` had at that seam.
+    # Copy it into the vendored generator rather than restarting processor
+    # context at the first generated token. Callers without processors keep
+    # the old allocation-free ``None`` path.
+    if logits_processors and initial_tokens is not None:
+        prev_tokens = (
+            initial_tokens.astype(mx.uint32)
+            if isinstance(initial_tokens, mx.array)
+            else mx.array(list(initial_tokens), dtype=mx.uint32)
+        )
+    else:
+        prev_tokens = None
 
     if prompt_cache is None:
         model_cache = _cache_module.make_prompt_cache(model)
@@ -615,13 +630,19 @@ def mtp_generate_step(
         draft_accept_lps: list = []
         xtc_draws: list = []
         prev_tok = main_tok
+        # Processor history for draft position j must contain the confirmed
+        # prefix plus main_tok and every earlier draft in this chain. Keeping
+        # ``prev`` fixed made d2 see ``prev + d1`` (omitting main_tok), and d3
+        # see ``prev + d2`` (omitting both), which weakens repetition/presence/
+        # frequency penalties precisely when K > 1.
+        chain_prev = prev
         cur_hidden = hidden_last
         cur_commit = cache_commit
         for _k in range(K):
             d_tok, d_lp, d_alp, d_xtc, d_hidden = _step_mtp(
                 cur_hidden,
                 prev_tok,
-                prev,
+                chain_prev,
                 cache_commit=cur_commit,
                 want_hidden=_mtp_supports_hidden and K >= 2,
             )
@@ -634,6 +655,12 @@ def mtp_generate_step(
             draft_lps.append(d_lp)
             draft_accept_lps.append(d_alp)
             xtc_draws.append(d_xtc)
+            if logits_processors:
+                chain_prev = (
+                    mx.concatenate([chain_prev, prev_tok.reshape(-1)])
+                    if chain_prev is not None
+                    else prev_tok.reshape(-1)
+                )
             prev_tok = d_tok
             # Drafter-hidden cascade: swap in the drafter's own
             # ``post_projection(h)`` for the next iteration's hidden
@@ -925,7 +952,6 @@ def mtp_generate_step(
             # -------------------------------------------------------
             k_len = len(pending_drafts)
             draft_toks_arr = [rec[0] for rec in pending_drafts]
-            draft_lps_arr = [rec[1] for rec in pending_drafts]
             draft_alps_arr = [rec[2] for rec in pending_drafts]
             first_xtc_draw = pending_drafts[0][3]
 
@@ -950,14 +976,12 @@ def mtp_generate_step(
                 xtc_draw=first_xtc_draw,
             )
 
-            # One shared uniform for all positions' probabilistic
-            # accept tests. Ollama uses a per-position Bernoulli draw;
-            # at greedy temp=0 the draw is ignored (accept iff argmax
-            # match), so this only matters for temp>0 where the same
-            # ``u`` biases all positions the same way — closer to
-            # Ollama's per-position draw than reusing the sampler
-            # chain's XTC cell would be.
-            u = mx.random.uniform()
+            # One independent uniform per speculative position. Reusing one
+            # scalar across K positions preserves each isolated acceptance
+            # probability but correlates the sequential accept decisions,
+            # changing the joint token distribution for K>1. Independent
+            # Bernoulli draws are required by rejection sampling.
+            u = mx.random.uniform(shape=(k_len,))
             drafts_i32 = drafts_arr.astype(mx.int32)
 
             # --------------------------------------------------------
@@ -975,7 +999,7 @@ def mtp_generate_step(
                 bonus_tok_arr = toks[k_len]
             else:
                 # Vectorized per-position log-accept over the K draft
-                # positions with a shared draw ``u``.
+                # positions with one independent draw per position.
                 v_alps = accept_lps[:k_len]  # (K, V)
                 idx = drafts_i32.reshape(-1, 1)  # (K, 1)
                 v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
@@ -1088,14 +1112,14 @@ def mtp_generate_step(
             for i in range(accepted_count):
                 accept_counter.record_accept(tokens_saved=1)
                 ntoks += 1
-                draft_lp = draft_lps_arr[i]
-                # The fused greedy drafter intentionally never builds a
-                # full-vocabulary draft logprob row.  The accepted token is
-                # also the target argmax, so its target row is the correct
-                # serving logprob surface and is already available here.
                 draft_id = int(draft_ids[i])
                 _remember_generated(draft_id)
-                yield draft_id, lps[i] if draft_lp is None else draft_lp, True
+                # Serving logprobs always describe the target model, even when
+                # the emitted token originated as a draft.  Returning the
+                # drafter row here leaks q(token) to API clients instead of the
+                # verified target p(token); the distributions legitimately
+                # differ on a probabilistically accepted proposal.
+                yield draft_id, lps[i], True
                 if ntoks >= max_tokens:
                     return
 
@@ -1146,6 +1170,11 @@ def mtp_generate_step(
 
                 ntoks += 1
                 _remember_generated(verify_tok_id)
+                # ``lps[position]`` is the full target-model logprob row, not
+                # a scalar attached to the independently pre-sampled
+                # ``toks[position]``.  Indexing this row later with the emitted
+                # residual token therefore reports its target probability,
+                # while rejection sampling preserves the target marginal.
                 yield verify_tok_id, lps[accepted_count], False
                 if ntoks >= max_tokens:
                     return

@@ -125,6 +125,7 @@ class TestRequest:
         assert req.num_computed_tokens == 0
         assert req.output_token_ids == []
         assert req.output_text == ""
+        assert req._mtp_safe_logits_processors == ()
 
     def test_arrival_time_set(self):
         before = time.time()

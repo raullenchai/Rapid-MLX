@@ -742,6 +742,7 @@ def _install_mtp_vendored(
     model: Any,
     requests: dict[str, Any] | None = None,
     uid_to_request_id: dict[int, str] | None = None,
+    uid_to_request_processors: dict[int, list] | None = None,
     max_k: int = 3,
     disable_auto_k: bool = False,
     controller_key: str | None = None,
@@ -777,15 +778,16 @@ def _install_mtp_vendored(
       batch=1-only (``mtp_forward`` raises on B>1) and the vendored
       generator maintains its own per-request state.
 
-    * Greedy sampling only (temperature == 0). Non-greedy falls through
-      to ``_orig_step`` — the byte-lossless verify contract lives in the
-      generator's residual-distribution sampling on reject, which the
-      MVP does not exercise. Non-greedy support is a follow-up.
+    * Request-local temperature / top-p / top-k / min-p are passed through to
+      the generator's target-distribution verifier. Seeded requests still fall
+      through because the vendored generator does not yet accept a request-
+      local PRNG key.
 
-    * No logits processors. If any position of ``gb.logits_processors``
-      is truthy we fall through — the generator has its own logits-
-      processor plumbing but wiring the mlx-lm per-uid processor list
-      through to the generator is out of MVP scope.
+    * The standard repetition / presence / frequency penalty processors are
+      passed through with the exact mlx-lm token history at the handoff seam.
+      Custom, grammar, tool, and reasoning-budget processors still fall
+      through because their mutable state needs an explicit speculative
+      rollback contract.
 
     * On the very first ``_step`` call we short-circuit and return the
       token that mlx-lm's fresh ``GenerationBatch.__init__._step()``
@@ -918,6 +920,7 @@ def _install_mtp_vendored(
     # uid can log both "B>1" and "non-greedy" if it hits both, but
     # each reason surfaces at most once per uid lifetime.
     _handoff_logged: set[tuple[int, str]] = set()
+    _initial_skip_logged: set[tuple[int, str]] = set()
 
     def _log_mtp_mid_stream_handoff_once(uid: int, reason: str, detail: str) -> None:
         """Emit a WARN log for a mid-stream MTP → plain-decode handoff,
@@ -954,6 +957,18 @@ def _install_mtp_vendored(
             detail,
         )
 
+    def _log_mtp_initial_skip_once(uid: int, reason: str) -> None:
+        """Surface a request that never entered MTP without log spam."""
+        key = (uid, reason)
+        if key in _initial_skip_logged:
+            return
+        _initial_skip_logged.add(key)
+        logger.info(
+            "[MTP-vendored] uid=%s remains on plain decode: %s.",
+            uid,
+            reason,
+        )
+
     def _cleanup_uid(uid: int) -> None:
         # Codex round-G BLOCKING #1: DO NOT clear _disabled_uids here.
         # This helper runs on every fallthrough branch (B>1, non-greedy,
@@ -984,45 +999,98 @@ def _install_mtp_vendored(
             except Exception:  # noqa: BLE001
                 pass
 
-    def _is_greedy_for_uid(uid: int) -> bool:
-        """Return True when the request behind ``uid`` sampled at temp=0.
+    def _sampling_options_for_uid(uid: int) -> tuple[dict[str, Any] | None, str]:
+        """Resolve the request-local MTP sampling contract, fail closed.
 
-        Matches the greedy contract that
-        ``vllm_mlx/spec_decode/mtp/generator.py::mtp_generate_step``
-        implements with ``temp=0.0``. Under temp>0, the vendored
-        generator can still preserve the lossless marginal via its
-        residual-distribution sample on reject — but the MVP install
-        hard-codes ``temp=0.0`` into the generator constructor, so any
-        request with temperature>0 would silently receive a
-        different sampled marginal.
-
-        Codex round-A blocker #1: fail closed on unresolvable metadata.
-        Prior revision returned ``True`` when ``uid_to_request_id`` or
-        ``requests`` were ``None`` (or the request lookup failed) —
-        that would silently apply greedy sampling to a temp>0 request
-        whose bookkeeping had just been evicted. Return ``False`` here
-        so the caller falls through to ``_orig_step()`` (which reads
-        the real sampler from ``gb.samplers[0]``) instead of applying
-        the MTP-hardcoded greedy path.
-
-        Codex round-B blocker: also fail closed when ``temperature is
-        None``. ``vllm_mlx.request.SamplingParams`` defaults
-        ``temperature=0.7`` (not zero) and ``None`` is not a normal
-        value — it typically signals "use the server / OpenAI-route
-        default," which is likewise nonzero. Treating a bare ``None``
-        as greedy would silently apply the MTP-hardcoded ``temp=0.0``
-        marginal to a request the operator meant to sample stochast-
-        ically. Only an EXPLICIT ``0.0`` passes the gate; every other
-        shape falls through to plain decode.
+        The scheduler owns the authoritative ``SamplingParams`` object and the
+        exact per-row processor list installed into mlx-lm. Only processors
+        explicitly marked as the standard penalty list at request insertion
+        may cross this seam; identity comparison prevents a future custom
+        processor with the same list length from being mistaken for a safe
+        one.
         """
         if uid_to_request_id is None or requests is None:
-            return False
+            return None, "request metadata is unavailable"
         req_id = uid_to_request_id.get(uid)
         req = requests.get(req_id) if req_id else None
-        if req is None or getattr(req, "sampling_params", None) is None:
-            return False
-        temp = getattr(req.sampling_params, "temperature", None)
-        return temp == 0.0
+        sp = getattr(req, "sampling_params", None) if req is not None else None
+        if sp is None:
+            return None, "sampling parameters are unavailable"
+
+        temp = getattr(sp, "temperature", None)
+        if temp is None:
+            return None, "temperature is unresolved"
+        if getattr(sp, "seed", None) is not None:
+            return None, "request-local seeded RNG is not yet supported"
+
+        # The scheduler's uid-keyed map is the processor source of truth. At
+        # the PromptProcessingBatch -> persistent GenerationBatch transition,
+        # mlx-lm can expose the live uid before its positional processor row is
+        # populated. Reading only ``gb.logits_processors[0]`` at that seam made
+        # Desktop's standard repetition penalty look like a custom-processor
+        # mismatch and permanently parked the request on plain decode (#2654).
+        #
+        # Keep the positional fallback for standalone/benchmark callers that
+        # do not own scheduler admission state. Production always passes the
+        # uid map; custom, grammar, tool, and reasoning processors remain in
+        # that authoritative list and therefore still fail closed below.
+        row_processors: list[Any] = []
+        if uid_to_request_processors is not None:
+            row_processors = list(uid_to_request_processors.get(uid, ()))
+        else:
+            all_processors = getattr(gb, "logits_processors", None)
+            if all_processors:
+                row = all_processors[0]
+                if row:
+                    row_processors = list(row)
+        safe_processors = list(getattr(req, "_mtp_safe_logits_processors", ()))
+        identities_match = len(row_processors) == len(safe_processors) and all(
+            actual is safe
+            for actual, safe in zip(row_processors, safe_processors, strict=True)
+        )
+        if not identities_match:
+            active_types = ",".join(
+                type(processor).__name__ for processor in row_processors
+            )
+            safe_types = ",".join(
+                type(processor).__name__ for processor in safe_processors
+            )
+            return None, (
+                "custom or stateful logits processor is active "
+                f"(active={len(row_processors)} [{active_types or '-'}], "
+                f"safe={len(safe_processors)} [{safe_types or '-'}])"
+            )
+
+        try:
+            fingerprint = (
+                float(temp),
+                float(getattr(sp, "top_p", 0.9)),
+                int(getattr(sp, "top_k", 0)),
+                float(getattr(sp, "min_p", 0.0)),
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None, "sampling parameters are invalid"
+        if not all(math.isfinite(value) for value in fingerprint):
+            return None, "sampling parameters are invalid"
+
+        initial_tokens: list[int] | None = None
+        if row_processors:
+            try:
+                initial_tokens = list(gb.tokens[0])
+            except (IndexError, TypeError):
+                return None, "processor token history is unavailable"
+        return (
+            {
+                "temp": fingerprint[0],
+                "top_p": fingerprint[1],
+                "top_k": fingerprint[2],
+                "min_p": fingerprint[3],
+                "logits_processors": row_processors or None,
+                "initial_tokens": initial_tokens,
+                "fingerprint": fingerprint,
+            },
+            "",
+        )
 
     def _mtp_step():
         """Wrapped ``GenerationBatch._step`` for MTP speculative decoding.
@@ -1223,9 +1291,13 @@ def _install_mtp_vendored(
                 _stats["ft_disabled"] += 1
                 return _orig_step()
 
-        if not _is_greedy_for_uid(uid):
+        sampling_options, sampling_skip_reason = _sampling_options_for_uid(uid)
+        if sampling_options is None:
             _stats["fallthrough_steps"] += 1
-            _stats["ft_non_greedy"] += 1
+            if "processor" in sampling_skip_reason:
+                _stats["ft_logits_processors"] += 1
+            else:
+                _stats["ft_non_greedy"] += 1
             # Codex round-L BLOCKING #3: prior round-H revision raised
             # ``RuntimeError`` here when sampling switched to non-
             # greedy after MTP had already emitted. That killed the
@@ -1241,41 +1313,31 @@ def _install_mtp_vendored(
                 _stats["ft_mid_stream_handoff"] += 1
                 _log_mtp_mid_stream_handoff_once(
                     uid,
-                    "non_greedy",
-                    "sampling switched to temperature > 0 mid-stream",
+                    "sampling_unsupported",
+                    sampling_skip_reason,
                 )
                 _record_terminal_disable(uid)
             else:
-                _mark_disabled(uid)
-            return _orig_step()
-
-        _lp = getattr(gb, "logits_processors", None)
-        if _lp and any(p for p in _lp if p):
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_logits_processors"] += 1
-            # Codex round-L BLOCKING #4: prior round-H revision raised
-            # ``RuntimeError`` here when a logits processor was added
-            # mid-stream after MTP had already emitted. That killed
-            # the request whenever an operator toggled a per-request
-            # processor (e.g., a guided-decoding grammar) after the
-            # first tokens streamed.
-            #
-            # Round-L fix: hand off to ``_orig_step`` regardless of
-            # state. Same handoff pattern as B>1 and non-greedy: log
-            # once per uid, mark disabled, delegate.
-            if uid in _state:
-                _stats["ft_mid_stream_handoff"] += 1
-                _log_mtp_mid_stream_handoff_once(
-                    uid,
-                    "logits_processor",
-                    "logits processor appeared mid-stream",
-                )
-                _record_terminal_disable(uid)
-            else:
+                _log_mtp_initial_skip_once(uid, sampling_skip_reason)
                 _mark_disabled(uid)
             return _orig_step()
 
         state = _state.get(uid)
+
+        if (
+            state is not None
+            and state.get("sampling_fingerprint") != sampling_options["fingerprint"]
+        ):
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_non_greedy"] += 1
+            _stats["ft_mid_stream_handoff"] += 1
+            _log_mtp_mid_stream_handoff_once(
+                uid,
+                "sampling_changed",
+                "request sampling parameters changed after MTP started",
+            )
+            _record_terminal_disable(uid)
+            return _orig_step()
 
         # Codex round-K BLOCKING #1: uid reuse detection for the
         # ACTIVE (non-disabled) state map. mlx-lm reuses uid ints
@@ -1370,7 +1432,12 @@ def _install_mtp_vendored(
                     model=mtp_model,
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
-                    temp=0.0,
+                    temp=sampling_options["temp"],
+                    top_p=sampling_options["top_p"],
+                    top_k=sampling_options["top_k"],
+                    min_p=sampling_options["min_p"],
+                    logits_processors=sampling_options["logits_processors"],
+                    initial_tokens=sampling_options["initial_tokens"],
                     # 0.9.13 PR-B: EV depth controller.
                     # Fallback key derived from the model's SHAPE, not
                     # its address. ``SchedulerConfig`` carries no model
@@ -1439,6 +1506,7 @@ def _install_mtp_vendored(
                 "queue": [],
                 "primed": True,
                 "request_id": _first_call_req_id,
+                "sampling_fingerprint": sampling_options["fingerprint"],
             }
             _stats["vendored_steps"] += 1
             # Codex round-I BLOCKING #2 / round-J BLOCKING #2+#3:
@@ -1577,8 +1645,8 @@ def _install_mtp_vendored(
 
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
-        "(single-request greedy adaptive chain-of-K; falls through on B>1 / "
-        "non-greedy / logits-processors)."
+        "(single-request adaptive chain-of-K with request-local sampling; "
+        "falls through on B>1 / seeded sampling / custom logits-processors)."
     )
     return True
 
@@ -3792,6 +3860,7 @@ class Scheduler:
                     model=self.model,
                     requests=self.requests,
                     uid_to_request_id=self.uid_to_request_id,
+                    uid_to_request_processors=self.uid_to_request_processors,
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
@@ -6894,30 +6963,30 @@ class Scheduler:
             # extension (not OpenAI-spec) and is documented as multiplicative
             # over a rolling window.
             sp = request.sampling_params
+            penalty_processors: list[Any] = []
             if (
                 sp.repetition_penalty != 1.0
                 or sp.presence_penalty != 0.0
                 or sp.frequency_penalty != 0.0
             ):
-                request_processors.extend(
-                    make_logits_processors(
-                        repetition_penalty=(
-                            sp.repetition_penalty
-                            if sp.repetition_penalty != 1.0
-                            else None
-                        ),
-                        presence_penalty=(
-                            sp.presence_penalty if sp.presence_penalty != 0.0 else None
-                        ),
-                        presence_context_size=4096,
-                        frequency_penalty=(
-                            sp.frequency_penalty
-                            if sp.frequency_penalty != 0.0
-                            else None
-                        ),
-                        frequency_context_size=4096,
-                    )
+                penalty_processors = make_logits_processors(
+                    repetition_penalty=(
+                        sp.repetition_penalty if sp.repetition_penalty != 1.0 else None
+                    ),
+                    presence_penalty=(
+                        sp.presence_penalty if sp.presence_penalty != 0.0 else None
+                    ),
+                    presence_context_size=4096,
+                    frequency_penalty=(
+                        sp.frequency_penalty if sp.frequency_penalty != 0.0 else None
+                    ),
+                    frequency_context_size=4096,
                 )
+                request_processors.extend(penalty_processors)
+            # MTP may reuse only this exact standard-penalty list. Identity
+            # (not processor count or type-name heuristics) is the fail-closed
+            # contract at the GenerationBatch handoff.
+            request._mtp_safe_logits_processors = tuple(penalty_processors)
             # Generation-time thinking-token budget (force-close </think>).
             # Appended LAST so its force-close mask (all but </think> -> -inf)
             # has final say over any penalty/grammar bias in the same step;

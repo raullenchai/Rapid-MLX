@@ -2463,6 +2463,192 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.tokens_saved == 1
 
 
+def test_generator_sampled_verify_accepts_matching_draft():
+    """The probabilistic verifier is active when temperature is non-zero."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    counter = MTPAcceptCounter()
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, 11, 13], [11]),
+            max_tokens=3,
+            temp=0.7,
+            top_p=0.95,
+            disable_auto_k=True,
+            accept_counter=counter,
+        )
+    )
+
+    # The scripted logits put effectively all mass on these tokens, while the
+    # non-zero temperature forces the probabilistic accept/residual branch.
+    assert [(token, drafted) for token, _lp, drafted in emitted] == [
+        (7, False),
+        (11, True),
+        (13, False),
+    ]
+    assert counter.snapshot().accepts == 1
+
+
+def test_generator_accepted_draft_reports_target_logprobs(monkeypatch):
+    """An accepted proposal exposes p_target, never the drafter's q row."""
+    import mlx_lm.sample_utils as sample_utils
+
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class _DistinctDistributionsModel(_MockedQwen35Model):
+        def _rows(self, target_ids, batch, boost):
+            rows = []
+            for token_id in target_ids:
+                row = mx.zeros((batch, self.vocab))
+                row = row + mx.where(
+                    mx.arange(self.vocab)[None, :] == token_id,
+                    mx.array(boost),
+                    mx.array(0.0),
+                )
+                rows.append(row)
+            return mx.stack(rows, axis=1)
+
+        def _logits_for_positions(self, target_ids, batch):
+            # Target p: deliberately soft so it differs materially from q.
+            return self._rows(target_ids, batch, 1.0)
+
+        def mtp_forward(self, hidden, next_token_ids, mtp_cache):
+            batch, positions = next_token_ids.shape
+            targets = []
+            for _ in range(positions):
+                if self._mtp_cursor < len(self._mtp):
+                    targets.append(self._mtp[self._mtp_cursor])
+                    self._mtp_cursor += 1
+                else:
+                    targets.append(0)
+            # Drafter q: a much sharper distribution around the same proposal.
+            return self._rows(targets, batch, 8.0)
+
+    monkeypatch.setattr(
+        sample_utils,
+        "categorical_sampling",
+        lambda logits, temp: mx.argmax(logits, axis=-1),
+    )
+    monkeypatch.setattr(
+        generator_mod.mx.random,
+        "uniform",
+        lambda *args, **kwargs: mx.zeros(kwargs.get("shape", ())),
+    )
+
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _DistinctDistributionsModel([7, 11, 13], [11]),
+            max_tokens=3,
+            temp=0.7,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+
+    accepted_id, served_logprobs, from_draft = emitted[1]
+    assert (accepted_id, from_draft) == (11, True)
+    target_logits = mx.where(mx.arange(32) == 11, mx.array(1.0), mx.array(0.0))
+    target_logprobs = target_logits - mx.logsumexp(target_logits)
+    draft_logits = mx.where(mx.arange(32) == 11, mx.array(8.0), mx.array(0.0))
+    draft_logprobs = draft_logits - mx.logsumexp(draft_logits)
+    assert mx.allclose(served_logprobs, target_logprobs)
+    assert not mx.allclose(served_logprobs, draft_logprobs)
+
+
+def test_generator_sampled_k3_draws_acceptance_independently_per_position(
+    monkeypatch,
+):
+    """K>1 rejection sampling must not correlate acceptance decisions."""
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    real_uniform = generator_mod.mx.random.uniform
+    shapes: list[tuple[int, ...] | None] = []
+
+    def recording_uniform(*args, **kwargs):
+        shapes.append(kwargs.get("shape"))
+        return real_uniform(*args, **kwargs)
+
+    monkeypatch.setattr(generator_mod.mx.random, "uniform", recording_uniform)
+    list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, 11, 12, 13, 14], [11, 12, 13]),
+            max_tokens=4,
+            max_k=3,
+            temp=0.7,
+            top_p=0.95,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+
+    assert (3,) in shapes
+
+
+def test_generator_penalty_processor_continues_existing_token_context():
+    """The first MTP target sample sees the same history as mlx-lm."""
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    observed: list[list[int]] = []
+
+    def recorder(tokens, logits):
+        observed.append(tokens.tolist())
+        return logits
+
+    list(
+        mtp_generate_step(
+            mx.array([7], dtype=mx.uint32),
+            _MockedQwen35Model([11], []),
+            max_tokens=1,
+            logits_processors=[recorder],
+            initial_tokens=[3, 5],
+            disable_auto_k=True,
+        )
+    )
+
+    assert observed == [[3, 5, 7]]
+
+
+def test_generator_penalty_processor_carries_full_k3_draft_history():
+    """Each chained draft sees main_tok plus every preceding proposal."""
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    observed: list[list[int]] = []
+
+    def recorder(tokens, logits):
+        observed.append(tokens.tolist())
+        return logits
+
+    list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, 11, 12, 13, 14], [11, 12, 13]),
+            max_tokens=4,
+            max_k=3,
+            logits_processors=[recorder],
+            initial_tokens=[3, 5],
+            disable_auto_k=True,
+        )
+    )
+
+    # Cold-start target sample, then the three sequential MTP draft samples.
+    # Later entries are the batched target verification pass and are not part
+    # of the chain-local-history assertion.
+    assert observed[:4] == [
+        [3, 5, 1],
+        [3, 5, 1, 7],
+        [3, 5, 1, 7, 11],
+        [3, 5, 1, 7, 11, 12],
+    ]
+
+
 def test_prompt_lookup_point_mass_residual_removes_proposed_token():
     from vllm_mlx.spec_decode.mtp.generator import (
         _point_mass_residual_distribution,
