@@ -293,6 +293,32 @@ def test_fix3_cli_helper_forwards_legacy_mtp_as_requested_spec_decode(monkeypatc
     assert seen["requested_spec_decode"] == "auto"
 
 
+def test_cli_explicit_mllm_precedes_automatic_architecture_fallback(monkeypatch):
+    """The public serve helper carries ``--mllm`` into the lane SSOT."""
+    from vllm_mlx import cli
+
+    monkeypatch.setattr(utils_mod, "is_mllm_model", lambda _name: True)
+    monkeypatch.setattr(
+        utils_mod,
+        "mllm_arch_unsupported_but_text_vendored",
+        lambda _name: True,
+    )
+
+    assert (
+        cli._serve_will_run_on_mllm_lane(
+            SimpleNamespace(
+                model="/local/unsupported-vision-checkpoint",
+                mllm=True,
+                no_mllm=False,
+                spec_decode="none",
+                enable_mtp=False,
+                force_spec_decode=False,
+            )
+        )
+        is True
+    )
+
+
 @pytest.mark.parametrize(
     ("flag", "expected"),
     [("--enable-mtp", "mtp"), ("--force-spec-decode", "auto")],
