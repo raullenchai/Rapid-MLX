@@ -1911,6 +1911,9 @@ final class ChatViewModel {
                 || !userMessage.imageAttachments.isEmpty
                 || !userMessage.fileAttachments.isEmpty else { return }
 
+        // Regenerate and Retry are user-owned turns. Stop any optional work
+        // about the answer they are replacing before the path is rewound.
+        cancelInflightWork()
         rewindPath(to: userIndex + 1)
         beginAssistantTurn(
             alias: alias,
@@ -2047,6 +2050,10 @@ final class ChatViewModel {
         let target = group[offset]
         guard target.id != anchor.id else { return false }
 
+        // Suggestions and a pending generated title describe the branch the
+        // user is leaving. Cancel them before adopting another visible path,
+        // otherwise switching back could resurrect an old rail.
+        cancelInflightWork()
         // From here on the operation MUTATES: leave the snapshot (its node
         // values may be stale — see ``TreeSnapshot``) and work on the live
         // buffers, which always carry the finished content.
@@ -2137,6 +2144,7 @@ final class ChatViewModel {
         // and persisted, so it must carry the finished content of every row.
         let tree = liveTree()
         guard tree.contains(where: { $0.id == id }) else { return false }
+        cancelInflightWork()
         let doomed = MessageTree.subtree(of: id, in: tree)
         let remaining = tree.filter { !doomed.contains($0.id) }
         guard !remaining.isEmpty else {
@@ -2170,6 +2178,9 @@ final class ChatViewModel {
         guard !isStreaming else { return }
         let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // The user's regeneration intent supersedes optional work even when
+        // bringing up the replacement model takes time or ultimately fails.
+        cancelInflightWork()
         if let server {
             let ok = await server.ensureServing(
                 alias: trimmed,

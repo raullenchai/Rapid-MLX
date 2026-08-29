@@ -436,7 +436,7 @@ struct BackgroundAssistGatingTests {
     /// the rail away and three did not — which a single-route test cannot
     /// see.
     @Test("Cancelling puts the rail away", arguments: [
-        "stop", "stopAndPersist", "newConversation",
+        "stop", "stopAndPersist", "newConversation", "delete",
     ])
     func cancellingClearsTheRail(_ route: String) {
         let model = ChatViewModel()
@@ -451,7 +451,8 @@ struct BackgroundAssistGatingTests {
         switch route {
         case "stop": model.stop()
         case "stopAndPersist": model.stopAndPersist()
-        default: model.newConversation()
+        case "newConversation": model.newConversation()
+        default: #expect(model.deleteMessage(id: last.id))
         }
 
         #expect(model.followUp == .idle, "\(route) left the rail showing")
@@ -480,6 +481,30 @@ struct BackgroundAssistGatingTests {
 
         // The matching assist still tears down its own rail.
         model.clearFollowUps(anchoredTo: currentAnswer.id)
+        #expect(model.followUp == .idle)
+        #expect(model.followUpAnchorID == nil)
+    }
+
+    @Test("Replay cancels suggestions for the replaced answer", arguments: [
+        "regenerate", "retry",
+    ])
+    func replayCancelsReplacedSuggestions(_ route: String) {
+        let model = ChatViewModel(persistsConversations: false)
+        let last = answer()
+        model.devSeedMessages([ask, last])
+        model.publishFollowUps(
+            "Old one?\nOld two?\nOld three?",
+            anchoredTo: last.id,
+            excluding: ""
+        )
+
+        if route == "regenerate" {
+            model.regenerateLast(alias: "test-model")
+        } else {
+            #expect(model.retryAssistantMessage(id: last.id, alias: "test-model"))
+        }
+        defer { model.stopAndPersist() }
+
         #expect(model.followUp == .idle)
         #expect(model.followUpAnchorID == nil)
     }
