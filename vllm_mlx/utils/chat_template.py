@@ -1230,6 +1230,7 @@ def apply_chat_template(
     enable_thinking: bool | None = None,
     model_name: str = "",
     add_generation_prompt: bool = True,
+    chat_template_kwargs: dict | None = None,
 ) -> str:
     """Apply a chat template to messages with consistent fallback behavior.
 
@@ -1373,6 +1374,20 @@ def apply_chat_template(
     if tools:
         template_kwargs["tools"] = tools
 
+    # Pass through client-supplied ``chat_template_kwargs`` keys (e.g.
+    # ``reasoning_effort`` for Qwen3.8) into the template render. Server-
+    # controlled keys (``tokenize``, ``add_generation_prompt``,
+    # ``enable_thinking``, ``tools``) are never overridden — the resolved
+    # values above take precedence. Unknown keys may raise ``TypeError``
+    # on templates that do not accept them; the error-driven fallback
+    # below (and the ``reasoning_effort`` pop in the second retry) handles
+    # that exactly as it does today.
+    for key, value in (chat_template_kwargs or {}).items():
+        if key in ("tokenize", "add_generation_prompt", "enable_thinking", "tools"):
+            continue
+        if key not in template_kwargs:
+            template_kwargs[key] = value
+
     # GPT-OSS / Harmony-style templates do not expose an on/off
     # ``enable_thinking`` switch; they expose ``reasoning_effort`` and default
     # it to ``medium``. When a route already resolved ``enable_thinking=False``
@@ -1397,16 +1412,9 @@ def apply_chat_template(
     #     match via `_HY3_MODEL_NAME_RE` — not a loose substring)
     #   * ``enable_thinking`` is not False (a client that explicitly
     #     disabled thinking wants no_think — respect that intent)
-    # NOTE (codex R12 NIT): there is presently NO request-side
-    # ``reasoning_effort`` plumb-through — the value is template-only, and this
-    # override is the sole injection point. ``setdefault`` (not direct
-    # assignment) is deliberate future-proofing: IF a later revision plumbs a
-    # graded effort (``medium`` / ``high``) through and pre-populates
-    # ``template_kwargs["reasoning_effort"]`` upstream of this call, the
-    # explicit value survives instead of being silently overwritten. Until that
-    # plumb-through exists, ``setdefault`` behaves identically to assignment
-    # here (the key is never pre-populated). Non-Hy3 models never see the kwarg,
-    # so no risk of TypeError on other templates.
+    # ``setdefault`` (not direct assignment) preserves a client-supplied
+    # ``chat_template_kwargs.reasoning_effort`` (plumbed in above) so an
+    # explicit request wins over the Hy3 ``low`` default.
     if _looks_like_hy3(model_name) and enable_thinking is not False:
         template_kwargs.setdefault("reasoning_effort", "low")
 

@@ -453,6 +453,7 @@ class BaseEngine(ABC):
         tools: list[dict] | None = None,
         enable_thinking: bool | None = None,
         add_generation_prompt: bool = True,
+        chat_template_kwargs: dict | None = None,
     ) -> str:
         """Render the chat prompt for ``messages`` + ``tools`` without
         starting generation.
