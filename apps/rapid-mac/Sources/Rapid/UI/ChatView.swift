@@ -470,6 +470,21 @@ struct ChatView: View {
                     .id(message.id)
                 }
             }
+            // A sibling of the ForEach, not a row inside it: that is what
+            // makes "under the last answer" true without MessageRow needing
+            // any notion of which row is last. The anchor check is what makes
+            // it the last *assistant* answer — a new user turn appends a row,
+            // the anchor stops matching, and the rail goes.
+            if let anchor = viewModel.followUpAnchorID, anchor == messages.last?.id {
+                FollowUpSuggestionRail(
+                    state: viewModel.followUp,
+                    isEnabled: readiness.sendAllowed,
+                    disabledTooltip: readiness.sendTooltip,
+                    onSelect: sendSuggestion
+                )
+                .frame(maxWidth: contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
             Color.clear
                 .frame(height: 1)
         }
@@ -908,6 +923,25 @@ struct ChatView: View {
             imageAttachments: submission.images,
             fileAttachments: submission.files
         )
+    }
+
+    /// Send a suggestion chip's question.
+    ///
+    /// A sibling of ``send()`` rather than a generalisation of it. The chip
+    /// sends its own text and leaves the composer alone — quietly consuming a
+    /// staged image or a half-typed draft would make one tap do two things,
+    /// and the reader did not ask for the second.
+    ///
+    /// Routed through ``acknowledgeIfNotReady()`` because that is the rule for
+    /// this surface: ``ChatViewModel/send(_:alias:supportsImageInput:imageAttachments:fileAttachments:)``
+    /// carries no readiness gate of its own, so anything that re-enters it
+    /// from the view has to answer to the gate here — the same reason
+    /// ``MessageRow``'s Edit and Retry callbacks do.
+    private func sendSuggestion(_ text: String) {
+        guard !viewModel.isStreaming, !attachmentDraft.isImportingFiles else { return }
+        guard acknowledgeIfNotReady() else { return }
+        composeFocusToken &+= 1
+        viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
     }
 
     private var attachmentStrip: some View {

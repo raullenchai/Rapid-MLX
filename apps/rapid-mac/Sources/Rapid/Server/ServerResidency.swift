@@ -241,6 +241,26 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         }
         return model.displayName(preferredAlias: fallback)
     }
+
+    /// The engine's own modality for whatever is serving `alias`, or nil when
+    /// this snapshot has never heard of it — an old sidecar that reports no
+    /// residency, or the window before the first poll lands.
+    ///
+    /// This is the authoritative lane signal. ``ModelBrandStyle/modelType(forAlias:)``
+    /// is a second, name-based guess that already decides whether image parts
+    /// go on the wire, but it classifies whole families (`qwen3.5-`, `gemma3-`)
+    /// as vision — accurate enough for "might accept an image", far too broad
+    /// for "is this the serialised one-at-a-time lane".
+    func modality(for alias: String) -> String? {
+        models.first { $0.matches(alias) && $0.state != "evicting" }?.modality
+    }
+
+    /// Requests the engine currently has in flight on `alias`. On the
+    /// serialised `--mllm` lane a non-zero value means anything we send now
+    /// queues behind real work.
+    func activeRequests(for alias: String) -> Int? {
+        models.first { $0.matches(alias) && $0.state != "evicting" }?.activeRequests
+    }
 }
 
 /// User-visible risk carried by an alias-replacing model activation.
