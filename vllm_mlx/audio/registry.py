@@ -40,6 +40,7 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 AudioType = Literal["tts", "stt"]
+AudioRuntimeRequirementKind = Literal["spacy_pipeline"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,19 @@ class AudioRuntimeAsset:
 
     repo_id: str
     allow_patterns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AudioRuntimeRequirement:
+    """One typed environment requirement prepared by ``rapid-mlx pull``.
+
+    The catalog stores data, not commands.  A closed ``kind`` set keeps the
+    preparation surface auditable and prevents model metadata from becoming an
+    arbitrary package-install hook.
+    """
+
+    kind: AudioRuntimeRequirementKind
+    name: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +112,7 @@ _REGISTRY: dict[str, AudioAliasEntry] | None = None
 # ids the same way it answers for short aliases.
 _HF_ID_INDEX: dict[str, str] = {}
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
+_RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -180,6 +195,50 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
             parsed.append(AudioRuntimeAsset(repo_id, tuple(patterns)))
         runtime_assets[family] = tuple(parsed)
 
+    runtime_requirements: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
+    raw_runtime_requirements = raw.get("_runtime_requirements", {})
+    if not isinstance(raw_runtime_requirements, dict):
+        raise ValueError("audio aliases.json: _runtime_requirements must be an object")
+    for family, requirements in raw_runtime_requirements.items():
+        if not isinstance(family, str) or not family:
+            raise ValueError(
+                "audio aliases.json: _runtime_requirements family keys must be "
+                "non-empty strings"
+            )
+        if not isinstance(requirements, list):
+            raise ValueError(
+                f"audio aliases.json: _runtime_requirements.{family} must be an array"
+            )
+        parsed_requirements: list[AudioRuntimeRequirement] = []
+        seen_requirements: set[tuple[str, str]] = set()
+        for index, requirement in enumerate(requirements):
+            if not isinstance(requirement, dict):
+                raise ValueError(
+                    f"audio aliases.json: _runtime_requirements.{family}[{index}] "
+                    "must be an object"
+                )
+            kind = requirement.get("kind")
+            name = requirement.get("name")
+            if kind != "spacy_pipeline":
+                raise ValueError(
+                    f"audio aliases.json: _runtime_requirements.{family}[{index}]."
+                    "kind must be 'spacy_pipeline'"
+                )
+            if not isinstance(name, str) or not name.isidentifier():
+                raise ValueError(
+                    f"audio aliases.json: _runtime_requirements.{family}[{index}]."
+                    "name must be a Python package identifier"
+                )
+            key = (kind, name)
+            if key in seen_requirements:
+                raise ValueError(
+                    f"audio aliases.json: duplicate runtime requirement {kind}:{name} "
+                    f"for family {family!r}"
+                )
+            seen_requirements.add(key)
+            parsed_requirements.append(AudioRuntimeRequirement(kind=kind, name=name))
+        runtime_requirements[family] = tuple(parsed_requirements)
+
     entries: dict[str, AudioAliasEntry] = {}
     for key, value in raw.items():
         if key.startswith("_"):
@@ -220,13 +279,19 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
             notes=value.get("notes", ""),
         )
 
-    unknown_families = set(runtime_assets) - {
-        entry.family for entry in entries.values()
-    }
-    if unknown_families:
-        names = ", ".join(sorted(unknown_families))
+    known_families = {entry.family for entry in entries.values()}
+    unknown_asset_families = set(runtime_assets) - known_families
+    if unknown_asset_families:
+        names = ", ".join(sorted(unknown_asset_families))
         raise ValueError(
             f"audio aliases.json: runtime assets declared for unknown family: {names}"
+        )
+    unknown_requirement_families = set(runtime_requirements) - known_families
+    if unknown_requirement_families:
+        names = ", ".join(sorted(unknown_requirement_families))
+        raise ValueError(
+            "audio aliases.json: runtime requirements declared for unknown family: "
+            f"{names}"
         )
     # Reverse index keyed on the lowercased HF id so ``serve_command``
     # can route a request like ``rapid-mlx serve mlx-community/Kokoro-
@@ -242,6 +307,8 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
     _HF_ID_INDEX.update(hf_id_index)
     _RUNTIME_ASSETS.clear()
     _RUNTIME_ASSETS.update(runtime_assets)
+    _RUNTIME_REQUIREMENTS.clear()
+    _RUNTIME_REQUIREMENTS.update(runtime_requirements)
     _REGISTRY = entries
     return entries
 
@@ -317,6 +384,17 @@ def runtime_assets_for(name: str | None) -> tuple[AudioRuntimeAsset, ...]:
     if entry is None:
         return ()
     return _RUNTIME_ASSETS.get(entry.family, ())
+
+
+def runtime_requirements_for(
+    name: str | None,
+) -> tuple[AudioRuntimeRequirement, ...]:
+    """Return typed environment requirements declared for an audio name."""
+
+    entry = resolve_audio_alias(name)
+    if entry is None:
+        return ()
+    return _RUNTIME_REQUIREMENTS.get(entry.family, ())
 
 
 def stt_aliases() -> dict[str, str]:
