@@ -20,9 +20,35 @@ from vllm_mlx.output_collector import RequestOutputCollector  # noqa: E402
 from vllm_mlx.scheduler import BackpressureError, Scheduler  # noqa: E402
 
 
+def test_engine_rejects_unknown_serving_lane_reason():
+    with pytest.raises(ValueError, match="unknown serving_lane_reason"):
+        BatchedEngine(
+            "fake/text-checkpoint",
+            serving_lane_reason="vision_weight_unavailable",
+        )
+
+
+@pytest.mark.parametrize(
+    ("engine_kwargs", "reason"),
+    [
+        ({"force_text": True}, "vision_supported"),
+        ({"force_mllm": True}, "text_checkpoint"),
+    ],
+)
+def test_engine_rejects_reason_for_the_wrong_effective_lane(engine_kwargs, reason):
+    with pytest.raises(ValueError, match="requires is_mllm"):
+        BatchedEngine(
+            "fake/checkpoint",
+            serving_lane_reason=reason,
+            **engine_kwargs,
+        )
+
+
 @pytest.mark.asyncio
 async def test_missing_vision_weights_update_live_lane_reason(monkeypatch):
     from vllm_mlx.models import mllm as mllm_mod
+
+    monkeypatch.setattr("vllm_mlx.engine.batched.is_mllm_model", lambda _: True)
 
     class FakeTextOnlyMLLM:
         def __init__(self, model_name, trust_remote_code=True):
@@ -38,7 +64,6 @@ async def test_missing_vision_weights_update_live_lane_reason(monkeypatch):
         "fake/text-only-vision-checkpoint",
         serving_lane_reason="vision_supported",
     )
-    engine._is_mllm = True
 
     async def start_llm():
         return None

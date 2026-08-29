@@ -25,7 +25,12 @@ from dataclasses import replace
 from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
-from ..api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
+from ..api.utils import (
+    clean_output_text,
+    extract_multimodal_content,
+    is_mllm_model,
+    validate_serving_lane_reason,
+)
 from ..output_router import Channel, OutputRouter
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
@@ -877,7 +882,6 @@ class BatchedEngine(BaseEngine):
         # demand for the vision lane, so a missing vision tower must hard-fail
         # for that operator rather than silently degrade behind their back.
         self._force_mllm = force_mllm
-        self._serving_lane_reason = serving_lane_reason
         if force_text:
             # User explicitly opted out of MLLM routing. Skip the probe
             # entirely so a False from auto-detection can't be overridden
@@ -885,6 +889,12 @@ class BatchedEngine(BaseEngine):
             self._is_mllm = False
         else:
             self._is_mllm = force_mllm or is_mllm_model(model_name)
+        if serving_lane_reason is not None:
+            validate_serving_lane_reason(
+                serving_lane_reason,
+                is_mllm=self._is_mllm,
+            )
+        self._serving_lane_reason = serving_lane_reason
         self._tool_logits_processor_factory = None
 
         self._model = None

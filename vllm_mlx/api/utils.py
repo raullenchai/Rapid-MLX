@@ -1363,6 +1363,95 @@ def mllm_backbone_is_hybrid(model_name: str) -> bool:
     return mllm_backbone_cache_mode(model_name) is not None
 
 
+# Single source of truth for the machine-readable ``serving_lane_reason``
+# strings the engine emits. Every emitting site — ``resolve_serving_lane_decision``
+# below, the startup seed in ``server.py``, and the post-load rewrite in
+# ``engine/batched.py`` — must emit a value that lives in this set. Keeping it
+# here (next to the decision function) instead of inlining literals at each site
+# is what lets ``ServingLaneDecision`` fail fast on a stray or renamed reason
+# and lets the Desktop copy contract test enumerate the values authoritatively.
+SERVING_LANE_REASONS = frozenset(
+    {
+        # resolve_serving_lane_decision — text lane
+        "text_lane_forced",
+        "text_checkpoint",
+        "text_lane_speculative_decode",
+        # resolve_serving_lane_decision — vision lane
+        "vision_lane_forced",
+        "vision_architecture_unavailable",
+        "vision_hybrid_cache_unsupported",
+        "vision_hybrid_runtime_supported",
+        "vision_hybrid_runtime_unsupported",
+        "vision_memory_insufficient",
+        "vision_supported",
+        # engine/batched.py — post-load rewrite after a failed vision load
+        "vision_weights_unavailable",
+        # server.py — startup seed for modalities with no vision lane
+        "not_applicable",
+    }
+)
+
+# The subset of ``SERVING_LANE_REASONS`` the engine pairs with
+# ``auto_text_fallback=True``: a checkpoint that LOOKS vision-capable but was
+# downgraded to the text lane during resolution. These are exactly the reasons
+# a vision-capable model can reach the user with while serving text-only, so
+# they are the ones the Desktop copy must give dedicated, cause-naming copy to
+# (never the generic "pick a vision-capable model" sentence).
+AUTO_TEXT_FALLBACK_REASONS = frozenset(
+    {
+        "text_lane_speculative_decode",
+        "vision_architecture_unavailable",
+        "vision_hybrid_cache_unsupported",
+        "vision_hybrid_runtime_unsupported",
+        "vision_memory_insufficient",
+    }
+)
+
+# Reasons that select the multimodal lane. Every other reason in the complete
+# roster describes a text lane (including mid-load and non-LLM fallbacks).
+# Keeping this classification explicit lets ``ServingLaneDecision`` reject a
+# reason/boolean pairing that would otherwise make downstream engine selection
+# disagree with the diagnostic sent to clients.
+VISION_SERVING_LANE_REASONS = frozenset(
+    {
+        "vision_lane_forced",
+        "vision_hybrid_runtime_supported",
+        "vision_supported",
+    }
+)
+
+
+def validate_serving_lane_reason(
+    reason: str,
+    *,
+    is_mllm: bool,
+    auto_text_fallback: bool | None = None,
+) -> None:
+    """Validate a serving-lane reason against its effective lane metadata."""
+    if reason not in SERVING_LANE_REASONS:
+        raise ValueError(
+            f"unknown serving_lane_reason {reason!r}: must be one of "
+            f"{sorted(SERVING_LANE_REASONS)}. Add it to SERVING_LANE_REASONS "
+            f"and the Desktop copy contract if it is genuinely engine-emitted."
+        )
+    if auto_text_fallback is not None:
+        expected_auto_fallback = reason in AUTO_TEXT_FALLBACK_REASONS
+        if auto_text_fallback != expected_auto_fallback:
+            raise ValueError(
+                f"{reason!r} requires auto_text_fallback="
+                f"{expected_auto_fallback}, got {auto_text_fallback}: only "
+                f"{sorted(AUTO_TEXT_FALLBACK_REASONS)} downgrade a vision-capable "
+                f"model to the text lane. Update the reason roster and dedicated "
+                f"Desktop copy together if that classification changes."
+            )
+    expected_mllm = reason in VISION_SERVING_LANE_REASONS
+    if is_mllm != expected_mllm:
+        raise ValueError(
+            f"{reason!r} requires is_mllm={expected_mllm}, got {is_mllm}: "
+            f"vision-lane reasons are {sorted(VISION_SERVING_LANE_REASONS)}"
+        )
+
+
 @dataclass(frozen=True)
 class ServingLaneDecision:
     """Metadata-derived serving lane and stable machine-readable reason."""
@@ -1370,6 +1459,13 @@ class ServingLaneDecision:
     is_mllm: bool
     reason: str
     auto_text_fallback: bool = False
+
+    def __post_init__(self) -> None:
+        validate_serving_lane_reason(
+            self.reason,
+            is_mllm=self.is_mllm,
+            auto_text_fallback=self.auto_text_fallback,
+        )
 
 
 def resolve_serving_lane_decision(
