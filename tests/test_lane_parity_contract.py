@@ -9,6 +9,7 @@ keep intentional differences explicit instead of hiding them behind skips.
 
 from __future__ import annotations
 
+import sys
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -398,7 +399,8 @@ def test_forced_tool_thinking_schema_bundle_is_lane_independent(
 class _TextScheduler:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.engine = None
+        self.config = SimpleNamespace(max_concurrent_requests=256)
+        self.engine = SimpleNamespace(scheduler=self)
 
     async def generate(self, **kwargs):
         self.calls.append(("generate", kwargs))
@@ -545,7 +547,7 @@ def _assert_shared_semantics(
 @pytest.mark.parametrize("is_mllm", [False, True], ids=["text", "multimodal"])
 @pytest.mark.parametrize("stream", [False, True], ids=["generate", "stream"])
 async def test_engine_dispatch_preserves_shared_request_semantics(
-    is_mllm: bool, stream: bool
+    monkeypatch, is_mllm: bool, stream: bool
 ) -> None:
     """Named #2447 guard: processors, stops, lifecycle and outputs survive.
 
@@ -553,6 +555,16 @@ async def test_engine_dispatch_preserves_shared_request_semantics(
     dropping any processor or shared sampling field on either generate path
     fails one diagnostic row.
     """
+
+    # ``check_admission`` imports only the scheduler's error type, but the
+    # production scheduler module imports MLX at module load. Keep this
+    # dispatch contract runnable on Linux CI, where MLX is intentionally not
+    # installed, without bypassing the real admission/reservation lifecycle.
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.scheduler",
+        SimpleNamespace(BackpressureError=RuntimeError),
+    )
 
     engine, scheduler = _engine(is_mllm=is_mllm)
     kwargs, processors = _request_semantics()
