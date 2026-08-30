@@ -235,63 +235,56 @@ struct BackgroundAssistGatingTests {
 
     // MARK: - Which lane will batch us
 
-    private func snapshot(modality: String, active: Int) -> ModelResidencySnapshot {
-        ModelResidencySnapshot(
-            memoryLimitBytes: 0, memoryUsedBytes: 0, memoryAvailableBytes: nil,
-            idleTTLSeconds: 0, loadsTotal: 0, evictionsTotal: 0,
-            models: [ResidentModelStatus(
-                id: "m", modelPath: "m", aliases: ["m"], modality: modality,
-                state: "ready", pinned: false, primary: true,
-                activeRequests: active, estimatedBytes: 0, measuredBytes: nil,
-                idleSeconds: 0
-            )]
+    private func profile(
+        id: String = "m", servingLane: String?, modality: String = "text"
+    ) -> ServerModelProfile {
+        ServerModelProfile(
+            id: id,
+            servingLane: servingLane,
+            modality: modality
         )
     }
 
     @Test("The batched text lane allows background work")
     func textLaneAllows() {
-        #expect(ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "text", active: 0), alias: "m"))
+        #expect(ChatViewModel.laneAllowsBackgroundWork(
+            profile(servingLane: "text"), alias: "m"
+        ))
     }
 
     /// The `--mllm` lane runs one request at a time, so anything we send
     /// there is not batched alongside the reader's turn — it is queued in
     /// front of their next one.
-    @Test("A serialised lane refuses")
-    func visionLaneRefuses() {
-        #expect(!ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "vision", active: 0), alias: "m"))
-    }
-
-    /// A busy text model is the normal case, not a reason to refuse.
     ///
-    /// There was an `activeRequests > 0` clause here and it was wrong twice
-    /// over: continuous batching is why this feature is affordable, and the
-    /// only writer of `residency` polls every five seconds — so at a turn
-    /// boundary the freshest snapshot was taken *during* the answer, and any
-    /// reply streaming for five seconds or more looked busy. It silently
-    /// disabled both features on exactly the long answers follow-ups are for.
-    @Test("A busy text model still allows")
-    func busyTextModelAllows() {
-        #expect(ChatViewModel.laneAllowsBackgroundWork(
-            snapshot(modality: "text", active: 3), alias: "m"
-        ))
-    }
-
-    /// The serialised lane refuses whether it is busy or not — that clause is
-    /// the one carrying the rationale.
-    @Test("A serialised lane refuses even when idle")
-    func visionLaneRefusesWhenIdle() {
+    /// The server still reports `modality: text` for this payload. The live
+    /// `serving_lane` is what distinguishes its execution path.
+    @Test("A serialised vision lane with text modality refuses")
+    func visionLaneRefuses() throws {
+        let payload = #"{"id":"m","serving_lane":"vision","modality":"text"}"#
+        let liveProfile = try JSONDecoder().decode(
+            ServerModelProfile.self, from: Data(payload.utf8)
+        )
         #expect(!ChatViewModel.laneAllowsBackgroundWork(
-            snapshot(modality: "vision", active: 0), alias: "m"
+            liveProfile, alias: "m"
         ))
     }
 
-    /// A sidecar too old to report residency would otherwise disable both
+    @Test("An older profile without a serving lane allows")
+    func missingServingLaneAllows() {
+        #expect(ChatViewModel.laneAllowsBackgroundWork(
+            profile(servingLane: nil), alias: "m"
+        ))
+    }
+
+    /// A sidecar too old to report a live profile would otherwise disable both
     /// features permanently. The cost of guessing wrong there is bounded by
     /// max_tokens, the deadline, and cancel-on-send.
     @Test("An unknown model allows")
     func unknownModelAllows() {
-        #expect(ChatViewModel.laneAllowsBackgroundWork(.empty, alias: "m"))
-        #expect(ChatViewModel.laneAllowsBackgroundWork(snapshot(modality: "text", active: 0), alias: "other"))
+        #expect(ChatViewModel.laneAllowsBackgroundWork(nil, alias: "m"))
+        #expect(ChatViewModel.laneAllowsBackgroundWork(
+            profile(id: "other", servingLane: "vision"), alias: "m"
+        ))
     }
 
     @Test("A server transition invalidates the scheduled background target")

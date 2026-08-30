@@ -501,31 +501,24 @@ final class ChatViewModel {
     /// reader's, or serialise it in front of their next turn.
     ///
     /// The `--mllm` vision lane runs one request at a time, so a background
-    /// call there is not free — it is a queue. Residency carries the engine's
-    /// own modality per alias, which is the authoritative signal;
-    /// ``ModelBrandStyle/modelType(forAlias:)`` is a name-based guess that
-    /// classifies whole families as vision and would kill this feature on the
-    /// most common models.
+    /// call there is not free — it is a queue. The live profile's
+    /// `serving_lane` is the authoritative execution decision. Its
+    /// `modality` remains `text` even for vision-capable models and therefore
+    /// cannot distinguish the serialised lane.
     ///
-    /// An unknown alias allows. A sidecar too old to report residency would
-    /// otherwise disable both features permanently, and the damage on that
-    /// path is already bounded by `max_tokens`, the deadline, and the fact
-    /// that the reader's next send cancels us.
-    ///
-    /// There is deliberately no "is the model busy" clause. One was here and
-    /// was wrong twice over. On the batched text lane a busy model is the
-    /// normal case and costs nothing — continuous batching is why this
-    /// feature is affordable at all. And the only writer of `residency` polls
-    /// every five seconds (``ContentView``), so at a turn boundary the
-    /// freshest snapshot was taken *during* the answer: any reply that
-    /// streamed for five seconds or more was guaranteed to look busy, which
-    /// silently disabled both features on exactly the long answers follow-ups
-    /// exist for. On the serialised lane, `modality` already refuses.
+    /// An unknown or older profile allows. Otherwise a sidecar predating
+    /// `serving_lane` would disable both features permanently, and the damage
+    /// on that path is already bounded by `max_tokens`, the deadline, and the
+    /// fact that the reader's next send cancels us. A mismatched profile also
+    /// allows rather than letting stale metadata decide for another alias.
     nonisolated static func laneAllowsBackgroundWork(
-        _ residency: ModelResidencySnapshot, alias: String
+        _ profile: ServerModelProfile?, alias: String
     ) -> Bool {
-        guard let modality = residency.modality(for: alias) else { return true }
-        return modality == "text"
+        guard let profile,
+              profile.id.caseInsensitiveCompare(alias) == .orderedSame,
+              let servingLane = profile.servingLane
+        else { return true }
+        return servingLane == "text"
     }
 
     /// Ask the model to name this conversation and to propose what to ask
@@ -538,7 +531,7 @@ final class ChatViewModel {
         followUpAnchorID = nil
 
         guard let server, case .ready(let alias) = server.state else { return }
-        guard Self.laneAllowsBackgroundWork(server.residency, alias: alias) else { return }
+        guard Self.laneAllowsBackgroundWork(server.activeModelProfile, alias: alias) else { return }
         guard let turn = Self.settledTurn(messages) else { return }
 
         let conversationID = activeConversationID
