@@ -11,11 +11,27 @@
 # multi-step bug-fix task against the local model, and asserts each one
 # actually made the test pass.
 #
-#   Usage:   RAPID_MLX_VENV=~/rapid-mlx-audit-venv ./agent_smoke.sh [model-alias]
+#   Usage:   RAPID_MLX_VENV=~/rapid-mlx-audit-venv ./agent_smoke.sh \
+#                [--sequences <top10_sequences.yaml>] [model-alias]
 #   Default: model-alias = qwen3.6-35b-8bit   (strong 8-bit — never 4-bit,
 #            which confounds "weak model" with "broken integration")
 #
-# Exit code: 0 iff all five Tier-1 agents PASS. Non-zero blocks the release.
+#   --sequences <file> (or $RAPID_MLX_SEQUENCES_YAML) additionally drives the
+#   top-10 residency-load sequences from tests/integrations/top10_sequences.yaml
+#   AFTER the five agent runs. This is the #2496 gate that keeps the "second
+#   load after a primary / after an MTP primary" path (#2438) exercised.
+#   Non-MTP sequences POST /v1/models/load in the YAML's order to the still-
+#   running warm serve and, after EVERY load, POST a /v1/chat/completions to
+#   assert 200 + non-empty content (the generate path where #2438 actually
+#   503'd). MTP sequences boot a DEDICATED `rapid-mlx serve` with the spec-
+#   decode config on its OWN port (a residency load never carries spec-decode),
+#   drive the sequence against it, scrape /metrics to enforce the #2421
+#   accept-rate floor, then tear it down. Default off — the plain five-agent
+#   smoke is byte-for-byte unchanged unless --sequences is passed.
+#
+# Exit code: 0 iff all five Tier-1 agents PASS (and, when --sequences is given,
+# all specified load sequences match their expected_status). Non-zero blocks
+# the release.
 # Non-destructive on the shared Studio: it starts only its own server (and kills
 # only that one), and backs up / restores (or removes) the ~/.codex, ~/.hermes
 # and ~/.dsh config it touches.
@@ -31,7 +47,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PATH="/opt/homebrew/bin:/opt/homebrew/opt/coreutils/libexec/gnubin:$HOME/.local/bin:$PATH"
 VENV="${RAPID_MLX_VENV:-$HOME/rapid-mlx-audit-venv}"
 RMLX="$VENV/bin/rapid-mlx"
-ALIAS="${1:-qwen3.6-35b-8bit}"
+ALIAS="qwen3.6-35b-8bit"
+SEQUENCES_YAML="${RAPID_MLX_SEQUENCES_YAML:-}"
 PORT="${RAPID_MLX_PORT:-8000}"
 B="http://localhost:$PORT"
 # Per-agent wall-clock budgets. The default gate model is a slow 35B hybrid with
@@ -142,6 +159,619 @@ else
   }
 fi
 
+# ---- top-10 residency-load sequences (#2496) ------------------------------
+# Drives tests/integrations/top10_sequences.yaml (schema v4):
+#   * NON-MTP sequences (mtp: none) are POSTed to the warm serve $B exactly as
+#     before, but with two hardenings per finding (a)-(f):
+#       1. After EVERY /v1/models/load the driver ALSO POSTs a short
+#          /v1/chat/completions and requires 200 + non-empty content. The
+#          #2438 503 never happens on the load — it happens on the FOLLOWING
+#          completion (the thread-bound Stream(gpu,3) generate path). A
+#          load-only driver structurally cannot see it.
+#       2. Per-step / overall wall-clock budgets bound each load+completion
+#          pair and each sequence, so a stalled generate step fails in
+#          seconds, not at the end of a 12x600s worst case.
+#   * MTP sequences (mtp: first only — a "second" ordering is a false claim,
+#     reviewer B3: a dedicated MTP serve boots already carrying spec-decode, so
+#     the primary is resident from step 1 and /v1/models/load cannot re-enable
+#     it) are driven against a DEDICATED
+#     `rapid-mlx serve <serve_alias> --port <own> <serve_extra>` booted on its
+#     OWN port (with its own ssh-localhost / XPC handling and cleanup). A
+#     residency /v1/models/load NEVER carries spec-decode
+#     (requested_spec_decode=none), so an MTP primary / Stream(gpu,3) can only
+#     exist on a serve booted with the speculative config. The driver:
+#       - boots the MTP serve (own-PID ownership only; never a port sweep),
+#       - drives the sequence (load + post-load completion per step) against it,
+#       - issues ONE canonical temp=0 chat on the freshly booted MTP primary and
+#         evaluates the #2421 contract as deltas between a pre- and post-chat
+#         /metrics scrape, for the exact (family, method) label pair
+#         (reviewer B1 — no uncalibrated floor),
+#       - tears the serve down (TERM -> wait -> KILL, own PID only).
+#     On current main these must be GREEN; on a pre-#2441 sha (62a038c7) the
+#     post-load completion of the MTP-primary step must go RED — that red is
+#     the proof the gate reproduces #2438 (0.13.1 SHIPPED WITH the #2441 fix).
+#
+# Implemented in python (PyYAML is a hard runtime dep, so $VENV/bin/python has
+# it; the parser refuses loudly otherwise). The MTP serve boot/kill stays in
+# bash because it reuses the ssh-localhost (launchd XPC -> login-session GPU
+# perf) handling the main serve uses. All logic lives in the driver emitted to
+# $WORK/seq_driver.py so the std + per-MTP-serve modes share one implementation.
+#
+# Usage: run_load_sequences <sequences.yaml> ; rc=$?
+# Exits 0 iff every std sequence AND every MTP sequence (net of its serve boot
+# + /metrics expectations) passes.
+#
+# Budget arithmetic (documented, mirrored in both gate workflows):
+#   * Per-step default:           300s (load + post-load completion together).
+#   * Per-sequence default:       900s std / 1500s MTP (overrides in YAML).
+#   * Sequence block overall cap: 3600s (12 x the 300s step cap would be the
+#     un-budgeted worst case; the per-sequence budget already bounds the
+#     pathological tail before the block cap matters).
+#   * MTP serve boot:             600s (120 x 5s, same as the main serve).
+run_load_sequences() {
+  local yaml="$1"
+  mkdir -p "$WORK"
+
+  # The residency router is Bearer-auth gated ONLY when serve runs with
+  # --api-key. This gate's serve boots without one, but forward any operator
+  # RAPID_MLX_API_KEY so the caller isn't silently locked out.
+  local auth=()
+  [ -n "${RAPID_MLX_API_KEY:-}" ] && auth+=(--auth "$RAPID_MLX_API_KEY")
+
+  # Write the shared sequence driver once; both the std and MTP-serve modes
+  # below invoke it. $WORK is cleaned up by the EXIT trap.
+  cat > "$WORK/seq_driver.py" <<'PY'
+"""Top-10 sequence driver (schema v4).
+
+Modes:
+  --mode std        drive every mtp: none sequence against --base.
+  --mode mtp        drive the single mtp != none sequence named by --only-seq
+                    against --base (the dedicated MTP serve), then scrape its
+                    /metrics and evaluate its metrics_expected.
+  --mtp-plans-out F write the MTP boot plan (one JSON object per line) to F
+                    and exit — bash uses it to boot each MTP serve.
+Exits 0 iff every required step (respecting per-step + per-sequence budgets)
+and every metric expectation passes.
+"""
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# Budget defaults. Mirrored in the agent_smoke.sh comment above.
+DEFAULT_STEP_TO = 300
+DEFAULT_SEQ_TO_STD = 900
+DEFAULT_SEQ_TO_MTP = 1500
+BLOCK_TO = 3600
+
+
+def _load_yaml(path):
+    import yaml
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _auth_header(auth):
+    return {"Authorization": "Bearer " + auth} if auth else {}
+
+
+def _post(base, path, body, auth, timeout):
+    """POST and return (http_status, body_text). 4xx/5xx are surfaced as a
+    status (e.code) — never an exception — so `expected_status` on a load is
+    compared properly and a completion 503 (the #2438 signal) is seen as a
+    status the caller fails on rather than a crash."""
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **_auth_header(auth)},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:  # 4xx/5xx: keep status, don't raise
+        return e.code, (e.read().decode("utf-8", "replace") if e.fp else "")
+
+
+def _chat(base, model, auth, timeout):
+    """Short completion exercising the generate path (the #2438 surface)."""
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+        "max_tokens": 8,
+        "temperature": 0,
+    }
+    st, text = _post(base, "/v1/chat/completions", body, auth, timeout)
+    nonempty = False
+    if st == 200:
+        try:
+            data = json.loads(text)
+            choices = data.get("choices") or []
+            content = ""
+            if choices:
+                msg = choices[0].get("message") or {}
+                content = msg.get("content")
+                if content is None:
+                    content = choices[0].get("text") or ""
+            nonempty = bool(content and content.strip())
+        except Exception:
+            nonempty = False
+    return st, nonempty
+
+
+def _scrape_metrics(base, auth, timeout):
+    req = urllib.request.Request(base + "/metrics", headers=_auth_header(auth))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _parse_series(text):
+    """Map metric name -> list of (labels dict, float value). Prometheus text
+    format, max two fields per line, `#` comment/HELP/TYPE lines skipped."""
+    out = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        labels = {}
+        if "{" in line:
+            head, _, tail = line.partition("}")
+            name, _, labstr = head.partition("{")
+            for part in labstr.split(","):
+                if "=" in part:
+                    k, _, vv = part.partition("=")
+                    labels[k.strip()] = vv.strip().strip('"')
+            value = tail.strip()
+        else:
+            name, _, value = line.partition(" ")
+        try:
+            number = float(value)
+        except ValueError:
+            continue
+        out.setdefault(name.strip(), []).append((labels, number))
+    return out
+
+
+def _series_point(series, want_family, want_method):
+    """Return (labels, value) for the single series that matches the exact
+    ``family`` AND ``method`` label, or None if absent. Any NaN value is
+    returned as-is so callers can fail on it (NaN never matches comparisons)."""
+    for lab, v in series:
+        if lab.get("family") == want_family and lab.get("method") == want_method:
+            return (lab, v)
+    return None
+
+
+def _nan(value) -> bool:
+    """True when a scraped float is NaN (comparisons silently pass on NaN)."""
+    return value != value
+
+
+def _eval_metrics(seq, pre_map, post_map):
+    """Evaluate the #2421 MTP accept-rate contract as deltas between a
+    pre-canonical-chat and post-canonical-chat /metrics scrape, for the exact
+    (family, method) label pair declared in the YAML.
+
+    Vector's reviewed contract (not a performance benchmark — this is an
+    engagement/observability smoke):
+      * delta_attempts      >= 1
+      * delta_accepts       >= 1 and <= delta_attempts
+      * delta_tokens_saved  >= delta_accepts
+      * delta_accepts / delta_attempts > 0.0
+      * the exported accept_ratio gauge is finite and consistent with the
+        exact cumulative accepts/attempts counters (gauge == accepts/attempts).
+    A missing series or NaN anywhere in the measured window is a failure —
+    NaN must never pass a comparison by construction."""
+    name = seq.get("name", "<unnamed>")
+    failures = []
+    for i, mx in enumerate(seq.get("metrics_expected") or ()):
+        family = mx.get("family")
+        method = mx.get("method")
+        if not family or not method:
+            failures.append(
+                f"{name}.metrics_expected[{i}]: 'family' and 'method' are "
+                "required for the #2421 MTP contract"
+            )
+            continue
+        metric = mx.get("metric")
+        pre = _series_point(pre_map.get(metric, []), family, method)
+        post = _series_point(post_map.get(metric, []), family, method)
+        if pre is None or post is None:
+            which = "pre" if pre is None else "post"
+            fail_kind = "ABSENT" if pre is None and post is None else "ABSENT pre/post"
+            failures.append(
+                f"{name}.metrics_expected[{i}]: {metric}"
+                f"{{family={family},method={method}}} {which} series "
+                f"{fail_kind} on /metrics"
+            )
+            continue
+        if _nan(pre[1]) or _nan(post[1]):
+            failures.append(
+                f"{name}.metrics_expected[{i}]: {metric}"
+                f"{{family={family},method={method}}} NaN in pre/post scrape "
+                "(NaN must not pass the contract)"
+            )
+            continue
+        if metric.endswith("_accept_ratio"):
+            # Gauge: finite + consistent with the cumulative accepts/attempts.
+            pre_a = _series_point(pre_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+            pre_c = _series_point(pre_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+            post_a = _series_point(post_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+            post_c = _series_point(post_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+            base_a = (post_a[1] if post_a is not None else 0.0) - (pre_a[1] if pre_a is not None else 0.0)
+            base_c = (post_c[1] if post_c is not None else 0.0) - (pre_c[1] if pre_c is not None else 0.0)
+            ratio = post[1]
+            if _nan(ratio):
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: accept_ratio NaN"
+                )
+                continue
+            # The gauge is cumulative accepts/attempts; check consistency with
+            # the cumulative counters at the post scrape.
+            cum_a = post_a[1] if post_a is not None else None
+            cum_c = post_c[1] if post_c is not None else None
+            if cum_a is not None and cum_a > 0 and cum_c is not None:
+                expect = cum_c / cum_a
+                if abs(expect - ratio) > 1e-6:
+                    failures.append(
+                        f"{name}.metrics_expected[{i}]: accept_ratio={ratio} "
+                        f"inconsistent with cumulative accepts/attempts "
+                        f"({cum_c}/{cum_a}={expect})"
+                    )
+            # The per-window ratio must be strictly positive.
+            if base_a > 0 and base_c / base_a <= 0.0:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: per-window "
+                    f"accepts/attempts={base_c}/{base_a} not > 0.0"
+                )
+            continue
+        if metric.endswith("_attempts_total"):
+            d = post[1] - pre[1]
+            if not d >= 1:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_attempts={d} not >= 1"
+                )
+            continue
+        if metric.endswith("_accepts_total"):
+            d = post[1] - pre[1]
+            try:
+                d_attempts = (post_map.get("rapid_mlx_spec_decode_attempts_total", []))
+                a_post = _series_point(d_attempts, family, method)
+                a_pre = _series_point(pre_map.get("rapid_mlx_spec_decode_attempts_total", []), family, method)
+                d_attempts = (a_post[1] if a_post is not None else 0.0) - (a_pre[1] if a_pre is not None else 0.0)
+            except Exception:
+                d_attempts = None
+            if not d >= 1:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_accepts={d} not >= 1"
+                )
+                continue
+            if d_attempts is not None and d > d_attempts:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_accepts={d} > "
+                    f"delta_attempts={d_attempts}"
+                )
+            continue
+        if metric.endswith("_tokens_saved_total"):
+            d = post[1] - pre[1]
+            try:
+                c_series = post_map.get("rapid_mlx_spec_decode_accepts_total", [])
+                c_post = _series_point(c_series, family, method)
+                c_pre = _series_point(pre_map.get("rapid_mlx_spec_decode_accepts_total", []), family, method)
+                d_accepts = (c_post[1] if c_post is not None else 0.0) - (c_pre[1] if c_pre is not None else 0.0)
+            except Exception:
+                d_accepts = None
+            if d_accepts is not None and d < d_accepts:
+                failures.append(
+                    f"{name}.metrics_expected[{i}]: delta_tokens_saved={d} < "
+                    f"delta_accepts={d_accepts}"
+                )
+            continue
+    return failures
+
+
+def _mtp_plans(spec):
+    out = []
+    for seq in spec.get("sequences", []):
+        if seq.get("mtp") != "none":
+            out.append(
+                {
+                    "name": seq["name"],
+                    "serve_alias": seq["serve_alias"],
+                    "serve_extra": seq.get("serve_extra") or [],
+                }
+            )
+    return out
+
+
+def _drive(spec, args):
+    failed = 0
+    mode = args["mode"]
+    deadline = time.time() + args.get("block_to", BLOCK_TO)
+    seqs = [s for s in spec.get("sequences", []) if s.get("mtp", "none") == "none"] \
+        if mode == "std" else [s for s in spec.get("sequences", []) if s.get("mtp") != "none"]
+    if mode == "mtp":
+        seqs = [s for s in seqs if s.get("name") == args["only_seq"]]
+    if not seqs:
+        return 0
+    for seq in seqs:
+        name = seq.get("name", "<unnamed>")
+        seq_to = seq.get("timeout_seconds") or (DEFAULT_SEQ_TO_MTP if mode == "mtp" else DEFAULT_SEQ_TO_STD)
+        seq_deadline = min(time.time() + seq_to, deadline)
+        print(f"  sequence {name} (budget {seq_to}s):")
+        for i, step in enumerate(seq.get("steps", []), start=1):
+            remaining = seq_deadline - time.time()
+            if remaining <= 5:
+                print(f"    step {i}: sequence budget ({seq_to}s) EXCEEDED [FAIL]")
+                failed += 1
+                break
+            step_to = int(min(step.get("timeout_seconds") or DEFAULT_STEP_TO, remaining))
+            model = step.get("model", "<missing model>")
+            body = {"model": model}
+            if step.get("replace_group") is not None:
+                body["replace_group"] = step["replace_group"]
+            body["replace_mode"] = step.get("replace_mode", "reject")
+            if step.get("estimated_size_gb") is not None:
+                body["estimated_size_gb"] = step["estimated_size_gb"]
+            want = step.get("expected_status", 200)
+            try:
+                load_st, _txt = _post(args["base"], "/v1/models/load", body, args["auth"], step_to)
+            except Exception as e:
+                print(f"    step {i}: /v1/models/load {{model={model}}} error: {e} [FAIL]")
+                failed += 1
+                continue
+            chat_to = int(max(10, min(step_to, seq_deadline - time.time())))
+            try:
+                chat_st, nonempty = _chat(args["base"], model, args["auth"], chat_to)
+            except Exception as e:
+                print(f"    step {i}: completion {{model={model}}} error: {e} [FAIL]")
+                failed += 1
+                continue
+            load_ok = load_st == want
+            chat_ok = chat_st == 200 and nonempty
+            marker = "PASS" if (load_ok and chat_ok) else "FAIL"
+            print(
+                f"    step {i}: load->HTTP {load_st}(want {want}) "
+                f"completion->HTTP {chat_st} content={'OK' if nonempty else 'EMPTY'} [{marker}]"
+            )
+            if not (load_ok and chat_ok):
+                failed += 1
+        if mode == "mtp":
+            # #2421 contract: one canonical temp=0, HTTP-200, non-empty chat on
+            # the freshly booted MTP primary, bracketed by a pre/post /metrics
+            # scrape, then evaluated as deltas for the exact family+method.
+            scrape_to = int(max(10, seq_deadline - time.time()))
+            try:
+                pre_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
+            except Exception as e:
+                print(f"    pre-metrics scrape error: {e} [FAIL]")
+                failed += 1
+                pre_map = {}
+            canonical_model = seq.get("serve_alias")
+            chat_st, nonempty = _chat(
+                args["base"], canonical_model, args["auth"],
+                int(max(10, seq_deadline - time.time())),
+            )
+            chat_ok = chat_st == 200 and nonempty
+            print(
+                f"    canonical MTP chat {{model={canonical_model}}} -> HTTP "
+                f"{chat_st} content={'OK' if nonempty else 'EMPTY'} "
+                f"[{'PASS' if chat_ok else 'FAIL'}]"
+            )
+            if not chat_ok:
+                failed += 1
+            try:
+                post_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
+            except Exception as e:
+                print(f"    post-metrics scrape error: {e} [FAIL]")
+                failed += 1
+                post_map = {}
+            mm = _eval_metrics(seq, pre_map, post_map)
+            for mf in mm:
+                print(f"    METRIC-FAIL: {mf}")
+            if mm:
+                failed += len(mm)
+    return failed
+
+
+def main(argv):
+    args = {
+        "yaml": None, "base": "http://localhost:8000", "auth": None,
+        "mode": "std", "only_seq": None, "mtp_plans_out": None,
+    }
+    it = iter(argv)
+    for a in it:
+        if a == "--yaml":
+            args["yaml"] = next(it)
+        elif a == "--base":
+            args["base"] = next(it)
+        elif a == "--auth":
+            args["auth"] = next(it) or None
+        elif a == "--mode":
+            args["mode"] = next(it)
+        elif a == "--only-seq":
+            args["only_seq"] = next(it)
+        elif a == "--mtp-plans-out":
+            args["mtp_plans_out"] = next(it)
+        elif a == "--block-to":
+            args["block_to"] = int(next(it))
+        else:
+            raise SystemExit(f"seq_driver: unknown arg {a!r}")
+    spec = _load_yaml(args["yaml"])
+    if args["mtp_plans_out"] is not None:
+        with open(args["mtp_plans_out"], "w", encoding="utf-8") as fh:
+            for plan in _mtp_plans(spec):
+                fh.write(json.dumps(plan) + "\n")
+        return 0
+    if not spec.get("sequences"):
+        raise SystemExit(f"no 'sequences' found in {args['yaml']}")
+    failed = _drive(spec, args)
+    if failed:
+        raise SystemExit(f"{failed} check(s) failed")
+    print("  sequence block PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+PY
+
+  # 1) Standard (mtp: none) sequences against the warm serve.
+  echo "== std (non-MTP) load sequences from $yaml =="
+  if ! "$VENV/bin/python" "$WORK/seq_driver.py" --yaml "$yaml" --base "$B" \
+        --mode std "${auth[@]+"${auth[@]}"}"; then
+    echo "RESULT: FAIL — a non-MTP /v1/models/load sequence or post-load completion failed." >&2
+    return 1
+  fi
+
+  # 2) MTP sequences: one dedicated MTP serve per sequence, own port, own boot
+  #    and cleanup. Produce the boot plan, then cycle boot -> drive -> scrape
+  #    -> teardown.
+  local plans="$WORK/mtp_plans.jsonl"
+  : > "$plans"
+  "$VENV/bin/python" "$WORK/seq_driver.py" --yaml "$yaml" --mtp-plans-out "$plans"
+  [ -s "$plans" ] || return 0   # no MTP sequences in this spec
+
+  echo "== MTP load sequences (dedicated MTP serve per sequence) =="
+  local line seq_name alias port rc=0
+  local -a extra=()
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    seq_name=$("$VENV/bin/python" -c 'import sys,json;print(json.loads(sys.argv[1])["name"])' "$line")
+    alias=$("$VENV/bin/python" -c 'import sys,json;print(json.loads(sys.argv[1])["serve_alias"])' "$line")
+    port=$(pick_free_port)
+    # bash 3.2 has no `mapfile`; read the serve_extra argv (one per line) into
+    # a here-string-fed loop into the pre-declared array.
+    extra=()
+    while IFS= read -r _a; do
+      [ -n "$_a" ] && extra+=("$_a")
+    done < <("$VENV/bin/python" -c 'import sys,json;print("\n".join(json.loads(sys.argv[1])["serve_extra"]))' "$line")
+    echo "  mtp serve: $seq_name -> rapid-mlx serve $alias on :$port ${extra[*]+"${extra[*]}"}"
+    if ! mtp_serve_boot "$alias" "$port" "${extra[@]+"${extra[@]}"}"; then
+      echo "  mtp serve boot FAILED for $seq_name" >&2
+      rc=1
+      break
+    fi
+    if ! "$VENV/bin/python" "$WORK/seq_driver.py" --yaml "$yaml" \
+         --base "http://localhost:$port" --mode mtp --only-seq "$seq_name" \
+         "${auth[@]+"${auth[@]}"}"; then
+      rc=1
+    fi
+    mtp_serve_teardown
+  done < "$plans"
+  return $rc
+}
+
+# ---- MTP-serve lifecycle (schema v4) --------------------------------------
+# A residency /v1/models/load never carries spec-decode, so an MTP primary /
+# Stream(gpu,3) can only exist on a serve booted WITH the speculative config.
+# These helpers boot exactly that dedicated serve on its OWN port with its own
+# cleanup, mirroring the main serve's ssh-localhost (launchd XPC -> login-
+# session GPU perf) handling — under an XPC/LaunchAgent context a directly
+# spawned serve is ~100x GPU-throttled and would spuriously fail the MTP
+# attempts/accept checks.
+MTP_SERVE_PID=""
+MTP_SERVE_PORT=""
+MTP_SERVE_LOG="$WORK/mtp-serve.log"
+
+pick_free_port() {
+  "$VENV/bin/python" -c \
+    'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+# mtp_serve_boot <alias> <port> [serve_extra args...] ; rc=$?
+# Boots a background `rapid-mlx serve <alias> --port <port> --disable-prefix-cache
+# --no-thinking <serve_extra...>` and waits for /v1/models to flip ready.
+# Returns non-zero if the port was already occupied, the process died, or it
+# never became ready in 600s.
+#
+# Ownership discipline (Vector B2): this function may only ever terminate the
+# process it itself started. A listener that wins pick_free_port AFTER we chose
+# it but BEFORE our serve binds is REPORTED and left running — never killed.
+# On ANY boot failure the MTP_SERVE_PID / MTP_SERVE_PORT ownership state is
+# cleared so a later teardown cannot act on a process we did not start.
+mtp_serve_boot() {
+  local alias="$1" port="$2"; shift 2
+  MTP_SERVE_PID=""
+  MTP_SERVE_PORT=""
+  local occupant
+  occupant=$(command -v lsof >/dev/null 2>&1 \
+    && lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  if [ -n "$occupant" ] \
+     || curl -s -m 3 "http://localhost:$port/v1/models" >/dev/null 2>&1; then
+    echo "mtp_serve_boot: port $port already serving (pid ${occupant:-unknown}) — " \
+         "not ours, leaving it running; free it first" >&2
+    return 1
+  fi
+  local base="http://localhost:$port"
+  local remote=""
+  if [ -n "${XPC_SERVICE_NAME:-}" ] && command -v ssh >/dev/null 2>&1 \
+     && ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            localhost true >/dev/null 2>&1; then
+    # Single-quote every extra arg so a JSON speculative config survives the
+    # remote shell un-touched. $RMLX / alias / port are space-free.
+    remote="nohup '$RMLX' serve $alias --port $port --disable-prefix-cache --no-thinking"
+    for a in "$@"; do remote="$remote '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"; done
+    remote="$remote > '$MTP_SERVE_LOG' 2>&1 & echo \$!"
+    MTP_SERVE_PID=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no localhost \
+      "$remote" 2>/dev/null | tail -1)
+    case "$MTP_SERVE_PID" in
+      ''|*[!0-9]*) MTP_SERVE_PID="" ;;
+    esac
+  fi
+  if [ -z "$MTP_SERVE_PID" ]; then
+    nohup "$RMLX" serve "$alias" --port "$port" --disable-prefix-cache \
+      --no-thinking "$@" > "$MTP_SERVE_LOG" 2>&1 &
+    MTP_SERVE_PID=$!
+  fi
+  echo "  mtp serve boot: pid=$MTP_SERVE_PID port=$port ($MTP_SERVE_LOG)"
+  local dead=0
+  for i in $(seq 1 120); do
+    curl -s -m 3 "$base/v1/models" 2>/dev/null | grep -q '"id"' && {
+      MTP_SERVE_PORT="$port"
+      return 0
+    }
+    kill -0 "$MTP_SERVE_PID" 2>/dev/null || { dead=1; break; }
+    sleep 5
+  done
+  # Boot failed under OUR pid: stop exactly that process, then clear ownership.
+  MTP_SERVE_PORT="$port"
+  mtp_serve_teardown
+  if [ "$dead" = 1 ]; then
+    tail -20 "$MTP_SERVE_LOG" >&2
+    echo "mtp_serve_boot: serve process died during boot" >&2
+  else
+    tail -20 "$MTP_SERVE_LOG" >&2
+    echo "mtp_serve_boot: serve not ready in 600s" >&2
+  fi
+  return 1
+}
+
+# Idempotent teardown of the MTP serve started most recently. Stops ONLY
+# MTP_SERVE_PID (TERM -> bounded wait -> KILL fallback); it never port-sweeps,
+# so a process that won the pick_free_port race is left running (Vector B2).
+# Any unexpected surviving listener on the port is reported, not killed.
+mtp_serve_teardown() {
+  if [ -n "$MTP_SERVE_PID" ]; then
+    kill -TERM "$MTP_SERVE_PID" 2>/dev/null
+    for _i in $(seq 1 10); do
+      kill -0 "$MTP_SERVE_PID" 2>/dev/null || break
+      sleep 0.2
+      [ "$_i" = 10 ] && { kill -KILL "$MTP_SERVE_PID" 2>/dev/null; break; }
+    done
+  fi
+  if [ -n "${MTP_SERVE_PORT:-}" ]; then
+    for _survivor in $(command -v lsof >/dev/null 2>&1 \
+      && lsof -nP -iTCP:"$MTP_SERVE_PORT" -sTCP:LISTEN -t 2>/dev/null); do
+      echo "mtp_serve_teardown: port $MTP_SERVE_PORT still held by pid " \
+           "$_survivor (not ours — leaving it running)" >&2
+    done
+  fi
+  MTP_SERVE_PID=""
+  MTP_SERVE_PORT=""
+}
+
 # Restore a config we may have overwritten with `--setup`: if we backed up a
 # pre-existing file, put it back; if the file did not exist before, remove the
 # one `--setup` created (and its marker). Idempotent — safe to call twice.
@@ -168,6 +798,9 @@ cleanup() {
   if [ -n "${PORT:-}" ]; then
     for _p in $(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null); do kill -9 "$_p" 2>/dev/null; done
   fi
+  # Any dedicated MTP serve left running (e.g. a step failed and we bailed)
+  # is ours to reap: we booted it, verified its port was free, and tracked it.
+  mtp_serve_teardown
   restore_cfg "$CODEX_CFG"
   restore_cfg "$HERMES_CFG"
   restore_cfg "$DSH_CFG"
@@ -183,6 +816,53 @@ trap cleanup EXIT
 
 fail() { echo "SMOKE-ABORT: $*" >&2; exit 3; }
 [ -x "$RMLX" ] || fail "no rapid-mlx at $RMLX (set RAPID_MLX_VENV)"
+
+# ---- argument parsing -----------------------------------------------------
+# Backward compatible: a bare positional [model-alias] is still `$ALIAS`; the
+# optional `--sequences <file>` (or `--sequences=<file>`) adds the #2496
+# residency-load gate. The agent-gate workflow calls `agent_smoke.sh "$MODEL"`,
+# which is untouched.
+_positional=()
+_prev_was_sequences=0
+for _arg in "$@"; do
+  if [ "$_prev_was_sequences" = 1 ]; then
+    # `--sequences` consumes the NEXT argument as the file path.
+    if [ -z "$_arg" ]; then
+      fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+    fi
+    SEQUENCES_YAML="$_arg"
+    _prev_was_sequences=0
+    continue
+  fi
+  case "$_arg" in
+    --sequences)
+      _prev_was_sequences=1
+      ;;
+    --sequences=*)
+      SEQUENCES_YAML="${_arg#*=}"
+      [ -n "$SEQUENCES_YAML" ] || fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+      ;;
+    -h|--help)
+      echo "usage: $0 [--sequences <top10_sequences.yaml>] [model-alias]"
+      exit 0
+      ;;
+    -*)
+      fail "unknown option: $_arg"
+      ;;
+    *)
+      _positional+=("$_arg")
+      ;;
+  esac
+done
+[ "$_prev_was_sequences" = 0 ] || fail "--sequences requires an argument: --sequences <top10_sequences.yaml>"
+unset _arg _prev_was_sequences
+[ "${#_positional[@]}" -le 1 ] || fail "at most one positional model alias (got: ${_positional[*]})"
+[ "${#_positional[@]}" -eq 1 ] && ALIAS="${_positional[0]}"
+# Validate a sequences file now (fail early), not mid-gate.
+if [ -n "$SEQUENCES_YAML" ]; then
+  [ -f "$SEQUENCES_YAML" ] || fail "--sequences file not found: $SEQUENCES_YAML"
+fi
+unset _positional
 
 echo "== versions =="
 printf "  rapid-mlx  %s\n" "$($RMLX --version 2>&1 | head -1)"
@@ -564,6 +1244,20 @@ if [ "${RAPID_MLX_RELEASE_GATE:-0}" = "1" ]; then
     exit 1
   fi
   echo "== release-gate extras PASSED (coherence + perf) =="
+fi
+
+# ---- top-10 residency-load sequences (#2496) — opt-in via --sequences ----
+# Runs LAST, on the same warm serve, so no agent run sees a mutated resident
+# model (each sequence's step 1 loads its own primary, which changes residency).
+# Pure HTTP — no serve reboots, no second model load beyond what the loader does.
+if [ -n "$SEQUENCES_YAML" ]; then
+  echo
+  echo "== top-10 residency-load sequences (#2496) from $SEQUENCES_YAML =="
+  if ! run_load_sequences "$SEQUENCES_YAML"; then
+    echo "RESULT: FAIL — a /v1/models/load sequence did not match its expected_status; this blocks the release."
+    exit 1
+  fi
+  echo "== top-10 residency-load sequences PASSED =="
 fi
 
 echo "RESULT: PASS — all five Tier-1 agents verified on $ALIAS."
