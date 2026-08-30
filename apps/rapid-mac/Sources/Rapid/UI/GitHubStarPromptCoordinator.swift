@@ -235,7 +235,8 @@ enum GitHubStarCLI {
 
     static func star(
         _ repositoryURL: URL,
-        executableURL overrideExecutableURL: URL? = nil
+        executableURL overrideExecutableURL: URL? = nil,
+        timeout requestedTimeout: Duration = timeout
     ) async throws {
         guard repositoryURL == GitHubCommunity.repositoryURL else {
             throw GitHubStarCLIError.invalidRepository
@@ -252,7 +253,7 @@ enum GitHubStarCLI {
         process.standardError = FileHandle.nullDevice
 
         try process.run()
-        try await waitUntilExit(process, timeout: timeout)
+        try await waitUntilExit(process, timeout: requestedTimeout)
 
         guard process.terminationStatus == 0 else {
             throw GitHubStarCLIError.commandFailed

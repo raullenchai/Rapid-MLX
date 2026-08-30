@@ -207,17 +207,68 @@ struct GitHubStarPromptCoordinatorTests {
 
     @Test("The default gh executor launches, waits, and reports command status")
     func ghStarExecutorRunsTheSubprocess() async {
-        try? await GitHubStarCLI.star(
-            GitHubCommunity.repositoryURL,
-            executableURL: URL(fileURLWithPath: "/usr/bin/true")
-        )
+        await #expect(throws: Never.self) {
+            try await GitHubStarCLI.star(
+                GitHubCommunity.repositoryURL,
+                executableURL: URL(fileURLWithPath: "/usr/bin/true")
+            )
+        }
 
-        await #expect(throws: GitHubStarCLIError.self) {
+        await #expect(throws: GitHubStarCLIError.commandFailed) {
             try await GitHubStarCLI.star(
                 GitHubCommunity.repositoryURL,
                 executableURL: URL(fileURLWithPath: "/usr/bin/false")
             )
         }
+    }
+
+    @Test("A hung gh child is force-stopped at the configured timeout")
+    func ghStarTimeoutKillsHungChild() async throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-star-hung-gh-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: executable) }
+        try Data("#!/bin/sh\nsleep 30\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await #expect(throws: GitHubStarCLIError.self) {
+            try await GitHubStarCLI.star(
+                GitHubCommunity.repositoryURL,
+                executableURL: executable,
+                timeout: .milliseconds(100)
+            )
+        }
+        #expect(clock.now - start < .seconds(3))
+    }
+
+    @Test("A second direct star cannot start while the first is in flight")
+    func directStarReentryIsRejected() async {
+        let defaults = isolatedDefaults()
+        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        let gate = DirectStarGate()
+        let prompt = GitHubStarPromptCoordinator(
+            defaults: defaults,
+            quietWindow: .zero,
+            presentationActive: true,
+            starExecutor: { _ in
+                await gate.wait()
+            }
+        )
+
+        prompt.productValueDelivered(.chatReply)
+        #expect(prompt.isPresented)
+
+        let firstAttempt = Task { await prompt.attemptDirectStar() }
+        await gate.waitUntilEntered()
+        #expect(await prompt.attemptDirectStar() == false)
+        await gate.release()
+        let firstAttemptSucceeded = await firstAttempt.value
+        #expect(firstAttemptSucceeded)
+        #expect(!prompt.isStarring)
     }
 
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
@@ -298,5 +349,28 @@ private final class PromptReference: @unchecked Sendable {
         await MainActor.run {
             prompt?.updatePresentationContext(.init(isBusy: true, hasBlockingSurface: false))
         }
+    }
+}
+
+private actor DirectStarGate {
+    private var entered = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        entered = true
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitUntilEntered() async {
+        while !entered {
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        continuations.forEach { $0.resume() }
+        continuations.removeAll()
     }
 }
