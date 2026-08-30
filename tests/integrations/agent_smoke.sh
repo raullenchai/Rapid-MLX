@@ -861,6 +861,15 @@ unset _arg _prev_was_sequences
 # Validate a sequences file now (fail early), not mid-gate.
 if [ -n "$SEQUENCES_YAML" ]; then
   [ -f "$SEQUENCES_YAML" ] || fail "--sequences file not found: $SEQUENCES_YAML"
+  # Agent tasks run in per-agent scratch repositories and `seed_repo` changes
+  # this shell's cwd. Bind the already-validated input to an absolute path
+  # before that happens; otherwise a repository-relative path passes here but
+  # the later sequence driver opens it relative to $WORK and fails after every
+  # Tier-1 agent has already passed.
+  _sequences_dir="$(cd "$(dirname "$SEQUENCES_YAML")" && pwd -P)" \
+    || fail "cannot resolve --sequences directory: $SEQUENCES_YAML"
+  SEQUENCES_YAML="$_sequences_dir/$(basename "$SEQUENCES_YAML")"
+  unset _sequences_dir
 fi
 unset _positional
 

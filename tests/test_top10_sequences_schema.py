@@ -53,6 +53,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SEQUENCES_FILE = _REPO_ROOT / "tests" / "integrations" / "top10_sequences.yaml"
 _ALIASES_FILE = _REPO_ROOT / "vllm_mlx" / "aliases.json"
+_AGENT_SMOKE_FILE = _REPO_ROOT / "tests" / "integrations" / "agent_smoke.sh"
 
 VALID_REPLACE_MODES = frozenset({"reject", "wait", "abort"})
 VALID_ACTIONS = frozenset({"load"})
@@ -61,6 +62,21 @@ VALID_ON_ABSENT = frozenset({"fail", "pass"})
 # Aliases that, per the v3->v4 coverage mandate, must actually be LOADED by
 # some sequence step (they were listed in top_10_aliases but never loaded).
 MUST_LOAD_ALIASES = ("gemma-4-26b-4bit", "bonsai-27b-2bit")
+
+
+def test_agent_smoke_binds_sequence_path_before_agent_cwd_changes() -> None:
+    """A repo-relative sequence path must survive ``seed_repo`` changing cwd."""
+    smoke = _AGENT_SMOKE_FILE.read_text(encoding="utf-8")
+    validation = smoke.index(
+        '[ -f "$SEQUENCES_YAML" ] || fail "--sequences file not found:'
+    )
+    binding = smoke.index(
+        'SEQUENCES_YAML="$_sequences_dir/$(basename "$SEQUENCES_YAML")"'
+    )
+    cwd_change = smoke.index("seed_repo() {")
+    sequence_run = smoke.index('run_load_sequences "$SEQUENCES_YAML"')
+
+    assert validation < binding < cwd_change < sequence_run
 
 
 @pytest.fixture(scope="module")
