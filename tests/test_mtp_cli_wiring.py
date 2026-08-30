@@ -1912,6 +1912,107 @@ def test_install_mtp_vendored_reaps_request_state_on_departure(
     assert gb._mtp_vendored_disabled_uids == {}
 
 
+def test_install_mtp_vendored_discards_finished_cache_after_partial_round(
+    monkeypatch,
+):
+    """A terminal response cannot publish verifier state past emitted tokens.
+
+    Pulling the first item from the real MTP generator can verify and accept a
+    multi-token draft round, advancing the cache through every accepted
+    position while only one token reaches ``GenerationBatch.next``.  Model
+    that boundary here: the response carries the advanced cache, then finishes
+    before the generator's second accepted token can be emitted.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    advanced_cache = [object()]
+    closed: list[bool] = []
+
+    class _AcceptedRound:
+        def __init__(self):
+            self.tokens = iter(
+                [
+                    (1001, mx.array([0.0]), True),
+                    (1002, mx.array([0.0]), True),
+                ]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.tokens)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: _AcceptedRound(),
+    )
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [7]
+    gb.prompt_cache = advanced_cache
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    response = SimpleNamespace(
+        uid=7,
+        finish_reason="length",
+        prompt_cache=advanced_cache,
+        all_tokens=[500, 1001],
+    )
+    gb.next_responses = [response]
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={
+            "req-7": SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+        },
+        uid_to_request_id={7: "req-7"},
+    )
+
+    gb._step()
+    assert set(gb._mtp_vendored_state) == {7}
+    assert gb.next() == [response]
+
+    assert response.prompt_cache is None
+    assert closed == [True]
+    assert gb._mtp_vendored_state == {}
+
+
+def test_install_mtp_vendored_preserves_plain_finished_cache():
+    """Installing the wrapper must not disable ordinary prefix-cache reuse."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    plain_cache = [object()]
+    response = SimpleNamespace(
+        uid=8,
+        finish_reason="stop",
+        prompt_cache=plain_cache,
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.next_responses = [response]
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=None,
+        uid_to_request_id=None,
+    )
+    assert gb.next() == [response]
+    assert response.prompt_cache is plain_cache
+
+
 def test_scheduler_text_stop_retires_mtp_state_before_next_request(monkeypatch):
     """A scheduler-side text stop must free the B=1 MTP slot immediately.
 

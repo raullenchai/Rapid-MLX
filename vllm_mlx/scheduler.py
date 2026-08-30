@@ -1587,10 +1587,20 @@ def _install_mtp_vendored(
     _orig_next = gb.next
 
     def _mtp_next(*args, **kwargs):
-        """Reap request-owned MTP state at the normal finish boundary."""
+        """Reap request-owned MTP state at the normal finish boundary.
+
+        A verifier step may have advanced ``gb.prompt_cache`` through several
+        accepted draft positions even though ``GenerationBatch.next`` finishes
+        the response after emitting only the first one (for example at EOS or
+        ``max_tokens``).  That cache is ahead of ``response.all_tokens`` and
+        must never be published as a reusable prefix.  Plain/fallthrough rows
+        have no entry in ``_state`` and retain mlx-lm's normal cache behavior.
+        """
         responses = _orig_next(*args, **kwargs)
         for response in responses:
             if getattr(response, "finish_reason", None) is not None:
+                if response.uid in _state and hasattr(response, "prompt_cache"):
+                    response.prompt_cache = None
                 _reap_uid(response.uid)
         return responses
 
