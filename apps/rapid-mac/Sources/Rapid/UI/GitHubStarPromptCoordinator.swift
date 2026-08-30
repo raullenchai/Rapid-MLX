@@ -156,7 +156,7 @@ final class GitHubStarPromptCoordinator {
 
         do {
             try await starExecutor(GitHubCommunity.repositoryURL)
-            guard isPresented else { return false }
+            guard isPresented || presentationPending else { return false }
             markCompleted()
             return true
         } catch {
@@ -246,8 +246,8 @@ enum GitHubStarCLI {
             "--hostname", "github.com",
             "repos/raullenchai/Rapid-MLX/starred"
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
         try process.run()
         try await waitUntilExit(process, timeout: timeout)

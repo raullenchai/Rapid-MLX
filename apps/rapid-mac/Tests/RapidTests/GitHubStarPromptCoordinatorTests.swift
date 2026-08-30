@@ -172,6 +172,30 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(!prompt.isPresented)
     }
 
+    @Test("A successful direct star completes after transient hiding")
+    func transientlyHiddenDirectStarCompletesLocally() async {
+        let defaults = isolatedDefaults()
+        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        let promptReference = PromptReference()
+        let prompt = GitHubStarPromptCoordinator(
+            defaults: defaults,
+            quietWindow: .zero,
+            presentationActive: true,
+            starExecutor: { _ in
+                await promptReference.hidePrompt()
+            }
+        )
+        promptReference.prompt = prompt
+
+        prompt.productValueDelivered(.chatReply)
+        #expect(prompt.isPresented)
+
+        let directStarSucceeded = await prompt.attemptDirectStar()
+        #expect(directStarSucceeded)
+        #expect(defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!prompt.isPresented)
+    }
+
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()
@@ -244,5 +268,11 @@ private final class PromptReference: @unchecked Sendable {
 
     func deferPrompt() async {
         await MainActor.run { prompt?.deferPrompt() }
+    }
+
+    func hidePrompt() async {
+        await MainActor.run {
+            prompt?.updatePresentationContext(.init(isBusy: true, hasBlockingSurface: false))
+        }
     }
 }
