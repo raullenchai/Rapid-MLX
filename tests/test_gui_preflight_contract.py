@@ -212,6 +212,18 @@ def test_cached_curated_tradeup_confirms_the_quickstart_memory_sheet():
     assert 'identifier == "MemoryWarning.Confirm"' not in flow
 
 
+def test_cached_curated_tradeup_waits_for_health_and_bounded_ui_readiness():
+    """A spawn event is not health, and hosted UI readiness gets 60 seconds."""
+    source = HARNESS.read_text()
+    flow = source.split("flow_cached_curated_tradeup() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"' in flow
+    assert (
+        'wait_identifier Quickstart.Ready.StartChatting \\\n        "$OUT/ready-confirmation.json" 240'
+        in flow
+    )
+
+
 def test_peekaboo_requirement_is_default_deny():
     """A new flow must be assumed to need peekaboo until stated otherwise.
 

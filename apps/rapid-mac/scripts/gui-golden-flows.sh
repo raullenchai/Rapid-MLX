@@ -149,6 +149,33 @@ assert_fake_server_starts() {
     die "$phase could not validate the sidecar event log"
 }
 
+# A recorded spawn is intentionally weaker than readiness: the fake writes
+# ``server_started`` immediately before binding its HTTP server.  Keep the
+# wire-side boundary explicit so a GUI assertion can distinguish a sidecar
+# that never became reachable from a slower app state transition.
+wait_fake_sidecar_health() {
+    local expected_alias="$1" what="$2" attempts="${3:-40}"
+    local sidecar_record sidecar_pid sidecar_port health_payload i
+    sidecar_record="$(jq -rs --arg alias "$expected_alias" \
+        'map(select(.event == "server_started" and .alias == $alias))
+         | last | [(.pid // ""), (.port // "")] | @tsv' \
+        "$OUT/fake-events.jsonl")"
+    IFS=$'\t' read -r sidecar_pid sidecar_port <<< "$sidecar_record"
+    [[ "$sidecar_pid" =~ ^[0-9]+$ && "$sidecar_port" =~ ^[0-9]+$ ]] \
+        || die "$what did not record a valid sidecar pid and port"
+    for ((i=0; i<attempts; i++)); do
+        health_payload="$(curl -fsS --connect-timeout 1 --max-time 1 \
+            "http://127.0.0.1:$sidecar_port/healthz" 2>/dev/null || true)"
+        if jq -e --argjson pid "$sidecar_pid" --arg alias "$expected_alias" \
+            '.ok == true and .pid == $pid and .alias == $alias' \
+            <<< "$health_payload" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    die "$what pid=$sidecar_pid started but never served its own health on :$sidecar_port"
+}
+
 require_observed_phase() {
     local observed="$1" phase="$2"
     [[ "$observed" == 1 ]] || die "required $phase phase was not observed"
@@ -1974,18 +2001,7 @@ flow_cached_quickstart() {
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "isolated persona did not bind its selected high port"
-    local sidecar_port
-    sidecar_port="$(jq -rs 'map(select(.event == "server_started" and .alias == "fake-alias")) | last | .port // empty' "$OUT/fake-events.jsonl")"
-    local sidecar_healthy=0
-    for _ in {1..40}; do
-        if curl -fsS "http://127.0.0.1:$sidecar_port/healthz" >/dev/null 2>&1; then
-            sidecar_healthy=1
-            break
-        fi
-        sleep 0.1
-    done
-    [[ "$sidecar_healthy" == 1 ]] \
-        || die "cached Quickstart sidecar started but never served health on :$sidecar_port"
+    wait_fake_sidecar_health "$FAKE_ALIAS" "cached Quickstart sidecar"
     # Ready is no longer completion: onboarding must hold the window until
     # the user explicitly confirms the final step. Pin both halves so a
     # future regression cannot silently restore the old auto-dismiss path.
@@ -2066,7 +2082,14 @@ flow_cached_curated_tradeup() {
         sleep 0.25
     done
     [[ "$starter_started" == 1 ]] || die "cached 16 GB starter did not start"
-    wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json"
+    wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"
+    # ``server_started`` is emitted before the fake binds HTTP, and a
+    # constrained hosted runner can spend more than the default 20-second AX
+    # budget moving from healthy sidecar to the final SwiftUI readiness step.
+    # Match the existing 60-second hosted-start budget without weakening the
+    # independent health or exact Ready-identifier requirements.
+    wait_identifier Quickstart.Ready.StartChatting \
+        "$OUT/ready-confirmation.json" 240
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"

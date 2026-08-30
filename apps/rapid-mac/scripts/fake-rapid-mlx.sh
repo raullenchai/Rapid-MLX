@@ -610,7 +610,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/healthz":
-            self._json(200, {"ok": True})
+            # The GUI golden harness verifies this identity before trusting a
+            # fake sidecar as ready.  A bare 200 could belong to an unrelated
+            # listener that won the ephemeral-port bind race after the fake
+            # recorded ``server_started`` but before it called bind().
+            self._json(200, {
+                "ok": True,
+                "pid": os.getpid(),
+                "alias": SERVED_ALIAS,
+            })
             return
         if path == "/v1/models":
             # ModelPickerBar reads this on real rapid-mlx — return
