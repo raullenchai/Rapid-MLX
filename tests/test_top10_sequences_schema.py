@@ -111,9 +111,9 @@ def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
     drive_end = smoke.index("\ndef main(argv):", drive_start)
     drive = smoke[drive_start:drive_end]
 
-    pre_scrape = drive.index('pre_map = _parse_series(_scrape_metrics(')
+    pre_scrape = drive.index("pre_map = _parse_series(_scrape_metrics(")
     canonical_chat = drive.index('canonical_model = seq.get("serve_alias")')
-    post_scrape = drive.index('post_map = _parse_series(_scrape_metrics(')
+    post_scrape = drive.index("post_map = _parse_series(_scrape_metrics(")
     metric_evaluation = drive.index("mm = _eval_metrics(seq, pre_map, post_map)")
     residency_sequence = drive.index(
         'for i, step in enumerate(seq.get("steps", []), start=1):'
