@@ -906,6 +906,24 @@ def test_local_snapshot_leaves_a_cold_repo_untouched(monkeypatch):
     assert tok._local_snapshot_if_cached("org/cold-repo") == "org/cold-repo"
 
 
+def test_local_snapshot_uses_unique_complete_offline_revision(monkeypatch):
+    """The loader receives the same verified local path the CLI admitted."""
+    from vllm_mlx.utils import tokenizer as tok
+
+    complete = "/cache/models--org--model/snapshots/complete"
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: False)
+    monkeypatch.setattr(
+        "vllm_mlx.model_metadata.resolve_unreferenced_cached_snapshot",
+        lambda _name: None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_metadata.resolve_offline_cached_snapshot",
+        lambda _name: Path(complete),
+    )
+
+    assert tok._local_snapshot_if_cached("org/model") == complete
+
+
 def test_local_snapshot_falls_back_when_the_local_resolve_fails(monkeypatch):
     """If the completeness probe says cached but the offline resolve raises
     (unexpected cache state), return the bare id so the normal path can still

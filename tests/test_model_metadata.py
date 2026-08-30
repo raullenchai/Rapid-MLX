@@ -347,6 +347,120 @@ def test_unreferenced_snapshot_does_not_override_existing_main_ref(
     assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
 
 
+def test_offline_resolver_uses_unique_complete_snapshot_when_main_is_incomplete(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshots = repo_root / "snapshots"
+    incomplete = snapshots / "new-revision"
+    incomplete.mkdir(parents=True)
+    complete = snapshots / "old-revision"
+    complete.mkdir()
+    _write_json(complete / "config.json", {"model_type": "qwen3_5"})
+    (complete / "model.safetensors").write_bytes(b"complete")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("new-revision", encoding="utf-8")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(
+        metadata,
+        "_cached_file",
+        lambda _name, filename: None,
+    )
+
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") == complete
+    routed = metadata.read_cached_model_metadata("publisher/model")
+    assert routed is not None
+    assert routed.snapshot_dir == complete
+    assert routed.config == {"model_type": "qwen3_5"}
+
+
+def test_offline_resolver_rejects_online_and_ambiguous_complete_revisions(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshots = repo_root / "snapshots"
+    incomplete = snapshots / "new-revision"
+    incomplete.mkdir(parents=True)
+    _write_json(incomplete / "config.json", {"model_type": "qwen3_5"})
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("new-revision", encoding="utf-8")
+    for revision in ("complete-a", "complete-b"):
+        snapshot = snapshots / revision
+        snapshot.mkdir()
+        _write_json(snapshot / "config.json", {"model_type": "qwen3_5"})
+        (snapshot / "model.safetensors").write_bytes(b"complete")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") is None
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") is None
+
+
+def test_offline_resolver_rejects_weight_link_outside_repo(monkeypatch, tmp_path):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshots = repo_root / "snapshots"
+    incomplete = snapshots / "new-revision"
+    incomplete.mkdir(parents=True)
+    _write_json(incomplete / "config.json", {"model_type": "qwen3_5"})
+    escaped = snapshots / "escaped-revision"
+    escaped.mkdir()
+    _write_json(escaped / "config.json", {"model_type": "qwen3_5"})
+    outside = tmp_path / "outside-model.safetensors"
+    outside.write_bytes(b"complete")
+    (escaped / "model.safetensors").symlink_to(outside)
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("new-revision", encoding="utf-8")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") is None
+
+
+def test_offline_resolver_rejects_invalid_ref_and_complete_selected_revision(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "models--publisher--model"
+    snapshots = repo_root / "snapshots"
+    selected = snapshots / "selected-revision"
+    selected.mkdir(parents=True)
+    _write_json(selected / "config.json", {"model_type": "qwen3_5"})
+    (selected / "model.safetensors").write_bytes(b"complete")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    main_ref = refs / "main"
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    main_ref.write_text("../selected-revision", encoding="utf-8")
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") is None
+
+    main_ref.write_text("selected-revision", encoding="utf-8")
+    assert metadata.resolve_offline_cached_snapshot("publisher/model") is None
+
+
+def test_complete_cached_checkpoint_rejects_snapshot_symlink(monkeypatch, tmp_path):
+    repo_root = tmp_path / "models--publisher--model"
+    real_snapshot = repo_root / "real-snapshot"
+    real_snapshot.mkdir(parents=True)
+    snapshot_link = repo_root / "snapshots" / "linked-revision"
+    snapshot_link.parent.mkdir()
+    snapshot_link.symlink_to(real_snapshot, target_is_directory=True)
+
+    assert (
+        metadata._complete_cached_checkpoint(
+            repo_root, snapshot_link, "publisher/model"
+        )
+        is None
+    )
+
+
 def test_unreferenced_snapshot_rejects_weight_link_outside_repo(monkeypatch, tmp_path):
     repo_root = tmp_path / "models--publisher--model"
     snapshot = repo_root / "snapshots" / "immutable-revision"

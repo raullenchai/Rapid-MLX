@@ -1718,7 +1718,9 @@ def _env_flag_active(raw: str | None) -> bool:
     ``0``/``false``/empty leave it off) without depending on the library's
     private ``constants._is_true`` helper, whose return type is untyped.
     """
-    return raw is not None and str(raw).lower() in {"1", "on", "yes", "true"}
+    from vllm_mlx.model_metadata import env_flag_active
+
+    return env_flag_active(raw)
 
 
 def _offline_hub_mode_active() -> bool:
@@ -1730,9 +1732,16 @@ def _offline_hub_mode_active() -> bool:
     ``HF_HUB_OFFLINE=0`` mask ``TRANSFORMERS_OFFLINE=1`` (or vice-versa), which
     the download layer does not do.
     """
-    return _env_flag_active(os.environ.get("HF_HUB_OFFLINE")) or _env_flag_active(
-        os.environ.get("TRANSFORMERS_OFFLINE")
-    )
+    from vllm_mlx.model_metadata import hub_offline_mode_active
+
+    return hub_offline_mode_active()
+
+
+def _offline_complete_cached_snapshot(model_name: str):
+    """Resolve the unique verified local revision allowed in offline mode."""
+    from vllm_mlx.model_metadata import resolve_offline_cached_snapshot
+
+    return resolve_offline_cached_snapshot(model_name)
 
 
 def _offline_uncached_error(model_name: str) -> str:
@@ -1798,6 +1807,12 @@ def _ensure_model_downloaded(
     # couldn't establish) — it falls through to the normal online path.
     cachedness = _cache_runnability(model_name)
     if cachedness is True:
+        return
+
+    if (
+        _offline_hub_mode_active()
+        and _offline_complete_cached_snapshot(model_name) is not None
+    ):
         return
 
     # Offline + uncached refusal (#2357): reaching this point means the model is
@@ -5847,7 +5862,10 @@ def _cache_runnability(repo: str) -> bool | None:
             is_repo_cached,
         )
         from vllm_mlx.audio.registry import resolve_audio_alias
-        from vllm_mlx.model_metadata import resolve_unreferenced_cached_snapshot
+        from vllm_mlx.model_metadata import (
+            resolve_offline_cached_snapshot,
+            resolve_unreferenced_cached_snapshot,
+        )
         from vllm_mlx.video.wan import WAN_REVISIONS
 
         audio_entry = resolve_audio_alias(repo)
@@ -5872,6 +5890,7 @@ def _cache_runnability(repo: str) -> bool | None:
             or _snapshot_is_complete_mflux_model(repo)
             or _snapshot_is_complete_wan_model(repo)
             or resolve_unreferenced_cached_snapshot(repo) is not None
+            or resolve_offline_cached_snapshot(repo) is not None
         )
     except (OSError, KeyError, ValueError, TypeError, AttributeError) as exc:
         import logging
@@ -8643,7 +8662,10 @@ def chat_command(args):
                     is_repo_cached,
                 )
 
-                if not is_repo_cached(resolved):
+                if (
+                    not is_repo_cached(resolved)
+                    and _offline_complete_cached_snapshot(resolved) is None
+                ):
                     # Offline + uncached (/model swap): refuse BEFORE the size
                     # estimate + confirm, so the user sees the one actionable
                     # offline reason instead of an "About to download" notice
@@ -12247,7 +12269,10 @@ def main():
                 is_repo_cached,
             )
 
-            if not is_repo_cached(args.model):
+            if (
+                not is_repo_cached(args.model)
+                and _offline_complete_cached_snapshot(args.model) is None
+            ):
                 # Offline + uncached (#2357): short-circuit BEFORE the size
                 # estimate + ``confirm_or_abort``. ``estimate_repo_size_bytes``
                 # makes a silent HF ``model_info`` round-trip that returns None
