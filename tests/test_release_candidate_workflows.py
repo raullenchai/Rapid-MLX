@@ -103,10 +103,11 @@ def test_tagged_promotion_and_standalone_build_are_mutually_exclusive():
         "&& inputs.promote_sha != ''))"
     )
     assert " ".join(jobs["mirror-dist"]["if"].split()) == (
-        "always() && needs.desktop-ready.result == 'success' && " + event_condition
+        "!cancelled() && needs.desktop-ready.result == 'success' && "
+        + event_condition
     )
     assert " ".join(jobs["publish-updater-fallback"]["if"].split()) == (
-        "always() && needs.desktop-ready.result == 'success' "
+        "!cancelled() && needs.desktop-ready.result == 'success' "
         "&& needs.mirror-dist.result == 'success' && " + event_condition
     )
 

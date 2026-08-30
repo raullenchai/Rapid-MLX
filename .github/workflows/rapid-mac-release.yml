@@ -575,10 +575,10 @@ jobs:
     # ``desktop-ready`` deliberately depends on both mutually-exclusive source
     # lanes, so one of its ancestors is always skipped. GitHub otherwise
     # propagates that skip past the successful join job and silently suppresses
-    # publication. Evaluate explicitly, while still failing closed unless the
-    # join itself succeeded.
+    # publication. Evaluate explicitly with the cancellation-safe status
+    # function, while still failing closed unless the join itself succeeded.
     if: >-
-      always()
+      !cancelled()
       && needs.desktop-ready.result == 'success'
       && (startsWith(github.ref, 'refs/tags/')
           || (github.event_name == 'workflow_dispatch'
@@ -719,7 +719,7 @@ jobs:
     # Includes the turnstyle queue plus final updater/Release publication.
     timeout-minutes: 120
     if: >-
-      always()
+      !cancelled()
       && needs.desktop-ready.result == 'success'
       && needs.mirror-dist.result == 'success'
       && (startsWith(github.ref, 'refs/tags/')

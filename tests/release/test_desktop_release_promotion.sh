@@ -188,8 +188,10 @@ lacks "$PROMOTE" 'notarize.sh' \
 MIRROR_JOB=$(sed -n '/^  mirror-dist:/,/^  publish-updater-fallback:/p' "$RAPID_RELEASE")
 PUBLISH_JOB=$(sed -n '/^  publish-updater-fallback:/,$p' "$RAPID_RELEASE")
 for JOB in "$MIRROR_JOB" "$PUBLISH_JOB"; do
-  contains "$JOB" 'always()' \
-    "publication evaluates after the mutually-exclusive source lane is skipped"
+  contains "$JOB" '!cancelled()' \
+    "publication evaluates after a skipped source lane but respects cancellation"
+  lacks "$JOB" 'always()' \
+    "publication cannot outlive an operator cancellation"
   contains "$JOB" "needs.desktop-ready.result == 'success'" \
     "publication fails closed unless the source-lane join succeeds"
   contains "$JOB" "startsWith(github.ref, 'refs/tags/')" \
