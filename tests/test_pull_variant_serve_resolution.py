@@ -561,6 +561,64 @@ def test_successful_ordinary_mirror_pull_clears_previous_variant(marker_path):
     assert _download_gate.pulled_variant(RAW_REPO) is None
 
 
+def test_successful_variant_mirror_pull_persists_serving_choice(marker_path):
+    """The default mirror path must retain the explicit variant for serve."""
+    import argparse
+
+    from vllm_mlx import cli
+
+    args = argparse.Namespace(
+        model=RAW_REPO,
+        bits="4",
+        format=None,
+        _original_alias=RAW_REPO,
+    )
+
+    def mirror_success(repo_id, *, allow_patterns, out):
+        assert repo_id == RAW_REPO
+        assert allow_patterns == ["4bit/*"]
+        out["network_fetch"] = True
+        return True
+
+    with (
+        patch(
+            "huggingface_hub.HfApi.list_repo_tree",
+            return_value=_multi_variant_tree(),
+        ),
+        patch.object(cli, "_try_mirror_prefetch", side_effect=mirror_success),
+    ):
+        cli.pull_command(args)
+
+    assert _download_gate.pulled_variant(RAW_REPO) == "4bit"
+
+
+def test_runtime_asset_override_does_not_touch_model_variant(capsys, marker_path):
+    """Dependency file filters neither rewrite metadata nor emit a false warning."""
+    import argparse
+
+    from vllm_mlx import cli
+
+    _download_gate.persist_pulled_variant(RAW_REPO, "8bit")
+    args = argparse.Namespace(
+        model=RAW_REPO,
+        bits=None,
+        format=None,
+        _original_alias=RAW_REPO,
+    )
+
+    def mirror_success(repo_id, *, allow_patterns, out):
+        assert repo_id == RAW_REPO
+        assert allow_patterns == ["runtime/*"]
+        out["network_fetch"] = False
+        return True
+
+    with patch.object(cli, "_try_mirror_prefetch", side_effect=mirror_success):
+        cli._pull_repository(args, allow_patterns_override=["runtime/*"])
+
+    assert _download_gate.pulled_variant(RAW_REPO) == "8bit"
+    assert "could not record that serving choice" not in capsys.readouterr().out
+
+
 def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
     """Cleanup metadata is best-effort on the mirror-success early return."""
     import argparse
