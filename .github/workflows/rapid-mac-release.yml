@@ -567,7 +567,16 @@ jobs:
     needs: desktop-ready
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: startsWith(github.ref, 'refs/tags/')
+    # A provenance-bound promotion dispatch is the canonical auto-release lane.
+    # GitHub does not reliably expose its selected tag through ``github.ref``
+    # in job-level expressions, so key publication eligibility to the two
+    # required promotion inputs as well. An input-free manual dispatch remains
+    # a non-publishing dry run.
+    if: >-
+      startsWith(github.ref, 'refs/tags/')
+      || (github.event_name == 'workflow_dispatch'
+          && inputs.promote_run_id != ''
+          && inputs.promote_sha != '')
     steps:
       - name: Download the notarised DMG artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
@@ -702,7 +711,11 @@ jobs:
     runs-on: ubuntu-latest
     # Includes the turnstyle queue plus final updater/Release publication.
     timeout-minutes: 120
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/')
+      || (github.event_name == 'workflow_dispatch'
+          && inputs.promote_run_id != ''
+          && inputs.promote_sha != '')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

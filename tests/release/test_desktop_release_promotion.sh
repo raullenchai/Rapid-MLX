@@ -185,6 +185,19 @@ lacks "$PROMOTE" 'desktop-releasable' \
 lacks "$PROMOTE" 'notarize.sh' \
   "promotion lane never re-notarizes or repacks"
 
+MIRROR_JOB=$(sed -n '/^  mirror-dist:/,/^  publish-updater-fallback:/p' "$RAPID_RELEASE")
+PUBLISH_JOB=$(sed -n '/^  publish-updater-fallback:/,$p' "$RAPID_RELEASE")
+for JOB in "$MIRROR_JOB" "$PUBLISH_JOB"; do
+  contains "$JOB" "startsWith(github.ref, 'refs/tags/')" \
+    "tag-triggered Desktop releases publish"
+  contains "$JOB" "github.event_name == 'workflow_dispatch'" \
+    "promotion dispatches are recognized as publishing lanes"
+  contains "$JOB" "inputs.promote_run_id != ''" \
+    "publishing promotion requires an exact producer run"
+  contains "$JOB" "inputs.promote_sha != ''" \
+    "publishing promotion requires an exact source SHA"
+done
+
 # A same-SHA tag claim may no-op after a prior failed/missed Desktop workflow.
 # The engine must therefore wait for exact tagged Desktop publication evidence,
 # not treat ref identity alone as proof that the DMG shipped.

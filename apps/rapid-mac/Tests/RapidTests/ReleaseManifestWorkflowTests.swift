@@ -52,7 +52,10 @@ struct ReleaseManifestWorkflowTests {
     @Test("missing distribution config fails instead of silently skipping")
     func missingConfigFailsClosed() throws {
         let job = Self.mirrorJob
-        #expect(job.contains("if: startsWith(github.ref, 'refs/tags/')"))
+        #expect(job.contains("startsWith(github.ref, 'refs/tags/')"))
+        #expect(job.contains("github.event_name == 'workflow_dispatch'"))
+        #expect(job.contains("inputs.promote_run_id != ''"))
+        #expect(job.contains("inputs.promote_sha != ''"))
         #expect(job.contains("tagged releases require updater fallback publishing"))
         #expect(!job.contains("skipping the optional CDN mirror"))
         for requiredSetting in [
