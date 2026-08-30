@@ -24,7 +24,10 @@ def _scheduler() -> Scheduler:
     tokenizer = MagicMock()
     tokenizer.encode = lambda text: list(range(len(text.split())))
     tokenizer.decode = lambda tokens, **_kwargs: " ".join(map(str, tokens))
-    return Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=2))
+    scheduler = Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=2))
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.remove.return_value = {}
+    return scheduler
 
 
 def test_detects_long_exact_periodic_suffix():

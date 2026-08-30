@@ -773,10 +773,10 @@ def _install_mtp_vendored(
 
     Adaptive chain-of-K scope:
 
-    * Single-request only (``len(gb.uids) == 1``). Multi-request batches
-      fall through to ``_orig_step`` — Gemma 4's MTP fast-path is
-      batch=1-only (``mtp_forward`` raises on B>1) and the vendored
-      generator maintains its own per-request state.
+    * Single-request only (``len(gb.uids) == 1``). Scheduler admission keeps
+      an MTP generator at one running sequence while additional requests wait;
+      Gemma 4's MTP fast-path is batch=1-only (``mtp_forward`` raises on B>1)
+      and the vendored generator maintains its own per-request state.
 
     * Request-local temperature / top-p / top-k / min-p are passed through to
       the generator's target-distribution verifier. Seeded requests still fall
@@ -895,6 +895,10 @@ def _install_mtp_vendored(
     # (this only happens under bench harness callers, where uids are
     # not reused across requests anyway).
     _disabled_uids: dict[int, str | None] = {}
+    # Terminal failures are distinct from pre-MTP soft disables. Once MTP has
+    # emitted, retrying through ``_orig_step`` would consume a stale placeholder;
+    # the uid must keep failing closed until removal or verified uid reuse.
+    _terminal_uids: dict[int, str | None] = {}
 
     _stats = {
         "vendored_steps": 0,
@@ -905,57 +909,10 @@ def _install_mtp_vendored(
         "ft_disabled": 0,
         "gen_exhausted": 0,
         "gen_raised": 0,
-        # Codex round-L BLOCKING #2-4: track uids that have been
-        # handed off from MTP to plain decode mid-stream so subsequent
-        # fallback branches can log ONCE per uid rather than once per
-        # step. Silent degradation is per Ollama's depth-0 park
-        # behavior; but we still want the operator to see the
-        # degradation happened, without log spam if the batch stays
-        # B>1 (or non-greedy, or has an lp) for many tokens.
-        "ft_mid_stream_handoff": 0,
+        "invariant_violations": 0,
     }
 
-    # Codex round-L BLOCKING #2-4: log-once bookkeeping for mid-stream
-    # MTP → plain-decode handoffs. Keyed by (uid, reason) so the same
-    # uid can log both "B>1" and "non-greedy" if it hits both, but
-    # each reason surfaces at most once per uid lifetime.
-    _handoff_logged: set[tuple[int, str]] = set()
     _initial_skip_logged: set[tuple[int, str]] = set()
-
-    def _log_mtp_mid_stream_handoff_once(uid: int, reason: str, detail: str) -> None:
-        """Emit a WARN log for a mid-stream MTP → plain-decode handoff,
-        at most once per (uid, reason).
-
-        Codex round-L BLOCKING #2-4: the fallback design matches
-        Ollama's depth-0 park behavior — MTP silently degrades to
-        plain decode when the current step is incompatible (B>1,
-        non-greedy, or has a logits processor) instead of aborting
-        the request with a RuntimeError. But the tradeoff is real:
-        ``gb._next_tokens`` currently holds the last-MTP-emitted
-        token (see ``_sync_next_tokens_after_emit``) rather than a
-        fresh baseline sample, so ``_orig_step`` may emit a
-        duplicated token or sample from a slightly stale cache
-        position for one step before the request continues on plain
-        decode. Log the handoff so the operator can correlate the
-        potential stream artifact with the load-balancing event.
-        """
-        key = (uid, reason)
-        if key in _handoff_logged:
-            return
-        _handoff_logged.add(key)
-        logger.warning(
-            "[MTP-vendored] uid=%s handoff to plain decode (%s): %s. "
-            "The MTP generator was closed; the request continues on "
-            "baseline mlx-lm _step. gb._next_tokens still holds the "
-            "last-MTP-emitted token so the next _orig_step call may "
-            "produce a duplicated token or a token sampled from a "
-            "slightly stale cache position for one step — a bounded, "
-            "known tradeoff for not killing the request "
-            "(Ollama-style depth-0 park behavior).",
-            uid,
-            reason,
-            detail,
-        )
 
     def _log_mtp_initial_skip_once(uid: int, reason: str) -> None:
         """Surface a request that never entered MTP without log spam."""
@@ -998,6 +955,20 @@ def _install_mtp_vendored(
                 gen.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _reap_uid(uid: int) -> None:
+        """Release every request-owned MTP object after the uid departs.
+
+        ``_cleanup_uid`` deliberately preserves the request's disable marker
+        while it is live. Completion/removal is the stronger lifecycle
+        boundary: no generator, marker, or log-once key may retain the request.
+        """
+        _cleanup_uid(uid)
+        _disabled_uids.pop(uid, None)
+        _terminal_uids.pop(uid, None)
+        _initial_skip_logged.difference_update(
+            key for key in _initial_skip_logged if key[0] == uid
+        )
 
     def _sampling_options_for_uid(uid: int) -> tuple[dict[str, Any] | None, str]:
         """Resolve the request-local MTP sampling contract, fail closed.
@@ -1131,13 +1102,11 @@ def _install_mtp_vendored(
         #     ``gb._next_tokens`` from the last MTP-emitted token,
         #     which we don't stage anywhere.
         def _record_terminal_disable(u: int) -> None:
-            """Record a terminal disable marker for uid ``u`` and
-            drop any per-generator state. Used on the "MTP already
-            emitted, fallthrough is unsafe" path."""
+            """Latch a terminal failure after MTP has emitted for ``u``."""
             _term_req_id = None
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
-            _disabled_uids[u] = _term_req_id
+            _terminal_uids[u] = _term_req_id
             _state_entry = _state.pop(u, None)
             if _state_entry is not None:
                 _gen = _state_entry.get("gen")
@@ -1195,20 +1164,11 @@ def _install_mtp_vendored(
             * ``.filter(keep)`` / ``.extend`` don't forward through
               the model — they mutate the tensor in place. No
               downstream cache interaction.
-            * Codex round-L BLOCKING #2-4 relaxed the round-H
-              terminal-raise contract: the B>1 / non-greedy /
-              logits-processor fallthrough branches now delegate to
-              ``_orig_step()`` instead of aborting the request. In
-              that handoff path, ``_orig_step()`` will read the
-              stale ``_next_tokens`` and may emit a duplicated token
-              or sample from a slightly stale cache position for one
-              step. The wrapper logs a WARN (once per uid+reason)
-              on the handoff so the operator can correlate the
-              artifact with the load-balancing event. This is the
-              accepted tradeoff for not killing the request — see
-              :func:`_log_mtp_mid_stream_handoff_once` and the
-              round-L rationale comments in the three fallthrough
-              branches.
+            * Once MTP has emitted, an ordinary-decode handoff is forbidden:
+              ``_orig_step()`` would consume this last-emitted placeholder as
+              if it were the next model input. Admission prevents B>1, and
+              defensive invariant checks fail closed instead of returning a
+              duplicate or stale token.
 
             Cache state stays under the MTP generator's control — the
             wrapper never advances ``prompt_cache`` outside a
@@ -1221,37 +1181,39 @@ def _install_mtp_vendored(
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
-            # Codex round-L BLOCKING #2: prior round-H revision raised
-            # ``RuntimeError`` here when any uid in ``_state`` had in-
-            # flight MTP emissions. That killed the request whenever
-            # normal continuous-batching load added a second uid to
-            # the batch — hostile behavior for a multi-request server
-            # where B>1 is the norm, not the exception.
-            #
-            # Round-L fix: hand off to ``_orig_step`` regardless of
-            # whether MTP has emitted. The MTP generator is closed and
-            # the affected uid(s) are marked disabled so we don't
-            # retry MTP on subsequent steps. The stream may briefly
-            # exhibit a duplicated token or a token sampled from a
-            # slightly stale cache position (``gb._next_tokens`` still
-            # holds the last-MTP-emitted token) — a bounded, known
-            # tradeoff that matches Ollama's ``depth=0`` park behavior
-            # when speculation cannot proceed. See
-            # :func:`_log_mtp_mid_stream_handoff_once` for the operator-
-            # facing warning contract.
             if _state:
                 terminal_uids = list(_state)
-                _stats["ft_mid_stream_handoff"] += len(terminal_uids)
+                _stats["invariant_violations"] += 1
                 for stale_uid in terminal_uids:
-                    _log_mtp_mid_stream_handoff_once(
-                        stale_uid,
-                        "b_gt_1",
-                        f"batch grew to size {len(gb.uids)}",
-                    )
                     _record_terminal_disable(stale_uid)
+                raise RuntimeError(
+                    "[MTP-vendored] single-request admission invariant violated: "
+                    f"batch grew to {len(gb.uids)} after MTP emitted for "
+                    f"uids={terminal_uids}. Failing closed because plain-decode "
+                    "handoff would corrupt the output stream."
+                )
             return _orig_step()
 
         uid = gb.uids[0]
+
+        if uid in _terminal_uids:
+            terminal_req_id = _terminal_uids[uid]
+            current_req_id = (
+                uid_to_request_id.get(uid) if uid_to_request_id is not None else None
+            )
+            if (
+                terminal_req_id is not None
+                and current_req_id is not None
+                and terminal_req_id != current_req_id
+            ):
+                del _terminal_uids[uid]
+            else:
+                _stats["invariant_violations"] += 1
+                raise RuntimeError(
+                    "[MTP-vendored] refusing to retry terminal uid="
+                    f"{uid}; request removal is required before this slot can "
+                    "return to plain decode."
+                )
 
         # Codex round-D blocker #2 + round-E blocker #1: honour the
         # permanent-skip map BEFORE re-entering FIRST-call
@@ -1298,25 +1260,15 @@ def _install_mtp_vendored(
                 _stats["ft_logits_processors"] += 1
             else:
                 _stats["ft_non_greedy"] += 1
-            # Codex round-L BLOCKING #3: prior round-H revision raised
-            # ``RuntimeError`` here when sampling switched to non-
-            # greedy after MTP had already emitted. That killed the
-            # request on a legitimate runtime sampling-param change.
-            #
-            # Round-L fix: hand off to ``_orig_step`` regardless of
-            # state. The MTP generator is closed and the uid is
-            # marked disabled so subsequent steps skip MTP entirely.
-            # Same bounded stream-artifact tradeoff as the B>1 handoff
-            # above; see :func:`_log_mtp_mid_stream_handoff_once` for
-            # the operator-facing WARN contract.
             if uid in _state:
-                _stats["ft_mid_stream_handoff"] += 1
-                _log_mtp_mid_stream_handoff_once(
-                    uid,
-                    "sampling_unsupported",
-                    sampling_skip_reason,
-                )
+                _stats["invariant_violations"] += 1
                 _record_terminal_disable(uid)
+                raise RuntimeError(
+                    "[MTP-vendored] request sampling contract changed after "
+                    f"MTP emitted for uid={uid}: {sampling_skip_reason}. "
+                    "Failing closed because plain-decode handoff would corrupt "
+                    "the output stream."
+                )
             else:
                 _log_mtp_initial_skip_once(uid, sampling_skip_reason)
                 _mark_disabled(uid)
@@ -1330,14 +1282,13 @@ def _install_mtp_vendored(
         ):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_greedy"] += 1
-            _stats["ft_mid_stream_handoff"] += 1
-            _log_mtp_mid_stream_handoff_once(
-                uid,
-                "sampling_changed",
-                "request sampling parameters changed after MTP started",
-            )
+            _stats["invariant_violations"] += 1
             _record_terminal_disable(uid)
-            return _orig_step()
+            raise RuntimeError(
+                "[MTP-vendored] request sampling parameters changed after "
+                f"MTP emitted for uid={uid}. Failing closed because "
+                "plain-decode handoff would corrupt the output stream."
+            )
 
         # Codex round-K BLOCKING #1: uid reuse detection for the
         # ACTIVE (non-disabled) state map. mlx-lm reuses uid ints
@@ -1547,7 +1498,7 @@ def _install_mtp_vendored(
                 _terminal_req_id = None
                 if uid_to_request_id is not None:
                     _terminal_req_id = uid_to_request_id.get(uid)
-                _disabled_uids[uid] = _terminal_req_id
+                _terminal_uids[uid] = _terminal_req_id
                 # Generator's own state can go — nothing to close
                 # here (StopIteration means it already tore down).
                 _state.pop(uid, None)
@@ -1599,7 +1550,7 @@ def _install_mtp_vendored(
                 _terminal_req_id = None
                 if uid_to_request_id is not None:
                     _terminal_req_id = uid_to_request_id.get(uid)
-                _disabled_uids[uid] = _terminal_req_id
+                _terminal_uids[uid] = _terminal_req_id
                 # Close the (broken) generator; don't touch
                 # _disabled_uids from inside _cleanup_uid.
                 _state_entry = _state.pop(uid, None)
@@ -1633,6 +1584,42 @@ def _install_mtp_vendored(
         _sync_next_tokens_after_emit(gb, tok_int, lp_arr)
         return [tok_int], [lp_arr]
 
+    _orig_next = gb.next
+
+    def _mtp_next(*args, **kwargs):
+        """Reap request-owned MTP state at the normal finish boundary."""
+        responses = _orig_next(*args, **kwargs)
+        for response in responses:
+            if getattr(response, "finish_reason", None) is not None:
+                _reap_uid(response.uid)
+        return responses
+
+    _orig_remove = getattr(batch_gen, "remove", None)
+
+    def _departed(uid_list: list[int]) -> list[int]:
+        """Return only uids that actually left after a partial remove error."""
+        finder = getattr(batch_gen, "_find_uids", None)
+        if finder is None:
+            return []
+        try:
+            still_present = set(finder(uid_list))
+        except Exception:  # noqa: BLE001
+            return []
+        return [uid for uid in uid_list if uid not in still_present]
+
+    def _mtp_remove(uids, return_prompt_caches=False):
+        """Reap MTP state after abort/removal without dropping live requests."""
+        uid_list = list(uids)
+        try:
+            result = _orig_remove(uid_list, return_prompt_caches=return_prompt_caches)
+        except Exception:
+            for uid in _departed(uid_list):
+                _reap_uid(uid)
+            raise
+        for uid in uid_list:
+            _reap_uid(uid)
+        return result
+
     # Patch onto the persistent _generation_batch. New GenerationBatch
     # instances created inside PromptProcessingBatch.generate() use the
     # CLASS _step for their priming call (which is exactly what we want:
@@ -1641,12 +1628,23 @@ def _install_mtp_vendored(
     # persistent gb happens via .extend(), after which our patched
     # _step takes over.
     gb._step = _mtp_step
+    gb.next = _mtp_next
+    if _orig_remove is not None:
+        batch_gen.remove = _mtp_remove
+    else:
+        logger.warning(
+            "[MTP-vendored] BatchGenerator has no remove(); abort-path "
+            "state reaping is not installed (mlx-lm version mismatch?)."
+        )
     batch_gen._mtp_vendored_stats = _stats
+    gb._mtp_vendored_state = _state
+    gb._mtp_vendored_disabled_uids = _disabled_uids
+    gb._mtp_vendored_terminal_uids = _terminal_uids
 
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
         "(single-request adaptive chain-of-K with request-local sampling; "
-        "falls through on B>1 / seeded sampling / custom logits-processors)."
+        "request state reaped on finish/remove)."
     )
     return True
 
@@ -6849,6 +6847,21 @@ class Scheduler:
             )
         return snapshot_boundary
 
+    def _max_running_sequences(self) -> int:
+        """Return the batch width supported by the live speculative runtime.
+
+        Before the lazy MTP install gate runs, admit one request so an
+        unsupported batch cannot form. A successful install keeps B=1; a
+        definitive gate miss restores the operator's ordinary-decode width.
+        """
+        if getattr(self.config, "spec_decode", "none") != "mtp":
+            return self.config.max_num_seqs
+        if not getattr(self, "spec_decode_runtime_attempted", False):
+            return 1
+        if getattr(self, "spec_decode_runtime_method", None) == "mtp":
+            return 1
+        return self.config.max_num_seqs
+
     def _schedule_waiting(self) -> list[Request]:
         """
         Move requests from waiting queue to running.
@@ -6858,7 +6871,11 @@ class Scheduler:
         """
         scheduled = []
 
-        while self.waiting and len(self.running) < self.config.max_num_seqs:
+        # The current vendored MTP verifier owns one request-local generator
+        # and explicitly supports B=1. Keep later requests in the ordinary
+        # scheduler queue until that request departs; this preserves liveness
+        # without ever attempting a lossy MTP-to-plain handoff mid-stream.
+        while self.waiting and len(self.running) < self._max_running_sequences():
             request = self.waiting.popleft()
 
             # Ensure we have a batch generator. The False return means
@@ -7167,6 +7184,39 @@ class Scheduler:
 
         return scheduled
 
+    def _retire_scheduler_finished_uid(self, response: Any) -> None:
+        """Remove a uid finished by scheduler-side stop policy.
+
+        mlx-lm removes rows when its own EOS/token limit sets ``finish_reason``.
+        Text stop sequences and repetition-loop aborts are detected later by
+        Rapid-MLX, after ``GenerationBatch.next()`` returned, so that row is
+        still live. Remove it through the BatchGenerator lifecycle seam and
+        copy any committed cache onto the response before normal cache storage.
+
+        An MTP generator can have verified lookahead in its private cache past
+        the one token surfaced by this response. Its rollback occurs only when
+        the generator resumes, which a scheduler-side stop deliberately skips.
+        Never publish that speculative cache as a reusable conversation prefix;
+        closing the request and discarding the cache is the only lossless
+        terminal action until the verifier exposes a committed-cache boundary.
+        """
+        batch_generator = self.batch_generator
+        if batch_generator is None:
+            raise RuntimeError(
+                "scheduler generated a terminal response without a BatchGenerator"
+            )
+        retain_cache = getattr(self, "spec_decode_runtime_method", None) != "mtp"
+        caches = batch_generator.remove(
+            [response.uid],
+            return_prompt_caches=retain_cache,
+        )
+        if not retain_cache:
+            return
+        cached = caches.get(response.uid) if isinstance(caches, dict) else None
+        if cached is None:
+            return
+        response.prompt_cache, response.all_tokens = cached
+
     def _process_batch_responses(
         self, responses: list[Any]
     ) -> tuple[list[RequestOutput], set[str]]:
@@ -7400,6 +7450,9 @@ class Scheduler:
 
             # Check if finished
             if finish_reason is not None:
+                scheduler_generated_finish = response.finish_reason is None
+                if scheduler_generated_finish:
+                    self._retire_scheduler_finished_uid(response)
                 response.finish_reason = finish_reason
                 if response.finish_reason == "stop":
                     request.set_finished(RequestStatus.FINISHED_STOPPED)

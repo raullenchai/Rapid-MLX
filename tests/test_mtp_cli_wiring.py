@@ -1375,6 +1375,7 @@ class _StubBatchGen:
         # call — the "next sampled token." Tests can override.
         self._orig_next_sample = mx.array([999], dtype=mx.uint32)
         self._orig_next_logprob = mx.array([0.0])
+        self.next_responses: list = []
 
     def _step(self):
         """Model-side ``mlx_lm.generate.GenerationBatch._step`` mimic.
@@ -1401,6 +1402,10 @@ class _StubBatchGen:
         self._next_logprobs = [self._orig_next_logprob]
         _ = mx.eval  # noqa: F841 — imported to keep parity with real path
         return current_list, self._next_logprobs
+
+    def next(self):
+        """Minimal completion boundary used by lifecycle-hook tests."""
+        return list(self.next_responses)
 
 
 class _StubModel:
@@ -1665,26 +1670,8 @@ def test_install_mtp_vendored_initial_skip_log_is_deduplicated_on_uid_reuse(
     assert gb.orig_step_calls == 2
 
 
-def test_install_mtp_vendored_falls_back_to_orig_step_on_batch_size_growth(monkeypatch):
-    """Codex round-A blocker #3 + round-L BLOCKING #2 regression
-    guard.
-
-    Two contracts under test:
-
-    * Round-A: a uid that ran MTP for a while then transitions to a
-      B>1 batch closes its generator (side-effect observable).
-
-    * Round-L: prior round-H revision raised ``RuntimeError`` when
-      B>1 arrived after MTP had emitted tokens, killing the request.
-      That is hostile to a multi-request server where B>1 is the
-      norm. Round-L flips the behavior: the MTP generator is
-      closed, the uid is disabled, and the wrapper delegates to
-      ``_orig_step()`` — the request continues on plain decode with
-      a bounded stream artifact (see :func:`_log_mtp_mid_stream_
-      handoff_once` for the rationale).
-
-    The historical B>1 raise from round-H is intentionally gone.
-    """
+def test_install_mtp_vendored_fails_closed_on_batch_size_growth(monkeypatch):
+    """A defensive B>1 violation must never emit a stale baseline token."""
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -1737,112 +1724,95 @@ def test_install_mtp_vendored_falls_back_to_orig_step_on_batch_size_growth(monke
     gb._step()
     assert fake_gen_calls["closed"] == 0
 
-    # Now transition to B=2. Round-L BLOCKING #2: uid=7 has state,
-    # but the wrapper MUST NOT raise. It MUST close the stale
-    # generator (round-A), delegate to _orig_step (round-L), and
-    # increment the mid-stream handoff counter (operator-visible
-    # via stats).
+    # Production admission keeps MTP at B=1. Simulate a broken admission
+    # boundary and prove the wrapper terminates before _orig_step can consume
+    # the last-emitted placeholder as a new model input.
     orig_step_before = gb.orig_step_calls
     gb.uids = [1, 2]
-    result = gb._step()
+    with pytest.raises(RuntimeError, match="admission invariant violated"):
+        gb._step()
 
-    # Round-L: fall through to _orig_step, not raise.
-    assert result is not None, (
-        "codex round-L BLOCKING #2 regression: B>1 mid-stream must "
-        "return _orig_step()'s tuple, not None. The wrapper is "
-        "expected to hand off silently, not abort."
-    )
-    assert gb.orig_step_calls == orig_step_before + 1, (
-        "codex round-L BLOCKING #2 regression: B>1 mid-stream did "
-        "NOT delegate to _orig_step. The request would have been "
-        "killed by a RuntimeError under the round-H invariant that "
-        "round-L relaxed."
-    )
+    assert gb.orig_step_calls == orig_step_before
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_batch_size"] >= 1
-    assert stats["ft_mid_stream_handoff"] >= 1, (
-        "codex round-L BLOCKING #2 regression: mid-stream handoff "
-        "counter did not fire. Operator loses observability of the "
-        "MTP → plain decode transition."
-    )
-    assert fake_gen_calls["closed"] >= 1, (
-        "codex round-A blocker #3 regression: B>1 handoff path did "
-        "not close the stale generator on the way out."
-    )
+    assert stats["invariant_violations"] == 1
+    assert fake_gen_calls["closed"] == 1
 
 
-def test_install_mtp_vendored_b_gt_1_handoff_keeps_yielding_tokens(monkeypatch):
-    """Codex round-L BLOCKING #2 positive test.
-
-    Once the mid-stream B>1 handoff has fired, subsequent _step
-    calls (still under B>1) MUST keep calling _orig_step — the
-    request stays on plain decode until it completes. The disable
-    marker on the affected uid ensures we don't accidentally re-arm
-    MTP mid-request.
-    """
+def test_mtp_running_limit_serializes_requests_without_changing_queue_capacity():
     from types import SimpleNamespace
 
-    import mlx.core as mx
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
-    from vllm_mlx.scheduler import _install_mtp_vendored
-    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
-
-    fake_gen_calls = {"constructed": 0, "closed": 0}
-
-    class _FakeGen:
-        def __init__(self):
-            fake_gen_calls["constructed"] += 1
-            self._n = 0
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            self._n += 1
-            return (self._n + 1000, mx.array([0.0]), False)
-
-        def close(self):
-            fake_gen_calls["closed"] += 1
-
-    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
-
-    batch_gen, gb = _make_batch_gen_with_gb()
-    gb.uids = [7]
-    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
-    ok = _install_mtp_vendored(
-        batch_gen,
-        model=_StubModel(),
-        requests={"req-7": request_stub},
-        uid_to_request_id={7: "req-7"},
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SchedulerConfig(
+        spec_decode="mtp", max_num_seqs=256, max_concurrent_requests=256
     )
-    assert ok is True
+    scheduler.spec_decode_runtime_attempted = False
+    scheduler.spec_decode_runtime_method = None
+    assert scheduler._max_running_sequences() == 1
+    assert scheduler.config.max_concurrent_requests == 256
 
-    gb._next_tokens = mx.array([500], dtype=mx.uint32)
-    gb._next_logprobs = [mx.array([0.0])]
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+    assert scheduler._max_running_sequences() == 1
 
-    # Prime MTP with one successful call, then trigger B>1 handoff.
-    gb._step()  # FIRST-call: MTP primed
-    gb.uids = [1, 2]
-    gb._step()  # handoff fires
-    # Handoff happened via _record_terminal_disable, so uid=7 is
-    # now in _disabled_uids (accessible via the state map keyed by
-    # uid). But the wrapper is now installed at B>1, and the
-    # disable gate only fires when len(gb.uids)==1. The B>1 gate
-    # in _mtp_step should keep firing for every subsequent step
-    # while B>1 — the request never re-enters MTP even if the
-    # batch later returns to B=1 for THIS uid because it's
-    # disabled.
+    # A definitive MTP gate miss means this generator is ordinary decode;
+    # restore the configured batch width instead of serializing forever.
+    scheduler.spec_decode_runtime_method = None
+    assert scheduler._max_running_sequences() == 256
 
-    orig_before = gb.orig_step_calls
-    for _ in range(5):
-        gb._step()
-    assert gb.orig_step_calls == orig_before + 5, (
-        "codex round-L BLOCKING #2 regression: post-handoff _step "
-        "calls did not consistently delegate to _orig_step. The "
-        "request must continue on plain decode after the handoff."
+    scheduler.config = SimpleNamespace(spec_decode="none", max_num_seqs=17)
+    assert scheduler._max_running_sequences() == 17
+
+
+def test_mtp_install_gate_miss_restores_plain_batch_width_in_same_schedule_tick():
+    """An unsupported MTP runtime must not serialize ordinary decoding."""
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.request import Request, SamplingParams
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda _text: [1]
+    scheduler = Scheduler(
+        MagicMock(),
+        tokenizer,
+        SchedulerConfig(spec_decode="mtp", max_num_seqs=4),
     )
-    stats = batch_gen._mtp_vendored_stats
-    assert stats["ft_batch_size"] >= 5
+    for index in range(2):
+        scheduler.waiting.append(
+            Request(
+                f"req-{index}",
+                "prompt",
+                SamplingParams(max_tokens=4),
+                prompt_token_ids=[1, 2],
+            )
+        )
+
+    batch_generator = MagicMock()
+    batch_generator.insert.side_effect = [[7], [8]]
+    scheduler.batch_generator = batch_generator
+    scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+    scheduler._register_uid_processors = MagicMock()
+
+    install_checks = 0
+
+    def ensure_after_failed_install(_sampling_params):
+        nonlocal install_checks
+        install_checks += 1
+        if install_checks == 1:
+            scheduler.spec_decode_runtime_attempted = True
+            scheduler.spec_decode_runtime_method = None
+        return True
+
+    scheduler._ensure_batch_generator = ensure_after_failed_install
+
+    scheduled = scheduler._schedule_waiting()
+
+    assert [request.request_id for request in scheduled] == ["req-0", "req-1"]
+    assert list(scheduler.running) == ["req-0", "req-1"]
+    assert batch_generator.insert.call_count == 2
 
 
 def test_install_mtp_vendored_b_gt_1_soft_fallthrough_when_no_state():
@@ -1875,6 +1845,315 @@ def test_install_mtp_vendored_b_gt_1_soft_fallthrough_when_no_state():
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_batch_size"] >= 1
     assert gb.orig_step_calls == 1
+
+
+@pytest.mark.parametrize("departure", ["finish", "remove"])
+def test_install_mtp_vendored_reaps_request_state_on_departure(
+    monkeypatch,
+    departure,
+):
+    """Normal completion and cancellation both release generator caches."""
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    closed: list[int] = []
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (1001, mx.array([0.0]), False)
+
+        def close(self):
+            closed.append(7)
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    present = {7}
+    batch_gen._find_uids = lambda uids: {
+        uid: (2, index) for index, uid in enumerate(sorted(present)) if uid in set(uids)
+    }
+
+    def remove(uids, return_prompt_caches=False):
+        present.difference_update(uids)
+        return {} if return_prompt_caches else None
+
+    batch_gen.remove = remove
+    gb.uids = [7]
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={
+            "req-7": SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+        },
+        uid_to_request_id={7: "req-7"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    gb._step()
+    assert set(gb._mtp_vendored_state) == {7}
+
+    if departure == "finish":
+        gb.next_responses = [SimpleNamespace(uid=7, finish_reason="stop")]
+        gb.next()
+    else:
+        batch_gen.remove([7])
+
+    assert closed == [7]
+    assert gb._mtp_vendored_state == {}
+    assert gb._mtp_vendored_disabled_uids == {}
+
+
+def test_scheduler_text_stop_retires_mtp_state_before_next_request(monkeypatch):
+    """A scheduler-side text stop must free the B=1 MTP slot immediately.
+
+    mlx-lm cannot see user-supplied text stop strings, so its response has no
+    finish reason and its GenerationBatch row remains live.  The scheduler
+    must remove that row through the same lifecycle hook as cancellation
+    before admitting the next queued request; otherwise the next request makes
+    the vendored verifier observe B=2 with stale request-local state.
+    """
+    from unittest.mock import MagicMock
+
+    import mlx.core as mx
+
+    from vllm_mlx.request import Request, RequestStatus, SamplingParams
+    from vllm_mlx.scheduler import (
+        Scheduler,
+        SchedulerConfig,
+        _install_mtp_vendored,
+    )
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (1001, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda _text: [1]
+    scheduler = Scheduler(
+        MagicMock(),
+        tokenizer,
+        SchedulerConfig(spec_decode="mtp", max_num_seqs=4),
+    )
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    present = {7}
+    cache_return_requests: list[bool] = []
+
+    def find_uids(uids):
+        return {
+            uid: (2, index)
+            for index, uid in enumerate(sorted(present))
+            if uid in set(uids)
+        }
+
+    def remove(uids, return_prompt_caches=False):
+        cache_return_requests.append(return_prompt_caches)
+        removed = [uid for uid in uids if uid in present]
+        present.difference_update(removed)
+        gb.uids = [uid for uid in gb.uids if uid in present]
+        if return_prompt_caches:
+            return {uid: (None, []) for uid in removed}
+        return None
+
+    batch_gen._find_uids = find_uids
+    batch_gen.remove = remove
+    scheduler.batch_generator = batch_gen
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+
+    first = Request(
+        "req-7",
+        "prompt",
+        SamplingParams(max_tokens=100, temperature=0.0, stop=["STOP"]),
+    )
+    first.status = RequestStatus.RUNNING
+    first.num_prompt_tokens = 1
+    first.batch_uid = 7
+    first._decoder = MagicMock()
+    first._decoder.add_token.return_value = " STOP"
+    first._decoder.get_full_text.return_value = "prefix STOP"
+    first._decoder.prev_text = "prefix "
+    scheduler.running[first.request_id] = first
+    scheduler.uid_to_request_id[7] = first.request_id
+    scheduler.request_id_to_uid[first.request_id] = 7
+
+    gb.uids = [7]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=scheduler.running,
+        uid_to_request_id=scheduler.uid_to_request_id,
+    )
+    gb._step()
+    assert set(gb._mtp_vendored_state) == {7}
+
+    response = SimpleNamespace(
+        uid=7,
+        token=501,
+        finish_reason=None,
+        logprobs=None,
+    )
+    outputs, finished = scheduler._process_batch_responses([response])
+    assert outputs[0].finish_reason == "stop"
+    assert finished == {first.request_id}
+    assert present == set()
+    assert gb._mtp_vendored_state == {}
+    assert not hasattr(response, "prompt_cache")
+    assert cache_return_requests == [False]
+
+    scheduler._cleanup_finished(finished)
+    second = Request(
+        "req-8",
+        "next",
+        SamplingParams(max_tokens=100, temperature=0.0),
+    )
+    second.status = RequestStatus.RUNNING
+    second.batch_uid = 8
+    scheduler.running[second.request_id] = second
+    scheduler.uid_to_request_id[8] = second.request_id
+    scheduler.request_id_to_uid[second.request_id] = 8
+    present.add(8)
+    gb.uids = [8]
+    gb.tokens = [[]]
+    gb._next_tokens = mx.array([600], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    gb._step()
+    assert set(gb._mtp_vendored_state) == {8}
+
+
+def test_install_mtp_vendored_partial_remove_reaps_only_departed_uid():
+    """A failed multi-uid remove must retain state for members still live."""
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    present = {7, 8}
+    batch_gen._find_uids = lambda uids: {
+        uid: (2, index) for index, uid in enumerate(sorted(present)) if uid in set(uids)
+    }
+
+    def partial_remove(uids, return_prompt_caches=False):
+        present.remove(uids[0])
+        raise RuntimeError("simulated partial remove")
+
+    batch_gen.remove = partial_remove
+    assert _install_mtp_vendored(batch_gen, model=_StubModel()) is True
+
+    closed: list[int] = []
+
+    class _Closable:
+        def __init__(self, uid):
+            self.uid = uid
+
+        def close(self):
+            closed.append(self.uid)
+
+    gb._mtp_vendored_state.update(
+        {
+            7: {"gen": _Closable(7), "queue": []},
+            8: {"gen": _Closable(8), "queue": []},
+        }
+    )
+    gb._mtp_vendored_disabled_uids.update({7: "req-7", 8: "req-8"})
+
+    with pytest.raises(RuntimeError, match="partial remove"):
+        batch_gen.remove([7, 8])
+
+    assert closed == [7]
+    assert set(gb._mtp_vendored_state) == {8}
+    assert gb._mtp_vendored_disabled_uids == {8: "req-8"}
+
+
+@pytest.mark.parametrize("finder_shape", ["missing", "raises"])
+def test_install_mtp_vendored_partial_remove_keeps_state_when_departure_unknown(
+    finder_shape,
+):
+    """An unobservable partial removal cannot justify reaping live state."""
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+
+    def partial_remove(_uids, return_prompt_caches=False):
+        raise RuntimeError("simulated partial remove")
+
+    batch_gen.remove = partial_remove
+    if finder_shape == "raises":
+
+        def broken_finder(_uids):
+            raise RuntimeError("finder unavailable")
+
+        batch_gen._find_uids = broken_finder
+
+    assert _install_mtp_vendored(batch_gen, model=_StubModel()) is True
+    gb._mtp_vendored_state[7] = {"gen": None, "queue": []}
+
+    with pytest.raises(RuntimeError, match="partial remove"):
+        batch_gen.remove([7])
+
+    assert set(gb._mtp_vendored_state) == {7}
+
+
+@pytest.mark.parametrize(
+    ("returned_caches", "expected_cache"),
+    [
+        ({}, None),
+        ({7: (["cache"], [1, 2])}, (["cache"], [1, 2])),
+    ],
+)
+def test_scheduler_stop_retirement_preserves_only_committed_plain_cache(
+    returned_caches,
+    expected_cache,
+):
+    """Plain decode keeps committed cache; a missing cache stays absent."""
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.spec_decode_runtime_method = None
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.remove.return_value = returned_caches
+    response = SimpleNamespace(uid=7)
+
+    scheduler._retire_scheduler_finished_uid(response)
+
+    scheduler.batch_generator.remove.assert_called_once_with(
+        [7], return_prompt_caches=True
+    )
+    if expected_cache is None:
+        assert not hasattr(response, "prompt_cache")
+    else:
+        assert (response.prompt_cache, response.all_tokens) == expected_cache
+
+
+def test_scheduler_stop_retirement_requires_live_batch_generator():
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = None
+
+    with pytest.raises(RuntimeError, match="without a BatchGenerator"):
+        scheduler._retire_scheduler_finished_uid(SimpleNamespace(uid=7))
 
 
 def test_install_mtp_vendored_first_call_construction_failure_does_not_double_book(
@@ -2230,18 +2509,8 @@ def test_install_mtp_vendored_cleanup_does_not_clear_disabled_uids(monkeypatch):
     )
 
 
-def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypatch):
-    """Codex round-G BLOCKING #2 regression guard (StopIteration branch).
-
-    On ``StopIteration`` mid-stream, the wrapper must:
-    (a) record the current request_id in ``_disabled_uids`` so any
-        retry short-circuits to plain decode; and
-    (b) raise ``RuntimeError`` so mlx-lm surfaces the failure.
-
-    Earlier revision called ``_cleanup_uid`` which cleared the
-    disable, meaning a retry on the same uid+request_id would re-
-    enter FIRST-call construction and hit the same bug.
-    """
+def test_install_mtp_vendored_stop_iteration_latches_terminal_uid(monkeypatch):
+    """A broken generator cannot retry through stale plain-decode state."""
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -2266,11 +2535,13 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [88]
     request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    requests = {"req-88": request_stub}
+    uid_to_request_id = {88: "req-88"}
     ok = _install_mtp_vendored(
         batch_gen,
         model=_StubModel(),
-        requests={"req-88": request_stub},
-        uid_to_request_id={88: "req-88"},
+        requests=requests,
+        uid_to_request_id=uid_to_request_id,
     )
     assert ok is True
 
@@ -2282,8 +2553,7 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     gb._step()
 
     # Second call — draining the queue is empty, pulls from _EmptyGen
-    # which raises StopIteration. Wrapper must record 88 in
-    # _disabled_uids (with req-88 as the marker) before raising.
+    # which raises StopIteration. Wrapper must record a terminal marker.
     try:
         gb._step()
     except RuntimeError as e:
@@ -2292,25 +2562,26 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
             or "stopiteration" in str(e).lower()
             or "before mlx-lm hit" in str(e).lower()
         )
-        # Simulate a retry: if mlx-lm re-enters _mtp_step with the
-        # same uid+request_id, the disable marker MUST fire and
-        # short-circuit to _orig_step (not re-enter construction).
-        # This can happen if the caller uses the exception as
-        # "back off then retry" rather than propagating.
+        # A retry on the same uid must fail closed again. It may not enter
+        # ordinary decode with the last-emitted token as its next input.
         gb._next_tokens = mx.array([500], dtype=mx.uint32)
         gb._next_logprobs = [mx.array([0.0])]
         gb.uids = [88]
         pre_retry_orig_step_calls = gb.orig_step_calls
+        with pytest.raises(RuntimeError, match="refusing to retry terminal"):
+            gb._step()
+        assert gb.orig_step_calls == pre_retry_orig_step_calls
+        assert gb._mtp_vendored_terminal_uids == {88: "req-88"}
+
+        # mlx-lm may reuse the integer uid after the failed request is removed.
+        # A different authoritative request id proves this is a new owner and
+        # clears the terminal latch before constructing its fresh generator.
+        uid_to_request_id[88] = "req-89"
+        requests["req-89"] = request_stub
+        gb._next_tokens = mx.array([600], dtype=mx.uint32)
+        gb._next_logprobs = [mx.array([0.0])]
         gb._step()
-        # The wrapper hit the disable short-circuit and called
-        # _orig_step. NOT a fresh construction attempt.
-        assert gb.orig_step_calls == pre_retry_orig_step_calls + 1, (
-            "codex round-G BLOCKING #2 regression: retry on the same "
-            "uid+request_id after a StopIteration failure did NOT hit "
-            "the disable short-circuit."
-        )
-        stats = batch_gen._mtp_vendored_stats
-        assert stats.get("ft_disabled", 0) >= 1
+        assert gb._mtp_vendored_terminal_uids == {}
         return
     raise AssertionError(
         "codex round-G BLOCKING #2 regression: wrapper did NOT raise "
@@ -2318,23 +2589,10 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     )
 
 
-def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
+def test_install_mtp_vendored_non_greedy_mid_stream_fails_closed(
     monkeypatch,
 ):
-    """Codex round-L BLOCKING #3 regression guard.
-
-    Prior round-H revision raised ``RuntimeError`` when sampling
-    switched to non-greedy after MTP had already emitted tokens.
-    That killed the request whenever an operator adjusted sampling
-    params mid-stream.
-
-    Round-L flip: the wrapper closes the MTP generator, marks the
-    uid disabled, delegates to ``_orig_step()``, and logs a WARN
-    for the operator. Subsequent steps stay on plain decode via
-    the disable short-circuit. Same bounded stream-artifact
-    tradeoff as the B>1 handoff (see :func:`_log_mtp_mid_stream_
-    handoff_once`).
-    """
+    """A changed sampling contract cannot cross to stale plain state."""
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -2379,60 +2637,27 @@ def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
     # First call — MTP primed. _state[55] populated.
     gb._step()
 
-    # Mid-stream switch to temp > 0 — round-L handoff branch.
+    # Mid-stream switch to temp > 0 must terminate before ordinary decode.
     orig_before = gb.orig_step_calls
     sp.temperature = 0.7
-    result = gb._step()
+    with pytest.raises(RuntimeError, match="sampling parameters changed"):
+        gb._step()
 
-    assert result is not None, (
-        "codex round-L BLOCKING #3 regression: non-greedy mid-stream "
-        "must delegate to _orig_step, not raise. The wrapper hands "
-        "off silently and lets the request continue on plain decode."
-    )
-    assert gb.orig_step_calls == orig_before + 1, (
-        "codex round-L BLOCKING #3 regression: non-greedy mid-stream "
-        "did NOT delegate to _orig_step. Under round-H the request "
-        "would have been killed by a RuntimeError; round-L relaxes "
-        "that to a fallback."
-    )
+    assert gb.orig_step_calls == orig_before
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_non_greedy"] >= 1
-    assert stats["ft_mid_stream_handoff"] >= 1, (
-        "codex round-L BLOCKING #3 regression: mid-stream handoff "
-        "counter did not fire on non-greedy transition."
-    )
-    assert fake_gen_calls["closed"] >= 1, (
-        "codex round-L BLOCKING #3: non-greedy handoff MUST close "
-        "the stale MTP generator so nothing dangles across the "
-        "request tail."
-    )
+    assert stats["invariant_violations"] == 1
+    assert fake_gen_calls["closed"] == 1
 
-    # Subsequent steps stay on plain decode (uid=55 is now disabled).
-    gb._next_tokens = mx.array([301], dtype=mx.uint32)
-    gb._next_logprobs = [mx.array([0.0])]
-    pre = gb.orig_step_calls
-    gb._step()
-    assert gb.orig_step_calls == pre + 1, (
-        "codex round-L BLOCKING #3 regression: post-handoff retry "
-        "did not hit the disable short-circuit; a new MTP generator "
-        "would be constructed and the fallback design regressed."
-    )
+    with pytest.raises(RuntimeError, match="refusing to retry terminal"):
+        gb._step()
+    assert gb.orig_step_calls == orig_before
 
 
-def test_install_mtp_vendored_logits_processors_mid_stream_falls_back_to_orig_step(
+def test_install_mtp_vendored_logits_processors_mid_stream_fails_closed(
     monkeypatch,
 ):
-    """Codex round-L BLOCKING #4 regression guard.
-
-    Prior round-H revision raised ``RuntimeError`` when a logits
-    processor was added after MTP had already emitted. That killed
-    the request whenever an operator wired a guided-decoding
-    grammar (or similar per-request processor) mid-stream.
-
-    Round-L flip: close the MTP generator, mark uid disabled,
-    delegate to ``_orig_step`` and log a WARN. Subsequent steps
-    stay on plain decode via the disable short-circuit.
-    """
+    """A newly added stateful processor cannot cross a stale handoff."""
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -2475,41 +2700,21 @@ def test_install_mtp_vendored_logits_processors_mid_stream_falls_back_to_orig_st
     # First call — MTP primed.
     gb._step()
 
-    # Mid-stream: install a truthy logits processor — round-L handoff branch.
+    # Mid-stream: install a truthy logits processor and fail before fallback.
     gb.logits_processors = [[lambda tokens, logits: logits]]
     orig_before = gb.orig_step_calls
-    result = gb._step()
+    with pytest.raises(RuntimeError, match="sampling contract changed"):
+        gb._step()
 
-    assert result is not None, (
-        "codex round-L BLOCKING #4 regression: mid-stream logits "
-        "processor MUST delegate to _orig_step, not raise."
-    )
-    assert gb.orig_step_calls == orig_before + 1, (
-        "codex round-L BLOCKING #4 regression: logits-processor "
-        "mid-stream did NOT delegate to _orig_step. The request "
-        "would have been killed by a RuntimeError under the "
-        "round-H invariant that round-L relaxed."
-    )
+    assert gb.orig_step_calls == orig_before
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_logits_processors"] >= 1
-    assert stats["ft_mid_stream_handoff"] >= 1, (
-        "codex round-L BLOCKING #4 regression: mid-stream handoff "
-        "counter did not fire on lp transition."
-    )
-    assert fake_gen_calls["closed"] >= 1, (
-        "codex round-L BLOCKING #4: lp handoff MUST close the "
-        "stale MTP generator on the way out."
-    )
+    assert stats["invariant_violations"] == 1
+    assert fake_gen_calls["closed"] == 1
 
-    # Subsequent step stays on plain decode (uid=33 disabled).
-    gb._next_tokens = mx.array([401], dtype=mx.uint32)
-    gb._next_logprobs = [mx.array([0.0])]
-    pre = gb.orig_step_calls
-    gb._step()
-    assert gb.orig_step_calls == pre + 1, (
-        "codex round-L BLOCKING #4 regression: post-handoff retry "
-        "did not hit the disable short-circuit."
-    )
+    with pytest.raises(RuntimeError, match="refusing to retry terminal"):
+        gb._step()
+    assert gb.orig_step_calls == orig_before
 
 
 def test_install_mtp_vendored_seeded_before_state_soft_fallthrough(monkeypatch):

@@ -35,7 +35,10 @@ def _make_scheduler() -> Scheduler:
     tokenizer = MagicMock()
     tokenizer.encode = lambda s: list(range(len(s.split())))
     config = SchedulerConfig(max_num_seqs=4)
-    return Scheduler(model, tokenizer, config)
+    scheduler = Scheduler(model, tokenizer, config)
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.remove.return_value = {}
+    return scheduler
 
 
 def _make_request(
