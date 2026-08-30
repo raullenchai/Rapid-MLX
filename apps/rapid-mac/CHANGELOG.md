@@ -136,6 +136,11 @@ can actually understand.
   listing, pull admission, or chat model switching.
   ([#2610](https://github.com/raullenchai/Rapid-MLX/pull/2610),
   [#2613](https://github.com/raullenchai/Rapid-MLX/pull/2613))
+- **Pulled variants resolve consistently on serve.** Pulling an explicit
+  `--bits` or `--format` variant records the selected subfolder so `serve`
+  loads the same checkpoint instead of the repository root. Catalog aliases
+  retain precedence over the pull marker.
+  ([#2558](https://github.com/raullenchai/Rapid-MLX/pull/2558))
 - **Oversized vision inputs fit the request budget automatically.** Images are
   reduced against the model's patch-aware token ceiling before preprocessing,
   with one measured retry for processor rounding. If the minimum aligned image
