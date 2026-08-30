@@ -71,11 +71,20 @@ jobs:
     # 90 rather than auto-release's 125 because this manual job does NOT run
     # the release-gate extras (coherence golden + perf) — those are gated on
     # RAPID_MLX_RELEASE_GATE=1, which only the release path sets. 94 min of
-    # pathological-retry tail still exceeds 90, but that path requires every
-    # agent to burn every retry; a genuine hang fails on its own per-agent
-    # budget long before, and this job is operator-triggered rather than
-    # release-blocking, so the tighter cap is the deliberate trade.
-    timeout-minutes: 90
+    # agent pathological-retry tail still exceeds the old 90, but that path
+    # requires every agent to burn every retry; a genuine hang fails on its own
+    # per-agent budget long before, and this job is operator-triggered rather
+    # than release-blocking.
+    #
+    # 140, not 90/94: this job now ALSO drives the --sequences gate
+    # (top10_sequences.yaml) after the agents. Its budgets, documented in
+    # agent_smoke.sh: std block <= 3600s (60 min), MTP 3 serves x (600s boot +
+    # 1500s seq) = 6300s (105 min) — a ~165 min pathological tail, but each
+    # step/sequence fails on its own budget in seconds, so only a slow-but-
+    # passing run reaches the cap. Healthy run: agents ~8-10 min + std ~25 +
+    # MTP ~30 = ~65 min; 140 keeps headroom for cold model loads on the shared
+    # Studio without guillotining a legitimately warm-up-heavy run.
+    timeout-minutes: 140
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Tier-1 agent re-verification
@@ -93,4 +102,10 @@ jobs:
           # Reviewed perf floor (tok/s). Blank → perf runs advisory (prints the
           # number to review); set it here to enforce. Never a fabricated baseline.
           RAPID_MLX_PERF_MIN_TPS: ${{ inputs.perf_min_tps }}
+          # #2496: also drive the top-10 residency-load sequences AFTER the
+          # agents — non-MTP loads + post-load completions on the warm serve,
+          # plus a dedicated MTP serve (own port) per MTP sequence whose
+          # /metrics is scraped for the #2421 accept-rate floor. Reproduces the
+          # #2438 "second load after an MTP primary" path.
+          RAPID_MLX_SEQUENCES_YAML: tests/integrations/top10_sequences.yaml
         run: bash tests/integrations/agent_smoke.sh "$MODEL"
