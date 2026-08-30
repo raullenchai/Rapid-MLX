@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,27 @@ def _load_module():
 @pytest.fixture(scope="module")
 def constraints():
     return _load_module()
+
+
+def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
+    emitted = constraints.emit_constraints().splitlines()
+    assert emitted[0].startswith("# Release-tested versions")
+    assert emitted[1:] == [
+        "mlx==0.32.2",
+        "transformers==5.12.1",
+        "mlx-vlm==0.6.16",
+        "mflux==0.19.0",
+    ]
+
+
+def test_emit_constraints_needs_only_the_python_standard_library() -> None:
+    result = subprocess.run(
+        [sys.executable, "-S", str(SCRIPT), "--emit-constraints"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "mlx-vlm==0.6.16" in result.stdout
 
 
 def test_exact_reduced_vision_runtime_is_allowed(constraints) -> None:
