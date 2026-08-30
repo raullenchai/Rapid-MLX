@@ -163,6 +163,22 @@ struct EmbeddedBearerCredentialTests {
         #expect(material.issue == .writeFailed)
     }
 
+    @Test("Per-launch material reports a persisted credential cleanup failure")
+    func perLaunchCleanupFailureIsVisible() {
+        let credentialStore = RecordingCredentialStore(clearResults: [false])
+
+        let material = EmbeddedBearerMaterialResolver.resolve(
+            lifetime: .perLaunch,
+            store: credentialStore,
+            now: now,
+            generateSecret: { self.secret(seed: 10) }
+        )
+
+        #expect(!material.isPersisted)
+        #expect(material.issue == .deleteFailed)
+        #expect(credentialStore.clearCount == 1)
+    }
+
     @Test("Secret storage is separate from UserDefaults policy storage")
     func storageSeparation() {
         let suiteName = "bearer-storage-separation"
@@ -241,6 +257,76 @@ struct ServerManagerEmbeddedBearerTests {
 
         #expect(server.embeddedBearerLifetime == .daily)
         #expect(defaults.string(forKey: "rapid.embeddedBearer.lifetime.v1") == "daily")
+        #expect(credentialStore.clearCount == 0)
+    }
+
+    @Test("Selecting Every start clears persisted storage without replacing the active bearer")
+    func selectingPerLaunchClearsPersistedStorage() {
+        let suiteName = "server-bearer-select-per-launch"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let credentialStore = RecordingCredentialStore()
+        let server = ServerManager(
+            testingState: .ready(alias: "model"),
+            activeBearer: "active-secret",
+            sessionDefaults: defaults,
+            bearerCredentialStore: credentialStore
+        )
+        server.setEmbeddedBearerLifetime(.daily)
+        _ = server.rotateEmbeddedBearerNow(now: Date(timeIntervalSince1970: 10))
+
+        server.setEmbeddedBearerLifetime(.perLaunch)
+
+        #expect(server.embeddedBearerLifetime == .perLaunch)
+        #expect(defaults.string(forKey: "rapid.embeddedBearer.lifetime.v1") == "perLaunch")
+        #expect(credentialStore.clearCount == 1)
+        #expect(server.activeBearer == "active-secret")
+        #expect(server.embeddedBearerStatus == .materialized(
+            rotatedAt: Date(timeIntervalSince1970: 10),
+            isPersisted: false,
+            issue: nil
+        ))
+    }
+
+    @Test("Failed Every start cleanup stays visible and can be retried")
+    func failedPerLaunchCleanupCanBeRetried() {
+        let suiteName = "server-bearer-retry-per-launch"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let credentialStore = RecordingCredentialStore(clearResults: [false, true])
+        let server = ServerManager(
+            testingState: .ready(alias: "model"),
+            activeBearer: "active-secret",
+            sessionDefaults: defaults,
+            bearerCredentialStore: credentialStore
+        )
+        server.setEmbeddedBearerLifetime(.daily)
+
+        server.setEmbeddedBearerLifetime(.perLaunch)
+
+        #expect(server.embeddedBearerLifetime == .perLaunch)
+        #expect(defaults.string(forKey: "rapid.embeddedBearer.lifetime.v1") == "perLaunch")
+        #expect(server.activeBearer == "active-secret")
+        #expect(server.embeddedBearerStatus == .materialized(
+            rotatedAt: nil,
+            isPersisted: true,
+            issue: .deleteFailed
+        ))
+        #expect(server.retryEmbeddedBearerCleanup())
+        #expect(credentialStore.clearCount == 2)
+        #expect(server.embeddedBearerStatus == .materialized(
+            rotatedAt: nil,
+            isPersisted: false,
+            issue: nil
+        ))
+    }
+
+    @Test("Settings explains failed embedded bearer cleanup without claiming success")
+    func cleanupFailureCopy() {
+        let copy = SettingsToolsPanel.embeddedBearerIssueCopy(.deleteFailed)
+
+        #expect(copy.contains("couldn’t be removed"))
+        #expect(copy.contains("Retry cleanup"))
     }
 
     @Test("Manual rotation persists only for persisted lifetimes")
@@ -279,7 +365,12 @@ struct ServerManagerEmbeddedBearerTests {
 
 private final class RecordingCredentialStore: EmbeddedBearerCredentialStoring, @unchecked Sendable {
     private(set) var saved: [EmbeddedBearerCredential] = []
-    private(set) var cleared = false
+    private(set) var clearCount = 0
+    private var clearResults: [Bool]
+
+    init(clearResults: [Bool] = [true]) {
+        self.clearResults = clearResults
+    }
 
     func loadCredential() -> EmbeddedBearerStorageResult {
         .missing
@@ -297,7 +388,8 @@ private final class RecordingCredentialStore: EmbeddedBearerCredentialStoring, @
 
     @discardableResult
     func clear() -> Bool {
-        cleared = true
-        return true
+        let index = min(clearCount, clearResults.count - 1)
+        clearCount += 1
+        return clearResults[index]
     }
 }

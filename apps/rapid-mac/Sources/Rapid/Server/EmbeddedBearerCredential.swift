@@ -19,7 +19,7 @@ enum EmbeddedBearerLifetime: String, CaseIterable, Equatable, Sendable {
     var summary: String {
         switch self {
         case .perLaunch:
-            return "Generate a one-time key for every model start. Nothing is stored in the Keychain."
+            return "Generate a one-time key for every model start instead of reusing a saved key."
         case .daily:
             return "Keep one Keychain-backed key for 24 hours across model starts and app restarts."
         case .explicit:
@@ -54,6 +54,7 @@ enum EmbeddedBearerStorageIssue: Equatable, Sendable {
     case corruptedCredential
     case unavailableKeychain
     case writeFailed
+    case deleteFailed
 }
 
 /// One start-time materialization of an embedded API credential. A persisted
@@ -194,12 +195,12 @@ enum EmbeddedBearerMaterialResolver {
 
         switch lifetime {
         case .perLaunch:
-            store.clear()
+            let clearedPersistedCredential = store.clear()
             return EmbeddedBearerMaterial(
                 secret: generatedSecret,
                 rotatedAt: now,
                 isPersisted: false,
-                issue: nil
+                issue: clearedPersistedCredential ? nil : .deleteFailed
             )
         case .daily:
             switch store.loadCredential() {

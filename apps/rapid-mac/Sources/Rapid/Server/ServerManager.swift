@@ -1128,6 +1128,32 @@ final class ServerManager {
     func setEmbeddedBearerLifetime(_ lifetime: EmbeddedBearerLifetime) {
         embeddedBearerLifetime = lifetime
         sessionDefaults?.set(lifetime.rawValue, forKey: "rapid.embeddedBearer.lifetime.v1")
+        if lifetime == .perLaunch {
+            retryEmbeddedBearerCleanup()
+        }
+    }
+
+    /// Make the per-launch storage promise true immediately, without changing
+    /// the bearer already held by a running child. A failed deletion remains a
+    /// visible, retryable state and the per-launch policy stays selected so the
+    /// next model start will never reuse the persisted credential.
+    @discardableResult
+    func retryEmbeddedBearerCleanup() -> Bool {
+        guard embeddedBearerLifetime == .perLaunch else { return false }
+        let cleared = bearerCredentialStore.clear()
+        let lastRotation: Date?
+        switch embeddedBearerStatus {
+        case .notMaterialized:
+            lastRotation = nil
+        case .materialized(let rotatedAt, _, _):
+            lastRotation = rotatedAt
+        }
+        embeddedBearerStatus = .materialized(
+            rotatedAt: lastRotation,
+            isPersisted: !cleared,
+            issue: cleared ? nil : .deleteFailed
+        )
+        return cleared
     }
 
     /// Persist a replacement under the current lifetime. A running child
