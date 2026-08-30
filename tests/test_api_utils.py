@@ -920,6 +920,7 @@ class TestMllmBackboneIsHybrid:
         import huggingface_hub
 
         from vllm_mlx import server
+        from vllm_mlx.api import utils as utils_mod
 
         alias = "qwen3.5-2b-4bit"
         repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
@@ -974,6 +975,32 @@ class TestMllmBackboneIsHybrid:
             "_ensure_model_downloaded",
             fail_on_network,
         )
+        # Keep the production checkpoint/routing path in the test.  Only the
+        # host capability is fixed so the hybrid checkpoint deterministically
+        # takes its supported text fallback on every CI machine.
+        monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 256.0)
+        monkeypatch.setattr(utils_mod, "mllm_hybrid_runtime_supported", lambda: False)
+
+        routing_config_inputs: list[str] = []
+        real_ensure_routing_config = server._ensure_routing_config
+
+        def capture_routing_config(model_name: str) -> None:
+            routing_config_inputs.append(model_name)
+            real_ensure_routing_config(model_name)
+
+        lane_inputs: list[str] = []
+        real_resolve_lane = server.resolve_serving_lane_decision
+
+        def capture_lane(model_name: str, **kwargs):
+            lane_inputs.append(model_name)
+            return real_resolve_lane(model_name, **kwargs)
+
+        monkeypatch.setattr(server, "_ensure_routing_config", capture_routing_config)
+        monkeypatch.setattr(
+            server,
+            "resolve_serving_lane_decision",
+            capture_lane,
+        )
 
         class StubEngine:
             is_mllm = False
@@ -1016,6 +1043,10 @@ class TestMllmBackboneIsHybrid:
         assert server._model_alias == alias
         assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
+        assert (
+            server._engine.kwargs["serving_lane_reason"]
+            == "vision_hybrid_runtime_unsupported"
+        )
 
         # CLI startup arrives with the canonical repo plus a matching saved
         # alias. That same-source identity remains valid and keeps its profile.
@@ -1023,6 +1054,8 @@ class TestMllmBackboneIsHybrid:
         assert server._model_alias == alias
         assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
+        assert routing_config_inputs == [repo, repo]
+        assert lane_inputs == [str(snapshot), str(snapshot)]
 
         # A removed/corrupt prior identity is stale process state, not a reason
         # to reject a valid current canonical request.
