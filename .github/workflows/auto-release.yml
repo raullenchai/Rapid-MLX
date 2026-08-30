@@ -282,7 +282,22 @@ jobs:
     # This outer cap is not a substitute for the per-request bounds: it only
     # prevents healthy checks near their individual budgets from being
     # guillotined by the job.
-    timeout-minutes: 175
+    # 240, not 175: the --sequences #2496 gate now follows the agents too.
+    # Its budgets, documented in agent_smoke.sh: std block <= 3600s (60 min),
+    # MTP 3 serves x (600s boot + 1500s seq) = 6300s (105 min) — a ~165 min
+    # pathological tail, but each step/sequence fails on its own budget in
+    # seconds, so only a slow-but-passing run reaches it. Healthy sequence path
+    # adds ~55 min to the previously-documented healthy agent+sidecar run; the
+    # prior 175 min cap would not have room for it. Recomputed worst case:
+    # agents ~121 min + sidecar ~33 + sequences ~165 = ~319, but the agent and
+    # sequence tails are the "burn every retry / every step hits its cap"
+    # pathological paths that fail on their internal budgets long before the
+    # job; 240 covers the realistic healthy path (agents ~8-10 + sequences
+    # ~55 + sidecar ~24 ≈ 90-100 min) with generous cold-start headroom. This
+    # outer cap is not a substitute for the per-step/per-agent bounds: it only
+    # prevents healthy checks near their individual budgets from being
+    # guillotined by the job.
+    timeout-minutes: 240
     # Serialize with the manual agent-gate.yml so two runs never contend for the
     # single runner / the serve port.
     concurrency:
@@ -337,7 +352,14 @@ jobs:
           "$V/bin/pip" install -q .
           echo "gate venv → $("$V/bin/rapid-mlx" --version) (releasing v$VERSION)"
 
-          RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
+          # #2496: also drive the top-10 residency-load sequences after the
+          # five agents — non-MTP loads + post-load completions on the warm
+          # serve, plus a DEDICATED MTP serve (own port) per MTP sequence whose
+          # /metrics is scraped for the #2421 accept-rate floor. Reproduces the
+          # #2438 "second load after an MTP primary" path (RED on a pre-#2441
+          # sha such as 62a038c7, GREEN on main).
+          RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh \
+            qwen3.6-35b-8bit --sequences tests/integrations/top10_sequences.yaml
 
           # Build the exact Desktop sidecar recipe and require real chat-photo
           # classification plus a real generated PNG to traverse their separate
