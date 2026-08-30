@@ -341,7 +341,10 @@ final class RapidUITestHarness {
     }
 
     func chatRequests() -> [[String: Any]] {
-        events().filter { $0["event"] as? String == "chat_request" }
+        events().filter {
+            $0["event"] as? String == "chat_request"
+                && $0["request_origin"] as? String != "background_assist"
+        }
     }
 
     @discardableResult
