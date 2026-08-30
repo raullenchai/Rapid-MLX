@@ -17,6 +17,56 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-08-30
+
+Rapid-MLX 0.13.2 makes long-running local assistants faster and more reliable,
+improves offline speech and Desktop safety, and promotes the exact signed
+Desktop candidate that passed release validation.
+
+### Added
+
+- **Opt-in native MTP for Qwen3.8 Flash-Next.** Target verification and atomic
+  recurrent-state rollback raise measured decode throughput by 36–42% across
+  128-token through 32K-context workloads while constrained requests retain
+  ordinary decoding.
+- **Conversation titles and follow-up suggestions.** Completed local chats can
+  derive a short title and offer three optional next steps without replacing a
+  user rename or displaying malformed output.
+- **Privacy-bounded activation milestones.** Desktop records the first
+  successful chat, dictation, and generated image only after explicit consent.
+
+### Changed
+
+- **Flash-Next long-context prefill is faster and reusable.** Batched QSA
+  index-cache construction reduced measured 2K, 8K, and 32K time to first token
+  by 28.9–32.5%, and semantic snapshots preserve reusable recurrent state
+  through batching and persistence.
+- **The Desktop download is smaller.** LZMA packaging and dependency-proven
+  pruning reduced the signed comparison DMG by 43.53% while retaining the
+  release contract.
+- **First-chat recommendations follow available memory.** New installs choose
+  a smaller default below 16 GB and prefer an eligible cached model in the same
+  memory tier.
+
+### Fixed
+
+- **Photo limits no longer make text chat look broken.** When a model's vision
+  lane needs more memory than the Mac has, Desktop now says that text chat is
+  still ready, recommends a lower-memory vision model, and dismisses the notice
+  after the user continues. ([#2778](https://github.com/raullenchai/Rapid-MLX/pull/2778))
+- Offline Kokoro pulls include their runtime assets, image attachments enforce
+  count and encoded-size budgets, and generated-image deletion uses a stable
+  app-owned confirmation sheet.
+- Model switching, request cancellation, required tool calls, explicit model
+  variants, oversized vision inputs, image-edit dimensions, suffix rollback,
+  MTP cache publication, and multilingual Parakeet metadata now retain their
+  validated contracts across the engine and Desktop.
+- Web browsing pins validated IPv4 and IPv6 destinations while preserving TLS
+  hostname verification, and Desktop credentials stay in Keychain-backed,
+  rotation-aware storage.
+- Protected publication promotes the exact signed and notarized Desktop
+  candidate bytes that passed pre-tag validation. ([#2775](https://github.com/raullenchai/Rapid-MLX/pull/2775))
+
 ## [0.13.2-rc1] — 2026-08-30
 
 ### Added
@@ -3564,7 +3614,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2-rc1...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...HEAD
+[0.13.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2-rc1...rapid-mac-v0.13.2
 [0.13.2-rc1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.1...rapid-mac-v0.13.2-rc1
 [0.13.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.0...rapid-mac-v0.13.1
 [0.5.16]: https://github.com/machinefi/rapid-desktop/compare/v0.5.15...v0.5.16
