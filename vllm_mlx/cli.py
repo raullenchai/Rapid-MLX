@@ -3372,7 +3372,16 @@ def serve_command(args):
             auto_config_resolved = True
             return None
         try:
-            auto_config = detect_model_config(args.model)
+            # ``pull --bits/--format`` records the selected subfolder for a
+            # bare multi-variant repo. Read defaults from that concrete
+            # checkpoint, not the config-less repository root. Preserve an
+            # explicit alias because its catalog subfolder outranks a repo
+            # marker by contract.
+            from .utils.tokenizer import _resolve_subfolder_checkpoint
+
+            config_identity = getattr(args, "_original_alias", None) or args.model
+            config_path = _resolve_subfolder_checkpoint(config_identity)
+            auto_config = detect_model_config(config_path)
         except Exception as e:
             if not non_fatal:
                 raise
@@ -6823,10 +6832,9 @@ def _escape_glob_literal(name: str) -> str:
     (``4bit``, ``mxfp4``) never hit this, but the selector claims to handle
     arbitrary multi-variant repos, so it must not corrupt their folder names.
     """
-    out: list[str] = []
-    for ch in name:
-        out.append(f"[{ch}]" if ch in "[]*?" else ch)
-    return "".join(out)
+    from ._download_gate import _escape_variant_glob_literal
+
+    return _escape_variant_glob_literal(name)
 
 
 def _resolve_variant_allow_patterns(
@@ -6986,6 +6994,15 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
         _was_cached = not _mirror_out.get("network_fetch", True)
+        # A successful ordinary pull supersedes any earlier explicit
+        # ``--bits/--format`` choice for this repo. Keep cache metadata aligned
+        # even on the mirror-success early return.
+        try:
+            from vllm_mlx._download_gate import clear_pulled_variant
+
+            clear_pulled_variant(repo_id)
+        except Exception:
+            pass
         _print_pull_summary(
             repo_id,
             snapshot_dir,
@@ -7086,6 +7103,37 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched
+        # #2340: persist the pulled variant so a later ``serve <repo>`` can
+        # join the same subfolder. A later successful ordinary pull clears an
+        # older marker so stale cache metadata cannot override that newer
+        # choice. The pull itself is already done and valid, so metadata I/O
+        # does not turn it into a failed download; a narrowed-pull metadata
+        # failure is surfaced loudly because serving could otherwise reuse an
+        # older choice.
+        if variant_allow is not None:
+            _variant_name = f"{_bits}bit" if _bits else (_fmt or "")
+            _marker_updated = False
+            try:
+                from vllm_mlx._download_gate import persist_pulled_variant
+
+                _marker_updated = persist_pulled_variant(repo_id, _variant_name)
+            except Exception:
+                pass
+            if not _marker_updated:
+                print(
+                    f"  Warning: downloaded {_variant_name}/, but could not "
+                    "record that serving choice in the model cache. "
+                    f"`rapid-mlx serve {repo_id}` may select an older or "
+                    "default checkpoint. Fix the cache permissions and "
+                    "re-run this pull."
+                )
+        else:
+            try:
+                from vllm_mlx._download_gate import clear_pulled_variant
+
+                clear_pulled_variant(repo_id)
+            except Exception:
+                pass
     except HFValidationError:
         # Malformed HF repo id (e.g. ``foo/bar/baz``) — surface the same
         # friendly "unknown model" hint the alias path uses instead of a

@@ -1029,9 +1029,30 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     # A malformed aliases.json is a hard error everywhere else too
     # (``resolve_model`` loads the same registry at CLI startup), so this
     # is consistent, not a new failure mode.
+    from huggingface_hub import snapshot_download
+
+    from .._download_gate import (
+        _escape_variant_glob_literal,
+        _snapshot_is_complete,
+        pulled_variant,
+    )
     from ..model_aliases import resolve_model, resolve_subfolder
 
-    subfolder = resolve_subfolder(model_name)
+    repo_id = resolve_model(model_name)
+
+    # #2340 precedence is intentional:
+    #
+    # 1. An explicit alias names a specific catalog checkpoint and must win.
+    # 2. A bare repo id uses the latest successful ``pull --bits/--format``
+    #    marker, when present.
+    # 3. Otherwise retain the historical reverse-catalog default/root lookup.
+    #
+    # This lets ``pull --bits 8 <repo>`` followed by ``serve <repo>`` recover
+    # 8bit without letting stale repo-level cache metadata change what
+    # ``serve lfm2.5-2.6b-4bit`` explicitly means.
+    catalog_subfolder = resolve_subfolder(model_name)
+    explicit_alias_subfolder = catalog_subfolder if model_name != repo_id else None
+    subfolder = explicit_alias_subfolder or pulled_variant(repo_id) or catalog_subfolder
     if not subfolder:
         return model_name
     # ``resolve_subfolder`` answers for BOTH spellings — the alias the user
@@ -1040,13 +1061,7 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     # programmatic callers reach with a bare alias, skipping the CLI's
     # pre-resolution, so normalize here instead of assuming someone
     # upstream already did.
-    repo_id = resolve_model(model_name)
-
-    from huggingface_hub import snapshot_download
-
-    from .._download_gate import _snapshot_is_complete
-
-    patterns = [f"{subfolder}/*"]
+    patterns = [f"{_escape_variant_glob_literal(subfolder)}/*"]
 
     # Offline-first: a warm, COMPLETE cache resolves with zero network. The
     # online call used to run first and, on a poisoned-DNS network, hangs in
@@ -1099,10 +1114,12 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     resolved = os.path.join(local, subfolder)
     if not os.path.isdir(resolved):
         raise RuntimeError(
-            f"{repo_id} declares subfolder {subfolder!r} but {resolved} "
+            f"{repo_id} resolves to subfolder {subfolder!r} but {resolved} "
             "does not exist after download — the publisher has probably "
-            "reorganized the repo. Update the alias rather than loading the "
-            "repo root, which is not a checkpoint."
+            "reorganized the repo, or the variant was pulled to a different "
+            f"cache. Re-run `rapid-mlx pull --format {subfolder} {repo_id}` "
+            "(or update the alias) rather than loading the repo root, which "
+            "is not a checkpoint."
         )
     # A directory is not a checkpoint. An interrupted or disk-full pull
     # leaves the folder present with its shards missing, and a publisher who

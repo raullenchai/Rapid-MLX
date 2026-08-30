@@ -424,6 +424,50 @@ def test_serve_command_threads_auto_detected_hybrid_into_cache_admission(
     assert scheduler.non_trimmable_exact_prefix_reuse is True
 
 
+def test_serve_command_detects_defaults_from_pulled_variant_checkpoint(
+    stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
+):
+    """CLI defaults follow the marker-resolved checkpoint, not the repo root."""
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.model_profile import ModelProfile
+
+    checkpoint = "/cache/snapshots/revision/8bit"
+    resolved: list[str] = []
+
+    def resolve_checkpoint(model_name):
+        resolved.append(model_name)
+        return checkpoint
+
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        resolve_checkpoint,
+    )
+    detected: list[str] = []
+
+    def detect_model_config(model_name):
+        detected.append(model_name)
+        return ModelProfile(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
+        )
+
+    monkeypatch.setattr(
+        "vllm_mlx.model_auto_config.detect_model_config", detect_model_config
+    )
+    monkeypatch.setattr(server_mod, "load_model", lambda *_args, **_kwargs: None)
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(port=_free_tcp_port())
+    ns.model = "publisher/multi-variant"
+    ns._original_alias = None
+
+    cli.serve_command(ns)
+
+    assert resolved == ["publisher/multi-variant"]
+    assert detected == [checkpoint]
+    assert ns.tool_call_parser == "hermes"
+    assert ns.reasoning_parser == "qwen3"
+
+
 def test_serve_command_cache_is_first_metadata_consumer(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):
