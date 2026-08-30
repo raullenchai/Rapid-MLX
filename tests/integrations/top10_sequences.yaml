@@ -1,0 +1,469 @@
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# top10_sequences.yaml — checked-in residency-load sequences for the top-10
+# usage smoke (issue #2496).
+#
+# PURPOSE
+#   This file is the single source of truth for the EXACT ordered sequence of
+#   residency (re)loads the Tier-1 gate (`tests/integrations/agent_smoke.sh
+#   --sequences tests/integrations/top10_sequences.yaml`) must issue, and —
+#   for MTP sequences — the dedicated MTP serve it must boot and the accept-rate
+#   floor it must assert. It exists so the release-blocker class that shipped
+#   0.13.0 / 0.13.1 is exercised on every gate run:
+#
+#     #2438 — "second `/v1/models/load` after an MTP primary -> 503
+#              `no Stream(gpu,3) in current thread`".
+#
+# ROOT CAUSE (state clearly)
+#   A serve booted with a speculative-decoding (MTP) configuration runs its
+#   generation on a PER-WORKER, THREAD-BOUND `Stream(gpu,3)` (MTP draft
+#   generator) separate from the ordinary backbone `Stream(gpu,0,1)`. When a
+#   residency `/v1/models/load` replaces or re-uses that worker's resources,
+#   the per-worker generation stream is torn down and replaced by the
+#   SECONDARY's worker stream. The thread that previously held `Stream(gpu,3)`
+#   then no longer owns a live stream, and the NEXT `/v1/chat/completions`
+#   (the generate path) throws `no Stream(gpu,3) in current thread` -> HTTP
+#   503, even though the load itself returned 200.
+#
+#   Two consequences shape this gate:
+#   * The 503 does NOT happen on the load. It happens on the FOLLOWING
+#     completion. A driver that only POSTs `/v1/models/load` and asserts the
+#     status can never see it — every sequence step must be followed by a real
+#     `/v1/chat/completions` that exercises the thread-bound generation path.
+#   * `/v1/models/load` never carries speculative/spec-decode configuration
+#     (`requested_spec_decode=none`), so an MTP primary can NEVER come from a
+#     bare residency load. The MTP primary must be booted by a dedicated
+#     `rapid-mlx serve` started with the speculative config on its OWN port.
+#     The gate therefore boots that MTP serve itself and drives the sequence
+#     against it (see `mtp:` below) — it never fakes an MTP primary via load.
+#
+#   FIX SHIPPED + GATE MANDATE
+#   #2441 ("bit stream per worker") fixed this: 0.13.1 SHIPPED WITH THE FIX.
+#   The gate must therefore reproduce the PRE-FIX behavior (the 503) on a
+#   pre-#2441 sha such as 62a038c7, and be GREEN (200s) on current main. A
+#   regression to the #2438 class turns the post-load completion step red on
+#   main; on a pre-fix sha that red is EXPECTED (that is the signal proving the
+#   gate actually reproduces the bug). One gate harness, two verdicts: RED on
+#   the pre-fix sha, GREEN on main.
+#
+# SCOPING
+#   * This is a SPEC + gate HARNESS, not a metric. It makes the gate CAPABLE of
+#     reproducing the #2438 path and of asserting the MTP accept rate.
+#   * #2421 (reviewer B1): the MTP engagement/observability contract is evaluated
+#     as DELTAS between a pre-canonical-chat and post-canonical-chat /metrics
+#     scrape, for the exact (family, method) label pair declared per expectation.
+#     delta_attempts >= 1; 1 <= delta_accepts <= delta_attempts;
+#     delta_tokens_saved >= delta_accepts; delta_accepts/delta_attempts > 0.0; and
+#     the exported accept_ratio gauge must be finite and consistent with the exact
+#     cumulative accepts/attempts counters. There is NO uncalibrated 0.4 floor —
+#     this is engagement/observability, not a performance benchmark. `family` is
+#     the exact serve_alias the MTP serve reports as its model_alias family label.
+#     `metrics_expected` is only enforced on `mtp != none` sequences (where an MTP
+#     serve is actually booted and the counters exist).
+#   * Nothing in this file loads a model by itself — it is declarative data
+#     consumed by the gate's driver. Nobody may run this spec directly.
+#
+# SCHEMA (v4)
+#   base_schema_version:  int — bump on any breaking schema change.
+#   top_10_aliases:       ordered list[str] — the top-10 usage-smoke model
+#                         aliases. Every alias a sequence LOADS must be here,
+#                         and every alias here should be loaded by SOME
+#                         sequence (or be an MTP serve_alias) — the schema test
+#                         enforces the coverage-critical ones.
+#   sequences:            list[sequence]
+#
+#   sequence = {
+#     name:            str (unique, kebab-case)
+#     description:     str (free text / rationale — includes the #2438 mande)
+#     mtp:             "none" | "first"
+#                      * "none"  — driven against the gate's main warm serve.
+#                      * "first" — the MTP-served primary is the FIRST load of
+#                                  the sequence (step 1 == serve_alias).
+#                      There is NO "second" (reviewer B3): a dedicated MTP serve
+#                      boots WITH the speculative config, so the MTP primary is
+#                      resident from step 1 — it can never "arrive" at a later
+#                      residency step, and /v1/models/load cannot carry
+#                      spec-decode. A "second" ordering is semantically false.
+#                      Any non-"none" requires the gate to boot a dedicated
+#                      `rapid-mlx serve <serve_alias> ... <serve_extra>` on its
+#                      OWN port, drive the sequence against it, scrape its
+#                      /metrics around one canonical MTP chat, then tear it
+#                      down (own-PID only — never a port sweep). The MTP serve
+#                      is what makes a Stream(gpu,3) exist at all (#2438).
+#     serve_alias:     str — the alias the gate boots the dedicated MTP serve
+#                      with (required when mtp != "none"). MUST be in
+#                      top_10_aliases.
+#     serve_extra:     list[str] (required when mtp != "none") — extra args
+#                      appended to `rapid-mlx serve <serve_alias>` to enable
+#                      MTP, e.g. ["--speculative-config",
+#                      '{"method":"mtp","num_speculative_tokens":3}'].
+#     metrics_expected: list[metric_expectation] (optional; enforced only when
+#                      mtp != "none") — the #2421 accept-rate surface.
+#     timeout_seconds: number|null (optional) — overall wall-clock budget for
+#                      the whole sequence INCLUDING its post-load completions
+#                      and (for mtp) serve boot + /metrics scrape. null/absent
+#                      => driver default (documented in agent_smoke.sh).
+#     steps:           list[step]  (ordered; >= 2 for a meaningful load-order
+#                      / teardown exercise)
+#   }
+#
+#   metric_expectation = {
+#     metric:            str — Prometheus metric name on the MTP serve's
+#                        /metrics (e.g. rapid_mlx_spec_decode_attempts_total).
+#     family:            str (required) — the EXACT `family` label this metric
+#                        is measured under: the serve_alias the MTP serve boots
+#                        with (it reports model_alias as its family label).
+#     method:            str (required) — the EXACT `method` label, "mtp".
+#     on_absent:         "fail"|"pass" (optional, default "fail") — behaviour
+#                        when the metric series is absent from a scrape. For an
+#                        MTP suffix counter an ABSENT series means MTP never
+#                        ran — that must FAIL.
+#     description:       str (optional).
+#   }
+#   The driver evaluates the #2421 contract as deltas of this exact
+#   (family, method) series between the pre- and post-canonical-chat scrapes
+#   (see "SCOPING"). The per-metric assertions are intrinsic to the contract,
+#   not per-sequence knobs.
+#
+#   step = {
+#     action:             "load"  (only supported action)
+#     model:              str — a top_10_aliases entry (never a raw path in v4:
+#                        local snapshots were dropped in favour of canonical,
+#                        resolvable aliases — see "local models" note below).
+#     replace_group:      "assistant" | null — exact text-group id the loader
+#                        accepts (ModelLoadRequest.replace_group pattern
+#                        `^(assistant)$`). null => co-resident secondary.
+#     replace_mode:       "reject" | "wait" | "abort" — how the loader handles
+#                        an in-use primary in the target group.
+#     estimated_size_gb:  number | null (optional) — admission hint (gt 0).
+#     expected_status:    int — the HTTP status the gate must assert on the
+#                        LOAD itself. NOTE this is the load status only; the
+#                        gate ALSO issues a /v1/chat/completions after every
+#                        step and requires 200 + non-empty content (that is the
+#                        #2438 generate path).
+#     timeout_seconds:    number|null (optional) — per-step budget for the
+#                        load + post-load completion pair.
+#     regression_would_be: str (optional) — signage: what a non-expected
+#                        status on THIS step means (fail the gate loudly).
+#   }
+#
+#   "local models" note (v3 -> v4 reconciliation)
+#   v3 expressed the 11th usage-smoke lane (a local on-disk snapshot of
+#   qwen3.5-4b) as a "local" / absolute-path model and ALSO carried aliases
+#   that no sequence ever loaded (gemma-4-26b, bonsai-27b). v4 DROPS the local
+#   absolute-path form entirely — a gate must resolve every model to a
+#   canonical alias it can reproducibly download/serve — and ADDS sequences
+#   that actually LOAD gemma-4-26b-4bit and bonsai-27b-2bit. The mixed-3.5bpw
+#   alias (qwen3.8-27b-mixed-3.5bpw) added in v3 remains as a second MTP-first
+#   lineage.
+#
+#   A->B->A invariant (enforced by tests/test_top10_sequences_schema.py):
+#     the first and last step of a sequence named `*-aba` load the SAME alias,
+#     and the in-between step loads a DIFFERENT alias.
+#
+# EXTENDING
+#   To add a sequence: append to `sequences`, add any NEW alias to
+#   `top_10_aliases` (keeping it a valid alias in vllm_mlx/aliases.json), then
+#   run `python3 -m pytest tests/test_top10_sequences_schema.py`.
+# ---------------------------------------------------------------------------
+
+base_schema_version: 4
+
+# Top-10 usage-smoke model aliases (mirrors the 0.13.x usage smoke roster).
+# v4 drops the v3 "local snapshot" lane in favour of canonical aliases only.
+top_10_aliases:
+  - qwen3.5-4b-4bit
+  - qwen3.5-9b-4bit
+  - qwen3.6-35b-4bit
+  - qwen3.6-35b-8bit
+  - qwen3.8-27b-4bit
+  - qwen3.6-27b-4bit
+  - gemma-4-26b-4bit
+  - bonsai-27b-2bit
+  - qwen3.8-27b-mixed-3.5bpw
+
+sequences:
+  # -------------------------------------------------------------------------
+  # 1. Canonical A->B->A — two distinct small text models, replace each step.
+  #    Baseline "second load after a primary" that any engine must survive.
+  # -------------------------------------------------------------------------
+  - name: simple-aba
+    description: >-
+      Load primary A (qwen3.5-4b-4bit), replace it with a DIFFERENT model B
+      (qwen3.5-9b-4bit), then load A again. Each replacement requests the text
+      "assistant" group so the engine tears down / reuses the previous
+      primary's GPU stream — the A->B->A teardown class from #2438, exercised
+      here on the ordinary (non-MTP) backbone path.
+    mtp: none
+    metrics_expected: []
+    timeout_seconds: 900
+    steps:
+      - action: load
+        model: qwen3.5-4b-4bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 300
+        regression_would_be: "first primary load failed — residency not usable"
+      - action: load
+        model: qwen3.5-9b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 300
+        regression_would_be: >-
+          second /v1/models/load after a primary must tear down / reuse the
+          old GPU stream; a 503 on the following completion here is the
+          #2438 defect class (stream teardown invisible to a load-only driver).
+      - action: load
+        model: qwen3.5-4b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 300
+        regression_would_be: >-
+          reloading the original primary after B — A->B->A home leg — must
+          succeed.
+
+  # -------------------------------------------------------------------------
+  # 2. MTP primary FIRST, then a second model — reproduces #2438 exactly.
+  #    The gate boots a DEDICATED `rapid-mlx serve qwen3.8-27b-4bit
+  #    --speculative-config <mtp3>` on its own port (the ONLY way an MTP
+  #    primary / Stream(gpu,3) can exist — a residency load never carries
+  #    spec-decode). Step 2's replacement tears down that per-worker stream;
+  #    the post-load completion is the generate path that 503'd in 0.13.0/1.
+  # -------------------------------------------------------------------------
+  - name: mtp-first-load-second
+    description: >-
+      THE #2438 reproduction. The gate boots an MTP serve (Qwen3.8 27B-4bit +
+      speculative-config num_speculative_tokens=3, per-worker Stream(gpu,3)),
+      then loads a DIFFERENT model with replace_group=assistant (step 2 tears
+      down the MTP worker's stream), then reloads the MTP primary. Every step
+      ends with a /v1/chat/completions asserting 200 + non-empty content — the
+      post-load generate path that shipped 503 on 0.13.0/0.13.1 (fixed #2441).
+      On current main this must be GREEN; on the pre-fix sha 62a038c7 the same
+      driver must go RED (that red IS the proof the gate reproduces #2438).
+      metrics_expected pins #2421: MTP attempts must be nonzero and the
+      accept ratio >= the gate floor.
+    mtp: first
+    serve_alias: qwen3.8-27b-4bit
+    serve_extra:
+      - "--speculative-config"
+      - '{"method":"mtp","num_speculative_tokens":3}'
+    metrics_expected:
+      - metric: rapid_mlx_spec_decode_attempts_total
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: the canonical MTP chat must drive delta_attempts >= 1 — a
+          zero/absent delta means the MTP serve never went spec-decode on the
+          freshly booted primary (no Stream(gpu,3) was exercised).
+      - metric: rapid_mlx_spec_decode_accepts_total
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: 1 <= delta_accepts <= delta_attempts on the canonical chat.
+      - metric: rapid_mlx_spec_decode_tokens_saved_total
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: delta_tokens_saved >= delta_accepts on the canonical chat.
+      - metric: rapid_mlx_spec_decode_accept_ratio
+        family: qwen3.8-27b-4bit
+        method: mtp
+        on_absent: fail
+        description: >-
+          #2421: the exported ratio gauge is finite and consistent with the
+          exact cumulative accepts/attempts counters; per-window ratio > 0.0.
+          No fixed floor — engagement/observability, not a perf benchmark.
+    timeout_seconds: 1500
+    steps:
+      - action: load
+        model: qwen3.8-27b-4bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "MTP primary did not load on the MTP serve"
+      - action: load
+        model: qwen3.6-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: >-
+          #2438 PRIME: a second load after an MTP primary whose FOLLOWING
+          completion returns 503 (or fails to fall back to plain decode) means
+          the per-worker Stream(gpu,3) teardown under residency load has
+          regressed. Must be RED on pre-fix 62a038c7, GREEN on main.
+      - action: load
+        model: qwen3.8-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "reloading the MTP primary after the second model failed"
+
+  # -------------------------------------------------------------------------
+  # 3. moe primary, then a second, symmetric reload — non-MTP MoE control so
+  #    the mtp lanes isolate the stream-3 defect from a general residency
+  #    teardown regression on the hybrid A3B family.
+  # -------------------------------------------------------------------------
+  - name: moe-primary-aba
+    description: >-
+      Load the flagship hybrid MoE Qwen3.6-35B-A3B-8bit first, then a different
+      model, then reload the MoE primary. Non-MTP control: if this sequence
+      breaks while mtp-first-load-second still passes MTP-agnostically, it is a
+      general A->B->A residency regression, not the #2438 stream-3 defect.
+    mtp: none
+    metrics_expected: []
+    timeout_seconds: 1500
+    steps:
+      - action: load
+        model: qwen3.6-35b-8bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 500
+      - action: load
+        model: qwen3.6-35b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "hybrid MoE primary teardown on second load regressed"
+      - action: load
+        model: qwen3.6-35b-8bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+
+  # -------------------------------------------------------------------------
+  # 4. MTP-FIRST variant on a mixed-bpw MTP checkpoint — a second MTP-repro
+  #    lineage so the #2438 guard is not coupled to a single SKU.
+  # -------------------------------------------------------------------------
+  - name: mtp-first-mixed-bpw
+    description: >-
+      Alternate #2438 lineage: the gate boots an MTP serve on qwen3.8-27b-mixed-
+      3.5bpw (same MTP head family as qwen3.8-27b-4bit) and loads Qwen3.6-27B
+      second, then back. Keeps the second-load-after-MTP-primary guard and the
+      #2421 accept-rate floor exercised across a second MTP-capable primary SKU.
+    mtp: first
+    serve_alias: qwen3.8-27b-mixed-3.5bpw
+    serve_extra:
+      - "--speculative-config"
+      - '{"method":"mtp","num_speculative_tokens":3}'
+    metrics_expected:
+      - metric: rapid_mlx_spec_decode_attempts_total
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
+        on_absent: fail
+      - metric: rapid_mlx_spec_decode_accepts_total
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
+        on_absent: fail
+      - metric: rapid_mlx_spec_decode_tokens_saved_total
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
+        on_absent: fail
+      - metric: rapid_mlx_spec_decode_accept_ratio
+        family: qwen3.8-27b-mixed-3.5bpw
+        method: mtp
+        on_absent: fail
+    timeout_seconds: 1500
+    steps:
+      - action: load
+        model: qwen3.8-27b-mixed-3.5bpw
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 500
+      - action: load
+        model: qwen3.6-27b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: >-
+          #2438 PRIME (mixed-bpw lineage): second load after MTP primary whose
+          following completion must not 503 / must not stall on the vendored
+          spec-decode path.
+      - action: load
+        model: qwen3.8-27b-mixed-3.5bpw
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+
+  # -------------------------------------------------------------------------
+  # 5. Gemma 4-26B — required coverage (v3 listed the alias and never loaded
+  #    it). A real Gemma-family residency A->B->A on the ordinary path.
+  # -------------------------------------------------------------------------
+  - name: gemma-primary-aba
+    description: >-
+      Residency A->B->A whose primary is Gemma 4 26B-4bit — the Gemma family
+      must actually load (v3 named the alias but no sequence loaded it). A
+      Gemma primary torn down by a second load then reloaded proves the
+      teardown path is last-family-agnostic, not Qwen-only.
+    mtp: none
+    metrics_expected: []
+    timeout_seconds: 1500
+    steps:
+      - action: load
+        model: gemma-4-26b-4bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "Gemma 26B primary did not load"
+      - action: load
+        model: qwen3.5-9b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "Gemma primary teardown on a second load regressed"
+      - action: load
+        model: gemma-4-26b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+
+  # -------------------------------------------------------------------------
+  # 6. Bonsai-27B — required coverage (v3 listed the alias and never loaded
+  #    it). A non-Qwen/Gemma family so the gate is not family-narrow.
+  # -------------------------------------------------------------------------
+  - name: bonsai-primary-aba
+    description: >-
+      Residency A->B->A whose primary is Bonsai 27B-2bit — the gate must also
+      prove the Bonsai weight family loads and survives a second-load teardown
+      (v3 named the alias but no sequence loaded it).
+    mtp: none
+    metrics_expected: []
+    timeout_seconds: 1500
+    steps:
+      - action: load
+        model: bonsai-27b-2bit
+        replace_group: null
+        replace_mode: reject
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "Bonsai 27B primary did not load"
+      - action: load
+        model: qwen3.5-9b-4bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
+        regression_would_be: "Bonsai primary teardown on a second load regressed"
+      - action: load
+        model: bonsai-27b-2bit
+        replace_group: "assistant"
+        replace_mode: wait
+        expected_status: 200
+        timeout_seconds: 500
