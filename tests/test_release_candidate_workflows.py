@@ -96,14 +96,19 @@ def test_tagged_promotion_and_standalone_build_are_mutually_exclusive():
         "desktop-ready",
         "mirror-dist",
     ]
-    publish_condition = (
-        "startsWith(github.ref, 'refs/tags/') "
+    event_condition = (
+        "(startsWith(github.ref, 'refs/tags/') "
         "|| (github.event_name == 'workflow_dispatch' "
         "&& inputs.promote_run_id != '' "
-        "&& inputs.promote_sha != '')"
+        "&& inputs.promote_sha != ''))"
     )
-    assert " ".join(jobs["mirror-dist"]["if"].split()) == publish_condition
-    assert " ".join(jobs["publish-updater-fallback"]["if"].split()) == publish_condition
+    assert " ".join(jobs["mirror-dist"]["if"].split()) == (
+        "always() && needs.desktop-ready.result == 'success' && " + event_condition
+    )
+    assert " ".join(jobs["publish-updater-fallback"]["if"].split()) == (
+        "always() && needs.desktop-ready.result == 'success' "
+        "&& needs.mirror-dist.result == 'success' && " + event_condition
+    )
 
 
 def test_release_preflight_is_dispatch_only_and_exact_head_bound():

@@ -188,6 +188,10 @@ lacks "$PROMOTE" 'notarize.sh' \
 MIRROR_JOB=$(sed -n '/^  mirror-dist:/,/^  publish-updater-fallback:/p' "$RAPID_RELEASE")
 PUBLISH_JOB=$(sed -n '/^  publish-updater-fallback:/,$p' "$RAPID_RELEASE")
 for JOB in "$MIRROR_JOB" "$PUBLISH_JOB"; do
+  contains "$JOB" 'always()' \
+    "publication evaluates after the mutually-exclusive source lane is skipped"
+  contains "$JOB" "needs.desktop-ready.result == 'success'" \
+    "publication fails closed unless the source-lane join succeeds"
   contains "$JOB" "startsWith(github.ref, 'refs/tags/')" \
     "tag-triggered Desktop releases publish"
   contains "$JOB" "github.event_name == 'workflow_dispatch'" \
@@ -197,6 +201,8 @@ for JOB in "$MIRROR_JOB" "$PUBLISH_JOB"; do
   contains "$JOB" "inputs.promote_sha != ''" \
     "publishing promotion requires an exact source SHA"
 done
+contains "$PUBLISH_JOB" "needs.mirror-dist.result == 'success'" \
+  "final publication fails closed unless immutable mirroring succeeds"
 
 # A same-SHA tag claim may no-op after a prior failed/missed Desktop workflow.
 # The engine must therefore wait for exact tagged Desktop publication evidence,

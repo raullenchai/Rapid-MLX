@@ -572,11 +572,18 @@ jobs:
     # in job-level expressions, so key publication eligibility to the two
     # required promotion inputs as well. An input-free manual dispatch remains
     # a non-publishing dry run.
+    # ``desktop-ready`` deliberately depends on both mutually-exclusive source
+    # lanes, so one of its ancestors is always skipped. GitHub otherwise
+    # propagates that skip past the successful join job and silently suppresses
+    # publication. Evaluate explicitly, while still failing closed unless the
+    # join itself succeeded.
     if: >-
-      startsWith(github.ref, 'refs/tags/')
-      || (github.event_name == 'workflow_dispatch'
-          && inputs.promote_run_id != ''
-          && inputs.promote_sha != '')
+      always()
+      && needs.desktop-ready.result == 'success'
+      && (startsWith(github.ref, 'refs/tags/')
+          || (github.event_name == 'workflow_dispatch'
+              && inputs.promote_run_id != ''
+              && inputs.promote_sha != ''))
     steps:
       - name: Download the notarised DMG artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
@@ -712,10 +719,13 @@ jobs:
     # Includes the turnstyle queue plus final updater/Release publication.
     timeout-minutes: 120
     if: >-
-      startsWith(github.ref, 'refs/tags/')
-      || (github.event_name == 'workflow_dispatch'
-          && inputs.promote_run_id != ''
-          && inputs.promote_sha != '')
+      always()
+      && needs.desktop-ready.result == 'success'
+      && needs.mirror-dist.result == 'success'
+      && (startsWith(github.ref, 'refs/tags/')
+          || (github.event_name == 'workflow_dispatch'
+              && inputs.promote_run_id != ''
+              && inputs.promote_sha != ''))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
