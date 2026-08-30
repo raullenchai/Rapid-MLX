@@ -6899,6 +6899,46 @@ class VariantNotFoundError(Exception):
         super().__init__(f"no '{requested}' variant in {repo_id}")
 
 
+def _sync_pulled_variant_marker(repo_id: str, variant: str | None) -> None:
+    """Commit the serving choice that corresponds to a successful pull.
+
+    Every downloader success path must make the same metadata transition:
+    an explicit ``--bits/--format`` pull records its selected subfolder, while
+    an ordinary pull clears an older selection.  Keeping this after-download
+    transaction in one helper prevents the mirror early-return and the
+    HuggingFace fallback from drifting apart again.
+
+    Marker I/O is best-effort because the checkpoint download has already
+    completed.  A failed explicit update is still surfaced: without that
+    warning, a later bare-repository ``serve`` could silently reuse an older
+    or default checkpoint.
+    """
+    if variant is not None:
+        marker_updated = False
+        try:
+            from vllm_mlx._download_gate import persist_pulled_variant
+
+            marker_updated = persist_pulled_variant(repo_id, variant)
+        except Exception:
+            pass
+        if not marker_updated:
+            print(
+                f"  Warning: downloaded {variant}/, but could not "
+                "record that serving choice in the model cache. "
+                f"`rapid-mlx serve {repo_id}` may select an older or "
+                "default checkpoint. Fix the cache permissions and "
+                "re-run this pull."
+            )
+        return
+
+    try:
+        from vllm_mlx._download_gate import clear_pulled_variant
+
+        clear_pulled_variant(repo_id)
+    except Exception:
+        pass
+
+
 def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
     """Download one repository through the normal mirror/HF pipeline."""
     import time
@@ -6945,6 +6985,14 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
             "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector."
         )
         sys.exit(1)
+
+    # Only a primary model pull owns serving-choice metadata. Runtime asset
+    # allow-pattern overrides select dependency files, not a checkpoint, and
+    # therefore leave any model variant marker untouched.
+    _owns_variant_marker = allow_patterns_override is None
+    _selected_variant = (
+        None if _bits is None and _fmt is None else (f"{_bits}bit" if _bits else _fmt)
+    )
 
     # The pull summary says "already cached / nothing to download" only from
     # the DOWNLOADER's own transfer account (mirror/HF bytes fetched), never
@@ -6994,15 +7042,12 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         # ``network_fetch`` is the mirror's authoritative "any bytes fetched
         # this pull" verdict (covers a fetched zero-byte file, codex #4).
         _was_cached = not _mirror_out.get("network_fetch", True)
-        # A successful ordinary pull supersedes any earlier explicit
-        # ``--bits/--format`` choice for this repo. Keep cache metadata aligned
-        # even on the mirror-success early return.
-        try:
-            from vllm_mlx._download_gate import clear_pulled_variant
-
-            clear_pulled_variant(repo_id)
-        except Exception:
-            pass
+        # Commit the same pulled-variant transition as the HF fallback before
+        # taking this early return.  The default mirror is the common path, so
+        # dropping the selection here would make a successful ``pull --bits``
+        # impossible to recover from a later bare-repository ``serve``.
+        if _owns_variant_marker:
+            _sync_pulled_variant_marker(repo_id, _selected_variant)
         _print_pull_summary(
             repo_id,
             snapshot_dir,
@@ -7103,37 +7148,11 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched
-        # #2340: persist the pulled variant so a later ``serve <repo>`` can
-        # join the same subfolder. A later successful ordinary pull clears an
-        # older marker so stale cache metadata cannot override that newer
-        # choice. The pull itself is already done and valid, so metadata I/O
-        # does not turn it into a failed download; a narrowed-pull metadata
-        # failure is surfaced loudly because serving could otherwise reuse an
-        # older choice.
-        if variant_allow is not None:
-            _variant_name = f"{_bits}bit" if _bits else (_fmt or "")
-            _marker_updated = False
-            try:
-                from vllm_mlx._download_gate import persist_pulled_variant
-
-                _marker_updated = persist_pulled_variant(repo_id, _variant_name)
-            except Exception:
-                pass
-            if not _marker_updated:
-                print(
-                    f"  Warning: downloaded {_variant_name}/, but could not "
-                    "record that serving choice in the model cache. "
-                    f"`rapid-mlx serve {repo_id}` may select an older or "
-                    "default checkpoint. Fix the cache permissions and "
-                    "re-run this pull."
-                )
-        else:
-            try:
-                from vllm_mlx._download_gate import clear_pulled_variant
-
-                clear_pulled_variant(repo_id)
-            except Exception:
-                pass
+        # #2340: apply the identical successful-pull metadata transaction on
+        # both download paths. A runtime-asset allow-pattern does not own model
+        # serving-choice metadata and therefore performs no marker transition.
+        if _owns_variant_marker:
+            _sync_pulled_variant_marker(repo_id, _selected_variant)
     except HFValidationError:
         # Malformed HF repo id (e.g. ``foo/bar/baz``) — surface the same
         # friendly "unknown model" hint the alias path uses instead of a
