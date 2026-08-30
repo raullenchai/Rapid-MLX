@@ -218,11 +218,11 @@ class GuidedGenerator:
     ``json_object`` mode, any valid JSON object).
 
     The llguidance ``LLTokenizer`` is built lazily on first use and cached
-    on the instance — it is derived from the INNER transformers fast/Rust
-    tokenizer (``tokenizer._tokenizer``), not the ``mlx_lm``
-    ``TokenizerWrapper``. If the model ships without a fast tokenizer,
-    tokenizer construction fails gracefully (logged, returns ``None`` from
-    generation) rather than crashing.
+    on the instance — it is derived from a transformers fast tokenizer,
+    whether the loader returned that tokenizer directly or wrapped it in an
+    ``mlx_lm`` ``TokenizerWrapper``. If the model ships without a fast
+    tokenizer, tokenizer construction fails gracefully (logged, returns
+    ``None`` from generation) rather than crashing.
     """
 
     def __init__(self, model, tokenizer):
@@ -250,12 +250,12 @@ class GuidedGenerator:
     def _get_lltokenizer(self):
         """Get or build the llguidance ``LLTokenizer``.
 
-        llguidance needs the underlying *fast* (Rust-backed) transformers
-        tokenizer, exposed by ``mlx_lm``'s ``TokenizerWrapper`` as
-        ``._tokenizer``. Models loaded with a slow (pure-Python)
-        tokenizer do not have that attribute in a usable form; in that
-        case we log once and return ``None`` so the caller can degrade to
-        unconstrained generation instead of raising.
+        llguidance needs the *fast* (Rust-backed) transformers tokenizer.
+        Standard ``mlx_lm`` loads expose it through ``TokenizerWrapper``'s
+        ``._tokenizer``; vendored loaders can return it directly. Models
+        loaded with a slow (pure-Python) tokenizer have neither supported
+        shape; in that case we log once and return ``None`` so the caller can
+        degrade to unconstrained generation instead of raising.
 
         Returns:
             An ``LLTokenizer`` instance, or ``None`` if one cannot be
@@ -266,24 +266,34 @@ class GuidedGenerator:
         if self._lltokenizer is not False:
             return self._lltokenizer
 
-        hf_tok = getattr(self._tokenizer, "_tokenizer", None)
+        # ``mlx_lm`` normally passes a TokenizerWrapper whose ``._tokenizer``
+        # is the HF fast tokenizer. Vendored model loaders may instead return
+        # that HF tokenizer directly; in that shape ``._tokenizer`` is the
+        # lower-level Rust object, which llguidance.hf intentionally rejects.
+        # Normalize both supported shapes to the HF wrapper that owns
+        # ``backend_tokenizer``.
+        # Prefer the inner object: mlx_lm's wrapper forwards unknown
+        # attributes, so probing the wrapper first can make it masquerade as
+        # the HF tokenizer even though llguidance requires the HF object
+        # itself. For a directly returned HF tokenizer the inner object is a
+        # raw Rust tokenizer and fails the shape check, so the outer object is
+        # selected next.
+        candidates = (getattr(self._tokenizer, "_tokenizer", None), self._tokenizer)
+        hf_tok = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate is not None
+                and getattr(candidate, "is_fast", False) is True
+                and hasattr(candidate, "backend_tokenizer")
+            ),
+            None,
+        )
         if hf_tok is None:
             logger.warning(
                 "Guided generation unavailable: the model's tokenizer has "
-                "no underlying fast (Rust) tokenizer (`._tokenizer`), which "
-                "llguidance requires. Falling back to unconstrained "
-                "generation."
-            )
-            self._lltokenizer = None
-            return None
-
-        # A fast tokenizer is required for `llguidance.hf.from_tokenizer`;
-        # a slow tokenizer lacks `is_fast`/the Rust internals it reads.
-        if getattr(hf_tok, "is_fast", True) is False:
-            logger.warning(
-                "Guided generation unavailable: the model's tokenizer is a "
-                "slow (non-fast) tokenizer, which llguidance cannot consume. "
-                "Falling back to unconstrained generation."
+                "no supported fast Hugging Face tokenizer, which llguidance "
+                "requires. Falling back to unconstrained generation."
             )
             self._lltokenizer = None
             return None

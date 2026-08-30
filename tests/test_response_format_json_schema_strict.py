@@ -310,6 +310,7 @@ def test_strict_true_guided_available_non_streaming_routes_to_constrained():
     # un-wrapped from ``response_format`` so llguidance can interpret
     # ``$defs``/``$ref``/``additionalProperties:false`` natively (PR #419).
     assert engine.guided_calls[0]["json_schema"] == _VALID_SCHEMA
+    assert engine.guided_calls[0]["kwargs"]["raise_on_failure"] is True
 
     # The strict counter must have ticked exactly once.
     snap = response_format_metrics.snapshot()
@@ -1497,6 +1498,7 @@ def test_strict_false_guided_available_routes_to_guided():
     resp = client.post("/v1/chat/completions", json=_payload(strict=False))
     assert resp.status_code == 200, resp.text
     assert len(engine.guided_calls) == 1
+    assert engine.guided_calls[0]["kwargs"]["raise_on_failure"] is False
     # Strict counter must NOT have ticked — only strict=true requests count.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 0

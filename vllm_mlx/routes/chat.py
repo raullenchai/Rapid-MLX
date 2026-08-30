@@ -5246,12 +5246,24 @@ async def _create_chat_completion_impl(
                     text=_forced_prefix_value + (output.text or ""),
                 )
         elif use_guided and json_schema:
+            # ``generate_with_schema`` owns a legacy best-effort fallback to
+            # ordinary chat. That is valid for suggestion-only schemas but not
+            # for strict=true: an unconstrained result that happens to validate
+            # is still not evidence that the requested constraint was applied.
+            # Own the flag at the route boundary and remove any colliding
+            # internal kwarg, matching the streaming and Responses paths.
+            _guided_kwargs = {
+                key: value
+                for key, value in chat_kwargs.items()
+                if key != "raise_on_failure"
+            }
             try:
                 output = await _wait_with_disconnect(
                     engine.generate_with_schema(
                         messages=messages,
                         json_schema=json_schema,
-                        **chat_kwargs,
+                        raise_on_failure=strict_mode,
+                        **_guided_kwargs,
                     ),
                     raw_request,
                     timeout=timeout,
