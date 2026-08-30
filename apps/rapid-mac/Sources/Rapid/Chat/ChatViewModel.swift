@@ -204,7 +204,10 @@ final class ChatViewModel {
             // A turn just ended (stream finished, failed, or was stopped) —
             // snapshot the final exchange into history + disk. Covers every
             // completion path without hooking each one.
-            if oldValue && !isStreaming { persistActive() }
+            if oldValue && !isStreaming {
+                persistActive()
+                scheduleBackgroundAssist()
+            }
         }
     }
     /// Most recent transport / parse error. Cleared on the next ``send``.
@@ -228,6 +231,27 @@ final class ChatViewModel {
     private(set) var lastFailureAlias: String?
 
     private var inflight: Task<Void, Never>?
+
+    /// The title / follow-up completions. One handle for both arms, so one
+    /// `cancel()` stops everything this model started on its own account.
+    private var backgroundAssist: Task<Void, Never>?
+
+    /// Chips under the last answer. Never persisted — a restored transcript
+    /// shows no suggestions, which is right: they were about a moment.
+    private(set) var followUp: FollowUpState = .idle
+
+    /// The message the current chips belong to. Publishing is gated on this
+    /// still being the last row, which covers a new turn, an edit, a retry,
+    /// and a conversation switch in one condition.
+    private(set) var followUpAnchorID: UUID?
+
+    enum FollowUpState: Equatable {
+        /// Nothing asked for, or nothing came back.
+        case idle
+        /// Asked; the rail is holding its space so the arrival costs no layout.
+        case pending
+        case ready([String])
+    }
 
     /// Tests that exercise turn replay can disable disk I/O so seeded
     /// transcripts never read or overwrite the user's conversation history.
@@ -382,7 +406,10 @@ final class ChatViewModel {
                 // A renamed row keeps its name. Re-deriving unconditionally
                 // meant the next streamed token silently reverted the user's
                 // rename back to the first prompt's opening words.
-                if !conversation.hasCustomTitle {
+                // Two owners can take the title away from the derivation:
+                // the user (a rename) and the background titler. Neither may
+                // be reverted by the next streamed token.
+                if !conversation.hasCustomTitle && !conversation.hasGeneratedTitle {
                     conversation.title = title
                 }
                 conversation.customInstructions = Self.normalizedInstruction(
@@ -405,6 +432,300 @@ final class ChatViewModel {
                 at: 0
             )
         }
+        saveConversations()
+    }
+
+    // MARK: - Background assist (titles, follow-ups)
+
+    /// Every task this model started on its own account, plus the reader's
+    /// stream.
+    ///
+    /// Folded into one helper because all five call sites were already
+    /// performing the identical two-line dance for ``inflight``, and a second
+    /// task would have made that six places to remember. The class of bug
+    /// this removes is "somebody added a third task and missed site four".
+    private func cancelInflightWork() {
+        inflight?.cancel()
+        inflight = nil
+        backgroundAssist?.cancel()
+        backgroundAssist = nil
+        // The rail belongs to the assist, so it is torn down with it. Keeping
+        // this here rather than at the call sites is the same argument the
+        // helper was created for, and the same bug: of the six sites, three
+        // remembered to put the rail away and three did not. A cancelled
+        // assist exits without publishing, so nothing downstream clears the
+        // anchor — and `ChatView` mounts the rail on the anchor alone, at a
+        // fixed height whatever it shows.
+        clearFollowUps()
+    }
+
+    /// A settled assistant answer worth building on.
+    struct SettledTurn: Equatable {
+        let assistantID: UUID
+        let lastUserText: String
+        /// The answer being followed up on. Used as the language reference,
+        /// because it is longer and more representative of the conversation
+        /// than a user message that might be one English word.
+        let assistantText: String
+    }
+
+    /// The transcript ends in an answer a reader could act on, or nil.
+    ///
+    /// Mirrors ``MessageRow``'s `showsAssistantActions`: an answer worth a
+    /// Copy button is an answer worth following up on, and keeping the two
+    /// judgements the same means chips never appear under a row that offers
+    /// no other affordance. Adds one clause of its own — a turn the reader
+    /// stopped is one they did not want more of.
+    nonisolated static func settledTurn(_ messages: [ChatMessage]) -> SettledTurn? {
+        guard let last = messages.last,
+              last.role == .assistant,
+              last.status == .complete,
+              // ``finaliseCancellation`` marks a stopped turn this way.
+              last.errorMessage != "Stopped.",
+              !last.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              // A tool-dispatch shell is scaffolding, not an answer.
+              (last.toolCalls?.isEmpty ?? true),
+              let user = messages.last(where: { $0.role == .user })
+        else { return nil }
+        return SettledTurn(
+            assistantID: last.id, lastUserText: user.content, assistantText: last.content
+        )
+    }
+
+    /// Is this the first exchange — the only one that gets a title?
+    nonisolated static func isFirstExchange(_ messages: [ChatMessage]) -> Bool {
+        messages.filter { $0.role == .user }.count == 1
+    }
+
+    /// Whether the engine's lane will batch our request alongside the
+    /// reader's, or serialise it in front of their next turn.
+    ///
+    /// The `--mllm` vision lane runs one request at a time, so a background
+    /// call there is not free — it is a queue. The live profile's
+    /// `serving_lane` is the authoritative execution decision. Its
+    /// `modality` remains `text` even for vision-capable models and therefore
+    /// cannot distinguish the serialised lane.
+    ///
+    /// An unknown or older profile allows. Otherwise a sidecar predating
+    /// `serving_lane` would disable both features permanently, and the damage
+    /// on that path is already bounded by `max_tokens`, the deadline, and the
+    /// fact that the reader's next send cancels us. A mismatched profile also
+    /// allows rather than letting stale metadata decide for another alias.
+    nonisolated static func laneAllowsBackgroundWork(
+        _ profile: ServerModelProfile?, alias: String
+    ) -> Bool {
+        guard let profile,
+              profile.id.caseInsensitiveCompare(alias) == .orderedSame,
+              let servingLane = profile.servingLane
+        else { return true }
+        return servingLane == "text"
+    }
+
+    /// Ask the model to name this conversation and to propose what to ask
+    /// next. Runs at the turn boundary; every reason not to is checked here,
+    /// on the main actor, before anything is spawned.
+    private func scheduleBackgroundAssist() {
+        // Last turn's chips are stale the moment this turn ends, whatever
+        // happens next.
+        followUp = .idle
+        followUpAnchorID = nil
+
+        guard let server, case .ready(let alias) = server.state else { return }
+        guard Self.laneAllowsBackgroundWork(server.activeModelProfile, alias: alias) else { return }
+        guard let turn = Self.settledTurn(messages) else { return }
+
+        let conversationID = activeConversationID
+        let epoch = conversationEpoch
+        let transcript = messages
+        // Not "is this the first exchange": that forfeits the one chance
+        // permanently if the call is cancelled, which `send` does on the very
+        // next message. `hasGeneratedTitle` already means "a title has
+        // landed", so gating on it keeps the once-per-conversation promise
+        // while letting a cancelled or failed attempt be retried next turn.
+        let needsTitle = conversations.first { $0.id == conversationID }
+            .map { !$0.hasCustomTitle && !$0.hasGeneratedTitle } == true
+
+        followUp = .pending
+        followUpAnchorID = turn.assistantID
+        // Alias, endpoint, and credential are one lifecycle snapshot. Reading
+        // port/bearer later from inside the task could pair a stale alias with
+        // a replacement server after a model switch.
+        let scheduledTarget = BackgroundCompletionClient.Target(
+            port: server.activePort,
+            bearer: server.activeBearer,
+            alias: alias
+        )
+
+        backgroundAssist = Task { [weak self] in
+            guard let self else { return }
+            guard let target = Self.revalidatedBackgroundTarget(
+                scheduledTarget,
+                state: server.state,
+                activePort: server.activePort,
+                activeBearer: server.activeBearer
+            ) else {
+                self.clearFollowUps(anchoredTo: turn.assistantID)
+                return
+            }
+            let client = BackgroundCompletionClient()
+
+            // Run both requests concurrently, but publish each one as soon as
+            // its own deadline completes. The title may wait for 15 seconds;
+            // it must not hold an already-ready follow-up rail hostage.
+            let titlePrompt = needsTitle
+                ? ConversationTitleSuggestion.messages(forFirstExchange: transcript)
+                : nil
+            let followUpPrompt = FollowUpSuggestion.messages(forTurn: transcript)
+            await Self.deliverBackgroundReplies(
+                title: {
+                    guard let titlePrompt else { return nil }
+                    return await client.complete(
+                        titlePrompt, target: target, maxTokens: 24,
+                        temperature: 0.2, deadline: .seconds(15)
+                    )
+                },
+                followUp: {
+                    guard let followUpPrompt else { return nil }
+                    return await client.complete(
+                        followUpPrompt, target: target, maxTokens: 96,
+                        temperature: 0.6, topP: 0.95, deadline: .seconds(8)
+                    )
+                },
+                onFollowUp: { suggestions in
+                    guard !Task.isCancelled, epoch == self.conversationEpoch else {
+                        // Cancelled after this assist reserved its space.
+                        // Clear only the rail generation this task owns.
+                        self.clearFollowUps(anchoredTo: turn.assistantID)
+                        return false
+                    }
+                    self.publishFollowUps(
+                        suggestions, anchoredTo: turn.assistantID,
+                        excluding: turn.lastUserText, reference: turn.assistantText
+                    )
+                    return true
+                },
+                onTitle: { title in
+                    guard !Task.isCancelled, epoch == self.conversationEpoch else { return }
+                    if let title { self.applyGeneratedTitle(title, to: conversationID) }
+                }
+            )
+        }
+    }
+
+    /// Start both optional completions together, while letting the
+    /// turn-scoped follow-up result reach the UI before the longer title
+    /// deadline. Returning `false` after the follow-up cancels the structured
+    /// title child when the owning conversation or turn is already stale.
+    static func deliverBackgroundReplies(
+        title: @escaping @Sendable () async -> String?,
+        followUp: @escaping @Sendable () async -> String?,
+        onFollowUp: (String?) -> Bool,
+        onTitle: (String?) -> Void
+    ) async {
+        async let titleReply = title()
+        async let followUpReply = followUp()
+
+        let suggestions = await followUpReply
+        guard onFollowUp(suggestions) else { return }
+
+        let generatedTitle = await titleReply
+        onTitle(generatedTitle)
+    }
+
+    /// Keep a background request bound to the server generation that
+    /// scheduled it.
+    ///
+    /// The task starts cooperatively, so a stop, restart, or model switch can
+    /// occur after ``scheduleBackgroundAssist`` captures `.ready` but before
+    /// this check executes. Returning the original snapshot only when all
+    /// lifecycle-facing fields still agree prevents a stale alias from being
+    /// sent to a replacement endpoint.
+    static func revalidatedBackgroundTarget(
+        _ scheduled: BackgroundCompletionClient.Target,
+        state: ServerState,
+        activePort: Int,
+        activeBearer: String?
+    ) -> BackgroundCompletionClient.Target? {
+        guard state == .ready(alias: scheduled.alias),
+              activePort == scheduled.port,
+              activeBearer == scheduled.bearer
+        else { return nil }
+        return scheduled
+    }
+
+    /// Show the chips, if they are still about the answer on screen.
+    ///
+    /// Split out rather than left inline so the staleness rule is reachable
+    /// from a test without a server — the same reason
+    /// ``finishStartupCancellation`` is its own method.
+    func publishFollowUps(
+        _ raw: String?,
+        anchoredTo anchorID: UUID,
+        excluding lastUserText: String,
+        reference: String? = nil
+    ) {
+        // One condition covers a switched conversation, a deleted one, a new
+        // turn, and an edit or retry that rewrote the tail.
+        guard messages.last?.id == anchorID else {
+            clearFollowUps()
+            return
+        }
+        guard let raw else { clearFollowUps(); return }
+        let questions = FollowUpSuggestion.parse(
+            raw, excluding: lastUserText, reference: reference
+        )
+        guard !questions.isEmpty else { clearFollowUps(); return }
+        // Sets the anchor as well as the state. `scheduleBackgroundAssist`
+        // already set it before spawning, but publishing one without the other
+        // is a combination the screen can never show — ``ChatView`` mounts the
+        // rail on the anchor — so the two are written together here rather
+        // than depending on a caller having done half the job.
+        followUpAnchorID = anchorID
+        followUp = .ready(questions)
+    }
+
+    /// Put the rail away.
+    ///
+    /// Clearing the anchor as well as the state is the load-bearing half:
+    /// ``ChatView`` mounts the rail on the anchor alone, and the rail holds a
+    /// fixed 40pt whatever it is showing. Leaving the anchor set after a
+    /// failure — a deadline, unparseable output, a script mismatch, all of
+    /// which are common — left an empty band under the answer until the next
+    /// turn. Shrinking the document is safe; it is growth the scroll probe
+    /// cannot absorb.
+    func clearFollowUps() {
+        followUp = .idle
+        followUpAnchorID = nil
+    }
+
+    /// Clear a rail only while it still belongs to the finishing assist.
+    ///
+    /// Cancellation is cooperative. A superseded request may resume after a
+    /// newer turn has already installed its own rail, so task-local cleanup
+    /// must compare ownership rather than clearing shared presentation state
+    /// unconditionally.
+    func clearFollowUps(anchoredTo anchorID: UUID) {
+        guard followUpAnchorID == anchorID else { return }
+        clearFollowUps()
+    }
+
+    /// Land a machine-generated title. Silent on every rejection.
+    ///
+    /// Addresses the conversation by id rather than by "whichever is active",
+    /// so a late reply cannot rename the wrong row — the epoch check above
+    /// already dropped it, and this makes the write safe even if that check
+    /// were ever relaxed.
+    ///
+    /// Deliberately does not touch `updatedAt`: naming a row is not working
+    /// on it, so the sidebar must not reshuffle. Same choice
+    /// ``renameConversation`` makes, and for the same reason.
+    func applyGeneratedTitle(_ raw: String, to id: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        guard !conversations[index].hasCustomTitle else { return }
+        guard !conversations[index].hasGeneratedTitle else { return }
+        guard let title = ConversationTitleSuggestion.parse(raw) else { return }
+        conversations[index].title = title
+        conversations[index].hasGeneratedTitle = true
         saveConversations()
     }
 
@@ -572,8 +893,7 @@ final class ChatViewModel {
     /// currently open first. Cancels any in-flight stream.
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
-        inflight?.cancel()
-        inflight = nil
+        cancelInflightWork()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
         // is what gets persisted and a mid-stream switch doesn't leave the
@@ -600,8 +920,7 @@ final class ChatViewModel {
         // persistActive() via didSet while the deleted messages + id are
         // still active, re-inserting the conversation we just removed.
         if id == activeConversationID {
-            inflight?.cancel()
-            inflight = nil
+            cancelInflightWork()
             conversationEpoch &+= 1
             messages.removeAll()
             branchedAway.removeAll()
@@ -757,8 +1076,7 @@ final class ChatViewModel {
     /// Start a fresh conversation — drops the transcript and any stale
     /// error banner. The in-flight stream (if any) is cancelled first.
     func newConversation() {
-        inflight?.cancel()
-        inflight = nil
+        cancelInflightWork()
         conversationEpoch &+= 1
         // Fix: without this a New Chat during a stream leaves the empty
         // chat stuck showing Stop (isStreaming never reset). Setting it
@@ -832,6 +1150,12 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
+
+        // The reader has taken the wheel. Anything we were asking the model
+        // on our own account stops now — it would land on a transcript that
+        // has moved on, and on the serialised vision lane it would be sitting
+        // in front of the turn they just asked for.
+        cancelInflightWork()
 
         let user = ChatMessage(
             role: .user,
@@ -1096,7 +1420,7 @@ final class ChatViewModel {
     /// has produced so far. The placeholder transitions to ``.complete``
     /// with whatever bytes already arrived.
     func stop() {
-        inflight?.cancel()
+        cancelInflightWork()
     }
 
     /// Stop AND snapshot, synchronously, for the app-termination path.
@@ -1110,7 +1434,7 @@ final class ChatViewModel {
     /// actor. The task's own cleanup remains harmless: it re-persists the same
     /// state if it ever gets to run.
     func stopAndPersist() {
-        inflight?.cancel()
+        cancelInflightWork()
         guard isStreaming else { return }
         // App termination snapshots synchronously, before the cancelled
         // stream task can reach its catch block. No request remains live, so
@@ -1587,6 +1911,9 @@ final class ChatViewModel {
                 || !userMessage.imageAttachments.isEmpty
                 || !userMessage.fileAttachments.isEmpty else { return }
 
+        // Regenerate and Retry are user-owned turns. Stop any optional work
+        // about the answer they are replacing before the path is rewound.
+        cancelInflightWork()
         rewindPath(to: userIndex + 1)
         beginAssistantTurn(
             alias: alias,
@@ -1723,6 +2050,10 @@ final class ChatViewModel {
         let target = group[offset]
         guard target.id != anchor.id else { return false }
 
+        // Suggestions and a pending generated title describe the branch the
+        // user is leaving. Cancel them before adopting another visible path,
+        // otherwise switching back could resurrect an old rail.
+        cancelInflightWork()
         // From here on the operation MUTATES: leave the snapshot (its node
         // values may be stale — see ``TreeSnapshot``) and work on the live
         // buffers, which always carry the finished content.
@@ -1813,6 +2144,7 @@ final class ChatViewModel {
         // and persisted, so it must carry the finished content of every row.
         let tree = liveTree()
         guard tree.contains(where: { $0.id == id }) else { return false }
+        cancelInflightWork()
         let doomed = MessageTree.subtree(of: id, in: tree)
         let remaining = tree.filter { !doomed.contains($0.id) }
         guard !remaining.isEmpty else {
@@ -1846,6 +2178,9 @@ final class ChatViewModel {
         guard !isStreaming else { return }
         let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // The user's regeneration intent supersedes optional work even when
+        // bringing up the replacement model takes time or ultimately fails.
+        cancelInflightWork()
         if let server {
             let ok = await server.ensureServing(
                 alias: trimmed,
