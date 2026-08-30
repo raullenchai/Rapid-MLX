@@ -231,6 +231,13 @@ def test_models_command_renders_hybrid_marker_for_qwen35_moe():
     assert "n/a" in row, f"expected suffix tier 'n/a' in row: {row!r}"
 
 
+def test_models_command_surfaces_flash_next_native_mtp_preset():
+    out = _capture_models_output()
+    row = next(line for line in out.splitlines() if "qwen3.8-flash-next-4bit " in line)
+    assert "✓ MTP" in row
+    assert "MTP@native@1" in row
+
+
 def test_models_command_renders_parser_for_hermes3_8b():
     """Non-hybrid model with parser + benched tier renders both columns.
 

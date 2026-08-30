@@ -28,6 +28,7 @@ import pytest
 # registry and the serve path disagreed, so the test has to read the registry.
 ALIAS_WITH_MTP = "qwen3.8-27b-mixed-3.5bpw"
 ALIAS_WITHOUT_MTP = "qwen3.5-27b-4bit"
+NATIVE_MTP_ALIAS = "qwen3.8-flash-next-4bit"
 
 # Popular aliases with a published, architecture-matched sidecar and a
 # production-registered MTP injector.  This is intentionally curated rather
@@ -125,6 +126,22 @@ def test_alias_declaration_supplies_the_sidecar_and_depth():
     assert args.spec_decode == "mtp"
     assert args.mtp_sidecar == declared.mtp_draft_model
     assert args.mtp_max_k == declared.mtp_speculative_tokens
+
+
+def test_native_alias_declaration_supplies_depth_without_a_sidecar():
+    """The advertised native preset must drive the serve normalization too."""
+    from vllm_mlx.model_aliases import resolve_profile
+
+    declared = resolve_profile(NATIVE_MTP_ALIAS)
+    args = _normalize(
+        _args(model=NATIVE_MTP_ALIAS, speculative_config='{"method":"mtp"}')
+    )
+
+    assert declared.supports_native_mtp is True
+    assert declared.mtp_draft_model is None
+    assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar is None
+    assert args.mtp_max_k == declared.mtp_speculative_tokens == 1
 
 
 def test_alias_without_a_declaration_still_gets_no_sidecar():

@@ -36,6 +36,7 @@ def test_available_payload_shape() -> None:
         "is_hybrid",
         "is_moe",
         "supports_spec_decode",
+        "supports_native_mtp",
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "modality",
@@ -45,6 +46,7 @@ def test_available_payload_shape() -> None:
         assert key in entry, f"text entry missing {key!r}"
     assert isinstance(entry["is_hybrid"], bool)
     assert isinstance(entry["is_moe"], bool)
+    assert isinstance(entry["supports_native_mtp"], bool)
     assert isinstance(entry["is_builtin"], bool)
     assert isinstance(entry["is_text_only"], bool)
     assert entry["size_bytes"] is None or isinstance(entry["size_bytes"], int)

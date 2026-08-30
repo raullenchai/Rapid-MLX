@@ -166,6 +166,10 @@ class ModelProfile:
     # Optional, bench-verified MTP preset. Presence takes precedence over the
     # generic suffix preset in catalog/UI surfaces; the target alias remains
     # opt-in and the engine never enables it automatically.
+    # Native MTP is separate from ``supports_spec_decode``: a hybrid model may
+    # disable the generic suffix/draft verifier while its model-specific MTP
+    # injector remains valid.
+    supports_native_mtp: bool = False
     mtp_draft_model: str | None = None
     mtp_speculative_tokens: int = 3
     default_max_tokens: int | None = None  # Per-model default when user omits

@@ -68,6 +68,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "is_hybrid_explicit",
         "is_moe",
         "supports_spec_decode",
+        "supports_native_mtp",
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "default_max_tokens",
@@ -116,6 +117,8 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
     assert profile.is_hybrid_explicit is True
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
+    assert profile.supports_native_mtp is True
+    assert profile.mtp_speculative_tokens == 1
     assert profile.tool_call_parser == "hermes"
     assert profile.reasoning_parser == "qwen3"
     assert detect_model_config(alias) == profile
@@ -131,6 +134,52 @@ def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
         assert profile.tool_call_parser == "qwen3_coder_xml"
         assert detect_model_config(alias) == profile
         assert detect_model_config(profile.hf_path) == profile
+
+
+def test_native_mtp_alias_metadata_is_strict_and_unambiguous() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="supports_native_mtp"):
+        _coerce(
+            "bad-native-mtp-bool",
+            {"hf_path": "publisher/model", "supports_native_mtp": "true"},
+        )
+    with pytest.raises(ValueError, match="requires explicit mtp_speculative_tokens"):
+        _coerce(
+            "native-mtp-without-depth",
+            {"hf_path": "publisher/model", "supports_native_mtp": True},
+        )
+    with pytest.raises(ValueError, match="native MTP is AR-only"):
+        _coerce(
+            "image-native-mtp",
+            {
+                "hf_path": "publisher/model",
+                "modality": "image-gen",
+                "supports_spec_decode": False,
+                "supports_native_mtp": True,
+                "mtp_speculative_tokens": 1,
+            },
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _coerce(
+            "ambiguous-mtp-source",
+            {
+                "hf_path": "publisher/model",
+                "supports_native_mtp": True,
+                "mtp_draft_model": "publisher/drafter",
+            },
+        )
+
+
+def test_flash_next_native_mtp_capability_label_is_opt_in() -> None:
+    from vllm_mlx.model_auto_config import _mtp_path_label
+
+    profile = list_profiles()["qwen3.8-flash-next-4bit"]
+
+    assert (
+        _mtp_path_label("qwen3.8-flash-next-4bit", profile)
+        == "native (opt-in: --speculative-config)"
+    )
 
 
 @pytest.mark.parametrize("bad_value", [0, 1, "true", None])
@@ -701,7 +750,7 @@ def test_mtp_preset_requires_a_valid_drafter_and_positive_token_count() -> None:
 def test_mtp_token_count_without_a_drafter_is_rejected() -> None:
     from vllm_mlx.model_aliases import _coerce
 
-    with pytest.raises(ValueError, match="requires mtp_draft_model"):
+    with pytest.raises(ValueError, match="requires .*mtp_draft_model"):
         _coerce(
             "fake-alias",
             {"hf_path": "fake/Model", "mtp_speculative_tokens": 3},

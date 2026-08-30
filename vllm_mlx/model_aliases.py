@@ -179,6 +179,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "is_hybrid_explicit",
             "is_moe",
             "supports_spec_decode",
+            "supports_native_mtp",
             "mtp_draft_model",
             "mtp_speculative_tokens",
             "default_max_tokens",
@@ -372,6 +373,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: ddtree_draft_model must be a string, "
             f"got {type(ddtree_draft_model).__name__}"
         )
+    supports_native_mtp = _strict_bool("supports_native_mtp", False)
 
     def _optional_positive_int(key: str) -> int | None:
         raw = value.get(key)
@@ -513,6 +515,11 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"alias {alias!r}: supports_ddtree must be false when "
                 f"modality={modality!r} (DDTree is AR-only)"
             )
+        if supports_native_mtp:
+            raise ValueError(
+                f"alias {alias!r}: supports_native_mtp must be false when "
+                f"modality={modality!r} (native MTP is AR-only)"
+            )
 
     mtp_draft_model = value.get("mtp_draft_model")
     if mtp_draft_model is not None and (
@@ -523,9 +530,24 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: mtp_draft_model must use non-empty 'org/repo' format"
         )
-    if "mtp_speculative_tokens" in value and mtp_draft_model is None:
+    if supports_native_mtp and mtp_draft_model is not None:
         raise ValueError(
-            f"alias {alias!r}: mtp_speculative_tokens requires mtp_draft_model"
+            f"alias {alias!r}: supports_native_mtp and mtp_draft_model are "
+            "mutually exclusive (native head versus sidecar drafter)"
+        )
+    if (
+        "mtp_speculative_tokens" in value
+        and mtp_draft_model is None
+        and not supports_native_mtp
+    ):
+        raise ValueError(
+            f"alias {alias!r}: mtp_speculative_tokens requires "
+            "supports_native_mtp=true or mtp_draft_model"
+        )
+    if supports_native_mtp and "mtp_speculative_tokens" not in value:
+        raise ValueError(
+            f"alias {alias!r}: supports_native_mtp=true requires explicit "
+            "mtp_speculative_tokens"
         )
     mtp_speculative_tokens = value.get("mtp_speculative_tokens", 3)
     if (
@@ -562,6 +584,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         is_hybrid_explicit=_strict_bool("is_hybrid_explicit", False),
         is_moe=_strict_bool("is_moe", False),
         supports_spec_decode=_strict_bool("supports_spec_decode", True),
+        supports_native_mtp=supports_native_mtp,
         mtp_draft_model=mtp_draft_model,
         mtp_speculative_tokens=mtp_speculative_tokens,
         default_max_tokens=value.get("default_max_tokens"),

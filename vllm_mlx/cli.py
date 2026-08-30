@@ -2077,12 +2077,12 @@ def _build_benchmark_context(target_tokens: int) -> str:
 def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     """Return ``(mtp_draft_model, mtp_speculative_tokens)`` declared by an alias.
 
-    ``(None, None)`` when the model is not a known alias, declares no MTP
-    sidecar, or the registry cannot be read. Resolution is best-effort by
-    design: this only supplies DEFAULTS for a request that already asked for
-    MTP, so a registry problem must degrade to "no default" and let the
-    injector's own hard-fail speak — never turn a serve into a crash of its
-    own (#1998).
+    ``(None, None)`` when the model is not a known alias, declares neither an
+    MTP sidecar nor a native MTP head, or the registry cannot be read.
+    Resolution is best-effort by design: this only supplies DEFAULTS for a
+    request that already asked for MTP, so a registry problem must degrade to
+    "no default" and let the injector's own hard-fail speak — never turn a
+    serve into a crash of its own (#1998).
 
     ``mtp_speculative_tokens`` is returned only when it is a positive int. The
     alias schema already rejects the alternatives (``model_aliases`` requires
@@ -2105,9 +2105,10 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     # hand-edited-registry case it promises it for (codex nit).
     raw_sidecar = getattr(profile, "mtp_draft_model", None)
     sidecar = raw_sidecar.strip() or None if isinstance(raw_sidecar, str) else None
-    if sidecar is None:
-        # Depth without a sidecar is meaningless — the injector has nothing to
-        # load — so don't hand back a lone K either.
+    native_head = getattr(profile, "supports_native_mtp", False) is True
+    if sidecar is None and not native_head:
+        # Depth without either a sidecar or a native target head is
+        # meaningless, so don't hand back a lone K.
         return None, None
     depth = getattr(profile, "mtp_speculative_tokens", None)
     if not isinstance(depth, int) or isinstance(depth, bool) or depth <= 0:
@@ -6261,6 +6262,7 @@ def _available_models_json_payload() -> dict:
             "is_hybrid": bool(getattr(p, "is_hybrid", False)),
             "is_moe": bool(getattr(p, "is_moe", False)),
             "supports_spec_decode": bool(getattr(p, "supports_spec_decode", False)),
+            "supports_native_mtp": bool(getattr(p, "supports_native_mtp", False)),
             "mtp_draft_model": getattr(p, "mtp_draft_model", None),
             "mtp_speculative_tokens": getattr(p, "mtp_speculative_tokens", None),
             "modality": _modality(p),
@@ -6416,7 +6418,11 @@ def models_command(args):
         p = profiles[alias]
         tools = p.tool_call_parser or "—"
         reasoning = p.reasoning_parser or "—"
-        if p.mtp_draft_model:
+        if getattr(p, "supports_native_mtp", False):
+            spec = "✓ MTP"
+            tier = "n/a"
+            preset = f"MTP@native@{p.mtp_speculative_tokens}"
+        elif p.mtp_draft_model:
             spec = "✓ MTP"
             tier = "n/a"
             preset = f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}"
@@ -6429,7 +6435,11 @@ def models_command(args):
             spec = "✓" if p.supports_spec_decode else "✗"
             tier = p.suffix_decoding_tier
             preset = "Suffix" if p.supports_spec_decode else "—"
-        if p.is_hybrid and not p.mtp_draft_model:
+        if (
+            p.is_hybrid
+            and not p.mtp_draft_model
+            and not getattr(p, "supports_native_mtp", False)
+        ):
             preset = "—"
 
         # DFlash column — eligible aliases show ✓, everything else "—" so

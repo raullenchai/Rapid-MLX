@@ -409,6 +409,8 @@
     "is_moe": true,
     "is_text_only": true,
     "supports_spec_decode": false,
+    "supports_native_mtp": true,
+    "mtp_speculative_tokens": 1,
     "min_memory_gb": 128,
     "experimental": true
   },

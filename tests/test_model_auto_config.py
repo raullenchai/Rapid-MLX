@@ -973,6 +973,7 @@ class TestVisibility:
 
         assert "experimental" in summary
         assert "Status           : ⚠ experimental" in table
+        assert "MTP path         : native (opt-in: --speculative-config)" in table
 
     def test_table_for_pure_attention_shows_supported(self):
         cfg = detect_model_config("mlx-community/Qwen3-0.6B-8bit")
@@ -1104,6 +1105,7 @@ class TestVisibility:
 
         matched_allowed = {
             "native",
+            "native (opt-in: --speculative-config)",
             "sidecar",
             "sidecar (opt-in: --speculative-config)",
             "disabled",

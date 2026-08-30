@@ -2285,19 +2285,24 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
 def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     """Truth-in-labeling for the MTP spec-decode path of a model.
 
-    Returns one of ``native`` / ``sidecar`` /
+    Returns one of ``native`` /
+    ``native (opt-in: --speculative-config)`` / ``sidecar`` /
     ``sidecar (opt-in: --speculative-config)`` / ``disabled``:
 
     * ``native``   — the family ships a native MTP head in the checkpoint
       (Qwen3.5 / Qwen3.6 / HY3) AND the resolved profile enables spec
       decode (``supports_spec_decode=True``). This is the path
       ``vllm_mlx.spec_decode.mtp`` drives directly.
+    * ``native (opt-in: --speculative-config)`` — method-specific profile
+      metadata declares a validated native head while the generic speculative
+      lane remains disabled (for example, a coupled hybrid verifier).
     * ``sidecar``  — Gemma 4: MTP is provided by an assistant drafter
       loaded alongside the base weights (no head baked in), and the
       profile enables spec decode.
     * ``sidecar (opt-in: --speculative-config)`` — the alias declares an MTP
       sidecar, but Rapid leaves it disabled until the user explicitly opts in.
-    * ``disabled`` — spec decode is off for this profile
+    * ``disabled`` — no native/sidecar MTP capability is declared and spec
+      decode is off for this profile
       (``supports_spec_decode=False`` — hybrid arch, or no MTP head /
       drafter registered for this alias), the family has no MTP mechanism
       at all (SuffixDecoding / DFlash are separate lanes surfaced by the
@@ -2307,6 +2312,12 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     Derivation is from the resolved profile only (no ``config.json``
     read), keeping the ``rapid-mlx info`` path weight-free.
     """
+    if getattr(cfg, "supports_native_mtp", False):
+        # Method-specific capability metadata is authoritative here. A hybrid
+        # checkpoint can disable the generic speculative lane while its
+        # native MTP injector remains verified. The feature is still
+        # explicit opt-in; this reports capability, never default-on state.
+        return "native (opt-in: --speculative-config)"
     if (getattr(cfg, "mtp_draft_model", None) or "").strip():
         # #1998: the alias DECLARES its own MTP sidecar, and that declaration
         # now drives the serve path, so MTP genuinely runs for this checkpoint
