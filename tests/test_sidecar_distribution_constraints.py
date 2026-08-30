@@ -28,6 +28,17 @@ def constraints():
     return _load_module()
 
 
+def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
+    emitted = constraints.emit_constraints().splitlines()
+    assert emitted[0].startswith("# Release-tested versions")
+    assert emitted[1:] == [
+        "mlx==0.32.2",
+        "transformers==5.12.1",
+        "mlx-vlm==0.6.16",
+        "mflux==0.19.0",
+    ]
+
+
 def test_exact_reduced_vision_runtime_is_allowed(constraints) -> None:
     assert constraints.is_validated_compatibility_exception(
         owner="mlx-vlm",

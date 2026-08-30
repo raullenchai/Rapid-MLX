@@ -10,6 +10,14 @@ from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+SIDECAR_CONSTRAINTS_FILE = Path(__file__).with_name("sidecar-constraints.txt")
+
+
+def emit_constraints() -> str:
+    """Return the canonical pip constraints used by release-shaped installs."""
+
+    return SIDECAR_CONSTRAINTS_FILE.read_text()
+
 
 def is_validated_compatibility_exception(
     *, owner: str, owner_version: str, requirement: Requirement, actual: str
@@ -75,8 +83,20 @@ def find_errors(site_packages: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("site_packages", type=Path)
+    parser.add_argument("site_packages", type=Path, nargs="?")
+    parser.add_argument(
+        "--emit-constraints",
+        action="store_true",
+        help="write the release-tested pip constraint set to stdout",
+    )
     args = parser.parse_args()
+    if args.emit_constraints:
+        if args.site_packages is not None:
+            parser.error("site_packages cannot be combined with --emit-constraints")
+        print(emit_constraints(), end="")
+        return 0
+    if args.site_packages is None:
+        parser.error("site_packages is required unless --emit-constraints is used")
     if not args.site_packages.is_dir():
         parser.error(f"site-packages directory does not exist: {args.site_packages}")
     errors = find_errors(args.site_packages)
