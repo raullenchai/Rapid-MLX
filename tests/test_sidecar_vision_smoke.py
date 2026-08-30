@@ -32,7 +32,9 @@ def test_release_workflow_runs_content_addressed_real_image_gate() -> None:
     workflow = (
         Path(__file__).parents[1] / ".github/workflows/auto-release.yml"
     ).read_text()
-    assert "timeout-minutes: 175" in workflow
+    # The #2496 sequence gate follows the agents and sidecar proofs, so the
+    # outer release window must cover that healthy path too.
+    assert "timeout-minutes: 240" in workflow
     manifest = json.loads(
         (
             Path(__file__).parents[1]
