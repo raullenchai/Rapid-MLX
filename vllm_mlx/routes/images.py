@@ -419,13 +419,16 @@ def _generate_edit_one(
 ) -> bytes:
     """Blocking single instruction-edit render — runs off the event loop.
 
-    No width/height is threaded through the API. Each edit engine chooses its
-    compatible default: FLUX.2 uses 1024×1024, while Qwen derives a canvas from
-    the input image. The request ``size`` is accepted for OpenAI compatibility
-    but deliberately not honored.
+    Explicit ``None`` dimensions tell every built-in edit engine to derive its
+    compatible canvas from the input image. Omitting these keywords is not
+    equivalent: the engine's text-to-image defaults are 1024×1024, which would
+    silently resize smaller or non-square edit inputs. The request ``size`` is
+    accepted for OpenAI compatibility but deliberately not honored.
     """
     return img_engine.generate(
         prompt=prompt,
+        width=None,
+        height=None,
         num_inference_steps=steps
         if steps is not None
         else getattr(img_engine, "default_edit_steps", _DEFAULT_EDIT_STEPS),

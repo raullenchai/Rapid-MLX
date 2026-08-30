@@ -545,12 +545,13 @@ class _FakeImageEngine:
         seed,
         guidance,
         negative_prompt,
-        width=None,
-        height=None,
+        width=1024,
+        height=1024,
         image_paths=None,
     ):
-        # The edit route omits width/height (the engine derives them from the
-        # input image); the generations route always supplies them.
+        # Match the real engine's text-to-image defaults so route tests catch a
+        # missing explicit ``None`` on edits. The generations route always
+        # supplies concrete dimensions.
         self.seeds.append(seed)
         self.image_paths_seen.append(image_paths)
         self.dims_seen.append((width, height))

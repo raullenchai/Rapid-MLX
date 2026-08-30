@@ -619,8 +619,8 @@ class ImageGenerationEngine:
         self,
         *,
         prompt: str,
-        width: int = 1024,
-        height: int = 1024,
+        width: int | None = 1024,
+        height: int | None = 1024,
         num_inference_steps: int = 4,
         seed: int = 0,
         guidance: float | None = None,
@@ -687,6 +687,10 @@ class ImageGenerationEngine:
                         ),
                     )
                 elif editing:
+                    # FLUX.2's edit pipeline resolves ``None`` against its
+                    # primary reference image (including aspect ratio). The
+                    # route deliberately selects that behavior; explicit
+                    # dimensions remain available to direct engine callers.
                     result = model.generate_image(
                         image_paths=image_paths,
                         height=height,
