@@ -490,8 +490,65 @@ struct ChatAttachmentDraftTests {
         #expect(stripped.contains(
             "attachmentDrafts.finishFileImport(request:importRequest,outcome.0,notice:notice)"
         ))
-        #expect(stripped.contains(".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()}"))
+        #expect(stripped.contains(
+            ".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()photoCapabilityNotice.dismiss()}"
+        ))
         #expect(stripped.contains(".onChange(of:viewModel.conversations.map(\\.id)){_,_inpruneAttachmentDrafts()}"))
+    }
+
+    @Test("Photo capability notices stay informational and transient")
+    func photoCapabilityNoticeWiring() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/ChatView.swift"),
+            encoding: .utf8
+        )
+        let stripped = CapabilityChipRenderGateSourceGuardTests
+            .stripCommentsAndWhitespace(source)
+
+        #expect(stripped.contains("@StateprivatevarphotoCapabilityNotice=PhotoCapabilityNotice()"))
+        #expect(stripped.contains("InlineNotice(message:message,tone:.info)"))
+        #expect(stripped.contains("InlineNotice(message:attachmentNotice,tone:.error)"))
+        #expect(stripped.contains("attachmentDraft.notice=nilphotoCapabilityNotice.present(message,availability:photoAvailability)"))
+        #expect(!stripped.contains("attachmentDraft.notice=imageInputUnavailableMessage??"))
+        #expect(stripped.contains(".onChange(of:alias){_,_inphotoCapabilityNotice.dismiss()}"))
+        #expect(stripped.contains(".onChange(of:photoAvailability){_,availabilityinphotoCapabilityNotice.reconcile(with:availability)}"))
+        #expect(stripped.contains(".onChange(of:draft){_,_inphotoCapabilityNotice.dismiss()}"))
+        #expect(stripped.contains("guardacknowledgeIfNotReady()else{return}photoCapabilityNotice.dismiss()"))
+        #expect(stripped.contains("guardacknowledgeIfNotReady()else{returnfalse}photoCapabilityNotice.dismiss()returnviewModel.editUserMessage"))
+        #expect(stripped.contains("guardacknowledgeIfNotReady()else{returnfalse}photoCapabilityNotice.dismiss()returnviewModel.retryAssistantMessage"))
+        #expect(stripped.contains("privatefuncsendSuggestion(_text:String){guard!viewModel.isStreaming,!attachmentDraft.isImportingFileselse{return}guardacknowledgeIfNotReady()else{return}photoCapabilityNotice.dismiss()"))
+        #expect(stripped.contains("privatefuncchoosePhotos(){photoCapabilityNotice.dismiss()letpanel=NSOpenPanel()"))
+        #expect(stripped.contains("privatefuncchooseFiles(){photoCapabilityNotice.dismiss()letpanel=NSOpenPanel()"))
+    }
+
+    @Test("Photo capability guidance expires when same-alias availability changes")
+    func photoCapabilityNoticeReconcilesAvailability() {
+        let textOnly = PhotoCapabilityNotice.Availability(
+            supportsImageInput: false,
+            unavailableMessage: "Photo mode needs more memory."
+        )
+        var notice = PhotoCapabilityNotice()
+        notice.present("Text chat is ready.", availability: textOnly)
+
+        notice.reconcile(with: textOnly)
+        #expect(notice.message == "Text chat is ready.")
+
+        notice.reconcile(with: PhotoCapabilityNotice.Availability(
+            supportsImageInput: true,
+            unavailableMessage: nil
+        ))
+        #expect(notice.message == nil)
+
+        notice.present("Old remedy", availability: textOnly)
+        notice.reconcile(with: PhotoCapabilityNotice.Availability(
+            supportsImageInput: false,
+            unavailableMessage: "A new lane-specific remedy"
+        ))
+        #expect(notice.message == nil)
     }
 
     private func makeImage(name: String, bytes: Int = 4) throws -> ChatImageAttachment {

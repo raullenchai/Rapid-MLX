@@ -320,7 +320,8 @@ final class ServerModelProfileTests {
         // not model size: a smaller quant of the same model hits the identical
         // floor and freeing memory changes nothing. The only remedy the user
         // can apply is a different vision-capable model.
-        #expect(message.contains("different vision-capable model"))
+        #expect(message.hasPrefix("Text chat is ready"))
+        #expect(message.contains("lower memory requirements"))
         #expect(message != Self.genericLaneCopy)
     }
 

@@ -170,6 +170,39 @@ private func copySanitizedToPasteboard(_ raw: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(ChatTextSanitizer.sanitizeForPasteboard(raw), forType: .string)
 }
+
+/// Transient guidance created by a rejected photo attempt.
+///
+/// The availability snapshot prevents a message about an old serving lane
+/// from surviving a same-alias restart onto a different lane. Alias and
+/// conversation changes still dismiss explicitly because they are navigation
+/// even when the two contexts happen to expose identical capabilities.
+struct PhotoCapabilityNotice: Equatable {
+    struct Availability: Equatable {
+        let supportsImageInput: Bool
+        let unavailableMessage: String?
+    }
+
+    private(set) var message: String?
+    private var presentedAvailability: Availability?
+
+    mutating func present(_ message: String, availability: Availability) {
+        self.message = message
+        presentedAvailability = availability
+    }
+
+    mutating func reconcile(with availability: Availability) {
+        guard let presentedAvailability,
+              presentedAvailability != availability else { return }
+        dismiss()
+    }
+
+    mutating func dismiss() {
+        message = nil
+        presentedAvailability = nil
+    }
+}
+
 /// Main chat surface. ChatGPT Desktop's layout: messages scroll the
 /// top region, the compose bar is pinned at the bottom. Streaming
 /// responses pin the scroll to the trailing edge so the user sees
@@ -222,6 +255,11 @@ struct ChatView: View {
 
     @State private var draft: String = ""
     @State private var attachmentDrafts = ChatAttachmentDraftStore()
+    /// A rejected photo is a capability explanation, not an attachment
+    /// failure. Keep it outside the conversation-keyed attachment draft so it
+    /// can use an informational treatment and disappear as soon as the user
+    /// continues with text, another conversation, or another model.
+    @State private var photoCapabilityNotice = PhotoCapabilityNotice()
     @State private var isAttachmentDropTarget = false
     @State private var composeFocusToken: Int = 0
     /// Incremented every time the user tries to send while gated. Drives
@@ -252,6 +290,12 @@ struct ChatView: View {
     private var attachmentDraft: ChatAttachmentDraft {
         get { attachmentDrafts[viewModel.activeConversationID] }
         nonmutating set { attachmentDrafts[viewModel.activeConversationID] = newValue }
+    }
+    private var photoAvailability: PhotoCapabilityNotice.Availability {
+        PhotoCapabilityNotice.Availability(
+            supportsImageInput: supportsImageInput,
+            unavailableMessage: imageInputUnavailableMessage
+        )
     }
 
     var body: some View {
@@ -300,7 +344,15 @@ struct ChatView: View {
             composeFocusToken &+= 1
         }
         .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
-        .onChange(of: viewModel.activeConversationID) { _, _ in pruneAttachmentDrafts() }
+        .onChange(of: viewModel.activeConversationID) { _, _ in
+            pruneAttachmentDrafts()
+            photoCapabilityNotice.dismiss()
+        }
+        .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
+        .onChange(of: photoAvailability) { _, availability in
+            photoCapabilityNotice.reconcile(with: availability)
+        }
+        .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
     }
 
     // MARK: - Transcript
@@ -422,6 +474,7 @@ struct ChatView: View {
                             // could kick off a turn the Send button is refusing
                             // to allow one row below.
                             guard acknowledgeIfNotReady() else { return false }
+                            photoCapabilityNotice.dismiss()
                             return viewModel.editUserMessage(
                                 id: message.id,
                                 newContent: newContent,
@@ -431,6 +484,7 @@ struct ChatView: View {
                         },
                         onRetry: {
                             guard acknowledgeIfNotReady() else { return false }
+                            photoCapabilityNotice.dismiss()
                             return viewModel.retryAssistantMessage(
                                 id: message.id,
                                 alias: alias,
@@ -621,6 +675,10 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity)
             } else if let attachmentNotice = attachmentDraft.notice {
                 InlineNotice(message: attachmentNotice, tone: .error)
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
+            } else if let message = photoCapabilityNotice.message {
+                InlineNotice(message: message, tone: .info)
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             }
@@ -913,6 +971,7 @@ struct ChatView: View {
         // flashes and VoiceOver speaks the same sentence the Send
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
+        photoCapabilityNotice.dismiss()
         draft = ""
         let submission = attachmentDraft.takeSubmission()
         composeFocusToken &+= 1
@@ -940,6 +999,7 @@ struct ChatView: View {
     private func sendSuggestion(_ text: String) {
         guard !viewModel.isStreaming, !attachmentDraft.isImportingFiles else { return }
         guard acknowledgeIfNotReady() else { return }
+        photoCapabilityNotice.dismiss()
         composeFocusToken &+= 1
         viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
     }
@@ -1012,6 +1072,7 @@ struct ChatView: View {
     }
 
     private func choosePhotos() {
+        photoCapabilityNotice.dismiss()
         let panel = NSOpenPanel()
         // ImageIO normalizes native still-image formats at the shared draft
         // boundary; the picker must expose the same contract as paste/drop.
@@ -1024,6 +1085,7 @@ struct ChatView: View {
     }
 
     private func chooseFiles() {
+        photoCapabilityNotice.dismiss()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.pdf, .commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = true
@@ -1036,6 +1098,7 @@ struct ChatView: View {
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
         guard !attachmentDraft.isImportingFiles else { return false }
+        photoCapabilityNotice.dismiss()
         // Filter before splitting, so images and documents get the same
         // answer to "is this already here". Re-attaching is not merely
         // redundant for a document: the per-message character budget is split
@@ -1257,9 +1320,14 @@ struct ChatView: View {
     }
 
     private func rejectImageInputForCurrentModel() {
-        attachmentDraft.notice = imageInputUnavailableMessage
+        let message = imageInputUnavailableMessage
             ?? "This model doesn't support photos. Choose a vision-capable model to add one."
-        VoiceOverAnnouncer.announce(attachmentDraft.notice ?? "This model doesn't support images.")
+        // The newest attempt owns the single notice slot. Leaving an older
+        // attachment error in place would make VoiceOver announce one fact
+        // while sighted users keep seeing another.
+        attachmentDraft.notice = nil
+        photoCapabilityNotice.present(message, availability: photoAvailability)
+        VoiceOverAnnouncer.announce(message)
     }
 
     /// The shared lifecycle gate for every path that would start a turn:

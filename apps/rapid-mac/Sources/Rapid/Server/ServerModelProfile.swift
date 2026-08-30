@@ -315,7 +315,7 @@ struct ImageInputAvailability: Equatable, Sendable {
             case .speculativeDecode:
                 "This model is running text-only because speculative decoding is on. Turn it off in Settings → Performance to add photos."
             case .visionMemoryInsufficient:
-                "This model's vision mode needs more memory than this Mac has. Choose a different vision-capable model to add photos."
+                "Text chat is ready with this model. Photo mode needs more memory than this Mac has. Choose a vision model with lower memory requirements to add photos."
             case .visionRuntimeUnsupported:
                 "This model is running text-only because its vision runtime isn't supported here. Choose a different vision-capable model to add photos."
             case .visionFeaturesUnavailable:

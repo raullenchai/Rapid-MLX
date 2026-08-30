@@ -645,13 +645,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This model's vision mode needs more memory than this Mac has. Choose a different vision-capable model to add photos."
+            "value" : "Text chat is ready with this model. Photo mode needs more memory than this Mac has. Choose a vision model with lower memory requirements to add photos."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+            "value" : "此模型的文字聊天可以正常使用。照片模式需要的内存超过这台 Mac 的容量；如需添加照片，请选择内存需求更低的视觉模型。"
           }
         }
       }

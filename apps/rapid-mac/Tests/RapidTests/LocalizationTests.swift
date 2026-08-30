@@ -194,7 +194,7 @@ struct LocalizationTests {
         )
         #expect(
             memory.unavailableMessage
-                == "此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+                == "此模型的文字聊天可以正常使用。照片模式需要的内存超过这台 Mac 的容量；如需添加照片，请选择内存需求更低的视觉模型。"
         )
 
         let legacy = ImageInputAvailability.resolve(

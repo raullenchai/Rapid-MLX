@@ -4132,7 +4132,7 @@ flow_localized_photo_hint() {
     dismiss_first_run
     start_model
 
-    local expected="此模型的视觉模式需要的内存超过这台 Mac 的容量。要添加照片，请选择另一个支持视觉的模型。"
+    local expected="此模型的文字聊天可以正常使用。照片模式需要的内存超过这台 Mac 的容量；如需添加照片，请选择内存需求更低的视觉模型。"
     local localized=0
     for _ in {1..40}; do
         see_main "$OUT/zh-main.json"
@@ -4156,6 +4156,26 @@ flow_localized_photo_hint() {
            | select(.identifier == "ContentView.Settings" and .description == "设置")' \
         "$OUT/zh-menu.json" >/dev/null \
         || die "the release-shaped app did not load its compiled zh-Hans resources"
+
+    # The disabled menu row explains the capability before an attempt; paste
+    # proves the mounted chat surface treats the same fact as a transient
+    # capability notice while keeping text chat usable.
+    press "$OUT/zh-menu.json" ChatView.AddAttachments "$OUT/zh-menu-close.json"
+    local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-28.png"
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
+        > "$OUT/zh-photo-paste.json"
+    wait_tree_text "$expected" "$OUT/zh-photo-notice.json" 40
+    send_prompt "Text chat remains available" zh-text-after-photo
+    wait_send_idle "$OUT/zh-text-after-photo-complete.json"
+    assert_tree_text "$OUT/zh-text-after-photo-complete.json" "Text chat remains available"
+    assert_tree_text "$OUT/zh-text-after-photo-complete.json" "deterministic content"
+    jq -e --arg expected "$expected" '
+        [.data.ui_elements[]?
+         | select([(.title // ""), (.value // ""), (.description // "")]
+                  | join(" ") | contains($expected))]
+        | length == 0
+    ' "$OUT/zh-text-after-photo-complete.json" >/dev/null \
+        || die "the photo capability notice persisted after a successful text turn"
 
     cleanup_persona
 }
