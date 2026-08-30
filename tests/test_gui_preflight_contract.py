@@ -202,6 +202,16 @@ def test_preflight_runs_before_any_persona_starts():
     )
 
 
+def test_cached_curated_tradeup_confirms_the_quickstart_memory_sheet():
+    """The onboarding sheet and main-window warning use different AX IDs."""
+    source = HARNESS.read_text()
+    flow = source.split("flow_cached_curated_tradeup() {", 1)[1].split("\n}", 1)[0]
+
+    assert 'identifier == "Quickstart.Memory.LoadAnyway"' in flow
+    assert '"$AX_DRIVER" click-center "$APP_PID" Quickstart.Memory.LoadAnyway' in flow
+    assert 'identifier == "MemoryWarning.Confirm"' not in flow
+
+
 def test_peekaboo_requirement_is_default_deny():
     """A new flow must be assumed to need peekaboo until stated otherwise.
 
