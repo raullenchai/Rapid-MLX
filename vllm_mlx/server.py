@@ -1745,19 +1745,30 @@ def _resolve_serving_checkpoint(
     the engine must receive that local path rather than retrying the repo id.
     """
     from .model_aliases import resolve_model, resolve_profile
+    from .utils.tokenizer import _resolve_subfolder_checkpoint
 
     model_path = resolve_model(model_name)
+    # Resolve a multi-variant repository before reading metadata or choosing a
+    # serving lane. This is the one checkpoint-identity choke point shared by
+    # startup and residency: an explicit alias keeps its declared subfolder,
+    # while a bare repo ID may recover the latest ``pull --bits/--format``
+    # marker. Deferring this to BatchedEngine loses the CLI's alias spelling
+    # and lets reverse-catalog metadata select the default checkpoint first.
+    resolved_subfolder_path = _resolve_subfolder_checkpoint(model_name)
+    checkpoint_path = (
+        model_path if resolved_subfolder_path == model_name else resolved_subfolder_path
+    )
     if not force_mllm and not force_text:
-        _ensure_routing_config(model_path)
+        _ensure_routing_config(checkpoint_path)
     from .model_metadata import read_model_metadata
 
-    metadata = read_model_metadata(model_path)
+    metadata = read_model_metadata(checkpoint_path)
     load_path = (
         str(metadata.snapshot_dir)
         if metadata is not None and metadata.snapshot_dir is not None
-        else model_path
+        else checkpoint_path
     )
-    profile = resolve_profile(model_path)
+    profile = resolve_profile(model_name) or resolve_profile(model_path)
     decision = resolve_serving_lane_decision(
         load_path,
         force_mllm=force_mllm,
@@ -1982,11 +1993,15 @@ def load_model(
     # resolve_profile handles both alias-name and HF-path lookups, so a
     # single call suffices regardless of which form load_model was passed.
     _profile = resolve_profile(effective_model_alias or requested_model_name)
-    _model_config = _profile
-    if _model_config is None:
-        from .model_auto_config import detect_model_config
+    # A reverse-catalog profile is only a default for a bare repo ID. When a
+    # narrowed pull marker selects another checkpoint in that repo, its local
+    # metadata is authoritative for auto-config just as an explicit alias is.
+    _bare_repo_has_pulled_variant = False
+    if effective_model_alias is None:
+        from ._download_gate import pulled_variant
 
-        _model_config = detect_model_config(model_name)
+        _bare_repo_has_pulled_variant = pulled_variant(model_name) is not None
+    _model_config = None if _bare_repo_has_pulled_variant else _profile
     if _profile is not None and _profile.recommended_sampling:
         _alias_recommended_sampling = dict(_profile.recommended_sampling)
 
@@ -2077,7 +2092,7 @@ def load_model(
     _serving_lane_reason = "not_applicable"
     if not _is_generative_media:
         _serving_checkpoint = _resolve_serving_checkpoint(
-            model_name,
+            effective_model_alias or model_name,
             force_mllm=force_mllm,
             force_text=force_text,
             requested_spec_decode=(
@@ -2089,6 +2104,16 @@ def load_model(
         _engine_model_path = _serving_checkpoint.load_path
         _auto_text_fallback = _serving_checkpoint.auto_text_fallback
         _serving_lane_reason = _serving_checkpoint.lane_reason
+
+    # A bare multi-variant repo has no useful config at its root. Resolve the
+    # concrete checkpoint first, then derive every checkpoint-owned default
+    # from that same directory the engine will load. Before #2340 this probe
+    # ran above ``_resolve_serving_checkpoint`` and could silently configure an
+    # uncatalogued ``pull --bits/--format`` model from the empty repo root.
+    if _model_config is None:
+        from .model_auto_config import detect_model_config
+
+        _model_config = detect_model_config(_engine_model_path)
     if _auto_text_fallback:
         fallback_detail = {
             "text_lane_speculative_decode": (
@@ -2117,7 +2142,7 @@ def load_model(
         )
 
     try:
-        gen_cfg = load_generation_config_sampling(model_name)
+        gen_cfg = load_generation_config_sampling(_engine_model_path)
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
         logger.debug(f"generation_config load failed (non-fatal): {_e}")
         gen_cfg = {}
@@ -2402,8 +2427,14 @@ async def _load_dynamic_resident_model(
     effective_force_text = profile_force_text
     serving_lane_reason = "not_applicable"
     if modality == "text":
+        # Keep an explicit alias authoritative when the control plane also
+        # supplies its canonical path. A genuine path override still wins;
+        # only use the alias spelling when it resolves to that same checkpoint.
+        checkpoint_identity = (
+            model_name if resolve_model(model_name) == resolved_path else resolved_path
+        )
         serving_checkpoint = _resolve_serving_checkpoint(
-            resolved_path,
+            checkpoint_identity,
             force_text=profile_force_text,
             # Residency loads carry no spec-decode request; keep the lane
             # contract identical to startup (whose default is also "none").
@@ -3331,7 +3362,10 @@ Examples:
             auto_config_resolved = True
             return None
         try:
-            auto_config = detect_model_config(args.model)
+            from .utils.tokenizer import _resolve_subfolder_checkpoint
+
+            config_path = _resolve_subfolder_checkpoint(args.model)
+            auto_config = detect_model_config(config_path)
         except Exception as exc:
             if not non_fatal:
                 raise

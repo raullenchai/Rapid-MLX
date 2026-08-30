@@ -279,6 +279,51 @@ async def test_dynamic_resident_loads_singleton_no_refs_snapshot_offline(
 
 
 @pytest.mark.asyncio
+async def test_dynamic_resident_preserves_explicit_subfolder_alias(
+    monkeypatch, scheduler_config_stub
+):
+    """Residency and startup must apply the same alias-over-marker precedence."""
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    alias = "lfm2.5-2.6b-4bit"
+    repo = "LiquidAI/LFM2.5-2.6B-MLX"
+    seen: list[str] = []
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        is_mllm = False
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def start(self):
+            pass
+
+        def generate_warmup(self):
+            pass
+
+    def fake_resolve_checkpoint(model_name, **kwargs):
+        seen.append(model_name)
+        return SimpleNamespace(
+            model_path=repo,
+            load_path="/cache/snapshots/revision/4bit",
+            auto_text_fallback=False,
+            lane_reason="text_checkpoint",
+        )
+
+    monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
+    monkeypatch.setattr(server, "_resolve_serving_checkpoint", fake_resolve_checkpoint)
+
+    entry = await server._load_dynamic_resident_model(alias, repo)
+
+    assert seen == [alias]
+    assert captured["model_name"] == "/cache/snapshots/revision/4bit"
+    assert entry.model_path == repo
+
+
+@pytest.mark.asyncio
 async def test_dynamic_switch_restores_hybrid_text_lane(
     monkeypatch, tmp_path, scheduler_config_stub
 ):
