@@ -9,7 +9,6 @@ and the attestation check.
 from __future__ import annotations
 
 import importlib.util
-import re
 from pathlib import Path
 
 import pytest
@@ -128,13 +127,18 @@ def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
     ]
     assert len(vision_specs) == 1
 
-    sidecar = (
-        _REPO_ROOT / "apps" / "rapid-mac" / "scripts" / "build-sidecar.sh"
-    ).read_text()
-    matches = re.findall(r"['\"](mlx-vlm[^'\"]*)['\"]", sidecar)
-    assert len(matches) == 1, "expected exactly one mlx-vlm sidecar requirement"
+    scripts = _REPO_ROOT / "apps" / "rapid-mac" / "scripts"
+    sidecar = (scripts / "build-sidecar.sh").read_text()
+    constraints = [
+        Requirement(line)
+        for line in (scripts / "sidecar-constraints.txt").read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    matches = [spec for spec in constraints if spec.name == "mlx-vlm"]
+    assert len(matches) == 1, "expected exactly one mlx-vlm sidecar constraint"
+    assert '--constraint "$SIDECAR_CONSTRAINTS"' in sidecar
 
-    desktop_spec = Requirement(matches[0])
+    desktop_spec = matches[0]
     # Both surfaces deliberately pin one validated version. A range here caused
     # fresh pip installs to backtrack to 0.6.3 while Desktop stayed on 0.6.16.
     assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.16").specifier
