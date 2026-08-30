@@ -157,12 +157,20 @@ class TestSplitFindingsByTier:
 # ---------------------------------------------------------------------------
 
 
-def _ctx(title: str = "", body: str = "") -> Context:
+def _ctx(
+    title: str = "",
+    body: str = "",
+    *,
+    author: str = "",
+    head_branch: str = "",
+) -> Context:
     """Build a context shell with just title + body — the step only
     reads those fields."""
     ctx = Context(pr_number=999, repo="x/y")
     ctx.pr_title = title
     ctx.pr_body = body
+    ctx.pr_author = author
+    ctx.head_branch = head_branch
     return ctx
 
 
@@ -292,6 +300,38 @@ class TestCLDescriptionQualityBody:
         )
         assert result.status == "fail"
         assert "body" in result.summary.lower() and "empty" in result.summary.lower()
+
+    def test_mergify_candidate_skips_machine_generated_description(self):
+        result = CLDescriptionQualityStep().run(
+            _ctx(
+                title="merge queue: checking pull requests together",
+                body="- [ ] check-success = tests",
+                author="app/mergify",
+                head_branch="mergify/merge-queue/867c6127d0",
+            )
+        )
+        assert result.status == "skip"
+        assert "Mergify" in result.summary
+
+    @pytest.mark.parametrize(
+        ("author", "head_branch"),
+        [
+            ("app/mergify", "feature/not-a-queue"),
+            ("contributor", "mergify/merge-queue/spoof"),
+        ],
+    )
+    def test_mergify_description_skip_requires_both_signals(
+        self, author: str, head_branch: str
+    ):
+        result = CLDescriptionQualityStep().run(
+            _ctx(
+                title="merge queue: checking pull requests together",
+                body="Generated status without rationale",
+                author=author,
+                head_branch=head_branch,
+            )
+        )
+        assert result.status == "fail"
 
     def test_body_with_no_rationale_signal_fails(self):
         """A body that's pure description with no ``why``, no

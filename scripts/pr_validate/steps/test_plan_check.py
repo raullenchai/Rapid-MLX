@@ -52,6 +52,13 @@ class TestPlanCheckStep(Step):
     description = "PR body must not have unchecked checkboxes"
 
     def run(self, ctx: Context) -> StepResult:
+        if ctx.is_mergify_merge_candidate:
+            return StepResult(
+                name=self.name,
+                status="skip",
+                summary="trusted Mergify candidate uses live queue-status checklists",
+            )
+
         body = (ctx.pr_body or "").strip()
         if not body:
             return StepResult(

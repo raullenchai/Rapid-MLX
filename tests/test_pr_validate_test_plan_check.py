@@ -14,12 +14,19 @@ from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.test_plan_check import TestPlanCheckStep
 
 
-def _ctx(body: str) -> Context:
+def _ctx(
+    body: str,
+    *,
+    author: str = "",
+    head_branch: str = "",
+) -> Context:
     """Build a context shell with just the PR body populated — the step
     only reads ``ctx.pr_body`` so everything else can be default.
     """
     ctx = Context(pr_number=999, repo="x/y")
     ctx.pr_body = body
+    ctx.pr_author = author
+    ctx.head_branch = head_branch
     return ctx
 
 
@@ -115,3 +122,33 @@ def test_leading_whitespace_still_matches():
     result = TestPlanCheckStep().run(_ctx(body))
     assert result.status == "fail"
     assert "Indented item" in result.details
+
+
+def test_mergify_candidate_skips_machine_queue_checklists():
+    body = """## Queue status
+- [ ] check-success = @github-actions/desktop-tests
+- [ ] #2509
+"""
+    result = TestPlanCheckStep().run(
+        _ctx(
+            body,
+            author="app/mergify",
+            head_branch="mergify/merge-queue/867c6127d0",
+        )
+    )
+    assert result.status == "skip"
+    assert "Mergify" in result.summary
+
+
+def test_mergify_skip_requires_app_author_and_reserved_branch():
+    body = "- [ ] E2E verification"
+
+    app_on_regular_branch = TestPlanCheckStep().run(
+        _ctx(body, author="app/mergify", head_branch="feature/not-a-queue")
+    )
+    human_on_reserved_branch = TestPlanCheckStep().run(
+        _ctx(body, author="contributor", head_branch="mergify/merge-queue/spoof")
+    )
+
+    assert app_on_regular_branch.status == "fail"
+    assert human_on_reserved_branch.status == "fail"

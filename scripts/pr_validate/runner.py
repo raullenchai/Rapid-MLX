@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from .base import Step
-from .context import Context
+from .context import Context, env_truthy
 from .scorecard import render_scorecard, verdict
 from .steps.cl_description_quality import CLDescriptionQualityStep
 from .steps.codex_review import CodexReviewStep
@@ -215,7 +215,7 @@ def run_pipeline(
     # MERGE-SAFE here would mislead the author into thinking their body is
     # fine. Surface it as a loud WARNING (non-blocking, the user asked for
     # the override) rather than a clean pass.
-    if body_only:
+    if body_only and env_truthy("PR_VALIDATE_SKIP_DESC"):
         desc_result = next(
             (r for r in ctx.results if r.name == "cl_description_quality"), None
         )
