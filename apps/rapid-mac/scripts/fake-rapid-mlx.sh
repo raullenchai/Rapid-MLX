@@ -971,9 +971,34 @@ class Handler(BaseHTTPRequestHandler):
                             hashlib.sha256(image_url["url"].encode()).hexdigest()
                         )
             user_payloads.append({"text": "\n".join(texts), "image_url_sha256": image_hashes})
+        roles = [m.get("role") for m in messages if isinstance(m, dict)]
+        first_system = (
+            messages[0].get("content", "")
+            if messages and isinstance(messages[0], dict)
+            and messages[0].get("role") == "system"
+            and isinstance(messages[0].get("content"), str)
+            else ""
+        )
+        # The desktop deliberately sends title/follow-up completions through
+        # the same endpoint as a reader's turn. Give journey assertions a
+        # semantic discriminator so concurrent assist traffic cannot shift a
+        # foreground request's array index or satisfy its request count. This
+        # is fixture-only metadata; the real API contract is unchanged.
+        is_background_assist = (
+            roles == ["system", "user"]
+            and body.get("max_tokens") in (24, 96)
+            and not definitions
+            and first_system.startswith((
+                "You are a conversation titler.",
+                "You suggest what the user might ask next.",
+            ))
+        )
         _event(
             "chat_request",
-            roles=[m.get("role") for m in messages if isinstance(m, dict)],
+            request_origin=(
+                "background_assist" if is_background_assist else "conversation"
+            ),
+            roles=roles,
             tools=[
                 d.get("function", {}).get("name")
                 for d in definitions

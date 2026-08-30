@@ -2698,13 +2698,15 @@ flow_message_actions() {
         && die "cancelling a message edit sent the draft"
 
     local requests_before requests_after
-    requests_before="$(grep -c '"event": "chat_request"' "$OUT/fake-events.jsonl")"
+    requests_before="$(jq -s '[.[] | select(.event == "chat_request"
+        and .request_origin != "background_assist")] | length' "$OUT/fake-events.jsonl")"
     see_main "$OUT/message-actions-before-retry.json"
     press "$OUT/message-actions-before-retry.json" "$assistant_retry" \
         "$OUT/message-actions-retry-press.json" \
         || die "Retry response is not pressable"
     for _ in {1..80}; do
-        requests_after="$(grep -c '"event": "chat_request"' "$OUT/fake-events.jsonl")"
+        requests_after="$(jq -s '[.[] | select(.event == "chat_request"
+            and .request_origin != "background_assist")] | length' "$OUT/fake-events.jsonl")"
         [[ "$requests_after" -gt "$requests_before" ]] && break
         sleep 0.1
     done
@@ -2927,7 +2929,8 @@ flow_tool_loop_budget() {
     jq -s -e '[.[] | select(.event == "tool_loop_synthesis" and .tool_results == 3)] | length == 1' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "the capped loop did not finish with one synthesis request"
-    jq -s -e '[.[] | select(.event == "chat_request")][-1].tools == []' \
+    jq -s -e '[.[] | select(.event == "chat_request"
+        and .request_origin != "background_assist")][-1].tools == []' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "the final synthesis request still advertised tools"
     cleanup_persona
@@ -4096,7 +4099,8 @@ print(hashlib.sha256(url.encode()).hexdigest())
 PY
 )"
     jq -e -s --arg first "$first_hash" --arg second "$second_hash" '
-        [ .[] | select(.event == "chat_request") ][1]
+        [ .[] | select(.event == "chat_request"
+              and .request_origin != "background_assist") ][1]
         | .user_payloads[-1].image_url_sha256 == [$second]
           and ([.user_payloads[]?.image_url_sha256[]?] | index($first) | not)
     ' "$OUT/fake-events.jsonl" >/dev/null \
@@ -4107,7 +4111,8 @@ PY
     send_prompt "Review current document" mm-document
     wait_send_idle "$OUT/mm-document-complete.json"
     jq -e -s '
-        [ .[] | select(.event == "chat_request") ][2]
+        [ .[] | select(.event == "chat_request"
+              and .request_origin != "background_assist") ][2]
         | ([.user_payloads[]?.image_url_sha256[]?] | length) == 0
           and (.user_payloads[-1].text
                | contains("BEGIN RAPID ATTACHMENT")
