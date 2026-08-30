@@ -916,6 +916,7 @@ class TestMllmBackboneIsHybrid:
         the fix must not guess among unreferenced revisions.
         """
         import json
+        from types import SimpleNamespace
 
         import huggingface_hub
 
@@ -973,6 +974,16 @@ class TestMllmBackboneIsHybrid:
             cli,
             "_ensure_model_downloaded",
             fail_on_network,
+        )
+        monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+        monkeypatch.setattr(
+            server,
+            "resolve_serving_lane_decision",
+            lambda _name, **_kwargs: SimpleNamespace(
+                is_mllm=False,
+                reason="text_lane_forced",
+                auto_text_fallback=True,
+            ),
         )
 
         class StubEngine:
