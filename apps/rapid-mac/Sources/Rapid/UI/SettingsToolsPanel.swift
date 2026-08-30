@@ -530,11 +530,26 @@ struct SettingsToolsPanel: View {
             EmptyView()
         case .materialized(_, let isPersisted, let issue):
             if let issue {
-                Text(Self.issueCopy(issue))
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                    Text(Self.embeddedBearerIssueCopy(issue))
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.statusError)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.DegradedNotice")
+
+                    if issue == .deleteFailed,
+                       server.embeddedBearerLifetime == .perLaunch {
+                        Button("Retry Keychain cleanup") {
+                            server.retryEmbeddedBearerCleanup()
+                        }
+                        .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.RetryCleanup")
+                    }
+                }
+            } else if server.embeddedBearerLifetime == .perLaunch {
+                Text("No embedded API key is stored in your Keychain.")
                     .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.statusError)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.DegradedNotice")
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Tools.EmbeddedAPI.ClearedNotice")
             } else if isPersisted {
                 Text("The current key is stored in your Keychain.")
                     .font(RapidFont.caption)
@@ -549,7 +564,7 @@ struct SettingsToolsPanel: View {
         }
     }
 
-    private static func issueCopy(_ issue: EmbeddedBearerStorageIssue) -> String {
+    static func embeddedBearerIssueCopy(_ issue: EmbeddedBearerStorageIssue) -> String {
         switch issue {
         case .generationFailed:
             return "Secure key generation failed, so the model was not started."
@@ -561,6 +576,8 @@ struct SettingsToolsPanel: View {
             return "The Keychain is unavailable, so this model started with a one-time key."
         case .writeFailed:
             return "The Keychain couldn’t store a new key, so this model started with a one-time key. Restart the model to try again."
+        case .deleteFailed:
+            return "The saved key couldn’t be removed from your Keychain. Retry cleanup before relying on Every start storage."
         }
     }
 
