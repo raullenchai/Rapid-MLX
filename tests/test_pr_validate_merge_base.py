@@ -18,13 +18,14 @@ local git fixture provides the merge-base ground truth.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
 
 from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps import fetch as fetch_mod
-from scripts.pr_validate.steps.fetch import _derive_merge_base
+from scripts.pr_validate.steps.fetch import FetchStep, _derive_merge_base
 
 
 @pytest.fixture
@@ -197,3 +198,49 @@ class TestDerivationMergeBase:
         # fall back", which fetch.py records as base_strategy="tip-fallback".
         sha, _strat = _derive_merge_base(ctx, {"baseRefOid": shas["base_tip"]})
         assert sha == ""
+
+
+class TestMergifyMetadata:
+    @pytest.mark.parametrize("author", ["app/mergify", "mergify[bot]"])
+    def test_fetch_recognizes_verified_app_candidate(
+        self, ctx, monkeypatch, author: str
+    ):
+        """Exercise the same gh metadata parsing path used in production.
+
+        GitHub CLI currently reports ``app/mergify`` while the REST API uses
+        ``mergify[bot]``. Both are verified representations of the same app;
+        the reserved queue branch remains the second required signal.
+        """
+        meta = {
+            "number": 2728,
+            "title": "merge queue: checking pull requests together",
+            "body": "- [ ] check-success = tests",
+            "author": {"login": author},
+            "isCrossRepository": False,
+            "headRefOid": "a" * 40,
+            "headRefName": "mergify/merge-queue/867c6127d0",
+            "baseRefOid": "b" * 40,
+            "additions": 1,
+            "deletions": 0,
+            "files": [{"path": "tests/test_example.py"}],
+            "state": "OPEN",
+            "mergeStateStatus": "CLEAN",
+        }
+
+        def fake_gh(command: str) -> str:
+            if command.startswith("pr view"):
+                return json.dumps(meta)
+            if command.startswith("pr diff"):
+                return "diff --git a/tests/test_example.py b/tests/test_example.py\n"
+            raise AssertionError(f"unexpected gh command: {command}")
+
+        monkeypatch.setattr(fetch_mod.shutil, "which", lambda _name: "/usr/bin/gh")
+        monkeypatch.setattr(fetch_mod, "_gh", fake_gh)
+        ctx.base_override = meta["baseRefOid"]
+
+        result = FetchStep().run(ctx)
+
+        assert result.status == "pass"
+        assert ctx.pr_author == author
+        assert ctx.head_branch == "mergify/merge-queue/867c6127d0"
+        assert ctx.is_mergify_merge_candidate is True

@@ -170,6 +170,13 @@ class CLDescriptionQualityStep(Step):
     description = "PR title + body have rationale (Google eng-practices)"
 
     def run(self, ctx: Context) -> StepResult:
+        if ctx.is_mergify_merge_candidate:
+            return StepResult(
+                name=self.name,
+                status="skip",
+                summary="trusted Mergify candidate aggregates reviewed PR descriptions",
+            )
+
         # Use env_truthy so ``PR_VALIDATE_SKIP_DESC=0`` correctly leaves
         # the gate enabled — bare ``os.environ.get`` would return the
         # string "0" which is truthy in Python and would silently skip.

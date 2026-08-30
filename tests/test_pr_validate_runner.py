@@ -297,7 +297,14 @@ class TestBodyOnly:
     """
 
     @staticmethod
-    def _stub_fetch(monkeypatch, title: str, body: str):
+    def _stub_fetch(
+        monkeypatch,
+        title: str,
+        body: str,
+        *,
+        author: str = "",
+        head_branch: str = "",
+    ):
         """Replace real FetchStep.run (which hits gh/network) with a body
         populating stub so the test is hermetic."""
         captured: list[str] = []
@@ -306,6 +313,8 @@ class TestBodyOnly:
             captured.append("fetch")
             ctx.pr_title = title
             ctx.pr_body = body
+            ctx.pr_author = author
+            ctx.head_branch = head_branch
             return StepResult(name="fetch", status="pass", summary="ok")
 
         monkeypatch.setattr(FetchStep, "run", fake_fetch_run)
@@ -401,6 +410,24 @@ class TestBodyOnly:
         assert "WARNING" in captured.err
         assert "PR_VALIDATE_SKIP_DESC" in captured.err
         assert "validated" in captured.err
+
+    def test_body_only_trusted_mergify_skip_does_not_claim_env_override(
+        self, repo_root_cwd, capsys, monkeypatch
+    ):
+        self._stub_fetch(
+            monkeypatch,
+            title="merge queue: checking pull requests together",
+            body="- [ ] check-success = tests",
+            author="app/mergify",
+            head_branch="mergify/merge-queue/867c6127d0",
+        )
+
+        rc = run_pipeline(pr_number=999, body_only=True)
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert "trusted Mergify candidate" in captured.out
+        assert "PR_VALIDATE_SKIP_DESC" not in captured.err
 
 
 class TestBaseOverrideValidation:
