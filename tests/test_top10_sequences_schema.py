@@ -205,6 +205,49 @@ def test_mtp_probe_requests_deterministic_sustained_decode() -> None:
     assert "1 through 100" in prompt
 
 
+def test_mtp_ratio_consistency_uses_prometheus_wire_precision() -> None:
+    """The exported gauge is rounded to four decimals; counters are exact."""
+    namespace = {"__name__": "sequence_driver_contract_test"}
+    exec(
+        compile(_sequence_driver_source(), str(_AGENT_SMOKE_FILE), "exec"),
+        namespace,
+    )
+    parse = namespace["_parse_series"]
+    evaluate = namespace["_eval_metrics"]
+    labels = 'family="qwen3.8-27b-4bit",method="mtp"'
+    pre = parse(
+        f"rapid_mlx_spec_decode_attempts_total{{{labels}}} 0\n"
+        f"rapid_mlx_spec_decode_accepts_total{{{labels}}} 0\n"
+        f"rapid_mlx_spec_decode_accept_ratio{{{labels}}} 0.0\n"
+    )
+    counters = (
+        f"rapid_mlx_spec_decode_attempts_total{{{labels}}} 166\n"
+        f"rapid_mlx_spec_decode_accepts_total{{{labels}}} 162\n"
+    )
+    seq = {
+        "name": "mtp-ratio",
+        "metrics_expected": [
+            {
+                "metric": "rapid_mlx_spec_decode_accept_ratio",
+                "family": "qwen3.8-27b-4bit",
+                "method": "mtp",
+            }
+        ],
+    }
+
+    rounded = parse(
+        counters + f"rapid_mlx_spec_decode_accept_ratio{{{labels}}} 0.9759\n"
+    )
+    assert evaluate(seq, pre, rounded) == []
+
+    inconsistent = parse(
+        counters + f"rapid_mlx_spec_decode_accept_ratio{{{labels}}} 0.9758\n"
+    )
+    failures = evaluate(seq, pre, inconsistent)
+    assert len(failures) == 1
+    assert "inconsistent with rounded cumulative" in failures[0]
+
+
 @pytest.fixture(scope="module")
 def spec() -> dict:
     assert _SEQUENCES_FILE.is_file(), f"missing {_SEQUENCES_FILE}"

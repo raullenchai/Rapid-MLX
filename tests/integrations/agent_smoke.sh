@@ -423,10 +423,14 @@ def _eval_metrics(seq, pre_map, post_map):
             cum_c = post_c[1] if post_c is not None else None
             if cum_a is not None and cum_a > 0 and cum_c is not None:
                 expect = cum_c / cum_a
-                if abs(expect - ratio) > 1e-6:
+                # The Prometheus exporter intentionally rounds this gauge to
+                # four decimals. Compare at that wire precision; a tighter
+                # epsilon rejects healthy fractions such as 162/166 because
+                # 0.9759 differs from the unrounded value by ~3.6e-6.
+                if ratio != round(expect, 4):
                     failures.append(
                         f"{name}.metrics_expected[{i}]: accept_ratio={ratio} "
-                        f"inconsistent with cumulative accepts/attempts "
+                        f"inconsistent with rounded cumulative accepts/attempts "
                         f"({cum_c}/{cum_a}={expect})"
                     )
             # The per-window ratio must be strictly positive.
