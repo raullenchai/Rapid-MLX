@@ -500,6 +500,42 @@ def _drive(spec, args):
         seq_to = seq.get("timeout_seconds") or (DEFAULT_SEQ_TO_MTP if mode == "mtp" else DEFAULT_SEQ_TO_STD)
         seq_deadline = min(time.time() + seq_to, deadline)
         print(f"  sequence {name} (budget {seq_to}s):")
+        if mode == "mtp":
+            # #2421 contract: prove engagement while the freshly booted MTP
+            # primary is still resident. The load sequence below deliberately
+            # replaces that primary, and /v1/models/load cannot restore its
+            # boot-only speculative configuration.
+            scrape_to = int(max(10, seq_deadline - time.time()))
+            try:
+                pre_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
+            except Exception as e:
+                print(f"    pre-metrics scrape error: {e} [FAIL]")
+                failed += 1
+                pre_map = {}
+            canonical_model = seq.get("serve_alias")
+            chat_st, nonempty = _chat(
+                args["base"], canonical_model, args["auth"],
+                int(max(10, seq_deadline - time.time())),
+            )
+            chat_ok = chat_st == 200 and nonempty
+            print(
+                f"    canonical MTP chat {{model={canonical_model}}} -> HTTP "
+                f"{chat_st} content={'OK' if nonempty else 'EMPTY'} "
+                f"[{'PASS' if chat_ok else 'FAIL'}]"
+            )
+            if not chat_ok:
+                failed += 1
+            try:
+                post_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
+            except Exception as e:
+                print(f"    post-metrics scrape error: {e} [FAIL]")
+                failed += 1
+                post_map = {}
+            mm = _eval_metrics(seq, pre_map, post_map)
+            for mf in mm:
+                print(f"    METRIC-FAIL: {mf}")
+            if mm:
+                failed += len(mm)
         for i, step in enumerate(seq.get("steps", []), start=1):
             remaining = seq_deadline - time.time()
             if remaining <= 5:
@@ -537,41 +573,6 @@ def _drive(spec, args):
             )
             if not (load_ok and chat_ok):
                 failed += 1
-        if mode == "mtp":
-            # #2421 contract: one canonical temp=0, HTTP-200, non-empty chat on
-            # the freshly booted MTP primary, bracketed by a pre/post /metrics
-            # scrape, then evaluated as deltas for the exact family+method.
-            scrape_to = int(max(10, seq_deadline - time.time()))
-            try:
-                pre_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
-            except Exception as e:
-                print(f"    pre-metrics scrape error: {e} [FAIL]")
-                failed += 1
-                pre_map = {}
-            canonical_model = seq.get("serve_alias")
-            chat_st, nonempty = _chat(
-                args["base"], canonical_model, args["auth"],
-                int(max(10, seq_deadline - time.time())),
-            )
-            chat_ok = chat_st == 200 and nonempty
-            print(
-                f"    canonical MTP chat {{model={canonical_model}}} -> HTTP "
-                f"{chat_st} content={'OK' if nonempty else 'EMPTY'} "
-                f"[{'PASS' if chat_ok else 'FAIL'}]"
-            )
-            if not chat_ok:
-                failed += 1
-            try:
-                post_map = _parse_series(_scrape_metrics(args["base"], args["auth"], scrape_to))
-            except Exception as e:
-                print(f"    post-metrics scrape error: {e} [FAIL]")
-                failed += 1
-                post_map = {}
-            mm = _eval_metrics(seq, pre_map, post_map)
-            for mf in mm:
-                print(f"    METRIC-FAIL: {mf}")
-            if mm:
-                failed += len(mm)
     return failed
 
 

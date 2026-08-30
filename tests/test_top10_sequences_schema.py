@@ -104,6 +104,21 @@ printf '%s\\n' "$SEQUENCES_YAML"
     assert Path(result.stdout.strip()) == sequence_file
 
 
+def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
+    """The MTP counters belong to the boot-configured primary, not a reload."""
+    smoke = _AGENT_SMOKE_FILE.read_text(encoding="utf-8")
+    drive_start = smoke.index("def _drive(spec, args):")
+    drive_end = smoke.index("\ndef main(argv):", drive_start)
+    drive = smoke[drive_start:drive_end]
+
+    metric_proof = drive.index("# #2421 contract: prove engagement")
+    residency_sequence = drive.index(
+        'for i, step in enumerate(seq.get("steps", []), start=1):'
+    )
+
+    assert metric_proof < residency_sequence
+
+
 @pytest.fixture(scope="module")
 def spec() -> dict:
     assert _SEQUENCES_FILE.is_file(), f"missing {_SEQUENCES_FILE}"
