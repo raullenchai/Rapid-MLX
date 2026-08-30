@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -202,3 +203,92 @@ def test_real_dogfood_entrypoints_share_the_host_guards() -> None:
     assert golden.count("DOGFOOD_WORKING_SET_GB=0.1") == 2
     assert golden.count("launch_persona_app ") == 3
     assert "launch_persona_app append" in golden
+
+
+def test_gui_ax_smoke_delivers_real_user_input() -> None:
+    ax = (ROOT / "apps/rapid-mac/scripts/gui-ax-smoke.sh").read_text()
+
+    assert "peekaboo click --help" in ax
+    assert 'grep -q -- --global-coords <<< "$click_help"' in ax
+    assert 'grep -q -- --input-strategy <<< "$click_help"' in ax
+    assert 'grep -q -- --foreground <<< "$click_help"' in ax
+    assert 'click_args=(click --coords "$coords")' in ax
+    assert "click_args+=(--global-coords)" in ax
+    assert "click_args+=(--input-strategy synthOnly)" in ax
+    assert "click_args+=(--foreground)" in ax
+    assert "pb perform-action" not in ax
+    assert "pb menu click" not in ax
+    assert (
+        "--snapshot"
+        not in ax.split("press_identifier()", maxsplit=1)[1].split(
+            "command -v peekaboo", maxsplit=1
+        )[0]
+    )
+    assert ax.index('press_identifier "$OUT/main.json"') < ax.index(
+        'pb image --window-id "$MAIN_WINDOW_ID"'
+    )
+
+
+@pytest.mark.parametrize(
+    ("help_text", "expected_flags"),
+    [
+        (
+            "--global-coords\n--input-strategy\n--foreground\n",
+            ["--global-coords", "--input-strategy", "synthOnly", "--foreground"],
+        ),
+        ("--global-coords\n--foreground\n", ["--global-coords", "--foreground"]),
+        ("Peekaboo 3.0 coordinates are global by default\n", []),
+    ],
+)
+def test_gui_ax_click_helper_uses_only_supported_flags(
+    tmp_path: Path, help_text: str, expected_flags: list[str]
+) -> None:
+    tree = tmp_path / "tree.json"
+    output = tmp_path / "output.json"
+    log = tmp_path / "args.log"
+    tree.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "Test.Button",
+                            "bounds": {"x": 10, "y": 20, "width": 10, "height": 10},
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    shell = r"""
+source "$RAPID_AX_SCRIPT"
+peekaboo() {
+    if [[ "${1:-}" == click && "${2:-}" == --help ]]; then
+        printf '%s' "$RAPID_FAKE_HELP"
+        return 0
+    fi
+    printf '%s\n' "$@" > "$RAPID_FAKE_LOG"
+    printf '{"success":true}\n'
+}
+press_identifier "$RAPID_FAKE_TREE" "Test.Button" "$RAPID_FAKE_OUTPUT"
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env=dict(
+            os.environ,
+            RAPID_HOST_PRECHECK_HELD="1",
+            RAPID_GUI_OUT=str(tmp_path / "artifacts"),
+            RAPID_AX_SCRIPT=str(ROOT / "apps/rapid-mac/scripts/gui-ax-smoke.sh"),
+            RAPID_FAKE_HELP=help_text,
+            RAPID_FAKE_LOG=str(log),
+            RAPID_FAKE_TREE=str(tree),
+            RAPID_FAKE_OUTPUT=str(output),
+        ),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    args = log.read_text().splitlines()
+    assert args[:3] == ["click", "--coords", "15,25"]
+    for flag in ("--global-coords", "--input-strategy", "synthOnly", "--foreground"):
+        assert (flag in args) is (flag in expected_flags)
