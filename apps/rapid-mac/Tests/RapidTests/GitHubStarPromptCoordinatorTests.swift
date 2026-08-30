@@ -101,6 +101,53 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(defaults.integer(forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions) == 35)
     }
 
+    @Test("A successful gh CLI star completes the invitation without a browser handoff")
+    func directStarCompletesLocally() async {
+        let defaults = isolatedDefaults()
+        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        let recorder = DirectStarRecorder()
+        let prompt = GitHubStarPromptCoordinator(
+            defaults: defaults,
+            quietWindow: .zero,
+            presentationActive: true,
+            starExecutor: { url in
+                await recorder.record(url)
+            }
+        )
+
+        prompt.productValueDelivered(.chatReply)
+        #expect(prompt.isPresented)
+
+        #expect(await prompt.attemptDirectStar())
+        #expect(await recorder.recordedURL() == GitHubCommunity.repositoryURL)
+        #expect(defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!prompt.isPresented)
+        #expect(!prompt.isStarring)
+    }
+
+    @Test("A failed direct star preserves the browser invitation")
+    func directStarFailureFallsBackLater() async {
+        let defaults = isolatedDefaults()
+        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        let prompt = GitHubStarPromptCoordinator(
+            defaults: defaults,
+            quietWindow: .zero,
+            presentationActive: true,
+            starExecutor: { _ in
+                throw GitHubStarCLIError.commandFailed
+            }
+        )
+
+        prompt.productValueDelivered(.chatReply)
+        #expect(prompt.isPresented)
+
+        let directStarSucceeded = await prompt.attemptDirectStar()
+        #expect(!directStarSucceeded)
+        #expect(!defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(prompt.isPresented)
+        #expect(!prompt.isStarring)
+    }
+
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()
@@ -153,5 +200,17 @@ private final class QuietWindowGate {
 
     func releaseNext() {
         waiters.removeFirst().resume()
+    }
+}
+
+private actor DirectStarRecorder {
+    private var url: URL?
+
+    func record(_ newValue: URL) {
+        url = newValue
+    }
+
+    func recordedURL() -> URL? {
+        url
     }
 }

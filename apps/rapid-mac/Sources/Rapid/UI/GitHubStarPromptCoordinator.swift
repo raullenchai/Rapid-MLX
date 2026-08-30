@@ -30,10 +30,12 @@ final class GitHubStarPromptCoordinator {
     static let quietWindow: Duration = .milliseconds(1_200)
 
     private(set) var isPresented = false
+    private(set) var isStarring = false
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let quietWindow: Duration
+    @ObservationIgnored private let starExecutor: @Sendable (URL) async throws -> Void
     @ObservationIgnored private let waitForQuietWindow: @MainActor (Duration) async -> Void
     @ObservationIgnored private var context: PresentationContext = .ready
     @ObservationIgnored private var presentationPending = false
@@ -46,6 +48,7 @@ final class GitHubStarPromptCoordinator {
         now: @escaping () -> Date = Date.init,
         quietWindow: Duration = GitHubStarPromptCoordinator.quietWindow,
         presentationActive: Bool = false,
+        starExecutor: @escaping @Sendable (URL) async throws -> Void = GitHubStarCLI.star,
         waitForQuietWindow: @escaping @MainActor (Duration) async -> Void = { duration in
             try? await Task.sleep(for: duration)
         }
@@ -53,6 +56,7 @@ final class GitHubStarPromptCoordinator {
         self.defaults = defaults
         self.now = now
         self.quietWindow = quietWindow
+        self.starExecutor = starExecutor
         self.presentationActive = presentationActive
         self.waitForQuietWindow = waitForQuietWindow
     }
@@ -139,6 +143,27 @@ final class GitHubStarPromptCoordinator {
     /// the install. Rapid does not probe the user's GitHub account to verify it.
     func repositoryOpened() {
         guard isPresented else { return }
+        markCompleted()
+    }
+
+    /// Tries the GitHub CLI first so developers can complete the invitation
+    /// without a browser round-trip. A missing or unauthenticated CLI is not an
+    /// error surface: the caller falls back to the existing browser handoff.
+    func attemptDirectStar() async -> Bool {
+        guard isPresented, !isStarring else { return false }
+        isStarring = true
+        defer { isStarring = false }
+
+        do {
+            try await starExecutor(GitHubCommunity.repositoryURL)
+            markCompleted()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func markCompleted() {
         isPresented = false
         presentationPending = false
         defaults.set(true, forKey: Keys.completed)
@@ -190,5 +215,82 @@ final class GitHubStarPromptCoordinator {
               isWorkloadEligible(total: defaults.integer(forKey: Keys.totalSuccessfulActions)) else { return }
         presentationPending = false
         isPresented = true
+    }
+}
+
+enum GitHubStarCLIError: Error {
+    case executableNotFound
+    case invalidRepository
+    case timedOut
+    case commandFailed
+}
+
+/// Runs one narrowly-scoped GitHub CLI request. The URL is Rapid-MLX's own
+/// canonical repository, so drag-and-dropped or copied URLs cannot change it.
+enum GitHubStarCLI {
+    static let timeout: Duration = .seconds(8)
+
+    static func star(_ repositoryURL: URL) async throws {
+        guard repositoryURL == GitHubCommunity.repositoryURL else {
+            throw GitHubStarCLIError.invalidRepository
+        }
+        guard let executable = executableURL() else {
+            throw GitHubStarCLIError.executableNotFound
+        }
+
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = [
+            "api", "--method", "PUT", "--silent",
+            "repos/raullenchai/Rapid-MLX/starred"
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        try process.run()
+        try await waitUntilExit(process, timeout: timeout)
+
+        guard process.terminationStatus == 0 else {
+            throw GitHubStarCLIError.commandFailed
+        }
+    }
+
+    static func executableURL() -> URL? {
+        let searchPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            ProcessInfo.processInfo.environment["PATH"] ?? "",
+            "/usr/bin",
+            "/bin"
+        ]
+
+        return searchPaths
+            .flatMap { $0.split(separator: ":").map(String.init) }
+            .map { URL(fileURLWithPath: $0).appendingPathComponent("gh") }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func waitUntilExit(_ process: Process, timeout: Duration) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await Task.detached {
+                    process.waitUntilExit()
+                    if process.terminationStatus != 0 {
+                        throw GitHubStarCLIError.commandFailed
+                    }
+                }.value
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                if process.isRunning {
+                    process.terminate()
+                }
+                try Task.checkCancellation()
+                throw GitHubStarCLIError.timedOut
+            }
+
+            try await group.next()
+            group.cancelAll()
+        }
     }
 }
