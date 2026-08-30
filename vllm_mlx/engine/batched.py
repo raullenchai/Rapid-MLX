@@ -114,6 +114,29 @@ _HARMONY_NO_THINKING_SUFFIX_TOKENS = (
     "<|message|>",
 )
 
+# Request semantics that both serving lanes must preserve. Keep these names
+# and their ordering in one place: the text scheduler receives the processors
+# as named request fields, while the multimodal scheduler receives the same
+# processors as an ordered list. A route or engine refactor must therefore
+# update one contract instead of four independent generate/stream branches.
+_LANE_PARITY_SAMPLING_KEYS = (
+    "repetition_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+)
+_TEXT_ONLY_SAMPLING_KEYS = ("top_k", "min_p", "seed")
+_LANE_PARITY_PROCESSOR_KEYS = (
+    "grammar_logits_processor",
+    "reasoning_budget_logits_processor",
+    "suppressed_tokens_logits_processor",
+)
+
+
+def _pop_lane_parity_processors(kwargs: dict[str, Any]) -> tuple[Any | None, ...]:
+    """Pop per-request processors in the scheduler's canonical order."""
+
+    return tuple(kwargs.pop(key, None) for key in _LANE_PARITY_PROCESSOR_KEYS)
+
 
 def _resolve_hf_model_type(model_name: str) -> str | None:
     """Best-effort read of ``config.json::model_type`` for ``model_name``.
@@ -2174,19 +2197,15 @@ class BatchedEngine(BaseEngine):
             # generator. ``top_k`` / ``min_p`` / ``seed`` MLLM passthrough
             # is intentionally NOT in scope here — see #512 follow-ups.
             _mllm_penalty_kwargs = {
-                k: kwargs.pop(k)
-                for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
-                if k in kwargs
+                key: kwargs.pop(key)
+                for key in _LANE_PARITY_SAMPLING_KEYS
+                if key in kwargs
             }
-            _mllm_logits_processors = []
-            for processor_key in (
-                "grammar_logits_processor",
-                "reasoning_budget_logits_processor",
-                "suppressed_tokens_logits_processor",
-            ):
-                processor = kwargs.pop(processor_key, None)
-                if processor is not None:
-                    _mllm_logits_processors.append(processor)
+            _mllm_logits_processors = [
+                processor
+                for processor in _pop_lane_parity_processors(kwargs)
+                if processor is not None
+            ]
             try:
                 output = await self._mllm_scheduler.generate(
                     prompt=prompt,
@@ -2233,22 +2252,9 @@ class BatchedEngine(BaseEngine):
         # sampler, repetition/presence/frequency_penalty via mlx-lm's
         # make_logits_processors().
         _sp_kwargs = {
-            k: kwargs.pop(k)
-            for k in (
-                "top_k",
-                "min_p",
-                "repetition_penalty",
-                "presence_penalty",
-                "frequency_penalty",
-                # H-11: forward the per-request seed onto SamplingParams
-                # so the scheduler can build a fresh seeded sampler. Without
-                # this, the seed field on the request model is parsed,
-                # validated, and silently dropped — Tomek r3's reproduced
-                # failure mode (five calls with seed=42 → five different
-                # outputs).
-                "seed",
-            )
-            if k in kwargs
+            key: kwargs.pop(key)
+            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_TEXT_ONLY_SAMPLING_KEYS)
+            if key in kwargs
         }
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
@@ -2275,13 +2281,11 @@ class BatchedEngine(BaseEngine):
         output_router_seed = kwargs.pop("_output_router_seed_token_ids", None)
         # Grammar-constrained tool calling (#558): per-request logits
         # processor forwarded to the scheduler's request_processors slot.
-        grammar_logits_processor = kwargs.pop("grammar_logits_processor", None)
-        reasoning_budget_logits_processor = kwargs.pop(
-            "reasoning_budget_logits_processor", None
-        )
-        suppressed_tokens_logits_processor = kwargs.pop(
-            "suppressed_tokens_logits_processor", None
-        )
+        (
+            grammar_logits_processor,
+            reasoning_budget_logits_processor,
+            suppressed_tokens_logits_processor,
+        ) = _pop_lane_parity_processors(kwargs)
         if output_router_seed is None and isinstance(prompt, str):
             # ``build_prompt(enable_thinking=False)`` is part of the public
             # engine contract and returns the prepared Harmony string. A
@@ -2436,17 +2440,13 @@ class BatchedEngine(BaseEngine):
             # OpenAI-spec penalty passthrough (#512) — see ``generate()``
             # MLLM branch above for the rationale.
             _mllm_penalty_kwargs = {
-                k: kwargs.pop(k)
-                for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
-                if k in kwargs
+                key: kwargs.pop(key)
+                for key in _LANE_PARITY_SAMPLING_KEYS
+                if key in kwargs
             }
             _mllm_logits_processors = [
                 processor
-                for processor in (
-                    kwargs.pop("grammar_logits_processor", None),
-                    kwargs.pop("reasoning_budget_logits_processor", None),
-                    kwargs.pop("suppressed_tokens_logits_processor", None),
-                )
+                for processor in _pop_lane_parity_processors(kwargs)
                 if processor is not None
             ]
             try:
@@ -2514,22 +2514,9 @@ class BatchedEngine(BaseEngine):
 
         # Extended sampling params (#355) — see generate() for rationale.
         _sp_kwargs = {
-            k: kwargs.pop(k)
-            for k in (
-                "top_k",
-                "min_p",
-                "repetition_penalty",
-                "presence_penalty",
-                "frequency_penalty",
-                # H-11: forward the per-request seed onto SamplingParams
-                # so the scheduler can build a fresh seeded sampler. Without
-                # this, the seed field on the request model is parsed,
-                # validated, and silently dropped — Tomek r3's reproduced
-                # failure mode (five calls with seed=42 → five different
-                # outputs).
-                "seed",
-            )
-            if k in kwargs
+            key: kwargs.pop(key)
+            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_TEXT_ONLY_SAMPLING_KEYS)
+            if key in kwargs
         }
         try:
             sampling_params = SamplingParams(
@@ -2547,13 +2534,11 @@ class BatchedEngine(BaseEngine):
                 kwargs.pop("requires_prompt_integrity", False)
             )
             # Grammar-constrained tool calling (#558) — streaming parity.
-            grammar_logits_processor = kwargs.pop("grammar_logits_processor", None)
-            reasoning_budget_logits_processor = kwargs.pop(
-                "reasoning_budget_logits_processor", None
-            )
-            suppressed_tokens_logits_processor = kwargs.pop(
-                "suppressed_tokens_logits_processor", None
-            )
+            (
+                grammar_logits_processor,
+                reasoning_budget_logits_processor,
+                suppressed_tokens_logits_processor,
+            ) = _pop_lane_parity_processors(kwargs)
             request_id = await self._engine.add_request(
                 request_id=request_id,
                 prompt=prompt,
