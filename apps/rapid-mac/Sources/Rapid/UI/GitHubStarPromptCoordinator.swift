@@ -241,20 +241,15 @@ enum GitHubStarCLI {
 
         let process = Process()
         process.executableURL = executable
-        process.arguments = [
+        process.arguments = apiArguments()
+    }
+
+    static func apiArguments() -> [String] {
+        [
             "api", "--method", "PUT", "--silent",
             "--hostname", "github.com",
-            "repos/raullenchai/Rapid-MLX/starred"
+            "user/starred/raullenchai/Rapid-MLX"
         ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        try process.run()
-        try await waitUntilExit(process, timeout: timeout)
-
-        guard process.terminationStatus == 0 else {
-            throw GitHubStarCLIError.commandFailed
-        }
     }
 
     static func executableURL() -> URL? {
@@ -285,7 +280,7 @@ enum GitHubStarCLI {
             group.addTask {
                 try await Task.sleep(for: timeout)
                 if process.isRunning {
-                    process.terminate()
+                    kill(process.processIdentifier, SIGKILL)
                 }
                 try Task.checkCancellation()
                 throw GitHubStarCLIError.timedOut

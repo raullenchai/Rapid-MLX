@@ -196,6 +196,15 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(!prompt.isPresented)
     }
 
+    @Test("The gh star request pins the canonical host and authenticated-user route")
+    func ghStarArgumentsAreCanonical() {
+        #expect(GitHubStarCLI.apiArguments() == [
+            "api", "--method", "PUT", "--silent",
+            "--hostname", "github.com",
+            "user/starred/raullenchai/Rapid-MLX"
+        ])
+    }
+
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()

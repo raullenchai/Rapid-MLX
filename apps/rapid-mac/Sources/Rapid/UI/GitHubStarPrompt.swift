@@ -74,7 +74,7 @@ struct GitHubStarPromptCard: View {
                                 return
                             }
 
-                            guard prompt.isPresented else { return }
+                            guard prompt.isPresented, !prompt.isStarring else { return }
 
                             openURL(GitHubCommunity.repositoryURL) { accepted in
                                 guard accepted else { return }
