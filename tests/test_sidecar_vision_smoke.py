@@ -50,7 +50,11 @@ def test_release_workflow_runs_content_addressed_real_image_gate() -> None:
     assert "steps.sidecar-pins.outputs.gemma_revision" in workflow
     assert "steps.sidecar-pins.outputs.flux_model" in workflow
     assert "steps.sidecar-pins.outputs.flux_revision" in workflow
-    assert "HF_HUB_OFFLINE=1 bash apps/rapid-mac/scripts/build-sidecar.sh" in workflow
+    assert 'RAPID_MLX_WHEEL="$CANDIDATE_WHEEL"' in workflow
+    assert '"$V/bin/pip" wheel' in workflow
+    assert "--emit-constraints" in workflow
+    assert '"$V/bin/pip" check' in workflow
+    assert "HF_HUB_OFFLINE=1 RAPID_MLX_WHEEL=" in workflow
     assert '"$SIDE/python/bin/python3.12"' in workflow
     assert '--model "$SIDECAR_GEMMA_SMOKE_MODEL"' in workflow
     assert (

@@ -328,13 +328,39 @@ jobs:
           set -euo pipefail
           export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-          # The version being released is not on PyPI yet (publish.yml runs after
-          # the tag), so build it from the checked-out source into a fresh venv.
+          # Build the candidate wheel once, then exercise those exact bytes in
+          # both the fresh text-lane venv and the shipped reduced Desktop
+          # sidecar. Installing the source separately in each lane could let a
+          # wheel-packaging omission escape the release gate.
           V="$RUNNER_TEMP/gate-venv-$VERSION"
           rm -rf "$V"
           /opt/homebrew/opt/python@3.12/bin/python3.12 -m venv "$V"
           "$V/bin/pip" install -q --upgrade pip
-          "$V/bin/pip" install -q .
+
+          WHEEL_DIR="$RUNNER_TEMP/gate-wheel-$VERSION"
+          rm -rf "$WHEEL_DIR"
+          mkdir -p "$WHEEL_DIR"
+          "$V/bin/pip" wheel \
+            --no-deps --wheel-dir "$WHEEL_DIR" .
+          shopt -s nullglob
+          WHEELS=("$WHEEL_DIR"/rapid_mlx-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one rapid-mlx candidate wheel; found ${#WHEELS[@]}" >&2
+            exit 1
+          fi
+          CANDIDATE_WHEEL="${WHEELS[0]}"
+          CONSTRAINTS="$RUNNER_TEMP/sidecar-constraints-$VERSION.txt"
+          /opt/homebrew/opt/python@3.12/bin/python3.12 \
+            apps/rapid-mac/scripts/check-sidecar-distributions.py \
+            --emit-constraints > "$CONSTRAINTS"
+
+          "$V/bin/pip" install -q --constraint "$CONSTRAINTS" "$CANDIDATE_WHEEL"
+          "$V/bin/pip" check
+          SITE_PACKAGES=$("$V/bin/python3.12" -c \
+            'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          "$V/bin/python3.12" \
+            apps/rapid-mac/scripts/check-sidecar-distributions.py \
+            "$SITE_PACKAGES"
           echo "gate venv → $("$V/bin/rapid-mlx" --version) (releasing v$VERSION)"
 
           RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
@@ -344,7 +370,8 @@ jobs:
           # production schedulers and HTTP routes. Every normal auto-release is
           # blocked by a missing immutable snapshot, incompatible reduced
           # dependency set, or failed media request.
-          HF_HUB_OFFLINE=1 bash apps/rapid-mac/scripts/build-sidecar.sh \
+          HF_HUB_OFFLINE=1 RAPID_MLX_WHEEL="$CANDIDATE_WHEEL" \
+            bash apps/rapid-mac/scripts/build-sidecar.sh \
             --out "$RUNNER_TEMP/desktop-vision-sidecar-$VERSION"
 
           # The reduced dependency-set exception covers both Qwen and Gemma
