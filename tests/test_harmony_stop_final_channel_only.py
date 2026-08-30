@@ -193,6 +193,8 @@ def _make_harmony_scheduler() -> Scheduler:
     }
     tokenizer.name_or_path = "mlx-community/gpt-oss-20b-MXFP4-Q8"
     scheduler = Scheduler(model, tokenizer, SchedulerConfig(max_num_seqs=4))
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.remove.return_value = {}
     assert scheduler._is_harmony_family is True, (
         "Scheduler should have detected the mock harmony vocab."
     )
@@ -210,6 +212,8 @@ def _make_non_harmony_scheduler() -> Scheduler:
     tokenizer.get_vocab = lambda: {"hello": 1, "world": 2}
     tokenizer.name_or_path = "mlx-community/Qwen3-4B-4bit"
     scheduler = Scheduler(model, tokenizer, SchedulerConfig(max_num_seqs=4))
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.remove.return_value = {}
     assert scheduler._is_harmony_family is False
     return scheduler
 
@@ -279,6 +283,7 @@ def test_scheduler_harmony_ignores_analysis_channel_stop_mention():
     )
     assert output.finished is False
     assert finished == set()
+    scheduler.batch_generator.remove.assert_not_called()
 
 
 def test_scheduler_harmony_stops_on_final_channel_marker():
@@ -304,6 +309,9 @@ def test_scheduler_harmony_stops_on_final_channel_marker():
     assert output.finish_reason == "stop"
     assert output.finished is True
     assert "rB" in finished
+    scheduler.batch_generator.remove.assert_called_once_with(
+        [0], return_prompt_caches=True
+    )
     # The trimmed text must retain the analysis-channel usage of
     # ``</execute_ipython>`` (that's part of the CoT surface, not the
     # user-visible final content) and cut off at the FINAL channel's
@@ -332,6 +340,9 @@ def test_scheduler_non_harmony_stops_on_raw_stream_unchanged():
     output, _ = _run_step(scheduler, req)
     assert output.finish_reason == "stop"
     assert output.output_text == "hello world "
+    scheduler.batch_generator.remove.assert_called_once_with(
+        [0], return_prompt_caches=True
+    )
 
 
 def test_scheduler_harmony_without_stop_param_unaffected():
@@ -350,6 +361,7 @@ def test_scheduler_harmony_without_stop_param_unaffected():
     output, _ = _run_step(scheduler, req)
     assert output.finish_reason is None
     assert output.finished is False
+    scheduler.batch_generator.remove.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
