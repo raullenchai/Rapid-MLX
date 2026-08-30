@@ -34,7 +34,7 @@ struct IPPinnedHTTPTransportTests {
         let url = try #require(URL(string: "http://pinned-cancel.test:\(port)/request"))
         let address = try #require(ParsedIP("127.0.0.1"))
 
-        try await raceTransportAgainstWatchdog {
+        try await raceTransportAgainstWatchdog(expected: .cancellation) {
             try await IPPinnedHTTPTransport.fetch(
                 url: url,
                 address: address,
@@ -57,7 +57,7 @@ struct IPPinnedHTTPTransportTests {
         let url = try #require(URL(string: "http://pinned-deadline.test:\(port)/request"))
         let address = try #require(ParsedIP("127.0.0.1"))
 
-        try await raceTransportAgainstWatchdog {
+        try await raceTransportAgainstWatchdog(expected: .deadline) {
             try await BrowseTool.withDeadline(0.2) {
                 try await IPPinnedHTTPTransport.fetch(
                     url: url,
@@ -201,9 +201,50 @@ struct IPPinnedHTTPTransportTests {
 
 private struct TestWatchdogDeadline: Error {}
 
-private enum FetchRaceOutcome {
+private enum FetchRaceExpectation {
+    case cancellation
+    case deadline
+}
+
+private enum FetchRaceOutcome: @unchecked Sendable {
     case fetch(Error)
     case watchdog(Error)
+}
+
+/// First-result latch for the transport/watchdog race. The fetch must be
+/// cancelled independently after the server observes its request; cancelling
+/// a shared task group also cancels the watchdog and lets that cancellation
+/// win nondeterministically.
+private final class FetchRaceSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: FetchRaceOutcome?
+    private var continuation: CheckedContinuation<FetchRaceOutcome, Never>?
+
+    func wait() async -> FetchRaceOutcome {
+        await withCheckedContinuation { pendingContinuation in
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                pendingContinuation.resume(returning: outcome)
+                return
+            }
+            continuation = pendingContinuation
+            lock.unlock()
+        }
+    }
+
+    func signal(_ outcome: FetchRaceOutcome) {
+        lock.lock()
+        guard self.outcome == nil else {
+            lock.unlock()
+            return
+        }
+        self.outcome = outcome
+        let pendingContinuation = continuation
+        continuation = nil
+        lock.unlock()
+        pendingContinuation?.resume(returning: outcome)
+    }
 }
 
 /// Accepts a request and deliberately does not respond, so cancellation has
@@ -286,47 +327,49 @@ private final class RequestSignal: @unchecked Sendable {
 }
 
 private func raceTransportAgainstWatchdog(
+    expected: FetchRaceExpectation,
     fetchBody: @escaping @Sendable () async throws -> (Data, HTTPURLResponse),
     watchdogBody: @escaping @Sendable () async throws -> Void,
     settle: @escaping @Sendable () async -> Bool
 ) async throws {
-    try await withThrowingTaskGroup(of: FetchRaceOutcome.self) { group in
-        group.addTask {
-            do {
-                _ = try await fetchBody()
-                return .fetch(TestWatchdogDeadline())
-            } catch {
-                return .fetch(error)
-            }
+    let signal = FetchRaceSignal()
+    let fetchTask = Task {
+        do {
+            _ = try await fetchBody()
+            signal.signal(.fetch(TestWatchdogDeadline()))
+        } catch {
+            signal.signal(.fetch(error))
         }
-        group.addTask {
-            do {
-                try await watchdogBody()
-                return .watchdog(TestWatchdogDeadline())
-            } catch {
-                return .watchdog(error)
-            }
+    }
+    let watchdogTask = Task {
+        do {
+            try await watchdogBody()
+            signal.signal(.watchdog(TestWatchdogDeadline()))
+        } catch {
+            signal.signal(.watchdog(error))
         }
+    }
+    let settleTask = Task {
+        if await settle() {
+            fetchTask.cancel()
+        }
+    }
 
-        let cancelAfterSettled = await settle()
-        if cancelAfterSettled {
-            group.cancelAll()
-        }
+    let first = await signal.wait()
+    fetchTask.cancel()
+    watchdogTask.cancel()
+    settleTask.cancel()
 
-        guard let first = try await group.next() else {
-            throw TestWatchdogDeadline()
-        }
-        group.cancelAll()
-        guard case .fetch(let error) = first else {
-            throw TestWatchdogDeadline()
-        }
-        if cancelAfterSettled {
-            #expect(error is CancellationError, "transport should surface cancellation")
-        } else {
-            #expect(
-                String(describing: error).contains("deadline"),
-                "deadline should be the first observed failure"
-            )
-        }
+    guard case .fetch(let error) = first else {
+        throw TestWatchdogDeadline()
+    }
+    switch expected {
+    case .cancellation:
+        #expect(error is CancellationError, "transport should surface cancellation")
+    case .deadline:
+        #expect(
+            !(error is CancellationError) && String(describing: error).contains("deadline"),
+            "deadline should be the first observed failure"
+        )
     }
 }

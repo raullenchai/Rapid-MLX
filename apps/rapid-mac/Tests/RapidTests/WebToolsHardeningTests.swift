@@ -157,11 +157,18 @@ struct WebToolsHardeningTests {
 
     @Test("Cancellation during an address attempt does not try the next address")
     func cancellationStopsAddressFallback() async throws {
-        let addresses = [try #require(ParsedIP("2001:db8::1"))]
+        let addresses = [
+            try #require(ParsedIP("2001:db8::1")),
+            try #require(ParsedIP("2001:db8::2")),
+            try #require(ParsedIP("192.0.2.1")),
+        ]
         let recorder = AddressAttemptRecorder()
 
         do {
-            _ = try await BrowseTool.firstSuccessful(addresses: addresses) { address in
+            _ = try await BrowseTool.firstSuccessful(
+                addresses: addresses,
+                attemptDelayNanoseconds: 20_000_000
+            ) { address in
                 await recorder.record(address)
                 throw CancellationError()
             }
@@ -170,7 +177,86 @@ struct WebToolsHardeningTests {
             #expect(error is CancellationError)
         }
 
+        #expect(await recorder.addresses == [addresses[0]])
+    }
+
+    @Test("A black-holed first address does not starve a working fallback")
+    func blackHoledFirstAddressDoesNotStarveFallback() async throws {
+        let addresses = [
+            try #require(ParsedIP("2001:db8::1")),
+            try #require(ParsedIP("2001:db8::2")),
+            try #require(ParsedIP("192.0.2.1")),
+        ]
+        let recorder = AddressAttemptRecorder()
+        let started = ContinuousClock.now
+
+        let result = try await BrowseTool.firstSuccessful(
+            addresses: addresses,
+            attemptDelayNanoseconds: 20_000_000
+        ) { address in
+            await recorder.record(address)
+            if address.family == .v6 {
+                try await Task.sleep(for: .seconds(2))
+                throw TestNetworkFailure()
+            }
+            return address.canonical
+        }
+
+        #expect(result == addresses[2].canonical)
+        #expect(await recorder.addresses == [addresses[0], addresses[2]])
+        #expect(started.duration(to: .now) < .seconds(1))
+    }
+
+    @Test("Fast failures advance immediately instead of waiting for each stagger")
+    func fastFailuresAdvanceImmediately() async throws {
+        let addresses = [
+            try #require(ParsedIP("2001:db8::1")),
+            try #require(ParsedIP("192.0.2.1")),
+            try #require(ParsedIP("2001:db8::2")),
+            try #require(ParsedIP("192.0.2.2")),
+        ]
+        let recorder = AddressAttemptRecorder()
+
+        let result = try await BrowseTool.withDeadline(1) {
+            try await BrowseTool.firstSuccessful(
+                addresses: addresses,
+                attemptDelayNanoseconds: 5_000_000_000
+            ) { address in
+                await recorder.record(address)
+                if address != addresses.last {
+                    throw TestNetworkFailure()
+                }
+                return address.canonical
+            }
+        }
+
+        #expect(result == addresses.last?.canonical)
         #expect(await recorder.addresses == addresses)
+    }
+
+    @Test("Address fallback reports failure after every candidate fails")
+    func addressFallbackReportsFailureAfterEveryCandidateFails() async throws {
+        let addresses = [
+            try #require(ParsedIP("2001:db8::1")),
+            try #require(ParsedIP("192.0.2.1")),
+        ]
+        let recorder = AddressAttemptRecorder()
+
+        do {
+            _ = try await BrowseTool.firstSuccessful(
+                addresses: addresses,
+                attemptDelayNanoseconds: 1_000_000
+            ) { address in
+                await recorder.record(address)
+                throw TestNetworkFailure()
+            }
+            Issue.record("Expected every address attempt to fail")
+        } catch {
+            #expect(error is TestNetworkFailure)
+        }
+
+        let attempted = await recorder.addresses.map(\.canonical).sorted()
+        #expect(attempted == addresses.map(\.canonical).sorted())
     }
 
     @Test("resolve yields empty for an NXDOMAIN reserved TLD")
