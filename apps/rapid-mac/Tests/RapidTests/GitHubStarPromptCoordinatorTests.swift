@@ -205,6 +205,21 @@ struct GitHubStarPromptCoordinatorTests {
         ])
     }
 
+    @Test("The default gh executor launches, waits, and reports command status")
+    func ghStarExecutorRunsTheSubprocess() async {
+        try? await GitHubStarCLI.star(
+            GitHubCommunity.repositoryURL,
+            executableURL: URL(fileURLWithPath: "/usr/bin/true")
+        )
+
+        await #expect(throws: GitHubStarCLIError.self) {
+            try await GitHubStarCLI.star(
+                GitHubCommunity.repositoryURL,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false")
+            )
+        }
+    }
+
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()

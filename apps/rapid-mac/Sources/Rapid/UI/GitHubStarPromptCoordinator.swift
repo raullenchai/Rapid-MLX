@@ -48,7 +48,9 @@ final class GitHubStarPromptCoordinator {
         now: @escaping () -> Date = Date.init,
         quietWindow: Duration = GitHubStarPromptCoordinator.quietWindow,
         presentationActive: Bool = false,
-        starExecutor: @escaping @Sendable (URL) async throws -> Void = GitHubStarCLI.star,
+        starExecutor: @escaping @Sendable (URL) async throws -> Void = { url in
+            try await GitHubStarCLI.star(url)
+        },
         waitForQuietWindow: @escaping @MainActor (Duration) async -> Void = { duration in
             try? await Task.sleep(for: duration)
         }
@@ -231,17 +233,30 @@ enum GitHubStarCLIError: Error {
 enum GitHubStarCLI {
     static let timeout: Duration = .seconds(8)
 
-    static func star(_ repositoryURL: URL) async throws {
+    static func star(
+        _ repositoryURL: URL,
+        executableURL overrideExecutableURL: URL? = nil
+    ) async throws {
         guard repositoryURL == GitHubCommunity.repositoryURL else {
             throw GitHubStarCLIError.invalidRepository
         }
-        guard let executable = executableURL() else {
+        guard let executable = overrideExecutableURL ?? executableURL() else {
             throw GitHubStarCLIError.executableNotFound
         }
 
         let process = Process()
         process.executableURL = executable
         process.arguments = apiArguments()
+
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        try process.run()
+        try await waitUntilExit(process, timeout: timeout)
+
+        guard process.terminationStatus == 0 else {
+            throw GitHubStarCLIError.commandFailed
+        }
     }
 
     static func apiArguments() -> [String] {
