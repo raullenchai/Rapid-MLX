@@ -2,9 +2,9 @@
 # AX-first Rapid-Mac GUI smoke using Peekaboo.
 #
 # This deliberately avoids model startup and mutable controls. It validates
-# that the running app exposes stable semantic selectors, opens Settings via
-# the application menu, navigates with AXPress, and records structured trees
-# plus screenshots for diagnosis.
+# that the running app exposes stable semantic selectors, opens Settings with
+# synthesized user clicks, and records structured trees plus screenshots for
+# diagnosis.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,14 +45,34 @@ observe_app() {
 
 press_identifier() {
     local tree="$1" identifier="$2" output="$3"
-    local element snapshot
-    element="$(jq -r --arg id "$identifier" \
-        '.data.ui_elements[] | select(.identifier == $id) | .id' "$tree" | head -1)"
-    snapshot="$(jq -r '.data.snapshot_id' "$tree")"
-    [[ -n "$element" ]] || return 1
-    pb perform-action --on "$element" --action AXPress --snapshot "$snapshot" --json > "$output"
+    local coords click_help
+    local -a click_args
+    coords="$(jq -r --arg id "$identifier" \
+        '.data.ui_elements[] | select(.identifier == $id) | .bounds |
+         "\((.x + (.width / 2)) | floor),\((.y + (.height / 2)) | floor)"' \
+        "$tree" | head -1)"
+    [[ -n "$coords" ]] || return 1
+    # SwiftUI can expose AXPress and report a successful action without
+    # dispatching the control's Button closure.  Deliver a foreground mouse
+    # event at the AX-resolved element's centre instead: this follows the same
+    # path as a user's click while retaining semantic identifier lookup.  A
+    # coordinate also avoids passing a daemon-owned snapshot to the local input
+    # host, where it cannot be resolved.
+    click_help="$(peekaboo click --help 2>&1)"
+    click_args=(click --coords "$coords")
+    if grep -q -- --global-coords <<< "$click_help"; then
+        click_args+=(--global-coords)
+    fi
+    if grep -q -- --input-strategy <<< "$click_help"; then
+        click_args+=(--input-strategy synthOnly)
+    fi
+    if grep -q -- --foreground <<< "$click_help"; then
+        click_args+=(--foreground)
+    fi
+    pb "${click_args[@]}" --json > "$output"
 }
 
+main() {
 command -v peekaboo >/dev/null || die "peekaboo is not installed"
 command -v jq >/dev/null || die "jq is not installed"
 
@@ -90,10 +110,10 @@ for identifier in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.Sen
         '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/main.json" >/dev/null \
         || die "main window missing AX identifier: $identifier"
 done
+press_identifier "$OUT/main.json" "ContentView.Settings" "$OUT/open-settings.json" \
+    || die "could not click ContentView.Settings"
 pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/main.png" --json \
     > "$OUT/main-image.json"
-
-pb menu click --app "$APP" --item 'Settings…' --json > "$OUT/open-settings.json"
 for _ in {1..20}; do
     pb list windows --app "$APP" --json > "$OUT/windows-settings.json"
     SETTINGS_WINDOW_ID="$(jq -r '.data.windows[] | select(.title == "Settings") | .window_id' \
@@ -125,10 +145,8 @@ for identifier in Settings.Models.ShowAllModelsToggle Settings.Models.AutoStartO
         || die "Models toggle is not exposed as a native AX checkbox: $identifier"
 done
 
-APPEARANCE_ID="$(jq -r '.data.ui_elements[] | select(.identifier == "Settings.Category.appearance") | .id' "$OUT/models.json")"
-SNAPSHOT="$(jq -r '.data.snapshot_id' "$OUT/models.json")"
-pb perform-action --on "$APPEARANCE_ID" --action AXPress --snapshot "$SNAPSHOT" --json \
-    > "$OUT/open-appearance.json"
+press_identifier "$OUT/models.json" "Settings.Category.appearance" "$OUT/open-appearance.json" \
+    || die "could not click Settings.Category.appearance"
 sleep 0.5
 pb see --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/appearance.json"
 
@@ -148,3 +166,8 @@ pb image --window-id "$SETTINGS_WINDOW_ID" --path "$OUT/appearance.png" --json \
 
 log "PASS — semantic GUI smoke complete"
 log "artifacts: $OUT"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
