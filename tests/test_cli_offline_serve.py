@@ -72,6 +72,20 @@ def test_offline_hub_mode_detects_env_switches(monkeypatch):
     assert cli._offline_hub_mode_active() is False
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("YES", True),
+        ("true", True),
+        ("0", False),
+        (None, False),
+    ],
+)
+def test_cli_env_flag_wrapper_preserves_shared_truth_table(raw, expected):
+    """The compatibility wrapper must exercise the shared parser directly."""
+    assert cli._env_flag_active(raw) is expected
+
+
 def test_offline_uncached_serve_refuses_before_download(monkeypatch, capsys):
     """Offline + uncached must exit(1) with one actionable message and NOT
     attempt the download/mirror path (no repeated "First-time download")."""
@@ -132,6 +146,59 @@ def test_offline_cached_repo_is_noop_not_refused(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **k: True)
     cli._ensure_model_downloaded("acme/already-cached")
     assert "is not cached" not in capsys.readouterr().err
+
+
+def test_offline_unique_complete_snapshot_is_noop_not_refused(monkeypatch, capsys):
+    """An incomplete main ref may use one verified complete local revision."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(cli, "_cache_runnability", lambda name: False)
+    monkeypatch.setattr(
+        cli,
+        "_offline_complete_cached_snapshot",
+        lambda name: "/cache/models--acme--model/snapshots/complete",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("offline cached snapshot must not enter download")
+        ),
+    )
+
+    cli._ensure_model_downloaded("acme/model")
+    assert "is not cached" not in capsys.readouterr().err
+
+
+def test_offline_unique_complete_snapshot_is_runnable_in_inventory(monkeypatch):
+    """Serve admission and cached-model inventory share one verdict."""
+    monkeypatch.setattr(
+        "vllm_mlx.audio.registry.resolve_audio_alias", lambda _repo: None
+    )
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _repo: False)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate._snapshot_is_complete_split_model",
+        lambda _repo: False,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate._snapshot_is_complete_mflux_model",
+        lambda _repo: False,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate._snapshot_is_complete_wan_model",
+        lambda _repo: False,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_metadata.resolve_unreferenced_cached_snapshot",
+        lambda _repo: None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_metadata.resolve_offline_cached_snapshot",
+        lambda _repo: "/cache/models--acme--model/snapshots/complete",
+    )
+    monkeypatch.setattr("vllm_mlx.video.wan.WAN_REVISIONS", {})
+
+    assert cli._cache_runnability("acme/model") is True
+    assert cli._cache_entry_is_runnable("acme/model") is True
 
 
 def test_offline_cached_mflux_is_noop_not_refused(monkeypatch, capsys):
@@ -318,6 +385,49 @@ def test_gate_does_not_refuse_when_wan_local_dir_set(monkeypatch, capsys, tmp_pa
     assert "is not cached and the network is unavailable" not in out.err
     assert confirmed != []  # the refusal was skipped; the confirm path ran
     assert dispatched != []  # … and serve still dispatched the Wan model
+
+
+def test_gate_dispatches_unique_complete_offline_snapshot_without_confirm(
+    monkeypatch, capsys
+):
+    """The interactive entry gate agrees with the loader's offline fallback."""
+    import vllm_mlx._download_gate as gate
+
+    monkeypatch.setattr(gate, "is_repo_cached", lambda _name: False)
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _name: False)
+    monkeypatch.setattr(cli.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(
+        cli,
+        "_offline_complete_cached_snapshot",
+        lambda _name: "/cache/models--publisher--model/snapshots/complete",
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr(
+        gate,
+        "estimate_download_size_bytes",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("offline cache hit must not estimate a download")
+        ),
+    )
+    monkeypatch.setattr(
+        gate,
+        "confirm_or_abort",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("offline cache hit must not ask to download")
+        ),
+    )
+
+    dispatched = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "serve", "publisher/model"]),
+        patch.object(cli, "serve_command", side_effect=dispatched.append),
+    ):
+        cli.main()
+
+    assert dispatched != []
+    assert "is not cached" not in capsys.readouterr().err
 
 
 def test_gate_wan_dir_set_does_not_exempt_text_model(monkeypatch, capsys, tmp_path):

@@ -24,6 +24,18 @@ MAX_METADATA_FILE_BYTES = 1 * 1024 * 1024
 MAX_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
 
 
+def env_flag_active(raw: str | None) -> bool:
+    """Return Hugging Face's public truth-value semantics for env switches."""
+    return raw is not None and str(raw).lower() in {"1", "on", "yes", "true"}
+
+
+def hub_offline_mode_active() -> bool:
+    """Whether either supported Hub/Transformers offline switch is active."""
+    return env_flag_active(os.environ.get("HF_HUB_OFFLINE")) or env_flag_active(
+        os.environ.get("TRANSFORMERS_OFFLINE")
+    )
+
+
 @dataclass(frozen=True)
 class ModelMetadata:
     """Offline metadata available for a local directory or HF snapshot."""
@@ -208,47 +220,17 @@ def _cached_file(model_name: str, filename: str) -> Path | None:
     return Path(cached)
 
 
-def resolve_unreferenced_cached_snapshot(model_name: str) -> Path | None:
-    """Return one complete cached checkpoint when no Hub ref resolves it.
-
-    ``snapshot_download(..., revision=<commit>)`` materializes
-    ``snapshots/<commit>/`` but intentionally does not update ``refs/main``.
-    That is the exact shape produced by an immutable catalog download.  The
-    normal ``try_to_load_from_cache`` lookup therefore cannot see the files,
-    even though the selected checkpoint is complete and directly loadable.
-
-    This fallback is deliberately narrow: there must be exactly one snapshot
-    directory, it must contain a valid config and a complete mlx-lm checkpoint,
-    and the checkpoint files must stay inside that repository's cache root.
-    Multiple revisions are ambiguous and return ``None``; callers then retain
-    the normal online/default-ref behavior instead of guessing which revision
-    the user intended.
-    """
-    if not _looks_like_hub_repo_id(model_name):
-        return None
+def _complete_cached_checkpoint(
+    repo_root: Path, snapshot: Path, model_name: str
+) -> Path | None:
+    """Validate one immutable snapshot and return its checkpoint directory."""
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
         from ._download_gate import _snapshot_is_complete
         from .model_aliases import checkpoint_prefix
 
-        repo_root = Path(HF_HUB_CACHE) / ("models--" + model_name.replace("/", "--"))
-        # This path is only for commit-pinned downloads that deliberately do
-        # not publish a default ref. If ``main`` exists, the Hub resolver owns
-        # revision selection and we must never substitute a different snapshot.
-        if os.path.lexists(repo_root / "refs" / "main"):
+        if snapshot.is_symlink() or not snapshot.is_dir():
             return None
-        snapshots_root = repo_root / "snapshots"
-        if snapshots_root.is_symlink() or not snapshots_root.is_dir():
-            return None
-        candidates = [
-            entry
-            for entry in snapshots_root.iterdir()
-            if entry.is_dir() and not entry.is_symlink()
-        ]
-        if len(candidates) != 1:
-            return None
-        checkpoint = candidates[0] / checkpoint_prefix(model_name)
+        checkpoint = snapshot / checkpoint_prefix(model_name)
         if checkpoint.is_symlink() or not checkpoint.is_dir():
             return None
         config_path = checkpoint / "config.json"
@@ -272,6 +254,90 @@ def resolve_unreferenced_cached_snapshot(model_name: str) -> Path | None:
         return None
 
 
+def resolve_unreferenced_cached_snapshot(model_name: str) -> Path | None:
+    """Return one complete cached checkpoint when no Hub ref resolves it.
+
+    ``snapshot_download(..., revision=<commit>)`` materializes
+    ``snapshots/<commit>/`` but intentionally does not update ``refs/main``.
+    That is the exact shape produced by an immutable catalog download.  The
+    normal ``try_to_load_from_cache`` lookup therefore cannot see the files,
+    even though the selected checkpoint is complete and directly loadable.
+
+    This fallback is deliberately narrow: there must be exactly one snapshot
+    directory, it must contain a valid config and a complete mlx-lm checkpoint,
+    and the checkpoint files must stay inside that repository's cache root.
+    Multiple revisions are ambiguous and return ``None``; callers then retain
+    the normal online/default-ref behavior instead of guessing which revision
+    the user intended.
+    """
+    if not _looks_like_hub_repo_id(model_name):
+        return None
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        repo_root = Path(HF_HUB_CACHE) / ("models--" + model_name.replace("/", "--"))
+        # This path is only for commit-pinned downloads that deliberately do
+        # not publish a default ref. If ``main`` exists, the Hub resolver owns
+        # revision selection and we must never substitute a different snapshot.
+        if os.path.lexists(repo_root / "refs" / "main"):
+            return None
+        snapshots_root = repo_root / "snapshots"
+        if snapshots_root.is_symlink() or not snapshots_root.is_dir():
+            return None
+        candidates = [
+            entry
+            for entry in snapshots_root.iterdir()
+            if entry.is_dir() and not entry.is_symlink()
+        ]
+        if len(candidates) != 1:
+            return None
+        return _complete_cached_checkpoint(repo_root, candidates[0], model_name)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
+def resolve_offline_cached_snapshot(model_name: str) -> Path | None:
+    """Return the sole complete local revision behind an incomplete main ref.
+
+    This is intentionally narrower than ordinary Hub resolution. It is active
+    only in explicit offline mode, requires ``refs/main`` to select an
+    incomplete snapshot, never mutates that ref, and refuses ambiguity when
+    more than one complete immutable revision remains in the cache.
+    """
+    if not hub_offline_mode_active() or not _looks_like_hub_repo_id(model_name):
+        return None
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        repo_root = Path(HF_HUB_CACHE) / ("models--" + model_name.replace("/", "--"))
+        snapshots_root = repo_root / "snapshots"
+        main_ref = repo_root / "refs" / "main"
+        if (
+            main_ref.is_symlink()
+            or not main_ref.is_file()
+            or snapshots_root.is_symlink()
+            or not snapshots_root.is_dir()
+        ):
+            return None
+        selected_sha = main_ref.read_text(encoding="utf-8").strip()
+        if not selected_sha or Path(selected_sha).name != selected_sha:
+            return None
+        selected = snapshots_root / selected_sha
+        if _complete_cached_checkpoint(repo_root, selected, model_name) is not None:
+            return None
+
+        complete = []
+        for snapshot in snapshots_root.iterdir():
+            checkpoint = _complete_cached_checkpoint(repo_root, snapshot, model_name)
+            if checkpoint is not None:
+                complete.append(checkpoint)
+                if len(complete) > 1:
+                    return None
+        return complete[0] if len(complete) == 1 else None
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
 def read_cached_model_metadata(model_name: str) -> ModelMetadata | None:
     """Read metadata for a cached HF repository, never triggering download.
 
@@ -284,8 +350,21 @@ def read_cached_model_metadata(model_name: str) -> ModelMetadata | None:
     from .model_aliases import checkpoint_prefix
 
     prefix = checkpoint_prefix(model_name)
-    config_path = _cached_file(model_name, f"{prefix}config.json")
-    snapshot_dir = config_path.parent if config_path is not None else None
+    # In explicit offline mode the serve gate and loader may select the sole
+    # verified-complete immutable revision behind an incomplete ``refs/main``.
+    # Route from that same checkpoint; mixing main-ref metadata with fallback
+    # weights can choose an incompatible architecture or serving lane.
+    snapshot_dir = resolve_offline_cached_snapshot(model_name)
+    config_path = (
+        _cached_file(model_name, f"{prefix}config.json")
+        if snapshot_dir is None
+        else None
+    )
+    snapshot_dir = (
+        config_path.parent
+        if snapshot_dir is None and config_path is not None
+        else snapshot_dir
+    )
     if snapshot_dir is None:
         template_path = _cached_file(model_name, f"{prefix}chat_template.jinja")
         snapshot_dir = template_path.parent if template_path is not None else None
