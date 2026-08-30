@@ -110,6 +110,24 @@ struct MessageBranchingTests {
         #expect(viewModel.messages.last?.id == replacement.id)
     }
 
+    @Test("Switching branches discards suggestions from the abandoned path")
+    func switchingBranchesClearsFollowUps() {
+        let (viewModel, _, answer) = seededModel()
+        viewModel.regenerateLast(alias: "test-model")
+        viewModel.stopAndPersist()
+        let replacement = viewModel.messages[1]
+        viewModel.publishFollowUps(
+            "Old one?\nOld two?\nOld three?",
+            anchoredTo: replacement.id,
+            excluding: ""
+        )
+
+        #expect(viewModel.stepBranch(from: replacement.id, by: -1))
+        #expect(viewModel.messages.last?.id == answer.id)
+        #expect(viewModel.followUp == .idle)
+        #expect(viewModel.followUpAnchorID == nil)
+    }
+
     @Test("Stepping past either end of the group is refused")
     func steppingOffTheEndIsRefused() {
         // Bounded, not wrapping — matches the arrows' disabled states.
