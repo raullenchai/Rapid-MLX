@@ -59,10 +59,13 @@ struct SidecarBuildScriptTests {
     @Test("Desktop vision stack is exact-pinned and metadata-validated")
     func visionStackIsReproducibleAndCompatible() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(script.contains("'mlx-vlm==0.6.16'"))
+        #expect(constraints.contains("mlx-vlm==0.6.16"))
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
                 "The no-deps sidecar install must never float within a range.")
+        #expect(script.contains(#"--constraint "$SIDECAR_CONSTRAINTS""#),
+                "Every install must consume the shared release constraint set.")
         #expect(script.contains("$REPO_ROOT/scripts/check-sidecar-distributions.py"),
                 "Every sidecar build must execute the tested metadata-coherence gate.")
         #expect(script.contains("SIDECAR_VISION_SMOKE_MODEL"))
@@ -99,8 +102,9 @@ struct SidecarBuildScriptTests {
     @Test("Desktop image stack is pinned and its torch-free proof fails closed")
     func imageStackIsPinnedAndProvenTorchFree() throws {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(script.contains("'mflux==0.19.0'"),
+        #expect(constraints.contains("mflux==0.19.0"),
                 "The no-deps sidecar install must never float within a range.")
         // The Images tab is only shippable because mflux's module-level
         // `import torch` is deferred into the three torch-only loading modes —
@@ -142,8 +146,10 @@ struct SidecarBuildScriptTests {
                 "The bounded desktop audio dependency group must remain separately installable.")
         #expect(pyproject.contains(#""mlx-audio>=0.2.9,<0.4.4""#))
         #expect(pyproject.contains(#""soundfile>=0.12.0""#))
-        #expect(script.contains(#""${RAPID_MLX_SOURCE}[audio-desktop]""#),
+        #expect(script.contains(#""${RAPID_MLX_INSTALL_TARGET}[audio-desktop]""#),
                 "The desktop sidecar must install the bounded desktop audio dependency set.")
+        #expect(script.contains(#"RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}""#),
+                "Release builds must be able to promote the exact candidate wheel into the sidecar.")
         #expect(script.contains("from mlx_audio.stt.utils import load_model"),
                 "The build smoke must import the transcription loader, not only mlx_audio's package root.")
         #expect(script.contains("from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor"),
@@ -188,6 +194,10 @@ struct SidecarBuildScriptTests {
 
     private static var appBuildScriptURL: URL {
         scriptURL.deletingLastPathComponent().appendingPathComponent("build.sh")
+    }
+
+    private static var constraintsURL: URL {
+        scriptURL.deletingLastPathComponent().appendingPathComponent("sidecar-constraints.txt")
     }
 
     private static var pyprojectURL: URL {

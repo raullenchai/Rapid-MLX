@@ -129,6 +129,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # = apps/rapid-mac
 # CI or dev layouts that put the engine somewhere else.
 ENGINE_ROOT="${RAPID_MLX_ENGINE_ROOT:-$(cd "${REPO_ROOT}/../.." && pwd)}"
 RAPID_MLX_SOURCE="${RAPID_MLX_SOURCE:-${ENGINE_ROOT}}"
+# Release jobs set this to the exact candidate wheel already exercised by the
+# fresh text-lane venv. Local builds retain the source-tree fallback.
+RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}"
+SIDECAR_CONSTRAINTS="${REPO_ROOT}/scripts/sidecar-constraints.txt"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/build/sidecar-stage}"
 DEVELOPER_ID="${DEVELOPER_ID:--}"
 SKIP_CODESIGN=0
@@ -167,6 +171,15 @@ require shasum
 
 if [ ! -f "$ENTITLEMENTS" ] && [ "$SKIP_CODESIGN" != "1" ]; then
     echo "ERR: entitlements file missing at $ENTITLEMENTS" >&2
+    exit 1
+fi
+
+if [ ! -f "$SIDECAR_CONSTRAINTS" ]; then
+    echo "ERR: sidecar constraints missing at $SIDECAR_CONSTRAINTS" >&2
+    exit 1
+fi
+if [ -n "$RAPID_MLX_WHEEL" ] && [ ! -f "$RAPID_MLX_WHEEL" ]; then
+    echo "ERR: RAPID_MLX_WHEEL does not exist: $RAPID_MLX_WHEEL" >&2
     exit 1
 fi
 
@@ -243,6 +256,11 @@ if [ ! -d "$RAPID_MLX_SOURCE" ] || [ ! -f "$RAPID_MLX_SOURCE/pyproject.toml" ]; 
     echo "     checkout of the rapid-mlx engine." >&2
     exit 1
 fi
+RAPID_MLX_INSTALL_TARGET="$RAPID_MLX_SOURCE"
+if [ -n "$RAPID_MLX_WHEEL" ]; then
+    RAPID_MLX_INSTALL_TARGET="$RAPID_MLX_WHEEL"
+    echo "==> using candidate wheel: $RAPID_MLX_WHEEL"
+fi
 # Drive dependency resolution with the pinned interpreter extracted above.
 # Its pip is present during assembly and stripped only after both installs,
 # keeping wheel selection tied to the exact ABI that ships in the bundle.
@@ -265,9 +283,10 @@ fi
     --no-warn-script-location \
     --no-compile \
     --upgrade \
-    "${RAPID_MLX_SOURCE}[audio-desktop]" \
-    'mlx==0.32.2' \
-    'transformers==5.12.1'
+    --constraint "$SIDECAR_CONSTRAINTS" \
+    "${RAPID_MLX_INSTALL_TARGET}[audio-desktop]" \
+    'mlx' \
+    'transformers'
 
 # pip normally selects wheels for the BUILD host. A sidecar assembled on
 # macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
@@ -334,7 +353,8 @@ echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader p
     --no-warn-script-location \
     --no-compile \
     --no-deps \
-    'mlx-vlm==0.6.16' \
+    --constraint "$SIDECAR_CONSTRAINTS" \
+    'mlx-vlm' \
     'Pillow>=10.0'
 
 # ----- step 2.6: bundle mflux --no-deps (Images tab image-gen lane) ----
@@ -380,7 +400,8 @@ echo "==> bundling mflux --no-deps + platformdirs/piexif/toml (Images tab image-
     --no-warn-script-location \
     --no-compile \
     --no-deps \
-    'mflux==0.19.0' \
+    --constraint "$SIDECAR_CONSTRAINTS" \
+    'mflux' \
     'platformdirs>=4.0,<5.0' \
     'piexif>=1.1.3,<2.0' \
     'toml>=0.10.2,<1.0'
