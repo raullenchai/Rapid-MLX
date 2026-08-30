@@ -182,10 +182,11 @@ fi
 #     exist on a serve booted with the speculative config. The driver:
 #       - boots the MTP serve (own-PID ownership only; never a port sweep),
 #       - drives the sequence (load + post-load completion per step) against it,
-#       - issues ONE canonical temp=0 chat on the freshly booted MTP primary and
-#         evaluates the #2421 contract as deltas between a pre- and post-chat
-#         /metrics scrape, for the exact (family, method) label pair
-#         (reviewer B1 — no uncalibrated floor),
+#       - issues ONE canonical temp=0 engagement chat with enough decode work
+#         for the freshly booted MTP primary to propose drafts, then evaluates
+#         the #2421 contract as deltas between a pre- and post-chat /metrics
+#         scrape, for the exact (family, method) label pair (reviewer B1 — no
+#         uncalibrated floor),
 #       - tears the serve down (TERM -> wait -> KILL, own PID only).
 #     On current main these must be GREEN; on a pre-#2441 sha (62a038c7) the
 #     post-load completion of the MTP-primary step must go RED — that red is
@@ -274,12 +275,21 @@ def _post(base, path, body, auth, timeout):
         return e.code, (e.read().decode("utf-8", "replace") if e.fp else "")
 
 
-def _chat(base, model, auth, timeout):
-    """Short completion exercising the generate path (the #2438 surface)."""
+def _chat(base, model, auth, timeout, *, mtp_probe=False):
+    """Exercise generation; optionally require enough decode for MTP drafts."""
+    if mtp_probe:
+        prompt = (
+            "Write the integers from 1 through 100 in order, separated by "
+            "single spaces. Output only the integers and spaces; do not stop early."
+        )
+        max_tokens = 256
+    else:
+        prompt = "Reply with the single word OK."
+        max_tokens = 8
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
-        "max_tokens": 8,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
     st, text = _post(base, "/v1/chat/completions", body, auth, timeout)
@@ -516,6 +526,7 @@ def _drive(spec, args):
             chat_st, nonempty = _chat(
                 args["base"], canonical_model, args["auth"],
                 int(max(10, seq_deadline - time.time())),
+                mtp_probe=True,
             )
             chat_ok = chat_st == 200 and nonempty
             print(

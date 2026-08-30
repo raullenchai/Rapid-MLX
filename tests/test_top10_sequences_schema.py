@@ -129,8 +129,8 @@ def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
         events.append("scrape")
         return next(scrapes)
 
-    def chat(_base, model, _auth, _timeout) -> tuple[int, bool]:
-        events.append(f"chat:{model}")
+    def chat(_base, model, _auth, _timeout, *, mtp_probe=False) -> tuple[int, bool]:
+        events.append(f"chat:{model}:{'mtp' if mtp_probe else 'short'}")
         return 200, True
 
     def post(_base, path, body, _auth, _timeout) -> tuple[int, str]:
@@ -174,11 +174,35 @@ def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
     assert namespace["_drive"](spec, args) == 0
     assert events == [
         "scrape",
-        "chat:primary",
+        "chat:primary:mtp",
         "scrape",
         "load:secondary",
-        "chat:secondary",
+        "chat:secondary:short",
     ]
+
+
+def test_mtp_probe_requests_deterministic_sustained_decode() -> None:
+    """A two-token ``OK`` response cannot prove speculative engagement."""
+    namespace = {"__name__": "sequence_driver_contract_test"}
+    exec(
+        compile(_sequence_driver_source(), str(_AGENT_SMOKE_FILE), "exec"),
+        namespace,
+    )
+    posted: dict = {}
+
+    def post(_base, path, body, _auth, _timeout) -> tuple[int, str]:
+        posted.update(path=path, body=body)
+        return 200, json.dumps({"choices": [{"message": {"content": "1 2 3 4"}}]})
+
+    namespace["_post"] = post
+    assert namespace["_chat"](
+        "http://test.invalid", "primary", None, 60, mtp_probe=True
+    ) == (200, True)
+    assert posted["path"] == "/v1/chat/completions"
+    assert posted["body"]["temperature"] == 0
+    assert posted["body"]["max_tokens"] == 256
+    prompt = posted["body"]["messages"][0]["content"]
+    assert "1 through 100" in prompt
 
 
 @pytest.fixture(scope="module")
