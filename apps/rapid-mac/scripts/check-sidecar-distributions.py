@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 from importlib import metadata
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
 SIDECAR_CONSTRAINTS_FILE = Path(__file__).with_name("sidecar-constraints.txt")
 
@@ -35,6 +36,8 @@ def is_validated_compatibility_exception(
     hard error.
     """
 
+    from packaging.utils import canonicalize_name
+
     return (
         canonicalize_name(owner) == "mlx-vlm"
         and owner_version == "0.6.16"
@@ -45,6 +48,9 @@ def is_validated_compatibility_exception(
 
 
 def find_errors(site_packages: Path) -> list[str]:
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
     distributions = list(metadata.distributions(path=[str(site_packages)]))
     if not distributions:
         return [f"no installed distributions found in {site_packages}"]
