@@ -45,6 +45,7 @@ What it pins (schema v4):
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -64,19 +65,43 @@ VALID_ON_ABSENT = frozenset({"fail", "pass"})
 MUST_LOAD_ALIASES = ("gemma-4-26b-4bit", "bonsai-27b-2bit")
 
 
-def test_agent_smoke_binds_sequence_path_before_agent_cwd_changes() -> None:
-    """A repo-relative sequence path must survive ``seed_repo`` changing cwd."""
+def test_agent_smoke_binds_sequence_path_before_agent_cwd_changes(
+    tmp_path: Path,
+) -> None:
+    """Execute the production binding block across a real cwd transition."""
     smoke = _AGENT_SMOKE_FILE.read_text(encoding="utf-8")
-    validation = smoke.index(
-        '[ -f "$SEQUENCES_YAML" ] || fail "--sequences file not found:'
-    )
-    binding = smoke.index(
-        'SEQUENCES_YAML="$_sequences_dir/$(basename "$SEQUENCES_YAML")"'
-    )
+    binding_start = smoke.index("# Validate a sequences file now (fail early)")
+    binding_end = smoke.index("unset _positional", binding_start)
     cwd_change = smoke.index("seed_repo() {")
     sequence_run = smoke.index('run_load_sequences "$SEQUENCES_YAML"')
+    binding_block = smoke[binding_start:binding_end]
 
-    assert validation < binding < cwd_change < sequence_run
+    assert binding_start < binding_end < cwd_change < sequence_run
+
+    fixture_dir = tmp_path / "fixture dir"
+    fixture_dir.mkdir()
+    sequence_file = fixture_dir / "top sequences.yaml"
+    sequence_file.write_text("base_schema_version: 4\n", encoding="utf-8")
+    later_cwd = tmp_path / "agent-work"
+    later_cwd.mkdir()
+
+    script = f"""
+fail() {{ echo "$*" >&2; exit 3; }}
+SEQUENCES_YAML='fixture dir/top sequences.yaml'
+{binding_block}
+cd '{later_cwd}'
+[ -f "$SEQUENCES_YAML" ]
+printf '%s\\n' "$SEQUENCES_YAML"
+"""
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert Path(result.stdout.strip()) == sequence_file
 
 
 @pytest.fixture(scope="module")
