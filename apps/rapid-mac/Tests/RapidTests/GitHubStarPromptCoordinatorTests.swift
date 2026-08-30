@@ -148,6 +148,30 @@ struct GitHubStarPromptCoordinatorTests {
         #expect(!prompt.isStarring)
     }
 
+    @Test("A direct star finishing after deferral does not override cadence")
+    func deferredDirectStarDoesNotCompleteInvitation() async {
+        let defaults = isolatedDefaults()
+        defaults.set(34, forKey: GitHubStarPromptCoordinator.Keys.totalSuccessfulActions)
+        let promptReference = PromptReference()
+        let prompt = GitHubStarPromptCoordinator(
+            defaults: defaults,
+            quietWindow: .zero,
+            presentationActive: true,
+            starExecutor: { _ in
+                await promptReference.deferPrompt()
+            }
+        )
+        promptReference.prompt = prompt
+
+        prompt.productValueDelivered(.chatReply)
+        #expect(prompt.isPresented)
+
+        let directStarSucceeded = await prompt.attemptDirectStar()
+        #expect(!directStarSucceeded)
+        #expect(!defaults.bool(forKey: GitHubStarPromptCoordinator.Keys.completed))
+        #expect(!prompt.isPresented)
+    }
+
     @Test("Closing the window suspends presentation and reopening earns a new quiet window")
     func windowLifecycleRestartsQuietWindow() async {
         let defaults = isolatedDefaults()
@@ -212,5 +236,13 @@ private actor DirectStarRecorder {
 
     func recordedURL() -> URL? {
         url
+    }
+}
+
+private final class PromptReference: @unchecked Sendable {
+    var prompt: GitHubStarPromptCoordinator?
+
+    func deferPrompt() async {
+        await MainActor.run { prompt?.deferPrompt() }
     }
 }

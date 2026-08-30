@@ -156,6 +156,7 @@ final class GitHubStarPromptCoordinator {
 
         do {
             try await starExecutor(GitHubCommunity.repositoryURL)
+            guard isPresented else { return false }
             markCompleted()
             return true
         } catch {
@@ -242,6 +243,7 @@ enum GitHubStarCLI {
         process.executableURL = executable
         process.arguments = [
             "api", "--method", "PUT", "--silent",
+            "--hostname", "github.com",
             "repos/raullenchai/Rapid-MLX/starred"
         ]
         process.standardOutput = Pipe()
