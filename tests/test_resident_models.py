@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -244,6 +245,16 @@ async def test_dynamic_resident_loads_singleton_no_refs_snapshot_offline(
         raise AssertionError("singleton snapshot must never need the network")
 
     monkeypatch.setattr("vllm_mlx.cli._ensure_model_downloaded", fail_on_network)
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+    monkeypatch.setattr(
+        server,
+        "resolve_serving_lane_decision",
+        lambda _name, **_kwargs: SimpleNamespace(
+            is_mllm=False,
+            reason="text_lane_forced",
+            auto_text_fallback=True,
+        ),
+    )
     captured = {}
 
     class FakeEngine:
@@ -370,6 +381,15 @@ async def test_dynamic_switch_restores_hybrid_text_lane(
 
     monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
     monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr(
+        server,
+        "resolve_serving_lane_decision",
+        lambda model_name, **_kwargs: SimpleNamespace(
+            is_mllm=False,
+            reason="text_lane_forced",
+            auto_text_fallback=str(model_name).endswith("qwen35-9b"),
+        ),
+    )
 
     await server._load_dynamic_resident_model("large", str(large))
     await server._load_dynamic_resident_model("small", str(small))
