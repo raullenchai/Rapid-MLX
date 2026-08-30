@@ -12,21 +12,22 @@ REPO = "raullenchai/Rapid-MLX"
 WORKFLOW = ".github/workflows/auto-release.yml"
 
 
-def _bundle(tmp_path: Path) -> tuple[Path, Path]:
+def _bundle(tmp_path: Path, *, version: str = VERSION) -> tuple[Path, Path]:
+    tag = f"rapid-mac-v{version}"
     bundle = tmp_path / "candidate"
     sparkle = bundle / "sparkle"
     sparkle.mkdir(parents=True)
     dmg = bundle / "rapid-mlx-desktop.dmg"
     dmg.write_bytes(b"signed notarized dmg")
-    zip_path = sparkle / "Rapid-MLX-Desktop-0.13.2.zip"
+    zip_path = sparkle / f"Rapid-MLX-Desktop-{version}.zip"
     zip_path.write_bytes(b"signed sparkle zip")
-    (bundle / "release-notes.md").write_text("## [0.13.2]\n")
+    (bundle / "release-notes.md").write_text(f"## [{version}]\n")
     (bundle / "rapid-mlx-desktop.manifest.json").write_text(
         json.dumps(
             {
                 "source_sha": SHA,
-                "version": VERSION,
-                "app_tag": TAG,
+                "version": version,
+                "app_tag": tag,
                 "signed": True,
                 "artifacts": [
                     {
@@ -41,7 +42,7 @@ def _bundle(tmp_path: Path) -> tuple[Path, Path]:
         )
     )
     (sparkle / "appcast.xml").write_text(
-        f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><enclosure url="https://dl.rapidmlx.com/{zip_path.name}" length="{zip_path.stat().st_size}" sparkle:version="132" sparkle:shortVersionString="{VERSION}" sparkle:edSignature="signature" /></item></channel></rss>'''
+        f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><sparkle:version>132</sparkle:version><sparkle:shortVersionString>{version}</sparkle:shortVersionString><enclosure url="https://dl.rapidmlx.com/{zip_path.name}" length="{zip_path.stat().st_size}" sparkle:edSignature="signature" /></item></channel></rss>'''
     )
     manifest = bundle / "desktop-promotion-manifest.json"
     manifest.write_text(
@@ -53,15 +54,15 @@ def _bundle(tmp_path: Path) -> tuple[Path, Path]:
                 run_id=123,
                 run_attempt=2,
                 source_sha=SHA,
-                version=VERSION,
-                app_tag=TAG,
+                version=version,
+                app_tag=tag,
             )
         )
     )
     return bundle, manifest
 
 
-def _verify(bundle: Path, manifest: Path):
+def _verify(bundle: Path, manifest: Path, *, version: str = VERSION):
     return verify_manifest(
         bundle=bundle,
         manifest_path=manifest,
@@ -70,14 +71,69 @@ def _verify(bundle: Path, manifest: Path):
         run_id=123,
         run_attempt=2,
         source_sha=SHA,
-        version=VERSION,
-        app_tag=TAG,
+        version=version,
+        app_tag=f"rapid-mac-v{version}",
     )
 
 
 def test_exact_bundle_round_trip(tmp_path: Path):
     bundle, manifest = _bundle(tmp_path)
     assert _verify(bundle, manifest)["producer"]["run_attempt"] == 2
+
+
+def test_rc_item_level_identity_round_trip(tmp_path: Path):
+    version = "0.13.2-rc1"
+    bundle, manifest = _bundle(tmp_path, version=version)
+    assert _verify(bundle, manifest, version=version)["release"]["version"] == version
+
+
+def test_legacy_enclosure_identity_is_accepted(tmp_path: Path):
+    bundle, _ = _bundle(tmp_path)
+    appcast = bundle / "sparkle/appcast.xml"
+    text = appcast.read_text()
+    text = text.replace("<sparkle:version>132</sparkle:version>", "")
+    text = text.replace(
+        f"<sparkle:shortVersionString>{VERSION}</sparkle:shortVersionString>", ""
+    )
+    text = text.replace(
+        "<enclosure ",
+        f'<enclosure sparkle:version="132" sparkle:shortVersionString="{VERSION}" ',
+    )
+    appcast.write_text(text)
+
+    manifest = create_manifest(
+        bundle=bundle,
+        repository=REPO,
+        workflow=WORKFLOW,
+        run_id=123,
+        run_attempt=2,
+        source_sha=SHA,
+        version=VERSION,
+        app_tag=TAG,
+    )
+    assert manifest["release"]["version"] == VERSION
+
+
+def test_conflicting_item_and_enclosure_identity_is_rejected(tmp_path: Path):
+    bundle, _ = _bundle(tmp_path)
+    appcast = bundle / "sparkle/appcast.xml"
+    appcast.write_text(
+        appcast.read_text().replace(
+            "<enclosure ",
+            '<enclosure sparkle:shortVersionString="0.13.3" ',
+        )
+    )
+    with pytest.raises(ValueError, match="shortVersionString values conflict"):
+        create_manifest(
+            bundle=bundle,
+            repository=REPO,
+            workflow=WORKFLOW,
+            run_id=123,
+            run_attempt=2,
+            source_sha=SHA,
+            version=VERSION,
+            app_tag=TAG,
+        )
 
 
 @pytest.mark.parametrize(
@@ -151,8 +207,8 @@ def test_appcast_identity_is_rejected_even_if_manifest_is_rehashed(tmp_path: Pat
     appcast = bundle / "sparkle/appcast.xml"
     appcast.write_text(
         appcast.read_text().replace(
-            f'sparkle:shortVersionString="{VERSION}"',
-            'sparkle:shortVersionString="0.13.3"',
+            f"<sparkle:shortVersionString>{VERSION}</sparkle:shortVersionString>",
+            "<sparkle:shortVersionString>0.13.3</sparkle:shortVersionString>",
         )
     )
     data = json.loads(manifest.read_text())

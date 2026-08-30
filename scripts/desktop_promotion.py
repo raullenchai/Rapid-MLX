@@ -136,25 +136,53 @@ def _verify_appcast(bundle: Path, *, version: str, zip_relative: str) -> None:
         root = ET.parse(appcast).getroot()
     except (OSError, ET.ParseError) as exc:
         raise ValueError(f"cannot parse Sparkle appcast: {exc}") from exc
-    enclosures = root.findall(".//enclosure")
-    if len(enclosures) != 1:
+    item_enclosures = [
+        (item, enclosure)
+        for item in root.findall(".//item")
+        for enclosure in item.findall("enclosure")
+    ]
+    if len(item_enclosures) != 1:
         raise ValueError(
-            f"Sparkle appcast must contain exactly one enclosure; found {len(enclosures)}"
+            "Sparkle appcast must contain exactly one enclosure; "
+            f"found {len(item_enclosures)}"
         )
-    enclosure = enclosures[0]
+    item, enclosure = item_enclosures[0]
     zip_path = _regular_file(bundle, zip_relative)
     url = enclosure.get("url", "")
     if url.rsplit("/", 1)[-1] != zip_path.name:
         raise ValueError("Sparkle enclosure URL does not name the promoted ZIP")
     if enclosure.get("length") != str(zip_path.stat().st_size):
         raise ValueError("Sparkle enclosure length does not match the promoted ZIP")
-    if enclosure.get(f"{{{SPARKLE_NS}}}shortVersionString") != version:
+    short_version = _sparkle_version_value(item, enclosure, "shortVersionString")
+    if short_version != version:
         raise ValueError("Sparkle short version does not match the promotion version")
-    build = enclosure.get(f"{{{SPARKLE_NS}}}version", "")
+    build = _sparkle_version_value(item, enclosure, "version")
     if not build.isdigit() or int(build) < 1:
         raise ValueError("Sparkle enclosure has no valid numeric bundle build")
     if not enclosure.get(f"{{{SPARKLE_NS}}}edSignature"):
         raise ValueError("Sparkle enclosure has no EdDSA signature")
+
+
+def _sparkle_version_value(
+    item: ET.Element, enclosure: ET.Element, local_name: str
+) -> str:
+    """Read one Sparkle identity field without accepting contradictory copies.
+
+    Sparkle 2 emits ``version`` and ``shortVersionString`` as item-level
+    elements. Older appcasts may carry the same values as enclosure
+    attributes. Sparkle accepts either representation, so promotion must too,
+    while rejecting an appcast that supplies both with different values.
+    """
+
+    child = item.find(f"{{{SPARKLE_NS}}}{local_name}")
+    element_value = (child.text or "").strip() if child is not None else ""
+    attribute_value = enclosure.get(f"{{{SPARKLE_NS}}}{local_name}", "").strip()
+    if element_value and attribute_value and element_value != attribute_value:
+        raise ValueError(f"Sparkle {local_name} values conflict")
+    value = element_value or attribute_value
+    if not value:
+        raise ValueError(f"Sparkle appcast is missing {local_name}")
+    return value
 
 
 def create_manifest(
