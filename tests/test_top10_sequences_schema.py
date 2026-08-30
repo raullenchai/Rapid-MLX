@@ -104,28 +104,81 @@ printf '%s\\n' "$SEQUENCES_YAML"
     assert Path(result.stdout.strip()) == sequence_file
 
 
-def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
-    """The MTP counters belong to the boot-configured primary, not a reload."""
+def _sequence_driver_source() -> str:
     smoke = _AGENT_SMOKE_FILE.read_text(encoding="utf-8")
-    drive_start = smoke.index("def _drive(spec, args):")
-    drive_end = smoke.index("\ndef main(argv):", drive_start)
-    drive = smoke[drive_start:drive_end]
+    marker = "cat > \"$WORK/seq_driver.py\" <<'PY'\n"
+    return smoke.split(marker, 1)[1].split("\nPY\n", 1)[0]
 
-    pre_scrape = drive.index("pre_map = _parse_series(_scrape_metrics(")
-    canonical_chat = drive.index('canonical_model = seq.get("serve_alias")')
-    post_scrape = drive.index("post_map = _parse_series(_scrape_metrics(")
-    metric_evaluation = drive.index("mm = _eval_metrics(seq, pre_map, post_map)")
-    residency_sequence = drive.index(
-        'for i, step in enumerate(seq.get("steps", []), start=1):'
+
+def test_mtp_engagement_is_proved_before_the_primary_is_replaced() -> None:
+    """Exercise the production driver with network calls replaced by a ledger."""
+    namespace = {"__name__": "sequence_driver_contract_test"}
+    exec(
+        compile(_sequence_driver_source(), str(_AGENT_SMOKE_FILE), "exec"),
+        namespace,
+    )
+    events: list[str] = []
+    scrapes = iter(
+        (
+            'rapid_mlx_spec_decode_attempts_total{family="primary",method="mtp"} 0',
+            'rapid_mlx_spec_decode_attempts_total{family="primary",method="mtp"} 1',
+        )
     )
 
-    assert (
-        pre_scrape
-        < canonical_chat
-        < post_scrape
-        < metric_evaluation
-        < residency_sequence
-    )
+    def scrape(*_args) -> str:
+        events.append("scrape")
+        return next(scrapes)
+
+    def chat(_base, model, _auth, _timeout) -> tuple[int, bool]:
+        events.append(f"chat:{model}")
+        return 200, True
+
+    def post(_base, path, body, _auth, _timeout) -> tuple[int, str]:
+        assert path == "/v1/models/load"
+        events.append(f"load:{body['model']}")
+        return 200, ""
+
+    namespace["_scrape_metrics"] = scrape
+    namespace["_chat"] = chat
+    namespace["_post"] = post
+    spec = {
+        "sequences": [
+            {
+                "name": "mtp-order",
+                "mtp": "first",
+                "serve_alias": "primary",
+                "metrics_expected": [
+                    {
+                        "metric": "rapid_mlx_spec_decode_attempts_total",
+                        "family": "primary",
+                        "method": "mtp",
+                    }
+                ],
+                "steps": [
+                    {
+                        "model": "secondary",
+                        "expected_status": 200,
+                    }
+                ],
+            }
+        ]
+    }
+    args = {
+        "mode": "mtp",
+        "only_seq": "mtp-order",
+        "base": "http://test.invalid",
+        "auth": None,
+        "block_to": 60,
+    }
+
+    assert namespace["_drive"](spec, args) == 0
+    assert events == [
+        "scrape",
+        "chat:primary",
+        "scrape",
+        "load:secondary",
+        "chat:secondary",
+    ]
 
 
 @pytest.fixture(scope="module")

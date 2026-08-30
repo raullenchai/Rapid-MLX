@@ -226,8 +226,8 @@ run_load_sequences() {
 Modes:
   --mode std        drive every mtp: none sequence against --base.
   --mode mtp        drive the single mtp != none sequence named by --only-seq
-                    against --base (the dedicated MTP serve), then scrape its
-                    /metrics and evaluate its metrics_expected.
+                    against --base (the dedicated MTP serve), proving its
+                    metrics_expected before the residency transitions.
   --mtp-plans-out F write the MTP boot plan (one JSON object per line) to F
                     and exit — bash uses it to boot each MTP serve.
 Exits 0 iff every required step (respecting per-step + per-sequence budgets)
@@ -627,8 +627,8 @@ PY
   fi
 
   # 2) MTP sequences: one dedicated MTP serve per sequence, own port, own boot
-  #    and cleanup. Produce the boot plan, then cycle boot -> drive -> scrape
-  #    -> teardown.
+  #    and cleanup. Produce the boot plan, then cycle boot -> prove MTP metrics
+  #    -> drive residency transitions -> teardown.
   local plans="$WORK/mtp_plans.jsonl"
   : > "$plans"
   "$VENV/bin/python" "$WORK/seq_driver.py" --yaml "$yaml" --mtp-plans-out "$plans"
