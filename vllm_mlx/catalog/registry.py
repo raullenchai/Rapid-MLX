@@ -75,7 +75,13 @@ class AtomicRegistry:
         projection, digest_field = _projection(kind, document)
         digest = rcj_digest(projection)
         declared = document.get(digest_field)
-        if declared != digest:
+        digest_is_optional = (
+            kind == "model_identity"
+            and document.get("identity_strength") == "unresolved"
+        )
+        if (not digest_is_optional and declared != digest) or (
+            digest_is_optional and declared is not None
+        ):
             raise CatalogValidationError(
                 kind, digest_field, "declared digest does not match RCJ-1"
             )
@@ -84,13 +90,6 @@ class AtomicRegistry:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{digest.removeprefix('sha256:')}.json"
         payload = canonical_json_bytes(document) + b"\n"
-        if target.exists():
-            if target.read_bytes() != payload:
-                raise CatalogValidationError(
-                    kind, digest_field, "content-address collision"
-                )
-            return digest
-
         descriptor, temporary_name = tempfile.mkstemp(prefix=".tmp-", dir=target_dir)
         temporary = Path(temporary_name)
         try:
@@ -98,7 +97,16 @@ class AtomicRegistry:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, target)
+            try:
+                # Same-directory hard-link publication is create-if-absent:
+                # unlike exists()+replace(), it can never overwrite a winner
+                # from another process between observation and commit.
+                os.link(temporary, target)
+            except FileExistsError:
+                if target.read_bytes() != payload:
+                    raise CatalogValidationError(
+                        kind, digest_field, "content-address collision"
+                    ) from None
         finally:
             temporary.unlink(missing_ok=True)
         return digest

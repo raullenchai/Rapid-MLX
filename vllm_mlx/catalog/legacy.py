@@ -113,15 +113,17 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
     """Project both legacy alias registries into one deterministic snapshot."""
 
     from vllm_mlx.audio.registry import list_audio_aliases
-    from vllm_mlx.model_aliases import list_builtin_aliases, list_profiles
+    from vllm_mlx.model_aliases import list_profiles
     from vllm_mlx.model_sizes import size_bytes
 
-    builtin = set(list_builtin_aliases())
     profiles = list_profiles()
     models: dict[str, dict[str, Any]] = {}
     aliases: list[dict[str, Any]] = []
 
-    for alias in sorted(builtin):
+    # `models --json` exposes the complete profile view, including user aliases.
+    # Project that same surface rather than truncating the shadow graph to the
+    # built-in catalog.
+    for alias in sorted(profiles):
         profile = profiles[alias]
         model_id = _registry_model_id(profile.hf_path, profile.subfolder)
         model = {
@@ -233,11 +235,11 @@ def build_shadow_report(
     """Return deterministic migration coverage; never changes resolution behavior."""
 
     from vllm_mlx.audio.registry import list_audio_aliases
-    from vllm_mlx.model_aliases import list_builtin_aliases
+    from vllm_mlx.model_aliases import list_profiles
 
     snapshot = snapshot or build_legacy_catalog_snapshot()
     policy = policy or build_legacy_recommendation_policy(snapshot)
-    legacy_aliases = set(list_builtin_aliases()) | {
+    legacy_aliases = set(list_profiles()) | {
         entry.alias for entry in list_audio_aliases()
     }
     projected_aliases = {entry["alias"] for entry in snapshot["aliases"]}
