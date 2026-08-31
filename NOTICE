@@ -59,6 +59,18 @@ repository. Each keeps its upstream license text alongside the code.
   GUST-FONT-LICENSE.txt notices alongside the font files.
   See apps/rapid-mac/Vendor/SwiftMath/LICENSE.
 
+* vllm_mlx/patches/glm5_next_processor.py
+  GLM-5 Next torch-free processor adapted from
+  https://github.com/jundot/omlx at commit
+  c520d7e6124cf6255868e589c6beb75cf4cee8f9.
+  Licensed under the Apache License, Version 2.0.
+
+* vllm_mlx/patches/glm5_next_runtime.py
+  GLM-5 Next text-runtime compatibility logic adapted from the mlx-vlm
+  correctness work at commits f9e2c507a154575956ea97449729a67de72c9c70 and
+  bffd4856a4504b76a242536f2dd356093c8e2e92.
+  Licensed under the MIT License.
+
 
 Runtime dependencies
 ====================

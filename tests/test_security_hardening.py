@@ -61,6 +61,28 @@ def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
         "mlx_vlm.utils",
         types.SimpleNamespace(load_config=fake_load_config),
     )
+    # This test owns only the remote-code forwarding contract. Keep the three
+    # independently-covered GLM compatibility installers out of its synthetic
+    # ``mlx_vlm`` module graph so the fake remains intentionally minimal.
+    for module_name, installer_name in (
+        (
+            "vllm_mlx.patches.glm5_next_runtime",
+            "install_glm5_next_runtime_fix",
+        ),
+        (
+            "vllm_mlx.patches.glm5_next_processor",
+            "install_glm5_next_processor_patch",
+        ),
+        (
+            "vllm_mlx.patches.glm5_next_forget_gate_quant",
+            "install_glm5_next_forget_gate_quant_fix",
+        ),
+    ):
+        monkeypatch.setitem(
+            sys.modules,
+            module_name,
+            types.SimpleNamespace(**{installer_name: lambda: None}),
+        )
     monkeypatch.setattr(
         "vllm_mlx.utils.tokenizer.augment_eos_token_ids_from_generation_config",
         lambda *_args, **_kwargs: None,

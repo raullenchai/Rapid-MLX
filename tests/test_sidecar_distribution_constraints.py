@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from packaging.requirements import Requirement
 
 SCRIPT = (
     Path(__file__).parents[1]
@@ -35,8 +34,8 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
     assert emitted[0].startswith("# Release-tested versions")
     assert emitted[1:] == [
         "mlx==0.32.2",
-        "transformers==5.12.1",
-        "mlx-vlm==0.6.16",
+        "transformers==5.15.1",
+        "mlx-vlm==0.6.17",
         "mflux==0.19.0",
     ]
 
@@ -48,39 +47,7 @@ def test_emit_constraints_needs_only_the_python_standard_library() -> None:
         capture_output=True,
         text=True,
     )
-    assert "mlx-vlm==0.6.16" in result.stdout
-
-
-def test_exact_reduced_vision_runtime_is_allowed(constraints) -> None:
-    assert constraints.is_validated_compatibility_exception(
-        owner="mlx-vlm",
-        owner_version="0.6.16",
-        requirement=Requirement("transformers>=5.14.0"),
-        actual="5.12.1",
-    )
-
-
-@pytest.mark.parametrize(
-    ("owner", "owner_version", "requirement", "actual"),
-    [
-        ("other", "0.6.16", "transformers>=5.14.0", "5.12.1"),
-        ("mlx-vlm", "0.6.15", "transformers>=5.14.0", "5.12.1"),
-        ("mlx-vlm", "0.6.17", "transformers>=5.14.0", "5.12.1"),
-        ("mlx-vlm", "0.6.16", "transformers>=5.13.0", "5.12.1"),
-        ("mlx-vlm", "0.6.16", "other>=5.14.0", "5.12.1"),
-        ("mlx-vlm", "0.6.16", "transformers>=5.14.0", "5.12.0"),
-        ("mlx-vlm", "0.6.16", "transformers>=5.14.0", "5.13.1"),
-    ],
-)
-def test_every_nearby_mismatch_still_fails_closed(
-    constraints, owner: str, owner_version: str, requirement: str, actual: str
-) -> None:
-    assert not constraints.is_validated_compatibility_exception(
-        owner=owner,
-        owner_version=owner_version,
-        requirement=Requirement(requirement),
-        actual=actual,
-    )
+    assert "mlx-vlm==0.6.17" in result.stdout
 
 
 def _write_metadata(
@@ -93,14 +60,14 @@ def _write_metadata(
     (dist_info / "METADATA").write_text("\n".join(lines) + "\n")
 
 
-def test_find_errors_reads_real_distribution_metadata(
+def test_find_errors_accepts_coherent_distribution_metadata(
     constraints, tmp_path: Path
 ) -> None:
-    _write_metadata(tmp_path, "transformers", "5.12.1")
+    _write_metadata(tmp_path, "transformers", "5.15.1")
     _write_metadata(
         tmp_path,
         "mlx-vlm",
-        "0.6.16",
+        "0.6.17",
         ("transformers>=5.14.0; python_version >= '3'",),
     )
     assert constraints.find_errors(tmp_path) == []
