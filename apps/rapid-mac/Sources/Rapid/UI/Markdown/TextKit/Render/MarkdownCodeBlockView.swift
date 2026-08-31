@@ -290,12 +290,21 @@ final class MarkdownCodeBlockView: NSView {
         // parses synchronously, so its button appears in the same turn. A
         // diagram has to be drawn by another process, so its button appears
         // when the drawing lands.
-        if previewSource != code {
+        if isSVG, previewSource != code {
             previewSource = code
-            if isSVG {
-                previewImage = SVGPreview.image(from: code)
-            } else {
-                let theme = MermaidRenderer.Theme(effectiveAppearance)
+            previewImage = SVGPreview.image(from: code)
+        } else if isMermaid {
+            let theme = MermaidRenderer.Theme(effectiveAppearance)
+            if previewSource != code {
+                previewSource = code
+                previewImage = nil
+            }
+            // Finality can change without the source changing: the last
+            // streamed code block is configured once as partial and again as
+            // settled. Re-check the cache and start the render on that second
+            // configure instead of requiring a text delta that will never
+            // arrive.
+            if previewImage == nil {
                 previewImage = MermaidRenderer.shared.cachedImage(source: code, theme: theme)
                 if previewImage == nil, isFinal {
                     requestMermaidRender(source: code, theme: theme)
