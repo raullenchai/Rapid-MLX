@@ -1,0 +1,9 @@
+{
+  "schema_version": 1, "identity_strength": "registry_pinned", "pipeline_kind": "image_generation",
+  "components": [
+    {"component_id": "primary", "role": "primary", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "transformer"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "weights", "method": "affine", "weight_bits_x2": 8}},
+    {"component_id": "text-encoder", "role": "text_encoder", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "text_encoder"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}},
+    {"component_id": "vae", "role": "vae", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "vae"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}}
+  ],
+  "identity_digest": "sha256:69e798dd8ffbe25a9d3876227056016fd692a257caf32a733b6d96472f67caf0"
+}

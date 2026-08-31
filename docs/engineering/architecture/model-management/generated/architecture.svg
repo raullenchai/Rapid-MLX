@@ -52,11 +52,11 @@
 <tspan x="54" y="410">ModelVariant</tspan>
 </text>
 <text x="54" y="460" class="status">🟡 partial · phase 2 · atlas</text>
-<rect x="40" y="504" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<rect x="40" y="504" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
 <text x="54" y="532" class="node">
 <tspan x="54" y="532">Artifact</tspan>
 </text>
-<text x="54" y="582" class="status">⚪ planned · phase 2 · atlas</text>
+<text x="54" y="582" class="status">🟡 partial · phase 2 · atlas</text>
 <rect x="40" y="626" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
 <text x="54" y="654" class="node">
 <tspan x="54" y="654">Capabilities</tspan>
@@ -79,21 +79,21 @@
 <text x="54" y="1070" class="status">⚪ planned · phase 3 · atlas</text>
 <rect x="356" y="88" width="310" height="1060" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
 <text x="370" y="118" class="lane">Machine, workload, and evidence</text>
-<rect x="368" y="138" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<rect x="368" y="138" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
 <text x="382" y="166" class="node">
 <tspan x="382" y="166">MachineFingerprint</tspan>
 </text>
-<text x="382" y="216" class="status">⚪ planned · phase 2 · vector</text>
+<text x="382" y="216" class="status">🟡 partial · phase 2 · vector</text>
 <rect x="368" y="260" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
 <text x="382" y="288" class="node">
 <tspan x="382" y="288">MachineClass</tspan>
 </text>
 <text x="382" y="338" class="status">⚪ planned · phase 2 · vector</text>
-<rect x="368" y="382" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<rect x="368" y="382" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
 <text x="382" y="410" class="node">
 <tspan x="382" y="410">WorkloadProfile</tspan>
 </text>
-<text x="382" y="460" class="status">⚪ planned · phase 2 · vector</text>
+<text x="382" y="460" class="status">🟡 partial · phase 2 · vector</text>
 <rect x="368" y="504" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
 <text x="382" y="532" class="node">
 <tspan x="382" y="532">CommunityBenchmarkSubmission</tspan>

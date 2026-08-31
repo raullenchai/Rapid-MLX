@@ -43,13 +43,13 @@ components:
   artifact:
     name: Artifact
     lane: facts
-    status: planned
+    status: partial
     phase: 2
     owner: atlas
     summary: Immutable repository revision, file manifest, tokenizer, and config.
-    files: []
-    tests: []
-    missing: Immutable revision/hash and reproducible artifact manifest.
+    files: [proto/model-runtime/v1/model-identity.schema.json]
+    tests: [tests/test_community_benchmark_proto.py]
+    missing: Runtime collector, registry verification, and migration from alias/hf_path submissions.
   capabilities:
     name: Capabilities
     lane: facts
@@ -57,7 +57,7 @@ components:
     phase: 2
     owner: atlas
     summary: What a variant can do, without quality judgement or default selection.
-    files: [vllm_mlx/model_profile.py]
+    files: [vllm_mlx/model_profile.py, proto/model-catalog/v1/model-alias.schema.json]
     tests: [tests/test_aliases_contract.py]
     missing: Separate capability contract from the general ModelProfile.
   runtime_compatibility:
@@ -77,9 +77,10 @@ components:
     phase: 2
     owner: pixel
     summary: Mutable user-facing names, branding, descriptions, icons, and aliases.
-    files: [vllm_mlx/aliases.json]
+    files: [vllm_mlx/aliases.json, proto/model-catalog/v1/model-alias.schema.json]
     tests: [tests/test_aliases_contract.py]
-    missing: Separation from stable model and variant identity.
+    migrations: [migrations/002-aliases-to-atomic-contracts.md]
+    missing: Runtime adapter and generated catalog migration.
   variant_qualification:
     name: VariantQualification
     lane: facts
@@ -93,13 +94,13 @@ components:
   machine_fingerprint:
     name: MachineFingerprint
     lane: evidence
-    status: planned
+    status: partial
     phase: 2
     owner: vector
     summary: Exact observed hardware, OS, RAM, thermal, and power state.
-    files: []
-    tests: []
-    missing: Typed schema and privacy-safe collection.
+    files: [proto/model-runtime/v1/machine-observation.schema.json]
+    tests: [tests/test_community_benchmark_proto.py]
+    missing: Privacy-reviewed condition probes, semantic validation, and producer migration.
   machine_class:
     name: MachineClass
     lane: evidence
@@ -113,13 +114,13 @@ components:
   workload_profile:
     name: WorkloadProfile
     lane: evidence
-    status: planned
+    status: partial
     phase: 2
     owner: vector
     summary: Structured modality, context, concurrency, objective, cache, and media shape.
-    files: []
-    tests: []
-    missing: Stable buckets and applicability matching.
+    files: [proto/community-benchmark/v1/benchmark-run.schema.json]
+    tests: [tests/test_community_benchmark_proto.py]
+    missing: Published protocol/corpus registry, stable buckets, and applicability matching.
   benchmark_submission:
     name: CommunityBenchmarkSubmission
     lane: evidence
@@ -127,9 +128,9 @@ components:
     phase: 4
     owner: vector
     summary: Reproducible raw metrics bound to fingerprint, workload, protocol, and runtime.
-    files: [scripts/benchmark_model_recommendations.py, docs/engineering/performance/README.md]
-    tests: [tests/test_community_bench.py]
-    missing: Unified submission protocol, contributor trust, signature, and privacy contract.
+    files: [proto/community-benchmark/v1/benchmark-run.schema.json, proto/model-runtime/v1/execution-config.schema.json, scripts/benchmark_model_recommendations.py, docs/engineering/performance/README.md]
+    tests: [tests/test_community_benchmark_proto.py, tests/test_community_bench.py]
+    missing: Producer/ingestion adapter, contributor trust, signature, and semantic validator.
   validated_benchmark_run:
     name: ValidatedBenchmarkRun
     lane: evidence

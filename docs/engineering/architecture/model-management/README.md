@@ -26,16 +26,16 @@ flowchart LR
     model_family["ModelFamily<br/><small>partial</small>"]
     model_release["ModelRelease<br/><small>planned</small>"]
     model_variant["ModelVariant<br/><small>partial</small>"]
-    artifact["Artifact<br/><small>planned</small>"]
+    artifact["Artifact<br/><small>partial</small>"]
     capabilities["Capabilities<br/><small>partial</small>"]
     runtime_compatibility["RuntimeCompatibility<br/><small>partial</small>"]
     alias_metadata["Alias / DisplayMetadata<br/><small>partial</small>"]
     variant_qualification["VariantQualification<br/><small>planned</small>"]
   end
   subgraph lane_evidence["Machine, workload, and evidence"]
-    machine_fingerprint["MachineFingerprint<br/><small>planned</small>"]
+    machine_fingerprint["MachineFingerprint<br/><small>partial</small>"]
     machine_class["MachineClass<br/><small>planned</small>"]
-    workload_profile["WorkloadProfile<br/><small>planned</small>"]
+    workload_profile["WorkloadProfile<br/><small>partial</small>"]
     benchmark_submission["CommunityBenchmarkSubmission<br/><small>partial</small>"]
     validated_benchmark_run["ValidatedBenchmarkRun<br/><small>partial</small>"]
     benchmark_aggregate["BenchmarkAggregate<br/><small>partial</small>"]
@@ -103,14 +103,14 @@ flowchart LR
   class model_family partial
   class model_release planned
   class model_variant partial
-  class artifact planned
+  class artifact partial
   class capabilities partial
   class runtime_compatibility partial
   class alias_metadata partial
   class variant_qualification planned
-  class machine_fingerprint planned
+  class machine_fingerprint partial
   class machine_class planned
-  class workload_profile planned
+  class workload_profile partial
   class benchmark_submission partial
   class validated_benchmark_run partial
   class benchmark_aggregate partial
@@ -144,15 +144,15 @@ The generated standalone sources are
 | ModelFamily | 🟡 `partial` | 2 | Atlas | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`model_aliases.py`](../../../../vllm_mlx/model_aliases.py) · [`aliases.json`](../../../../vllm_mlx/aliases.json) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | First-class stable family ID separate from alias metadata. |
 | ModelRelease | ⚪ `planned` | 2 | Atlas | — | Release schema and stable parent relationship. |
 | ModelVariant | 🟡 `partial` | 2 | Atlas | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`aliases.json`](../../../../vllm_mlx/aliases.json) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | First-class variant ID and quantization identity. |
-| Artifact | ⚪ `planned` | 2 | Atlas | — | Immutable revision/hash and reproducible artifact manifest. |
-| Capabilities | 🟡 `partial` | 2 | Atlas | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | Separate capability contract from the general ModelProfile. |
+| Artifact | 🟡 `partial` | 2 | Atlas | [`model-identity.schema.json`](../../../../proto/model-runtime/v1/model-identity.schema.json) · [`test_community_benchmark_proto.py`](../../../../tests/test_community_benchmark_proto.py) | Runtime collector, registry verification, and migration from alias/hf_path submissions. |
+| Capabilities | 🟡 `partial` | 2 | Atlas | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`model-alias.schema.json`](../../../../proto/model-catalog/v1/model-alias.schema.json) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | Separate capability contract from the general ModelProfile. |
 | RuntimeCompatibility | 🟡 `partial` | 2 | Atlas | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`model_auto_config.py`](../../../../vllm_mlx/model_auto_config.py) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | Versioned compatibility record bound to an artifact revision. |
-| Alias / DisplayMetadata | 🟡 `partial` | 2 | Pixel | [`aliases.json`](../../../../vllm_mlx/aliases.json) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) | Separation from stable model and variant identity. |
+| Alias / DisplayMetadata | 🟡 `partial` | 2 | Pixel | [`aliases.json`](../../../../vllm_mlx/aliases.json) · [`model-alias.schema.json`](../../../../proto/model-catalog/v1/model-alias.schema.json) · [`test_aliases_contract.py`](../../../../tests/test_aliases_contract.py) · [migration](migrations/002-aliases-to-atomic-contracts.md) | Runtime adapter and generated catalog migration. |
 | VariantQualification | ⚪ `planned` | 3 | Atlas | — | Qualification schema, expiry, revocation, and product eval pipeline. |
-| MachineFingerprint | ⚪ `planned` | 2 | Vector | — | Typed schema and privacy-safe collection. |
+| MachineFingerprint | 🟡 `partial` | 2 | Vector | [`machine-observation.schema.json`](../../../../proto/model-runtime/v1/machine-observation.schema.json) · [`test_community_benchmark_proto.py`](../../../../tests/test_community_benchmark_proto.py) | Privacy-reviewed condition probes, semantic validation, and producer migration. |
 | MachineClass | ⚪ `planned` | 2 | Vector | — | Normalization and model-fit versus available-RAM safety rules. |
-| WorkloadProfile | ⚪ `planned` | 2 | Vector | — | Stable buckets and applicability matching. |
-| CommunityBenchmarkSubmission | 🟡 `partial` | 4 | Vector | [`benchmark_model_recommendations.py`](../../../../scripts/benchmark_model_recommendations.py) · [`README.md`](../../../../docs/engineering/performance/README.md) · [`test_community_bench.py`](../../../../tests/test_community_bench.py) | Unified submission protocol, contributor trust, signature, and privacy contract. |
+| WorkloadProfile | 🟡 `partial` | 2 | Vector | [`benchmark-run.schema.json`](../../../../proto/community-benchmark/v1/benchmark-run.schema.json) · [`test_community_benchmark_proto.py`](../../../../tests/test_community_benchmark_proto.py) | Published protocol/corpus registry, stable buckets, and applicability matching. |
+| CommunityBenchmarkSubmission | 🟡 `partial` | 4 | Vector | [`benchmark-run.schema.json`](../../../../proto/community-benchmark/v1/benchmark-run.schema.json) · [`execution-config.schema.json`](../../../../proto/model-runtime/v1/execution-config.schema.json) · [`benchmark_model_recommendations.py`](../../../../scripts/benchmark_model_recommendations.py) · [`README.md`](../../../../docs/engineering/performance/README.md) · [`test_community_benchmark_proto.py`](../../../../tests/test_community_benchmark_proto.py) · [`test_community_bench.py`](../../../../tests/test_community_bench.py) | Producer/ingestion adapter, contributor trust, signature, and semantic validator. |
 | ValidatedBenchmarkRun | 🟡 `partial` | 4 | Vector | [`benchmark_model_recommendations.py`](../../../../scripts/benchmark_model_recommendations.py) · [`test_community_bench.py`](../../../../tests/test_community_bench.py) | Unified validation record and promotion eligibility contract. |
 | BenchmarkAggregate | 🟡 `partial` | 4 | Vector | [`benchmark_model_recommendations.py`](../../../../scripts/benchmark_model_recommendations.py) · [`test_community_bench_aggregate.py`](../../../../tests/test_community_bench_aggregate.py) | Artifact/machine/workload/runtime/protocol compound key and confidence contract. |
 | ProfileCandidate | 🟡 `partial` | 2 | Vector | [`model_profile.py`](../../../../vllm_mlx/model_profile.py) · [`aliases.json`](../../../../vllm_mlx/aliases.json) · [`cli.py`](../../../../vllm_mlx/cli.py) · [`test_recurrent_prefill_auto_default.py`](../../../../tests/test_recurrent_prefill_auto_default.py) · [evidence](../../performance/2026-08-22-long-context-service-prefill.md) · [migration](migrations/001-prefill-profile-extraction.md) | Explicit staging status, scoped evidence ID, review, expiry, and promotion contract. |

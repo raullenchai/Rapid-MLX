@@ -1,0 +1,7 @@
+{
+  "schema_version": 1, "config_digest": "sha256:39e722513fa180477c0dfea8b588754a18602821ea64426ae73e56d24016b3b8",
+  "runtime": {"distribution": "release", "rapid_mlx": "0.14.0", "mlx": "0.32.1", "mlx_lm": "0.31.3", "python": "3.12.11"},
+  "task_type": "text_generation",
+  "resources": {"max_concurrency": 1, "wired_memory_limit_mib": 110000, "compute_dtype": "bfloat16", "offload": "none"},
+  "task": {"kind": "text_generation", "language": {"context_length": 32768, "speculative_decoding": {"method": "mtp", "max_draft_tokens": 3, "assistant_source": "embedded_head"}, "kv_cache": {"mode": "quantized", "dtype": "q8", "bits_x2": 16, "group_size": 64}, "prefix_cache_enabled": false, "prefill_backend": "gpu", "prefill_chunk_size": 2048}}
+}
