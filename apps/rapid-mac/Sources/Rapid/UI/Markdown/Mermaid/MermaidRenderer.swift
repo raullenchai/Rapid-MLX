@@ -272,10 +272,10 @@ final class MermaidRenderer {
         else { return .sourceRejected }
 
         do {
-            guard let image = try await snapshot(
+            let image = try await snapshot(
                 webView: webView, measurement: measured
-            ) else { return .infrastructureFailure }
-            return .image(RenderedImage(value: image))
+            )
+            return .image(image)
         } catch {
             failures += 1
             teardown()
@@ -356,7 +356,7 @@ final class MermaidRenderer {
     private func snapshot(
         webView: WKWebView,
         measurement: MermaidRenderMeasurement
-    ) async throws -> NSImage? {
+    ) async throws -> RenderedImage {
         let surfaceSize = CGSize(width: measurement.width, height: measurement.height)
         // `WKSnapshotConfiguration.rect` is clipped to the view's drawable
         // surface. The host starts small to keep idle WebKit cheap, then grows
@@ -376,7 +376,7 @@ final class MermaidRenderer {
 
         let gate = MermaidEvaluationGate()
         return try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<NSImage?, Error>) in
+            (continuation: CheckedContinuation<RenderedImage, Error>) in
             let completion: @MainActor @Sendable (NSImage?, Error?) -> Void = {
                 image, error in
                 guard gate.claim() else { return }
@@ -392,7 +392,7 @@ final class MermaidRenderer {
                 // The snapshot arrives at pixel dimensions; restate it in
                 // points so `SVGPreview.drawSize` measures it like SVG.
                 image.size = CGSize(width: measurement.width, height: measurement.height)
-                continuation.resume(returning: image)
+                continuation.resume(returning: RenderedImage(value: image))
             }
 
             abortActiveOperation = {
