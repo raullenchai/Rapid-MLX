@@ -102,11 +102,15 @@ final class MermaidRenderer {
         case infrastructureFailure
     }
 
-    /// Bounded. Diagrams recur — a conversation revisits the same one every
-    /// time the row is rebuilt — so a small cache carries most of the traffic.
+    /// Bounded by both entry count and retained bitmap cost. A single accepted
+    /// 2× snapshot can occupy about 64 MB, so count alone is not a memory
+    /// bound for a model response containing many large diagrams.
     private static let capacity = 32
+    private static let defaultCacheByteLimit = 256 * 1_024 * 1_024
+    private let cacheByteLimit: Int
     private var cache: [Key: Entry] = [:]
     private var order: [Key] = []
+    private(set) var cachedImageBytes = 0
     private var inFlight: [Key: Task<RenderedImage?, Never>] = [:]
 
     /// Rendering happens in a window so WebKit has somewhere to draw. It is
@@ -149,11 +153,13 @@ final class MermaidRenderer {
     init(
         renderTimeout: Duration = .seconds(8),
         javaScriptEvaluator: JavaScriptEvaluator? = nil,
-        snapshotter: Snapshotter? = nil
+        snapshotter: Snapshotter? = nil,
+        cacheByteLimit: Int = MermaidRenderer.defaultCacheByteLimit
     ) {
         self.renderTimeout = renderTimeout
         self.javaScriptEvaluator = javaScriptEvaluator
         self.snapshotter = snapshotter
+        self.cacheByteLimit = max(0, cacheByteLimit)
     }
 
     // MARK: - The synchronous half
@@ -214,10 +220,45 @@ final class MermaidRenderer {
     }
 
     private func store(_ entry: Entry, for key: Key) {
+        if let replaced = cache.removeValue(forKey: key) {
+            cachedImageBytes -= Self.cacheCost(of: replaced)
+            order.removeAll { $0 == key }
+        }
         cache[key] = entry
         order.append(key)
-        guard order.count > Self.capacity else { return }
-        cache.removeValue(forKey: order.removeFirst())
+        cachedImageBytes += Self.cacheCost(of: entry)
+        while order.count > Self.capacity || cachedImageBytes > cacheByteLimit {
+            guard !order.isEmpty else { break }
+            let evicted = order.removeFirst()
+            if let removed = cache.removeValue(forKey: evicted) {
+                cachedImageBytes -= Self.cacheCost(of: removed)
+            }
+        }
+    }
+
+    private static func cacheCost(of entry: Entry) -> Int {
+        guard case .image(let image) = entry else { return 0 }
+        let representationBytes = image.representations.compactMap { representation -> Int? in
+            guard representation.pixelsWide > 0, representation.pixelsHigh > 0 else {
+                return nil
+            }
+            let (pixels, overflow) = representation.pixelsWide.multipliedReportingOverflow(
+                by: representation.pixelsHigh
+            )
+            guard !overflow else { return Int.max }
+            let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
+            return byteOverflow ? Int.max : bytes
+        }.max()
+        if let representationBytes { return representationBytes }
+
+        // Injected/test images can have no bitmap representation. Production
+        // snapshots are 2×, so preserve the same conservative cost model.
+        let width = max(0, Int(ceil(image.size.width * 2)))
+        let height = max(0, Int(ceil(image.size.height * 2)))
+        let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow else { return Int.max }
+        let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
+        return byteOverflow ? Int.max : bytes
     }
 
     // MARK: - The web view
@@ -512,6 +553,7 @@ final class MermaidRenderer {
         teardown()
         cache.removeAll()
         order.removeAll()
+        cachedImageBytes = 0
         failures = 0
         webViewsCreated = 0
     }

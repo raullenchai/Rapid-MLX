@@ -410,6 +410,29 @@ struct MermaidRenderingTests {
         #expect(!MermaidRenderer.acceptsSnapshot(width: Int.max, height: 2))
     }
 
+    @Test("Maximum-sized images are evicted by aggregate bitmap cost")
+    func aggregateBitmapCostEvictsOldestImage() async {
+        let maximumImageBytes = 2_000 * 2 * 2_000 * 2 * 4
+        let renderer = MermaidRenderer(
+            javaScriptEvaluator: { _, _, _, completion in
+                completion(.success(["ok": true, "width": 2_000, "height": 2_000]))
+            },
+            snapshotter: { _, configuration, completion in
+                completion(NSImage(size: configuration.rect.size), nil)
+            },
+            cacheByteLimit: maximumImageBytes
+        )
+        let first = "graph TD\n  First --> Large"
+        let second = "graph TD\n  Second --> Large"
+
+        #expect(await renderer.image(source: first, theme: .light) != nil)
+        #expect(await renderer.image(source: second, theme: .light) != nil)
+
+        #expect(renderer.cachedImage(source: first, theme: .light) == nil)
+        #expect(renderer.cachedImage(source: second, theme: .light) != nil)
+        #expect(renderer.cachedImageBytes == maximumImageBytes)
+    }
+
     @Test("A timed-out render releases the serial queue")
     func timedOutRenderReleasesQueue() async {
         var attempts = 0
