@@ -1,0 +1,9 @@
+{
+  "number": 2792,
+  "head": {
+    "sha": "fd384c93e2a8182a0547e24f098e3063bd4c9b2e",
+    "repo": {"full_name": "raullenchai/Rapid-MLX"}
+  },
+  "labels": [{"name": "merge-ready-mac"}, {"name": "dequeued"}],
+  "body": "## Verification\n\nCoherence-Sweep: seven-family 42/42 evidence remains applicable to the unchanged core toolchain; the optional vision runtime separately passed Apple-MLX and real-image checks."
+}
