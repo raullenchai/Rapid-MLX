@@ -22,8 +22,13 @@ enum MermaidLibrary {
     /// The bytes, or nil when anything about them is wrong.
     static func load() -> Data? {
         guard let url = locate(), let data = try? Data(contentsOf: url) else { return nil }
-        guard let expected = expectedDigest(), digest(of: data) == expected else { return nil }
-        return data
+        guard let expected = expectedDigest() else { return nil }
+        return validated(data: data, expectedDigest: expected)
+    }
+
+    /// Pure integrity boundary used by both the loader and its tamper test.
+    static func validated(data: Data, expectedDigest: String) -> Data? {
+        digest(of: data) == expectedDigest ? data : nil
     }
 
     private static func locate() -> URL? {
