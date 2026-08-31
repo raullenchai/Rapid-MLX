@@ -817,7 +817,12 @@ enum ModelCatalog {
               let aliasRows = snapshot["aliases"] as? [[String: Any]]
         else { return nil }
 
-        var modelsByID: [String: (repo: String, size: String?)] = [:]
+        var modelsByID: [String: (
+            repo: String,
+            size: String?,
+            resolution: String,
+            identityDigest: String?
+        )] = [:]
         for model in modelRows {
             guard model["schema_version"] as? Int == 1,
                   let modelID = model["registry_model_id"] as? String,
@@ -839,7 +844,9 @@ enum ModelCatalog {
             } else {
                 size = nil
             }
-            modelsByID[modelID] = (repo, size)
+            modelsByID[modelID] = (
+                repo, size, resolution, model["model_identity_digest"] as? String
+            )
         }
 
         var entries: [ModelEntry] = []
@@ -865,7 +872,9 @@ enum ModelCatalog {
                   }),
                   let desktopAvailable = availability["desktop"] as? Bool,
                   let executionPresets = row["execution_presets"] as? [[String: Any]],
-                  let model = modelsByID[modelID]
+                  let model = modelsByID[modelID],
+                  targetResolution == model.resolution,
+                  target["model_identity_digest"] as? String == model.identityDigest
             else { return nil }
             let presetIDs = executionPresets.compactMap { $0["preset_id"] as? String }
             guard presetIDs.count == executionPresets.count,

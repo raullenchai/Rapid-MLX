@@ -187,6 +187,20 @@ struct AtomicModelCatalogTests {
         }
         #expect(ModelCatalog.parseAtomicModelEntriesJSON(missingAvailability) == nil)
 
+        let mismatchedResolution = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            var target = aliases[0]["target"] as! [String: Any]
+            target["resolution_status"] = "resolved"
+            target["model_identity_digest"] = "sha256:" + String(repeating: "a", count: 64)
+            aliases[0]["target"] = target
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(mismatchedResolution) == nil)
+
         let duplicatePreset = Self.mutated { root in
             var atomic = root["atomic"] as! [String: Any]
             var snapshot = atomic["snapshot"] as! [String: Any]
