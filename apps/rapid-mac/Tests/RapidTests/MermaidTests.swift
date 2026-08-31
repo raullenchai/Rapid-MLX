@@ -127,6 +127,7 @@ struct MermaidLibraryTests {
         data[data.count / 2] = data[data.count / 2] &+ 1
         #expect(MermaidLibrary.digest(of: data) != real)
         #expect(data.count == (try Data(contentsOf: url)).count, "same length, different bytes")
+        #expect(MermaidLibrary.validated(data: data, expectedDigest: real) == nil)
     }
 }
 
@@ -307,14 +308,19 @@ private final class MermaidNavigationBoundaryHarness {
             if webView.url != nil && !webView.isLoading { return }
             try await Task.sleep(for: .milliseconds(50))
         }
+        throw MermaidBoundaryHarnessError.hostPageLoadTimedOut
     }
 
     /// A fixed wait: a refusal produces no event to wait for, and the
     /// unguarded control has to be given the same budget to succeed in.
     func navigate(to urlString: String) async {
-        webView.evaluateJavaScript("location.href = '\(urlString)'") { _, _ in }
+        _ = try? await webView.evaluateJavaScript("location.href = '\(urlString)'")
         try? await Task.sleep(for: .milliseconds(900))
     }
+}
+
+private enum MermaidBoundaryHarnessError: Error {
+    case hostPageLoadTimedOut
 }
 
 /// Serves a bare page. The real handler also serves 3.4 MB of Mermaid, which
@@ -403,10 +409,12 @@ struct MermaidRenderingTests {
 
     @Test("A timed-out render releases the serial queue")
     func timedOutRenderReleasesQueue() async {
+        var attempts = 0
         let renderer = MermaidRenderer(
             renderTimeout: .milliseconds(100),
             javaScriptEvaluator: { webView, source, theme, completion in
-                guard source != "hang forever" else { return }
+                attempts += 1
+                guard attempts > 1 else { return }
                 webView.callAsyncJavaScript(
                     "return await __rapidRender(source, theme);",
                     arguments: ["source": source, "theme": theme.rawValue],
@@ -417,13 +425,13 @@ struct MermaidRenderingTests {
             }
         )
 
+        let source = "graph TD\n  Recovered --> Queue"
         let started = ContinuousClock.now
-        #expect(await renderer.image(source: "hang forever", theme: .light) == nil)
+        #expect(await renderer.image(source: source, theme: .light) == nil)
         #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(!renderer.isKnownBad(source: source, theme: .light))
 
-        let recovered = await renderer.image(
-            source: "graph TD\n  Recovered --> Queue", theme: .light
-        )
+        let recovered = await renderer.image(source: source, theme: .light)
         #expect(recovered != nil)
     }
 
@@ -441,12 +449,10 @@ struct MermaidRenderingTests {
             }
         )
 
-        #expect(await renderer.image(
-            source: "graph TD\n  Snapshot --> Timeout", theme: .light
-        ) == nil)
-        let recovered = await renderer.image(
-            source: "graph TD\n  Snapshot --> Recovered", theme: .light
-        )
+        let source = "graph TD\n  Snapshot --> Retry"
+        #expect(await renderer.image(source: source, theme: .light) == nil)
+        #expect(!renderer.isKnownBad(source: source, theme: .light))
+        let recovered = await renderer.image(source: source, theme: .light)
         #expect(recovered != nil)
     }
 

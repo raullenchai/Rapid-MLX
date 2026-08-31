@@ -88,6 +88,12 @@ final class MermaidRenderer {
         case failed
     }
 
+    private enum RenderOutcome {
+        case image(NSImage)
+        case sourceRejected
+        case infrastructureFailure
+    }
+
     /// Bounded. Diagrams recur — a conversation revisits the same one every
     /// time the row is rebuilt — so a small cache carries most of the traffic.
     private static let capacity = 32
@@ -178,8 +184,20 @@ final class MermaidRenderer {
 
         let task = Task { [weak self] () -> NSImage? in
             guard let self else { return nil }
-            let image = await self.render(source: source, theme: theme)
-            self.store(image.map(Entry.image) ?? .failed, for: key)
+            let outcome = await self.render(source: source, theme: theme)
+            let image: NSImage?
+            switch outcome {
+            case .image(let rendered):
+                self.store(.image(rendered), for: key)
+                image = rendered
+            case .sourceRejected:
+                self.store(.failed, for: key)
+                image = nil
+            case .infrastructureFailure:
+                // A rebuilt WebKit process may succeed on the next attempt.
+                // Do not turn a host failure into a permanent source verdict.
+                image = nil
+            }
             self.inFlight[key] = nil
             return image
         }
@@ -212,11 +230,11 @@ final class MermaidRenderer {
     /// something else, cropped.
     private var tail: Task<Void, Never>?
 
-    private func render(source: String, theme: Theme) async -> NSImage? {
+    private func render(source: String, theme: Theme) async -> RenderOutcome {
         let previous = tail
-        let task = Task { @MainActor [weak self] () -> NSImage? in
+        let task = Task { @MainActor [weak self] () -> RenderOutcome in
             _ = await previous?.value
-            guard let self else { return nil }
+            guard let self else { return .infrastructureFailure }
             return await self.renderExclusively(source: source, theme: theme)
         }
         tail = Task { @MainActor in _ = await task.value }
@@ -225,9 +243,9 @@ final class MermaidRenderer {
 
     /// Draws one diagram, with the web view to itself. Only ever called from
     /// ``render(source:theme:)``, which is what guarantees that.
-    private func renderExclusively(source: String, theme: Theme) async -> NSImage? {
-        guard failures < Self.failureBudget else { return nil }
-        guard let webView = await preparedWebView() else { return nil }
+    private func renderExclusively(source: String, theme: Theme) async -> RenderOutcome {
+        guard failures < Self.failureBudget else { return .infrastructureFailure }
+        guard let webView = await preparedWebView() else { return .infrastructureFailure }
 
         let measured: MermaidRenderMeasurement?
         do {
@@ -239,20 +257,21 @@ final class MermaidRenderer {
             // whole thing so the next diagram starts clean.
             failures += 1
             teardown()
-            return nil
+            return .infrastructureFailure
         }
         guard let measured,
               Self.acceptsSnapshot(width: measured.width, height: measured.height)
-        else { return nil }
+        else { return .sourceRejected }
 
         do {
-            return try await snapshot(
+            guard let image = try await snapshot(
                 webView: webView, measurement: measured
-            )
+            ) else { return .infrastructureFailure }
+            return .image(image)
         } catch {
             failures += 1
             teardown()
-            return nil
+            return .infrastructureFailure
         }
     }
 
