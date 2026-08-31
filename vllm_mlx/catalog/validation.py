@@ -107,6 +107,23 @@ class ContractValidator:
                     "catalog_snapshot", "aliases", f"duplicate alias {alias_name!r}"
                 )
             seen_aliases.add(alias_name)
+            preset_ids: set[str] = set()
+            for preset_index, preset in enumerate(alias["execution_presets"]):
+                preset_id = preset["preset_id"]
+                if preset_id in preset_ids:
+                    raise CatalogValidationError(
+                        "catalog_snapshot",
+                        f"aliases/{alias_name}/execution_presets/{preset_index}/preset_id",
+                        f"duplicate preset_id {preset_id!r}",
+                    )
+                preset_ids.add(preset_id)
+            default_preset = alias["default_execution_preset_id"]
+            if default_preset is not None and default_preset not in preset_ids:
+                raise CatalogValidationError(
+                    "catalog_snapshot",
+                    f"aliases/{alias_name}/default_execution_preset_id",
+                    "does not resolve to exactly one execution preset",
+                )
             target = alias["target"]
             model = model_by_id.get(target["registry_model_id"])
             if model is None:

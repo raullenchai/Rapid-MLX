@@ -183,6 +183,20 @@ struct AtomicModelCatalogTests {
         }
         #expect(ModelCatalog.parseAtomicModelEntriesJSON(missingAvailability) == nil)
 
+        let duplicatePreset = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases[0]["default_execution_preset_id"] = "balanced"
+            aliases[0]["execution_presets"] = [
+                ["preset_id": "balanced"], ["preset_id": "balanced"],
+            ]
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(duplicatePreset) == nil)
+
         let digestMismatch = Self.mutated({ root in
             var atomic = root["atomic"] as! [String: Any]
             var snapshot = atomic["snapshot"] as! [String: Any]

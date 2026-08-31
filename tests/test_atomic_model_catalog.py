@@ -83,11 +83,11 @@ def test_legacy_projection_includes_uncached_user_aliases(
     monkeypatch.setenv(
         "RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "user-aliases.json")
     )
-    set_user_alias("my-daily", "qwen3.8-27b-4bit", list_builtin_aliases())
+    set_user_alias("MyModel", "qwen3.8-27b-4bit", list_builtin_aliases())
 
     snapshot = build_legacy_catalog_snapshot()
     aliases = {item["alias"]: item for item in snapshot["aliases"]}
-    assert aliases["my-daily"]["target"] == aliases["qwen3.8-27b-4bit"]["target"]
+    assert aliases["MyModel"]["target"] == aliases["qwen3.8-27b-4bit"]["target"]
     assert build_catalog_bundle()["shadow_report"]["equivalent"] is True
 
 
@@ -169,7 +169,9 @@ def test_atomic_registry_is_idempotent_and_detects_tampering(tmp_path: Path) -> 
         registry.get("model_identity", digest)
 
 
-def test_atomic_registry_accepts_schema_valid_unresolved_identity(tmp_path: Path) -> None:
+def test_atomic_registry_accepts_schema_valid_unresolved_identity(
+    tmp_path: Path,
+) -> None:
     identity = json.loads(
         (
             ROOT / "proto/model-runtime/v1/examples/model-identity.llm.example.json"
@@ -230,4 +232,32 @@ def test_catalog_snapshot_rejects_alias_target_drift() -> None:
         }
     )
     with pytest.raises(CatalogValidationError, match="does not resolve"):
+        ContractValidator().validate_catalog_snapshot(snapshot)
+
+
+def test_catalog_snapshot_rejects_duplicate_execution_preset_ids() -> None:
+    snapshot = build_legacy_catalog_snapshot()
+    alias = snapshot["aliases"][0]
+    preset = {
+        "preset_id": "balanced",
+        "execution_config_digest": "sha256:" + "a" * 64,
+        "evidence": {"status": "unverified_legacy"},
+    }
+    alias["default_execution_preset_id"] = "balanced"
+    alias["execution_presets"] = [
+        preset,
+        {**preset, "execution_config_digest": "sha256:" + "b" * 64},
+    ]
+    snapshot["catalog_digest"] = rcj_digest(
+        {
+            key: snapshot[key]
+            for key in (
+                "schema_version",
+                "models",
+                "aliases",
+                "recommendation_policy_digests",
+            )
+        }
+    )
+    with pytest.raises(CatalogValidationError, match="duplicate preset_id"):
         ContractValidator().validate_catalog_snapshot(snapshot)

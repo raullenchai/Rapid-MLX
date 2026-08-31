@@ -864,12 +864,14 @@ enum ModelCatalog {
                   let executionPresets = row["execution_presets"] as? [[String: Any]],
                   let model = modelsByID[modelID]
             else { return nil }
+            let presetIDs = executionPresets.compactMap { $0["preset_id"] as? String }
+            guard presetIDs.count == executionPresets.count,
+                  Set(presetIDs).count == presetIDs.count
+            else { return nil }
             if row["default_execution_preset_id"] is NSNull {
                 guard executionPresets.isEmpty else { return nil }
             } else if let defaultPreset = row["default_execution_preset_id"] as? String {
-                guard executionPresets.contains(where: {
-                    $0["preset_id"] as? String == defaultPreset
-                }) else { return nil }
+                guard presetIDs.contains(defaultPreset) else { return nil }
             } else {
                 return nil
             }
