@@ -168,19 +168,34 @@ struct MermaidNetworkDenialTests {
         #expect(probe.requestCount >= 1, "the probe cannot see connections; every other test here is vacuous")
     }
 
-    /// A diagram whose label smuggles a remote image. Mermaid renders it,
-    /// WebKit is asked to load it, and nothing must arrive.
-    @Test("A diagram cannot fetch a remote image")
-    func diagramCannotFetch() async throws {
+    /// The production content rule blocks a host-page subresource that the
+    /// identical unguarded page demonstrably loads. This exercises WebKit's
+    /// request path directly instead of relying on markup that Mermaid's own
+    /// strict sanitizer removes before a request exists.
+    @Test("The host page cannot fetch a remote image")
+    func hostPageCannotFetchRemoteImage() async throws {
         let probe = try #require(LocalRequestProbe())
         defer { probe.stop() }
-        let source = """
-            graph TD
-              A["<img src='http://127.0.0.1:\(probe.port)/leak.png'>"] --> B[End]
-            """
-        _ = await renderer.image(source: source, theme: .light)
-        try await Task.sleep(for: .milliseconds(600))
-        #expect(probe.requestCount == 0, "the diagram reached the network")
+        let target = "http://127.0.0.1:\(probe.port)/leak.png"
+
+        let unguarded = try await MermaidSubresourceBoundaryHarness(
+            target: target, blocksNetwork: false
+        )
+        try await unguarded.loadHostPage()
+        #expect(
+            probe.requestCount >= 1,
+            "the unguarded page did not request the payload; the denial would be vacuous"
+        )
+        let baseline = probe.requestCount
+
+        let guarded = try await MermaidSubresourceBoundaryHarness(
+            target: target, blocksNetwork: true
+        )
+        try await guarded.loadHostPage()
+        #expect(
+            probe.requestCount == baseline,
+            "the production content rule allowed a host-page image request"
+        )
     }
 
     /// The navigation rule, asked directly.
@@ -321,6 +336,82 @@ private final class MermaidNavigationBoundaryHarness {
 
 private enum MermaidBoundaryHarnessError: Error {
     case hostPageLoadTimedOut
+    case ruleListCompilationFailed
+}
+
+@MainActor
+private final class MermaidSubresourceBoundaryHarness {
+    let webView: WKWebView
+    private let window: NSWindow
+
+    init(target: String, blocksNetwork: Bool) async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(
+            MermaidSubresourceStubHandler(target: target),
+            forURLScheme: MermaidHostPage.scheme
+        )
+        if blocksNetwork {
+            guard let ruleList = await Self.compileProductionRuleList() else {
+                throw MermaidBoundaryHarnessError.ruleListCompilationFailed
+            }
+            configuration.userContentController.add(ruleList)
+        }
+        webView = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 200, height: 200),
+            configuration: configuration
+        )
+        window = NSWindow(
+            contentRect: webView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(webView)
+        window.orderOut(nil)
+    }
+
+    func loadHostPage() async throws {
+        webView.load(URLRequest(url: MermaidHostPage.hostPageURL))
+        for _ in 0..<60 {
+            if webView.url != nil && !webView.isLoading {
+                try await Task.sleep(for: .milliseconds(400))
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw MermaidBoundaryHarnessError.hostPageLoadTimedOut
+    }
+
+    private static func compileProductionRuleList() async -> WKContentRuleList? {
+        await withCheckedContinuation { continuation in
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "rapid-mermaid-subresource-\(UUID().uuidString)",
+                encodedContentRuleList: MermaidHostPage.contentRuleListJSON
+            ) { ruleList, _ in
+                continuation.resume(returning: ruleList)
+            }
+        }
+    }
+}
+
+private final class MermaidSubresourceStubHandler: NSObject, WKURLSchemeHandler {
+    private let target: String
+
+    init(target: String) { self.target = target }
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        let escaped = target.replacingOccurrences(of: "\"", with: "&quot;")
+        let html = Data("<html><body><img src=\"\(escaped)\"></body></html>".utf8)
+        task.didReceive(URLResponse(
+            url: task.request.url!, mimeType: "text/html",
+            expectedContentLength: html.count, textEncodingName: "utf-8"
+        ))
+        task.didReceive(html)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
 }
 
 /// Serves a bare page. The real handler also serves 3.4 MB of Mermaid, which
