@@ -69,9 +69,8 @@ final class AudioViewModel {
     /// with a Recommended badge may appear first), and feeding that order
     /// back into default selection silently changes the active checkpoint.
     private var transcriptionSelectionModels: [ModelEntry] {
-        let candidates = audioModels.filter {
-            $0.audioCapability?.supportsTranscription == true
-                && ModelCatalog.isDesktopAudioAliasVisible($0.alias)
+        let candidates = ModelSelectionPurpose.speechToText.entries(in: audioModels).filter {
+            ModelCatalog.isDesktopAudioAliasVisible($0.alias)
         }
         return Self.stablyDeduplicatedTranscriptionModels(candidates)
     }
@@ -81,10 +80,7 @@ final class AudioViewModel {
         // audio core, not Kokoro's spaCy/espeak language stack or F5 cloning.
         // Qwen3 CustomVoice is reference-free, has real named speakers, and
         // runs entirely on dependencies in the desktop audio extra.
-        audioModels.filter {
-            $0.audioCapability?.supportsPresetSpeech == true
-                && $0.audioFamily == "qwen3_tts"
-        }
+        ModelSelectionPurpose.textToSpeech.entries(in: audioModels)
     }
 
     var isBusy: Bool {

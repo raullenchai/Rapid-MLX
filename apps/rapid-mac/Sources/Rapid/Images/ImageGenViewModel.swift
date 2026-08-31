@@ -146,11 +146,11 @@ final class ImageGenViewModel {
     var selectedAlias: String = ""
 
     var generationModels: [ModelEntry] {
-        imageModels.filter { $0.imageCapability?.supportsGeneration == true }
+        ModelSelectionPurpose.imageGeneration.entries(in: imageModels)
     }
 
     var editModels: [ModelEntry] {
-        imageModels.filter { $0.imageCapability?.supportsEditing == true }
+        ModelSelectionPurpose.imageEditing.entries(in: imageModels)
     }
 
     var selectableModels: [ModelEntry] {

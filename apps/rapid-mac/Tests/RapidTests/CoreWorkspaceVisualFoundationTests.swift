@@ -605,6 +605,14 @@ struct CoreWorkspaceVisualFoundationTests {
         )
     }
 
+    @Test("Every shared Chat picker receives the non-chat task boundary")
+    func sharedChatPickersKeepTaskScope() throws {
+        let chat = try strippedSource("Sources/Rapid/UI/ChatView.swift")
+        let connect = try strippedSource("Sources/Rapid/UI/ConnectToolsView.swift")
+        #expect(chat.contains("knownNonChatAliases:knownNonChatAliases"))
+        #expect(connect.contains("knownNonChatAliases:knownNonChatAliases"))
+    }
+
     // MARK: - Responsive contract
 
     /// Breakpoints belong to the view receiving the geometry: Chat's detail

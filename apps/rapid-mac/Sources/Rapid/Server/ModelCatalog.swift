@@ -52,6 +52,48 @@ enum ImageModelCapability: String, Sendable, Hashable {
     }
 }
 
+/// The product task a model picker is serving.
+///
+/// Keep this separate from ``ModelKind``: image generation and editing share
+/// one kind, as do speech input and speech output, but those operations accept
+/// different request shapes. Every picker asks this policy for its rows so an
+/// alias cannot become selectable merely because it was present in a broader
+/// catalog response.
+enum ModelSelectionPurpose: Sendable, Hashable {
+    case chat
+    case imageGeneration
+    case imageEditing
+    case speechToText
+    case textToSpeech
+
+    func accepts(_ entry: ModelEntry) -> Bool {
+        switch self {
+        case .chat:
+            return entry.kind == .chat
+        case .imageGeneration:
+            return entry.kind == .image
+                && entry.imageCapability?.supportsGeneration == true
+        case .imageEditing:
+            return entry.kind == .image
+                && entry.imageCapability?.supportsEditing == true
+        case .speechToText:
+            return entry.kind == .audio
+                && entry.audioCapability?.supportsTranscription == true
+        case .textToSpeech:
+            // The signed Desktop bundle supports the reference-free Qwen3
+            // preset-voice flow. Other TTS capabilities need inputs or
+            // dependencies this surface deliberately does not collect.
+            return entry.kind == .audio
+                && entry.audioCapability?.supportsPresetSpeech == true
+                && entry.audioFamily == "qwen3_tts"
+        }
+    }
+
+    func entries(in catalog: [ModelEntry]) -> [ModelEntry] {
+        catalog.filter(accepts)
+    }
+}
+
 /// Audited speculative-decoding preset advertised by the alias registry.
 /// `nil` on ``ModelEntry`` means the alias explicitly has no usable preset
 /// (or an older sidecar did not advertise one), so Settings fails closed.

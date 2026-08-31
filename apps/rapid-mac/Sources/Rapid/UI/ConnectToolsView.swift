@@ -32,6 +32,10 @@ struct ConnectToolsView: View {
     /// Side-channel downloader the inline picker's context menu uses
     /// ("Download in background") and its cache-state glyphs.
     @Bindable var downloads: DownloadManager
+    /// Media identities already proven by their task catalogs. The stopped
+    /// Launch page shares Chat's alias binding, so it must apply the same
+    /// cross-task guard as the composer picker.
+    var knownNonChatAliases: Set<String> = []
     /// The absolute path to the `rapid-mlx` sidecar binary this app owns
     /// (``ServerLocator`` resolution). The Desktop app deliberately does NOT
     /// install its sidecar onto the user's `PATH` (see ``ServerLocator`` —
@@ -305,6 +309,7 @@ struct ConnectToolsView: View {
                 server: server,
                 downloads: downloads,
                 alias: $alias,
+                knownNonChatAliases: knownNonChatAliases,
                 composerStyle: true
             )
             ReadinessBanner(readiness: readiness, onAction: onReadinessAction)

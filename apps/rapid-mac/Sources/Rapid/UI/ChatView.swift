@@ -221,6 +221,11 @@ struct ChatView: View {
     @State private var incrementalAssistantIDs: Set<UUID> = []
     @Bindable var server: ServerManager
     @Binding var alias: String
+    /// Aliases authoritatively owned by a non-chat surface. The set may grow
+    /// after this view mounts as media catalogs finish loading, so the picker
+    /// uses it both to reject ready-state races and to normalize a stale
+    /// selection when classification arrives late.
+    var knownNonChatAliases: Set<String> = []
     /// The single readiness value for this window, resolved once by
     /// ``ContentView`` and shared with the Launch page. Both the chat
     /// hero and the composer read their copy off this, so they cannot
@@ -944,6 +949,7 @@ struct ChatView: View {
                 server: server,
                 downloads: downloads,
                 alias: $alias,
+                knownNonChatAliases: knownNonChatAliases,
                 quickstart: quickstart,
                 composerStyle: true,
                 onUserSelection: onUserModelSelection
