@@ -532,6 +532,12 @@ struct CoreWorkspaceVisualFoundationTests {
             "Sources/Rapid/UI/ReadinessBanner.swift": [
                 "Readiness.Action",
             ],
+            "Sources/Rapid/UI/CommandPaletteView.swift": [
+                "CommandPalette.Panel",
+                "CommandPalette.Field",
+                "CommandPalette.Close",
+                "CommandPalette.Empty",
+            ],
         ]
         for (path, identifiers) in expectations {
             let source = try strippedSource(path)
@@ -754,6 +760,36 @@ struct CoreWorkspaceVisualFoundationTests {
         #expect(
             app.contains(#"@AppStorage(ContentView.showLogsKey)"#),
             "The menu command and the in-window controls must read one flag; a scene-scoped value is unreachable from .commands."
+        )
+    }
+
+    @Test("Command palette has a keyboard menu path")
+    func commandPaletteHasAMenuCommand() throws {
+        let app = try strippedSource("Sources/Rapid/RapidApp.swift")
+        let content = try strippedSource("Sources/Rapid/UI/ContentView.swift")
+        #expect(
+            app.contains(#"keyboardShortcut("p",modifiers:.command)"#),
+            "Command palette must stay reachable from the keyboard, not only from hover controls."
+        )
+        #expect(
+            app.contains("commandPaletteRequest.open()"),
+            "The menu command must stage a monotonic request for the main window."
+        )
+        #expect(
+            content.contains(#"@StateprivatevarshowCommandPalette=false"#),
+            "Palette visibility is a window session state, not a persisted preference."
+        )
+        #expect(
+            content.contains("privatefuncopenConversationSearch(){showCommandPalette=falseshowConversationSearch=true}"),
+            "Chat search must clear palette state so the two overlays cannot queue."
+        )
+        #expect(
+            app.contains("NSApp.activate(ignoringOtherApps:true)"),
+            "The menu path must activate the app before showing the window-scoped palette."
+        )
+        #expect(
+            content.contains(".onChange(of:commandPaletteRequest.requestID)"),
+            "A recreated main window must consume a menu palette request on appear."
         )
     }
 }
