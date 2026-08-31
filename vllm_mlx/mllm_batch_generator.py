@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -350,6 +350,15 @@ class MLLMBatchRequest:
     # 0 means "not yet processed" — the field is set in ``_process_prompts``
     # once preprocessing has run.
     num_prompt_tokens: int = 0
+    # Full logical usage remains in ``num_prompt_tokens``; this is only the
+    # leading span restored from a trim-free mlx-vlm APC snapshot.
+    cached_tokens: int = 0
+    # Token sequence before a warm hit slices ``input_ids`` to its suffix.
+    full_prompt_token_ids: list[int] = field(default_factory=list)
+    # Stable conversation boundary computed by BatchedEngine from the same
+    # message-aware template probe used by the text scheduler. Exact hybrid
+    # snapshots are captured here, before the transient generation suffix.
+    prefix_boundary: int = 0
 
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
@@ -397,6 +406,7 @@ class MLLMBatchResponse:
     # inherit the count without us having to thread it through every
     # decode step.
     prompt_tokens: int = 0
+    cached_tokens: int = 0
 
 
 @dataclass
@@ -622,6 +632,7 @@ class MLLMBatchGenerator:
         vision_min_pixels: int = 0,
         vision_max_pixels: int = 0,
         vision_prefill_token_budget: int = 8192,
+        enable_prefix_cache: bool = True,
     ):
         """
         Initialize MLLM batch generator.
@@ -652,6 +663,48 @@ class MLLMBatchGenerator:
 
         # Get language model for text generation
         self.language_model = getattr(model, "language_model", model)
+
+        # Reuse mlx-vlm's shipped APC implementation rather than maintaining
+        # another cache format in Rapid. Hybrid/ArraysCache backbones select
+        # APC's conservative exact-snapshot mode: recurrent state resumes only
+        # at a stored token boundary and is never trimmed. Block storage is not
+        # used by this path, so keep that pool empty while APC owns the bounded
+        # exact LRU (APC_EXACT_CACHE_ENTRIES, default 2).
+        self._prefix_cache = None
+        self._prefix_cache_mode: str | None = None
+        self._prefix_cache_extra_hash = 0
+        self._prefix_cache_hits = 0
+        self._prefix_cache_misses = 0
+        self._prefix_cache_evictions_offset = 0
+        self._prefix_cache_tokens_saved = 0
+        if enable_prefix_cache:
+            try:
+                from mlx_vlm import apc as _apc
+
+                mode = _apc.model_apc_mode(self.language_model)
+                if mode == "exact":
+                    self._prefix_cache = _apc.from_env(
+                        overrides={"enabled": True, "num_blocks": 0}
+                    )
+                    self._prefix_cache_mode = mode
+                    self._prefix_cache_extra_hash = _apc.semantic_extra_hash(
+                        model=self.model,
+                        processor=self.processor,
+                    )
+                    logger.info(
+                        "MLLMBatchGenerator: exact prefix caching enabled for "
+                        "hybrid prompt-cache state"
+                    )
+                elif mode is not None:
+                    logger.info(
+                        "MLLMBatchGenerator: prefix caching remains on the text "
+                        "scheduler for block-compatible MLLM cache mode=%s",
+                        mode,
+                    )
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                # Vision remains usable on an incomplete optional runtime;
+                # only the warm-prefix optimization is unavailable.
+                logger.warning("MLLM exact prefix cache unavailable: %s", exc)
 
         # Check if this is actually a VLM with separate language model
         self.is_vlm = hasattr(model, "language_model")
@@ -808,6 +861,122 @@ class MLLMBatchGenerator:
             self._old_wired_limit = mx.set_wired_limit(
                 mx.device_info()["max_recommended_working_set_size"]
             )
+
+    def _lookup_exact_text_prefix(self, request: MLLMBatchRequest) -> list[Any] | None:
+        """Restore a trim-free APC prefix for a text-only MLLM request.
+
+        Image-bearing requests deliberately bypass this path. Their media
+        placeholders depend on pixel content, and this custom scheduler does
+        not carry mlx-vlm's media hash. Cold image prefill therefore remains
+        the safe path and preserves the existing vision-feature cache.
+        """
+        cache = getattr(self, "_prefix_cache", None)
+        if (
+            cache is None
+            or getattr(self, "_prefix_cache_mode", None) != "exact"
+            or not _is_text_only_request(request)
+            or request.input_ids is None
+            # Exact APC restores KV state only. Sequence-aligned processor
+            # outputs cannot be shortened generically, so keep the cold path
+            # unless the only auxiliary input is a semantically empty mask.
+            or request.extra_kwargs
+            or not _attention_mask_is_droppable(request.attention_mask)
+        ):
+            return None
+
+        raw_ids = cast(list[Any], request.input_ids.reshape(-1).tolist())
+        full_ids = [int(token) for token in raw_ids]
+        request.full_prompt_token_ids = full_ids
+        if len(full_ids) < 2:
+            self._prefix_cache_misses += 1
+            return None
+
+        warm_cache, prefix_len = cache.lookup_exact_cache(
+            full_ids,
+            extra_hash=getattr(self, "_prefix_cache_extra_hash", 0),
+        )
+        if warm_cache is None or not 0 < prefix_len < len(full_ids):
+            self._prefix_cache_misses += 1
+            return None
+
+        request.cached_tokens = int(prefix_len)
+        self._prefix_cache_hits += 1
+        self._prefix_cache_tokens_saved += int(prefix_len)
+        if request.input_ids.ndim == 1:
+            request.input_ids = request.input_ids[prefix_len:]
+        else:
+            request.input_ids = request.input_ids[:, prefix_len:]
+        # An all-valid mask carries no information and no longer matches the
+        # suffix-only IDs after restoring KV state. Let the model rebuild its
+        # causal mask from the restored cache length instead.
+        request.attention_mask = None
+        logger.info(
+            "[mllm_apc] request=%s HIT prompt_tokens=%d cached=%d remaining=%d",
+            request.request_id[:12],
+            len(full_ids),
+            prefix_len,
+            len(full_ids) - prefix_len,
+        )
+        return cast(list[Any], warm_cache)
+
+    def _store_exact_text_prefix(
+        self,
+        request: MLLMBatchRequest,
+        prompt_cache: list[Any],
+        *,
+        prefix_len: int,
+    ) -> None:
+        """Store a stable-boundary snapshot for the next conversation turn."""
+        cache = getattr(self, "_prefix_cache", None)
+        if (
+            cache is None
+            or getattr(self, "_prefix_cache_mode", None) != "exact"
+            or prefix_len <= 0
+            or prefix_len > len(request.full_prompt_token_ids)
+        ):
+            return
+        # mlx-vlm's exact-cache API deep-clones and evaluates every supported
+        # cache entry synchronously before returning.  The live request cache
+        # can therefore continue prefill/generation without moving this stored
+        # boundary snapshot forward.
+        cache.store_exact_cache(
+            request.full_prompt_token_ids[:prefix_len],
+            prompt_cache,
+            extra_hash=getattr(self, "_prefix_cache_extra_hash", 0),
+        )
+
+    def get_prefix_cache_stats(self) -> dict[str, Any] | None:
+        """Return the common prefix-cache counter shape for APIs/metrics."""
+        cache = getattr(self, "_prefix_cache", None)
+        if cache is None:
+            return None
+        snapshot = cache.stats_snapshot()
+        return {
+            "hits": self._prefix_cache_hits,
+            "misses": self._prefix_cache_misses,
+            "evictions": getattr(self, "_prefix_cache_evictions_offset", 0)
+            + int(snapshot.get("evictions", 0)),
+            "tokens_saved": self._prefix_cache_tokens_saved,
+        }
+
+    def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
+        """Drop reusable MLLM APC state while retaining model weights."""
+        cache = getattr(self, "_prefix_cache", None)
+        if cache is None:
+            return False
+        if reset_stats:
+            self._prefix_cache_evictions_offset = 0
+        else:
+            snapshot = cache.stats_snapshot()
+            self._prefix_cache_evictions_offset = getattr(
+                self, "_prefix_cache_evictions_offset", 0
+            ) + int(snapshot.get("evictions", 0))
+        cache.clear()
+        if reset_stats:
+            self._prefix_cache_hits = 0
+            self._prefix_cache_misses = 0
+            self._prefix_cache_tokens_saved = 0
+        return True
 
     def close(self) -> None:
         """Release resources and reset wired limit."""
@@ -1313,9 +1482,13 @@ class MLLMBatchGenerator:
         chunk = max(1, min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS))
         is_text_only = _is_text_only_request(request)
         no_extra_kwargs = not request.extra_kwargs
+        prompt_length = input_ids.shape[1]
         if (
             cache is not None
-            and input_ids.shape[1] > chunk
+            and (
+                prompt_length > chunk
+                or 0 < request.prefix_boundary - request.cached_tokens < prompt_length
+            )
             and is_text_only
             and no_extra_kwargs
             and _attention_mask_is_droppable(request.attention_mask)
@@ -1332,9 +1505,14 @@ class MLLMBatchGenerator:
             # any working model; the numerical-equivalence test locks this in.
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
+            boundary = request.prefix_boundary - request.cached_tokens
+            if not 0 < boundary <= prefix_len:
+                boundary = 0
             pos = 0
             while pos < prefix_len:
                 n = min(chunk, prefix_len - pos)
+                if pos < boundary < pos + n:
+                    n = boundary - pos
                 # No pixel_values (text-only); pass None explicitly because
                 # some mlx-vlm classes (Gemma3/Gemma4) declare it a required
                 # positional kwarg even for the text path (see note above).
@@ -1344,6 +1522,12 @@ class MLLMBatchGenerator:
                 mx.eval([c.state for c in cache])
                 mx.clear_cache()
                 pos += n
+                if pos == boundary:
+                    self._store_exact_text_prefix(
+                        request,
+                        cache,
+                        prefix_len=request.prefix_boundary,
+                    )
             output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
         elif (
             getattr(self, "_is_gemma3_vlm", False) and request.pixel_values is not None
@@ -1457,7 +1641,9 @@ class MLLMBatchGenerator:
 
         for req in requests:
             # Create a fresh KVCache for this request's language model prefill
-            request_cache = make_prompt_cache(self.language_model)
+            request_cache = self._lookup_exact_text_prefix(req)
+            if request_cache is None:
+                request_cache = make_prompt_cache(self.language_model)
 
             with mx.stream(self._stream):
                 # Run VLM forward pass — cache= flows through to language_model
@@ -1819,6 +2005,7 @@ class MLLMBatchGenerator:
                     # to read here (``req.input_ids`` itself may now be
                     # None to free memory).
                     prompt_tokens=req.num_prompt_tokens,
+                    cached_tokens=req.cached_tokens,
                 )
             )
 

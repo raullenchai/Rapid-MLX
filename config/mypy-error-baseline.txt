@@ -56,7 +56,7 @@ vllm_mlx/mcp/security.py 1
 vllm_mlx/mcp/tools.py 1
 vllm_mlx/memory_cache.py 19
 vllm_mlx/mllm_batch_generator.py 14
-vllm_mlx/mllm_scheduler.py 5
+vllm_mlx/mllm_scheduler.py 2
 vllm_mlx/model_auto_config.py 6
 vllm_mlx/models/bailing_hybrid.py 1
 vllm_mlx/models/cohere2_moe.py 5

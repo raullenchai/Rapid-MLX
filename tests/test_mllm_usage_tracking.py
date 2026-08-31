@@ -115,6 +115,45 @@ def test_scheduler_memoises_prompt_tokens_from_first_response():
     assert req.num_prompt_tokens == 137
 
 
+def test_scheduler_memoises_cached_tokens_from_first_response():
+    scheduler = _make_scheduler()
+    req = _make_mllm_request(scheduler, "r-cache")
+    scheduler.uid_to_request_id[0] = "r-cache"
+
+    response = MagicMock(spec=MLLMBatchResponse)
+    response.uid = 0
+    response.token = 42
+    response.finish_reason = None
+    response.logprobs = None
+    response.prompt_tokens = 137
+    response.cached_tokens = 120
+
+    outputs, _finished = scheduler._process_batch_responses([response])
+
+    assert outputs[0].cached_tokens == 120
+    assert req.cached_tokens == 120
+
+
+def test_scheduler_ignores_non_integer_cached_tokens_from_legacy_mock():
+    scheduler = _make_scheduler()
+    req = _make_mllm_request(scheduler, "r-legacy")
+    scheduler.uid_to_request_id[0] = "r-legacy"
+
+    response = MagicMock(spec=MLLMBatchResponse)
+    response.uid = 0
+    response.token = 42
+    response.finish_reason = None
+    response.logprobs = None
+    response.prompt_tokens = 12
+    # ``MagicMock(spec=...)`` synthesizes an attribute-shaped mock unless a
+    # legacy caller explicitly stamps the newly-added field.
+
+    outputs, _finished = scheduler._process_batch_responses([response])
+
+    assert outputs[0].cached_tokens == 0
+    assert req.cached_tokens == 0
+
+
 def test_scheduler_does_not_overwrite_existing_count():
     """Second and later responses (per request) must NOT overwrite the
     memoised ``num_prompt_tokens``. The first response per request is
@@ -200,7 +239,12 @@ def test_next_stamps_prompt_tokens_from_request(monkeypatch):
     # off-by-one or index swap. Vision-heavy requests have larger counts
     # (image-patch expansion), text-only requests are smaller.
     request_a = MLLMBatchRequest(
-        uid=0, request_id="ra", prompt="x", max_tokens=8, num_prompt_tokens=259
+        uid=0,
+        request_id="ra",
+        prompt="x",
+        max_tokens=8,
+        num_prompt_tokens=259,
+        cached_tokens=240,
     )
     request_b = MLLMBatchRequest(
         uid=1, request_id="rb", prompt="y", max_tokens=8, num_prompt_tokens=12
@@ -230,6 +274,8 @@ def test_next_stamps_prompt_tokens_from_request(monkeypatch):
         f"Second response must carry request_b's prompt_tokens=12; "
         f"got {responses[1].prompt_tokens}."
     )
+    assert responses[0].cached_tokens == 240
+    assert responses[1].cached_tokens == 0
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +293,10 @@ def test_dataclass_fields_present():
     resp = MLLMBatchResponse(uid=1, request_id="x", token=5, logprobs=None)
     assert hasattr(resp, "prompt_tokens")
     assert resp.prompt_tokens == 0  # default
+    assert resp.cached_tokens == 0
 
     req = MLLMBatchRequest(uid=1, request_id="x", prompt="hi")
     assert hasattr(req, "num_prompt_tokens")
     assert req.num_prompt_tokens == 0  # default
+    assert req.cached_tokens == 0
+    assert req.prefix_boundary == 0

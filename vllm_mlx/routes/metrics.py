@@ -1271,18 +1271,9 @@ def _render_prometheus(cfg: Any) -> str:
             cache_stats = candidate
             break
 
-    # The MLLM lane runs an ``MLLMScheduler`` with no ``AsyncEngineCore``
-    # (``BatchedEngine.start`` returns after ``_start_mllm``), so it has no
-    # prompt prefix cache and exposes none of the canonical keys above. It
-    # deliberately does NOT feed this family: ``mllm_scheduler.vision_cache``
-    # is a vestigial, never-populated ``MLLMPrefixCacheManager`` (nothing
-    # inserts into it), and the live image cache under
-    # ``mllm_scheduler.vision_embedding_cache`` is an embedding cache, not a
-    # prefix cache — surfacing it here would misname vision hits as
-    # prefix-cache hits. So on that lane ``cache_stats`` stays ``None`` and
-    # the whole ``rapid_mlx_prefix_cache_*`` family is absent together (see
-    # the pressure-eviction counter below, which is gated on the same
-    # condition so it can never survive alone — #1777).
+    # The MLLM lane exposes mlx-vlm APC under the same canonical
+    # ``prefix_cache`` key. Vision embedding caches remain separate and are
+    # never misreported as language-prefix hits.
 
     if cache_stats is not None:
         # The raw cache counters are reset by ``cache.clear()``; pipe each
