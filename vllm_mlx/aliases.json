@@ -1150,6 +1150,19 @@
       "top_p": 0.95
     }
   },
+  "glm5.3-flash-4bit": {
+    "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "glm4",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_native_mtp": false,
+    "supports_dflash": false,
+    "min_memory_gb": 192,
+    "experimental": true
+  },
   "glm4.5-air-4bit": {
     "hf_path": "mlx-community/GLM-4.5-Air-4bit",
     "tool_call_parser": "glm47",
