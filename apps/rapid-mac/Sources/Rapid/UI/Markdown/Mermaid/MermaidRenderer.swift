@@ -53,6 +53,21 @@ final class MermaidRenderer {
         }
     }
 
+    typealias JavaScriptEvaluator = @MainActor (
+        _ webView: WKWebView,
+        _ source: String,
+        _ theme: Theme,
+        _ completion: @escaping @MainActor @Sendable (Result<Any, Error>) -> Void
+    ) -> Void
+
+    /// A preview is drawn at 2×. Bounding both axes and point area keeps a
+    /// model-authored diagram from turning into an unbounded bitmap request.
+    nonisolated static let maximumPointDimension = 4_096
+    nonisolated static let maximumPointArea = 4_000_000
+
+    private let renderTimeout: Duration
+    private let javaScriptEvaluator: JavaScriptEvaluator?
+
     private struct Key: Hashable {
         let source: String
         let theme: Theme
@@ -110,7 +125,13 @@ final class MermaidRenderer {
     /// instance under Swift Testing's default parallelism read each other's
     /// resets. That surfaced as "Light and dark are cached apart" failing only
     /// when run alongside its neighbours.
-    init() {}
+    init(
+        renderTimeout: Duration = .seconds(8),
+        javaScriptEvaluator: JavaScriptEvaluator? = nil
+    ) {
+        self.renderTimeout = renderTimeout
+        self.javaScriptEvaluator = javaScriptEvaluator
+    }
 
     // MARK: - The synchronous half
 
@@ -199,23 +220,11 @@ final class MermaidRenderer {
         guard failures < Self.failureBudget else { return nil }
         guard let webView = await preparedWebView() else { return nil }
 
-        let measured: (width: Int, height: Int)?
+        let measured: MermaidRenderMeasurement?
         do {
-            let result = try await webView.callAsyncJavaScript(
-                "return await __rapidRender(source, theme);",
-                // Arguments, never interpolation: the source is
-                // model-authored and must not be able to become code.
-                arguments: ["source": source, "theme": theme.rawValue],
-                in: nil,
-                contentWorld: .page
+            measured = try await evaluateRender(
+                in: webView, source: source, theme: theme
             )
-            guard let dictionary = result as? [String: Any],
-                  dictionary["ok"] as? Bool == true,
-                  let width = dictionary["width"] as? Int,
-                  let height = dictionary["height"] as? Int,
-                  width > 0, height > 0
-            else { return nil }
-            measured = (width, height)
         } catch {
             // A wedged render leaves the content process unusable; drop the
             // whole thing so the next diagram starts clean.
@@ -223,7 +232,9 @@ final class MermaidRenderer {
             teardown()
             return nil
         }
-        guard let measured else { return nil }
+        guard let measured,
+              Self.acceptsSnapshot(width: measured.width, height: measured.height)
+        else { return nil }
 
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(x: 0, y: 0, width: measured.width, height: measured.height)
@@ -240,6 +251,69 @@ final class MermaidRenderer {
                 // measures a vector document.
                 image.size = CGSize(width: measured.width, height: measured.height)
                 continuation.resume(returning: image)
+            }
+        }
+    }
+
+    nonisolated static func acceptsSnapshot(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0,
+              width <= maximumPointDimension,
+              height <= maximumPointDimension
+        else { return false }
+        let (area, overflow) = width.multipliedReportingOverflow(by: height)
+        return !overflow && area <= maximumPointArea
+    }
+
+    /// Evaluate model-authored diagram source behind a hard deadline. WebKit
+    /// does not guarantee that cancelling its async wrapper interrupts a
+    /// wedged content process, so this callback bridge resumes independently;
+    /// the caller tears the abandoned view down before the queue advances.
+    private func evaluateRender(
+        in webView: WKWebView,
+        source: String,
+        theme: Theme
+    ) async throws -> MermaidRenderMeasurement? {
+        let gate = MermaidEvaluationGate()
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<MermaidRenderMeasurement?, Error>) in
+            let completion: @MainActor @Sendable (Result<Any, Error>) -> Void = { result in
+                guard gate.claim() else { return }
+                switch result {
+                case .success(let value):
+                    guard let dictionary = value as? [String: Any],
+                          dictionary["ok"] as? Bool == true,
+                          let width = dictionary["width"] as? Int,
+                          let height = dictionary["height"] as? Int
+                    else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    continuation.resume(returning: MermaidRenderMeasurement(
+                        width: width, height: height
+                    ))
+                case .failure:
+                    continuation.resume(throwing: MermaidRenderError.evaluationFailed)
+                }
+            }
+
+            if let javaScriptEvaluator {
+                javaScriptEvaluator(webView, source, theme, completion)
+            } else {
+                webView.callAsyncJavaScript(
+                    "return await __rapidRender(source, theme);",
+                    // Arguments, never interpolation: the source is
+                    // model-authored and must not be able to become code.
+                    arguments: ["source": source, "theme": theme.rawValue],
+                    in: nil,
+                    in: .page,
+                    completionHandler: completion
+                )
+            }
+
+            Task { [renderTimeout] in
+                try? await Task.sleep(for: renderTimeout)
+                guard gate.claim() else { return }
+                continuation.resume(throwing: MermaidRenderError.timedOut)
             }
         }
     }
@@ -354,6 +428,31 @@ final class MermaidRenderer {
             ) { list, _ in continuation.resume(returning: list) }
                 ?? continuation.resume(returning: nil)
         }
+    }
+}
+
+private enum MermaidRenderError: Error {
+    case evaluationFailed
+    case timedOut
+}
+
+private struct MermaidRenderMeasurement: Sendable {
+    let width: Int
+    let height: Int
+}
+
+/// The JavaScript callback may arrive after the deadline. Exactly one path
+/// owns the continuation, even when WebKit replies concurrently with timeout.
+private final class MermaidEvaluationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }
 
