@@ -775,7 +775,7 @@ enum ModelCatalog {
                 (
                     entry.alias,
                     CatalogProfileCapability(
-                        isBuiltin: true,
+                        isBuiltin: entry.isBuiltinProfile == true,
                         isTextOnly: !entry.taskTypes.contains(.visionLanguage)
                     )
                 )
@@ -848,6 +848,8 @@ enum ModelCatalog {
             guard row["schema_version"] as? Int == 1,
                   let alias = row["alias"] as? String, isSafeAlias(alias),
                   seenAliases.insert(alias).inserted,
+                  let origin = row["origin"] as? String,
+                  ["builtin", "user"].contains(origin),
                   let target = row["target"] as? [String: Any],
                   let modelID = target["registry_model_id"] as? String,
                   let targetResolution = target["resolution_status"] as? String,
@@ -939,7 +941,7 @@ enum ModelCatalog {
                 taskTypes: tasks,
                 operationModes: operations,
                 runtimeAdapter: runtimeAdapter,
-                isBuiltinProfile: true,
+                isBuiltinProfile: origin == "builtin",
                 isTextOnly: !tasks.contains(.visionLanguage)
             ))
         }
@@ -1087,12 +1089,16 @@ enum ModelCatalog {
         excluded: Set<String>
     ) -> [ModelEntry] {
         var cachedByAlias: [String: (repo: String?, size: String?)] = [:]
+        var cachedByRepo: [String: (repo: String, size: String?)] = [:]
         var externalByRepo: [String: String?] = [:]
         for (alias, repo, size) in cached {
             if alias == "(external)", let repo {
                 externalByRepo[repo] = size
             } else if !alias.isEmpty && !isStatusAlias(alias) {
                 cachedByAlias[alias] = (repo, size)
+                if let repo = sanitizedHuggingFaceRepo(repo), cachedByRepo[repo] == nil {
+                    cachedByRepo[repo] = (repo, size)
+                }
             }
         }
 
@@ -1100,19 +1106,23 @@ enum ModelCatalog {
         var seenAliases = Set(atomic.map(\.alias))
         var entries = atomic.map { entry -> ModelEntry in
             let cachedHit = cachedByAlias[entry.alias]
+            let siblingHit = entry.hfRepo.flatMap { cachedByRepo[$0] }
             let externalRepo = entry.hfRepo.flatMap { repo in
                 externalByRepo.keys.contains(repo) ? repo : nil
             }
             if let externalRepo { consumedExternal.insert(externalRepo) }
-            guard cachedHit != nil || externalRepo != nil else { return entry }
+            guard cachedHit != nil || siblingHit != nil || externalRepo != nil else {
+                return entry
+            }
             return ModelEntry(
                 alias: entry.alias,
-                hfRepo: cachedHit?.repo ?? entry.hfRepo ?? externalRepo,
+                hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? entry.hfRepo ?? externalRepo,
                 sizeOnDisk: cachedHit?.size
+                    ?? siblingHit?.size
                     ?? externalRepo.flatMap { externalByRepo[$0] }
                     ?? entry.sizeOnDisk,
                 cached: true,
-                isExternal: cachedHit == nil && externalRepo != nil,
+                isExternal: cachedHit == nil && siblingHit == nil && externalRepo != nil,
                 kind: entry.kind,
                 audioCapability: entry.audioCapability,
                 audioFamily: entry.audioFamily,

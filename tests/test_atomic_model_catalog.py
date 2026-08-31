@@ -88,6 +88,8 @@ def test_legacy_projection_includes_uncached_user_aliases(
     snapshot = build_legacy_catalog_snapshot()
     aliases = {item["alias"]: item for item in snapshot["aliases"]}
     assert aliases["MyModel"]["target"] == aliases["qwen3.8-27b-4bit"]["target"]
+    assert aliases["MyModel"]["origin"] == "user"
+    assert aliases["qwen3.8-27b-4bit"]["origin"] == "builtin"
     assert build_catalog_bundle()["shadow_report"]["equivalent"] is True
 
 

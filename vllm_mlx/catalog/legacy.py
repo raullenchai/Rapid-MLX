@@ -96,11 +96,17 @@ def _audio_capabilities(entry: Any) -> dict[str, Any]:
 
 
 def _alias_record(
-    alias: str, model_id: str, capabilities: dict[str, Any], *, desktop: bool = True
+    alias: str,
+    model_id: str,
+    capabilities: dict[str, Any],
+    *,
+    origin: str,
+    desktop: bool = True,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "alias": alias,
+        "origin": origin,
         "target": {"registry_model_id": model_id, "resolution_status": "unresolved"},
         "capabilities": capabilities,
         "availability": _availability(desktop=desktop),
@@ -113,10 +119,11 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
     """Project both legacy alias registries into one deterministic snapshot."""
 
     from vllm_mlx.audio.registry import list_audio_aliases
-    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_aliases import list_builtin_aliases, list_profiles
     from vllm_mlx.model_sizes import size_bytes
 
     profiles = list_profiles()
+    builtin = set(list_builtin_aliases())
     models: dict[str, dict[str, Any]] = {}
     aliases: list[dict[str, Any]] = []
 
@@ -140,7 +147,14 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
         if isinstance(estimated_size, int) and estimated_size > 0:
             model["estimated_download_size_bytes"] = estimated_size
         models.setdefault(model_id, model)
-        aliases.append(_alias_record(alias, model_id, _main_capabilities(profile)))
+        aliases.append(
+            _alias_record(
+                alias,
+                model_id,
+                _main_capabilities(profile),
+                origin="builtin" if alias in builtin else "user",
+            )
+        )
 
     for entry in list_audio_aliases():
         model_id = _registry_model_id(entry.hf_id, None)
@@ -159,6 +173,7 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
                 entry.alias,
                 model_id,
                 _audio_capabilities(entry),
+                origin="builtin",
                 desktop=entry.alias != "whisper-tiny",
             )
         )

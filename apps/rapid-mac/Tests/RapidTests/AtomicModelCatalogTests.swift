@@ -47,6 +47,7 @@ struct AtomicModelCatalogTests {
         }
         for index in aliases.indices {
             aliases[index]["schema_version"] = 1
+            aliases[index]["origin"] = "builtin"
             var target = aliases[index]["target"] as! [String: Any]
             target["resolution_status"] = "unresolved"
             aliases[index]["target"] = target
@@ -238,5 +239,37 @@ struct AtomicModelCatalogTests {
         #expect(merged.first { $0.alias == "custom" }?.kind == .chat)
         #expect(merged.first { $0.alias == "hidden" } == nil)
         #expect(merged.first { $0.alias == "org/external" }?.isExternal == true)
+    }
+
+    @Test("alias origin and repository siblings preserve legacy safety semantics")
+    func originAndSiblingCacheArePreserved() throws {
+        let userPayload = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases[0]["origin"] = "user"
+            var sibling = aliases[0]
+            sibling["alias"] = "chat-sibling"
+            sibling["origin"] = "builtin"
+            aliases.append(sibling)
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let userEntries = try #require(
+            ModelCatalog.parseAtomicModelEntriesJSON(userPayload)
+        )
+        #expect(userEntries.first { $0.alias == "chat" }?.isBuiltinProfile == false)
+        #expect(ModelCatalog.parseAvailableJSON(userPayload)?.profiles["chat"]?.isBuiltin == false)
+
+        let chat = try #require(userEntries.first { $0.alias == "chat" })
+        let sibling = try #require(userEntries.first { $0.alias == "chat-sibling" })
+        let merged = ModelCatalog.mergeAtomicAndCached(
+            atomic: [chat, sibling],
+            cached: [("chat", "org/chat", "1 GiB")],
+            excluded: []
+        )
+        #expect(merged.first { $0.alias == "chat-sibling" }?.cached == true)
+        #expect(merged.first { $0.alias == "chat-sibling" }?.sizeOnDisk == "1 GiB")
     }
 }

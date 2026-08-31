@@ -5,10 +5,11 @@
   "description": "Product-facing alias layered on immutable ModelIdentity and effective ExecutionConfig contracts. It is never itself an artifact or comparison identity.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "alias", "target", "capabilities", "availability", "default_execution_preset_id", "execution_presets"],
+  "required": ["schema_version", "alias", "origin", "target", "capabilities", "availability", "default_execution_preset_id", "execution_presets"],
   "properties": {
     "schema_version": {"const": 1},
     "alias": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "origin": {"enum": ["builtin", "user"], "description": "Provenance gate for curated product behavior; user aliases never inherit builtin trust merely by targeting the same artifact."},
     "presentation": {
       "type": "object", "additionalProperties": false,
       "properties": {

@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "alias": "sample-image",
+  "origin": "builtin",
   "presentation": {"name": "Sample Image Model", "description_id": "sample-image-v1"},
   "target": {"registry_model_id": "example/sample-image/2026-08", "resolution_status": "resolved", "model_identity_digest": "sha256:69e798dd8ffbe25a9d3876227056016fd692a257caf32a733b6d96472f67caf0"},
   "capabilities": {"task_types": ["image_generation"], "generation_modes": ["text_to_image", "image_to_image"], "experimental": false},
