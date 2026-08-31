@@ -1621,6 +1621,9 @@ class BatchedEngine(BaseEngine):
             vision_cache_size=100,
             max_concurrent_requests=max_concurrent_requests,
             allow_arrays_cache=arrays_cache_compat,
+            enable_prefix_cache=getattr(
+                self._scheduler_config, "enable_prefix_cache", True
+            ),
             vision_min_pixels=vision_min_pixels,
             vision_max_pixels=vision_max_pixels,
         )
@@ -2206,6 +2209,7 @@ class BatchedEngine(BaseEngine):
                 for processor in _pop_lane_parity_processors(kwargs)
                 if processor is not None
             ]
+            prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
                 output = await self._mllm_scheduler.generate(
                     prompt=prompt,
@@ -2220,6 +2224,7 @@ class BatchedEngine(BaseEngine):
                     lifecycle_admission_token=admission_token,
                     on_request_committed=request_committed,
                     logits_processors=_mllm_logits_processors,
+                    prefix_boundary=prefix_boundary,
                     **_mllm_penalty_kwargs,
                 )
             except BaseException:
@@ -2236,6 +2241,7 @@ class BatchedEngine(BaseEngine):
                 tokens=output.output_token_ids,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
+                cached_tokens=getattr(output, "cached_tokens", 0),
                 finish_reason=output.finish_reason,
                 # H-03: MLLM non-stream parity — propagate the matched
                 # stop string for the Anthropic adapter.
@@ -2449,6 +2455,7 @@ class BatchedEngine(BaseEngine):
                 for processor in _pop_lane_parity_processors(kwargs)
                 if processor is not None
             ]
+            prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
                 request_id = await self._mllm_scheduler.add_request_async(
                     request_id=request_id,
@@ -2464,6 +2471,7 @@ class BatchedEngine(BaseEngine):
                     lifecycle_admission_token=admission_token,
                     on_request_committed=commit_admission,
                     logits_processors=_mllm_logits_processors,
+                    prefix_boundary=prefix_boundary,
                     **_mllm_penalty_kwargs,
                 )
             except BaseException:
@@ -2500,6 +2508,7 @@ class BatchedEngine(BaseEngine):
                     tokens=output.new_token_ids,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
+                    cached_tokens=getattr(output, "cached_tokens", 0),
                     finished=output.finished,
                     finish_reason=output.finish_reason,
                     logprobs=output.logprobs,
@@ -3673,6 +3682,7 @@ class BatchedEngine(BaseEngine):
                 "batch_generator",
                 "vision_embedding_cache",
                 "vision_cache",
+                "prefix_cache",
             ):
                 if key in mllm_stats:
                     stats[key] = mllm_stats[key]
@@ -3690,14 +3700,16 @@ class BatchedEngine(BaseEngine):
 
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get cache statistics."""
-        if self._mllm_scheduler and self._mllm_scheduler.vision_cache:
-            return self._mllm_scheduler.vision_cache.get_stats()
+        if self._mllm_scheduler:
+            return self._mllm_scheduler.get_cache_stats()
         elif self._engine:
             return self._engine.get_cache_stats()
         return None
 
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear reusable text prefix KV state while keeping weights loaded."""
+        if self._mllm_scheduler:
+            return self._mllm_scheduler.clear_prefix_cache(reset_stats=reset_stats)
         if self._engine:
             return self._engine.clear_prefix_cache(reset_stats=reset_stats)
         return False

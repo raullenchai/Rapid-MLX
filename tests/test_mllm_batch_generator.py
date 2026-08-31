@@ -16,7 +16,10 @@ pytestmark = pytest.mark.requires_mlx
 
 
 import base64
+import concurrent.futures
 import io
+import threading
+from unittest.mock import MagicMock
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -146,6 +149,9 @@ class _ChunkRecordingModel:
     def __call__(self, input_ids, cache=None, **kwargs):
         seqlen = input_ids.shape[1]
         self.calls.append((seqlen, kwargs))
+        for entry in cache or ():
+            if hasattr(entry, "tokens_seen"):
+                entry.tokens_seen += seqlen
 
         class _Out:
             pass
@@ -161,6 +167,7 @@ class _FakeCache:
 
     def __init__(self):
         self.state_reads = 0
+        self.tokens_seen = 0
 
     @property
     def state(self):
@@ -1814,3 +1821,350 @@ def test_prefill_cap_exempts_batch_of_long_text_only_prompts():
         "a 10k-token vision request among long text-only peers must still "
         "trip the cap (#682 preserved)"
     )
+
+
+# --------------------------------------------------------------------------- #
+# #2524 — text-only warm turns on a hybrid model served through the MLLM lane
+# reuse mlx-vlm's conservative exact-cache snapshots. Image requests bypass
+# this path because token IDs alone do not identify their media content.
+# --------------------------------------------------------------------------- #
+
+
+class _ExactPrefixCache:
+    def __init__(self, warm_cache=None, prefix_len: int = 0):
+        self.warm_cache = warm_cache
+        self.prefix_len = prefix_len
+        self.lookups = []
+        self.stores = []
+        self.store_state_at_call = []
+        self.clears = 0
+        self.evictions = 3
+
+    def lookup_exact_cache(self, token_ids, *, extra_hash):
+        self.lookups.append((list(token_ids), extra_hash))
+        return self.warm_cache, self.prefix_len
+
+    def store_exact_cache(self, token_ids, prompt_cache, *, extra_hash):
+        self.stores.append((list(token_ids), prompt_cache, extra_hash))
+        # The production APC manager synchronously deep-clones cache state.
+        # Record that state now so later mutations of the live cache cannot
+        # make this test accidentally validate the final prompt boundary.
+        self.store_state_at_call.append(
+            tuple(getattr(entry, "tokens_seen", None) for entry in prompt_cache)
+        )
+        return True
+
+    def stats_snapshot(self):
+        return {"evictions": self.evictions}
+
+    def clear(self):
+        self.clears += 1
+        self.evictions = 0
+
+
+def _make_prefix_cache_generator(manager) -> MLLMBatchGenerator:
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    gen._prefix_cache = manager
+    gen._prefix_cache_mode = "exact"
+    gen._prefix_cache_extra_hash = 17
+    gen._prefix_cache_hits = 0
+    gen._prefix_cache_misses = 0
+    gen._prefix_cache_evictions_offset = 0
+    gen._prefix_cache_tokens_saved = 0
+    return gen
+
+
+def test_exact_prefix_cache_restores_text_prefix_and_slices_only_suffix():
+    warm_cache = [object()]
+    manager = _ExactPrefixCache(warm_cache=warm_cache, prefix_len=3)
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5)
+
+    restored = gen._lookup_exact_text_prefix(request)
+
+    assert restored is warm_cache
+    assert manager.lookups == [([0, 1, 2, 3, 4], 17)]
+    assert request.full_prompt_token_ids == [0, 1, 2, 3, 4]
+    assert request.cached_tokens == 3
+    assert request.input_ids.tolist() == [3, 4]
+    assert gen.get_prefix_cache_stats() == {
+        "hits": 1,
+        "misses": 0,
+        "evictions": 3,
+        "tokens_saved": 3,
+    }
+
+
+def test_exact_prefix_cache_restores_two_dimensional_input():
+    manager = _ExactPrefixCache(warm_cache=[object()], prefix_len=3)
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5)
+    request.input_ids = mx.array([[0, 1, 2, 3, 4]])
+
+    assert gen._lookup_exact_text_prefix(request) is manager.warm_cache
+    assert request.input_ids.tolist() == [[3, 4]]
+
+
+def test_exact_prefix_cache_drops_all_valid_mask_after_restore():
+    manager = _ExactPrefixCache(warm_cache=[object()], prefix_len=3)
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5)
+    request.attention_mask = mx.ones((1, 5), dtype=mx.int32)
+
+    assert gen._lookup_exact_text_prefix(request) is manager.warm_cache
+    assert request.input_ids.tolist() == [3, 4]
+    assert request.attention_mask is None
+
+
+@pytest.mark.parametrize(
+    "auxiliary_inputs",
+    [
+        {"attention_mask": mx.array([[0, 1, 1, 1, 1]], dtype=mx.int32)},
+        {"extra_kwargs": {"position_ids": mx.arange(5)[None, :]}},
+    ],
+)
+def test_exact_prefix_cache_bypasses_sequence_aligned_auxiliary_inputs(
+    auxiliary_inputs,
+):
+    manager = _ExactPrefixCache(warm_cache=[object()], prefix_len=3)
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5)
+    for name, value in auxiliary_inputs.items():
+        setattr(request, name, value)
+
+    assert gen._lookup_exact_text_prefix(request) is None
+    assert manager.lookups == []
+    assert request.input_ids.tolist() == [0, 1, 2, 3, 4]
+
+
+def test_exact_prefix_cache_short_prompt_counts_miss_without_lookup():
+    manager = _ExactPrefixCache()
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(1)
+
+    assert gen._lookup_exact_text_prefix(request) is None
+    assert manager.lookups == []
+    assert gen.get_prefix_cache_stats()["misses"] == 1
+
+
+def test_generator_enables_exact_apc_from_pinned_runtime(monkeypatch):
+    from mlx_vlm import apc
+
+    manager = _ExactPrefixCache()
+    monkeypatch.setattr(apc, "model_apc_mode", lambda _model: "exact")
+    monkeypatch.setattr(apc, "from_env", lambda *, overrides: manager)
+    monkeypatch.setattr(apc, "semantic_extra_hash", lambda **_kwargs: 41)
+
+    gen = _make_generator(_RecordingModel())
+    try:
+        assert gen._prefix_cache is manager
+        assert gen._prefix_cache_mode == "exact"
+        assert gen._prefix_cache_extra_hash == 41
+    finally:
+        gen.close()
+
+
+def test_generator_keeps_mllm_available_when_exact_apc_init_fails(monkeypatch):
+    from mlx_vlm import apc
+
+    monkeypatch.setattr(
+        apc,
+        "model_apc_mode",
+        lambda _model: (_ for _ in ()).throw(ValueError("unsupported cache layout")),
+    )
+
+    gen = _make_generator(_RecordingModel())
+    try:
+        assert gen._prefix_cache is None
+        assert gen._prefix_cache_mode is None
+    finally:
+        gen.close()
+
+
+def test_exact_prefix_cache_miss_keeps_full_prompt_then_stores_boundary():
+    manager = _ExactPrefixCache()
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5)
+
+    assert gen._lookup_exact_text_prefix(request) is None
+    assert request.input_ids.tolist() == [0, 1, 2, 3, 4]
+    prompt_cache = [object()]
+    gen._store_exact_text_prefix(request, prompt_cache, prefix_len=3)
+
+    assert manager.stores == [([0, 1, 2], prompt_cache, 17)]
+    assert gen.get_prefix_cache_stats()["misses"] == 1
+
+
+def test_text_prefill_captures_exact_cache_at_stable_template_boundary():
+    model = _ChunkRecordingModel()
+    manager = _ExactPrefixCache()
+    gen = _make_bare_generator(prefill_step_size=512, model=model)
+    prefix_gen = _make_prefix_cache_generator(manager)
+    for name in (
+        "_prefix_cache",
+        "_prefix_cache_mode",
+        "_prefix_cache_extra_hash",
+        "_prefix_cache_hits",
+        "_prefix_cache_misses",
+        "_prefix_cache_evictions_offset",
+        "_prefix_cache_tokens_saved",
+    ):
+        setattr(gen, name, getattr(prefix_gen, name))
+    request = _make_ids_request(20)
+    request.full_prompt_token_ids = list(range(20))
+    request.prefix_boundary = 14
+    cache = [_FakeCache()]
+
+    gen._run_vision_encoding(request, cache=cache)
+
+    # Even though this prompt is shorter than the ordinary 512-token chunk,
+    # the stable boundary forces an exact split: stable history, remaining
+    # generation suffix, then the one-token logits forward.
+    assert [seqlen for seqlen, _kwargs in model.calls] == [14, 5, 1]
+    assert manager.stores == [(list(range(14)), cache, 17)]
+    assert manager.store_state_at_call == [(14,)]
+    assert cache[0].tokens_seen == 20
+
+
+def test_exact_prefix_cache_never_looks_up_or_stores_image_request():
+    manager = _ExactPrefixCache(warm_cache=[object()], prefix_len=3)
+    gen = _make_prefix_cache_generator(manager)
+    request = _make_ids_request(5, pixel_values=mx.zeros((1, 3, 4, 4)))
+
+    assert gen._lookup_exact_text_prefix(request) is None
+    gen._store_exact_text_prefix(request, [object()], prefix_len=3)
+
+    assert manager.lookups == []
+    assert manager.stores == []
+    assert request.full_prompt_token_ids == []
+    assert request.input_ids.tolist() == [0, 1, 2, 3, 4]
+
+
+def test_exact_prefix_cache_clear_preserves_or_resets_local_counters():
+    manager = _ExactPrefixCache()
+    gen = _make_prefix_cache_generator(manager)
+    gen._prefix_cache_hits = 2
+    gen._prefix_cache_misses = 4
+    gen._prefix_cache_tokens_saved = 123
+
+    assert gen.clear_prefix_cache(reset_stats=False) is True
+    assert manager.clears == 1
+    assert gen.get_prefix_cache_stats() == {
+        "hits": 2,
+        "misses": 4,
+        "evictions": 3,
+        "tokens_saved": 123,
+    }
+
+    assert gen.clear_prefix_cache(reset_stats=True) is True
+    assert manager.clears == 2
+    assert gen.get_prefix_cache_stats() == {
+        "hits": 0,
+        "misses": 0,
+        "evictions": 0,
+        "tokens_saved": 0,
+    }
+
+
+def test_bare_generator_without_prefix_cache_keeps_legacy_cold_path():
+    gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    request = _make_ids_request(5)
+
+    assert gen._lookup_exact_text_prefix(request) is None
+    assert gen.get_prefix_cache_stats() is None
+    assert gen.clear_prefix_cache() is False
+
+
+def _make_cache_scheduler(*, batch_generator):
+    from vllm_mlx.mllm_scheduler import MLLMScheduler
+
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    scheduler._step_executor = None
+    scheduler._injected_step_executor = None
+    scheduler.waiting = []
+    scheduler.running = {}
+    scheduler._aborted_queue_ids = set()
+    scheduler.finished_req_ids = set()
+    scheduler.num_requests_processed = 2
+    scheduler.total_prompt_tokens = 3
+    scheduler.total_completion_tokens = 4
+    scheduler.num_requests_cancelled = 0
+    scheduler.num_requests_cancelled_via_disconnect = 0
+    scheduler.batch_generator = batch_generator
+    scheduler.vision_cache = None
+    return scheduler
+
+
+def test_scheduler_prefix_cache_stats_and_empty_paths():
+    batch_generator = MagicMock()
+    batch_generator.stats.return_value.to_dict.return_value = {"active": 0}
+    batch_generator.get_vision_cache_stats.return_value = {"entries": 0}
+    batch_generator.get_prefix_cache_stats.return_value = {"hits": 2}
+    scheduler = _make_cache_scheduler(batch_generator=batch_generator)
+
+    assert scheduler.get_stats()["prefix_cache"] == {"hits": 2}
+    assert scheduler.get_cache_stats() == {"hits": 2}
+
+    scheduler.batch_generator = None
+    assert scheduler.get_cache_stats() is None
+    assert scheduler.clear_prefix_cache() is False
+
+
+def test_scheduler_prefix_cache_clear_waits_behind_inflight_step():
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="mllm-step-clear-test"
+    )
+    events: list[tuple[str, str]] = []
+    step_started = threading.Event()
+    release_step = threading.Event()
+
+    class _Generator:
+        def clear_prefix_cache(self, *, reset_stats):
+            events.append(("clear", threading.current_thread().name))
+            return True
+
+    scheduler = _make_cache_scheduler(batch_generator=_Generator())
+    scheduler._step_executor = executor
+    scheduler._injected_step_executor = executor
+
+    def inflight_step():
+        events.append(("step-start", threading.current_thread().name))
+        step_started.set()
+        assert release_step.wait(timeout=5)
+        events.append(("step-store", threading.current_thread().name))
+
+    try:
+        step_future = executor.submit(inflight_step)
+        assert step_started.wait(timeout=5)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as caller:
+            clear_future = caller.submit(
+                scheduler.clear_prefix_cache, reset_stats=False
+            )
+            assert not clear_future.done()
+            release_step.set()
+            step_future.result(timeout=5)
+            assert clear_future.result(timeout=5) is True
+
+        assert [event for event, _thread in events] == [
+            "step-start",
+            "step-store",
+            "clear",
+        ]
+        assert all(
+            thread.startswith("mllm-step-clear-test") for _event, thread in events
+        )
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_scheduler_prefix_cache_clear_rejects_active_requests():
+    batch_generator = MagicMock()
+    scheduler = _make_cache_scheduler(batch_generator=batch_generator)
+    scheduler.waiting = [object()]
+
+    with pytest.raises(
+        RuntimeError, match="cannot clear prefix cache while requests are active"
+    ):
+        scheduler.clear_prefix_cache(reset_stats=False)
+
+    batch_generator.clear_prefix_cache.assert_not_called()

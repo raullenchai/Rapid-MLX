@@ -64,6 +64,12 @@ def test_batched_engine_promotes_mllm_stats_to_common_top_level():
                 "num_requests_processed": 3,
                 "total_prompt_tokens": 40,
                 "total_completion_tokens": 7,
+                "prefix_cache": {
+                    "hits": 2,
+                    "misses": 1,
+                    "evictions": 0,
+                    "tokens_saved": 30,
+                },
             }
 
     engine = BatchedEngine.__new__(BatchedEngine)
@@ -84,6 +90,7 @@ def test_batched_engine_promotes_mllm_stats_to_common_top_level():
     assert stats["num_requests_processed"] == 3
     assert stats["total_prompt_tokens"] == 40
     assert stats["total_completion_tokens"] == 7
+    assert stats["prefix_cache"]["tokens_saved"] == 30
     assert stats["steps_executed"] == 12
     assert stats["uptime_seconds"] >= 2.0
 
