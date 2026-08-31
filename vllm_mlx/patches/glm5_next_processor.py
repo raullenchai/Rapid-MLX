@@ -49,6 +49,15 @@ _IMAGE_KWARGS = {
     "temporal_patch_size",
 }
 
+_HUB_METADATA_KWARGS = {
+    "cache_dir",
+    "force_download",
+    "local_files_only",
+    "revision",
+    "subfolder",
+    "token",
+}
+
 
 def smart_resize(
     num_frames: int,
@@ -319,9 +328,17 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _load_json(model_path: str | Path, filename: str) -> dict[str, Any] | None:
+def _load_json(
+    model_path: str | Path,
+    filename: str,
+    *,
+    hub_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     root = Path(model_path)
-    local = root / filename
+    options = dict(hub_kwargs or {})
+    subfolder = options.get("subfolder")
+    local_root = root / str(subfolder) if subfolder else root
+    local = local_root / filename
     if local.exists():
         return _read_json_object(local)
     if root.exists():
@@ -331,16 +348,20 @@ def _load_json(model_path: str | Path, filename: str) -> dict[str, Any] | None:
     try:
         from huggingface_hub import hf_hub_download
 
-        downloaded = hf_hub_download(str(model_path), filename)
+        downloaded = hf_hub_download(str(model_path), filename, **options)
         return _read_json_object(Path(downloaded))
     except Exception:
         return None
 
 
-def _image_processor_kwargs(model_path: str | Path) -> dict:
-    config = _load_json(model_path, "config.json") or {}
+def _image_processor_kwargs(
+    model_path: str | Path, *, hub_kwargs: dict[str, Any] | None = None
+) -> dict:
+    config = _load_json(model_path, "config.json", hub_kwargs=hub_kwargs) or {}
     vision = config.get("vision_config", {}) or {}
-    processor = _load_json(model_path, "processor_config.json") or {}
+    processor = (
+        _load_json(model_path, "processor_config.json", hub_kwargs=hub_kwargs) or {}
+    )
     image = processor.get("image_processor", {}) or {}
 
     result = {}
@@ -399,8 +420,17 @@ class Glm5NextProcessor(ProcessorMixin):
         return_mm_token_type_ids=True,
         **kwargs,
     ) -> BatchFeature:
+        if text is None:
+            text = [""]
+        elif not isinstance(text, list):
+            text = [text]
+        text = ["" if item is None else str(item) for item in text]
+
         image_inputs = {}
-        if images is not None:
+        has_images = images is not None and (
+            not isinstance(images, list) or bool(images)
+        )
+        if has_images:
             image_kwargs = {
                 key: value for key, value in kwargs.items() if key in _IMAGE_KWARGS
             }
@@ -411,24 +441,21 @@ class Glm5NextProcessor(ProcessorMixin):
                     **image_kwargs,
                 )
             )
-
-        if text is None:
-            text = [""]
-        elif not isinstance(text, list):
-            text = [text]
-        text = ["" if item is None else str(item) for item in text]
+        elif any(self.image_token in prompt for prompt in text):
+            raise ValueError("Image tokens were provided without images.")
 
         if image_inputs:
             placeholder = "<|glm5_next_image_placeholder|>"
             image_idx = 0
             grids = image_inputs["image_grid_thw"]
+            merge_size = int(
+                image_kwargs.get("merge_size", self.image_processor.merge_size)
+            )
             for prompt_idx, prompt in enumerate(text):
                 while self.image_token in prompt:
                     if image_idx >= len(grids):
                         raise ValueError("More image tokens were provided than images.")
-                    count = int(
-                        np.prod(grids[image_idx]) // self.image_processor.merge_size**2
-                    )
+                    count = int(np.prod(grids[image_idx]) // merge_size**2)
                     prompt = prompt.replace(self.image_token, placeholder * count, 1)
                     image_idx += 1
                 text[prompt_idx] = prompt.replace(placeholder, self.image_token)
@@ -484,6 +511,11 @@ class Glm5NextProcessor(ProcessorMixin):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         tokenizer_kwargs = dict(kwargs)
+        hub_kwargs = {
+            key: value
+            for key, value in tokenizer_kwargs.items()
+            if key in _HUB_METADATA_KWARGS
+        }
         chat_template = tokenizer_kwargs.pop("chat_template", None)
         tokenizer_kwargs.pop("return_tensors", None)
         tokenizer = AutoTokenizer.from_pretrained(
@@ -493,11 +525,19 @@ class Glm5NextProcessor(ProcessorMixin):
         if Path(pretrained_model_name_or_path).exists():
             load_chat_template(tokenizer, pretrained_model_name_or_path)
         processor_config = (
-            _load_json(pretrained_model_name_or_path, "processor_config.json") or {}
+            _load_json(
+                pretrained_model_name_or_path,
+                "processor_config.json",
+                hub_kwargs=hub_kwargs,
+            )
+            or {}
         )
         return cls(
             image_processor=Glm5NextImageProcessor(
-                **_image_processor_kwargs(pretrained_model_name_or_path)
+                **_image_processor_kwargs(
+                    pretrained_model_name_or_path,
+                    hub_kwargs=hub_kwargs,
+                )
             ),
             tokenizer=tokenizer,
             chat_template=(

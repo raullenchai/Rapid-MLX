@@ -154,6 +154,35 @@ def test_processor_rejects_more_tokens_than_images() -> None:
         )
 
 
+@pytest.mark.parametrize("images", [None, []])
+def test_processor_rejects_image_marker_without_media(images) -> None:
+    processor = Glm5NextProcessor(tokenizer=_TokenizerStub())
+    with pytest.raises(ValueError, match="without images"):
+        processor(images=images, text=["inspect <|image|>"])
+
+
+def test_processor_uses_request_merge_size_for_placeholder_count() -> None:
+    image_processor = Glm5NextImageProcessor(
+        patch_size=2,
+        temporal_patch_size=2,
+        merge_size=2,
+        min_image_tokens=1,
+        max_image_tokens=16,
+    )
+    processor = Glm5NextProcessor(
+        image_processor=image_processor,
+        tokenizer=_TokenizerStub(),
+    )
+    inputs = processor(
+        images=Image.new("RGB", (16, 16), "blue"),
+        text="<|image|>",
+        merge_size=4,
+    )
+    image_tokens = int(mx.sum(inputs["input_ids"] == 120).item())
+    expected = int(inputs["image_grid_thw"][0].prod().item()) // 4**2
+    assert image_tokens == expected
+
+
 def test_image_processor_scalar_paths_and_optional_transforms() -> None:
     image_processor = Glm5NextImageProcessor(
         patch_size=2,
@@ -245,6 +274,17 @@ def test_json_metadata_local_remote_and_invalid_shapes(
     assert processor_patch._load_json("org/model", "config.json") is None
 
 
+def test_local_metadata_honors_subfolder(tmp_path: Path) -> None:
+    subfolder = tmp_path / "tested-revision"
+    subfolder.mkdir()
+    (subfolder / "config.json").write_text('{"revision":"pinned"}')
+    assert processor_patch._load_json(
+        tmp_path,
+        "config.json",
+        hub_kwargs={"subfolder": "tested-revision", "local_files_only": True},
+    ) == {"revision": "pinned"}
+
+
 def test_image_processor_kwargs_merge_checkpoint_metadata(tmp_path: Path) -> None:
     (tmp_path / "config.json").write_text(
         '{"vision_config":{"patch_size":16,"temporal_patch_size":3,'
@@ -285,6 +325,48 @@ def test_from_pretrained_builds_local_processor(monkeypatch, tmp_path: Path) -> 
     assert processor.chat_template == "checkpoint template"
     assert processor.image_processor.patch_size == 16
     assert loaded == [(tokenizer, tmp_path)]
+
+
+def test_from_pretrained_forwards_hub_identity_to_all_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import huggingface_hub
+
+    metadata = tmp_path / "metadata.json"
+    metadata.write_text("{}")
+    hub_calls = []
+    tokenizer_calls = []
+
+    def fake_download(repo_id, filename, **kwargs):
+        hub_calls.append((repo_id, filename, kwargs))
+        return metadata
+
+    tokenizer = _TokenizerStub()
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(
+        processor_patch.AutoTokenizer,
+        "from_pretrained",
+        lambda path, **kwargs: tokenizer_calls.append((path, kwargs)) or tokenizer,
+    )
+
+    options = {
+        "revision": "tested-commit",
+        "cache_dir": tmp_path / "hub-cache",
+        "local_files_only": True,
+        "force_download": False,
+        "token": "test-token",
+        "subfolder": "processor",
+    }
+    Glm5NextProcessor.from_pretrained("org/model", **options)
+
+    assert tokenizer_calls == [("org/model", options)]
+    assert [filename for _, filename, _ in hub_calls] == [
+        "processor_config.json",
+        "config.json",
+        "processor_config.json",
+    ]
+    assert all(repo_id == "org/model" for repo_id, _, _ in hub_calls)
+    assert all(kwargs == options for _, _, kwargs in hub_calls)
 
 
 def test_installer_registers_once_without_replacing_existing_prompt_shape(
