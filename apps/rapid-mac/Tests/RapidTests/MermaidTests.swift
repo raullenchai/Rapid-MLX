@@ -420,6 +420,29 @@ struct MermaidRenderingTests {
         #expect(recovered != nil)
     }
 
+    @Test("A timed-out snapshot releases the serial queue")
+    func timedOutSnapshotReleasesQueue() async {
+        var attempts = 0
+        let renderer = MermaidRenderer(
+            renderTimeout: .milliseconds(100),
+            snapshotter: { webView, configuration, completion in
+                attempts += 1
+                guard attempts > 1 else { return }
+                webView.takeSnapshot(
+                    with: configuration, completionHandler: completion
+                )
+            }
+        )
+
+        #expect(await renderer.image(
+            source: "graph TD\n  Snapshot --> Timeout", theme: .light
+        ) == nil)
+        let recovered = await renderer.image(
+            source: "graph TD\n  Snapshot --> Recovered", theme: .light
+        )
+        #expect(recovered != nil)
+    }
+
     @Test("Diagrams of every common kind render", arguments: [
         ("flowchart", "graph TD\n  A[Start] --> B{Choice}\n  B -->|yes| C[Go]"),
         ("sequence", "sequenceDiagram\n  A->>B: hello\n  B-->>A: hi"),
@@ -760,6 +783,28 @@ struct MermaidSetupTests {
     /// per test, so every test gets a clean cache, failure budget and web
     /// view, and no suite can reset another's while it is mid-render.
     private let renderer = MermaidRenderer()
+
+    @Test("Initial navigation has a deadline")
+    func initialNavigationHasDeadline() async {
+        let navigation = MermaidNavigationPolicy()
+        let started = ContinuousClock.now
+        let loaded = await navigation.waitForLoad(timeout: .milliseconds(100))
+        #expect(!loaded)
+        #expect(ContinuousClock.now - started < .seconds(2))
+    }
+
+    @Test("Content-process termination settles initial navigation")
+    func contentProcessTerminationSettlesNavigation() async {
+        var reportedTermination = false
+        let navigation = MermaidNavigationPolicy {
+            reportedTermination = true
+        }
+        async let loaded = navigation.waitForLoad(timeout: .seconds(5))
+        navigation.webViewWebContentProcessDidTerminate(WKWebView())
+        let didLoad = await loaded
+        #expect(!didLoad)
+        #expect(reportedTermination)
+    }
 
     @Test("Concurrent first renders share one web view")
     func concurrentFirstRendersShareOneWebView() async {

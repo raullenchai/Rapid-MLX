@@ -59,6 +59,11 @@ final class MermaidRenderer {
         _ theme: Theme,
         _ completion: @escaping @MainActor @Sendable (Result<Any, Error>) -> Void
     ) -> Void
+    typealias Snapshotter = @MainActor (
+        _ webView: WKWebView,
+        _ configuration: WKSnapshotConfiguration,
+        _ completion: @escaping @MainActor @Sendable (NSImage?, Error?) -> Void
+    ) -> Void
 
     /// A preview is drawn at 2×. Bounding both axes and point area keeps a
     /// model-authored diagram from turning into an unbounded bitmap request.
@@ -67,6 +72,8 @@ final class MermaidRenderer {
 
     private let renderTimeout: Duration
     private let javaScriptEvaluator: JavaScriptEvaluator?
+    private let snapshotter: Snapshotter?
+    private var abortActiveOperation: (@MainActor () -> Void)?
 
     private struct Key: Hashable {
         let source: String
@@ -127,10 +134,12 @@ final class MermaidRenderer {
     /// when run alongside its neighbours.
     init(
         renderTimeout: Duration = .seconds(8),
-        javaScriptEvaluator: JavaScriptEvaluator? = nil
+        javaScriptEvaluator: JavaScriptEvaluator? = nil,
+        snapshotter: Snapshotter? = nil
     ) {
         self.renderTimeout = renderTimeout
         self.javaScriptEvaluator = javaScriptEvaluator
+        self.snapshotter = snapshotter
     }
 
     // MARK: - The synchronous half
@@ -236,22 +245,14 @@ final class MermaidRenderer {
               Self.acceptsSnapshot(width: measured.width, height: measured.height)
         else { return nil }
 
-        let configuration = WKSnapshotConfiguration()
-        configuration.rect = CGRect(x: 0, y: 0, width: measured.width, height: measured.height)
-        // Twice the point size: the result is a bitmap, and a preview that
-        // was crisp only on a non-Retina display would be a regression on
-        // every Mac this app supports.
-        configuration.snapshotWidth = NSNumber(value: measured.width * 2)
-
-        return await withCheckedContinuation { continuation in
-            webView.takeSnapshot(with: configuration) { image, _ in
-                guard let image else { continuation.resume(returning: nil); return }
-                // The snapshot arrives at pixel dimensions; restate it in
-                // points so `SVGPreview.drawSize` measures it the same way it
-                // measures a vector document.
-                image.size = CGSize(width: measured.width, height: measured.height)
-                continuation.resume(returning: image)
-            }
+        do {
+            return try await snapshot(
+                webView: webView, measurement: measured
+            )
+        } catch {
+            failures += 1
+            teardown()
+            return nil
         }
     }
 
@@ -278,6 +279,7 @@ final class MermaidRenderer {
             (continuation: CheckedContinuation<MermaidRenderMeasurement?, Error>) in
             let completion: @MainActor @Sendable (Result<Any, Error>) -> Void = { result in
                 guard gate.claim() else { return }
+                self.abortActiveOperation = nil
                 switch result {
                 case .success(let value):
                     guard let dictionary = value as? [String: Any],
@@ -294,6 +296,11 @@ final class MermaidRenderer {
                 case .failure:
                     continuation.resume(throwing: MermaidRenderError.evaluationFailed)
                 }
+            }
+
+            abortActiveOperation = {
+                guard gate.claim() else { return }
+                continuation.resume(throwing: MermaidRenderError.contentProcessTerminated)
             }
 
             if let javaScriptEvaluator {
@@ -313,6 +320,61 @@ final class MermaidRenderer {
             Task { [renderTimeout] in
                 try? await Task.sleep(for: renderTimeout)
                 guard gate.claim() else { return }
+                self.abortActiveOperation = nil
+                continuation.resume(throwing: MermaidRenderError.timedOut)
+            }
+        }
+    }
+
+    private func snapshot(
+        webView: WKWebView,
+        measurement: MermaidRenderMeasurement
+    ) async throws -> NSImage? {
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = CGRect(
+            x: 0, y: 0, width: measurement.width, height: measurement.height
+        )
+        // Twice the point size: the result is a bitmap, and a preview that
+        // was crisp only on a non-Retina display would be a regression on
+        // every Mac this app supports.
+        configuration.snapshotWidth = NSNumber(value: measurement.width * 2)
+
+        let gate = MermaidEvaluationGate()
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<NSImage?, Error>) in
+            let completion: @MainActor @Sendable (NSImage?, Error?) -> Void = {
+                image, error in
+                guard gate.claim() else { return }
+                self.abortActiveOperation = nil
+                if error != nil {
+                    continuation.resume(throwing: MermaidRenderError.snapshotFailed)
+                    return
+                }
+                guard let image else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // The snapshot arrives at pixel dimensions; restate it in
+                // points so `SVGPreview.drawSize` measures it like SVG.
+                image.size = CGSize(width: measurement.width, height: measurement.height)
+                continuation.resume(returning: image)
+            }
+
+            abortActiveOperation = {
+                guard gate.claim() else { return }
+                continuation.resume(throwing: MermaidRenderError.contentProcessTerminated)
+            }
+
+            if let snapshotter {
+                snapshotter(webView, configuration, completion)
+            } else {
+                webView.takeSnapshot(with: configuration, completionHandler: completion)
+            }
+
+            Task { [renderTimeout] in
+                try? await Task.sleep(for: renderTimeout)
+                guard gate.claim() else { return }
+                self.abortActiveOperation = nil
                 continuation.resume(throwing: MermaidRenderError.timedOut)
             }
         }
@@ -361,7 +423,9 @@ final class MermaidRenderer {
             frame: CGRect(x: 0, y: 0, width: 1_400, height: 1_400),
             configuration: configuration
         )
-        let navigation = MermaidNavigationPolicy()
+        let navigation = MermaidNavigationPolicy { [weak self] in
+            self?.webContentProcessDidTerminate()
+        }
         view.navigationDelegate = navigation
         self.navigationPolicy = navigation
 
@@ -379,7 +443,7 @@ final class MermaidRenderer {
         webView = view
 
         view.load(URLRequest(url: MermaidHostPage.hostPageURL))
-        guard await navigation.waitForLoad() else {
+        guard await navigation.waitForLoad(timeout: renderTimeout) else {
             failures += 1
             teardown()
             return nil
@@ -400,6 +464,13 @@ final class MermaidRenderer {
 
     private var navigationPolicy: MermaidNavigationPolicy?
 
+    private func webContentProcessDidTerminate() {
+        let abort = abortActiveOperation
+        abortActiveOperation = nil
+        abort?()
+        teardown()
+    }
+
     /// Test seam: put the renderer back to cold. Nothing in the app calls
     /// this — the web view is dropped only when a render wedges it.
     func resetForTesting() {
@@ -411,6 +482,7 @@ final class MermaidRenderer {
     }
 
     private func teardown() {
+        abortActiveOperation = nil
         webView?.navigationDelegate = nil
         webView?.removeFromSuperview()
         webView = nil
@@ -432,7 +504,9 @@ final class MermaidRenderer {
 }
 
 private enum MermaidRenderError: Error {
+    case contentProcessTerminated
     case evaluationFailed
+    case snapshotFailed
     case timedOut
 }
 
@@ -491,16 +565,29 @@ private final class MermaidSchemeHandler: NSObject, WKURLSchemeHandler {
 }
 
 /// Allows the one page and cancels everything else.
+@MainActor
 final class MermaidNavigationPolicy: NSObject, WKNavigationDelegate {
     private var continuation: CheckedContinuation<Bool, Never>?
     private var finished: Bool?
+    private let onTermination: @MainActor () -> Void
 
-    func waitForLoad() async -> Bool {
+    init(onTermination: @escaping @MainActor () -> Void = {}) {
+        self.onTermination = onTermination
+    }
+
+    func waitForLoad(timeout: Duration = .seconds(8)) async -> Bool {
         if let finished { return finished }
-        return await withCheckedContinuation { self.continuation = $0 }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.settle(false)
+            }
+        }
     }
 
     private func settle(_ value: Bool) {
+        guard finished == nil else { return }
         finished = value
         continuation?.resume(returning: value)
         continuation = nil
@@ -521,7 +608,7 @@ final class MermaidNavigationPolicy: NSObject, WKNavigationDelegate {
     /// scheme. It is not a substitute for exercising the installed delegate —
     /// `MermaidNavigationBoundaryTests` loads a real loopback URL through a
     /// real `WKWebView` and asserts a listening server never sees it.
-    static func policy(for url: URL?) -> WKNavigationActionPolicy {
+    nonisolated static func policy(for url: URL?) -> WKNavigationActionPolicy {
         url?.scheme == MermaidHostPage.scheme ? .allow : .cancel
     }
 
@@ -536,4 +623,9 @@ final class MermaidNavigationPolicy: NSObject, WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) { settle(false) }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        settle(false)
+        onTermination()
+    }
 }
