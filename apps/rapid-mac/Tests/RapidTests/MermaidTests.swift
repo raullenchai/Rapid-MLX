@@ -379,7 +379,10 @@ struct MermaidHostPagePolicyTests {
         #expect(html.contains("\"theme\""))
         #expect(html.contains("\"themeVariables\""))
         #expect(html.contains("suppressErrorRendering: true"))
-        #expect(html.contains("el.setAttribute(\"viewBox\""))
+        #expect(html.contains("\"viewBox\","))
+        #expect(html.contains("const padding = 8"))
+        #expect(html.contains("box.x - padding"))
+        #expect(html.contains("box.width + padding * 2"))
         #expect(!html.contains("box.width + box.x * 2"))
     }
 }
@@ -454,6 +457,28 @@ struct MermaidRenderingTests {
         #expect(!renderer.isKnownBad(source: source, theme: .light))
         let recovered = await renderer.image(source: source, theme: .light)
         #expect(recovered != nil)
+    }
+
+    @Test("A nil snapshot rebuilds and retries instead of poisoning the source")
+    func nilSnapshotRetries() async {
+        var attempts = 0
+        let renderer = MermaidRenderer(
+            snapshotter: { webView, configuration, completion in
+                attempts += 1
+                guard attempts > 1 else {
+                    completion(nil, nil)
+                    return
+                }
+                webView.takeSnapshot(
+                    with: configuration, completionHandler: completion
+                )
+            }
+        )
+
+        let source = "graph TD\n  Nil --> Retry"
+        #expect(await renderer.image(source: source, theme: .light) == nil)
+        #expect(!renderer.isKnownBad(source: source, theme: .light))
+        #expect(await renderer.image(source: source, theme: .light) != nil)
     }
 
     @Test("The snapshot surface matches validated diagram dimensions")
