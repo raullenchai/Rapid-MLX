@@ -106,7 +106,6 @@ final class MermaidRenderer {
     /// 2× snapshot can occupy about 64 MB, so count alone is not a memory
     /// bound for a model response containing many large diagrams.
     private static let capacity = 32
-    private static let defaultCacheByteLimit = 256 * 1_024 * 1_024
     private let cacheByteLimit: Int
     private var cache: [Key: Entry] = [:]
     private var order: [Key] = []
@@ -154,7 +153,9 @@ final class MermaidRenderer {
         renderTimeout: Duration = .seconds(8),
         javaScriptEvaluator: JavaScriptEvaluator? = nil,
         snapshotter: Snapshotter? = nil,
-        cacheByteLimit: Int = MermaidRenderer.defaultCacheByteLimit
+        // Keep this a literal. Swift 6.1 can crash in SILGen when a default
+        // argument reaches through this @MainActor type to a static product.
+        cacheByteLimit: Int = 268_435_456
     ) {
         self.renderTimeout = renderTimeout
         self.javaScriptEvaluator = javaScriptEvaluator
