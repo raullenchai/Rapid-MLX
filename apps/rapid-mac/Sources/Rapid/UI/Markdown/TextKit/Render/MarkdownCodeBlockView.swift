@@ -167,6 +167,16 @@ final class MarkdownCodeBlockView: NSView {
         // time, so unlike the fill it cannot re-resolve itself — the text has
         // to be rebuilt against the new appearance.
         renderer.setCode(code, language: language)
+        // Mermaid output contains resolved theme colours. Drop the old
+        // bitmap and ask the renderer for the new appearance's cache entry;
+        // an in-flight render for the previous theme is rejected by
+        // `requestMermaidRender` before it can repaint this view.
+        if MermaidSource.looksLikeMermaid(code: code, language: language) {
+            previewImage = nil
+            previewSource = nil
+            updatePreviewAvailability()
+            invalidateLayoutChain()
+        }
         needsDisplay = true
     }
 

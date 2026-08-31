@@ -385,6 +385,41 @@ struct MermaidRenderingTests {
     /// view, and no suite can reset another's while it is mid-render.
     private let renderer = MermaidRenderer()
 
+    @Test("Snapshot dimensions are bounded before bitmap allocation")
+    func snapshotDimensionsAreBounded() {
+        #expect(MermaidRenderer.acceptsSnapshot(width: 2_000, height: 2_000))
+        #expect(!MermaidRenderer.acceptsSnapshot(width: 4_097, height: 100))
+        #expect(!MermaidRenderer.acceptsSnapshot(width: 100, height: 4_097))
+        #expect(!MermaidRenderer.acceptsSnapshot(width: 4_000, height: 4_000))
+        #expect(!MermaidRenderer.acceptsSnapshot(width: Int.max, height: 2))
+    }
+
+    @Test("A timed-out render releases the serial queue")
+    func timedOutRenderReleasesQueue() async {
+        let renderer = MermaidRenderer(
+            renderTimeout: .milliseconds(100),
+            javaScriptEvaluator: { webView, source, theme, completion in
+                guard source != "hang forever" else { return }
+                webView.callAsyncJavaScript(
+                    "return await __rapidRender(source, theme);",
+                    arguments: ["source": source, "theme": theme.rawValue],
+                    in: nil,
+                    in: .page,
+                    completionHandler: completion
+                )
+            }
+        )
+
+        let started = ContinuousClock.now
+        #expect(await renderer.image(source: "hang forever", theme: .light) == nil)
+        #expect(ContinuousClock.now - started < .seconds(2))
+
+        let recovered = await renderer.image(
+            source: "graph TD\n  Recovered --> Queue", theme: .light
+        )
+        #expect(recovered != nil)
+    }
+
     @Test("Diagrams of every common kind render", arguments: [
         ("flowchart", "graph TD\n  A[Start] --> B{Choice}\n  B -->|yes| C[Go]"),
         ("sequence", "sequenceDiagram\n  A->>B: hello\n  B-->>A: hi"),
@@ -691,6 +726,20 @@ struct PreviewAutoRevealTests {
         _ = block(source, "mermaid", isFinal: true)
         try? await Task.sleep(for: .milliseconds(1_500))
         #expect(renderer.cachedImage(source: source, theme: .light) != nil)
+    }
+
+    @Test("Changing appearance requests a matching diagram theme")
+    func appearanceChangeRendersMatchingTheme() async throws {
+        let source = "graph TD\n  Light --> Dark"
+        let view = block(source, "mermaid")
+        try? await Task.sleep(for: .milliseconds(1_500))
+        let light = try #require(renderer.cachedImage(source: source, theme: .light))
+
+        view.appearance = NSAppearance(named: .darkAqua)
+        view.viewDidChangeEffectiveAppearance()
+        try? await Task.sleep(for: .milliseconds(1_500))
+        let dark = try #require(renderer.cachedImage(source: source, theme: .dark))
+        #expect(light !== dark)
     }
 }
 
