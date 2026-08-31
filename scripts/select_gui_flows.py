@@ -59,7 +59,7 @@ def _manifest() -> list[dict[str, object]]:
         lines = block.splitlines()
         values: dict[str, object] = {"name": lines[0].strip()}
         for line in lines[1:]:
-            match = re.match(r"^    (group|ci_tier): ([a-z-]+)\s*$", line)
+            match = re.match(r"^    (group|ci_tier|driver): ([a-z-]+)\s*$", line)
             if match:
                 values[match.group(1)] = match.group(2)
                 continue
@@ -68,7 +68,7 @@ def _manifest() -> list[dict[str, object]]:
                 values["source_paths"] = [
                     item.strip() for item in match.group(1).split(",") if item.strip()
                 ]
-        required = {"name", "group", "ci_tier", "source_paths"}
+        required = {"name", "group", "ci_tier", "driver", "source_paths"}
         if set(values) != required or not values["source_paths"]:
             raise ValueError(f"malformed GUI journey routing fields: {values['name']}")
         journeys.append(values)
@@ -78,7 +78,18 @@ def _manifest() -> list[dict[str, object]]:
 
 
 def _pr_journeys() -> list[dict[str, object]]:
-    return [journey for journey in _manifest() if journey["ci_tier"] == "pr"]
+    """PR journeys that the bash harness runs.
+
+    `driver: swift` journeys are covered in-process by the build job's
+    `swift test` on every PR, so they never occupy a GUI shard and must not
+    be offered to `gui-golden-flows.sh`, which has no case for them.
+    """
+
+    return [
+        journey
+        for journey in _manifest()
+        if journey["ci_tier"] == "pr" and journey["driver"] != "swift"
+    ]
 
 
 def all_flows() -> list[str]:

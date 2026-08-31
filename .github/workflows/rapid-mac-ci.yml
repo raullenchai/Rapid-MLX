@@ -550,12 +550,6 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
 
-      - name: 'Golden flow: message-actions'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow message-actions
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/message-actions
-
       - name: 'Golden flow: restored-tools'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow restored-tools

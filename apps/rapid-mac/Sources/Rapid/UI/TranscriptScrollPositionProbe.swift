@@ -342,7 +342,16 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
 
         private func updateBottomTarget(animated: Bool) {
             guard let target = constrainedBottomOrigin() else { return }
-            if !animated {
+            // A view display link only fires while the window sits on an
+            // active display. In a window that is off every display there is
+            // nothing to animate on — parking the target would leave the
+            // transcript stranded mid-document forever — so land instantly.
+            // No window at all stays on the animated path: deterministic
+            // tests drive `advanceScrollFrame` directly against unhosted
+            // scroll views, and a production view without a window has
+            // `attach` re-anchoring it the moment one arrives.
+            let window = scrollView?.window
+            if !animated || (window != nil && window?.screen == nil) {
                 applyScroll(to: target)
                 cancelScrollTarget()
                 return

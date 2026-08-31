@@ -58,7 +58,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-curated-tradeup, cached-variant-collapse, download-progress, settings-persistence, settings-mtp, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, update-busy, campaign-banner, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -402,7 +402,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
+        fresh-install|cached-quickstart|cached-curated-tradeup|cached-variant-collapse|download-progress|settings-persistence|settings-mtp|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|update-busy|campaign-banner|launch-integrations) return 1 ;;
         slow-stream-stop|model-switch-active-request|model-crash-recovery|low-memory-choice|chat-document-attachment|chat-multimodal-attachments|image-generation|dictation|dictation-rc2-upgrade|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -2690,218 +2690,6 @@ flow_chat_restore() {
            | length == 0' "$OUT/search-new-chat-landed.json" >/dev/null \
         || die "New chat did not dismiss conversation search"
     log "  conversation Pin/Unpin and search Clear/Close/New chat all produced effects"
-    cleanup_persona
-}
-
-flow_message_actions() {
-    # Every inline message action must produce its advertised result. Dynamic
-    # UUID suffixes are discovered from the live tree so this drives the same
-    # controls a user sees instead of a test-only entry point.
-    start_persona message-actions
-    dismiss_first_run
-    start_model
-    see_main "$OUT/message-actions-model-info-before.json"
-    press "$OUT/message-actions-model-info-before.json" ModelPickerBar.ModelInfo \
-        "$OUT/message-actions-model-info-press.json" \
-        || die "Model info button is not pressable"
-    wait_tree_text "Parameters" "$OUT/message-actions-model-info-open.json" 40
-    assert_tree_text "$OUT/message-actions-model-info-open.json" "$FAKE_ALIAS"
-    # Clicking the anchor again dismisses its popover and proves it is not a
-    # one-way overlay that traps the rest of the composer.
-    press "$OUT/message-actions-model-info-open.json" ModelPickerBar.ModelInfo \
-        "$OUT/message-actions-model-info-close-press.json" \
-        || die "Model info popover cannot be dismissed from its anchor"
-    send_prompt "original message action prompt" message-actions
-    wait_send_idle "$OUT/message-actions-settled.json"
-    see_main "$OUT/message-actions-before.json"
-
-    local assistant_copy assistant_select assistant_retry user_edit suffix
-    assistant_copy="$(jq -r '.data.ui_elements[]? | (.identifier // "")
-        | select(startswith("ChatView.Message.Copy."))' \
-        "$OUT/message-actions-before.json" | tail -1)"
-    assistant_select="${assistant_copy/Message.Copy./Message.SelectText.}"
-    assistant_retry="${assistant_copy/Message.Copy./Message.Retry.}"
-    user_edit="$(jq -r '.data.ui_elements[]? | (.identifier // "")
-        | select(startswith("ChatView.Message.Edit."))' \
-        "$OUT/message-actions-before.json" | head -1)"
-    [[ -n "$assistant_copy" && -n "$user_edit" ]] \
-        || die "completed turn exposes no assistant and user message actions"
-
-    pbcopy < /dev/null
-    press "$OUT/message-actions-before.json" "$assistant_copy" \
-        "$OUT/message-actions-copy-press.json" \
-        || die "Copy response is not pressable"
-    [[ -n "$(pbpaste)" ]] || die "Copy response left the pasteboard empty"
-
-    see_main "$OUT/message-actions-after-copy.json"
-    press "$OUT/message-actions-after-copy.json" "$assistant_select" \
-        "$OUT/message-actions-select-press.json" \
-        || die "Select text is not pressable"
-    wait_identifier SelectText.Done "$OUT/message-actions-select-sheet.json"
-    press "$OUT/message-actions-select-sheet.json" SelectText.Done \
-        "$OUT/message-actions-select-done-press.json" \
-        || die "Select text sheet cannot be dismissed"
-    for _ in {1..40}; do
-        see_main "$OUT/message-actions-select-closed.json"
-        if jq -e '.data.walk.complete == true
-                  and ([.data.ui_elements[]? | .identifier // ""]
-                       | index("SelectText.Done")) == null' \
-            "$OUT/message-actions-select-closed.json" >/dev/null; then break; fi
-        sleep 0.1
-    done
-    jq -e '([.data.ui_elements[]? | .identifier // ""]
-            | index("SelectText.Done")) == null' \
-        "$OUT/message-actions-select-closed.json" >/dev/null \
-        || die "Done did not dismiss the Select text sheet"
-
-    # Copy's checkmark reverts after 1.2s. SwiftUI may replace the action-row
-    # backing elements during that symbol transition; wait for the stable copy
-    # state so this journey measures Edit itself rather than an intentionally
-    # transient sibling animation.
-    for _ in {1..40}; do
-        see_main "$OUT/message-actions-copy-settled.json"
-        if jq -e --arg identifier "$assistant_copy" \
-            '.data.ui_elements[]? | select(.identifier == $identifier)
-             | select(.selected != true)' \
-            "$OUT/message-actions-copy-settled.json" >/dev/null; then break; fi
-        sleep 0.1
-    done
-    see_main "$OUT/message-actions-before-edit.json"
-    suffix="${user_edit##*.}"
-    if ! press "$OUT/message-actions-before-edit.json" "$user_edit" \
-        "$OUT/message-actions-edit-press.json"; then
-        # AXUIElementPerformAction may report cannotComplete even if SwiftUI
-        # committed the synchronous state mutation. Read the outcome before
-        # calling it dead; if no editor appeared, this is a product failure.
-        sleep 0.2
-        see_main "$OUT/message-actions-edit-failed-outcome.json"
-        jq -e --arg identifier "ChatView.Message.EditField.$suffix" \
-            '.data.ui_elements[]? | select(.identifier == $identifier)' \
-            "$OUT/message-actions-edit-failed-outcome.json" >/dev/null \
-            || die "Edit message is not pressable"
-    fi
-    wait_identifier "ChatView.Message.EditField.$suffix" \
-        "$OUT/message-actions-editor.json"
-    "$AX_DRIVER" set-value "$APP_PID" "ChatView.Message.EditField.$suffix" \
-        "cancelled edit must not send" > "$OUT/message-actions-edit-type.json"
-    see_main "$OUT/message-actions-edit-draft.json"
-    press "$OUT/message-actions-edit-draft.json" \
-        "ChatView.Message.CancelEdit.$suffix" \
-        "$OUT/message-actions-edit-cancel-press.json" \
-        || die "Cancel editing is not pressable"
-    wait_identifier "$user_edit" "$OUT/message-actions-edit-cancelled.json"
-    grep -q 'cancelled edit must not send' "$OUT/fake-events.jsonl" 2>/dev/null \
-        && die "cancelling a message edit sent the draft"
-
-    local requests_before requests_after
-    requests_before="$(jq -s '[.[] | select(.event == "chat_request"
-        and .request_origin != "background_assist")] | length' "$OUT/fake-events.jsonl")"
-    see_main "$OUT/message-actions-before-retry.json"
-    press "$OUT/message-actions-before-retry.json" "$assistant_retry" \
-        "$OUT/message-actions-retry-press.json" \
-        || die "Retry response is not pressable"
-    for _ in {1..80}; do
-        requests_after="$(jq -s '[.[] | select(.event == "chat_request"
-            and .request_origin != "background_assist")] | length' "$OUT/fake-events.jsonl")"
-        [[ "$requests_after" -gt "$requests_before" ]] && break
-        sleep 0.1
-    done
-    [[ "$requests_after" -gt "$requests_before" ]] \
-        || die "Retry response did not send a replacement request"
-    wait_send_idle "$OUT/message-actions-retried.json"
-
-    see_main "$OUT/message-actions-before-save-edit.json"
-    user_edit="$(jq -r '.data.ui_elements[]? | (.identifier // "")
-        | select(startswith("ChatView.Message.Edit."))' \
-        "$OUT/message-actions-before-save-edit.json" | head -1)"
-    [[ -n "$user_edit" ]] || die "retried turn exposes no Edit message action"
-    suffix="${user_edit##*.}"
-    press "$OUT/message-actions-before-save-edit.json" "$user_edit" \
-        "$OUT/message-actions-save-edit-open-press.json" || true
-    wait_identifier "ChatView.Message.EditField.$suffix" \
-        "$OUT/message-actions-save-editor.json"
-    "$AX_DRIVER" set-value "$APP_PID" "ChatView.Message.EditField.$suffix" \
-        "saved edited message prompt" > "$OUT/message-actions-save-edit-type.json"
-    see_main "$OUT/message-actions-save-edit-draft.json"
-    press "$OUT/message-actions-save-edit-draft.json" \
-        "ChatView.Message.SaveEdit.$suffix" \
-        "$OUT/message-actions-save-edit-press.json" \
-        || die "Save edited message is not pressable"
-    for _ in {1..80}; do
-        if jq -e 'select(.event == "chat_request")
-                  | select(.user_texts | index("saved edited message prompt"))' \
-            "$OUT/fake-events.jsonl" >/dev/null 2>&1; then break; fi
-        sleep 0.1
-    done
-    jq -e 'select(.event == "chat_request")
-           | select(.user_texts | index("saved edited message prompt"))' \
-        "$OUT/fake-events.jsonl" >/dev/null \
-        || die "Save edited message did not resend the edited turn"
-    wait_send_idle "$OUT/message-actions-saved-edit-settled.json"
-
-    # A finished answer no longer emits document-frame changes. This is the
-    # exact state where Jump to latest used to set the pinned flag but leave
-    # the transcript physically scrolled up. Drive a long, fully settled
-    # answer, move away from its tail, then require the same last-message
-    # action to return after pressing the button.
-    send_prompt "shape:long finished answer for jump-to-bottom" message-actions-long
-    wait_send_idle "$OUT/message-actions-long-settled.json"
-    local bottom_scroll_value
-    bottom_scroll_value="$(jq -r '[.data.ui_elements[]?
-        | select(.role == "AXScrollBar" and (.value | type) == "number")
-        | .value] | max // empty' "$OUT/message-actions-long-settled.json")"
-    [[ -n "$bottom_scroll_value" ]] \
-        || die "long settled transcript exposes no measurable scroll position"
-    "$AX_DRIVER" set-scroll-value "$APP_PID" 0 \
-        > "$OUT/message-actions-scroll-up.json" \
-        || die "could not move the settled transcript away from its tail"
-    local jump_visible=0
-    for _ in {1..60}; do
-        see_main "$OUT/message-actions-scrolled.json"
-        if jq -e '.data.ui_elements[]?
-                  | select(.identifier == "Transcript.JumpToBottom")' \
-            "$OUT/message-actions-scrolled.json" >/dev/null; then
-            jump_visible=1; break
-        fi
-        sleep 0.1
-    done
-    [[ "$jump_visible" == 1 ]] \
-        || die "scrolling up a settled transcript never exposed Jump to latest"
-    local scrolled_value
-    scrolled_value="$(jq -r '[.data.ui_elements[]?
-        | select(.role == "AXScrollBar" and (.value | type) == "number")
-        | .value] | min // empty' "$OUT/message-actions-scrolled.json")"
-    [[ -n "$scrolled_value" ]] \
-        || die "scrolled transcript exposes no measurable scroll position"
-    awk -v before="$bottom_scroll_value" -v after="$scrolled_value" \
-        'BEGIN { exit !(after < before - 0.02) }' \
-        || die "scroll fixture did not move away from the settled transcript tail"
-    press "$OUT/message-actions-scrolled.json" Transcript.JumpToBottom \
-        "$OUT/message-actions-jump-press.json" \
-        || die "Jump to latest is not pressable on a settled transcript"
-    local jumped=0
-    for _ in {1..60}; do
-        see_main "$OUT/message-actions-jumped.json"
-        local jumped_value
-        jumped_value="$(jq -r '[.data.ui_elements[]?
-            | select(.role == "AXScrollBar" and (.value | type) == "number")
-            | .value] | max // empty' "$OUT/message-actions-jumped.json")"
-        if [[ -n "$jumped_value" ]] \
-            && awk -v before="$scrolled_value" -v after="$jumped_value" \
-                'BEGIN { exit !(after > before + 0.02) }' \
-            && ! jq -e '.data.ui_elements[]?
-                        | select(.identifier == "Transcript.JumpToBottom")' \
-                "$OUT/message-actions-jumped.json" >/dev/null; then
-            jumped=1; break
-        fi
-        sleep 0.1
-    done
-    [[ "$jumped" == 1 ]] \
-        || die "Jump to latest hid itself without returning the settled transcript to its tail"
-    jq -n '{success: true,
-            assertion: "a finished transcript scrolls back to its final answer"}' \
-        > "$OUT/message-actions-jump-assertion.json"
-    log "  message actions and finished-answer Jump to latest all produced effects"
     cleanup_persona
 }
 
@@ -5982,7 +5770,6 @@ case "$FLOW" in
     settings-persistence) flow_settings_persistence ;;
     settings-mtp) flow_settings_mtp ;;
     chat-restore) flow_chat_restore ;;
-    message-actions) flow_message_actions ;;
     restored-tools) flow_restored_tools ;;
     tool-loop-budget) flow_tool_loop_budget ;;
     chat-depth) flow_chat_depth ;;
@@ -6015,7 +5802,6 @@ case "$FLOW" in
         flow_settings_persistence
         flow_settings_mtp
         flow_chat_restore
-        flow_message_actions
         flow_restored_tools
         flow_tool_loop_budget
         flow_chat_depth
