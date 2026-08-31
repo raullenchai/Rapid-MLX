@@ -47,6 +47,7 @@ struct MarkdownBlockStack: View {
             if case .text = $0.content { return true }
             return false
         }?.id
+        let lastGroupID = groups.last?.id
 
         VStack(alignment: .leading, spacing: options.interContentSpacing) {
             ForEach(groups) { group in
@@ -73,7 +74,7 @@ struct MarkdownBlockStack: View {
                         // it — ten a second, each a different string, each
                         // failing and each taking a cache slot from a result
                         // that will matter.
-                        isFinal: !isStreaming || index < groups.count - 1
+                        isFinal: !isStreaming || group.id != lastGroupID
                     )
                 case .table(let block):
                     MarkdownTableView(block: block, options: options)
