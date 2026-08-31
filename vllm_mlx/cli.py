@@ -48,6 +48,21 @@ def _log_level_choice(value: str) -> str:
     return value.upper()
 
 
+def _add_video_job_args(parser: argparse.ArgumentParser) -> None:
+    """Register the shared video artifact-store option on a serve parser."""
+    parser.add_argument(
+        "--video-output-dir",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Persist completed video jobs and MP4 files under PATH so they "
+            "remain available after a server restart. The default uses a "
+            "process-temporary directory."
+        ),
+    )
+
+
 def _auth_feature_str(argv_api_key: str | None) -> str | None:
     """Banner-side renderer for the ``auth: on`` feature line.
 
@@ -2988,6 +3003,17 @@ def serve_command(args):
         from ._pysample import install as _pysample_install
 
         _pysample_install()
+
+    # Validate the opt-in artifact store before dependency probes or a large
+    # video-model download. The route owns path resolution and writeability so
+    # the unified and standalone server entrypoints cannot drift.
+    from .routes.video import configure_video_jobs
+
+    try:
+        configure_video_jobs(getattr(args, "video_output_dir", None))
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"error: cannot configure video output directory: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
     # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
     # passed its own PID via ``--watchdog-ppid`` or
@@ -10122,6 +10148,7 @@ Examples:
         ),
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    _add_video_job_args(serve_parser)
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into
     # ``rapid-mlx`` with the pre-bound fd. This closes the bind→auth
