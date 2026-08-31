@@ -86,6 +86,20 @@ class ContractValidator:
         if failures:
             raise failures[0]
 
+    def validate_model_identity(self, identity: dict[str, Any]) -> None:
+        self.validate("model_identity", identity)
+        component_ids = [item["component_id"] for item in identity["components"]]
+        if len(component_ids) != len(set(component_ids)):
+            raise CatalogValidationError(
+                "model_identity", "components", "component_id values must be unique"
+            )
+        if component_ids != sorted(component_ids):
+            raise CatalogValidationError(
+                "model_identity",
+                "components",
+                "components must be sorted by component_id",
+            )
+
     def validate_catalog_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.validate("catalog_snapshot", snapshot)
         model_by_id: dict[str, dict[str, Any]] = {}

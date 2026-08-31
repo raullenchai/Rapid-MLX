@@ -16,7 +16,6 @@ from vllm_mlx.catalog import (
     ContractValidator,
     build_catalog_bundle,
     build_legacy_catalog_snapshot,
-    build_legacy_recommendation_policy,
     canonical_json_bytes,
     rcj_digest,
 )
@@ -115,8 +114,9 @@ def test_catalog_digest_covers_ordered_records_and_policy_reference() -> None:
 
 
 def test_recommendation_adapter_scales_measurements_and_validates_tasks() -> None:
-    snapshot = build_legacy_catalog_snapshot()
-    policy = build_legacy_recommendation_policy(snapshot)
+    bundle = build_catalog_bundle()
+    snapshot = bundle["snapshot"]
+    policy = bundle["recommendation_policies"][0]
     first = policy["tiers"][0]["picks"][0]
     assert policy["machine_dimension"] == "physical_memory_mib"
     assert first["footprint_mib"] == 3 * 1024
@@ -192,6 +192,77 @@ def test_atomic_registry_accepts_schema_valid_unresolved_identity(
         }
     )
     assert registry.get("model_identity", digest) == identity
+
+
+def test_atomic_registry_rechecks_declared_digest_on_read(tmp_path: Path) -> None:
+    identity = json.loads(
+        (
+            ROOT / "proto/model-runtime/v1/examples/model-identity.llm.example.json"
+        ).read_text()
+    )
+    registry = AtomicRegistry(tmp_path)
+    digest = registry.put("model_identity", identity)
+    path = tmp_path / "model_identity" / f"{digest.removeprefix('sha256:')}.json"
+    tampered = copy.deepcopy(identity)
+    tampered["identity_digest"] = "sha256:" + "f" * 64
+    path.write_text(json.dumps(tampered))
+
+    with pytest.raises(CatalogValidationError, match="declared digest"):
+        registry.get("model_identity", digest)
+
+
+def test_atomic_registry_rejects_noncanonical_model_components(tmp_path: Path) -> None:
+    identity = json.loads(
+        (
+            ROOT / "proto/model-runtime/v1/examples/model-identity.llm.example.json"
+        ).read_text()
+    )
+    duplicate = copy.deepcopy(identity["components"][0])
+    duplicate["role"] = "adapter"
+    identity["components"].append(duplicate)
+    identity["identity_digest"] = rcj_digest(
+        {
+            key: identity[key]
+            for key in ("schema_version", "pipeline_kind", "components")
+        }
+    )
+    with pytest.raises(CatalogValidationError, match="component_id values"):
+        AtomicRegistry(tmp_path).put("model_identity", identity)
+
+    identity["components"][1]["component_id"] = "adapter"
+    identity["identity_digest"] = rcj_digest(
+        {
+            key: identity[key]
+            for key in ("schema_version", "pipeline_kind", "components")
+        }
+    )
+    with pytest.raises(CatalogValidationError, match="must be sorted"):
+        AtomicRegistry(tmp_path).put("model_identity", identity)
+
+
+def test_atomic_registry_requires_catalog_context_for_recommendations(
+    tmp_path: Path,
+) -> None:
+    bundle = build_catalog_bundle()
+    snapshot = bundle["snapshot"]
+    policy = bundle["recommendation_policies"][0]
+    registry = AtomicRegistry(tmp_path)
+    with pytest.raises(ValueError, match="requires catalog_snapshot"):
+        registry.put("recommendation_policy", policy)
+
+    invalid = copy.deepcopy(policy)
+    invalid["tiers"][1]["minimum_memory_mib"] = 1
+    invalid["policy_digest"] = rcj_digest(
+        {key: value for key, value in invalid.items() if key != "policy_digest"}
+    )
+    with pytest.raises(CatalogValidationError, match="strictly increasing"):
+        registry.put("recommendation_policy", invalid, catalog_snapshot=snapshot)
+
+    digest = registry.put("recommendation_policy", policy, catalog_snapshot=snapshot)
+    assert (
+        registry.get("recommendation_policy", digest, catalog_snapshot=snapshot)
+        == policy
+    )
 
 
 def test_atomic_registry_never_replaces_a_concurrent_winner(

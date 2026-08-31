@@ -67,13 +67,44 @@ class AtomicRegistry:
         self.root = Path(root)
         self.validator = validator or ContractValidator()
 
-    def put(self, kind: RegistryKind, document: dict[str, Any]) -> str:
+    def _validate_document(
+        self,
+        kind: RegistryKind,
+        document: dict[str, Any],
+        *,
+        catalog_snapshot: dict[str, Any] | None,
+    ) -> None:
         if kind == "catalog_snapshot":
             self.validator.validate_catalog_snapshot(document)
+        elif kind == "recommendation_policy":
+            if catalog_snapshot is None:
+                raise ValueError(
+                    "recommendation_policy validation requires catalog_snapshot"
+                )
+            self.validator.validate_catalog_snapshot(catalog_snapshot)
+            aliases = {item["alias"]: item for item in catalog_snapshot["aliases"]}
+            self.validator.validate_recommendation_policy(document, aliases=aliases)
+            if (
+                document["policy_digest"]
+                not in catalog_snapshot["recommendation_policy_digests"]
+            ):
+                raise CatalogValidationError(
+                    "recommendation_policy",
+                    "policy_digest",
+                    "is not referenced by the catalog snapshot",
+                )
+        elif kind == "model_identity":
+            self.validator.validate_model_identity(document)
         else:
             self.validator.validate(kind, document)
-        projection, digest_field = _projection(kind, document)
-        digest = rcj_digest(projection)
+
+    @staticmethod
+    def _validate_declared_digest(
+        kind: RegistryKind,
+        document: dict[str, Any],
+        digest: str,
+        digest_field: str,
+    ) -> None:
         declared = document.get(digest_field)
         digest_is_optional = (
             kind == "model_identity"
@@ -85,6 +116,18 @@ class AtomicRegistry:
             raise CatalogValidationError(
                 kind, digest_field, "declared digest does not match RCJ-1"
             )
+
+    def put(
+        self,
+        kind: RegistryKind,
+        document: dict[str, Any],
+        *,
+        catalog_snapshot: dict[str, Any] | None = None,
+    ) -> str:
+        self._validate_document(kind, document, catalog_snapshot=catalog_snapshot)
+        projection, digest_field = _projection(kind, document)
+        digest = rcj_digest(projection)
+        self._validate_declared_digest(kind, document, digest, digest_field)
 
         target_dir = self.root / kind
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +154,13 @@ class AtomicRegistry:
             temporary.unlink(missing_ok=True)
         return digest
 
-    def get(self, kind: RegistryKind, digest: str) -> dict[str, Any]:
+    def get(
+        self,
+        kind: RegistryKind,
+        digest: str,
+        *,
+        catalog_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not digest.startswith("sha256:") or len(digest) != 71:
             raise ValueError("digest must be sha256:<64 lowercase hex characters>")
         suffix = digest.removeprefix("sha256:")
@@ -119,13 +168,12 @@ class AtomicRegistry:
             raise ValueError("digest must be sha256:<64 lowercase hex characters>")
         path = self.root / kind / f"{suffix}.json"
         document = json.loads(path.read_text(encoding="utf-8"))
-        if kind == "catalog_snapshot":
-            self.validator.validate_catalog_snapshot(document)
-        else:
-            self.validator.validate(kind, document)
-        projection, _ = _projection(kind, document)
-        if rcj_digest(projection) != digest:
+        self._validate_document(kind, document, catalog_snapshot=catalog_snapshot)
+        projection, digest_field = _projection(kind, document)
+        computed = rcj_digest(projection)
+        if computed != digest:
             raise CatalogValidationError(
                 kind, "", "stored object failed content-address verification"
             )
+        self._validate_declared_digest(kind, document, computed, digest_field)
         return document
