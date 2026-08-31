@@ -126,7 +126,7 @@ Both pinned by `PBS_VERSION` / `PBS_TAG` in `scripts/build-sidecar.sh`.
 
 The root `pyproject.toml` `[project].dependencies` block, installed in
 full. The ranges below are the **root manifest's**; the sidecar build pins
-`mlx==0.32.2` and `transformers==5.12.1` at install time (step 2 of
+`mlx==0.32.2` and `transformers==5.15.1` at install time (step 2 of
 `scripts/build-sidecar.sh`) so the shipped vision stack is reproducible.
 
 | Component | Declared range | License | Project |
@@ -158,7 +158,7 @@ path works in a text-only bundle:
 
 | Component | Pin | License | Project |
 | --- | --- | --- | --- |
-| mlx-vlm | `==0.6.16` | MIT | https://github.com/Blaizzy/mlx-vlm |
+| mlx-vlm | `==0.6.17` | MIT | https://github.com/Blaizzy/mlx-vlm |
 | Pillow | `>=10.0` | MIT-CMU | https://github.com/python-pillow/Pillow |
 
 ### Third-party source vendored into the engine
@@ -189,6 +189,8 @@ The largest and most self-contained components:
 | MLX Stable Audio 3 | https://github.com/Stability-AI/stable-audio-3 | MIT | `vllm_mlx/audio/sa3/` (`LICENSE`, `NOTICE`) |
 | CogVideoX-Fun MLX | https://github.com/dgrauet/VideoX-Fun-mlx | Apache-2.0 | `videox_fun_mlx/` (`LICENSE`, `NOTICE`) |
 | TurboQuant Metal kernels | https://github.com/arozanov/turboquant-mlx | Apache-2.0 | `vllm_mlx/kernels/turboquant_fused.metal` |
+| GLM-5 Next image processor | https://github.com/jundot/omlx (`c520d7e`) | Apache-2.0 | `vllm_mlx/patches/glm5_next_processor.py` |
+| GLM-5 Next text runtime | https://github.com/Blaizzy/mlx-vlm (`f9e2c50`, `bffd485`) | MIT | `vllm_mlx/patches/glm5_next_runtime.py` |
 | Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `vllm_mlx/models/gemma4_vendored/` |
 | Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `vllm_mlx/models/hy_v3.py` |
 | DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `vllm_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
