@@ -330,6 +330,14 @@ final class MermaidRenderer {
         webView: WKWebView,
         measurement: MermaidRenderMeasurement
     ) async throws -> NSImage? {
+        let surfaceSize = CGSize(width: measurement.width, height: measurement.height)
+        // `WKSnapshotConfiguration.rect` is clipped to the view's drawable
+        // surface. The host starts small to keep idle WebKit cheap, then grows
+        // only after the measured dimensions pass the allocation bounds.
+        webView.frame = CGRect(origin: .zero, size: surfaceSize)
+        window?.setContentSize(surfaceSize)
+        webView.layoutSubtreeIfNeeded()
+
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(
             x: 0, y: 0, width: measurement.width, height: measurement.height

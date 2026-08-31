@@ -73,19 +73,23 @@ enum MermaidSource {
     /// that is what tells `graph TD` from a Python block opening
     /// `graph = nx.Graph()`.
     nonisolated static func openingKeyword(of code: String) -> (opening: String, rest: String)? {
-        var lines = code.split(separator: "\n", omittingEmptySubsequences: false)[...]
+        // CRLF is one extended grapheme cluster in Swift, so splitting on the
+        // literal `\n` Character misses it. Split by newline semantics.
+        var lines = code.split(
+            omittingEmptySubsequences: false, whereSeparator: \.isNewline
+        )[...]
 
         // Frontmatter, if the very first line opens one.
-        if lines.first?.trimmingCharacters(in: .whitespaces) == "---" {
+        if lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
             lines = lines.dropFirst()
             guard let close = lines.firstIndex(where: {
-                $0.trimmingCharacters(in: .whitespaces) == "---"
+                $0.trimmingCharacters(in: .whitespacesAndNewlines) == "---"
             }) else { return nil }
             lines = lines[lines.index(after: close)...]
         }
 
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty || trimmed.hasPrefix("%%") { continue }
             let word = trimmed.prefix { !$0.isWhitespace && $0 != ":" }
             guard !word.isEmpty else { return nil }
