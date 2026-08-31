@@ -4,7 +4,7 @@
   "origin": "builtin",
   "presentation": {"name": "Sample Image Model", "description_id": "sample-image-v1"},
   "target": {"registry_model_id": "example/sample-image/2026-08", "resolution_status": "resolved", "model_identity_digest": "sha256:69e798dd8ffbe25a9d3876227056016fd692a257caf32a733b6d96472f67caf0"},
-  "capabilities": {"task_types": ["image_generation"], "generation_modes": ["text_to_image", "image_to_image"], "experimental": false},
+  "capabilities": {"task_types": ["image_generation"], "is_text_only": false, "generation_modes": ["text_to_image", "image_to_image"], "experimental": false},
   "availability": {"cli": true, "server": true, "desktop": true, "website": true},
   "default_execution_preset_id": "m4-max-balanced",
   "execution_presets": [{"preset_id": "m4-max-balanced", "execution_config_digest": "sha256:89f69f97fd129c690adb7465a7aa495e196cc66fab212c5421e45403eb9dad7c", "evidence": {"status": "community_candidate", "evidence_id": "community/image/m4-max-v1", "machine_profile_digest": "sha256:c805ee05c006a80c867d83f59bfc157af147d9258277f1f2994d1ae1ae2703d0", "workload_protocol_digest": "sha256:176afc2f841db939d04c25b91fbd5030f349ed77f1a5adc564cc4c68666fa438"}}]

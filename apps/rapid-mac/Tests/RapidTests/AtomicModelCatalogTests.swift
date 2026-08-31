@@ -48,6 +48,9 @@ struct AtomicModelCatalogTests {
         for index in aliases.indices {
             aliases[index]["schema_version"] = 1
             aliases[index]["origin"] = "builtin"
+            var capabilities = aliases[index]["capabilities"] as! [String: Any]
+            capabilities["is_text_only"] = index == 0
+            aliases[index]["capabilities"] = capabilities
             var target = aliases[index]["target"] as! [String: Any]
             target["resolution_status"] = "unresolved"
             aliases[index]["target"] = target
@@ -267,9 +270,17 @@ struct AtomicModelCatalogTests {
         let merged = ModelCatalog.mergeAtomicAndCached(
             atomic: [chat, sibling],
             cached: [("chat", "org/chat", "1 GiB")],
-            excluded: []
+            excluded: [],
+            speculative: [
+                "chat-sibling": SpeculativeDecodingPreset(
+                    method: .suffix, model: nil, tokens: nil
+                ),
+            ]
         )
         #expect(merged.first { $0.alias == "chat-sibling" }?.cached == true)
         #expect(merged.first { $0.alias == "chat-sibling" }?.sizeOnDisk == "1 GiB")
+        #expect(merged.first {
+            $0.alias == "chat-sibling"
+        }?.speculativeDecodingPreset?.method == .suffix)
     }
 }

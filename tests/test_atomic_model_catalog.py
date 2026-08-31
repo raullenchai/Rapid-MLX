@@ -57,6 +57,7 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
     assert aliases["qwen3.8-27b-4bit"]["capabilities"]["task_types"] == [
         "text_generation"
     ]
+    assert aliases["qwen3.8-27b-4bit"]["capabilities"]["is_text_only"] is False
     assert aliases["flux2-klein-4b"]["capabilities"]["operation_modes"] == [
         "text_to_image",
         "image_to_image",

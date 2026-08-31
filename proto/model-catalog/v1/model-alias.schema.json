@@ -34,9 +34,10 @@
     },
     "capabilities": {
       "type": "object", "additionalProperties": false,
-      "required": ["task_types"],
+      "required": ["task_types", "is_text_only"],
       "properties": {
         "task_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["text_generation", "vision_language", "image_generation", "video_generation", "speech_synthesis", "speech_recognition", "forced_alignment"]}},
+        "is_text_only": {"type": "boolean", "description": "Compatibility safety pin consumed by current launch policy; explicit rather than inferred from task taxonomy."},
         "generation_modes": {"type": "array", "uniqueItems": true, "items": {"enum": ["text_to_image", "image_to_image", "inpainting", "text_to_video", "image_to_video", "video_to_video"]}},
         "operation_modes": {"type": "array", "uniqueItems": true, "items": {"enum": ["chat", "image_understanding", "text_to_image", "image_to_image", "inpainting", "text_to_video", "image_to_video", "video_to_video", "preset_voice", "voice_cloning", "voice_design", "transcription", "translation", "forced_alignment"]}},
         "runtime_adapter": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._/-]*$"},

@@ -59,6 +59,7 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
         )
     capabilities: dict[str, Any] = {
         "task_types": tasks,
+        "is_text_only": bool(getattr(profile, "is_text_only", False)),
         "operation_modes": operations,
         "runtime_adapter": adapter,
         "experimental": bool(getattr(profile, "experimental", False)),
@@ -89,6 +90,7 @@ def _audio_capabilities(entry: Any) -> dict[str, Any]:
             operations = ["preset_voice"]
     return {
         "task_types": tasks,
+        "is_text_only": False,
         "operation_modes": operations,
         "runtime_adapter": f"mlx_audio/{entry.family}",
         "experimental": entry.family in {"voxcpm", "dia"},
