@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Atomic product model catalog")
 struct AtomicModelCatalogTests {
-    private static let payload = #"""
+    private static let unsignedPayload = #"""
     {
       "text": [{"alias":"chat","supports_spec_decode":true}],
       "atomic": {
@@ -30,6 +30,76 @@ struct AtomicModelCatalogTests {
       }
     }
     """#
+
+    private static let payload = makePayload()
+
+    private static func makePayload() -> String {
+        let data = Data(unsignedPayload.utf8)
+        guard var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var atomic = root["atomic"] as? [String: Any],
+              var snapshot = atomic["snapshot"] as? [String: Any],
+              var models = snapshot["models"] as? [[String: Any]],
+              var aliases = snapshot["aliases"] as? [[String: Any]]
+        else { fatalError("invalid unsigned fixture") }
+        for index in models.indices {
+            models[index]["schema_version"] = 1
+            models[index]["resolution_status"] = "unresolved"
+        }
+        for index in aliases.indices {
+            aliases[index]["schema_version"] = 1
+            var target = aliases[index]["target"] as! [String: Any]
+            target["resolution_status"] = "unresolved"
+            aliases[index]["target"] = target
+            var availability = aliases[index]["availability"] as! [String: Any]
+            availability["cli"] = true
+            availability["server"] = true
+            availability["website"] = true
+            aliases[index]["availability"] = availability
+            aliases[index]["default_execution_preset_id"] = NSNull()
+            aliases[index]["execution_presets"] = []
+        }
+        snapshot["models"] = models
+        snapshot["aliases"] = aliases
+        atomic["snapshot"] = snapshot
+        root["atomic"] = atomic
+        let output = try! JSONSerialization.data(withJSONObject: root)
+        return signed(String(decoding: output, as: UTF8.self))
+    }
+
+    private static func signed(_ input: String) -> String {
+        guard let data = input.data(using: .utf8),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var atomic = root["atomic"] as? [String: Any],
+              var snapshot = atomic["snapshot"] as? [String: Any]
+        else { fatalError("invalid atomic test fixture") }
+        snapshot["recommendation_policy_digests"] = []
+        guard let digest = ModelCatalog.atomicCatalogDigest(snapshot) else {
+            fatalError("test fixture cannot be canonicalized")
+        }
+        snapshot["catalog_digest"] = digest
+        atomic["snapshot"] = snapshot
+        atomic["shadow_report"] = ["equivalent": true, "catalog_digest": digest]
+        root["atomic"] = atomic
+        guard let output = try? JSONSerialization.data(
+            withJSONObject: root, options: [.sortedKeys, .withoutEscapingSlashes]
+        ) else { fatalError("test fixture cannot be serialized") }
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private static func mutated(
+        _ update: (inout [String: Any]) -> Void,
+        resign: Bool = true
+    ) -> String {
+        let data = Data(payload.utf8)
+        guard var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { fatalError("invalid signed fixture") }
+        update(&root)
+        guard let output = try? JSONSerialization.data(withJSONObject: root) else {
+            fatalError("mutated fixture cannot be serialized")
+        }
+        let value = String(decoding: output, as: UTF8.self)
+        return resign ? signed(value) : value
+    }
 
     @Test("one graph maps every modality into the correct product kind")
     func mapsTasksToProductKinds() throws {
@@ -67,10 +137,73 @@ struct AtomicModelCatalogTests {
 
     @Test("unknown atomic tasks fail closed into the legacy downgrade path")
     func unknownTaskRejectsAtomicEnvelope() {
-        let future = Self.payload.replacingOccurrences(
+        let future = Self.signed(Self.payload.replacingOccurrences(
             of: "\"text_generation\"", with: "\"future_generation\""
-        )
+        ))
         #expect(ModelCatalog.parseAtomicModelEntriesJSON(future) == nil)
+    }
+
+    @Test("Swift RCJ digest agrees with the Python golden vector")
+    func digestGoldenVector() {
+        let snapshot: [String: Any] = [
+            "schema_version": 1,
+            "models": [],
+            "aliases": [],
+            "recommendation_policy_digests": [],
+        ]
+        #expect(ModelCatalog.atomicCatalogDigest(snapshot) ==
+            "sha256:1710f73da67f8d5ca58ce8343929534485262218d4c1d9ebc95ad9e9e3ee599f")
+    }
+
+    @Test("broken references, digests, and shadow reports fail closed")
+    func corruptSnapshotsRejectAtomicEnvelope() {
+        let missingTarget = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            var alias = aliases[0]
+            var target = alias["target"] as! [String: Any]
+            target["registry_model_id"] = "legacy/hf/missing"
+            alias["target"] = target
+            aliases[0] = alias
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(missingTarget) == nil)
+
+        let missingAvailability = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases[0].removeValue(forKey: "availability")
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(missingAvailability) == nil)
+
+        let digestMismatch = Self.mutated({ root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var models = snapshot["models"] as! [[String: Any]]
+            var source = models[0]["source"] as! [String: Any]
+            source["repo_id"] = "org/tampered"
+            models[0]["source"] = source
+            snapshot["models"] = models
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }, resign: false)
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(digestMismatch) == nil)
+
+        let failedShadow = Self.mutated({ root in
+            var atomic = root["atomic"] as! [String: Any]
+            var shadow = atomic["shadow_report"] as! [String: Any]
+            shadow["equivalent"] = false
+            atomic["shadow_report"] = shadow
+            root["atomic"] = atomic
+        }, resign: false)
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(failedShadow) == nil)
     }
 
     @Test("atomic Settings merge preserves custom and external cached models")

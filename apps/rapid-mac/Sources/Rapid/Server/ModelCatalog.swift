@@ -1,3 +1,5 @@
+import CoreFoundation
+import CryptoKit
 import Foundation
 
 /// What a model is *for*. Drives the capability tabs in Model Management —
@@ -806,19 +808,30 @@ enum ModelCatalog {
         guard let atomic = root["atomic"] as? [String: Any],
               let snapshot = atomic["snapshot"] as? [String: Any],
               snapshot["schema_version"] as? Int == 1,
+              let declaredDigest = snapshot["catalog_digest"] as? String,
+              atomicCatalogDigest(snapshot) == declaredDigest,
+              let shadow = atomic["shadow_report"] as? [String: Any],
+              shadow["equivalent"] as? Bool == true,
+              shadow["catalog_digest"] as? String == declaredDigest,
               let modelRows = snapshot["models"] as? [[String: Any]],
               let aliasRows = snapshot["aliases"] as? [[String: Any]]
         else { return nil }
 
         var modelsByID: [String: (repo: String, size: String?)] = [:]
         for model in modelRows {
-            guard let modelID = model["registry_model_id"] as? String,
+            guard model["schema_version"] as? Int == 1,
+                  let modelID = model["registry_model_id"] as? String,
+                  modelsByID[modelID] == nil,
+                  let resolution = model["resolution_status"] as? String,
+                  ["resolved", "unresolved"].contains(resolution),
+                  (resolution == "resolved") == (model["model_identity_digest"] is String),
                   let source = model["source"] as? [String: Any],
                   source["provider"] as? String == "huggingface",
                   let repo = sanitizedHuggingFaceRepo(source["repo_id"] as? String)
-            else { continue }
+            else { return nil }
             let size: String?
             if let bytes = model["estimated_download_size_bytes"] as? NSNumber {
+                guard bytes.int64Value > 0 else { return nil }
                 size = ByteCountFormatter.string(
                     fromByteCount: bytes.int64Value,
                     countStyle: .binary
@@ -830,16 +843,37 @@ enum ModelCatalog {
         }
 
         var entries: [ModelEntry] = []
+        var seenAliases: Set<String> = []
         for row in aliasRows {
-            guard let alias = row["alias"] as? String, isSafeAlias(alias),
+            guard row["schema_version"] as? Int == 1,
+                  let alias = row["alias"] as? String, isSafeAlias(alias),
+                  seenAliases.insert(alias).inserted,
                   let target = row["target"] as? [String: Any],
                   let modelID = target["registry_model_id"] as? String,
+                  let targetResolution = target["resolution_status"] as? String,
+                  ["resolved", "unresolved"].contains(targetResolution),
+                  (targetResolution == "resolved")
+                    == (target["model_identity_digest"] is String),
                   let capabilities = row["capabilities"] as? [String: Any],
                   let rawTasks = capabilities["task_types"] as? [String],
+                  let availability = row["availability"] as? [String: Any],
+                  ["cli", "server", "desktop", "website"].allSatisfy({
+                    availability[$0] is Bool
+                  }),
+                  let desktopAvailable = availability["desktop"] as? Bool,
+                  let executionPresets = row["execution_presets"] as? [[String: Any]],
                   let model = modelsByID[modelID]
-            else { continue }
-            if let availability = row["availability"] as? [String: Any],
-               availability["desktop"] as? Bool == false {
+            else { return nil }
+            if row["default_execution_preset_id"] is NSNull {
+                guard executionPresets.isEmpty else { return nil }
+            } else if let defaultPreset = row["default_execution_preset_id"] as? String {
+                guard executionPresets.contains(where: {
+                    $0["preset_id"] as? String == defaultPreset
+                }) else { return nil }
+            } else {
+                return nil
+            }
+            if !desktopAvailable {
                 continue
             }
             let tasks = Set(rawTasks.compactMap(ModelTask.init(rawValue:)))
@@ -847,10 +881,9 @@ enum ModelCatalog {
             // place. Reject the atomic envelope and use the versioned legacy
             // projection; never turn an unknown task into Chat by default.
             guard !tasks.isEmpty, tasks.count == rawTasks.count else { return nil }
-            let operations = Set(
-                (capabilities["operation_modes"] as? [String] ?? [])
-                    .compactMap(ModelOperation.init(rawValue:))
-            )
+            let rawOperations = capabilities["operation_modes"] as? [String] ?? []
+            let operations = Set(rawOperations.compactMap(ModelOperation.init(rawValue:)))
+            guard operations.count == rawOperations.count else { return nil }
             let kind: ModelKind
             if tasks.contains(.imageGeneration) {
                 kind = .image
@@ -909,6 +942,74 @@ enum ModelCatalog {
             ))
         }
         return entries
+    }
+
+    /// Recompute the RCJ-1 catalog address in Swift before accepting a Python
+    /// sidecar snapshot. This closes partial/corrupt JSON handling without
+    /// requiring the Desktop to duplicate the entire JSON Schema engine.
+    static func atomicCatalogDigest(_ snapshot: [String: Any]) -> String? {
+        guard let schemaVersion = snapshot["schema_version"],
+              let models = snapshot["models"],
+              let aliases = snapshot["aliases"],
+              let policyDigests = snapshot["recommendation_policy_digests"]
+        else { return nil }
+        let projection: [String: Any] = [
+            "schema_version": schemaVersion,
+            "models": models,
+            "aliases": aliases,
+            "recommendation_policy_digests": policyDigests,
+        ]
+        guard let normalized = rcjNormalized(projection),
+              JSONSerialization.isValidJSONObject(normalized),
+              let data = try? JSONSerialization.data(
+                withJSONObject: normalized,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+              )
+        else { return nil }
+        let digest = SHA256.hash(data: data).map {
+            String(format: "%02x", $0)
+        }.joined()
+        return "sha256:\(digest)"
+    }
+
+    private static func rcjNormalized(_ value: Any) -> Any? {
+        if value is NSNull { return NSNull() }
+        if let string = value as? String {
+            return string.precomposedStringWithCanonicalMapping
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue
+            }
+            let double = number.doubleValue
+            guard double.isFinite,
+                  double.rounded(.towardZero) == double,
+                  abs(double) <= 9_007_199_254_740_991
+            else { return nil }
+            return number.int64Value
+        }
+        if let array = value as? [Any] {
+            var normalized: [Any] = []
+            normalized.reserveCapacity(array.count)
+            for child in array {
+                guard let item = rcjNormalized(child) else { return nil }
+                normalized.append(item)
+            }
+            return normalized
+        }
+        if let object = value as? [String: Any] {
+            var normalized: [String: Any] = [:]
+            for (key, child) in object {
+                guard key.unicodeScalars.allSatisfy(\.isASCII),
+                      let item = rcjNormalized(child)
+                else { return nil }
+                let normalizedKey = key.precomposedStringWithCanonicalMapping
+                guard normalized[normalizedKey] == nil else { return nil }
+                normalized[normalizedKey] = item
+            }
+            return normalized
+        }
+        return nil
     }
 
     static func parseAtomicModelEntriesJSON(_ output: String) -> [ModelEntry]? {
