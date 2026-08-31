@@ -1371,6 +1371,9 @@ struct LaunchView: View {
     /// The currently-chosen model, bound so the stopped state's inline
     /// picker can change it and the shared readiness re-derives.
     @Binding var alias: String
+    /// Catalog-proven media aliases forwarded to the stopped-state Chat model
+    /// picker so Launch and the composer enforce one task boundary.
+    var knownNonChatAliases: Set<String> = []
     /// The window's shared readiness value. Optional so the dev snapshot
     /// harness can render the page standalone; when supplied, the page
     /// describes the model lifecycle in exactly the same words the chat
@@ -1386,6 +1389,7 @@ struct LaunchView: View {
             alias: $alias,
             server: server,
             downloads: downloads,
+            knownNonChatAliases: knownNonChatAliases,
             // The sidecar binary this app owns lives off-PATH (see
             // ``ServerLocator``); pass its absolute path so the launch/agent
             // commands this page generates actually run in a terminal.

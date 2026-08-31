@@ -207,6 +207,13 @@ final class DictationController {
         let cached: Bool
     }
     private var catalogByAlias: [String: CatalogFacts] = [:]
+    /// Audio identities proven by Dictation's own catalog load. ContentView
+    /// needs this before AudioView mounts so a voice-lane ready transition
+    /// cannot masquerade as an unknown custom Chat model. Persisted selection
+    /// alone is deliberately not proof of capability.
+    var knownAudioAliases: Set<String> {
+        Set(catalogByAlias.keys)
+    }
     private let onProductValueDelivered: @MainActor (ProductValueKind) -> Void
 
     init(

@@ -70,4 +70,24 @@ struct LaunchMediaResidencyTests {
             section: .chat
         ))
     }
+
+    @Test("Dictation ASR cannot replace Chat before the Audio catalog mounts")
+    func persistedDictationAliasWinsUnknownFallback() {
+        #expect(!ContentView.shouldSyncChatAlias(
+            serving: "qwen3-asr",
+            catalogEntries: [entries[0]],
+            knownMediaAliases: ["qwen3-asr"],
+            section: .chat
+        ))
+    }
+
+    @Test("An authoritative Chat row wins over a stale media identity")
+    func chatCatalogWinsCollision() {
+        #expect(ContentView.shouldSyncChatAlias(
+            serving: "CHAT-MODEL",
+            catalogEntries: [entries[0]],
+            knownMediaAliases: ["chat-model"],
+            section: .chat
+        ))
+    }
 }

@@ -53,6 +53,10 @@ struct ModelPickerBar: View {
     /// "Delete from disk" landed in v0.5.2.
     @Bindable var downloads: DownloadManager
     @Binding var alias: String
+    /// Aliases proven to belong to Image, STT, or TTS. Unknown aliases remain
+    /// valid for custom text-model compatibility; only explicit media
+    /// classification can evict a selection from Chat.
+    var knownNonChatAliases: Set<String> = []
     /// F-LWT-1: the Quickstart coordinator owns the "user is
     /// mid-Quickstart-flow" gate. The picker reads ``phase`` to
     /// (a) render a dedicated "Quickstart" section above
@@ -322,6 +326,15 @@ struct ModelPickerBar: View {
         // catalog refresh will pick it up via ``recommendedDefault``).
         .task(id: quickstartPhaseGateKey) {
             applyQuickstartSelectionMirror()
+        }
+        // Media catalogs load independently from Chat. If one of them arrives
+        // after a process-ready transition temporarily supplied its alias to
+        // the composer, converge the selection as soon as the authoritative
+        // classification becomes available. Custom text aliases are left
+        // untouched because absence from the chat catalog is not evidence of
+        // being media-only.
+        .onChange(of: knownNonChatAliases) { _, aliases in
+            reconcileKnownNonChatSelection(aliases)
         }
         .sheet(isPresented: $showCustom) {
             customAliasSheet
@@ -1024,6 +1037,38 @@ struct ModelPickerBar: View {
     /// where every recommended row would otherwise paint amber for "".
     static func roleRowIsSelected(selectedAlias: String, rowAlias: String) -> Bool {
         return !selectedAlias.isEmpty && selectedAlias == rowAlias
+    }
+
+    /// Normalize only an alias positively identified as non-chat. A chat
+    /// catalog row wins over a supplemental media set, and an unknown custom
+    /// alias remains untouched. The fallback must itself be a chat row.
+    static func normalizedChatSelection(
+        currentAlias: String,
+        catalog: [ModelEntry],
+        knownNonChatAliases: Set<String>,
+        fallbackAlias: String?
+    ) -> String {
+        let validFallback = fallbackAlias.flatMap { fallback in
+            catalog.first(where: {
+                $0.alias.caseInsensitiveCompare(fallback) == .orderedSame
+                    && ModelSelectionPurpose.chat.accepts($0)
+            })?.alias
+        }
+        if currentAlias.isEmpty {
+            return validFallback ?? ""
+        }
+        if catalog.contains(where: {
+            $0.alias.caseInsensitiveCompare(currentAlias) == .orderedSame
+                && ModelSelectionPurpose.chat.accepts($0)
+        }) {
+            return currentAlias
+        }
+        guard knownNonChatAliases.contains(where: {
+            $0.caseInsensitiveCompare(currentAlias) == .orderedSame
+        }) else {
+            return currentAlias
+        }
+        return validFallback ?? ""
     }
 
     /// The one download-state glyph for every row in the picker's
@@ -2007,16 +2052,31 @@ struct ModelPickerBar: View {
         // produce a missing row — never a selectable fake model, and
         // never a placeholder word promoted into ``alias`` by
         // ``recommendedDefault`` below.
-        let entries = loaded.filter { !ModelDisplayName.isUnresolved($0.alias) }
+        let entries = ModelSelectionPurpose.chat.entries(in: loaded).filter {
+            !ModelDisplayName.isUnresolved($0.alias)
+        }
         self.catalog = entries
         catalogGeneration = generation
-        // Default selection: only apply if the current alias is blank or
-        // not in the catalog (catalog absence still means manual pick).
-        if alias.isEmpty || !entries.contains(where: { $0.alias == alias }) {
-            if let recommended = recommendedDefault() {
-                alias = recommended
-            }
+        let normalized = Self.normalizedChatSelection(
+            currentAlias: alias,
+            catalog: entries,
+            knownNonChatAliases: knownNonChatAliases,
+            fallbackAlias: recommendedDefault()
+        )
+        if normalized != alias {
+            alias = normalized
         }
+    }
+
+    private func reconcileKnownNonChatSelection(_ aliases: Set<String>) {
+        let normalized = Self.normalizedChatSelection(
+            currentAlias: alias,
+            catalog: catalog,
+            knownNonChatAliases: aliases,
+            fallbackAlias: recommendedDefault()
+        )
+        guard normalized != alias else { return }
+        alias = normalized
     }
 }
 
