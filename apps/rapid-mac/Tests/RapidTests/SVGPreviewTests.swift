@@ -441,11 +441,7 @@ struct PreviewOrientationTests {
         view.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
         view.configure(code: banded, language: "svg", options: options)
 
-        let button = try #require(
-            view.subviews.compactMap { $0 as? NSButton }
-                .first { $0.accessibilityIdentifier() == "CodeBlock.Preview" }
-        )
-        _ = button.target?.perform(button.action, with: button)
+        // No press: a renderable document now opens as its picture.
         view.frame.size.height = view.height(forWidth: 300)
 
         let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -596,34 +592,37 @@ struct MarkdownCodeBlockPreviewTests {
         let short = block(svg, "svg")
         let long = block(padded, "svg")
 
+        // Both open as their picture, so both are already the image's height.
+        #expect(short.height(forWidth: 400) == long.height(forWidth: 400))
+
+        // Pressing shows each source, and only then do their heights diverge.
+        for view in [short, long] {
+            let button = try #require(previewButton(in: view))
+            _ = button.target?.perform(button.action, with: button)
+        }
         let shortSource = short.height(forWidth: 400)
         let longSource = long.height(forWidth: 400)
         #expect(longSource > shortSource, "the padded document should have a taller source")
 
+        // And back to the picture, where they agree again — which is only true
+        // if the picture replaced the source rather than joining it.
         for view in [short, long] {
             let button = try #require(previewButton(in: view))
             _ = button.target?.perform(button.action, with: button)
         }
         #expect(short.height(forWidth: 400) == long.height(forWidth: 400))
-        // And the long one got shorter, which appending could never do.
         #expect(long.height(forWidth: 400) < longSource)
-
-        // Pressing again puts each source back.
-        for view in [short, long] {
-            let button = try #require(previewButton(in: view))
-            _ = button.target?.perform(button.action, with: button)
-        }
-        #expect(short.height(forWidth: 400) == shortSource)
-        #expect(long.height(forWidth: 400) == longSource)
     }
 
+    /// A renderable document opens as its picture, so the button starts by
+    /// offering the source.
     @Test("The button names the mode it switches to")
     func buttonTitleTracksState() throws {
         let view = block(svg, "svg")
         let button = try #require(previewButton(in: view))
-        #expect(button.title == "Preview")
-        _ = button.target?.perform(button.action, with: button)
         #expect(button.title == "Code")
+        _ = button.target?.perform(button.action, with: button)
+        #expect(button.title == "Preview")
     }
 
     /// Re-configuring with a different language — which happens on every
@@ -633,7 +632,6 @@ struct MarkdownCodeBlockPreviewTests {
     func previewClosesWhenNoLongerSVG() throws {
         let view = block(svg, "svg")
         let button = try #require(previewButton(in: view))
-        _ = button.target?.perform(button.action, with: button)
         let expanded = view.height(forWidth: 400)
 
         view.configure(code: "print(\"hi\")", language: "swift", options: MarkdownOptions())
