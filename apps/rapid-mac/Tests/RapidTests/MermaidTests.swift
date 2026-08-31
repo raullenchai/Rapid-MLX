@@ -445,21 +445,30 @@ struct MermaidRenderingTests {
     func timedOutSnapshotReleasesQueue() async {
         var attempts = 0
         let renderer = MermaidRenderer(
-            renderTimeout: .milliseconds(100),
-            snapshotter: { webView, configuration, completion in
+            // This test owns the callback timing. A 100 ms deadline made the
+            // recovery attempt race a cold replacement WebKit process on
+            // hosted runners, testing machine load instead of queue release.
+            renderTimeout: .seconds(1),
+            javaScriptEvaluator: { _, _, _, completion in
+                completion(.success(["ok": true, "width": 320, "height": 180]))
+            },
+            snapshotter: { _, configuration, completion in
                 attempts += 1
                 guard attempts > 1 else { return }
-                webView.takeSnapshot(
-                    with: configuration, completionHandler: completion
-                )
+                // Keep the recovery proof deterministic: NSImage stays on the
+                // main actor and no second native snapshot races the deadline.
+                completion(NSImage(size: configuration.rect.size), nil)
             }
         )
 
         let source = "graph TD\n  Snapshot --> Retry"
+        let started = ContinuousClock.now
         #expect(await renderer.image(source: source, theme: .light) == nil)
+        #expect(ContinuousClock.now - started < .seconds(3))
         #expect(!renderer.isKnownBad(source: source, theme: .light))
         let recovered = await renderer.image(source: source, theme: .light)
         #expect(recovered != nil)
+        #expect(attempts == 2)
     }
 
     @Test("A nil snapshot rebuilds and retries instead of poisoning the source")
