@@ -278,6 +278,10 @@ enum ModelSizing {
         let id: UUID
         let alias: String
         let hfPath: String?
+        /// Absolute directory passed to video-generation serves. Retained on
+        /// a parked warning so confirmation cannot silently fall back to the
+        /// CLI's process-local default.
+        let videoOutputDirectory: String?
         let isAutoRespawn: Bool
         let severity: MemorySafety
         /// Estimated GB the model needs.
@@ -302,6 +306,7 @@ enum ModelSizing {
             id: UUID = UUID(),
             alias: String,
             hfPath: String?,
+            videoOutputDirectory: String? = nil,
             isAutoRespawn: Bool,
             severity: MemorySafety,
             footprintGB: Double,
@@ -314,6 +319,7 @@ enum ModelSizing {
             self.id = id
             self.alias = alias
             self.hfPath = hfPath
+            self.videoOutputDirectory = videoOutputDirectory
             self.isAutoRespawn = isAutoRespawn
             self.severity = severity
             self.footprintGB = footprintGB
@@ -327,6 +333,7 @@ enum ModelSizing {
         static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.alias == rhs.alias
                 && lhs.hfPath == rhs.hfPath
+                && lhs.videoOutputDirectory == rhs.videoOutputDirectory
                 && lhs.isAutoRespawn == rhs.isAutoRespawn
                 && lhs.severity == rhs.severity
                 && lhs.footprintGB == rhs.footprintGB
