@@ -39,6 +39,8 @@ struct GitHubStarPromptTests {
 
         #expect(card.contains("Enjoying Rapid-MLX?"))
         #expect(card.contains("Rapid-MLX is open source."))
+        #expect(card.contains("Text(\"Star on GitHub\")"))
+        #expect(!card.contains("Text(\"Open GitHub\")"))
         #expect(card.contains(".frame(width: 360)"))
         #expect(card.contains(".frame(width: 84, height: RapidTheme.ControlHeight.medium)"))
         #expect(card.contains(".padding(14)"))
