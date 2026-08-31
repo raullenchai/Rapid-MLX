@@ -380,6 +380,16 @@ final class MarkdownCodeBlockView: NSView {
                       ),
                       MermaidRenderer.Theme(self.effectiveAppearance) == theme else { return }
                 if let image = await self.mermaidImageProvider(source, theme) {
+                    // The await above is a reentrancy point: this recycled row
+                    // may now represent another source or appearance.
+                    guard self.previewIdentity == PreviewIdentity(
+                            source: source, kind: .mermaid
+                          ),
+                          MermaidSource.looksLikeMermaid(
+                            code: self.code, language: self.language
+                          ),
+                          MermaidRenderer.Theme(self.effectiveAppearance) == theme
+                    else { return }
                     self.previewImage = image
                     if !self.hasToggledPreview { self.isShowingPreview = true }
                     self.setPreviewHidden(false)

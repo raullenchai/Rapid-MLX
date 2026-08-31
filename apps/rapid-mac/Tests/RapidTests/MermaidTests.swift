@@ -779,6 +779,13 @@ struct MermaidRenderingTests {
 
 /// Auto-reveal, and the two rules that keep it from being annoying.
 @MainActor
+private final class MermaidRenderRaceGate {
+    var firstStarted = false
+    var releaseFirst = false
+    var secondFinished = false
+}
+
+@MainActor
 @Suite("Preview auto-reveal", .serialized)
 struct PreviewAutoRevealTests {
 
@@ -899,6 +906,54 @@ struct PreviewAutoRevealTests {
         #expect(attempts == 2)
         #expect(!button.isHidden)
         #expect(button.title == "Code")
+    }
+
+    @Test("A late render cannot overwrite a reused row")
+    func lateRenderCannotOverwriteReusedRow() async throws {
+        let first = "graph TD\n  Slow --> Old"
+        let second = "graph TD\n  Fast --> Current"
+        let staleImage = NSImage(size: NSSize(width: 100, height: 400))
+        let currentImage = NSImage(size: NSSize(width: 400, height: 100))
+        let gate = MermaidRenderRaceGate()
+        let view = MarkdownCodeBlockView(
+            options: MarkdownOptions(),
+            mermaidImageProvider: { source, _ in
+                if source == first {
+                    gate.firstStarted = true
+                    while !gate.releaseFirst { await Task.yield() }
+                    return staleImage
+                }
+                gate.secondFinished = true
+                return currentImage
+            }
+        )
+        view.appearance = NSAppearance(named: .aqua)
+        view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        view.configure(code: first, language: "mermaid", options: MarkdownOptions())
+        for _ in 0..<100 where !gate.firstStarted { await Task.yield() }
+        #expect(gate.firstStarted)
+
+        view.configure(code: second, language: "mermaid", options: MarkdownOptions())
+        for _ in 0..<100 where !gate.secondFinished { await Task.yield() }
+        #expect(gate.secondFinished)
+        gate.releaseFirst = true
+        try await Task.sleep(for: .milliseconds(50))
+
+        let reference = MarkdownCodeBlockView(
+            options: MarkdownOptions(),
+            mermaidImageProvider: { _, _ in currentImage }
+        )
+        reference.appearance = NSAppearance(named: .aqua)
+        reference.frame = view.frame
+        reference.configure(
+            code: second, language: "mermaid", options: MarkdownOptions()
+        )
+        for _ in 0..<50 where previewButton(reference)?.isHidden != false {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(previewButton(view)?.isHidden == false)
+        #expect(view.height(forWidth: 400) == reference.height(forWidth: 400))
     }
 
     @Test("Changing appearance requests a matching diagram theme")
