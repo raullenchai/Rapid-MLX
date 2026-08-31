@@ -127,8 +127,12 @@ enum MermaidHostPage {
             el.removeAttribute("height");
             el.style.maxWidth = "none";
             const box = el.getBBox();
-            const width = Math.ceil(box.width + box.x * 2) || Math.ceil(box.width);
-            const height = Math.ceil(box.height + box.y * 2) || Math.ceil(box.height);
+            const width = Math.ceil(box.width);
+            const height = Math.ceil(box.height);
+            // The origin may be negative. Preserve the actual drawing bounds
+            // in the viewport rather than folding x/y into its dimensions,
+            // which can either clip or add asymmetric empty space.
+            el.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
             el.setAttribute("width", width);
             el.setAttribute("height", height);
             return { ok: true, width: width, height: height };

@@ -67,6 +67,9 @@ struct MermaidSourceTests {
         #expect(MermaidSource.looksLikeMermaid(
             code: "%% a comment\n%%{init: {'theme':'dark'}}%%\ngraph TD\n  A --> B", language: nil
         ))
+        #expect(MermaidSource.looksLikeMermaid(
+            code: "---\r\ntitle: Demo\r\n---\r\ngraph TD\r\n  A --> B", language: nil
+        ))
     }
 
     /// The trailing-separator rule: a keyword has to open a document, not
@@ -370,6 +373,8 @@ struct MermaidHostPagePolicyTests {
         #expect(html.contains("\"theme\""))
         #expect(html.contains("\"themeVariables\""))
         #expect(html.contains("suppressErrorRendering: true"))
+        #expect(html.contains("el.setAttribute(\"viewBox\""))
+        #expect(!html.contains("box.width + box.x * 2"))
     }
 }
 
@@ -443,6 +448,24 @@ struct MermaidRenderingTests {
             source: "graph TD\n  Snapshot --> Recovered", theme: .light
         )
         #expect(recovered != nil)
+    }
+
+    @Test("The snapshot surface matches validated diagram dimensions")
+    func snapshotSurfaceMatchesMeasurement() async {
+        var surfaceMatched = false
+        let renderer = MermaidRenderer(
+            snapshotter: { webView, configuration, completion in
+                surfaceMatched = webView.frame.size == configuration.rect.size
+                webView.takeSnapshot(
+                    with: configuration, completionHandler: completion
+                )
+            }
+        )
+        let image = await renderer.image(
+            source: "graph TD\n  Sized --> Surface", theme: .light
+        )
+        #expect(image != nil)
+        #expect(surfaceMatched)
     }
 
     @Test("Diagrams of every common kind render", arguments: [
