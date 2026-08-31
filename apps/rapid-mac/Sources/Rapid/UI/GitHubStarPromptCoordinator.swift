@@ -284,26 +284,45 @@ enum GitHubStarCLI {
     }
 
     private static func waitUntilExit(_ process: Process, timeout: Duration) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
+        enum Outcome {
+            case exited(Int32)
+            case timedOut
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        let outcome = try await withThrowingTaskGroup(of: Outcome.self) { group in
             group.addTask {
-                try await Task.detached {
+                await Task.detached {
                     process.waitUntilExit()
-                    if process.terminationStatus != 0 {
-                        throw GitHubStarCLIError.commandFailed
-                    }
                 }.value
+                // Once the deadline has passed, timeout is authoritative even
+                // if SIGKILL makes the waiter observe a nonzero exit first.
+                guard clock.now < deadline else { return .timedOut }
+                return .exited(process.terminationStatus)
             }
             group.addTask {
-                try await Task.sleep(for: timeout)
+                try await clock.sleep(until: deadline)
                 if process.isRunning {
                     kill(process.processIdentifier, SIGKILL)
                 }
-                try Task.checkCancellation()
-                throw GitHubStarCLIError.timedOut
+                return .timedOut
             }
 
-            try await group.next()
+            guard let first = try await group.next() else {
+                throw GitHubStarCLIError.commandFailed
+            }
             group.cancelAll()
+            return first
+        }
+
+        switch outcome {
+        case .exited(0):
+            return
+        case .exited:
+            throw GitHubStarCLIError.commandFailed
+        case .timedOut:
+            throw GitHubStarCLIError.timedOut
         }
     }
 }

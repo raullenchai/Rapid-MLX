@@ -86,8 +86,8 @@ struct GitHubStarPromptCard: View {
                             if prompt.isStarring {
                                 Text("Starring…")
                             } else {
-                                Text("Open GitHub")
-                                Image(systemName: "arrow.up.right")
+                                Text("Star on GitHub")
+                                Image(systemName: "star")
                                     .font(.system(size: 10, weight: .semibold))
                             }
                         }
@@ -100,7 +100,9 @@ struct GitHubStarPromptCard: View {
                     ))
                     .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
                     .disabled(prompt.isStarring)
-                    .accessibilityHint("Stars the Rapid-MLX repository, using the GitHub CLI when available")
+                    .accessibilityHint(
+                        "Stars the Rapid-MLX repository using GitHub CLI, or opens GitHub if unavailable"
+                    )
                     .accessibilityIdentifier("GitHub.Star.ValueMoment.Open")
 
                     Button("Later") { prompt.deferPrompt() }

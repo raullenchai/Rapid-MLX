@@ -235,7 +235,7 @@ struct GitHubStarPromptCoordinatorTests {
 
         let clock = ContinuousClock()
         let start = clock.now
-        await #expect(throws: GitHubStarCLIError.self) {
+        await #expect(throws: GitHubStarCLIError.timedOut) {
             try await GitHubStarCLI.star(
                 GitHubCommunity.repositoryURL,
                 executableURL: executable,
