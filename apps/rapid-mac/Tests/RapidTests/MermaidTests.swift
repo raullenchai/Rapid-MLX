@@ -414,7 +414,10 @@ struct MermaidRenderingTests {
     func timedOutRenderReleasesQueue() async {
         var attempts = 0
         let renderer = MermaidRenderer(
-            renderTimeout: .milliseconds(100),
+            // The first evaluator intentionally never completes. Give the
+            // recovery render enough room for a cold WebKit process on CI;
+            // this test measures queue release, not a 100 ms performance SLA.
+            renderTimeout: .milliseconds(500),
             javaScriptEvaluator: { webView, source, theme, completion in
                 attempts += 1
                 guard attempts > 1 else { return }
