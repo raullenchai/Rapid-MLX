@@ -6449,6 +6449,9 @@ def _available_models_json_payload() -> dict:
             # explicit text-only pin always wins over name inference.
             "is_builtin": alias in builtin_aliases,
             "is_text_only": bool(getattr(p, "is_text_only", False)),
+            "supports_image_input": bool(
+                getattr(p, "supports_image_input", False)
+            ),
         }
 
     text, video, image = {}, {}, {}

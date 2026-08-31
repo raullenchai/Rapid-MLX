@@ -51,7 +51,7 @@ branch can leave the alias unchanged but change the weights.
 | --- | --- | --- |
 | alias key | `ModelAlias.alias` | Stable product name; excluded from identity. |
 | `hf_path`, `subfolder` | registry resolver input | Resolve to component source + immutable revision; do not retain as an alias-owned identity fact. |
-| `modality`, `video_modes`, `is_text_only` | `ModelAlias.capabilities` | Normalize to task types/modes; validate against the resolved pipeline. |
+| `modality`, `video_modes`, `supports_image_input`, `is_text_only` | `ModelAlias.capabilities` | Normalize explicit product tasks/modes independently from the runtime lane; validate against the resolved pipeline. |
 | tool/reasoning parser, chat template | alias capabilities | Product routing/rendering metadata. |
 | architecture/MoE/hybrid flags | discovered registry metadata | Verify from pinned config; capability gates may reference it but alias text is not authoritative. |
 | spec/MTP/DFlash/DDTree/PFlash/TurboQuant flags and draft models | execution preset + compatibility evidence | Materialize a complete config; draft models are their own `ModelIdentity`. |
@@ -134,8 +134,10 @@ Implemented foundation:
 
 The current projection is deliberately unresolved: legacy repo IDs are resolver
 inputs, not immutable model identities. It also centralizes existing image and
-audio capability inference in the adapter; Phase 2 must replace those bridge
-rules with generated explicit alias capabilities before authoritative cutover.
+audio capability inference in the adapter; image-input support is already an
+explicit alias-profile fact and must not be inferred from names or the runtime
+lane. Phase 2 must replace the remaining bridge rules with generated explicit
+alias capabilities before authoritative cutover.
 Likewise, Desktop's RAM recommendation reader remains on the legacy file while
 the atomic policy is shadow-validated. No automatic model choice changes in
 Phase 1.

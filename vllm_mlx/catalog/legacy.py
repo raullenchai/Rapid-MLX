@@ -54,6 +54,9 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
         )
     else:
         tasks, operations = ["text_generation"], ["chat"]
+        if bool(getattr(profile, "supports_image_input", False)):
+            tasks.append("vision_language")
+            operations.append("image_understanding")
         adapter = (
             "rapid_mlx/text_diffusion" if modality == "text-diffusion" else "mlx_lm"
         )

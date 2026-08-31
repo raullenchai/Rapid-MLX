@@ -55,7 +55,12 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
     assert len(models) < len(aliases), "aliases sharing artifacts must deduplicate"
 
     assert aliases["qwen3.8-27b-4bit"]["capabilities"]["task_types"] == [
-        "text_generation"
+        "text_generation",
+        "vision_language",
+    ]
+    assert aliases["qwen3.8-27b-4bit"]["capabilities"]["operation_modes"] == [
+        "chat",
+        "image_understanding",
     ]
     assert aliases["qwen3.8-27b-4bit"]["capabilities"]["is_text_only"] is False
     assert aliases["flux2-klein-4b"]["capabilities"]["operation_modes"] == [
