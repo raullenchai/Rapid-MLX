@@ -2,6 +2,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CommonCrypto
 
 // Promoted from the ad-hoc /tmp/probe_cheetah.swift used to verify v0.5.10's
 // fix for the v0.5.9 ship-blocker (SPM Bundle.module accessor fatalError'd
@@ -131,6 +132,34 @@ if let fontsURL = bundle.url(forResource: "mathFonts", withExtension: "bundle"),
     print("OK: SwiftMath fonts and licence notices at \(fontsURL.path)")
 } else {
     FileHandle.standardError.write(Data("FAIL: SwiftMath font bundle is missing, invalid, or lacks licence notices\n".utf8))
+    ok = false
+}
+
+// Mermaid, for diagram previews. Hand-written because the manifest parser
+// above only understands `.png`, so a vendored `.js` gets no verification at
+// all by default — and if either file fails to stage, `MermaidLibrary.load()`
+// returns nil and the feature vanishes from the shipped app with nothing
+// failing anywhere.
+if let js = bundle.url(forResource: "mermaid.min", withExtension: "js"),
+   let digestURL = bundle.url(forResource: "mermaid.min.js", withExtension: "sha256"),
+   let data = try? Data(contentsOf: js),
+   let digestText = try? String(contentsOf: digestURL, encoding: .utf8) {
+    let expected = digestText.split(separator: " ").first.map(String.init) ?? ""
+    var hash = [UInt8](repeating: 0, count: 32)
+    data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG($0.count), &hash) }
+    let actual = hash.map { String(format: "%02x", $0) }.joined()
+    if actual == expected {
+        print("OK: mermaid.min.js matches its staged digest")
+    } else {
+        FileHandle.standardError.write(
+            Data("FAIL: mermaid.min.js does not match its staged digest\n".utf8)
+        )
+        ok = false
+    }
+} else {
+    FileHandle.standardError.write(
+        Data("FAIL: mermaid.min.js or its .sha256 is missing from Resources\n".utf8)
+    )
     ok = false
 }
 
