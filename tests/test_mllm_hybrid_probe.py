@@ -139,6 +139,49 @@ def test_mlx_vlm_arrayscache_is_accepted_in_serialized_mode(monkeypatch):
     assert first_incompatible_mllm_cache_type([cache], allow_arrays_cache=True) is None
 
 
+def test_mlx_vlm_cache_list_recursively_accepts_pooling_cache():
+    """GLM sparse-attention cache leaves own the complete batch lifecycle."""
+    from mlx_vlm.models import cache as vlm_cache
+
+    compound = vlm_cache.CacheList(vlm_cache.KVCache(), vlm_cache.PoolingCache(4))
+
+    assert first_incompatible_mllm_cache_type([compound]) is None
+
+
+def test_mlx_vlm_cache_list_rejects_unknown_leaf():
+    """A supported wrapper must not turn an unknown cache into an allowlist."""
+    from mlx_vlm.models import cache as vlm_cache
+
+    unknown = type("UnknownCache", (), {})()
+    compound = vlm_cache.CacheList(vlm_cache.KVCache(), unknown)
+
+    assert first_incompatible_mllm_cache_type([compound]) == "UnknownCache"
+
+
+def test_mlx_vlm_cache_list_merges_and_extracts_pooling_state():
+    """Exercise the exact merge/filter/extract lifecycle used by MLLMBatch."""
+    from mlx_vlm.models import cache as vlm_cache
+
+    first = vlm_cache.CacheList(vlm_cache.KVCache(), vlm_cache.PoolingCache(4))
+    second = vlm_cache.CacheList(vlm_cache.KVCache(), vlm_cache.PoolingCache(4))
+    for cache, value in ((first, 1.0), (second, 2.0)):
+        cache[0].update_and_fetch(
+            mx.full((1, 1, 1, 2), value), mx.full((1, 1, 1, 2), value)
+        )
+        cache[1].update_and_fetch(mx.full((1, 2, 3), value))
+
+    merged = vlm_cache.CacheList.merge([first, second])
+
+    assert isinstance(merged, vlm_cache.CacheList)
+    assert isinstance(merged[0], vlm_cache.BatchKVCache)
+    assert isinstance(merged[1], vlm_cache.BatchPoolingCache)
+    assert merged[1].pooled.shape == (2, 2, 3)
+    merged.filter(mx.array([1], mx.int32))
+    extracted = merged.extract(0)
+    assert isinstance(extracted[1], vlm_cache.PoolingCache)
+    assert extracted[1].pooled.tolist() == [[[2.0, 2.0, 2.0]] * 2]
+
+
 def test_arrayscache_scheduler_mode_requires_singleton_limits():
     config = MLLMSchedulerConfig(
         max_num_seqs=1,

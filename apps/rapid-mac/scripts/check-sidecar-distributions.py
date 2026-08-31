@@ -6,10 +6,6 @@ from __future__ import annotations
 import argparse
 from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from packaging.requirements import Requirement
 
 SIDECAR_CONSTRAINTS_FILE = Path(__file__).with_name("sidecar-constraints.txt")
 
@@ -18,33 +14,6 @@ def emit_constraints() -> str:
     """Return the canonical pip constraints used by release-shaped installs."""
 
     return SIDECAR_CONSTRAINTS_FILE.read_text()
-
-
-def is_validated_compatibility_exception(
-    *, owner: str, owner_version: str, requirement: Requirement, actual: str
-) -> bool:
-    """Return true only for the release-tested reduced vision runtime.
-
-    mlx-vlm 0.6.16 declares Transformers >=5.14 for its complete feature set.
-    Rapid's shipped Qwen/Gemma image lanes do not exercise that newer surface;
-    they are validated by real image inference with Transformers 5.12.1.  This
-    is deliberately an exact tuple rather than a package-wide metadata bypass.
-
-    Remove this exception after replacing Rapid's Transformers <5.13 cap with
-    !=5.13.0 and completing the tracked 5.15.x coherence sweep. Every other
-    owner/version, dependency, declared specifier, or actual version remains a
-    hard error.
-    """
-
-    from packaging.utils import canonicalize_name
-
-    return (
-        canonicalize_name(owner) == "mlx-vlm"
-        and owner_version == "0.6.16"
-        and canonicalize_name(requirement.name) == "transformers"
-        and str(requirement.specifier) == ">=5.14.0"
-        and actual == "5.12.1"
-    )
 
 
 def find_errors(site_packages: Path) -> list[str]:
@@ -68,17 +37,6 @@ def find_errors(site_packages: Path) -> list[str]:
             if actual is None or not requirement.specifier:
                 continue
             if actual in requirement.specifier:
-                continue
-            if is_validated_compatibility_exception(
-                owner=owner,
-                owner_version=dist.version,
-                requirement=requirement,
-                actual=actual,
-            ):
-                print(
-                    "==> validated compatibility exception: "
-                    "mlx-vlm 0.6.16 with transformers 5.12.1"
-                )
                 continue
             errors.append(
                 f"{owner} requires {requirement}, but bundled "
