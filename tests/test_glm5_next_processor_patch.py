@@ -82,6 +82,15 @@ def test_smart_resize_downscales_and_rejects_impossible_budget() -> None:
     assert 2 * height * width <= 64 * 2 * 28**2
     with pytest.raises(ValueError, match="too small"):
         smart_resize(2, 100, 100, factor=28, max_image_tokens=0)
+    with pytest.raises(ValueError, match="aspect ratio"):
+        smart_resize(
+            2,
+            1,
+            10_000,
+            factor=28,
+            min_image_tokens=1,
+            max_image_tokens=1,
+        )
 
 
 def test_image_shape_conversion_and_resize_edges(tmp_path: Path) -> None:
@@ -115,6 +124,26 @@ def test_image_shape_conversion_and_resize_edges(tmp_path: Path) -> None:
     float_image = np.full((3, 2, 2), 0.5, dtype=np.float32)
     resized = processor_patch._resize_channel_first(float_image, 4, 4)
     assert resized.shape == (3, 4, 4)
+    assert resized.dtype == np.float32
+    assert np.allclose(resized, 0.5, atol=1 / 255)
+
+
+def test_path_image_is_materialized_before_file_closes(monkeypatch) -> None:
+    image = Image.new("RGB", (5, 4), "red")
+    state = {"closed": False}
+
+    class TrackedImage:
+        def __enter__(self):
+            return image
+
+        def __exit__(self, *_args):
+            state["closed"] = True
+            image.close()
+
+    monkeypatch.setattr(processor_patch.Image, "open", lambda _path: TrackedImage())
+    result = processor_patch._to_channel_first("image.png", True)
+    assert state["closed"] is True
+    assert result.shape == (3, 4, 5)
 
 
 def test_ambiguous_channel_shape_preserves_pixels_with_explicit_format() -> None:
@@ -286,12 +315,24 @@ def test_json_metadata_local_remote_and_invalid_shapes(
         huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: downloaded
     )
     assert processor_patch._load_json("org/model", "config.json") == {"remote": True}
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            LocalEntryNotFoundError("offline")
+        ),
     )
     assert processor_patch._load_json("org/model", "config.json") is None
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{")
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: malformed
+    )
+    with pytest.raises(ValueError):
+        processor_patch._load_json("org/model", "config.json")
 
 
 def test_local_metadata_honors_subfolder(tmp_path: Path) -> None:

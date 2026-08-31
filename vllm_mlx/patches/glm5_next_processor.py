@@ -29,6 +29,7 @@ from PIL import Image
 from transformers import AutoTokenizer
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_processing_utils import ImageProcessingMixin
+from transformers.image_transforms import resize
 from transformers.image_utils import ChannelDimension, infer_channel_dimension_format
 from transformers.processing_utils import ProcessorMixin
 
@@ -106,18 +107,23 @@ def smart_resize(
         )
 
     low, high = 1, height
-    best_height, best_width = factor, factor
+    best: tuple[int, int] | None = None
     while low <= high:
         content_height = (low + high) // 2
         content_width = max(1, math.floor(width * content_height / height))
         candidate_height = align(content_height)
         candidate_width = align(content_width)
         if aligned_frames * candidate_height * candidate_width <= max_pixels:
-            best_height, best_width = candidate_height, candidate_width
+            best = candidate_height, candidate_width
             low = content_height + 1
         else:
             high = content_height - 1
-    return best_height, best_width
+    if best is None:
+        raise ValueError(
+            "The image aspect ratio cannot fit the configured token budget "
+            "without distortion. Increase max_image_tokens or resize the image."
+        )
+    return best
 
 
 def _to_channel_first(
@@ -126,8 +132,12 @@ def _to_channel_first(
     input_data_format: str | ChannelDimension | None = None,
 ) -> np.ndarray:
     if isinstance(image, (str, Path)):
-        image = Image.open(image)
-    if hasattr(image, "convert"):
+        with Image.open(image) as opened:
+            if do_convert_rgb:
+                opened = opened.convert("RGB")
+            array = np.asarray(opened).copy()
+        channel_dimension = ChannelDimension.LAST
+    elif hasattr(image, "convert"):
         if do_convert_rgb:
             image = image.convert("RGB")
         array = np.asarray(image)
@@ -163,16 +173,13 @@ def _resize_channel_first(
 ) -> np.ndarray:
     if image.shape[-2:] == (target_height, target_width):
         return image
-    array = np.transpose(image, (1, 2, 0))
-    if array.dtype != np.uint8:
-        if np.issubdtype(array.dtype, np.floating) and array.max(initial=0) <= 1:
-            array = array * 255
-        array = np.clip(array, 0, 255).astype(np.uint8)
-    resized = Image.fromarray(array).resize(
-        (target_width, target_height),
+    return resize(
+        image,
+        (target_height, target_width),
         resample=Image.Resampling.BICUBIC,
+        data_format=ChannelDimension.FIRST,
+        input_data_format=ChannelDimension.FIRST,
     )
-    return np.transpose(np.asarray(resized), (2, 0, 1))
 
 
 class Glm5NextImageProcessor(ImageProcessingMixin):
@@ -363,10 +370,11 @@ def _load_json(
         return None
     try:
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError
 
         downloaded = hf_hub_download(str(model_path), filename, **options)
         return _read_json_object(Path(downloaded))
-    except Exception:
+    except EntryNotFoundError:
         return None
 
 
