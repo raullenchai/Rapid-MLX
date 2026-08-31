@@ -2,6 +2,12 @@ import SwiftUI
 
 enum GitHubCommunity {
     static let repositoryURL = URL(string: "https://github.com/raullenchai/Rapid-MLX")!
+    static let feedbackBugReportURL = URL(
+        string: "https://github.com/raullenchai/Rapid-MLX/issues/new?template=desktop_bug.yml"
+    )!
+    static let feedbackFeatureRequestURL = URL(
+        string: "https://github.com/raullenchai/Rapid-MLX/issues/new?template=feature_request.yml"
+    )!
     /// Retained so re-onboarding can clear the preference written by older
     /// builds, even though completion no longer presents an overlay.
     static let didShowOnboardingPromptKey = "Rapid.didShowOnboardingGitHubStarPrompt"
@@ -97,6 +103,23 @@ struct GitHubStarPromptCard: View {
                         ))
                         .frame(width: 84, height: RapidTheme.ControlHeight.medium)
                         .accessibilityIdentifier("GitHub.Star.ValueMoment.Later")
+
+                    Menu("Feedback") {
+                        Button("Bug report") {
+                            openURL(GitHubCommunity.feedbackBugReportURL)
+                        }
+                        .accessibilityIdentifier("GitHub.Star.ValueMoment.BugReport")
+                        Button("Feature request") {
+                            openURL(GitHubCommunity.feedbackFeatureRequestURL)
+                        }
+                        .accessibilityIdentifier("GitHub.Star.ValueMoment.FeatureRequest")
+                    }
+                    .buttonStyle(RapidSecondaryButtonStyle(
+                        height: RapidTheme.ControlHeight.medium,
+                        font: .system(size: 14, weight: .medium)
+                    ))
+                    .frame(width: 84, height: RapidTheme.ControlHeight.medium)
+                    .accessibilityIdentifier("GitHub.Star.ValueMoment.Feedback")
                 }
             }
 
