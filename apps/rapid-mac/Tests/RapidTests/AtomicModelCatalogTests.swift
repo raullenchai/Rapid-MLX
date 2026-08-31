@@ -297,4 +297,41 @@ struct AtomicModelCatalogTests {
             $0.alias == "chat-sibling"
         }?.speculativeDecodingPreset?.method == .suffix)
     }
+
+    @Test("cache identity includes subfolder and preserves external ownership")
+    func subfolderAndExternalCacheIdentity() {
+        let subA = ModelEntry(
+            alias: "sub-a", hfRepo: "org/shared", sizeOnDisk: nil, cached: false,
+            sourceSubfolder: "a"
+        )
+        let subASibling = ModelEntry(
+            alias: "sub-a-sibling", hfRepo: "org/shared", sizeOnDisk: nil,
+            cached: false,
+            sourceSubfolder: "a"
+        )
+        let subB = ModelEntry(
+            alias: "sub-b", hfRepo: "org/shared", sizeOnDisk: nil, cached: false,
+            sourceSubfolder: "b"
+        )
+        let root = ModelEntry(
+            alias: "root", hfRepo: "org/root", sizeOnDisk: nil, cached: false
+        )
+
+        let managed = ModelCatalog.mergeAtomicAndCached(
+            atomic: [subA, subASibling, subB],
+            cached: [("sub-a", "org/shared", "1 GiB")],
+            excluded: []
+        )
+        #expect(managed.first { $0.alias == "sub-a" }?.cached == true)
+        #expect(managed.first { $0.alias == "sub-a-sibling" }?.cached == true)
+        #expect(managed.first { $0.alias == "sub-b" }?.cached == false)
+
+        let external = ModelCatalog.mergeAtomicAndCached(
+            atomic: [root, subA],
+            cached: [("(external)", "org/root", nil), ("(external)", "org/shared", nil)],
+            excluded: []
+        )
+        #expect(external.first { $0.alias == "root" }?.isExternal == true)
+        #expect(external.first { $0.alias == "sub-a" }?.cached == false)
+    }
 }

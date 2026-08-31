@@ -247,6 +247,9 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var taskTypes: Set<ModelTask> = []
     var operationModes: Set<ModelOperation> = []
     var runtimeAdapter: String? = nil
+    /// Artifact identity includes the case-sensitive repo and optional
+    /// subfolder. Repo-only cache joins are unsafe for multi-checkpoint repos.
+    var sourceSubfolder: String? = nil
 
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
@@ -819,6 +822,7 @@ enum ModelCatalog {
 
         var modelsByID: [String: (
             repo: String,
+            subfolder: String?,
             size: String?,
             resolution: String,
             identityDigest: String?
@@ -845,7 +849,11 @@ enum ModelCatalog {
                 size = nil
             }
             modelsByID[modelID] = (
-                repo, size, resolution, model["model_identity_digest"] as? String
+                repo,
+                source["subfolder"] as? String,
+                size,
+                resolution,
+                model["model_identity_digest"] as? String
             )
         }
 
@@ -951,6 +959,7 @@ enum ModelCatalog {
                 taskTypes: tasks,
                 operationModes: operations,
                 runtimeAdapter: runtimeAdapter,
+                sourceSubfolder: model.subfolder,
                 isBuiltinProfile: origin == "builtin",
                 isTextOnly: isTextOnly
             ))
@@ -1033,34 +1042,6 @@ enum ModelCatalog {
         return parseAtomicModelEntriesJSON(root)
     }
 
-    private static func applyingCachedRepos(
-        to entries: [ModelEntry],
-        cachedByRepo: [String: String?]
-    ) -> [ModelEntry] {
-        entries.map { entry in
-            guard let repo = entry.hfRepo, cachedByRepo.keys.contains(repo) else {
-                return entry
-            }
-            return ModelEntry(
-                alias: entry.alias,
-                hfRepo: repo,
-                sizeOnDisk: cachedByRepo[repo] ?? entry.sizeOnDisk,
-                cached: true,
-                isExternal: entry.isExternal,
-                kind: entry.kind,
-                audioCapability: entry.audioCapability,
-                audioFamily: entry.audioFamily,
-                imageCapability: entry.imageCapability,
-                taskTypes: entry.taskTypes,
-                operationModes: entry.operationModes,
-                runtimeAdapter: entry.runtimeAdapter,
-                speculativeDecodingPreset: entry.speculativeDecodingPreset,
-                isBuiltinProfile: entry.isBuiltinProfile,
-                isTextOnly: entry.isTextOnly
-            )
-        }
-    }
-
     /// Load the complete product catalog with one sidecar snapshot and one
     /// cache scan. Settings uses this instead of independently querying every
     /// tab, so all tabs agree on one catalog digest and model additions do not
@@ -1101,15 +1082,25 @@ enum ModelCatalog {
         speculative: [String: SpeculativeDecodingPreset] = [:]
     ) -> [ModelEntry] {
         var cachedByAlias: [String: (repo: String?, size: String?)] = [:]
-        var cachedByRepo: [String: (repo: String, size: String?)] = [:]
-        var externalByRepo: [String: String?] = [:]
+        let atomicByAlias = Dictionary(
+            uniqueKeysWithValues: atomic.map { ($0.alias, $0) }
+        )
+        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
+        var unmappedRootByRepo: [String: (size: String?, present: Bool)] = [:]
+        var externalByRepo: [String: (size: String?, present: Bool)] = [:]
         for (alias, repo, size) in cached {
             if alias == "(external)", let repo {
-                externalByRepo[repo] = size
+                externalByRepo[repo] = (size, true)
+            } else if alias == "(unmapped)", let repo {
+                unmappedRootByRepo[repo] = (size, true)
             } else if !alias.isEmpty && !isStatusAlias(alias) {
                 cachedByAlias[alias] = (repo, size)
-                if let repo = sanitizedHuggingFaceRepo(repo), cachedByRepo[repo] == nil {
-                    cachedByRepo[repo] = (repo, size)
+                if let source = atomicByAlias[alias],
+                   let sourceRepo = source.hfRepo,
+                   let key = artifactCacheKey(source),
+                   repo == nil || sanitizedHuggingFaceRepo(repo) == sourceRepo,
+                   cachedByArtifact[key] == nil {
+                    cachedByArtifact[key] = (sourceRepo, size)
                 }
             }
         }
@@ -1123,23 +1114,32 @@ enum ModelCatalog {
         var seenAliases = Set(enrichedAtomic.map(\.alias))
         var entries = enrichedAtomic.map { entry -> ModelEntry in
             let cachedHit = cachedByAlias[entry.alias]
-            let siblingHit = entry.hfRepo.flatMap { cachedByRepo[$0] }
+            let siblingHit = artifactCacheKey(entry).flatMap { cachedByArtifact[$0] }
+            let unmappedRoot = entry.sourceSubfolder == nil
+                ? entry.hfRepo.flatMap { repo in
+                    unmappedRootByRepo[repo].map { (repo, $0.size) }
+                }
+                : nil
             let externalRepo = entry.hfRepo.flatMap { repo in
-                externalByRepo.keys.contains(repo) ? repo : nil
+                entry.sourceSubfolder == nil && externalByRepo[repo] != nil ? repo : nil
             }
             if let externalRepo { consumedExternal.insert(externalRepo) }
-            guard cachedHit != nil || siblingHit != nil || externalRepo != nil else {
+            guard cachedHit != nil || siblingHit != nil || unmappedRoot != nil
+                    || externalRepo != nil else {
                 return entry
             }
             return ModelEntry(
                 alias: entry.alias,
-                hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? entry.hfRepo ?? externalRepo,
+                hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? unmappedRoot?.0
+                    ?? entry.hfRepo ?? externalRepo,
                 sizeOnDisk: cachedHit?.size
                     ?? siblingHit?.size
-                    ?? externalRepo.flatMap { externalByRepo[$0] }
+                    ?? unmappedRoot?.1
+                    ?? externalRepo.flatMap { externalByRepo[$0]?.size }
                     ?? entry.sizeOnDisk,
                 cached: true,
-                isExternal: cachedHit == nil && siblingHit == nil && externalRepo != nil,
+                isExternal: cachedHit == nil && siblingHit == nil
+                    && unmappedRoot == nil && externalRepo != nil,
                 kind: entry.kind,
                 audioCapability: entry.audioCapability,
                 audioFamily: entry.audioFamily,
@@ -1147,6 +1147,7 @@ enum ModelCatalog {
                 taskTypes: entry.taskTypes,
                 operationModes: entry.operationModes,
                 runtimeAdapter: entry.runtimeAdapter,
+                sourceSubfolder: entry.sourceSubfolder,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly
@@ -1181,6 +1182,11 @@ enum ModelCatalog {
         return entries
     }
 
+    private static func artifactCacheKey(_ entry: ModelEntry) -> String? {
+        guard let repo = sanitizedHuggingFaceRepo(entry.hfRepo) else { return nil }
+        return repo + "\0" + (entry.sourceSubfolder ?? "")
+    }
+
     /// Image aliases with explicit generation/edit capabilities for the Images tab's
     /// model picker. Parsed from the same ``rapid-mlx models`` output the
     /// chat catalog reads, but keeping ONLY the image rows the chat catalog
@@ -1199,19 +1205,11 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
         let cached = await cachedTask
-        let cachedByRepo = Dictionary(
-            cached.compactMap { _, repo, size -> (String, String?)? in
-                guard let repo else { return nil }
-                return (repo, size)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
         let json = await modelsJSON
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
-            return applyingCachedRepos(
-                to: atomic.filter { $0.kind == .image },
-                cachedByRepo: cachedByRepo
-            )
+            return mergeAtomicAndCached(
+                atomic: atomic, cached: cached, excluded: []
+            ).filter { $0.kind == .image }
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseImageRows(modelsOut)
@@ -1269,10 +1267,9 @@ enum ModelCatalog {
         )
         let json = await modelsJSON
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
-            return applyingCachedRepos(
-                to: atomic.filter { $0.kind == .audio },
-                cachedByRepo: cachedByRepo
-            )
+            return mergeAtomicAndCached(
+                atomic: atomic, cached: cached, excluded: []
+            ).filter { $0.kind == .audio }
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseAudioRows(modelsOut).filter {
