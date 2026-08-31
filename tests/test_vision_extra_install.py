@@ -156,7 +156,7 @@ def test_vision_mlx_vlm_matches_desktop_runtime() -> None:
         if Requirement(spec).name == "mlx-vlm"
     ]
     assert len(requirements) == 1
-    assert requirements[0].specifier == SpecifierSet("==0.6.16")
+    assert requirements[0].specifier == SpecifierSet("==0.6.17")
 
 
 def test_transformers_range_excludes_5130_and_caps_next_minor() -> None:
@@ -581,7 +581,7 @@ def test_dev_extra_pins_tomli_for_python_310() -> None:
 
 
 def test_all_mlx_vlm_specs_match_validated_desktop_pin() -> None:
-    """Every optional surface must resolve mlx-vlm exactly to 0.6.16."""
+    """Every optional surface must resolve mlx-vlm exactly to 0.6.17."""
     py = _load_pyproject()
     extras = py.get("project", {}).get("optional-dependencies", {})
     offenders: list[tuple[str, str]] = []
@@ -590,11 +590,11 @@ def test_all_mlx_vlm_specs_match_validated_desktop_pin() -> None:
             name, _ = _split_spec(spec)
             if name.lower() != "mlx-vlm":
                 continue
-            if Requirement(spec).specifier != SpecifierSet("==0.6.16"):
+            if Requirement(spec).specifier != SpecifierSet("==0.6.17"):
                 offenders.append((extra_name, spec))
     assert offenders == [], (
-        "These mlx-vlm specs can drift from the Desktop's validated 0.6.16 runtime:\n"
+        "These mlx-vlm specs can drift from the Desktop's validated 0.6.17 runtime:\n"
         + "\n".join(f"  [{e}] {s!r}" for e, s in offenders)
-        + "\n\nPin every mlx-vlm-bearing extra to ==0.6.16. Move the pin only "
+        + "\n\nPin every mlx-vlm-bearing extra to ==0.6.17. Move the pin only "
         "after the Desktop and dependency-coherence sweeps validate a new release."
     )

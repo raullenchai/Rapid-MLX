@@ -1898,6 +1898,29 @@ def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
     )
 
 
+def test_glm_5_3_flash_alias_is_experimental_and_fails_closed() -> None:
+    """GLM-5.3 starts on the verified autoregressive VLM path only."""
+
+    alias = "glm5.3-flash-4bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"
+    assert profile.experimental is True
+    assert profile.min_memory_gb == 192.0
+    assert profile.vision_min_memory_gb is None
+    assert profile.is_hybrid is True
+    assert profile.is_hybrid_explicit is True
+    assert profile.is_moe is True
+    assert profile.supports_spec_decode is False
+    assert profile.supports_native_mtp is False
+    assert profile.supports_dflash is False
+    assert profile.tool_call_parser == "glm47"
+    assert profile.reasoning_parser == "glm4"
+    assert profile.recommended_sampling is None
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+
+
 # =============================================================================
 # is_text_only routing state-pin (#393 declarative default for force_text)
 # =============================================================================
