@@ -61,7 +61,7 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(constraints.contains("mlx-vlm==0.6.16"))
+        #expect(constraints.contains("mlx-vlm==0.6.17"))
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
                 "The no-deps sidecar install must never float within a range.")
         #expect(script.contains(#"--constraint "$SIDECAR_CONSTRAINTS""#),
