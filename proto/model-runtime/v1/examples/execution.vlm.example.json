@@ -1,0 +1,6 @@
+{
+  "schema_version": 1, "config_digest": "sha256:ddd012cc3b0b4ce8e9450b54fb49d6c0a66778006b0086172200a374541aa31b",
+  "runtime": {"distribution": "release", "rapid_mlx": "0.14.0", "mlx": "0.32.1", "mlx_vlm": "0.4.0", "python": "3.12.11"},
+  "task_type": "vision_language", "resources": {"max_concurrency": 1, "compute_dtype": "bfloat16", "offload": "none"},
+  "task": {"kind": "vision_language", "language": {"context_length": 8192, "speculative_decoding": {"method": "none"}, "kv_cache": {"mode": "full_precision", "dtype": "bfloat16"}, "prefix_cache_enabled": false, "prefill_backend": "gpu", "prefill_chunk_size": null}, "media_input": {"preprocess_backend": "cpu", "encoder_cache_enabled": false}}
+}

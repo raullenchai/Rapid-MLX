@@ -1,0 +1,9 @@
+{
+  "schema_version": 1, "identity_strength": "registry_pinned", "pipeline_kind": "vision_language",
+  "components": [
+    {"component_id": "language", "role": "language_model", "source": {"kind": "huggingface", "repo_id": "example-org/sample-vlm", "resolved_revision": "1111111111111111111111111111111111111111", "subfolder": "language"}, "artifact": {"format": "mlx-safetensors", "manifest_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "weights", "method": "affine", "weight_bits_x2": 8}},
+    {"component_id": "primary", "role": "primary", "source": {"kind": "huggingface", "repo_id": "example-org/sample-vlm", "resolved_revision": "1111111111111111111111111111111111111111"}, "artifact": {"format": "mlx-safetensors", "manifest_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}},
+    {"component_id": "vision", "role": "vision_encoder", "source": {"kind": "huggingface", "repo_id": "example-org/sample-vlm", "resolved_revision": "1111111111111111111111111111111111111111", "subfolder": "vision"}, "artifact": {"format": "mlx-safetensors", "manifest_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}}
+  ],
+  "identity_digest": "sha256:48a9c1aa21e7462e3b4ba28e4cb863a1d04b19aab6c9e18b4050803f9ce84dbf"
+}

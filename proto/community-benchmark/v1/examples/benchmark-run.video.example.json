@@ -1,0 +1,37 @@
+{
+  "schema_version": 1, "run_id": "22345678-1234-4abc-8def-1234567890ab",
+  "started_at": "2026-08-31T20:00:00Z", "completed_at": "2026-08-31T20:08:00Z",
+  "collector": {"name": "rapid-mlx-community-bench", "version": "0.14.0"},
+  "model": {
+    "schema_version": 1, "identity_strength": "registry_pinned", "pipeline_kind": "video_generation",
+    "components": [
+      {"component_id": "primary", "role": "primary", "source": {"kind": "huggingface", "repo_id": "example-org/sample-video", "resolved_revision": "3333333333333333333333333333333333333333", "subfolder": "transformer"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "weights", "method": "affine", "weight_bits_x2": 8}},
+      {"component_id": "text-encoder", "role": "text_encoder", "source": {"kind": "huggingface", "repo_id": "example-org/sample-video", "resolved_revision": "3333333333333333333333333333333333333333", "subfolder": "text_encoder"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}},
+      {"component_id": "vae", "role": "vae", "source": {"kind": "huggingface", "repo_id": "example-org/sample-video", "resolved_revision": "3333333333333333333333333333333333333333", "subfolder": "vae"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}}
+    ],
+    "identity_digest": "sha256:e27590cde854696c942f81c58e384025c7914795e2e10997fbc60e133ad0589c"
+  },
+  "machine": {
+    "schema_version": 1, "profile_completeness": "complete",
+    "profile": {"chip": "Apple M4 Max", "memory_gib": 128, "cpu_cores": 16, "performance_cores": 12, "efficiency_cores": 4, "gpu_cores": 40},
+    "profile_digest": "sha256:c805ee05c006a80c867d83f59bfc157af147d9258277f1f2994d1ae1ae2703d0",
+    "os": {"name": "macOS", "version": "26.0", "architecture": "arm64"},
+    "conditions_before": {"power_source": "ac", "power_mode": "automatic", "low_power_mode": false, "thermal_state": "nominal", "memory_pressure": "normal", "available_memory_mib": 98304},
+    "conditions_after": {"power_source": "ac", "power_mode": "automatic", "low_power_mode": false, "thermal_state": "fair", "memory_pressure": "normal", "available_memory_mib": 86000}
+  },
+  "execution": {
+    "schema_version": 1, "config_digest": "sha256:a721934194eb04d877e03974556ae7effb7c900632116044dc0436973ccefb14",
+    "runtime": {"distribution": "release", "rapid_mlx": "0.14.0", "mlx": "0.32.1", "mflux": "0.12.0", "python": "3.12.11"},
+    "task_type": "video_generation", "resources": {"max_concurrency": 1, "compute_dtype": "bfloat16", "offload": "none"},
+    "task": {"kind": "video_generation", "diffusion": {"attention_backend": "native", "compilation": "disabled", "vae_tiling": true, "vae_slicing": true, "denoiser_chunk_size": 8}, "temporal_chunking": {"enabled": true, "frames_per_chunk": 16}}
+  },
+  "workload": {
+    "protocol_id": "rapid-video-speed", "protocol_version": 1, "protocol_strength": "registered",
+    "protocol_digest": "sha256:a163611473ac73cf3f1de00f56433425ae971cb015550568e392f6050e948d1e", "task_type": "video_generation",
+    "dataset": {"id": "rapid-public-prompts", "version": 1, "digest": "sha256:1364a3627ef40d98e2920fe188f0941fe6f4a78ea306e4c81964e3b6b705c44c"},
+    "concurrency": 1,
+    "cases": [{"case_id": "t2v-480p-81f", "warmup_rounds": 0, "measured_rounds": 1, "mode": "text_to_video", "width": 832, "height": 480, "frames": 81, "fps_milli": 24000, "steps": 20, "guidance_millionths": 5000000, "seed": 12648430}]
+  },
+  "outcome": {"status": "completed"},
+  "measurements": [{"case_id": "t2v-480p-81f", "round_index": 1, "total_duration_ms": 465812.4, "peak_active_memory_mib": 48760, "completed": true, "frames": 81, "width": 832, "height": 480, "text_encode_duration_ms": 340.2, "denoise_duration_ms": 451000.2, "vae_decode_duration_ms": 14472.0}]
+}

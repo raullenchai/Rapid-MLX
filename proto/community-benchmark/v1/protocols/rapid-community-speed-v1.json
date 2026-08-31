@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "protocol_digest": "sha256:bf2e8220a74527a18974f7e9aba433cf366d615bde3b2fc1b0c21c8cdb39dddd",
+  "workload": {
+    "protocol_id": "rapid-community-speed",
+    "protocol_version": 1,
+    "protocol_strength": "registered",
+    "protocol_digest": "sha256:bf2e8220a74527a18974f7e9aba433cf366d615bde3b2fc1b0c21c8cdb39dddd",
+    "task_type": "text_generation",
+    "dataset": {
+      "id": "rapid-synthetic-token-corpus",
+      "version": 1,
+      "digest": "sha256:c78c1d1638b8c3a38ca51928d56ffde73653171ff85381beefb50caf637dcdc6"
+    },
+    "concurrency": 1,
+    "cases": [
+      {
+        "case_id": "pp512-tg128",
+        "target_prompt_tokens": 512,
+        "target_output_tokens": 128,
+        "warmup_rounds": 1,
+        "measured_rounds": 5
+      },
+      {
+        "case_id": "pp2048-tg512",
+        "target_prompt_tokens": 2048,
+        "target_output_tokens": 512,
+        "warmup_rounds": 1,
+        "measured_rounds": 5
+      }
+    ]
+  }
+}

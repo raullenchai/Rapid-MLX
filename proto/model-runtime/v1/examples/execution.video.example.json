@@ -1,0 +1,6 @@
+{
+  "schema_version": 1, "config_digest": "sha256:a721934194eb04d877e03974556ae7effb7c900632116044dc0436973ccefb14",
+  "runtime": {"distribution": "release", "rapid_mlx": "0.14.0", "mlx": "0.32.1", "mflux": "0.12.0", "python": "3.12.11"},
+  "task_type": "video_generation", "resources": {"max_concurrency": 1, "compute_dtype": "bfloat16", "offload": "none"},
+  "task": {"kind": "video_generation", "diffusion": {"attention_backend": "native", "compilation": "disabled", "vae_tiling": true, "vae_slicing": true, "denoiser_chunk_size": 8}, "temporal_chunking": {"enabled": true, "frames_per_chunk": 16}}
+}
