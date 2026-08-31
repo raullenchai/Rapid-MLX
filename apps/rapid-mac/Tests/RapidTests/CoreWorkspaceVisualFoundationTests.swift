@@ -531,6 +531,7 @@ struct CoreWorkspaceVisualFoundationTests {
             ],
             "Sources/Rapid/UI/ReadinessBanner.swift": [
                 "Readiness.Action",
+                "Readiness.ExportDiagnostics",
             ],
             "Sources/Rapid/UI/CommandPaletteView.swift": [
                 "CommandPalette.Panel",

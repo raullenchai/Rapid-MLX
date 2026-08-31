@@ -29,6 +29,8 @@ struct ReadinessBanner: View {
     var attentionToken: Int = 0
     var onAction: (ModelReadiness.Action) -> Void
 
+    @Environment(ServerManager.self) private var server
+
     // Reduce Motion is handled inside the pieces this composes:
     // ``PulsingStateDot`` suppresses its own breathing loop, and
     // ``rapidAnimation`` resolves to an instant change. The emphasis
@@ -74,6 +76,17 @@ struct ReadinessBanner: View {
                     ))
                     .fixedSize()
                     .accessibilityIdentifier("Readiness.Action")
+                }
+
+                if readiness.isFailure {
+                    QuietIconButton(
+                        symbol: "stethoscope",
+                        label: "Export diagnostics…",
+                        help: "Export a privacy-scrubbed diagnostics bundle for support"
+                    ) {
+                        DiagnosticsBundle.exportViaSavePanel(server: server)
+                    }
+                    .accessibilityIdentifier("Readiness.ExportDiagnostics")
                 }
             }
 
