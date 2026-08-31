@@ -88,13 +88,16 @@ final class MermaidRenderer {
         case failed
     }
 
-    /// Every value is created, consumed, and cached on this renderer's main
-    /// actor. `Task.value` still requires a Sendable result even when both
-    /// producer and consumer are actor-bound; the unchecked conformance is
-    /// limited to carrying AppKit's non-Sendable `NSImage` across that API
-    /// boundary without moving it off the main actor.
-    private enum RenderOutcome: @unchecked Sendable {
-        case image(NSImage)
+    /// `Task.value` requires a Sendable payload even though this renderer and
+    /// every image consumer are main-actor isolated. This wrapper expresses
+    /// that narrow ownership invariant without claiming NSImage is generally
+    /// safe to move between executors.
+    private struct RenderedImage: @unchecked Sendable {
+        let value: NSImage
+    }
+
+    private enum RenderOutcome: Sendable {
+        case image(RenderedImage)
         case sourceRejected
         case infrastructureFailure
     }
@@ -104,7 +107,7 @@ final class MermaidRenderer {
     private static let capacity = 32
     private var cache: [Key: Entry] = [:]
     private var order: [Key] = []
-    private var inFlight: [Key: Task<NSImage?, Never>] = [:]
+    private var inFlight: [Key: Task<RenderedImage?, Never>] = [:]
 
     /// Rendering happens in a window so WebKit has somewhere to draw. It is
     /// never ordered front and never joins the app's window list in any way
@@ -185,15 +188,15 @@ final class MermaidRenderer {
         case .failed: return nil
         case nil: break
         }
-        if let running = inFlight[key] { return await running.value }
+        if let running = inFlight[key] { return await running.value?.value }
 
-        let task = Task { [weak self] () -> NSImage? in
+        let task = Task { [weak self] () -> RenderedImage? in
             guard let self else { return nil }
             let outcome = await self.render(source: source, theme: theme)
-            let image: NSImage?
+            let image: RenderedImage?
             switch outcome {
             case .image(let rendered):
-                self.store(.image(rendered), for: key)
+                self.store(.image(rendered.value), for: key)
                 image = rendered
             case .sourceRejected:
                 self.store(.failed, for: key)
@@ -207,7 +210,7 @@ final class MermaidRenderer {
             return image
         }
         inFlight[key] = task
-        return await task.value
+        return await task.value?.value
     }
 
     private func store(_ entry: Entry, for key: Key) {
@@ -272,7 +275,7 @@ final class MermaidRenderer {
             guard let image = try await snapshot(
                 webView: webView, measurement: measured
             ) else { return .infrastructureFailure }
-            return .image(image)
+            return .image(RenderedImage(value: image))
         } catch {
             failures += 1
             teardown()
