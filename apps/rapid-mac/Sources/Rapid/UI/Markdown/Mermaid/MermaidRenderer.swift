@@ -542,10 +542,21 @@ final class MermaidRenderer {
     private var navigationPolicy: MermaidNavigationPolicy?
 
     private func webContentProcessDidTerminate() {
+        // Active render failures are charged by their throwing evaluate/
+        // snapshot path; initial-load failures are charged by buildWebView.
+        // Between renders neither path runs, so charge that idle crash here.
+        if loaded, abortActiveOperation == nil {
+            failures += 1
+        }
         let abort = abortActiveOperation
         abortActiveOperation = nil
         abort?()
         teardown()
+    }
+
+    /// Test seam for the delegate callback while the prepared renderer is idle.
+    func simulateIdleContentProcessTerminationForTesting() {
+        webContentProcessDidTerminate()
     }
 
     /// Test seam: put the renderer back to cold. Nothing in the app calls

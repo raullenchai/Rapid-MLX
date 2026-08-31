@@ -1078,4 +1078,23 @@ struct MermaidSetupTests {
             #expect(renderer.cachedImage(source: source, theme: .light) != nil)
         }
     }
+
+    @Test("Idle content-process crashes exhaust the rebuild budget")
+    func idleContentProcessCrashesExhaustBudget() async {
+        renderer.resetForTesting()
+        defer { renderer.resetForTesting() }
+
+        for index in 1...3 {
+            let source = "graph TD\n  BeforeCrash\(index) --> Rebuild\(index)"
+            #expect(await renderer.image(source: source, theme: .light) != nil)
+            renderer.simulateIdleContentProcessTerminationForTesting()
+        }
+        let webViewsBeforeBlockedRender = renderer.webViewsCreated
+
+        let blocked = await renderer.image(
+            source: "graph TD\n  Budget --> Exhausted", theme: .light
+        )
+        #expect(blocked == nil)
+        #expect(renderer.webViewsCreated == webViewsBeforeBlockedRender)
+    }
 }
