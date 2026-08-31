@@ -285,13 +285,16 @@ class Glm5NextImageProcessor(ImageProcessingMixin):
         return BatchFeature(data=data, tensor_type=return_tensors)
 
     def get_number_of_image_patches(
-        self, height: int, width: int, images_kwargs: dict | None = None
+        self,
+        height: int,
+        width: int,
+        images_kwargs: dict[str, Any] | None = None,
     ) -> int:
         images_kwargs = images_kwargs or {}
-        patch_size = images_kwargs.get("patch_size", self.patch_size)
-        merge_size = images_kwargs.get("merge_size", self.merge_size)
-        patch_expand_factor = images_kwargs.get(
-            "patch_expand_factor", self.patch_expand_factor
+        patch_size = int(images_kwargs.get("patch_size", self.patch_size))
+        merge_size = int(images_kwargs.get("merge_size", self.merge_size))
+        patch_expand_factor = int(
+            images_kwargs.get("patch_expand_factor", self.patch_expand_factor)
         )
         target_height, target_width = smart_resize(
             images_kwargs.get("temporal_patch_size", self.temporal_patch_size),
@@ -311,11 +314,16 @@ class Glm5NextImageProcessor(ImageProcessingMixin):
         return (target_height // patch_size) * (target_width // patch_size)
 
 
-def _load_json(model_path: str | Path, filename: str) -> dict | None:
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    parsed = json.loads(path.read_text())
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _load_json(model_path: str | Path, filename: str) -> dict[str, Any] | None:
     root = Path(model_path)
     local = root / filename
     if local.exists():
-        return json.loads(local.read_text())
+        return _read_json_object(local)
     if root.exists():
         # A local checkpoint either carries the optional metadata or it does
         # not. Never reinterpret its filesystem path as a Hub repo ID.
@@ -324,7 +332,7 @@ def _load_json(model_path: str | Path, filename: str) -> dict | None:
         from huggingface_hub import hf_hub_download
 
         downloaded = hf_hub_download(str(model_path), filename)
-        return json.loads(Path(downloaded).read_text())
+        return _read_json_object(Path(downloaded))
     except Exception:
         return None
 

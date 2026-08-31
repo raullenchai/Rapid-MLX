@@ -3,8 +3,7 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
+import pytest
 
 from vllm_mlx.patches.glm5_next_forget_gate_quant import (
     _remap_quantized_forget_gate_tensors,
@@ -33,28 +32,58 @@ def test_quantization_metadata_follows_forget_gate_weight_rename() -> None:
     assert "model.layers.0.self_attn.q_proj.scales" in remapped
 
 
+@pytest.mark.requires_mlx
 def test_installer_wraps_released_sanitizer_once_in_clean_process() -> None:
-    script = """
-from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
-from mlx_vlm.models.glm5_next import language
+    from mlx_vlm.models.glm5_next import language
 
-language.LanguageModel.sanitize = lambda self, weights: dict(weights)
-assert patch.install_glm5_next_forget_gate_quant_fix() is True
-assert patch.install_glm5_next_forget_gate_quant_fix() is False
-assert patch.is_installed() is True
+    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
 
-result = language.LanguageModel.sanitize(
-    object(),
-    {"model.layers.0.self_attn.f_a_proj.scales": "sentinel"},
-)
-assert result == {
-    "model.layers.0.self_attn.forget_gate.f_a_proj.scales": "sentinel"
-}
-assert language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED is True
-"""
-    subprocess.run(
-        [sys.executable, "-c", script],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    original = language.LanguageModel.sanitize
+    marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
+    marker_existed = hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED")
+    patch._INSTALLED = False
+    if marker_existed:
+        del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
+    language.LanguageModel.sanitize = lambda self, weights: dict(weights)
+
+    try:
+        assert patch.install_glm5_next_forget_gate_quant_fix() is True
+        assert patch.install_glm5_next_forget_gate_quant_fix() is False
+        assert patch.is_installed() is True
+
+        result = language.LanguageModel.sanitize(
+            object(),
+            {"model.layers.0.self_attn.f_a_proj.scales": "sentinel"},
+        )
+        assert result == {
+            "model.layers.0.self_attn.forget_gate.f_a_proj.scales": "sentinel"
+        }
+        assert language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED is True
+    finally:
+        language.LanguageModel.sanitize = original
+        if marker_existed:
+            language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = marker
+        elif hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED"):
+            del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
+        patch._INSTALLED = False
+
+
+@pytest.mark.requires_mlx
+def test_installer_respects_quant_runtime_that_is_already_patched() -> None:
+    from mlx_vlm.models.glm5_next import language
+
+    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
+
+    marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
+    marker_existed = hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED")
+    patch._INSTALLED = False
+    language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = True
+    try:
+        assert patch.install_glm5_next_forget_gate_quant_fix() is False
+        assert patch.is_installed() is True
+    finally:
+        if marker_existed:
+            language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = marker
+        else:
+            del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
+        patch._INSTALLED = False

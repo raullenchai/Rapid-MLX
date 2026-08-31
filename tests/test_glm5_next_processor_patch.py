@@ -7,9 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import mlx.core as mx
+import numpy as np
 import pytest
 from PIL import Image
+
+mx = pytest.importorskip("mlx.core", reason="requires Apple MLX")
 
 from vllm_mlx.patches import glm5_next_processor as processor_patch
 from vllm_mlx.patches.glm5_next_processor import (
@@ -22,18 +24,32 @@ from vllm_mlx.patches.glm5_next_processor import (
 class _TokenizerStub:
     model_input_names = ["input_ids", "attention_mask"]
 
+    def __init__(self):
+        self.calls = []
+
     @staticmethod
     def convert_tokens_to_ids(token: str) -> int:
         return {"<|image|>": 120, "<|video|>": 121}[token]
 
-    @staticmethod
-    def __call__(texts, **kwargs):
-        del kwargs
+    def __call__(self, texts, **kwargs):
+        self.calls.append((texts, kwargs))
         rows = [[1] + [120] * text.count("<|image|>") + [2] for text in texts]
         return {
             "input_ids": rows,
             "attention_mask": [[1] * len(row) for row in rows],
         }
+
+    @staticmethod
+    def batch_decode(*args, **kwargs):
+        return (args, kwargs)
+
+    @staticmethod
+    def decode(*args, **kwargs):
+        return (args, kwargs)
+
+    @staticmethod
+    def apply_chat_template(*args, **kwargs):
+        return (args, kwargs)
 
 
 def test_token_budget_keeps_native_448_tile() -> None:
@@ -51,6 +67,48 @@ def test_smart_resize_rejects_empty_media(
 ) -> None:
     with pytest.raises(ValueError, match="must be positive"):
         smart_resize(num_frames, height, width)
+
+
+def test_smart_resize_downscales_and_rejects_impossible_budget() -> None:
+    height, width = smart_resize(
+        2,
+        1000,
+        500,
+        factor=28,
+        min_image_tokens=1,
+        max_image_tokens=64,
+    )
+    assert height % 28 == width % 28 == 0
+    assert 2 * height * width <= 64 * 2 * 28**2
+    with pytest.raises(ValueError, match="too small"):
+        smart_resize(2, 100, 100, factor=28, max_image_tokens=0)
+
+
+def test_image_shape_conversion_and_resize_edges(tmp_path: Path) -> None:
+    path = tmp_path / "gray.png"
+    Image.new("L", (4, 3), 127).save(path)
+    from_path = processor_patch._to_channel_first(path, True)
+    assert from_path.shape == (3, 3, 4)
+    assert processor_patch._to_channel_first(
+        np.zeros((3, 5), dtype=np.uint8), True
+    ).shape == (3, 3, 5)
+
+    alpha = np.zeros((3, 4, 4), dtype=np.uint8)
+    assert processor_patch._to_channel_first(alpha, True).shape == (3, 3, 4)
+    channel_first_gray = np.zeros((1, 3, 5), dtype=np.uint8)
+    assert processor_patch._to_channel_first(channel_first_gray, True).shape == (
+        3,
+        3,
+        5,
+    )
+    with pytest.raises(ValueError, match="3D image"):
+        processor_patch._to_channel_first(np.zeros((4,)), True)
+    with pytest.raises(ValueError, match="RGB image"):
+        processor_patch._to_channel_first(np.zeros((2, 3, 5)), False)
+
+    float_image = np.full((3, 2, 2), 0.5, dtype=np.float32)
+    resized = processor_patch._resize_channel_first(float_image, 4, 4)
+    assert resized.shape == (3, 4, 4)
 
 
 def test_processor_expands_exact_image_placeholder_count() -> None:
@@ -87,6 +145,67 @@ def test_processor_rejects_image_placeholder_count_mismatch() -> None:
         )
 
 
+def test_processor_rejects_more_tokens_than_images() -> None:
+    processor = Glm5NextProcessor(tokenizer=_TokenizerStub())
+    with pytest.raises(ValueError, match="More image tokens"):
+        processor(
+            images=[Image.new("RGB", (28, 28), "blue")],
+            text=["<|image|><|image|>"],
+        )
+
+
+def test_image_processor_scalar_paths_and_optional_transforms() -> None:
+    image_processor = Glm5NextImageProcessor(
+        patch_size=2,
+        temporal_patch_size=2,
+        merge_size=2,
+        min_image_tokens=1,
+        max_image_tokens=4,
+    )
+    image = np.zeros((4, 8, 3), dtype=np.uint8)
+    assert len(image_processor.fetch_images(image)) == 1
+    output = image_processor(
+        images=image,
+        return_tensors=None,
+        do_rescale=False,
+        do_normalize=False,
+    )
+    assert output["pixel_values"].shape == (8, 24)
+    with pytest.raises(ValueError, match="must not be None"):
+        image_processor.preprocess()
+
+
+def test_text_only_defaults_delegation_and_model_inputs() -> None:
+    tokenizer = _TokenizerStub()
+    processor = Glm5NextProcessor(tokenizer=tokenizer)
+    empty = processor(text=None, return_tensors=None)
+    assert empty["input_ids"] == [[1, 2]]
+    single = processor(
+        text="hello",
+        padding_side="left",
+        return_mm_token_type_ids=False,
+        return_tensors=None,
+    )
+    assert single["input_ids"] == [[1, 2]]
+    assert tokenizer.calls[-1][1]["padding_side"] == "left"
+    assert processor.batch_decode([1], skip_special_tokens=True) == (
+        ([1],),
+        {"skip_special_tokens": True},
+    )
+    assert processor.decode([1]) == (([1],), {})
+    assert processor.apply_chat_template([{"role": "user"}]) == (
+        ([{"role": "user"}],),
+        {},
+    )
+    assert processor.model_input_names == [
+        "input_ids",
+        "attention_mask",
+        "pixel_values",
+        "image_grid_thw",
+        "mm_token_type_ids",
+    ]
+
+
 def test_local_optional_metadata_miss_never_falls_through_to_hub(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -97,6 +216,104 @@ def test_local_optional_metadata_miss_never_falls_through_to_hub(
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail)
     assert processor_patch._load_json(tmp_path, "processor_config.json") is None
+
+
+def test_json_metadata_local_remote_and_invalid_shapes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text('{"vision_config":{"patch_size":16}}')
+    assert processor_patch._load_json(tmp_path, "config.json") == {
+        "vision_config": {"patch_size": 16}
+    }
+    config.write_text("[]")
+    assert processor_patch._load_json(tmp_path, "config.json") is None
+
+    downloaded = tmp_path / "downloaded.json"
+    downloaded.write_text('{"remote":true}')
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: downloaded
+    )
+    assert processor_patch._load_json("org/model", "config.json") == {"remote": True}
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert processor_patch._load_json("org/model", "config.json") is None
+
+
+def test_image_processor_kwargs_merge_checkpoint_metadata(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text(
+        '{"vision_config":{"patch_size":16,"temporal_patch_size":3,'
+        '"spatial_merge_size":4}}'
+    )
+    (tmp_path / "processor_config.json").write_text(
+        '{"image_processor":{"patch_size":14,"max_image_tokens":99}}'
+    )
+    assert processor_patch._image_processor_kwargs(tmp_path) == {
+        "patch_size": 14,
+        "max_image_tokens": 99,
+        "temporal_patch_size": 3,
+        "merge_size": 4,
+    }
+
+
+def test_from_pretrained_builds_local_processor(monkeypatch, tmp_path: Path) -> None:
+    tokenizer = _TokenizerStub()
+    tokenizer.chat_template = "tokenizer template"
+    (tmp_path / "config.json").write_text(
+        '{"vision_config":{"patch_size":16,"spatial_merge_size":2}}'
+    )
+    (tmp_path / "processor_config.json").write_text(
+        '{"chat_template":"checkpoint template"}'
+    )
+    loaded = []
+    monkeypatch.setattr(
+        processor_patch.AutoTokenizer,
+        "from_pretrained",
+        lambda path, **kwargs: tokenizer,
+    )
+    monkeypatch.setattr(
+        processor_patch,
+        "load_chat_template",
+        lambda instance, path: loaded.append((instance, path)),
+    )
+    processor = Glm5NextProcessor.from_pretrained(tmp_path, return_tensors="mlx")
+    assert processor.chat_template == "checkpoint template"
+    assert processor.image_processor.patch_size == 16
+    assert loaded == [(tokenizer, tmp_path)]
+
+
+def test_installer_registers_once_without_replacing_existing_prompt_shape(
+    monkeypatch,
+) -> None:
+    from mlx_vlm.prompt_utils import MODEL_CONFIG, MessageFormat
+
+    calls = []
+    original = MODEL_CONFIG.get("glm5_next")
+    existed = "glm5_next" in MODEL_CONFIG
+    MODEL_CONFIG.pop("glm5_next", None)
+    processor_patch._INSTALLED = False
+    monkeypatch.setattr(
+        processor_patch,
+        "install_auto_processor_patch",
+        lambda model_type, processor: calls.append((model_type, processor)),
+    )
+    try:
+        assert processor_patch.install_glm5_next_processor_patch() is True
+        assert processor_patch.install_glm5_next_processor_patch() is False
+        assert processor_patch.is_installed() is True
+        assert calls == [("glm5_next", Glm5NextProcessor)]
+        assert MODEL_CONFIG["glm5_next"] is MessageFormat.LIST_WITH_IMAGE_FIRST
+    finally:
+        if existed:
+            MODEL_CONFIG["glm5_next"] = original
+        else:
+            MODEL_CONFIG.pop("glm5_next", None)
+        processor_patch._INSTALLED = False
 
 
 def test_install_registers_auto_processor_and_prompt_shape_in_clean_process(

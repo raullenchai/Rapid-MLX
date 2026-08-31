@@ -19,9 +19,6 @@ import threading
 from collections.abc import Sequence
 from typing import Any
 
-import mlx.core as mx
-import mlx.nn as nn
-
 _LOCK = threading.Lock()
 _INSTALLED = False
 
@@ -55,6 +52,8 @@ def install_glm5_next_runtime_fix() -> bool:
         if _INSTALLED:
             return False
 
+        import mlx.core as mx
+        import mlx.nn as nn
         from mlx_vlm.models.deepseek_v32.language import (
             DeepseekV32MoE,
             MoEGate,
@@ -117,9 +116,7 @@ def install_glm5_next_runtime_fix() -> bool:
                     width = config.moe_intermediate_size * config.n_shared_experts
                     self.shared_experts = Glm5NextMLP(config, intermediate_size=width)
 
-        released_sparse_attention = language.Glm5NextSparseAttention
-
-        class Glm5NextSparseAttention(released_sparse_attention):
+        class Glm5NextSparseAttention(language.Glm5NextSparseAttention):
             def __init__(self, config):
                 super().__init__(config)
                 self.q_a_layernorm = nn.RMSNorm(
@@ -130,9 +127,7 @@ def install_glm5_next_runtime_fix() -> bool:
                 )
                 self.indexer.k_norm = nn.LayerNorm(self.indexer.head_dim, eps=1e-6)
 
-        released_linear_attention = language.Glm5NextLinearAttention
-
-        class Glm5NextLinearAttention(released_linear_attention):
+        class Glm5NextLinearAttention(language.Glm5NextLinearAttention):
             def _fused_in_proj(self, inputs):
                 modules = (
                     self.q_proj,
@@ -159,7 +154,6 @@ def install_glm5_next_runtime_fix() -> bool:
                     sanitized[key] = value.astype(mx.float32)
             return sanitized
 
-        @property
         def cast_predicate(self):
             def predicate(key):
                 if "e_score_correction_bias" in key:
@@ -176,7 +170,7 @@ def install_glm5_next_runtime_fix() -> bool:
         language.Glm5NextSparseAttention = Glm5NextSparseAttention
         language.Glm5NextLinearAttention = Glm5NextLinearAttention
         language.LanguageModel.sanitize = patched_sanitize
-        language.LanguageModel.cast_predicate = cast_predicate
+        language.LanguageModel.cast_predicate = property(cast_predicate)
         language._RAPID_MLX_RUNTIME_FIX_INSTALLED = True
         _INSTALLED = True
         return True

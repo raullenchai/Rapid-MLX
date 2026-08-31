@@ -2,7 +2,7 @@
 """Cache compatibility helpers for MLLM continuous batching."""
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 
 def first_incompatible_mllm_cache_type(
@@ -50,7 +50,8 @@ def first_incompatible_mllm_cache_type(
     for cache in caches:
         if compound_type is not None and isinstance(cache, compound_type):
             incompatible = first_incompatible_mllm_cache_type(
-                cache.caches, allow_arrays_cache=allow_arrays_cache
+                cast(Any, cache).caches,
+                allow_arrays_cache=allow_arrays_cache,
             )
             if incompatible is not None:
                 return incompatible
