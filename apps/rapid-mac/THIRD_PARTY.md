@@ -69,6 +69,18 @@ time of writing. Run that command for the exact revisions in your build.
   https://github.com/mgriebling/SwiftMath
   LaTeX rendering for math/STEM model responses.
 
+* **mermaid** — Mermaid contributors — MIT License
+  Vendored at 11.17.0 under `Vendor/mermaid`, pinned by
+  `Vendor/mermaid/mermaid.min.js.sha256`. The complete upstream MIT text is
+  kept at `Vendor/mermaid/LICENSE`. Vendored rather than resolved by SwiftPM
+  because it is not a Swift package; `scripts/build.sh` stages it into
+  `Contents/Resources/` and fails the build if it is missing or does not match
+  its digest.
+  https://github.com/mermaid-js/mermaid
+  Draws the diagram behind a fenced `mermaid` block's Preview button, in an
+  offscreen web view that is denied the network three ways and is snapshotted
+  to an image before anything reaches the screen.
+
 ### Transitive, but linked into the shipped binary
 
 Pulled in by the markdown packages above, so they are compiled into the app

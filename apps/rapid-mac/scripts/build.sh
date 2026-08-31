@@ -208,12 +208,30 @@ cp -R "$SWIFTMATH_FONTS" "$CONTENTS/Resources/mathFonts.bundle"
 # separate script so the test suite can exercise it against fixtures. The Python
 # payload's licenses already travel via pip's `*.dist-info/licenses/` under the
 # staged sidecar and are not re-copied.
+# Mermaid, for diagram previews. Hard fail rather than the `warning:`
+# treatment the PNGs get: a silent fallback ships a DMG where the Preview
+# button never appears, which is the v0.5.9 class of bug this file's
+# resource-staging comment is about.
+MERMAID_DIR="$ROOT/Vendor/mermaid"
+if [[ ! -f "$MERMAID_DIR/mermaid.min.js" ]]; then
+    echo "ERROR: Vendor/mermaid/mermaid.min.js is missing" >&2
+    exit 1
+fi
+( cd "$MERMAID_DIR" && shasum -a 256 -c mermaid.min.js.sha256 >/dev/null ) || {
+    echo "ERROR: Vendor/mermaid/mermaid.min.js does not match its digest" >&2
+    exit 1
+}
+cp "$MERMAID_DIR/mermaid.min.js" "$CONTENTS/Resources/mermaid.min.js"
+cp "$MERMAID_DIR/mermaid.min.js.sha256" "$CONTENTS/Resources/mermaid.min.js.sha256"
+echo "==> mermaid staged ($(du -h "$MERMAID_DIR/mermaid.min.js" | cut -f1))"
+
 echo "==> staging third-party license texts"
 "$ROOT/scripts/stage-licenses.sh" \
     "$ROOT/Package.resolved" \
     "$ROOT/.build/checkouts" \
     "$ROOT/Vendor/SwiftMath/LICENSE" \
-    "$CONTENTS/Resources/Licenses"
+    "$CONTENTS/Resources/Licenses" \
+    "$ROOT/Vendor/mermaid/LICENSE"
 
 # App accent colour. AppKit paints NSMenu highlights, checkboxes and focus
 # rings with the app's accent colour, and nothing in SwiftUI reaches those:

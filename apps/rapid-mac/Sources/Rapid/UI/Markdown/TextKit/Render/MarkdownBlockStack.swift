@@ -47,6 +47,7 @@ struct MarkdownBlockStack: View {
             if case .text = $0.content { return true }
             return false
         }?.id
+        let lastGroupID = groups.last?.id
 
         VStack(alignment: .leading, spacing: options.interContentSpacing) {
             ForEach(groups) { group in
@@ -64,7 +65,17 @@ struct MarkdownBlockStack: View {
                         fadeConfiguration: fadeConfiguration
                     )
                 case .code(let block):
-                    MarkdownCodeBlockRepresentable(block: block, options: options)
+                    MarkdownCodeBlockRepresentable(
+                        block: block,
+                        options: options,
+                        // A block only stops changing when the stream is over
+                        // or something has been appended after it. Drawing a
+                        // diagram before then means drawing every prefix of
+                        // it — ten a second, each a different string, each
+                        // failing and each taking a cache slot from a result
+                        // that will matter.
+                        isFinal: !isStreaming || group.id != lastGroupID
+                    )
                 case .table(let block):
                     MarkdownTableView(block: block, options: options)
                         // #1824: VoiceOver reads tables today and that cannot
@@ -203,15 +214,21 @@ private struct MarkdownTextBlockRepresentable: NSViewRepresentable {
 private struct MarkdownCodeBlockRepresentable: NSViewRepresentable {
     let block: MarkdownItem.CodeBlock
     let options: MarkdownOptions
+    /// Whether this block's text will change again. See the call site.
+    let isFinal: Bool
 
     func makeNSView(context: Context) -> MarkdownCodeBlockView {
         let view = MarkdownCodeBlockView(options: options)
-        view.configure(code: block.code, language: block.language, options: options)
+        view.configure(
+            code: block.code, language: block.language, options: options, isFinal: isFinal
+        )
         return view
     }
 
     func updateNSView(_ view: MarkdownCodeBlockView, context: Context) {
-        view.configure(code: block.code, language: block.language, options: options)
+        view.configure(
+            code: block.code, language: block.language, options: options, isFinal: isFinal
+        )
     }
 
     func sizeThatFits(
