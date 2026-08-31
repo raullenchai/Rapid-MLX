@@ -127,12 +127,22 @@ enum MermaidHostPage {
             el.removeAttribute("height");
             el.style.maxWidth = "none";
             const box = el.getBBox();
-            const width = Math.ceil(box.width);
-            const height = Math.ceil(box.height);
+            if (box.width <= 0 || box.height <= 0) {
+              return { ok: false, error: "empty drawing" };
+            }
+            // getBBox() omits stroke caps and marker arrowheads. Reserve a
+            // small perimeter so edge strokes are not cropped by the exact
+            // snapshot surface.
+            const padding = 8;
+            const width = Math.ceil(box.width + padding * 2);
+            const height = Math.ceil(box.height + padding * 2);
             // The origin may be negative. Preserve the actual drawing bounds
             // in the viewport rather than folding x/y into its dimensions,
             // which can either clip or add asymmetric empty space.
-            el.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
+            el.setAttribute(
+              "viewBox",
+              `${box.x - padding} ${box.y - padding} ${box.width + padding * 2} ${box.height + padding * 2}`
+            );
             el.setAttribute("width", width);
             el.setAttribute("height", height);
             return { ok: true, width: width, height: height };

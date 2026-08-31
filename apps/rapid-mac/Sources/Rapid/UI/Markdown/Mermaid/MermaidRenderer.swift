@@ -378,7 +378,7 @@ final class MermaidRenderer {
                     return
                 }
                 guard let image else {
-                    continuation.resume(returning: nil)
+                    continuation.resume(throwing: MermaidRenderError.snapshotFailed)
                     return
                 }
                 // The snapshot arrives at pixel dimensions; restate it in
