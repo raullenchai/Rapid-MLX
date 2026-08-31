@@ -88,7 +88,12 @@ final class MermaidRenderer {
         case failed
     }
 
-    private enum RenderOutcome {
+    /// Every value is created, consumed, and cached on this renderer's main
+    /// actor. `Task.value` still requires a Sendable result even when both
+    /// producer and consumer are actor-bound; the unchecked conformance is
+    /// limited to carrying AppKit's non-Sendable `NSImage` across that API
+    /// boundary without moving it off the main actor.
+    private enum RenderOutcome: @unchecked Sendable {
         case image(NSImage)
         case sourceRejected
         case infrastructureFailure
