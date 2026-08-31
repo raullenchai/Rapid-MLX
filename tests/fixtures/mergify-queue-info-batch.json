@@ -1,0 +1,12 @@
+{
+  "checking_base_sha": "68817d9a40db187b53a1a0d76888c0283d03e116",
+  "previous_check_retries": [],
+  "previous_failed_batches": [],
+  "pull_requests": [
+    {"number": 2812, "scopes": []},
+    {"number": 2810, "scopes": []},
+    {"number": 2821, "scopes": []},
+    {"number": 2826, "scopes": []}
+  ],
+  "scopes": []
+}
