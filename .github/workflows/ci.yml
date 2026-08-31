@@ -432,6 +432,7 @@ jobs:
             tests/test_glm5_next_processor_patch.py \
             tests/test_glm5_next_forget_gate_quant.py \
             tests/test_glm5_next_runtime_patch.py \
+            tests/test_mllm_hybrid_probe.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \
