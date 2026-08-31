@@ -153,7 +153,6 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         cogvideox_modules = {
             "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
             "mlx_arsenal": "mlx-arsenal",
-            "imageio": "imageio",
             "PIL": "Pillow",
             "numpy": "numpy",
             "huggingface_hub": "huggingface-hub",
@@ -364,6 +363,9 @@ class VideoEngine:
                 "image": str(image) if image is not None else None,
                 "verbose": False,
                 "enhance_prompt": False,
+                # The public response is video-only. Avoid decoding and
+                # muxing a silent audio track only to strip it again.
+                "no_audio": True,
             }
             if negative_prompt is not None:
                 generation_kwargs["negative_prompt"] = negative_prompt
@@ -384,7 +386,6 @@ class VideoEngine:
             output_height=output_height,
             family="LTX-2.3",
         )
-        self._remove_audio_track(output_path)
 
     @staticmethod
     def _remove_audio_track(output_path: Path) -> None:
@@ -473,7 +474,9 @@ class VideoEngine:
                             "(iw-ow)/2:(ih-oh)/2"
                         ),
                         "-c:v",
-                        "libx264",
+                        "h264_videotoolbox",
+                        "-pix_fmt",
+                        "yuv420p",
                         "-c:a",
                         "copy",
                         str(cropped),

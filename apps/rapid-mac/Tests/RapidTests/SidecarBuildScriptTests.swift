@@ -168,8 +168,40 @@ struct SidecarBuildScriptTests {
                 "Only model-family directories outside Qwen3 TTS may be removed.")
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
-        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-172}""#),
-                "The signing baseline must match the measured post-audio bundle, less the orphaned libpython dylib dropped in step 3.")
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-173}""#),
+                "The signing baseline must include the bundled FFmpeg executable.")
+    }
+
+    @Test("Desktop video runtime is pinned, OpenCV-free, LGPL, and smoke-proven")
+    func videoRuntimeIsBoundedAndAudited() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
+
+        #expect(constraints.contains("mlx-video-with-audio==0.1.36"))
+        #expect(constraints.contains("mlx-arsenal==0.12.1"))
+        #expect(script.contains("'mlx-video-with-audio'"))
+        #expect(script.contains("'mlx-arsenal'"))
+        #expect(!script.contains(#"${RAPID_MLX_INSTALL_TARGET}[video]"#),
+                "The broad video extra would pull OpenCV and a conflicting vision stack.")
+        #expect(script.contains("re-audit the OpenCV-free encoder patch"),
+                "Pinned upstream encoder patches must fail closed on source drift.")
+        #expect(script.contains("FFMPEG_VERSION=\"7.1.5\""))
+        #expect(script.contains("de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"))
+        #expect(script.contains("--enable-encoder=h264_videotoolbox"))
+        #expect(script.contains("--disable-swresample"),
+                "The video-only encoder must not retain FFmpeg's audio resampler.")
+        #expect(script.contains("bundled FFmpeg does not target Desktop's macOS 14 minimum"))
+        #expect(script.contains("unexpectedly enables GPL/nonfree components"))
+        #expect(script.contains(#"echo "$STAGE/bin/ffmpeg""#),
+                "The standalone encoder is a signed Mach-O too.")
+        #expect(script.contains(#"assert importlib.util.find_spec("cv2") is None"#))
+        #expect(script.contains(#"assert importlib.util.find_spec("imageio") is None"#))
+        #expect(script.contains("encode_rgb_video(np.zeros((2, 32, 16, 3)"),
+                "The build must produce a real MP4 with the packaged encoder.")
+        #expect(script.contains("VideoEngine._crop_generated_output("),
+                "The smoke must exercise the aligned-to-requested crop path too.")
+        #expect(script.contains(#"cp "$FFMPEG_TAR" "$STAGE/licenses/sources/ffmpeg-${FFMPEG_VERSION}.tar.xz""#),
+                "The complete corresponding FFmpeg source must travel with the executable.")
     }
 
     /// The shared libpython optimization must stay behind the tested guard.
