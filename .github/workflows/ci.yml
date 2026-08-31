@@ -222,10 +222,17 @@ jobs:
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          # Mergify attaches queue metadata to the queue branch head, not to
+          # GitHub's synthetic refs/pull/<n>/merge test commit. This job is
+          # PR-only, so pin HEAD to the immutable event head before queue-info.
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -242,9 +249,43 @@ jobs:
           BASE_BRANCH: ${{ github.base_ref || 'main' }}
         run: git fetch --no-tags origin "${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
 
+      # A Mergify speculative PR has no source labels/body, so read its supported
+      # Git-note metadata with the official CLI. Reuse prior guard results only
+      # for a same-repository candidate created by the Mergify GitHub App. Bind
+      # proof to the second parent of each immutable `Merge of #N` integration
+      # commit, never to the PR's movable current head. Any malformed lineage or
+      # failed exact-head proof fails closed.
+      - name: Install Mergify CLI for trusted queue metadata
+        if: >-
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        uses: Mergifyio/setup-cli@dc99f07e699b94b39e5495c24596372813eadcbc  # v1.3.0
+        with:
+          mergify_cli_version: 2026.8.28.1
+
+      - name: Read trusted Mergify queue metadata
+        id: queue-info
+        if: >-
+          github.event.pull_request.user.login == 'mergify[bot]' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'mergify/merge-queue/')
+        run: mergify ci queue-info
+
+      - name: Verify Mergify source-head attestations
+        id: mergify-attestation
+        if: steps.queue-info.outcome == 'success'
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          QUEUE_METADATA: ${{ steps.queue-info.outputs.queue_metadata }}
+          REAL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/check_mergify_mlx_attestation.py
+
       - name: Guard mlx/mlx-lm/mlx-vlm version bounds
         env:
-          MLX_BOUND_BASE_REF: origin/${{ github.base_ref || 'main' }}
+          MLX_BOUND_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          MLX_BOUND_ATTESTED: ${{ steps.mergify-attestation.outputs.attested }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: python scripts/check_mlx_bound_move.py
