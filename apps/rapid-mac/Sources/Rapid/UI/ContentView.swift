@@ -82,6 +82,8 @@ struct ContentView: View {
     @Environment(MCPToolApprovalStore.self) private var mcpApproval
     @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @Environment(GitHubStarPromptCoordinator.self) private var githubStarPrompt
+    @Environment(SparkleUpdateController.self) private var sparkleUpdater
+    @Environment(CommandPaletteRequestCoordinator.self) private var commandPaletteRequest
     @Environment(\.openWindow) private var openWindow
 
     @State private var alias: String = ""
@@ -101,6 +103,7 @@ struct ContentView: View {
     // restoration data. With a single main window the persistence scope is
     // the same in practice.
     @AppStorage(ContentView.showLogsKey) private var showLogs: Bool = false
+    @State private var showCommandPalette = false
     /// Per-session "browse all models" dismissal of the Quickstart card.
     @State private var quickstartDismissedThisSession: Bool = false
     /// Explicit recovery route from the no-model empty state into the
@@ -178,7 +181,15 @@ struct ContentView: View {
         .overlay {
             if showConversationSearch {
                 conversationSearchOverlay
+            } else if showCommandPalette {
+                commandPaletteOverlay
             }
+        }
+        .onChange(of: commandPaletteRequest.requestID) { _, requestID in
+            showCommandPaletteFromRequest(requestID)
+        }
+        .onAppear {
+            showCommandPaletteFromRequest(commandPaletteRequest.requestID)
         }
         .onChange(of: server.state) { _, newState in
             // A chat-model replacement can keep the process or respawn it.
@@ -463,7 +474,7 @@ struct ContentView: View {
                     section = .chat
                 },
                 onSearchChats: {
-                    showConversationSearch = true
+                    openConversationSearch()
                 },
                 onSelectConversation: { id in
                     chat.selectConversation(id)
@@ -567,7 +578,88 @@ struct ContentView: View {
                 || server.pendingModelSwitch != nil
                 || browseApproval.pendingRequest != nil
                 || mcpApproval.pendingRequest != nil
+                || showCommandPalette
         )
+    }
+
+    private var commandPaletteOverlay: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { showCommandPalette = false }
+                    .accessibilityHidden(true)
+
+                CommandPaletteView(
+                    onRun: runCommandPaletteAction,
+                    onDismiss: { showCommandPalette = false }
+                )
+                .frame(
+                    width: min(620, max(480, proxy.size.width - 64)),
+                    height: min(460, max(340, proxy.size.height - 80))
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityIdentifier("ContentView.CommandPalette")
+    }
+
+    private func runCommandPaletteAction(_ command: CommandPalette.Command) {
+        showCommandPalette = false
+        switch command {
+        case .newChat:
+            chat.newConversation()
+            section = .chat
+        case .searchChats:
+            openConversationSearch()
+        case .images:
+            section = .images
+        case .audio:
+            section = .audio
+        case .launch:
+            section = .launch
+        case .settings:
+            openWindow(id: "settings")
+        case .modelManagement:
+            settingsRouter.route(to: .modelManagement) {
+                openWindow(id: "settings")
+            }
+        case .connectors:
+            settingsRouter.route(to: .connectors) {
+                openWindow(id: "settings")
+            }
+        case .serverLogs:
+            showLogs.toggle()
+        case .exportDiagnostics:
+            DiagnosticsBundle.exportViaSavePanel(server: server)
+        case .checkUpdates:
+            if sparkleUpdater.isEnabled {
+                if sparkleUpdater.canCheckForUpdates {
+                    sparkleUpdater.checkForUpdates()
+                } else {
+                    settingsRouter.route(to: .app) {
+                        openWindow(id: "settings")
+                    }
+                }
+            } else {
+                Task { _ = await updater.check() }
+                settingsRouter.route(to: .app) {
+                    openWindow(id: "settings")
+                }
+            }
+        }
+    }
+
+    private func openConversationSearch() {
+        showCommandPalette = false
+        showConversationSearch = true
+    }
+
+    private func showCommandPaletteFromRequest(_ requestID: UInt) {
+        guard commandPaletteRequest.consume(requestID) else { return }
+        showConversationSearch = false
+        showCommandPalette = true
     }
 
     private var conversationSearchOverlay: some View {

@@ -96,6 +96,7 @@ struct RapidApp: App {
     @State private var appearance: AppearanceConfig
     /// Deep-link channel into the Settings window.
     @State private var settingsRouter: SettingsRouter
+    @State private var commandPaletteRequest = CommandPaletteRequestCoordinator()
     /// App-owned owner of the one-time invitation that follows the first
     /// successful product outcome. Feature models only publish typed success.
     @State private var deferredTelemetryConsent: DeferredTelemetryConsentCoordinator
@@ -376,6 +377,7 @@ struct RapidApp: App {
                 .environment(customInstructions)
                 .environment(appearance)
                 .environment(settingsRouter)
+                .environment(commandPaletteRequest)
                 .environment(deferredTelemetryConsent)
                 .environment(githubStarPrompt)
                 .environment(installTracker)
@@ -513,6 +515,14 @@ struct RapidApp: App {
                 // button both drive this same flag.
                 Toggle("Show Server Log", isOn: $showLogs)
                     .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
+            CommandMenu("Go") {
+                Button("Command Palette…") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    commandPaletteRequest.open()
+                    openWindow(id: "main")
+                }
+                .keyboardShortcut("p", modifiers: .command)
             }
         }
 
