@@ -75,6 +75,9 @@ export PYTHONDONTWRITEBYTECODE=1
 # python ``-u`` flag below) makes every print flush immediately so
 # the matchers actually fire. v0.7.10 fix for the v0.7.9 regression.
 export PYTHONUNBUFFERED=1
+if [ -x "$ROOT/bin/ffmpeg" ]; then
+    export FFMPEG_BINARY="$ROOT/bin/ffmpeg"
+fi
 unset PYTHONSTARTUP
 
 exec "$ROOT/python/bin/python3.12" -P -u -s -m vllm_mlx.cli "$@"

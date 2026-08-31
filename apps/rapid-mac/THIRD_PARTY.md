@@ -26,10 +26,10 @@ and what `scripts/build-sidecar.sh` installs by name. The full transitive
 Python closure is **not** enumerated — a shipped bundle also contains
 everything those packages pull in (`pydantic`, `starlette`, `safetensors`,
 `certifi`, `regex`, …), each under its own license and each carrying its
-own license file in the bundle. Optional engine extras (`[vision]`,
-`[audio]`, `[chat]`, and the rest) are **not** installed into the sidecar
-and are out of scope. Model weights downloaded at runtime carry their own
-separate licenses from their publishers.
+own license file in the bundle. Optional engine extras are included only
+through the bounded Desktop runtime sets documented below; the broad
+`[vision]`, `[image]`, and `[video]` closures are not installed. Model weights
+downloaded at runtime carry their own separate licenses from their publishers.
 
 ## Swift packages
 
@@ -153,13 +153,31 @@ full. The ranges below are the **root manifest's**; the sidecar build pins
 | openai-harmony | `>=0.0.8` | Apache-2.0 | https://github.com/openai/harmony |
 | llguidance | `>=1.7.6` | MIT | https://github.com/microsoft/llguidance |
 
-Additionally installed by name with `--no-deps`, so the gemma-4 loader
-path works in a text-only bundle:
+Additionally installed by name with `--no-deps`, providing the bounded Desktop
+vision, image, and video runtime paths without their unused heavyweight
+dependency closures:
 
 | Component | Pin | License | Project |
 | --- | --- | --- | --- |
 | mlx-vlm | `==0.6.16` | MIT | https://github.com/Blaizzy/mlx-vlm |
 | Pillow | `>=10.0` | MIT-CMU | https://github.com/python-pillow/Pillow |
+| mflux | `==0.19.0` | MIT | https://github.com/filipstrand/mflux |
+| mlx-video-with-audio | `==0.1.36` | MIT | https://pypi.org/project/mlx-video-with-audio/ |
+| mlx-arsenal | `==0.12.1` | MIT | https://pypi.org/project/mlx-arsenal/ |
+
+### Video encoder
+
+* **FFmpeg 7.1.5** — LGPL-2.1-or-later
+  https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz
+
+The sidecar builds a minimal arm64 executable from the exact source archive
+whose SHA-256 is
+`de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f`.
+It enables only file/pipe input, MP4/raw-video formats, H.264/raw-video decode,
+Apple's `h264_videotoolbox` encoder, and crop/format/scale filters. GPL and
+nonfree components are not enabled. The complete corresponding source archive
+and LGPL 2.1 text ship beside the executable under
+`Contents/Resources/rapid-mlx/licenses/`.
 
 ### Third-party source vendored into the engine
 

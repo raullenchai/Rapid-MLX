@@ -54,6 +54,11 @@ enum ApplicationSupportLocator {
     /// touch.
     static let folderName: String = "Rapid"
 
+    /// Durable completed-video storage owned by Desktop. Keeping it beneath
+    /// the same HOME-aware root as sessions and crash state isolates dogfood
+    /// launches and gives the future Video library one stable location.
+    static let videoArtifactsFolderName: String = "VideoArtifacts"
+
     /// Production accessor — reads ``ProcessInfo.processInfo.environment``.
     /// All non-test callers use this shape.
     static func applicationSupportRoot() -> URL {
@@ -67,6 +72,15 @@ enum ApplicationSupportLocator {
     static func applicationSupportRoot(environment: [String: String]) -> URL {
         applicationSupportBase(environment: environment)
             .appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    static func videoArtifactsDirectory() -> URL {
+        videoArtifactsDirectory(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func videoArtifactsDirectory(environment: [String: String]) -> URL {
+        applicationSupportRoot(environment: environment)
+            .appendingPathComponent(videoArtifactsFolderName, isDirectory: true)
     }
 
     /// ``Library/Application Support`` itself, resolved by the same
