@@ -841,9 +841,41 @@ struct PreviewAutoRevealTests {
         #expect(!renderer.isKnownBad(source: source, theme: .light))
 
         // And the control: the same block, final, does get drawn.
-        _ = block(source, "mermaid", isFinal: true)
-        try? await Task.sleep(for: .milliseconds(1_500))
+        let finalView = block(source, "mermaid", isFinal: true)
+        for _ in 0..<100 where renderer.cachedImage(source: source, theme: .light) == nil {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
         #expect(renderer.cachedImage(source: source, theme: .light) != nil)
+        #expect(previewButton(finalView)?.isHidden == false)
+    }
+
+    @Test("A transient render failure retries through the production view")
+    func transientFailureRetriesInView() async throws {
+        let source = "graph TD\n  Transient --> Recovered"
+        let recovered = NSImage(size: NSSize(width: 320, height: 180))
+        var attempts = 0
+        let view = MarkdownCodeBlockView(
+            options: MarkdownOptions(),
+            mermaidImageProvider: { _, _ in
+                attempts += 1
+                return attempts == 1 ? nil : recovered
+            }
+        )
+        view.appearance = NSAppearance(named: .aqua)
+        view.configure(
+            code: source,
+            language: "mermaid",
+            options: MarkdownOptions(),
+            isFinal: true
+        )
+
+        for _ in 0..<50 where previewButton(view)?.isHidden != false {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let button = try #require(previewButton(view))
+        #expect(attempts == 2)
+        #expect(!button.isHidden)
+        #expect(button.title == "Code")
     }
 
     @Test("Changing appearance requests a matching diagram theme")

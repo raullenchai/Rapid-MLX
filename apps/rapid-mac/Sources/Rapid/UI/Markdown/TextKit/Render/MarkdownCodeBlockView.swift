@@ -9,6 +9,8 @@ import AppKit
 final class MarkdownCodeBlockView: NSView {
 
     private let renderer: MarkdownTextRenderer
+    private let mermaidImageProvider:
+        @MainActor (String, MermaidRenderer.Theme) async -> NSImage?
     private var options: MarkdownOptions
     private var code: String = ""
     private var language: String?
@@ -43,9 +45,16 @@ final class MarkdownCodeBlockView: NSView {
 
     public override var isFlipped: Bool { true }
 
-    public init(options: MarkdownOptions) {
+    init(
+        options: MarkdownOptions,
+        mermaidImageProvider: @escaping @MainActor
+            (String, MermaidRenderer.Theme) async -> NSImage? = { source, theme in
+                await MermaidRenderer.shared.image(source: source, theme: theme)
+            }
+    ) {
         self.options = options
         self.renderer = MarkdownTextRenderer(options: options)
+        self.mermaidImageProvider = mermaidImageProvider
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = options.codeCornerRadius
@@ -357,20 +366,33 @@ final class MarkdownCodeBlockView: NSView {
     private func requestMermaidRender(source: String, theme: MermaidRenderer.Theme) {
         guard !MermaidRenderer.shared.isKnownBad(source: source, theme: theme) else { return }
         Task { @MainActor [weak self] in
-            let image = await MermaidRenderer.shared.image(source: source, theme: theme)
-            guard let self, let image else { return }
-            // The block may have been reconfigured while the render was out.
-            guard self.previewIdentity == PreviewIdentity(source: source, kind: .mermaid),
-                  MermaidSource.looksLikeMermaid(
-                    code: self.code, language: self.language
-                  ),
-                  MermaidRenderer.Theme(self.effectiveAppearance) == theme else { return }
-            self.previewImage = image
-            if !self.hasToggledPreview { self.isShowingPreview = true }
-            self.setPreviewHidden(false)
-            self.previewButton.title = self.isShowingPreview ? "Code" : "Preview"
-            self.needsDisplay = true
-            self.invalidateLayoutChain()
+            // The renderer distinguishes deterministic source errors from
+            // transient WebKit/snapshot failures. Give the latter one fresh
+            // production-path attempt instead of leaving a valid completed
+            // diagram hidden until an unrelated reconfiguration occurs.
+            for attempt in 0..<2 {
+                guard let self,
+                      self.previewIdentity == PreviewIdentity(
+                        source: source, kind: .mermaid
+                      ),
+                      MermaidSource.looksLikeMermaid(
+                        code: self.code, language: self.language
+                      ),
+                      MermaidRenderer.Theme(self.effectiveAppearance) == theme else { return }
+                if let image = await self.mermaidImageProvider(source, theme) {
+                    self.previewImage = image
+                    if !self.hasToggledPreview { self.isShowingPreview = true }
+                    self.setPreviewHidden(false)
+                    self.previewButton.title = self.isShowingPreview ? "Code" : "Preview"
+                    self.needsDisplay = true
+                    self.invalidateLayoutChain()
+                    return
+                }
+                guard attempt == 0,
+                      !MermaidRenderer.shared.isKnownBad(
+                        source: source, theme: theme
+                      ) else { return }
+            }
         }
     }
 
