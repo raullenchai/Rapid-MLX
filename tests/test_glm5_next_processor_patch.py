@@ -93,8 +93,10 @@ def test_image_shape_conversion_and_resize_edges(tmp_path: Path) -> None:
         np.zeros((3, 5), dtype=np.uint8), True
     ).shape == (3, 3, 5)
 
-    alpha = np.zeros((3, 4, 4), dtype=np.uint8)
-    assert processor_patch._to_channel_first(alpha, True).shape == (3, 3, 4)
+    alpha = np.zeros((4, 5, 4), dtype=np.uint8)
+    assert processor_patch._to_channel_first(
+        alpha, True, input_data_format="channels_last"
+    ).shape == (3, 4, 5)
     channel_first_gray = np.zeros((1, 3, 5), dtype=np.uint8)
     assert processor_patch._to_channel_first(channel_first_gray, True).shape == (
         3,
@@ -103,12 +105,30 @@ def test_image_shape_conversion_and_resize_edges(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="3D image"):
         processor_patch._to_channel_first(np.zeros((4,)), True)
-    with pytest.raises(ValueError, match="RGB image"):
+    with pytest.raises(ValueError, match="infer channel dimension"):
         processor_patch._to_channel_first(np.zeros((2, 3, 5)), False)
+    with pytest.raises(ValueError, match="RGB image"):
+        processor_patch._to_channel_first(
+            np.zeros((2, 3, 5)), False, input_data_format="channels_first"
+        )
 
     float_image = np.full((3, 2, 2), 0.5, dtype=np.float32)
     resized = processor_patch._resize_channel_first(float_image, 4, 4)
     assert resized.shape == (3, 4, 4)
+
+
+def test_ambiguous_channel_shape_preserves_pixels_with_explicit_format() -> None:
+    channel_first = np.arange(3 * 4 * 4, dtype=np.uint8).reshape(3, 4, 4)
+    inferred = processor_patch._to_channel_first(channel_first, True)
+    assert np.array_equal(inferred, channel_first)
+
+    channel_last = np.transpose(channel_first, (1, 2, 0))
+    explicit = processor_patch._to_channel_first(
+        channel_last,
+        True,
+        input_data_format="channels_last",
+    )
+    assert np.array_equal(explicit, channel_first)
 
 
 def test_processor_expands_exact_image_placeholder_count() -> None:

@@ -29,6 +29,7 @@ from PIL import Image
 from transformers import AutoTokenizer
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_processing_utils import ImageProcessingMixin
+from transformers.image_utils import ChannelDimension, infer_channel_dimension_format
 from transformers.processing_utils import ProcessorMixin
 
 OPENAI_CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -40,6 +41,7 @@ _IMAGE_KWARGS = {
     "do_rescale",
     "image_mean",
     "image_std",
+    "input_data_format",
     "max_image_tokens",
     "merge_size",
     "min_image_tokens",
@@ -118,21 +120,34 @@ def smart_resize(
     return best_height, best_width
 
 
-def _to_channel_first(image: Any, do_convert_rgb: bool) -> np.ndarray:
+def _to_channel_first(
+    image: Any,
+    do_convert_rgb: bool,
+    input_data_format: str | ChannelDimension | None = None,
+) -> np.ndarray:
     if isinstance(image, (str, Path)):
         image = Image.open(image)
     if hasattr(image, "convert"):
         if do_convert_rgb:
             image = image.convert("RGB")
         array = np.asarray(image)
+        channel_dimension = ChannelDimension.LAST
     else:
         array = np.asarray(image)
+        channel_dimension = None
 
     if array.ndim == 2:
         array = np.repeat(array[..., None], 3, axis=-1)
+        channel_dimension = ChannelDimension.LAST
     if array.ndim != 3:
         raise ValueError(f"Expected a 3D image, got shape {array.shape}.")
-    if array.shape[-1] in (1, 3, 4):
+    if input_data_format is not None:
+        channel_dimension = ChannelDimension(input_data_format)
+    elif channel_dimension is None:
+        channel_dimension = infer_channel_dimension_format(
+            array, num_channels=(1, 3, 4)
+        )
+    if channel_dimension is ChannelDimension.LAST:
         array = np.transpose(array, (2, 0, 1))
     if array.shape[0] == 4:
         array = array[:3]
@@ -207,7 +222,8 @@ class Glm5NextImageProcessor(ImageProcessingMixin):
         do_normalize = kwargs.get("do_normalize", self.do_normalize)
         image_mean = kwargs.get("image_mean", self.image_mean)
         image_std = kwargs.get("image_std", self.image_std)
-        image = _to_channel_first(image, do_convert_rgb)
+        input_data_format = kwargs.get("input_data_format")
+        image = _to_channel_first(image, do_convert_rgb, input_data_format)
         _, height, width = image.shape
         patch_size = kwargs.get("patch_size", self.patch_size)
         temporal_patch_size = kwargs.get(
