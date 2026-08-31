@@ -402,6 +402,10 @@ enum DevSnapshot {
                 .frame(width: 900, alignment: .leading)
                 .background(RapidTheme.surfaceCanvas)
                 .tint(RapidTheme.brandAmber)
+                // Failure banners now expose diagnostics, which reads the
+                // server from the environment; keep the standalone matrix
+                // capture alive across every readiness state.
+                .environment(server)
             )
         }
         let matrixSize = CGSize(width: 900, height: 900)
