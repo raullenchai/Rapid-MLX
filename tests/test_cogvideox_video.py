@@ -52,6 +52,53 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
     assert thread_ids[0] != caller_thread_id
 
 
+def test_cogvideox_engine_encodes_generated_pixels(monkeypatch, tmp_path) -> None:
+    import numpy as np
+
+    from vllm_mlx.video.engine import VideoGenerationEngine
+
+    fake_mlx = ModuleType("mlx")
+    fake_core = ModuleType("mlx.core")
+    fake_core.zeros = np.zeros
+    fake_core.ones = np.ones
+    fake_core.eval = lambda _output: None
+    fake_core.float32 = np.float32
+    fake_mlx.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+    engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "_load_sync",
+        lambda: lambda **_kwargs: np.zeros((1, 3, 4, 8, 3), dtype=np.float32),
+    )
+    captured = {}
+
+    def fake_encode(pixels, output_path, fps):
+        captured["shape"] = pixels.shape
+        captured["fps"] = fps
+        Path(output_path).write_bytes(b"mp4")
+
+    monkeypatch.setattr("vllm_mlx.video.encoding.encode_rgb_video", fake_encode)
+
+    output = engine._generate_sync(
+        prompt="sunset",
+        negative_prompt="",
+        width=8,
+        height=4,
+        frames=3,
+        fps=12,
+        steps=2,
+        guidance_scale=1.0,
+        seed=1,
+    )
+    asyncio.run(engine.close())
+
+    assert output.read_bytes() == b"mp4"
+    assert captured == {"shape": (3, 4, 8, 3), "fps": 12}
+
+
 def test_cogvideox_engine_cleans_failed_output_copy(monkeypatch, tmp_path) -> None:
     from vllm_mlx.video.engine import VideoGenerationEngine
 
@@ -149,7 +196,7 @@ def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) 
     import vllm_mlx.runtime.video_lane as lane
 
     monkeypatch.setattr(lane.sys, "version_info", (3, 11))
-    missing = {"mlx_arsenal", "imageio", "PIL"}
+    missing = {"mlx_arsenal", "PIL"}
     monkeypatch.setattr(
         lane.importlib.util,
         "find_spec",
@@ -163,7 +210,6 @@ def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) 
     assert exc.value.code == 2
     error = capsys.readouterr().err
     assert "mlx-arsenal" in error
-    assert "imageio" in error
     assert "Pillow" in error
 
 
