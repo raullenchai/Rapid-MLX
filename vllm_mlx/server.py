@@ -2997,6 +2997,9 @@ Examples:
         default=8000,
         help="Port to bind to",
     )
+    from .cli import _add_video_job_args as _add_video_job_args_to_server_parser
+
+    _add_video_job_args_to_server_parser(parser)
     parser.add_argument(
         "--log-level",
         type=normalize_log_level,
@@ -3261,6 +3264,13 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    from .routes.video import configure_video_jobs
+
+    try:
+        configure_video_jobs(args.video_output_dir)
+    except (OSError, RuntimeError, ValueError) as exc:
+        parser.error(f"cannot configure video output directory: {exc}")
 
     # PortSweep pre-flight (codex round-1 MAJOR on PR #848): mirror the
     # ``rapid-mlx serve`` CLI's loopback-shadow probe here so the
