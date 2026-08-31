@@ -59,6 +59,7 @@ struct ImageGenerationResolutionTests {
             rootView: ImagesView(viewModel: viewModel, server: server)
                 .environment(SettingsRouter())
                 .environment(downloads)
+                .environment(server)
         )
         host.layoutSubtreeIfNeeded()
 
