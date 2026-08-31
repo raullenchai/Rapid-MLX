@@ -52,6 +52,17 @@ def test_ltx23_model_discovery_is_video_shaped() -> None:
     assert info.capabilities == ["video.generation"]
 
 
+def test_invalid_video_reference_image_is_rejected(tmp_path: Path) -> None:
+    invalid = tmp_path / "reference.png"
+    invalid.write_bytes(b"not-an-image")
+
+    with pytest.raises(HTTPException) as exc:
+        video._validate_reference_image(invalid)
+
+    assert exc.value.status_code == 400
+    assert "invalid input_reference" in str(exc.value.detail)
+
+
 def test_video_runtime_preflight_fails_before_download(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
