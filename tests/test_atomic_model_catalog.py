@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,28 @@ def test_atomic_registry_never_replaces_a_concurrent_winner(
     digest = first["identity_digest"]
     stored = tmp_path / "model_identity" / f"{digest.removeprefix('sha256:')}.json"
     assert stored.read_bytes() == winner_payload
+
+
+def test_atomic_registry_syncs_directory_after_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = json.loads(
+        (
+            ROOT / "proto/model-runtime/v1/examples/model-identity.llm.example.json"
+        ).read_text()
+    )
+    real_fsync = registry_module.os.fsync
+    synced_directory = False
+
+    def observing_fsync(descriptor: int) -> None:
+        nonlocal synced_directory
+        if stat.S_ISDIR(registry_module.os.fstat(descriptor).st_mode):
+            synced_directory = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(registry_module.os, "fsync", observing_fsync)
+    AtomicRegistry(tmp_path).put("model_identity", identity)
+    assert synced_directory is True
 
 
 def test_catalog_snapshot_rejects_alias_target_drift() -> None:

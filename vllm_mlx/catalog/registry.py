@@ -145,6 +145,14 @@ class AtomicRegistry:
                 # unlike exists()+replace(), it can never overwrite a winner
                 # from another process between observation and commit.
                 os.link(temporary, target)
+                directory_descriptor = os.open(target_dir, os.O_RDONLY)
+                try:
+                    # Persist the newly created directory entry before
+                    # returning its address. The file fsync above protects
+                    # bytes, not the name that makes them reachable.
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
             except FileExistsError:
                 if target.read_bytes() != payload:
                     raise CatalogValidationError(
