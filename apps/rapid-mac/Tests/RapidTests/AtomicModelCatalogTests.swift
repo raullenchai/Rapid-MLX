@@ -60,8 +60,36 @@ struct AtomicModelCatalogTests {
     func chatProjectionUsesAtomicPlacement() throws {
         let parsed = try #require(ModelCatalog.parseAvailableJSON(Self.payload))
         #expect(parsed.entries.map(\.0) == ["chat"])
-        #expect(parsed.excluded == ["image", "video", "tts", "stt"])
+        #expect(parsed.excluded == ["image", "video", "tts", "stt", "hidden"])
         #expect(parsed.speculative["chat"]?.method == .suffix)
         #expect(parsed.profiles["chat"]?.isTextOnly == true)
+    }
+
+    @Test("unknown atomic tasks fail closed into the legacy downgrade path")
+    func unknownTaskRejectsAtomicEnvelope() {
+        let future = Self.payload.replacingOccurrences(
+            of: "\"text_generation\"", with: "\"future_generation\""
+        )
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(future) == nil)
+    }
+
+    @Test("atomic Settings merge preserves custom and external cached models")
+    func cacheMergePreservesUserModels() throws {
+        let atomic = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))
+        let cached: [(String, String?, String?)] = [
+            ("chat", "org/chat", "1 GiB"),
+            ("custom", "org/custom", "2 GiB"),
+            ("hidden", "org/hidden", "3 GiB"),
+            ("(external)", "org/external", "4 GiB"),
+        ]
+        let merged = ModelCatalog.mergeAtomicAndCached(
+            atomic: atomic,
+            cached: cached,
+            excluded: ["image", "video", "tts", "stt", "hidden"]
+        )
+        #expect(merged.first { $0.alias == "chat" }?.cached == true)
+        #expect(merged.first { $0.alias == "custom" }?.kind == .chat)
+        #expect(merged.first { $0.alias == "hidden" } == nil)
+        #expect(merged.first { $0.alias == "org/external" }?.isExternal == true)
     }
 }

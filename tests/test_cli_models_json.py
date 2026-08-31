@@ -142,3 +142,17 @@ def test_command_emits_single_valid_json_cached(capfd) -> None:
     out = capfd.readouterr().out
     doc = json.loads(out)
     assert "cached" in doc and "total_bytes" in doc
+
+
+def test_atomic_shadow_failure_preserves_legacy_discovery(monkeypatch) -> None:
+    import vllm_mlx.audio.registry as audio_registry
+
+    def broken_audio_registry():
+        raise ValueError("simulated optional registry failure")
+
+    monkeypatch.setattr(audio_registry, "list_audio_aliases", broken_audio_registry)
+    payload = _available_models_json_payload()
+
+    assert payload["text"]
+    assert payload["audio"] == []
+    assert "atomic" not in payload

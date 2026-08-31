@@ -6481,9 +6481,15 @@ def _available_models_json_payload() -> dict:
     # older Desktop builds; new consumers read this joined model/alias graph.
     # It is deliberately read-only: legacy registries still resolve launches
     # until the migration report stays clean through a release window.
-    from vllm_mlx.catalog import build_catalog_bundle
+    try:
+        from vllm_mlx.catalog import build_catalog_bundle
 
-    payload["atomic"] = build_catalog_bundle()
+        payload["atomic"] = build_catalog_bundle()
+    except Exception:
+        # Shadow data must never take the legacy discovery surface down. CI
+        # validates every checked-in registry; an installed optional/corrupt
+        # audio registry still degrades exactly as it did before atomic mode.
+        pass
     return payload
 
 

@@ -753,7 +753,21 @@ enum ModelCatalog {
     )? {
         guard let allEntries = parseAtomicModelEntriesJSON(root) else { return nil }
         let entries = allEntries.filter { $0.kind == .chat }.map { ($0.alias, $0.hfRepo) }
-        let excluded = Set(allEntries.filter { $0.kind != .chat }.map(\.alias))
+        guard let atomic = root["atomic"] as? [String: Any],
+              let snapshot = atomic["snapshot"] as? [String: Any],
+              let aliasRows = snapshot["aliases"] as? [[String: Any]]
+        else { return nil }
+        let chatAliases = Set(entries.map(\.0))
+        let allAliases = Set(aliasRows.compactMap { row -> String? in
+            guard let alias = row["alias"] as? String, isSafeAlias(alias) else {
+                return nil
+            }
+            return alias
+        })
+        // Include aliases hidden from this Desktop build as well as visible
+        // media aliases. Otherwise `rapid-mlx ls` could re-admit a hidden
+        // audio/video model as an untyped Chat row.
+        let excluded = allAliases.subtracting(chatAliases)
         let profiles = Dictionary(
             uniqueKeysWithValues: allEntries.filter { $0.kind == .chat }.map { entry in
                 (
@@ -829,6 +843,10 @@ enum ModelCatalog {
                 continue
             }
             let tasks = Set(rawTasks.compactMap(ModelTask.init(rawValue:)))
+            // A newer sidecar may add task values this Desktop cannot safely
+            // place. Reject the atomic envelope and use the versioned legacy
+            // projection; never turn an unknown task into Chat by default.
+            guard !tasks.isEmpty, tasks.count == rawTasks.count else { return nil }
             let operations = Set(
                 (capabilities["operation_modes"] as? [String] ?? [])
                     .compactMap(ModelOperation.init(rawValue:))
@@ -944,17 +962,93 @@ enum ModelCatalog {
             hubCacheOverride: hubCacheOverride
         )
         let json = await modelsJSON
-        guard json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) else {
+        guard json.succeeded,
+              let atomic = parseAtomicModelEntriesJSON(json.stdout),
+              let projection = parseAvailableJSON(json.stdout)
+        else {
             return nil
         }
-        let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { _, repo, size -> (String, String?)? in
-                guard let repo else { return nil }
-                return (repo, size)
-            },
-            uniquingKeysWith: { first, _ in first }
+        return mergeAtomicAndCached(
+            atomic: atomic,
+            cached: await cachedTask,
+            excluded: projection.excluded
         )
-        return applyingCachedRepos(to: atomic, cachedByRepo: cachedByRepo)
+    }
+
+    /// Preserve the user-owned cache surface while atomic aliases drive
+    /// product placement. Custom aliases remain visible, external repos remain
+    /// non-deletable, and hidden/media aliases cannot re-enter as Chat rows.
+    static func mergeAtomicAndCached(
+        atomic: [ModelEntry],
+        cached: [(String, String?, String?)],
+        excluded: Set<String>
+    ) -> [ModelEntry] {
+        var cachedByAlias: [String: (repo: String?, size: String?)] = [:]
+        var externalByRepo: [String: String?] = [:]
+        for (alias, repo, size) in cached {
+            if alias == "(external)", let repo {
+                externalByRepo[repo] = size
+            } else if !alias.isEmpty && !isStatusAlias(alias) {
+                cachedByAlias[alias] = (repo, size)
+            }
+        }
+
+        var consumedExternal: Set<String> = []
+        var seenAliases = Set(atomic.map(\.alias))
+        var entries = atomic.map { entry -> ModelEntry in
+            let cachedHit = cachedByAlias[entry.alias]
+            let externalRepo = entry.hfRepo.flatMap { repo in
+                externalByRepo.keys.contains(repo) ? repo : nil
+            }
+            if let externalRepo { consumedExternal.insert(externalRepo) }
+            guard cachedHit != nil || externalRepo != nil else { return entry }
+            return ModelEntry(
+                alias: entry.alias,
+                hfRepo: cachedHit?.repo ?? entry.hfRepo ?? externalRepo,
+                sizeOnDisk: cachedHit?.size
+                    ?? externalRepo.flatMap { externalByRepo[$0] }
+                    ?? entry.sizeOnDisk,
+                cached: true,
+                isExternal: cachedHit == nil && externalRepo != nil,
+                kind: entry.kind,
+                audioCapability: entry.audioCapability,
+                audioFamily: entry.audioFamily,
+                imageCapability: entry.imageCapability,
+                taskTypes: entry.taskTypes,
+                operationModes: entry.operationModes,
+                runtimeAdapter: entry.runtimeAdapter,
+                speculativeDecodingPreset: entry.speculativeDecodingPreset,
+                isBuiltinProfile: entry.isBuiltinProfile,
+                isTextOnly: entry.isTextOnly
+            )
+        }
+
+        for (alias, repo, size) in cached
+        where !alias.isEmpty
+            && !isStatusAlias(alias)
+            && !seenAliases.contains(alias)
+            && !excluded.contains(alias) {
+            seenAliases.insert(alias)
+            entries.append(ModelEntry(
+                alias: alias, hfRepo: repo, sizeOnDisk: size, cached: true
+            ))
+        }
+        for (alias, repo, size) in cached where alias == "(external)" {
+            guard let repo,
+                  !consumedExternal.contains(repo),
+                  !seenAliases.contains(repo),
+                  !excluded.contains(repo)
+            else { continue }
+            seenAliases.insert(repo)
+            entries.append(ModelEntry(
+                alias: repo,
+                hfRepo: repo,
+                sizeOnDisk: size,
+                cached: true,
+                isExternal: true
+            ))
+        }
+        return entries
     }
 
     /// Image aliases with explicit generation/edit capabilities for the Images tab's
