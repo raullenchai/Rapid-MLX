@@ -890,6 +890,98 @@ wait_identifier() {
     die "timed out waiting for AX identifier $identifier"
 }
 
+settle_transcript_at_bottom() {
+    local destination="$1" press_result="$2"
+    see_main "$destination"
+    # The window can expose both sidebar and transcript scrollbars. Correlate
+    # the transcript bar with the compose surface: it is the first vertical
+    # bar to the Send button's right. This anchor remains present after the
+    # Jump-to-latest overlay hides.
+    local scroll_x before_value
+    scroll_x="$(jq -r '
+        ([.data.ui_elements[]?
+          | select(.identifier == "ChatView.SendOrStopButton")
+          | .bounds.x] | first) as $compose_x
+        | [.data.ui_elements[]?
+           | select(.role == "AXScrollBar"
+                    and (.value | type) == "number"
+                    and .bounds.height > .bounds.width
+                    and .bounds.x > $compose_x)]
+        | sort_by(.bounds.x) | .[0].bounds.x // empty' "$destination")"
+    [[ -n "$scroll_x" ]] \
+        || die "could not identify the transcript scrollbar beside the compose surface"
+    before_value="$(jq -r --argjson scroll_x "$scroll_x" '
+        [.data.ui_elements[]?
+         | select(.role == "AXScrollBar"
+                  and (.value | type) == "number"
+                  and ((.bounds.x - $scroll_x) | fabs) < 1)
+         | .value] | first // empty' "$destination")"
+    [[ -n "$before_value" ]] \
+        || die "transcript exposes no measurable scroll position before Jump to latest"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Transcript.JumpToBottom")' \
+        "$destination" >/dev/null; then
+        press "$destination" Transcript.JumpToBottom "$press_result" \
+            || die "transcript was not at its tail and Jump to latest was not pressable"
+    fi
+    local previous_tail_key="" stable_samples=0
+    for _ in {1..60}; do
+        see_main "$destination"
+        local current_value tail_marker_visible tail_key=""
+        current_value="$(jq -r --argjson scroll_x "$scroll_x" '
+            [.data.ui_elements[]?
+             | select(.role == "AXScrollBar"
+                      and (.value | type) == "number"
+                      and ((.bounds.x - $scroll_x) | fabs) < 1)
+             | .value] | first // empty' "$destination")"
+        # AppKit may remove an overlay scrollbar once a short transcript fits
+        # entirely inside its viewport. In that state, the last assistant
+        # action row being fully visible is stronger physical evidence than a
+        # scrollbar value that no longer exists.
+        tail_marker_visible="$(jq -r '
+            ([.data.ui_elements[]?
+              | select(.role == "AXScrollArea"
+                       and .bounds.x > 200
+                       and .bounds.width > 300
+                       and .bounds.height > 100)]
+             | sort_by(.bounds.width) | last) as $transcript
+            | if $transcript == null then false else
+                ([.data.ui_elements[]?
+                  | select((.identifier // "")
+                           | startswith("ChatView.Message.Retry."))
+                  | select(.bounds.y >= $transcript.bounds.y
+                           and (.bounds.y + .bounds.height)
+                               <= ($transcript.bounds.y + $transcript.bounds.height))]
+                 | length) > 0
+              end' "$destination")"
+        if [[ -n "$current_value" ]] \
+            && awk -v current="$current_value" \
+                'BEGIN { exit !(current >= 0.99) }'; then
+            tail_key="$current_value"
+        elif [[ -z "$current_value" && "$tail_marker_visible" == "true" ]]; then
+            tail_key="assistant-tail-visible"
+        fi
+        if [[ -n "$tail_key" ]] \
+            && ! jq -e '.data.ui_elements[]?
+                        | select(.identifier == "Transcript.JumpToBottom")' \
+                "$destination" >/dev/null; then
+            if [[ "$previous_tail_key" == "$tail_key" ]]; then
+                stable_samples=$((stable_samples + 1))
+            else
+                stable_samples=1
+            fi
+            if (( stable_samples >= 2 )); then
+                return
+            fi
+        else
+            stable_samples=0
+        fi
+        previous_tail_key="$tail_key"
+        sleep 0.1
+    done
+    die "Jump to latest did not physically settle the transcript at its tail"
+}
+
 wait_identifier_enabled() {
     local identifier="$1" destination="$2" attempts="${3:-80}"
     for ((i=0; i<attempts; i++)); do
@@ -1807,6 +1899,10 @@ flow_fresh_install() {
     start_model
     send_prompt "Say hello in one short sentence." "post-value-consent"
     wait_identifier TelemetryConsent.PostValueBanner "$OUT/post-value-consent-visible.json"
+    # Streaming completion and scroll anchoring settle independently. Capture
+    # the structural baseline only after the transcript reaches its stable tail.
+    settle_transcript_at_bottom "$OUT/post-value-consent-visible.json" \
+        "$OUT/post-value-consent-jump-press.json"
     assert_tree_text "$OUT/post-value-consent-visible.json" "Hello"
     [[ "$(jq '[.data.ui_elements[]? | select(.identifier == "TelemetryConsent.PostValueBanner")] | length' \
         "$OUT/post-value-consent-visible.json")" == 1 ]] \
