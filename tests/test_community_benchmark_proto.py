@@ -24,6 +24,9 @@ SCHEMA_PATHS = (
     RUNTIME_ROOT / "machine-observation.schema.json",
     RUNTIME_ROOT / "execution-config.schema.json",
     CATALOG_ROOT / "model-alias.schema.json",
+    CATALOG_ROOT / "model-registry-record.schema.json",
+    CATALOG_ROOT / "recommendation-policy.schema.json",
+    CATALOG_ROOT / "catalog-snapshot.schema.json",
     BENCH_ROOT / "benchmark-run.schema.json",
 )
 
@@ -149,6 +152,38 @@ def test_unresolved_alias_has_no_identity_digest_or_presets(schemas, registry) -
     example["default_execution_preset_id"] = None
     example["execution_presets"] = []
     _validator(schemas["model-alias.schema.json"], registry).validate(example)
+
+
+@pytest.mark.parametrize(
+    ("task_type", "pipeline_kind"),
+    (
+        ("speech_synthesis", "speech_synthesis"),
+        ("speech_recognition", "speech_recognition"),
+    ),
+)
+def test_audio_atomic_contracts_are_reachable(
+    schemas, registry, task_type, pipeline_kind
+) -> None:
+    identity = _load(RUNTIME_ROOT / "examples" / "model-identity.llm.example.json")
+    identity["pipeline_kind"] = pipeline_kind
+    identity["identity_digest"] = _digest(
+        {
+            key: identity[key]
+            for key in ("schema_version", "pipeline_kind", "components")
+        }
+    )
+    _validator(schemas["model-identity.schema.json"], registry).validate(identity)
+
+    execution = _load(RUNTIME_ROOT / "examples" / "execution.text.example.json")
+    execution["task_type"] = task_type
+    execution["task"] = {
+        "kind": task_type,
+        "audio": {"streaming": True, "batch_size": 1, "compute_backend": "gpu"},
+    }
+    execution["config_digest"] = _digest(
+        {key: execution[key] for key in ("task_type", "resources", "task")}
+    )
+    _validator(schemas["execution-config.schema.json"], registry).validate(execution)
 
 
 @pytest.mark.parametrize("kind", ("image", "video"))

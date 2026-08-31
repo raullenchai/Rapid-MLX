@@ -1438,6 +1438,16 @@ struct SettingsModelManagementPanel: View {
             loading = false
             return
         }
+        // One atomic snapshot drives every capability tab. This avoids four
+        // independent `models --json` calls and prevents tab-to-tab drift if a
+        // sidecar or catalog changes during refresh. Older sidecars fall
+        // through to the established per-surface compatibility loaders.
+        if let atomic = await ModelCatalog.productEntries(binary: binary) {
+            catalog = atomic
+            reconcileCapability()
+            loading = false
+            return
+        }
         let generation = downloads.cacheGeneration
         // Show a cached snapshot straight away and skip the spinner entirely —
         // flashing "loading" over data we already have makes every visit to

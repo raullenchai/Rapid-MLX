@@ -47,9 +47,9 @@ components:
     phase: 2
     owner: atlas
     summary: Immutable repository revision, file manifest, tokenizer, and config.
-    files: [proto/model-runtime/v1/model-identity.schema.json]
-    tests: [tests/test_community_benchmark_proto.py]
-    missing: Runtime collector, registry verification, and migration from alias/hf_path submissions.
+    files: [proto/model-runtime/v1/model-identity.schema.json, proto/model-catalog/v1/model-registry-record.schema.json, vllm_mlx/catalog/registry.py]
+    tests: [tests/test_community_benchmark_proto.py, tests/test_atomic_model_catalog.py]
+    missing: Runtime collector, immutable upstream revision resolution, and signed publication policy.
   capabilities:
     name: Capabilities
     lane: facts
@@ -73,14 +73,14 @@ components:
   alias_metadata:
     name: Alias / DisplayMetadata
     lane: facts
-    status: partial
+    status: migrating
     phase: 2
     owner: pixel
     summary: Mutable user-facing names, branding, descriptions, icons, and aliases.
-    files: [vllm_mlx/aliases.json, proto/model-catalog/v1/model-alias.schema.json]
-    tests: [tests/test_aliases_contract.py]
+    files: [vllm_mlx/aliases.json, vllm_mlx/audio/aliases.json, proto/model-catalog/v1/model-alias.schema.json, vllm_mlx/catalog/legacy.py]
+    tests: [tests/test_aliases_contract.py, tests/test_atomic_model_catalog.py]
     migrations: [migrations/002-aliases-to-atomic-contracts.md]
-    missing: Runtime adapter and generated catalog migration.
+    missing: Replace bridge inference with explicit generated capabilities and resolve immutable identities.
   variant_qualification:
     name: VariantQualification
     lane: facts
@@ -182,9 +182,9 @@ components:
     phase: 4
     owner: atlas
     summary: Ordered qualified variants with reason codes, tradeoffs, and limitations.
-    files: [vllm_mlx/model_profile.py]
-    tests: [tests/test_ram_tier_recommendations_agree.py]
-    missing: Explicit quality gate, policy version, and reason-code contract.
+    files: [vllm_mlx/model_profile.py, proto/model-catalog/v1/recommendation-policy.schema.json, vllm_mlx/catalog/legacy.py]
+    tests: [tests/test_ram_tier_recommendations_agree.py, tests/test_atomic_model_catalog.py]
+    missing: Desktop atomic-policy cutover, explicit quality gate, and promoted evidence provenance.
   ranked_recommendation_set:
     name: RankedRecommendationSet
     lane: product
@@ -263,21 +263,21 @@ components:
     status: partial
     phase: 1
     owner: pixel
-    summary: Consumes effective config and displays reasons, tradeoffs, limitations, and overrides.
-    files: [vllm_mlx/cli.py]
-    tests: [tests/test_recurrent_prefill_auto_default.py]
+    summary: Consumes the atomic catalog for model placement and effective config for runtime behavior.
+    files: [vllm_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
+    tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
-    missing: Resolved-config DTO and provenance/reason presentation without duplicated policy.
+    missing: Atomic recommendation-policy reader plus resolved-config provenance/reason presentation.
   rapid_server:
     name: Rapid Server / CLI
     lane: runtime
     status: partial
     phase: 1
     owner: atlas
-    summary: Consumes and exposes the same resolved configuration and provenance.
-    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
-    tests: [tests/test_cli_config_fidelity.py]
-    missing: Central resolved-config contract and provenance API.
+    summary: Exposes the shared atomic catalog while consuming the same resolved configuration and provenance.
+    files: [vllm_mlx/cli.py, vllm_mlx/server.py, vllm_mlx/catalog/legacy.py]
+    tests: [tests/test_cli_config_fidelity.py, tests/test_cli_models_json.py, tests/test_atomic_model_catalog.py]
+    missing: Central resolved-config contract, immutable model resolver, and provenance API.
   actual_runtime_telemetry:
     name: ActualRuntimeTelemetry
     lane: learning

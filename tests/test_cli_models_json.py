@@ -22,8 +22,13 @@ from vllm_mlx.cli import (
 
 def test_available_payload_shape() -> None:
     payload = _available_models_json_payload()
-    assert set(payload) == {"text", "audio", "video", "image"}
-    assert all(isinstance(payload[k], list) for k in payload)
+    assert set(payload) == {"text", "audio", "video", "image", "atomic"}
+    assert all(isinstance(payload[k], list) for k in ("text", "audio", "video", "image"))
+    assert set(payload["atomic"]) == {
+        "snapshot",
+        "recommendation_policies",
+        "shadow_report",
+    }
     # There is always at least one text alias in the registry.
     assert payload["text"], "expected at least one text alias"
     entry = payload["text"][0]
@@ -56,6 +61,23 @@ def test_available_payload_shape() -> None:
     assert entry["min_memory_gb"] is None or isinstance(
         entry["min_memory_gb"], (int, float)
     )
+
+
+def test_atomic_projection_preserves_legacy_aliases_and_is_bounded() -> None:
+    payload = _available_models_json_payload()
+    atomic = payload["atomic"]
+    snapshot = atomic["snapshot"]
+
+    assert atomic["shadow_report"]["equivalent"] is True
+    assert {entry["alias"] for entry in snapshot["aliases"]} == {
+        entry["alias"]
+        for bucket in ("text", "audio", "video", "image")
+        for entry in payload[bucket]
+    }
+    assert snapshot["catalog_digest"].startswith("sha256:")
+    # Desktop caps subprocess stdout at 1 MiB. Keep healthy headroom while the
+    # shadow envelope contains both legacy buckets and the atomic graph.
+    assert len(json.dumps(payload, separators=(",", ":")).encode()) < 768 * 1024
 
 
 def test_available_sections_are_split_by_modality() -> None:

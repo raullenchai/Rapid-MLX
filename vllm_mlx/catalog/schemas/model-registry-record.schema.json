@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/model-catalog/v1/model-registry-record.schema.json",
+  "title": "Rapid-MLX ModelRegistryRecord v1",
+  "description": "Stable Rapid registry ID and resolver input for one model pipeline. Mutable aliases point here; immutable ModelIdentity is attached only after resolution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "registry_model_id", "source", "resolution_status"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "registry_model_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._/-]*$"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "repo_id"],
+      "properties": {
+        "provider": {"const": "huggingface"},
+        "repo_id": {"type": "string", "maxLength": 256, "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"},
+        "subfolder": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\r\n]+$"}
+      }
+    },
+    "resolution_status": {"enum": ["resolved", "unresolved"]},
+    "model_identity_digest": {"$ref": "#/$defs/sha256Digest"},
+    "estimated_download_size_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "Advisory catalog metadata, never part of ModelIdentity or a benchmark cohort."}
+  },
+  "allOf": [{
+    "if": {"properties": {"resolution_status": {"const": "resolved"}}, "required": ["resolution_status"]},
+    "then": {"required": ["model_identity_digest"]},
+    "else": {"not": {"required": ["model_identity_digest"]}}
+  }],
+  "$defs": {"sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

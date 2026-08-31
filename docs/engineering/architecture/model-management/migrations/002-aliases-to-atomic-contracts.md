@@ -1,6 +1,7 @@
 # Migrate `aliases.json` onto atomic model contracts
 
-Status: proposed contract; no production routing change in this PR.
+Status: Phase 1 shadow materialization implemented; legacy runtime resolution
+remains authoritative.
 
 Owner: Atlas. Vector owns benchmark evidence thresholds; Pixel/Harbor consume
 the catalog through generated artifacts and must not create parallel profiles.
@@ -117,6 +118,27 @@ Exit criteria: 100% of checked-in aliases materialize or have an owner/expiry
 diagnostic; zero routing/default mismatches across the alias fixture matrix;
 all model-runtime digests reproduce across Python, Swift, and TypeScript; and
 cold/warm loads reuse the same existing HF cache objects without redownload.
+
+Implemented foundation:
+
+- `vllm_mlx.catalog.legacy` projects the text/VLM/image/video and audio alias
+  registries plus RAM-tier recommendations into one deterministic graph;
+- `rapid-mlx models --json` retains all legacy buckets and adds the graph under
+  `atomic`, including a local deterministic equivalence report;
+- Rapid Desktop prefers atomic task/operation capabilities for Chat, Images,
+  Video, TTS, and STT placement, then falls back to the legacy parser for an
+  older sidecar;
+- the content-addressed store, RCJ-1 digest implementation, packaged validators,
+  and schema-drift checks are reusable by Server, GUI tooling, and a future
+  website build.
+
+The current projection is deliberately unresolved: legacy repo IDs are resolver
+inputs, not immutable model identities. It also centralizes existing image and
+audio capability inference in the adapter; Phase 2 must replace those bridge
+rules with generated explicit alias capabilities before authoritative cutover.
+Likewise, Desktop's RAM recommendation reader remains on the legacy file while
+the atomic policy is shadow-validated. No automatic model choice changes in
+Phase 1.
 
 ### Phase 2 — generated catalog, dual read
 

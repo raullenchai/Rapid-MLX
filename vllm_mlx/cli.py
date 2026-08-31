@@ -6477,6 +6477,13 @@ def _available_models_json_payload() -> dict:
         ]
     except Exception:
         payload["audio"] = []
+    # Atomic catalog shadow. Existing bucket keys remain byte-compatible for
+    # older Desktop builds; new consumers read this joined model/alias graph.
+    # It is deliberately read-only: legacy registries still resolve launches
+    # until the migration report stays clean through a release window.
+    from vllm_mlx.catalog import build_catalog_bundle
+
+    payload["atomic"] = build_catalog_bundle()
     return payload
 
 

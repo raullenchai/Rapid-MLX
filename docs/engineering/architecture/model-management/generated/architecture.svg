@@ -67,11 +67,11 @@
 <tspan x="54" y="776">RuntimeCompatibility</tspan>
 </text>
 <text x="54" y="826" class="status">🟡 partial · phase 2 · atlas</text>
-<rect x="40" y="870" width="286" height="102" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<rect x="40" y="870" width="286" height="102" rx="10" fill="#f3e8ff" stroke="#9333ea" stroke-width="2"/>
 <text x="54" y="898" class="node">
 <tspan x="54" y="898">Alias / DisplayMetadata</tspan>
 </text>
-<text x="54" y="948" class="status">🟡 partial · phase 2 · pixel</text>
+<text x="54" y="948" class="status">🟣 migrating · phase 2 · pixel</text>
 <rect x="40" y="992" width="286" height="102" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
 <text x="54" y="1020" class="node">
 <tspan x="54" y="1020">VariantQualification</tspan>
