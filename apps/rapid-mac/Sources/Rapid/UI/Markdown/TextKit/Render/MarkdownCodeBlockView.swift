@@ -24,7 +24,12 @@ final class MarkdownCodeBlockView: NSView {
     /// re-parse on every pass. Nil means "not an SVG, or not yet valid" —
     /// which is what half a streamed document looks like.
     private var previewImage: NSImage?
-    private var previewSource: String?
+    private enum PreviewKind: Equatable { case svg, mermaid }
+    private struct PreviewIdentity: Equatable {
+        let source: String
+        let kind: PreviewKind
+    }
+    private var previewIdentity: PreviewIdentity?
 
     /// Whether this block's text is settled. A diagram is only worth drawing
     /// once it has stopped being rewritten — see the call site in
@@ -173,7 +178,6 @@ final class MarkdownCodeBlockView: NSView {
         // `requestMermaidRender` before it can repaint this view.
         if MermaidSource.looksLikeMermaid(code: code, language: language) {
             previewImage = nil
-            previewSource = nil
             updatePreviewAvailability()
             invalidateLayoutChain()
         }
@@ -291,24 +295,30 @@ final class MarkdownCodeBlockView: NSView {
         guard isSVG || isMermaid else {
             setPreviewHidden(true)
             previewImage = nil
-            previewSource = nil
+            previewIdentity = nil
+            hasToggledPreview = false
             isShowingPreview = false
             return
+        }
+
+        let identity = PreviewIdentity(
+            source: code, kind: isSVG ? .svg : .mermaid
+        )
+        if previewIdentity != identity {
+            previewIdentity = identity
+            previewImage = nil
+            hasToggledPreview = false
+            isShowingPreview = false
         }
 
         // The two sources differ in when their picture exists. An SVG document
         // parses synchronously, so its button appears in the same turn. A
         // diagram has to be drawn by another process, so its button appears
         // when the drawing lands.
-        if isSVG, previewSource != code {
-            previewSource = code
+        if isSVG, previewImage == nil {
             previewImage = SVGPreview.image(from: code)
         } else if isMermaid {
             let theme = MermaidRenderer.Theme(effectiveAppearance)
-            if previewSource != code {
-                previewSource = code
-                previewImage = nil
-            }
             // Finality can change without the source changing: the last
             // streamed code block is configured once as partial and again as
             // settled. Re-check the cache and start the render on that second
@@ -350,7 +360,10 @@ final class MarkdownCodeBlockView: NSView {
             let image = await MermaidRenderer.shared.image(source: source, theme: theme)
             guard let self, let image else { return }
             // The block may have been reconfigured while the render was out.
-            guard self.code == source,
+            guard self.previewIdentity == PreviewIdentity(source: source, kind: .mermaid),
+                  MermaidSource.looksLikeMermaid(
+                    code: self.code, language: self.language
+                  ),
                   MermaidRenderer.Theme(self.effectiveAppearance) == theme else { return }
             self.previewImage = image
             if !self.hasToggledPreview { self.isShowingPreview = true }
