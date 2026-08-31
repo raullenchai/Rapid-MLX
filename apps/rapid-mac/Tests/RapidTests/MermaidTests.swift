@@ -367,6 +367,8 @@ struct MermaidHostPagePolicyTests {
         let html = MermaidHostPage.html
         #expect(html.contains("securityLevel: \"strict\""))
         #expect(html.contains("\"htmlLabels\""))
+        #expect(html.contains("\"theme\""))
+        #expect(html.contains("\"themeVariables\""))
         #expect(html.contains("suppressErrorRendering: true"))
     }
 }
@@ -656,6 +658,28 @@ struct MermaidRenderingTests {
         #expect(light !== dark)
         #expect(renderer.cachedImage(source: source, theme: .light) === light)
         #expect(renderer.cachedImage(source: source, theme: .dark) === dark)
+    }
+
+    @Test("Diagram directives cannot override the selected appearance")
+    func directivesCannotOverrideAppearance() async throws {
+        let plain = "graph TD\n  A[Chosen] --> B[Appearance]"
+        let directed = """
+            %%{init: {"theme":"dark","themeVariables":{"primaryColor":"#ff0000"}}}%%
+            \(plain)
+            """
+
+        for theme in [MermaidRenderer.Theme.light, .dark] {
+            let expected = try #require(
+                await renderer.image(source: plain, theme: theme)
+            )
+            let protected = try #require(
+                await renderer.image(source: directed, theme: theme)
+            )
+            #expect(
+                fingerprint(protected) == fingerprint(expected),
+                "a diagram directive overrode the \(theme.rawValue) appearance"
+            )
+        }
     }
 }
 

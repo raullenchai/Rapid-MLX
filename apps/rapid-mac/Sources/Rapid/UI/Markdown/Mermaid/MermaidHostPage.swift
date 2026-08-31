@@ -107,6 +107,7 @@ enum MermaidHostPage {
               secure: [
                 "secure", "securityLevel", "startOnLoad",
                 "maxTextSize", "suppressErrorRendering", "htmlLabels",
+                "theme", "themeVariables",
               ],
               // Mermaid's own size guard, so its error fires before ours.
               maxTextSize: 50000,
