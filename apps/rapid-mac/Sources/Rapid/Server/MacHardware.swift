@@ -11,6 +11,10 @@ import Foundation
 /// from the same pool, so a 16 GB Mac genuinely has ~12 GB to
 /// give a model — there is no separate VRAM headroom.
 struct MacHardware: Sendable, Equatable {
+    /// Share of physical unified memory budgeted to the model process. The
+    /// remainder stays available to macOS and other applications.
+    static let modelUsableMemoryFraction = 0.80
+
     /// Apple Silicon chip family — only the dimensions we actually
     /// branch on. We deliberately don't model the Intel-Mac era
     /// because Rapid is mlx-only and mlx requires Apple Silicon.
@@ -45,7 +49,7 @@ struct MacHardware: Sendable, Equatable {
     /// Usable share of RAM for a model and KV cache. Follows
     /// whichllm's "80% rule" (20% reserved for OS + everything else).
     var usableRAMGB: Double {
-        physicalRAMGB * 0.80
+        physicalRAMGB * Self.modelUsableMemoryFraction
     }
 
     // MARK: - Probe

@@ -3,3 +3,5 @@ mlx==0.32.2
 transformers==5.12.1
 mlx-vlm==0.6.16
 mflux==0.19.0
+mlx-video-with-audio==0.1.36
+mlx-arsenal==0.12.1
