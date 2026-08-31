@@ -764,6 +764,44 @@ struct PreviewAutoRevealTests {
         let dark = try #require(renderer.cachedImage(source: source, theme: .dark))
         #expect(light !== dark)
     }
+
+    @Test("Reusing a row reclassifies identical source")
+    func reusedRowReclassifiesIdenticalSource() async throws {
+        let source = "graph TD\n  Same --> Source"
+        let view = block(source, "mermaid")
+        try? await Task.sleep(for: .milliseconds(1_500))
+        let button = try #require(previewButton(view))
+        #expect(!button.isHidden)
+
+        view.configure(
+            code: source, language: "swift", options: MarkdownOptions(), isFinal: true
+        )
+        #expect(button.isHidden)
+
+        view.configure(
+            code: source, language: "mermaid", options: MarkdownOptions(), isFinal: true
+        )
+        #expect(!button.isHidden)
+        #expect(button.title == "Code")
+    }
+
+    @Test("A replacement diagram receives the default auto-reveal")
+    func replacementDiagramAutoReveals() async throws {
+        let first = "graph TD\n  First --> Closed"
+        let second = "graph TD\n  Second --> Opens"
+        let view = block(first, "mermaid")
+        try? await Task.sleep(for: .milliseconds(1_500))
+        let button = try #require(previewButton(view))
+        _ = button.target?.perform(button.action, with: button)
+        #expect(button.title == "Preview")
+
+        view.configure(
+            code: second, language: "mermaid", options: MarkdownOptions(), isFinal: true
+        )
+        try? await Task.sleep(for: .milliseconds(1_500))
+        #expect(button.title == "Code")
+        #expect(!button.isHidden)
+    }
 }
 
 /// One web view, however many diagrams arrive at once.
