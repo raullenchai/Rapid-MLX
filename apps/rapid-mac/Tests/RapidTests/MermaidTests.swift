@@ -623,6 +623,9 @@ struct PreviewAutoRevealTests {
     private func block(_ code: String, _ language: String?, isFinal: Bool = true)
         -> MarkdownCodeBlockView {
         let view = MarkdownCodeBlockView(options: MarkdownOptions())
+        // Keep the cache assertions below independent of the host's current
+        // appearance. CI and developer Macs may run in either mode.
+        view.appearance = NSAppearance(named: .aqua)
         view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
         view.configure(
             code: code, language: language, options: MarkdownOptions(), isFinal: isFinal
