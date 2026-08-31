@@ -282,9 +282,9 @@ class VideoGenerationEngine:
         handle.close()
         output_path = Path(handle.name)
         try:
-            import imageio.v3 as iio
+            from .encoding import encode_rgb_video
 
-            iio.imwrite(output_path, pixels, fps=fps, codec="libx264")
+            encode_rgb_video(pixels, output_path, fps)
         except Exception:
             output_path.unlink(missing_ok=True)
             raise

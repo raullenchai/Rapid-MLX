@@ -189,6 +189,10 @@ def test_wan_lane_crops_aligned_generation_to_requested_size(
 
     assert output.read_bytes() == b"cropped"
     assert "crop=1280:720:(iw-ow)/2:(ih-oh)/2" in captured["command"]
+    assert captured["command"][captured["command"].index("-c:v") + 1] == (
+        "h264_videotoolbox"
+    )
+    assert captured["command"][captured["command"].index("-pix_fmt") + 1] == "yuv420p"
 
 
 @pytest.mark.parametrize("frames", [2, 24, 50, 96])
