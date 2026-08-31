@@ -10,8 +10,8 @@ slide a vision-capable checkpoint back onto the text lane (reason
 ``text_lane_speculative_decode``) instead of silently being dropped by the MLLM
 lane, which never consumes ``scheduler_config.spec_decode``.
 
-These tests fake the installed mlx-vlm version to >= 0.6.16 (the Desktop sidecar
-pin) and assert the resulting lane decision for the Qwen3.8-Flash-Next config
+These tests fake the installed mlx-vlm version to >= 0.6.16 (the hybrid-runtime
+floor) and assert the resulting lane decision for the Qwen3.8-Flash-Next config
 shape returned by the alias artifact's ``config.json`` (``model_type=qwen4_exp``,
 ``vision_config`` present, ``image_token_id`` present, ``language_model_only==
 false``).
@@ -48,7 +48,7 @@ def _flash_next_config() -> dict:
 def _fake_mlx_vlm_ge_016(monkeypatch):
     """Fake the installed mlx-vlm as a recent version that can drive the
     vision arch — i.e. the scenario where the alias would otherwise be routed
-    into the mlx-vlm MLLM lane (Desktop sidecar pins mlx-vlm 0.6.16)."""
+    into the mlx-vlm MLLM lane (the sidecar currently exceeds this floor)."""
     import importlib.metadata as md
 
     _orig_version = md.version
@@ -105,9 +105,13 @@ def test_fix1_unaliased_qwen4_exp_vendored_goes_text_lane(monkeypatch, tmp_path)
         "checkpoint_has_multimodal_weights",
         lambda snapshot, config: True,
     )
+    # This is a missing-runtime-module contract, independent of whichever
+    # mlx-vlm release happens to execute the test.  Newer releases may ship
+    # qwen4_exp, so model the unavailable architecture explicitly.
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: None)
 
-    # Without the fix the raw mllm model check is True and mlx-vlm has no
-    # qwen4_exp package, so the vendored fallback must fire.
+    # Without the fix the raw mllm model check is True; the simulated missing
+    # qwen4_exp module must make the vendored fallback fire.
     assert mllm_arch_unsupported_but_text_vendored("/some/local/qwen4_exp") is True
     decision = resolve_serving_lane_decision("/some/local/qwen4_exp")
     assert decision.is_mllm is False

@@ -154,7 +154,7 @@ VLM_EXTRA_INSTALL_HINT = (
     "Install it with:\n"
     "    pip install 'rapid-mlx[vision]'\n"
     "or directly (pinned to stay compatible with rapid-mlx's transformers pin):\n"
-    "    pip install 'mlx-vlm==0.6.16'"
+    "    pip install 'mlx-vlm==0.6.17'"
 )
 
 
@@ -1409,6 +1409,22 @@ class MLXMultimodalLM:
         _require_mlx_vlm()
 
         try:
+            # Stable Transformers does not yet register the processor used by
+            # glm5_next checkpoints. Install the architecture-owned processor
+            # at the same lazy boundary as mlx-vlm itself so base/text-only
+            # installs remain import-light.
+            from ..patches.glm5_next_forget_gate_quant import (
+                install_glm5_next_forget_gate_quant_fix,
+            )
+            from ..patches.glm5_next_processor import (
+                install_glm5_next_processor_patch,
+            )
+            from ..patches.glm5_next_runtime import install_glm5_next_runtime_fix
+
+            install_glm5_next_runtime_fix()
+            install_glm5_next_processor_patch()
+            install_glm5_next_forget_gate_quant_fix()
+
             from mlx_vlm import load
             from mlx_vlm.utils import load_config
 
