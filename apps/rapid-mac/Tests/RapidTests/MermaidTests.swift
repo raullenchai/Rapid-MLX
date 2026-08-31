@@ -623,13 +623,18 @@ struct MermaidRenderingTests {
         // flight at once, which a sequential loop would not be.
         renderer.resetForTesting()
         let started = diagrams.map { source in
-            Task { @MainActor () -> NSImage? in
-                await renderer.image(source: source, theme: .light)
+            Task { @MainActor () -> String? in
+                guard let image = await renderer.image(source: source, theme: .light) else {
+                    return nil
+                }
+                // NSImage is main-actor owned and deliberately non-Sendable.
+                // Reduce it to a Sendable fingerprint before the task returns.
+                return fingerprint(image)
             }
         }
         var together: [String] = []
         for task in started {
-            together.append(fingerprint(try #require(await task.value)))
+            together.append(try #require(await task.value))
         }
 
         for index in diagrams.indices {
@@ -933,16 +938,18 @@ struct MermaidSetupTests {
 
         // Distinct sources, so `inFlight` cannot be what dedups them.
         let sources = (1...6).map { "graph TD\n  A\($0)[Node \($0)] --> B\($0)[End \($0)]" }
-        // `async let`, not a task group: the group's sending checks reject a
-        // `@MainActor` child here, and what matters is only that six requests
-        // are outstanding together.
-        async let a: NSImage? = renderer.image(source: sources[0], theme: .light)
-        async let b: NSImage? = renderer.image(source: sources[1], theme: .light)
-        async let c: NSImage? = renderer.image(source: sources[2], theme: .light)
-        async let d: NSImage? = renderer.image(source: sources[3], theme: .light)
-        async let e: NSImage? = renderer.image(source: sources[4], theme: .light)
-        async let f: NSImage? = renderer.image(source: sources[5], theme: .light)
-        _ = await (a, b, c, d, e, f)
+        // Start every request before awaiting any result. The tasks return only
+        // a Sendable success bit; the main-actor NSImage never crosses the task
+        // boundary.
+        let started = sources.map { source in
+            Task { @MainActor () -> Bool in
+                await renderer.image(source: source, theme: .light) != nil
+            }
+        }
+        for task in started {
+            let rendered = await task.value
+            #expect(rendered)
+        }
         #expect(
             renderer.webViewsCreated == 1,
             "built \(renderer.webViewsCreated) web views for six diagrams"
