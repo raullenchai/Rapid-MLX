@@ -77,10 +77,13 @@ journeys:
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/UI/ChatView.swift]
     owns_baseline: true
+  # Sunk into `swift test`: driver `swift` journeys run in-process on a
+  # GoldenStage inside the build job's test suite (`@Suite("Golden journey:
+  # <name>")` in Tests/RapidTests), not as a bash shard flow.
   - name: message-actions
     group: chat
     risk: medium
-    driver: ax
+    driver: swift
     ci_tier: pr
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]

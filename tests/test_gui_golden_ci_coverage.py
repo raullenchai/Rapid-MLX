@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 WORKFLOW = ROOT / ".github/workflows/rapid-mac-ci.yml"
 MANIFEST = ROOT / "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml"
+SWIFT_TESTS = ROOT / "apps/rapid-mac/Tests/RapidTests"
 
 # `chat-depth` requires all five turns to be simultaneously realised in AX.
 # The hosted runner's 1024x681 app window virtualises the oldest messages, so
@@ -81,11 +82,54 @@ def test_every_named_flow_is_gated_or_explicitly_excluded():
     assert not gated - named
 
 
+def swift_journeys() -> set[str]:
+    return {
+        str(journey["name"])
+        for journey in manifest_journeys()
+        if journey["driver"] == "swift"
+    }
+
+
+def swift_suite_titles() -> set[str]:
+    """Journeys carried by in-process `swift test` suites.
+
+    A `driver: swift` journey's coverage lives in a Swift Testing suite named
+    `Golden journey: <name>`; the title is the machine-checkable link between
+    the manifest inventory and the code that honours it.
+    """
+
+    # Commented-out code must not satisfy a coverage gate, and a named suite
+    # only counts when its file also declares at least one live @Test —
+    # source-level approximations of "this journey actually executes".
+    # Anything subtler (a @Test that compiles but asserts nothing) is the
+    # Swift build's and reviewer's territory, not a regex's.
+    titles: set[str] = set()
+    for path in SWIFT_TESTS.glob("*.swift"):
+        file_titles: set[str] = set()
+        has_live_test = False
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if stripped.startswith("@Test"):
+                has_live_test = True
+            match = re.match(r'@Suite\("Golden journey: ([a-z0-9-]+)"', stripped)
+            if match:
+                file_titles.add(match.group(1))
+        if has_live_test:
+            titles.update(file_titles)
+    return titles
+
+
 def test_manifest_is_the_complete_unique_flow_inventory():
     journeys = manifest_journeys()
     names = [str(journey["name"]) for journey in journeys]
     assert len(names) == len(set(names))
-    assert set(names) == harness_flows()
+    assert set(names) - swift_journeys() == harness_flows()
+
+
+def test_swift_driver_journeys_have_their_golden_suite():
+    assert swift_journeys() == swift_suite_titles()
 
 
 def test_manifest_fields_are_valid_and_fail_closed():
@@ -98,7 +142,7 @@ def test_manifest_fields_are_valid_and_fail_closed():
         "app-lifecycle",
     }
     allowed_risks = {"low", "medium", "high"}
-    allowed_drivers = {"ax", "xcuitest", "hybrid"}
+    allowed_drivers = {"ax", "xcuitest", "hybrid", "swift"}
     allowed_tiers = {"pr", "local"}
     allowed_fixtures = {
         "audio-models",
@@ -156,11 +200,13 @@ def test_manifest_fields_are_valid_and_fail_closed():
 
 
 def test_manifest_ci_tiers_match_the_workflow_contract():
+    # `driver: swift` journeys ride the build job's `swift test`, which runs
+    # on every PR; they must not also occupy a GUI shard step.
     pr_flows = {
         str(journey["name"])
         for journey in manifest_journeys()
         if journey["ci_tier"] == "pr"
-    }
+    } - swift_journeys()
     local_flows = {
         str(journey["name"])
         for journey in manifest_journeys()

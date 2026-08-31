@@ -512,7 +512,6 @@ def test_peekaboo_requirement_is_default_deny():
     peekaboo_free = {
         "chat-restore",
         "fresh-install",
-        "message-actions",
         "cached-quickstart",
         "cached-curated-tradeup",
         "cached-variant-collapse",

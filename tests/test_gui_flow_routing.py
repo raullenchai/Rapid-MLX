@@ -24,7 +24,9 @@ def _groups() -> dict[str, set[str]]:
     journeys = yaml.safe_load(MANIFEST.read_text())["journeys"]
     result: dict[str, set[str]] = {}
     for journey in journeys:
-        if journey["ci_tier"] == "pr":
+        # `driver: swift` journeys run in the build job's `swift test`, not
+        # in a GUI shard, so the selector never offers them to the harness.
+        if journey["ci_tier"] == "pr" and journey["driver"] != "swift":
             result.setdefault(journey["group"], set()).add(journey["name"])
     return result
 
