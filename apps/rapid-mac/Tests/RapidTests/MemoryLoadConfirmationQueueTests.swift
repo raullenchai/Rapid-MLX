@@ -206,6 +206,32 @@ struct MemoryLoadConfirmationQueueTests {
         #expect(refreshed.new.hfPath == original.hfPath)
     }
 
+    @Test("live refresh preserves a parked video's artifact contract")
+    func liveRefreshPreservesVideoOutputDirectory() throws {
+        let gib = UInt64(1 << 30)
+        var queue = MemoryLoadConfirmationQueue()
+        let original = ModelSizing.MemoryWarning(
+            alias: "ltx-2.3-mlx-q4",
+            hfPath: "org/ltx-video",
+            videoOutputDirectory: "/tmp/Rapid/VideoArtifacts",
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: 24,
+            freeGB: 2,
+            totalGB: 32
+        )
+        queue.enqueue(warning: original, requestID: nil)
+
+        let result = queue.refreshCurrentWarning(
+            snapshot: .init(totalBytes: 64 * gib, usedBytes: 8 * gib)
+        )
+        let refreshed = try #require(result)
+
+        #expect(refreshed.new.id == original.id)
+        #expect(refreshed.new.videoOutputDirectory == original.videoOutputDirectory)
+        #expect(refreshed.new.footprintGB == original.footprintGB)
+    }
+
     @Test("post-stop refresh does not credit the released model twice")
     func liveRefreshUsesPostStopHostTruth() throws {
         let gib = UInt64(1 << 30)

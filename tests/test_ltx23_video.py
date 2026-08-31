@@ -427,6 +427,7 @@ def test_video_engine_calls_mlx_native_pipeline(
         image,
         verbose,
         enhance_prompt,
+        no_audio,
         negative_prompt=None,
         cfg_scale=3.0,
         image_strength=1.0,
@@ -464,7 +465,7 @@ def test_video_engine_calls_mlx_native_pipeline(
         conditioning_strength=0.25,
     )
 
-    assert output.read_bytes() == b"video-only-mp4"
+    assert output.read_bytes() == b"mp4"
     assert stat.S_IMODE(output.stat().st_mode) == 0o640
     assert captured["model_repo"] == "notapalindrome/ltx23-mlx-av-q4"
     assert captured["num_frames"] == 97
@@ -472,10 +473,8 @@ def test_video_engine_calls_mlx_native_pipeline(
     assert captured["negative_prompt"] == "static"
     assert captured["cfg_scale"] == 4.5
     assert captured["image_strength"] == 0.25
-    assert len(ffmpeg_calls) == 1
-    assert ffmpeg_calls[0][ffmpeg_calls[0].index("-map") + 1] == "0:v:0"
-    assert "-an" in ffmpeg_calls[0]
-    assert ffmpeg_calls[0][ffmpeg_calls[0].index("-c:v") + 1] == "copy"
+    assert captured["no_audio"] is True
+    assert ffmpeg_calls == []
 
 
 def test_video_only_remux_failure_is_actionable(
