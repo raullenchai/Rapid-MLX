@@ -117,6 +117,33 @@ class TestRequest:
         assert req1 < req3
 
 
+def test_batched_engine_routes_cache_operations_to_active_backend():
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    engine = BatchedEngine.__new__(BatchedEngine)
+    mllm = MagicMock()
+    mllm.get_cache_stats.return_value = {"hits": 2}
+    mllm.clear_prefix_cache.return_value = True
+    engine._mllm_scheduler = mllm
+    engine._engine = None
+
+    assert engine.get_cache_stats() == {"hits": 2}
+    assert engine.clear_prefix_cache(reset_stats=False) is True
+    mllm.clear_prefix_cache.assert_called_once_with(reset_stats=False)
+
+    text_engine = MagicMock()
+    text_engine.get_cache_stats.return_value = {"hits": 3}
+    text_engine.clear_prefix_cache.return_value = True
+    engine._mllm_scheduler = None
+    engine._engine = text_engine
+    assert engine.get_cache_stats() == {"hits": 3}
+    assert engine.clear_prefix_cache() is True
+
+    engine._engine = None
+    assert engine.get_cache_stats() is None
+    assert engine.clear_prefix_cache() is False
+
+
 class TestSamplingParams:
     """Tests for SamplingParams."""
 

@@ -40,8 +40,8 @@ LANE_CAPABILITIES = {
     "top_k": {"text": True, "multimodal": False},
     "min_p": {"text": True, "multimodal": False},
     "seed": {"text": True, "multimodal": False},
-    "prefix_cache_usage": {"text": True, "multimodal": False},
-    "cached_tokens_usage": {"text": True, "multimodal": False},
+    "prefix_cache_usage": {"text": True, "multimodal": True},
+    "cached_tokens_usage": {"text": True, "multimodal": True},
 }
 
 
@@ -452,6 +452,7 @@ class _MultimodalScheduler:
             prompt_tokens=4,
             completion_tokens=2,
             finish_reason="stop",
+            cached_tokens=1,
             matched_stop="END",
         )
 
@@ -470,6 +471,7 @@ class _MultimodalScheduler:
             finished=True,
             finish_reason="stop",
             logprobs=[{"token": "vision-result"}],
+            cached_tokens=1,
             matched_stop="END",
         )
 
@@ -574,6 +576,7 @@ async def test_engine_dispatch_preserves_shared_request_semantics(
         "temperature": 0.2,
         "top_p": 0.8,
         "stop": ["END", "HALT"],
+        "prefix_boundary": 7,
         **kwargs,
     }
     if not stream:
@@ -608,6 +611,7 @@ async def test_engine_dispatch_preserves_shared_request_semantics(
         captured=captured,
         processors=processors,
     )
+    assert captured["prefix_boundary"] == 7
 
     result = outputs[-1]
     assert result.finish_reason == "stop"
@@ -632,4 +636,7 @@ def test_intentional_lane_differences_are_explicit_and_complete() -> None:
         "cached_tokens_usage",
     }
     assert all(set(row) == {"text", "multimodal"} for row in LANE_CAPABILITIES.values())
-    assert all(row["text"] != row["multimodal"] for row in LANE_CAPABILITIES.values())
+    for name in {"media", "speculative_decode", "top_k", "min_p", "seed"}:
+        assert LANE_CAPABILITIES[name]["text"] != LANE_CAPABILITIES[name]["multimodal"]
+    for name in {"prefix_cache_usage", "cached_tokens_usage"}:
+        assert LANE_CAPABILITIES[name] == {"text": True, "multimodal": True}

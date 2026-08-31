@@ -774,6 +774,7 @@ class TestMLLMSchedulerStopSequences:
                 token=i,
                 logprobs=mx.array([0.1]),
                 finish_reason=None,
+                cached_tokens=7,
             )
             for i in range(2)
         ]
@@ -784,6 +785,7 @@ class TestMLLMSchedulerStopSequences:
         assert [o.new_text for o in outputs] == ["hel", "lo"]
         assert [o.output_text for o in outputs] == ["hel", "hello"]
         assert request.output_text == "hello"
+        assert request.cached_tokens == 7
         assert mock_tokenizer.decode.call_count == 0
 
     def test_process_batch_responses_stop_string(self):

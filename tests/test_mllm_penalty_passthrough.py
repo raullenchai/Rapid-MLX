@@ -261,6 +261,7 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
     async for _ in engine.stream_generate(
         prompt="hi",
         max_tokens=8,
+        prefix_boundary=5,
         repetition_penalty=1.7,
         presence_penalty=0.3,
         frequency_penalty=0.4,
@@ -274,6 +275,7 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
     assert captured["presence_penalty"] == 0.3
     assert captured["frequency_penalty"] == 0.4
     assert captured["logits_processors"] == [grammar, budget, suppression]
+    assert captured["prefix_boundary"] == 5
 
     captured.clear()
     async for _ in engine.stream_generate(prompt="hi", max_tokens=8):
@@ -288,14 +290,17 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
             prompt_tokens=1,
             completion_tokens=1,
             finish_reason="stop",
+            cached_tokens=0,
         )
 
     engine._mllm_scheduler.generate = _fake_generate
     await engine.generate(
         prompt="hi",
         max_tokens=8,
+        prefix_boundary=5,
         grammar_logits_processor=grammar,
         reasoning_budget_logits_processor=budget,
         suppressed_tokens_logits_processor=suppression,
     )
     assert captured["logits_processors"] == [grammar, budget, suppression]
+    assert captured["prefix_boundary"] == 5
