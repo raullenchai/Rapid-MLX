@@ -258,6 +258,18 @@ def test_atomic_registry_requires_catalog_context_for_recommendations(
     with pytest.raises(CatalogValidationError, match="strictly increasing"):
         registry.put("recommendation_policy", invalid, catalog_snapshot=snapshot)
 
+    missing_preset = copy.deepcopy(policy)
+    missing_preset["tiers"][0]["picks"][0]["execution_preset_id"] = "missing"
+    missing_preset["policy_digest"] = rcj_digest(
+        {key: value for key, value in missing_preset.items() if key != "policy_digest"}
+    )
+    with pytest.raises(CatalogValidationError, match="does not resolve"):
+        registry.put(
+            "recommendation_policy",
+            missing_preset,
+            catalog_snapshot=snapshot,
+        )
+
     digest = registry.put("recommendation_policy", policy, catalog_snapshot=snapshot)
     assert (
         registry.get("recommendation_policy", digest, catalog_snapshot=snapshot)

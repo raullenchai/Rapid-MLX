@@ -206,6 +206,15 @@ class ContractValidator:
                         f"tiers/{tier_index}/picks/{pick_index}/alias",
                         "alias does not advertise the policy task_type",
                     )
+                preset_id = pick.get("execution_preset_id")
+                if preset_id is not None and preset_id not in {
+                    preset["preset_id"] for preset in alias["execution_presets"]
+                }:
+                    raise CatalogValidationError(
+                        "recommendation_policy",
+                        f"tiers/{tier_index}/picks/{pick_index}/execution_preset_id",
+                        "does not resolve in the selected alias",
+                    )
         projection = {
             key: value for key, value in policy.items() if key != "policy_digest"
         }
