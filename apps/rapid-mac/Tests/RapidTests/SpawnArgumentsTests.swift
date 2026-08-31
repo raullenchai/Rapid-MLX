@@ -222,6 +222,25 @@ struct SpawnArgumentsTests {
         }
     }
 
+    @Test("video serve argv carries the durable output directory after greedy CORS values")
+    func videoArgvCarriesArtifactDirectory() {
+        let output = "/Users/test/Library/Application Support/Rapid/VideoArtifacts"
+        let argv = ServerManager.serveArguments(
+            alias: "ltx-2.3-mlx-q4",
+            host: "127.0.0.1",
+            port: 8000,
+            videoOutputDirectory: output
+        )
+        let videoFlag = argv.firstIndex(of: "--video-output-dir")
+        let corsFlag = argv.firstIndex(of: "--cors-origins")
+        #expect(videoFlag != nil)
+        #expect(corsFlag != nil)
+        if let videoFlag, let corsFlag {
+            #expect(corsFlag < videoFlag)
+            #expect(argv[videoFlag + 1] == output)
+        }
+    }
+
     @Test("serve argv NEVER carries --api-key (bearer must travel via env)")
     func argvNeverContainsApiKey() {
         let argv = ServerManager.serveArguments(
