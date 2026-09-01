@@ -344,6 +344,7 @@ async def status():
             "protected_chunks": stats.get("adaptive_prefill_protected_chunks", 0),
             "reduced_chunks": stats.get("adaptive_prefill_reduced_chunks", 0),
         },
+        "mtp_prompt_lookup": stats.get("mtp_vendored", {}),
         "idle_cache_clear": stats.get(
             "idle_cache_clear",
             {"enabled": False, "seconds": 0, "clear_count": 0, "last_clear_at": None},

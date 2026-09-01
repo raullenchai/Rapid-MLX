@@ -3251,6 +3251,146 @@ def test_install_mtp_vendored_carries_seeded_rng_after_priming(monkeypatch):
     assert gb.orig_step_calls == 0
 
 
+def test_install_mtp_vendored_latches_prompt_lookup_and_complete_history(
+    monkeypatch,
+):
+    """A qualified greedy request carries one immutable PLD decision/history."""
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    class _QualifiedModel(_StubModel):
+        mtp_prompt_lookup_supported = True
+        mtp_prompt_lookup_policy = PromptLookupPolicy(enabled_by_default=True)
+
+    def _recording_generator(*args, **kwargs):
+        seen.update(kwargs)
+        return _FakeGen()
+
+    monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "18")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "42")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "6")
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _recording_generator)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [31]
+    gb.tokens = [[101, 102]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(temperature=0.0),
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_QualifiedModel(),
+        requests={"req-31": request_stub},
+        uid_to_request_id={31: "req-31"},
+    )
+    gb._step()
+
+    assert seen["prompt_lookup_enabled"] is True
+    assert seen["prompt_lookup_history"] == [101, 102, 500]
+    policy = seen["prompt_lookup_policy"]
+    assert isinstance(policy, PromptLookupPolicy)
+    assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (18, 42, 6)
+    assert seen["timing_stats"] is batch_gen._mtp_vendored_stats
+    assert batch_gen._mtp_vendored_stats["prompt_lookup_proposals"] == 0.0
+
+
+def test_scheduler_stats_export_vendored_mtp_counters_by_value():
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda _text: [1]
+    scheduler = Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=1))
+    counters = {"prompt_lookup_proposals": 3.0}
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator._mtp_vendored_stats = counters
+
+    stats = scheduler.get_stats()
+
+    assert stats["mtp_vendored"] == counters
+    assert stats["mtp_vendored"] is not counters
+
+
+def test_install_mtp_vendored_does_not_admit_sampled_prompt_lookup(monkeypatch):
+    """Non-greedy requests stay on ordinary MTP pending separate qualification."""
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    class _QualifiedModel(_StubModel):
+        mtp_prompt_lookup_supported = True
+        mtp_prompt_lookup_policy = PromptLookupPolicy(enabled_by_default=True)
+
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: seen.update(kwargs) or _FakeGen(),
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [32]
+    gb.tokens = [[101, 102]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.7,
+            top_p=0.9,
+            top_k=0,
+            min_p=0.0,
+            seed=None,
+        ),
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_QualifiedModel(),
+        requests={"req-32": request_stub},
+        uid_to_request_id={32: "req-32"},
+    )
+    gb._step()
+
+    assert seen["prompt_lookup_enabled"] is False
+    assert seen["prompt_lookup_history"] is None
+
+
 def test_install_mtp_vendored_passes_request_sampling_and_safe_penalty_context(
     monkeypatch,
 ):

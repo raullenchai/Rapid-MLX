@@ -99,6 +99,7 @@ class QSAIndexCache(ArraysCache):
     """Raw circular index keys plus persistent compressed-key state."""
 
     step = 256
+    rollback_state: list[tuple[list[int], list[int], list[int], mx.array]] | None = None
 
     def __init__(
         self,
@@ -115,6 +116,7 @@ class QSAIndexCache(ArraysCache):
         self._valid_until: list[int] | None = None
         self._right_padding: list[int] | None = None
         self._pending_left_padding = [int(item) for item in (left_padding or [0])]
+        self.rollback_state = None
 
     def _ensure_batch(self, batch: int):
         """Adopt mlx-lm's fresh-batch size before state is committed."""
@@ -201,6 +203,8 @@ class QSAIndexCache(ArraysCache):
         raw_keys: mx.array,
         transform_group: Callable[[mx.array, int], mx.array],
         transform_groups: Callable[[mx.array, mx.array], mx.array] | None = None,
+        *,
+        record_rollback: bool = False,
     ) -> mx.array:
         """Commit valid raw rows and cache every newly completed group.
 
@@ -213,8 +217,11 @@ class QSAIndexCache(ArraysCache):
         batch, length, dim = raw_keys.shape
         self._ensure_batch(batch)
         valid_spans = self.valid_spans(length)
+        if record_rollback and (batch != 1 or valid_spans != [(0, length)]):
+            raise ValueError("QSA speculative snapshots require one unpadded request")
         if (
-            transform_groups is not None
+            not record_rollback
+            and transform_groups is not None
             and batch == 1
             and valid_spans == [(0, length)]
             and self._offsets[0] % self.compress_ratio == 0
@@ -228,6 +235,9 @@ class QSAIndexCache(ArraysCache):
         elif self.raw_ring.shape[0] != batch or self.raw_ring.shape[-1] != dim:
             raise ValueError("QSA raw-key cache shape changed within one request")
 
+        rollback_states: (
+            list[tuple[list[int], list[int], list[int], mx.array]] | None
+        ) = [] if record_rollback else None
         completed: list[list[mx.array]] = [[] for _ in range(batch)]
         for row, (input_start, valid_length) in enumerate(valid_spans):
             for token in range(valid_length):
@@ -241,6 +251,22 @@ class QSAIndexCache(ArraysCache):
                     ).astype(raw_keys.dtype)
                     completed[row].append(
                         transform_group(pooled, position + 1 - self.compress_ratio)[0]
+                    )
+                if rollback_states is not None:
+                    # Arithmetic forces an independent lazy buffer; evaluating
+                    # below freezes every accepted boundary before a later
+                    # token overwrites the four-slot raw ring.
+                    ring_snapshot = mx.contiguous(
+                        self.raw_ring + mx.zeros_like(self.raw_ring)
+                    )
+                    offset = position + 1
+                    rollback_states.append(
+                        (
+                            [offset],
+                            [offset // self.compress_ratio],
+                            list(self._pending_left_padding),
+                            ring_snapshot,
+                        )
                     )
             self._offsets[row] += valid_length
             self._pending_left_padding[row] -= input_start
@@ -266,6 +292,9 @@ class QSAIndexCache(ArraysCache):
                     expanded[row, start : start + len(rows), :] = mx.stack(rows)
             self.compressed_keys = expanded
         self._compressed_counts = new_counts
+        if rollback_states is not None:
+            mx.eval([state[3] for state in rollback_states])
+            self.rollback_state = rollback_states
 
         if self.compressed_keys is None:
             return mx.zeros((batch, 0, dim), dtype=raw_keys.dtype)
@@ -383,13 +412,45 @@ class QSAIndexCache(ArraysCache):
 
     def can_trim(self, n: int) -> bool:
         """Amount-aware preflight consumed by composite cache rollback."""
+        if self.rollback_state is not None:
+            keep = len(self.rollback_state) - n
+            return 1 <= keep <= len(self.rollback_state)
         return all(self._can_trim_row(offset, n) for offset in self._offsets)
 
     def trim_checkpoint(self):
-        return list(self._offsets), list(self._compressed_counts)
+        return (
+            list(self._offsets),
+            list(self._compressed_counts),
+            list(self._pending_left_padding),
+            self.raw_ring,
+            self.rollback_state,
+        )
 
     def restore_trim_checkpoint(self, state):
-        self._offsets, self._compressed_counts = state
+        (
+            self._offsets,
+            self._compressed_counts,
+            self._pending_left_padding,
+            self.raw_ring,
+            self.rollback_state,
+        ) = state
+
+    def restore_rollback(self, n_to_drop: int, verify_size: int) -> None:
+        snapshots = self.rollback_state
+        if not snapshots or len(snapshots) != verify_size:
+            raise AssertionError("QSA verify rollback has no complete saved boundary")
+        keep = verify_size - n_to_drop
+        if keep < 1 or keep > len(snapshots):
+            raise AssertionError(
+                f"invalid QSA rollback boundary: keep={keep}, "
+                f"snapshots={len(snapshots)}"
+            )
+        offsets, counts, pending, raw_ring = snapshots[keep - 1]
+        self._offsets = list(offsets)
+        self._compressed_counts = list(counts)
+        self._pending_left_padding = list(pending)
+        self.raw_ring = raw_ring
+        self.rollback_state = None
 
     def _can_trim_row(self, offset: int, n: int) -> bool:
         if n < 0 or n > offset:
@@ -405,6 +466,11 @@ class QSAIndexCache(ArraysCache):
         # recently completed group at a boundary. Rewind only within that
         # recoverable window; the next update overwrites discarded rows and
         # deterministically recomputes a removed compressed block.
+        if self.rollback_state is not None:
+            if not self.can_trim(n):
+                return 0
+            self.restore_rollback(n, len(self.rollback_state))
+            return n
         if not all(self._can_trim_row(offset, n) for offset in self._offsets):
             return 0
         self._offsets = [offset - n for offset in self._offsets]

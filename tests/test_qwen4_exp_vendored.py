@@ -709,6 +709,85 @@ def test_scheduler_rollback_preflights_qsa_cachelist_for_full_rejection():
     assert kv.offset == qsa.offset == 8
 
 
+def test_prompt_lookup_admits_qsa_snapshot_rollback_across_group():
+    """QSA's verify snapshot admits the full PLD proposal at a boundary."""
+    from vllm_mlx.spec_decode.mtp.generator import (
+        _safe_prompt_lookup_draft_count,
+    )
+
+    kv = KVCache()
+    keys = mx.arange(9, dtype=mx.float32).reshape(1, 1, 9, 1)
+    kv.update_and_fetch(keys, -keys)
+    qsa = QSAIndexCache(compress_ratio=4)
+    qsa.update(
+        mx.arange(9, dtype=mx.float32).reshape(1, 9, 1),
+        lambda group, start: group + start,
+    )
+    cache = CacheList(kv, qsa)
+    recurrent = Qwen4ExpStateCache(size=2)
+
+    # At offset 9 the ordinary raw ring can undo one token, not two. Both QSA
+    # and recurrent layers publish verify snapshots, so PLD may safely retain
+    # the full proposal and transactionally select an accepted boundary later.
+    assert _safe_prompt_lookup_draft_count([recurrent, cache], 2) == 2
+    assert kv.offset == qsa.offset == 9
+
+
+def test_qsa_speculative_snapshot_restores_cross_group_accepted_prefix():
+    """A partial PLD rejection preserves only base + accepted QSA rows."""
+    from vllm_mlx.cache_rollback import trim_all
+
+    def transform(group, start):
+        return group + start
+
+    initial = mx.arange(9, dtype=mx.float32).reshape(1, 9, 1)
+    verify = mx.array([[[90.0], [91.0], [92.0]]])
+    qsa = QSAIndexCache(compress_ratio=4)
+    qsa.update(initial, transform)
+    kv = KVCache()
+    kv.update_and_fetch(initial[:, None, :, :], -initial[:, None, :, :])
+
+    qsa.update(verify, transform, record_rollback=True)
+    kv.update_and_fetch(verify[:, None, :, :], -verify[:, None, :, :])
+    assert qsa.offset == kv.offset == 12
+
+    # Reject both drafts from [base, draft_1, draft_2], retaining base only.
+    assert trim_all([CacheList(kv, qsa)], 2)
+    assert qsa.offset == kv.offset == 10
+    assert qsa.rollback_state is None
+
+    cold = QSAIndexCache(compress_ratio=4)
+    cold.update(mx.concatenate([initial, verify[:, :1]], axis=1), transform)
+    mx.eval(qsa.state, cold.state)
+    assert qsa._compressed_count == cold._compressed_count
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.array(cold.raw_ring))
+    np.testing.assert_array_equal(np.array(qsa.state[1]), np.array(cold.state[1]))
+
+
+def test_qsa_speculative_snapshot_rejects_padded_or_batched_verify():
+    """Snapshots are deliberately limited to the audited single-row lane."""
+
+    qsa = QSAIndexCache(compress_ratio=4, left_padding=[0, 0])
+    raw = mx.zeros((2, 1, 1), dtype=mx.float32)
+
+    with pytest.raises(ValueError, match="one unpadded request"):
+        qsa.update(raw, lambda group, _start: group, record_rollback=True)
+
+
+def test_qsa_speculative_snapshot_fails_closed_on_invalid_boundary():
+    """Missing, incomplete, and impossible snapshot boundaries never trim."""
+
+    qsa = QSAIndexCache(compress_ratio=4)
+    with pytest.raises(AssertionError, match="no complete saved boundary"):
+        qsa.restore_rollback(1, 2)
+
+    raw = mx.arange(3, dtype=mx.float32).reshape(1, 3, 1)
+    qsa.update(raw, lambda group, _start: group, record_rollback=True)
+    assert qsa.trim(3) == 0
+    with pytest.raises(AssertionError, match="invalid QSA rollback boundary"):
+        qsa.restore_rollback(3, 3)
+
+
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
     from vllm_mlx.scheduler import _install_suffix_decoding
 
@@ -1196,6 +1275,25 @@ def test_speculative_reject_restores_gdn_ple_and_qsa_state():
             assert baseline[1].offset == restored[1].offset
 
 
+def test_qsa_snapshots_only_multi_token_verify_windows():
+    """Ordinary K=1 MTP pays no QSA snapshot cost; PLD K>1 does."""
+    args = _ple_args()
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    k1_cache = model.make_cache()
+    pld_cache = model.make_cache()
+    prompt = mx.array([[1, 2, 3]])
+    mx.eval(model(prompt, cache=k1_cache), model(prompt, cache=pld_cache))
+
+    mx.eval(model(mx.array([[4, 5]]), cache=k1_cache, n_confirmed=1))
+    mx.eval(model(mx.array([[4, 5, 6]]), cache=pld_cache, n_confirmed=2))
+
+    k1_qsa = next(cache[1] for cache in k1_cache if isinstance(cache, CacheList))
+    pld_qsa = next(cache[1] for cache in pld_cache if isinstance(cache, CacheList))
+    assert k1_qsa.rollback_state is None
+    assert pld_qsa.rollback_state is not None
+    assert len(pld_qsa.rollback_state) == 3
+
+
 def test_qwen4_state_cache_restores_atomic_slot_boundary():
     cache = Qwen4ExpStateCache(size=2)
     cache.cache = [mx.array([1]), mx.array([2])]
@@ -1498,6 +1596,10 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
 
     assert inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=checkpoint) is True
     assert inject.validate_qwen4_exp_mtp_support(model) is True
+    assert model.mtp_prompt_lookup_supported is True
+    policy = model.mtp_prompt_lookup_policy
+    assert policy.enabled_by_default is True
+    assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (16, 64, 8)
 
 
 def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(

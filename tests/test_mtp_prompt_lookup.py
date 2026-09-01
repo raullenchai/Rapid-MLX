@@ -2,7 +2,35 @@
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupIndex
+from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    PromptLookupIndex,
+    PromptLookupPolicy,
+)
+
+
+def test_prompt_lookup_policy_validates_model_qualified_defaults() -> None:
+    policy = PromptLookupPolicy(
+        enabled_by_default=True,
+        min_ngram=16,
+        max_ngram=64,
+        max_tokens=8,
+    )
+
+    assert policy.enabled_by_default is True
+    assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (16, 64, 8)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"min_ngram": 1}, "min_ngram"),
+        ({"min_ngram": 4, "max_ngram": 3}, "max_ngram"),
+        ({"max_tokens": 0}, "max_tokens"),
+    ],
+)
+def test_prompt_lookup_policy_rejects_invalid_configuration(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        PromptLookupPolicy(**kwargs)
 
 
 def test_prompt_lookup_returns_prompt_continuation() -> None:
