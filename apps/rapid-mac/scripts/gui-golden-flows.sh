@@ -1533,6 +1533,89 @@ press() {
     return 1
 }
 
+# Hosted runners exercise the production memory guard against their real
+# ambient pressure even though golden journeys launch a zero-weight fake
+# sidecar.  A journey that has explicitly asked to start a model must follow
+# that real confirmation branch before it can use a wire event or readiness
+# state as its independent proof.  Keep the action generic because Quickstart
+# presents its warning inside onboarding with a different AX identifier.
+memory_confirmation_enabled() {
+    local tree="$1" identifier="$2"
+    jq -e --arg id "$identifier" \
+       '.data.ui_elements[]?
+        | select(.identifier == $id and .enabled == true)' \
+       "$tree" >/dev/null
+}
+
+memory_confirmation_signature() {
+    local tree="$1" identifier="$2"
+    jq -cS --arg id "$identifier" \
+       '.data.ui_elements[]?
+        | select(.identifier == $id)
+        | {identifier, label, title, value, description, help}' \
+       "$tree" | head -1
+}
+
+confirm_memory_warning_from_tree() {
+    local tree="$1" evidence="$2" identifier="$3"
+    memory_confirmation_enabled "$tree" "$identifier" || return 1
+    # The live AX tree can change between observation and click while the
+    # app revalidates memory. Treat that as a retryable transition, not a
+    # product failure; the next poll will inspect the new tree.
+    "$AX_DRIVER" click-center "$APP_PID" "$identifier" > "$evidence" \
+        || return 1
+    log "  confirmed hosted-runner memory warning through $identifier"
+}
+
+# Report visibility/click state through globals so Bash 3.2 callers can keep
+# one semantic-presentation latch per AX identifier without namerefs or eval.
+# A warning that remains mounted gets bounded, spaced retries. Disappearance
+# re-arms it; a changed label/message also counts as a new presentation so a
+# tight warning restored as unsafe by memory revalidation can be confirmed.
+follow_memory_confirmation_edge() {
+    local tree="$1" evidence="$2" previous_signature="$3"
+    local previous_polls="$4" previous_attempts="$5" identifier="$6"
+    local signature=""
+    MEMORY_CONFIRMATION_SIGNATURE="$previous_signature"
+    MEMORY_CONFIRMATION_POLLS="$previous_polls"
+    MEMORY_CONFIRMATION_ATTEMPTS="$previous_attempts"
+    MEMORY_CONFIRMATION_VISIBLE=0
+    MEMORY_CONFIRMATION_CLICKED=0
+    signature="$(memory_confirmation_signature "$tree" "$identifier")"
+    if [[ -n "$signature" ]]; then
+        MEMORY_CONFIRMATION_VISIBLE=1
+        if [[ "$signature" != "$previous_signature" ]]; then
+            MEMORY_CONFIRMATION_POLLS=0
+            MEMORY_CONFIRMATION_ATTEMPTS=0
+        else
+            MEMORY_CONFIRMATION_POLLS=$((previous_polls + 1))
+        fi
+        # click-center proves that mouse events were posted, not that SwiftUI
+        # consumed them. Retry a still-identical presentation after one second,
+        # but cap attempts so a stuck alert cannot be hammered every poll.
+        # Product-side confirmPendingMemoryLoad claims the warning synchronously
+        # before async revalidation, so a repeated delivery while it is checking
+        # cannot enqueue a duplicate launch.
+        if memory_confirmation_enabled "$tree" "$identifier" \
+           && [[ "$MEMORY_CONFIRMATION_ATTEMPTS" -lt 3 \
+                 && ( "$MEMORY_CONFIRMATION_ATTEMPTS" == 0 \
+                      || "$MEMORY_CONFIRMATION_POLLS" -ge 4 ) ]]; then
+            # Consume the budget before posting the click. Driver failures must
+            # be spaced and capped just like successfully posted mouse events.
+            MEMORY_CONFIRMATION_SIGNATURE="$signature"
+            MEMORY_CONFIRMATION_POLLS=0
+            MEMORY_CONFIRMATION_ATTEMPTS=$((MEMORY_CONFIRMATION_ATTEMPTS + 1))
+            if confirm_memory_warning_from_tree "$tree" "$evidence" "$identifier"; then
+                MEMORY_CONFIRMATION_CLICKED=1
+            fi
+        fi
+    else
+        MEMORY_CONFIRMATION_SIGNATURE=""
+        MEMORY_CONFIRMATION_POLLS=0
+        MEMORY_CONFIRMATION_ATTEMPTS=0
+    fi
+}
+
 round_trip_toggle() {
     local identifier="$1" stem="$2"
     local before after restored
@@ -1684,7 +1767,11 @@ start_model() {
     # user needs before clicking it.
     wait_identifier_enabled Readiness.Action "$OUT/readiness-start.json"
     local initial_action
+    local selected_alias
     initial_action="$(element_field "$OUT/readiness-start.json" Readiness.Action description)"
+    selected_alias="$(element_field "$OUT/readiness-start.json" ModelPickerBar.ModelMenu value)"
+    [[ -n "$selected_alias" ]] \
+        || die "the readiness action exposed no selected model alias"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
     if [[ "$initial_action" == "Download" ]]; then
         local download_ready=0
@@ -1714,30 +1801,10 @@ start_model() {
     # Hosted macOS runners can spend more than 30 seconds cold-starting the
     # bundled fake sidecar after a full release build. Keep the event-based
     # readiness proof, but allow 60 seconds before declaring startup broken.
-    local memory_confirmed=0
-    for _ in {1..240}; do
-        grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
-        # Authoritative aliases retain their production footprint estimate
-        # even though this journey launches the zero-weight fake sidecar.  A
-        # memory-constrained hosted runner can therefore present the real
-        # safety confirmation after Start.  Confirm only when that explicit
-        # sheet exists; this keeps the product gate covered without leaving a
-        # fake-model GUI journey dependent on the runner's ambient pressure.
-        if [[ "$memory_confirmed" == 0 ]]; then
-            see_main "$OUT/readiness-after-start.json"
-            if jq -e '.data.ui_elements[]?
-                      | select(.identifier == "MemoryWarning.Confirm" and .enabled == true)' \
-                "$OUT/readiness-after-start.json" >/dev/null; then
-                "$AX_DRIVER" click-center "$APP_PID" MemoryWarning.Confirm \
-                    > "$OUT/readiness-memory-confirm.json"
-                memory_confirmed=1
-                log "  confirmed hosted-runner memory warning for fake sidecar"
-            fi
-        fi
-        sleep 0.25
-    done
-    grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null \
-        || die "fake model did not become ready"
+    wait_fake_event_after_start \
+        ".event == \"server_started\" and .alias == \"$selected_alias\"" \
+        "fake model did not become ready" \
+        readiness
     wait_send_idle "$OUT/readiness-ready.json"
 }
 
@@ -1822,8 +1889,30 @@ baseline() {
 # button, so a single dump can be a hybrid of two states.
 wait_send_idle() {
     local destination="$1" attempts="${2:-160}" stable=0
+    local memory_confirmation_signature="" memory_confirmation_polls=0
+    local memory_confirmation_attempts=0
+    local confirmation_evidence="${destination%.json}-memory-confirm.json"
     for ((i=0; i<attempts; i++)); do
         see_main "$destination"
+        # Relaunch/session-restore paths do not pass through start_model(), but
+        # they can still hit the same production memory warning on a busy
+        # hosted runner.  Waiting for an idle composer means this journey has
+        # already requested the model, so follow the explicit confirmation
+        # branch before continuing to wait for independent UI readiness.
+        follow_memory_confirmation_edge \
+            "$destination" "$confirmation_evidence" \
+            "$memory_confirmation_signature" \
+            "$memory_confirmation_polls" \
+            "$memory_confirmation_attempts" \
+            MemoryWarning.Confirm
+        memory_confirmation_signature="$MEMORY_CONFIRMATION_SIGNATURE"
+        memory_confirmation_polls="$MEMORY_CONFIRMATION_POLLS"
+        memory_confirmation_attempts="$MEMORY_CONFIRMATION_ATTEMPTS"
+        if [[ "$MEMORY_CONFIRMATION_VISIBLE" == 1 ]]; then
+            stable=0
+            sleep 0.25
+            continue
+        fi
         if jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.SendOrStopButton"
                   and has("description") and .description == "Send message"
                   and has("enabled") and (has("help") | not))' \
@@ -2100,9 +2189,12 @@ flow_cached_quickstart() {
     assert_tree_text "$OUT/selected.json" "Start existing model"
     press "$OUT/selected.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
 
-    wait_fake_event \
+    wait_fake_event_after_start \
         ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
-        "cached Quickstart did not start the selected model"
+        "cached Quickstart did not start the selected model" \
+        cached-quickstart \
+        Quickstart.Memory.Load \
+        Quickstart.Memory.LoadAnyway
     jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-alias"
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
@@ -2160,34 +2252,13 @@ flow_cached_curated_tradeup() {
     # The 16 GB fixture owns recommendation policy, not the host's live
     # pressure. A busy hosted runner can therefore (correctly) ask for the
     # existing explicit memory confirmation before it starts this zero-weight
-    # fake. Handle that real branch exactly as start_model does: confirm only
-    # when the enabled warning is present, then still require the independent
-    # sidecar event. Without this, ambient runner pressure made the flow wait
-    # for a start the app was intentionally holding for user consent.
-    local memory_confirmed=0 starter_started=0
-    for _ in {1..240}; do
-        if [[ -s "$OUT/fake-events.jsonl" ]] \
-           && jq -e -s 'any(.[]; .event == "server_started"
-                                   and .alias == "qwen3.5-4b-4bit")' \
-                "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
-            starter_started=1
-            break
-        fi
-        if [[ "$memory_confirmed" == 0 ]]; then
-            see_main "$OUT/starter-after-start.json"
-            if jq -e '.data.ui_elements[]?
-                      | select(.identifier == "Quickstart.Memory.LoadAnyway"
-                               and .enabled == true)' \
-                "$OUT/starter-after-start.json" >/dev/null; then
-                "$AX_DRIVER" click-center "$APP_PID" Quickstart.Memory.LoadAnyway \
-                    > "$OUT/starter-memory-confirm.json"
-                memory_confirmed=1
-                log "  confirmed hosted-runner memory warning for cached starter"
-            fi
-        fi
-        sleep 0.25
-    done
-    [[ "$starter_started" == 1 ]] || die "cached 16 GB starter did not start"
+    # fake. Success still requires the exact independent sidecar event.
+    wait_fake_event_after_start \
+        '.event == "server_started" and .alias == "qwen3.5-4b-4bit"' \
+        "cached 16 GB starter did not start" \
+        starter \
+        Quickstart.Memory.Load \
+        Quickstart.Memory.LoadAnyway
     wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"
     # ``server_started`` is emitted before the fake binds HTTP, and a
     # constrained hosted runner can spend more than the default 20-second AX
@@ -3834,6 +3905,48 @@ wait_fake_event() {
     die "$what"
 }
 
+# Wait for the wire proof of a model-start action while also following the
+# real memory-confirmation sheet when host pressure makes it appear.  The
+# confirmation is never accepted speculatively: the enabled AX action must be
+# present, and success still requires the caller's independent event predicate.
+wait_fake_event_after_start() {
+    local predicate="$1" what="$2" prefix="$3"
+    shift 3
+    local confirmation_identifiers=("$@") confirmation_signatures=()
+    local confirmation_polls=() confirmation_attempts=() i j
+    if [[ "${#confirmation_identifiers[@]}" == 0 ]]; then
+        confirmation_identifiers=(MemoryWarning.Confirm)
+    fi
+    for ((j=0; j<${#confirmation_identifiers[@]}; j++)); do
+        confirmation_signatures[$j]=""
+        confirmation_polls[$j]=0
+        confirmation_attempts[$j]=0
+    done
+    for ((i=0; i<240; i++)); do
+        if [[ -s "$OUT/fake-events.jsonl" ]] \
+           && jq -e -s "any(.[]; $predicate)" \
+                "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
+            return 0
+        fi
+        see_main "$OUT/${prefix}-after-start.json"
+        for ((j=0; j<${#confirmation_identifiers[@]}; j++)); do
+            follow_memory_confirmation_edge \
+                "$OUT/${prefix}-after-start.json" \
+                "$OUT/${prefix}-memory-confirm.json" \
+                "${confirmation_signatures[$j]}" \
+                "${confirmation_polls[$j]}" \
+                "${confirmation_attempts[$j]}" \
+                "${confirmation_identifiers[$j]}"
+            confirmation_signatures[$j]="$MEMORY_CONFIRMATION_SIGNATURE"
+            confirmation_polls[$j]="$MEMORY_CONFIRMATION_POLLS"
+            confirmation_attempts[$j]="$MEMORY_CONFIRMATION_ATTEMPTS"
+            [[ "$MEMORY_CONFIRMATION_CLICKED" == 0 ]] || break
+        done
+        sleep 0.25
+    done
+    die "$what"
+}
+
 # Put text in the Images composer and PROVE it arrived.
 #
 # ``set-value`` reports success on whatever element carries the identifier,
@@ -3978,9 +4091,10 @@ flow_image_generation() {
     # Match the ALIAS, not merely "a server started": the app may already have
     # started one on the chat alias at launch, and that event would satisfy a
     # bare grep while the image model never loaded at all.
-    wait_fake_event \
+    wait_fake_event_after_start \
         ".event == \"server_started\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
-        "the image model never started — Readiness.Action did not switch the server"
+        "the image model never started — Readiness.Action did not switch the server" \
+        image-generation
 
     # ``help`` distinguishes "not ready" from "ready with an empty prompt":
     # the button is disabled in both, and only the hint separates them.
@@ -4543,9 +4657,10 @@ flow_resident_load_rejected() {
         || die "chat Readiness.Action is not pressable - could not start the resident chat model"
     # Match the ALIAS, not merely "a server started": the fake must be serving
     # the chat alias so the residency snapshot reports it resident.
-    wait_fake_event \
+    wait_fake_event_after_start \
         ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
-        "the chat model never started - no resident sidecar to reject against"
+        "the chat model never started - no resident sidecar to reject against" \
+        resident-chat
     # The chat sidecar must actually reach .ready (with a child) in the app's
     # state machine BEFORE the Images load: ``ensureServing`` only takes the
     # in-process ``/v1/models/load`` path when ``readyWithChild`` is true, i.e.
@@ -4599,8 +4714,10 @@ flow_resident_load_rejected() {
     press "$OUT/rlr-ig-readiness.json" Readiness.Action "$OUT/rlr-ig-start.json" \
         || die "Images Readiness.Action is not pressable - the load button is dead"
 
-    wait_fake_event ".event == \"server_start_rejected\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
-        "the fake never rejected the dedicated image sidecar"
+    wait_fake_event_after_start \
+        ".event == \"server_start_rejected\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
+        "the fake never rejected the dedicated image sidecar" \
+        resident-image
     if jq -e 'select(.event == "model_load")' "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
         die "Images incorrectly issued an in-process /v1/models/load"
     fi
@@ -4853,9 +4970,10 @@ flow_audio_readiness() {
         "$OUT/fake-events.jsonl" 0 "" "Speech after download-only action"
     press "$OUT/speech-downloaded.json" Readiness.Action "$OUT/speech-start.json" \
         || die "Speech Start is not pressable after download"
-    wait_fake_event \
+    wait_fake_event_after_start \
         '.event == "server_started" and .alias == "fake-qwen3-tts"' \
-        "Speech did not start after the explicit Start action"
+        "Speech did not start after the explicit Start action" \
+        speech
     local speech_loaded=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/speech-loaded.json"

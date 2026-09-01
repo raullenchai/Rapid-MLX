@@ -592,9 +592,9 @@ def test_cached_curated_tradeup_confirms_the_quickstart_memory_sheet():
     source = HARNESS.read_text()
     flow = source.split("flow_cached_curated_tradeup() {", 1)[1].split("\n}", 1)[0]
 
-    assert 'identifier == "Quickstart.Memory.LoadAnyway"' in flow
-    assert '"$AX_DRIVER" click-center "$APP_PID" Quickstart.Memory.LoadAnyway' in flow
-    assert 'identifier == "MemoryWarning.Confirm"' not in flow
+    assert "wait_fake_event_after_start" in flow
+    assert "Quickstart.Memory.Load" in flow
+    assert "Quickstart.Memory.LoadAnyway" in flow
 
 
 def test_cached_curated_tradeup_waits_for_health_and_bounded_ui_readiness():
@@ -946,15 +946,20 @@ def test_fresh_install_fixture_contains_the_real_starter():
 
 
 def test_start_model_waits_for_an_interactive_readiness_action():
-    """A mounted SwiftUI button can still reject an AX press while disabled."""
+    """Start waits for an interactive action and its actually selected alias."""
     source = HARNESS.read_text()
     helper = source.split("start_model() {", 1)[1].split("\n}", 1)[0]
     assert "wait_identifier_enabled Readiness.Action" in helper
     assert helper.index("wait_identifier_enabled Readiness.Action") < helper.index(
         'press "$OUT/readiness-start.json" Readiness.Action'
     )
-    assert 'identifier == "MemoryWarning.Confirm" and .enabled == true' in helper
-    assert '"$AX_DRIVER" click-center "$APP_PID" MemoryWarning.Confirm' in helper
+    assert "wait_fake_event_after_start" in helper
+    assert (
+        'selected_alias="$(element_field "$OUT/readiness-start.json" '
+        'ModelPickerBar.ModelMenu value)"'
+    ) in helper
+    assert r"and .alias == \"$selected_alias\"" in helper
+    assert r"and .alias == \"$FAKE_ALIAS\"" not in helper
 
     driver = DRIVER.read_text()
     click = driver.split('case "click-center":', 1)[1].split(
@@ -962,6 +967,315 @@ def test_start_model_waits_for_an_interactive_readiness_action():
     )[0]
     assert "kAXPositionAttribute" in click and "kAXSizeAttribute" in click
     assert ".leftMouseDown" in click and ".leftMouseUp" in click
+
+
+def test_start_model_witnesses_the_selected_download_alias(tmp_path):
+    """Fresh install starts the downloaded pick, not the persona's fallback."""
+    source = HARNESS.read_text()
+    helper = (
+        "start_model() {"
+        + source.split("start_model() {", 1)[1].split("\n}", 1)[0]
+        + "\n}"
+    )
+    capture = tmp_path / "predicate.txt"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            helper
+            + r"""
+set -euo pipefail
+OUT="$1"
+CAPTURE="$2"
+wait_identifier_enabled() { :; }
+element_field() {
+    if [[ "$2" == "Readiness.Action" ]]; then
+        printf 'Start\n'
+    else
+        printf 'lfm2.5-1b-4bit\n'
+    fi
+}
+press() { :; }
+wait_fake_event_after_start() { printf '%s\n' "$1" > "$CAPTURE"; }
+wait_send_idle() { :; }
+die() { printf '%s\n' "$*" >&2; exit 1; }
+start_model
+""",
+            "start-model-selected-alias",
+            str(tmp_path),
+            str(capture),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert capture.read_text().strip() == (
+        '.event == "server_started" and .alias == "lfm2.5-1b-4bit"'
+    )
+
+
+def test_direct_model_starts_follow_enabled_memory_confirmation_branches():
+    """Every explicit fake-sidecar start must tolerate real host pressure."""
+    source = HARNESS.read_text()
+    enabled = source.split("memory_confirmation_enabled() {", 1)[1].split("\n}", 1)[0]
+    confirm = source.split("confirm_memory_warning_from_tree() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert ".identifier == $id and .enabled == true" in enabled
+    assert 'click-center "$APP_PID" "$identifier"' in confirm
+    assert "|| return 1" in confirm
+
+    wait = source.split("wait_fake_event_after_start() {", 1)[1].split("\n}", 1)[0]
+    assert 'jq -e -s "any(.[]; $predicate)"' in wait
+    assert "follow_memory_confirmation_edge" in wait
+    assert "confirmation_signatures" in wait
+    assert "confirmation_attempts" in wait
+    assert wait.index("follow_memory_confirmation_edge") < wait.index('die "$what"')
+
+    cached = source.split("flow_cached_quickstart() {", 1)[1].split("\n}", 1)[0]
+    assert "wait_fake_event_after_start" in cached
+    assert "Quickstart.Memory.Load" in cached
+    assert "Quickstart.Memory.LoadAnyway" in cached
+
+    image = source.split("flow_image_generation() {", 1)[1].split("\n}", 1)[0]
+    assert "wait_fake_event_after_start" in image
+    assert r"and .alias == \"$FAKE_IMAGE_ALIAS\"" in image
+
+    resident = source.split("flow_resident_load_rejected() {", 1)[1].split("\n}", 1)[0]
+    assert resident.count("wait_fake_event_after_start") == 2
+    assert "resident-chat" in resident
+    assert "resident-image" in resident
+
+    audio = source.split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
+    assert "wait_fake_event_after_start" in audio
+    assert 'and .alias == "fake-qwen3-tts"' in audio
+
+
+def test_memory_confirmation_helper_handles_quickstart_revalidation(tmp_path):
+    """A tight confirmation may return as unsafe after live-memory revalidation."""
+    source = HARNESS.read_text()
+
+    def shell_function(name: str) -> str:
+        return (
+            name + "() {" + source.split(name + "() {", 1)[1].split("\n}", 1)[0] + "\n}"
+        )
+
+    helpers = "\n".join(
+        shell_function(name)
+        for name in (
+            "memory_confirmation_enabled",
+            "memory_confirmation_signature",
+            "confirm_memory_warning_from_tree",
+            "follow_memory_confirmation_edge",
+        )
+    )
+
+    driver = tmp_path / "driver.sh"
+    driver.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$3" >> "$CLICKS"\n'
+        '[[ "$3" != "MemoryWarning.Fail" ]] || exit 1\n'
+        "printf '{\"success\":true}\\n'\n"
+    )
+    driver.chmod(0o755)
+    tight = tmp_path / "tight.json"
+    unsafe = tmp_path / "unsafe.json"
+    tight.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {"identifier": "Quickstart.Memory.Load", "enabled": True}
+                    ]
+                }
+            }
+        )
+    )
+    unsafe.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "Quickstart.Memory.LoadAnyway",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    absent = tmp_path / "absent.json"
+    absent.write_text(json.dumps({"data": {"ui_elements": []}}))
+    main_tight = tmp_path / "main-tight.json"
+    main_unsafe = tmp_path / "main-unsafe.json"
+    main_tight.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "MemoryWarning.Confirm",
+                            "enabled": True,
+                            "label": "Load model",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    main_unsafe.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "MemoryWarning.Confirm",
+                            "enabled": True,
+                            "label": "Load anyway (risky)",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    main_unsafe_disabled = tmp_path / "main-unsafe-disabled.json"
+    main_unsafe_disabled.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "MemoryWarning.Confirm",
+                            "enabled": False,
+                            "label": "Load anyway (risky)",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    failed_delivery = tmp_path / "failed-delivery.json"
+    failed_delivery.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "identifier": "MemoryWarning.Fail",
+                            "enabled": True,
+                            "label": "Load model",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    evidence = tmp_path / "evidence.json"
+    clicks = tmp_path / "clicks.txt"
+    script = f"""
+set -euo pipefail
+AX_DRIVER="$1"
+APP_PID=42
+EVIDENCE="$7"
+export CLICKS="$9"
+log() {{ :; }}
+die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+{helpers}
+load_signature=""; load_polls=0; load_attempts=0
+anyway_signature=""; anyway_polls=0; anyway_attempts=0
+scan_quickstart() {{
+    follow_memory_confirmation_edge "$1" "$EVIDENCE" \\
+        "$load_signature" "$load_polls" "$load_attempts" Quickstart.Memory.Load
+    load_signature="$MEMORY_CONFIRMATION_SIGNATURE"
+    load_polls="$MEMORY_CONFIRMATION_POLLS"
+    load_attempts="$MEMORY_CONFIRMATION_ATTEMPTS"
+    follow_memory_confirmation_edge "$1" "$EVIDENCE" \\
+        "$anyway_signature" "$anyway_polls" "$anyway_attempts" Quickstart.Memory.LoadAnyway
+    anyway_signature="$MEMORY_CONFIRMATION_SIGNATURE"
+    anyway_polls="$MEMORY_CONFIRMATION_POLLS"
+    anyway_attempts="$MEMORY_CONFIRMATION_ATTEMPTS"
+}}
+scan_quickstart "$2"
+scan_quickstart "$2"
+scan_quickstart "$4"
+scan_quickstart "$3"
+scan_quickstart "$3"
+main_signature=""; main_polls=0; main_attempts=0
+scan_main() {{
+    follow_memory_confirmation_edge "$1" "$EVIDENCE" \\
+        "$main_signature" "$main_polls" "$main_attempts" MemoryWarning.Confirm
+    main_signature="$MEMORY_CONFIRMATION_SIGNATURE"
+    main_polls="$MEMORY_CONFIRMATION_POLLS"
+    main_attempts="$MEMORY_CONFIRMATION_ATTEMPTS"
+}}
+scan_main "$5"
+scan_main "$5"
+scan_main "$6"
+scan_main "$6"
+for _ in {{1..20}}; do scan_main "$6"; done
+# Disabling and re-enabling the same mounted semantic decision must not mint a
+# fresh delivery budget after the three-attempt cap has been consumed.
+scan_main "${{10}}"
+for _ in {{1..20}}; do scan_main "$6"; done
+fail_signature=""; fail_polls=0; fail_attempts=0
+scan_failure() {{
+    follow_memory_confirmation_edge "$1" "$EVIDENCE" \\
+        "$fail_signature" "$fail_polls" "$fail_attempts" MemoryWarning.Fail
+    fail_signature="$MEMORY_CONFIRMATION_SIGNATURE"
+    fail_polls="$MEMORY_CONFIRMATION_POLLS"
+    fail_attempts="$MEMORY_CONFIRMATION_ATTEMPTS"
+}}
+for _ in {{1..20}}; do scan_failure "$8"; done
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            script,
+            "confirmation-contract",
+            str(driver),
+            str(tight),
+            str(unsafe),
+            str(absent),
+            str(main_tight),
+            str(main_unsafe),
+            str(evidence),
+            str(failed_delivery),
+            str(clicks),
+            str(main_unsafe_disabled),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    recorded = clicks.read_text().splitlines()
+    assert recorded[:2] == [
+        "Quickstart.Memory.Load",
+        "Quickstart.Memory.LoadAnyway",
+    ]
+    # Tight is clicked once, then the semantically new unsafe presentation
+    # gets at most three spaced delivery attempts despite remaining visible or
+    # temporarily disabled before it becomes interactive again.
+    assert recorded[2:6] == ["MemoryWarning.Confirm"] * 4
+    # A failing driver consumes the same spaced budget instead of retrying on
+    # every 250 ms poll forever.
+    assert recorded[6:] == ["MemoryWarning.Fail"] * 3
+
+
+def test_ready_wait_confirms_memory_warning_after_session_restore():
+    """Automatic restore can show the same sheet without calling start_model."""
+    source = HARNESS.read_text()
+    wait = source.split("wait_send_idle() {", 1)[1].split("\n}", 1)[0]
+    assert "follow_memory_confirmation_edge" in wait
+    assert "memory_confirmation_signature" in wait
+    assert "memory_confirmation_attempts" in wait
+    assert 'MEMORY_CONFIRMATION_VISIBLE" == 1' in wait
+    assert wait.index("follow_memory_confirmation_edge") < wait.index(
+        'identifier == "ChatView.SendOrStopButton"'
+    )
+    assert "continue" in wait
 
 
 def test_image_inflight_baseline_uses_an_event_backed_warmup_phase():
