@@ -697,6 +697,9 @@ final class ServerManager {
     /// where an auto-start or model selection could otherwise race a second
     /// model into memory.
     private var communityBenchmarkReservations: Set<UUID> = []
+    private var communityBenchmarkWaiters: [
+        (reservation: UUID, continuation: CheckedContinuation<UUID, Never>)
+    ] = []
 
     private var communityBenchmarkReserved: Bool {
         !communityBenchmarkReservations.isEmpty
@@ -3188,8 +3191,17 @@ final class ServerManager {
     /// allowed to finish atomically, then is stopped here; starts suspended in
     /// pre-spawn work observe ``communityBenchmarkReserved`` before launch.
     func prepareForCommunityBenchmark() async -> UUID {
+        // A second view instance can appear while the first is still reaping
+        // its cancelled subprocess. Serialize benchmark ownership so two
+        // heavyweight local runners never overlap in unified memory.
         let reservation = UUID()
-        communityBenchmarkReservations.insert(reservation)
+        if communityBenchmarkReserved {
+            _ = await withCheckedContinuation { continuation in
+                communityBenchmarkWaiters.append((reservation, continuation))
+            }
+        } else {
+            communityBenchmarkReservations.insert(reservation)
+        }
         cancelAutoRespawn()
         cancelRuntimeProbe()
         while isOperating {
@@ -3203,7 +3215,12 @@ final class ServerManager {
     /// exited. The prior model is intentionally not auto-restored in the
     /// internal beta; the user can start it again explicitly.
     func finishCommunityBenchmark(_ reservation: UUID) {
-        communityBenchmarkReservations.remove(reservation)
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+        if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {
+            let next = communityBenchmarkWaiters.removeFirst()
+            communityBenchmarkReservations.insert(next.reservation)
+            next.continuation.resume(returning: next.reservation)
+        }
     }
 
     /// Shared expected-stop path. Model replacement keeps the previous

@@ -24,7 +24,11 @@ def benchmark_command(args) -> int:
         value = plan_for_alias(args.benchmark_model)
     elif action == "run":
         try:
-            value = run_local(args.benchmark_model, archive=archive)
+            value = run_local(
+                args.benchmark_model,
+                archive=archive,
+                inherit_process_group=getattr(args, "inherit_process_group", False),
+            )
         except LocalBenchmarkError as exc:
             if args.json:
                 print(

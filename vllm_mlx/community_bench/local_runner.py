@@ -55,7 +55,9 @@ def _peak_memory_mib(base_url: str) -> int:
         return 0
 
 
-def _run_image(alias: str) -> list[dict[str, Any]]:
+def _run_image(
+    alias: str, *, isolate_process_group: bool = True
+) -> list[dict[str, Any]]:
     from vllm_mlx.bench._server import serve
 
     workload = registered_workload("image_generation")
@@ -71,7 +73,11 @@ def _run_image(alias: str) -> list[dict[str, Any]]:
         "seed": case["seed"],
     }
     measurements: list[dict[str, Any]] = []
-    with serve(alias, boot_timeout_s=600) as server:
+    with serve(
+        alias,
+        boot_timeout_s=600,
+        isolate_process_group=isolate_process_group,
+    ) as server:
         endpoint = f"{server['base_url']}/images/generations"
         total = case["warmup_rounds"] + case["measured_rounds"]
         for index in range(total):
@@ -100,7 +106,9 @@ def _run_image(alias: str) -> list[dict[str, Any]]:
     return measurements
 
 
-def _run_video(alias: str) -> list[dict[str, Any]]:
+def _run_video(
+    alias: str, *, isolate_process_group: bool = True
+) -> list[dict[str, Any]]:
     from vllm_mlx.bench._server import serve
 
     workload = registered_workload("video_generation")
@@ -120,6 +128,7 @@ def _run_video(alias: str) -> list[dict[str, Any]]:
         # The registered protocol is a 20-step Wan workload. Wan otherwise
         # delegates to a backend default that may change between releases.
         extra_env={"RAPID_MLX_WAN_STEPS": str(case["steps"])},
+        isolate_process_group=isolate_process_group,
     ) as server:
         started = time.perf_counter()
         response = requests.post(
@@ -221,7 +230,12 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
     return measurements, context_length
 
 
-def run_local(alias: str, *, archive: LocalRunArchive | None = None) -> dict[str, Any]:
+def run_local(
+    alias: str,
+    *,
+    archive: LocalRunArchive | None = None,
+    inherit_process_group: bool = False,
+) -> dict[str, Any]:
     """Run a registered protocol, validate it, and save it locally only."""
 
     plan = plan_for_alias(alias)
@@ -239,9 +253,13 @@ def run_local(alias: str, *, archive: LocalRunArchive | None = None) -> dict[str
                 _text_measurements(model["repo_id"])
             )
         elif task_type == "image_generation":
-            measurements = _run_image(alias)
+            measurements = _run_image(
+                alias, isolate_process_group=not inherit_process_group
+            )
         elif task_type == "video_generation":
-            measurements = _run_video(alias)
+            measurements = _run_video(
+                alias, isolate_process_group=not inherit_process_group
+            )
         else:
             raise ValueError(f"unsupported benchmark task {task_type!r}")
     except Exception as exc:

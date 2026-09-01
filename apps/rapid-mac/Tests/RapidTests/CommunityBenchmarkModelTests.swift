@@ -77,6 +77,16 @@ struct CommunityBenchmarkModelTests {
         #expect(model.memoryFit == "does_not_fit")
     }
 
+    @Test("Desktop keeps benchmark servers in its owned process group")
+    func benchmarkRunTopologyFlag() {
+        #expect(
+            CommunityBenchmarkCommand.benchmarkRunArguments(alias: "flux2-klein-4b") == [
+                "benchmark", "run", "flux2-klein-4b", "--json",
+                "--inherit-process-group",
+            ]
+        )
+    }
+
     @Test("Cancelling a benchmark reaps its descendant process group")
     func cancellationReapsDescendant() async throws {
         let root = FileManager.default.temporaryDirectory

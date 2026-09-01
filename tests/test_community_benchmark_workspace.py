@@ -189,7 +189,7 @@ def test_failed_attempt_is_archived_without_exception_text(
     monkeypatch.setattr(
         local_runner,
         "_run_image",
-        lambda alias: (_ for _ in ()).throw(MemoryError("secret path")),
+        lambda alias, **kwargs: (_ for _ in ()).throw(MemoryError("secret path")),
     )
 
     with pytest.raises(local_runner.LocalBenchmarkError) as failure:
@@ -216,7 +216,9 @@ def test_machine_probe_failure_is_archived_without_traceback_or_fake_identity(
     monkeypatch.setattr(
         local_runner,
         "_run_image",
-        lambda alias: pytest.fail("executor must not start after probe failure"),
+        lambda alias, **kwargs: pytest.fail(
+            "executor must not start after probe failure"
+        ),
     )
 
     with pytest.raises(
@@ -253,6 +255,7 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         assert alias == "example-image"
+        assert kwargs["isolate_process_group"] is False
         yield {"base_url": "http://local/v1"}
 
     def post(url: str, *, json: dict, timeout: float) -> _Response:
@@ -269,7 +272,9 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     timings = iter((0.0, 1.0, 2.0, 4.5))
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
 
-    run = local_runner.run_local("example-image", archive=archive)
+    run = local_runner.run_local(
+        "example-image", archive=archive, inherit_process_group=True
+    )
 
     assert len(calls) == 2  # one warmup plus one measured round
     assert calls[0]["url"] == "http://local/v1/images/generations"
@@ -494,7 +499,7 @@ def test_bench_server_scopes_protocol_environment_to_child(
 
     monkeypatch.setattr(_server.subprocess, "Popen", popen)
     monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
-    monkeypatch.setattr(_server, "_terminate", lambda *args: None)
+    monkeypatch.setattr(_server, "_terminate", lambda *args, **kwargs: None)
     monkeypatch.delenv("RAPID_MLX_WAN_STEPS", raising=False)
 
     with _server.serve(
@@ -506,3 +511,38 @@ def test_bench_server_scopes_protocol_environment_to_child(
 
     assert observed["RAPID_MLX_WAN_STEPS"] == "20"
     assert "RAPID_MLX_WAN_STEPS" not in os.environ
+
+
+def test_bench_server_can_inherit_supervisor_process_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed: dict[str, object] = {}
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def popen(*args, **kwargs):
+        observed["preexec_fn"] = kwargs["preexec_fn"]
+        return Process()
+
+    def terminate(*args, **kwargs):
+        observed["isolated_process_group"] = kwargs["isolated_process_group"]
+
+    monkeypatch.setattr(_server.subprocess, "Popen", popen)
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    monkeypatch.setattr(_server, "_terminate", terminate)
+
+    with _server.serve(
+        "flux2-klein-4b",
+        log_path=tmp_path / "server.log",
+        isolate_process_group=False,
+    ):
+        pass
+
+    assert observed == {
+        "preexec_fn": None,
+        "isolated_process_group": False,
+    }

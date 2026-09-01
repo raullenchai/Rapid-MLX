@@ -11515,6 +11515,11 @@ Examples:
     )
     community_run.add_argument("benchmark_model")
     community_run.add_argument("--json", action="store_true")
+    community_run.add_argument(
+        "--inherit-process-group",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     community_results = community_subparsers.add_parser(
         "results", help="List locally saved benchmark results"
     )

@@ -32,7 +32,9 @@ records rather than parse legacy submission JSON.
 - Desktop stops its active inference server before benchmarking so two large
   model processes cannot compete for unified memory. An owner-scoped lifecycle
   reservation remains active until cancellation has terminated and reaped the
-  benchmark CLI's entire process group, including its child server.
+  benchmark CLI's entire process group, including its child server. Desktop's
+  hidden supervisor flag keeps that server in the owned group; navigation away
+  cancels the run, and a replacement view waits for the prior lease to drain.
 - A completed run always contains its atomic `MachineObservation`. If the
   privacy-allowlisted machine probe itself fails, the local failed attempt uses
   `machine_probe_failed` and omits `machine` rather than fabricating identity;

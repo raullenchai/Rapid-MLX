@@ -209,6 +209,13 @@ enum CommunityBenchmarkCommand {
         var errorDescription: String? { message }
     }
 
+    static func benchmarkRunArguments(alias: String) -> [String] {
+        [
+            "benchmark", "run", alias, "--json",
+            "--inherit-process-group",
+        ]
+    }
+
     static func run(binary: URL, arguments: [String]) async throws -> Data {
         let box = BenchmarkProcessBox()
         return try await withTaskCancellationHandler {
@@ -290,6 +297,13 @@ struct CommunityBenchmarkView: View {
             if selectedAlias.isEmpty { selectedAlias = models.first?.entry.alias ?? "" }
             await refreshBenchmarkCatalog()
             await refreshResults()
+        }
+        .onDisappear {
+            // `runTask` is intentionally unstructured so the button owns it;
+            // navigation must explicitly cancel it before the only Stop
+            // control disappears. ServerManager keeps the lease until the
+            // subprocess tree has actually been reaped.
+            runTask?.cancel()
         }
     }
 
@@ -414,7 +428,9 @@ struct CommunityBenchmarkView: View {
             do {
                 _ = try await CommunityBenchmarkCommand.run(
                     binary: binary,
-                    arguments: ["benchmark", "run", selected.entry.alias, "--json"]
+                    arguments: CommunityBenchmarkCommand.benchmarkRunArguments(
+                        alias: selected.entry.alias
+                    )
                 )
                 await refreshResults()
             } catch is CancellationError {

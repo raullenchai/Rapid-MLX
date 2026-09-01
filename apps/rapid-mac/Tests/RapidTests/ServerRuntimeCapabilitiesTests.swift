@@ -231,14 +231,22 @@ struct ServerRuntimeCapabilitiesTests {
 
         await witness.waitUntilEntered()
         let firstReservation = await manager.prepareForCommunityBenchmark()
-        let secondReservation = await manager.prepareForCommunityBenchmark()
+        var secondAcquired = false
+        let secondOwner = Task { @MainActor in
+            let reservation = await manager.prepareForCommunityBenchmark()
+            secondAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
 
         #expect(await probe.value == nil)
         #expect(await witness.wasCancelled)
+        #expect(!secondAcquired)
         #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
         #expect(await manager.ensureServing(alias: "qwen3.5-4b") == false)
 
         manager.finishCommunityBenchmark(firstReservation)
+        let secondReservation = await secondOwner.value
         #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
         manager.finishCommunityBenchmark(secondReservation)
         manager.runtimeCapabilitiesProvider = { _ in .allKnown }
