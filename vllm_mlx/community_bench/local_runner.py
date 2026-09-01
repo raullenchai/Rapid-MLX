@@ -9,6 +9,9 @@ import binascii
 import concurrent.futures
 import io
 import math
+import multiprocessing
+import os
+import signal
 import tempfile
 import time
 from typing import Any
@@ -23,6 +26,7 @@ from .workspace import LocalRunArchive, plan_for_alias
 _VIDEO_JOB_TIMEOUT_S = 3600.0
 _VIDEO_POLL_INTERVAL_S = 1.0
 _VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S = 300.0
+_VIDEO_ARTIFACT_PROBE_TIMEOUT_S = 120.0
 _MAX_VIDEO_ARTIFACT_BYTES = 1024 * 1024 * 1024
 
 
@@ -104,7 +108,7 @@ def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -
     return len(data)
 
 
-def _probe_video_artifact(path: str) -> tuple[int, int, int, float]:
+def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
     try:
         import imageio.v2 as imageio
     except ImportError as exc:  # pragma: no cover - video extra owns this dependency
@@ -128,6 +132,82 @@ def _probe_video_artifact(path: str) -> tuple[int, int, int, float]:
             raise
         raise RuntimeError("video benchmark returned an invalid MP4 artifact") from exc
     return int(size[0]), int(size[1]), int(frames), fps
+
+
+def _video_probe_worker(path: str, sender) -> None:
+    """Probe in its own process group so ffmpeg descendants are terminable."""
+
+    try:
+        os.setsid()
+        sender.send(("ok", _probe_video_artifact_unbounded(path)))
+    except BaseException as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, RuntimeError)
+            else "video benchmark returned an invalid MP4 artifact"
+        )
+        try:
+            sender.send(("error", message))
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        sender.close()
+
+
+def _terminate_video_probe(process: multiprocessing.Process) -> None:
+    pid = process.pid
+    if pid is None:
+        return
+    try:
+        owns_process_group = os.getpgid(pid) == pid
+    except ProcessLookupError:
+        owns_process_group = False
+    if process.is_alive():
+        if owns_process_group:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            process.terminate()
+        process.join(timeout=1)
+    if process.is_alive():
+        if owns_process_group:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
+        process.join(timeout=1)
+
+
+def _probe_video_artifact(
+    path: str, *, timeout_s: float = _VIDEO_ARTIFACT_PROBE_TIMEOUT_S
+) -> tuple[int, int, int, float]:
+    """Probe an MP4 behind a hard deadline and reap the whole probe group."""
+
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_video_probe_worker, args=(path, sender))
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout_s):
+            _terminate_video_probe(process)
+            raise TimeoutError("video artifact probe exceeded its hard deadline")
+        try:
+            status, payload = receiver.recv()
+        except EOFError as exc:
+            raise RuntimeError("video artifact probe exited without a result") from exc
+    finally:
+        receiver.close()
+        process.join(timeout=1)
+        if process.is_alive():
+            _terminate_video_probe(process)
+    if status != "ok":
+        raise RuntimeError(str(payload))
+    return tuple(payload)
 
 
 def _validated_video_artifact(

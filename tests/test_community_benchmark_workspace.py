@@ -772,6 +772,24 @@ def test_video_artifact_is_downloaded_and_probed(
     assert content_response.closed is True
 
 
+def test_video_artifact_probe_has_a_hard_deadline(tmp_path: Path) -> None:
+    artifact = tmp_path / "untrusted.mp4"
+    artifact.write_bytes(b"not-an-mp4")
+
+    with pytest.raises(TimeoutError, match="probe exceeded its hard deadline"):
+        local_runner._probe_video_artifact(str(artifact), timeout_s=0)
+
+
+def test_video_artifact_probe_returns_worker_validation_error(tmp_path: Path) -> None:
+    artifact = tmp_path / "corrupt.mp4"
+    artifact.write_bytes(b"not-an-mp4")
+
+    with pytest.raises(
+        RuntimeError, match=r"invalid MP4 artifact|requires rapid-mlx\[video\]"
+    ):
+        local_runner._probe_video_artifact(str(artifact), timeout_s=10)
+
+
 @pytest.mark.parametrize("mode", ["empty", "corrupt"])
 def test_video_artifact_rejects_missing_or_corrupt_content(
     monkeypatch: pytest.MonkeyPatch, mode: str
