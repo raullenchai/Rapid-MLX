@@ -173,7 +173,11 @@ final class GoldenStage {
         // IMP instead of relying on the scalar riding home in a pointer.
         typealias PressIMP = @convention(c) (NSObject, Selector) -> Bool
         let imp = unsafeBitCast(node.method(for: sel), to: PressIMP.self)
-        _ = imp(node, sel)
+        // A rejected action reported as success would surface later as an
+        // unrelated wait timeout; fail at the press instead.
+        guard imp(node, sel) else {
+            throw StageError(description: "press: \(identifier) rejected the press action")
+        }
         Self.turnRunLoop()
     }
 
@@ -420,11 +424,61 @@ final class GoldenStage {
         }
         if text.isEmpty { text = string(obj, "accessibilityLabel") }
         if text.isEmpty { text = string(obj, "accessibilityTitle") }
-        if !id.isEmpty || !text.isEmpty {
+        // Role-only nodes matter too: a markdown table's AXRow/AXCell
+        // containers carry structure without text, and the golden flows
+        // assert that structure survives rendering.
+        if !id.isEmpty || !text.isEmpty || !role.isEmpty {
             out.append(Node(id: id, role: role, text: text))
         }
         for child in branches(obj, visited: &visited) {
             walk(child, into: &out, visited: &visited)
         }
+    }
+}
+
+extension GoldenStage {
+    /// Row/column structure of the first table-like AX container on the
+    /// stage, resolved through the same `accessibilityRows` /
+    /// `accessibilityColumns` queries an assistive client makes. In-process,
+    /// a SwiftUI `Table` exposes its row and column OBJECTS but resolves
+    /// per-cell values only through the real AX server's parameterized cell
+    /// queries, so structure — not cell text — is what a `swift test`
+    /// journey can assert here.
+    func tableStructure(withRole role: String = "AXOutline") -> (rows: Int, columns: Int)? {
+        guard let node = firstRawNode(withRole: role) else { return nil }
+        return (
+            rows: Self.axElementCount(node, "accessibilityRows"),
+            columns: Self.axElementCount(node, "accessibilityColumns")
+        )
+    }
+
+    private func firstRawNode(withRole role: String) -> NSObject? {
+        for window in stageWindows() {
+            if let hit = Self.findByRole(window, role: role) { return hit }
+        }
+        return nil
+    }
+
+    private static func axElementCount(_ obj: NSObject, _ selector: String) -> Int {
+        let sel = NSSelectorFromString(selector)
+        guard obj.responds(to: sel), let result = obj.perform(sel) else { return 0 }
+        return ((result.takeUnretainedValue() as? [NSObject]) ?? []).count
+    }
+
+    private static func findByRole(_ obj: NSObject, role target: String) -> NSObject? {
+        var visited: Set<ObjectIdentifier> = [ObjectIdentifier(obj)]
+        return findByRole(obj, role: target, visited: &visited)
+    }
+
+    private static func findByRole(
+        _ obj: NSObject,
+        role target: String,
+        visited: inout Set<ObjectIdentifier>
+    ) -> NSObject? {
+        if string(obj, "accessibilityRole") == target { return obj }
+        for child in branches(obj, visited: &visited) {
+            if let hit = findByRole(child, role: target, visited: &visited) { return hit }
+        }
+        return nil
     }
 }

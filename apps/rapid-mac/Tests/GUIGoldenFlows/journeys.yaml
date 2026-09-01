@@ -91,7 +91,7 @@ journeys:
   - name: restored-tools
     group: chat
     risk: medium
-    driver: ax
+    driver: swift
     ci_tier: pr
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/Tools/]
@@ -99,7 +99,7 @@ journeys:
   - name: tool-loop-budget
     group: chat
     risk: medium
-    driver: ax
+    driver: swift
     ci_tier: pr
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/Tools/]
@@ -115,19 +115,21 @@ journeys:
   - name: math-rendering
     group: chat
     risk: medium
-    driver: ax
+    driver: swift
     ci_tier: pr
     fixtures: [fake-sidecar, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/, apps/rapid-mac/Sources/Rapid/UI/Markdown/]
     owns_baseline: false
+  # slow-stream-stop no longer owns a structural baseline: its in-process
+  # suite asserts the stopped states directly instead of snapshotting them.
   - name: slow-stream-stop
     group: chat
     risk: high
-    driver: ax
+    driver: swift
     ci_tier: pr
     fixtures: [fake-sidecar, slow-stream, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Chat/]
-    owns_baseline: true
+    owns_baseline: false
   - name: model-crash-recovery
     group: app-lifecycle
     risk: high

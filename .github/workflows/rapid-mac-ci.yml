@@ -550,30 +550,6 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-multimodal-attachments
 
-      - name: 'Golden flow: restored-tools'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow restored-tools
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/restored-tools
-
-      - name: 'Golden flow: tool-loop-budget'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow tool-loop-budget
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/tool-loop-budget
-
-      - name: 'Golden flow: math-rendering'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow math-rendering
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/math-rendering
-
-      - name: 'Golden flow: slow-stream-stop'
-        continue-on-error: true
-        run: ./scripts/gui-golden-flows.sh --flow slow-stream-stop
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/slow-stream-stop
-
       - name: 'Golden flow: model-crash-recovery'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow model-crash-recovery
@@ -740,7 +716,7 @@ jobs:
           fi
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in fresh-install settings-persistence settings-mtp chat-restore slow-stream-stop model-crash-recovery update-state update-busy campaign-banner image-generation audio-readiness launch-integrations; do
+          for flow in fresh-install settings-persistence settings-mtp chat-restore model-crash-recovery update-state update-busy campaign-banner image-generation audio-readiness launch-integrations; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true

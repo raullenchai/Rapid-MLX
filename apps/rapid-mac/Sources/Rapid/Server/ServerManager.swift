@@ -1094,11 +1094,13 @@ final class ServerManager {
         testingState: ServerState,
         binaryPath: URL? = nil,
         residency: ModelResidencySnapshot = .empty,
+        activePort: Int = PortSweep.defaultPort,
         activeBearer: String? = nil,
         sessionDefaults: UserDefaults? = nil,
         bearerCredentialStore: (any EmbeddedBearerCredentialStoring)? = nil
     ) {
         self.state = testingState
+        self.activePort = activePort
         self.activeBearer = activeBearer
         self.binaryPath = binaryPath
         self.residency = residency

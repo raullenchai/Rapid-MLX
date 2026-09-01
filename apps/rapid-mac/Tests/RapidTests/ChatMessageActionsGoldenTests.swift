@@ -9,9 +9,9 @@ import Testing
 /// (`gui-golden-flows.sh`) into `swift test`: every inline message action
 /// must produce its advertised result. The real ``ChatView`` is mounted on
 /// a ``GoldenStage`` and driven through the same accessibility identifiers
-/// the out-of-process flow used; the streaming backend is a recording SSE
-/// fake standing in for the fake sidecar, so the "a request actually left
-/// the process" assertions keep an independent witness.
+/// the out-of-process flow used; the streaming backend is the shared
+/// ``GoldenChatFake``, so the "a request actually left the process"
+/// assertions keep an independent witness.
 ///
 /// Journey inventory: `Tests/GUIGoldenFlows/journeys.yaml` lists this as
 /// `driver: swift`; the GUI coverage contract maps that driver to this
@@ -20,215 +20,23 @@ import Testing
 @Suite("Golden journey: message-actions", .serialized)
 struct ChatMessageActionsGoldenTests {
 
-    // MARK: - Recording SSE fake (in-process fake sidecar)
-
-    /// Streams a deterministic multi-chunk assistant reply for every chat
-    /// completion request and records each request body, mirroring the fake
-    /// sidecar's `chat_request` event log that the bash flow counted.
-    final class RecordingSSEProtocol: URLProtocol, @unchecked Sendable {
-        private static let lock = NSLock()
-        nonisolated(unsafe) private static var bodies: [Data] = []
-
-        /// Chunked mid-sentence like the fake sidecar's CONTENT_CHUNKS so
-        /// the transcript assertions ("deterministic content") stay
-        /// word-for-word compatible with the bash journey.
-        static let replyChunks = [
-            "Hello", " from", " the", " fake", " rapid-mlx", " mock.",
-            " I", " return", " deterministic", " content", " so", " the",
-            " golden", " journey", " has", " something", " to", " assert", " on.",
-        ]
-
-        /// The fake sidecar shapes its answer by prompt keywords; mirror the
-        /// one shape this suite needs: `shape:long` yields an answer taller
-        /// than the stage viewport so scroll journeys have somewhere to go.
-        static let longReplyChunks: [String] =
-            (1...48).map { paragraph in
-                "Paragraph \(paragraph) of the long settled answer that "
-                    + "overflows the stage viewport.\n\n"
-            } + ["END-OF-LONG-ANSWER"]
-
-        private static func chunks(forPromptIn body: Data) -> [String] {
-            guard
-                let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-                let messages = object["messages"] as? [[String: Any]],
-                let prompt = messages.last(where: { ($0["role"] as? String) == "user" })?["content"] as? String
-            else { return replyChunks }
-            return prompt.contains("shape:long") ? longReplyChunks : replyChunks
-        }
-
-        static func reset() {
-            lock.lock()
-            bodies = []
-            lock.unlock()
-        }
-
-        static func recordedBodies() -> [Data] {
-            lock.lock()
-            defer { lock.unlock() }
-            return bodies
-        }
-
-        static func recordedPrompts() -> [String] {
-            recordedBodies().compactMap { body in
-                guard
-                    let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-                    let messages = object["messages"] as? [[String: Any]]
-                else { return nil }
-                return messages.last { ($0["role"] as? String) == "user" }
-                    .flatMap { $0["content"] as? String }
-            }
-        }
-
-        static func session() -> URLSession {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [RecordingSSEProtocol.self]
-            return URLSession(configuration: configuration)
-        }
-
-        override class func canInit(with request: URLRequest) -> Bool { true }
-        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-        /// URLSession surfaces an upload body as either `httpBody` or a
-        /// stream depending on how the request was built; missing one form
-        /// would silently drop the "a request actually left the process"
-        /// witness for those requests.
-        private func requestBody() -> Data? {
-            if let body = request.httpBody { return body }
-            guard let stream = request.httpBodyStream else { return nil }
-            stream.open()
-            defer { stream.close() }
-            var body = Data()
-            let bufferSize = 64 * 1024
-            var buffer = [UInt8](repeating: 0, count: bufferSize)
-            while stream.hasBytesAvailable {
-                let read = stream.read(&buffer, maxLength: bufferSize)
-                guard read > 0 else { break }
-                body.append(buffer, count: read)
-            }
-            return body
-        }
-
-        override func startLoading() {
-            var chunks = Self.replyChunks
-            if let body = requestBody() {
-                Self.lock.lock()
-                Self.bodies.append(body)
-                Self.lock.unlock()
-                chunks = Self.chunks(forPromptIn: body)
-            }
-
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "text/event-stream"]
-            )!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            for chunk in chunks {
-                let payload: [String: Any] = [
-                    "choices": [["delta": ["content": chunk], "finish_reason": NSNull()]]
-                ]
-                let json = try! JSONSerialization.data(withJSONObject: payload)
-                client?.urlProtocol(self, didLoad: Data("data: ".utf8) + json + Data("\n\n".utf8))
-            }
-            let finish: [String: Any] = [
-                "choices": [["delta": [String: Any](), "finish_reason": "stop"]]
-            ]
-            let finishJSON = try! JSONSerialization.data(withJSONObject: finish)
-            client?.urlProtocol(self, didLoad: Data("data: ".utf8) + finishJSON + Data("\n\n".utf8))
-            client?.urlProtocol(self, didLoad: Data("data: [DONE]\n\n".utf8))
-            client?.urlProtocolDidFinishLoading(self)
-        }
-
-        override func stopLoading() {}
-    }
-
-    // MARK: - Stage assembly
-
-    static let alias = "fake-alias"
-
-    @MainActor
-    struct Mounted {
-        let stage: GoldenStage
-        let chat: ChatViewModel
-        let server: ServerManager
-    }
-
-    /// Mount the real chat surface the way ``ContentView`` hosts it, with
-    /// the smallest honest dependency set: a ready fake server, an SSE
-    /// recording client, and throwaway stores. No conversation persists.
-    static func mountChatSurface() -> Mounted {
-        RecordingSSEProtocol.reset()
-        let server = ServerManager(testingState: .ready(alias: alias))
-        let chat = ChatViewModel(
-            client: ChatStreamClient(
-                baseURL: URL(string: "fake://golden-message-actions")!,
-                session: RecordingSSEProtocol.session()
-            ),
-            server: server,
-            persistsConversations: false
-        )
-        let downloads = DownloadManager()
-        let quickstart = QuickstartCoordinator()
-
-        let view = ChatView(
-            viewModel: chat,
-            server: server,
-            alias: .constant(alias),
-            readiness: .ready(alias: alias)
-        )
-        .environment(downloads)
-        .environment(quickstart)
-
-        let stage = GoldenStage(view)
-        return Mounted(stage: stage, chat: chat, server: server)
-    }
-
-    /// `send_prompt` from the bash harness: type into the composer via AX
-    /// set-value, press send, then require BOTH the drained composer and
-    /// the recorded request — the composer clearing is the app's story
-    /// about itself; the recorded body is the independent witness that a
-    /// request actually left the process.
-    static func sendPrompt(_ prompt: String, on stage: GoldenStage) async throws {
-        let requestsBefore = RecordingSSEProtocol.recordedBodies().count
-        try stage.setValue(prompt, for: "rapid.chat.compose")
-        try stage.press("ChatView.SendOrStopButton")
-        try await stage.wait(for: "composer to drain and the request to be recorded") {
-            stage.value(of: "rapid.chat.compose") == ""
-                && RecordingSSEProtocol.recordedBodies().count > requestsBefore
-        }
-    }
-
-    /// `wait_send_idle` from the bash harness: the drained text can land a
-    /// beat before the stream formally completes, and several message
-    /// actions (Edit, Retry) are disabled while streaming — a press on a
-    /// disabled control no-ops silently. The send button relabelling back
-    /// from "Stop generating" is the AX-visible idle signal.
-    static func waitForSendIdle(on stage: GoldenStage) async throws {
-        try await stage.wait(for: "composer to settle into a ready, non-streaming state") {
-            stage.tree().contains {
-                $0.id == "ChatView.SendOrStopButton" && $0.text == "Send message"
-            }
-        }
-    }
-
-    static func waitForSettledReply(on stage: GoldenStage) async throws {
-        try await stage.waitForText("deterministic content")
+    static func waitForSettledReply(on surface: GoldenChatSurface) async throws {
+        try await surface.stage.waitForText("deterministic content")
         // The reply streams in many chunks; settle on the final words so
         // later assertions see the finished turn, not a partial one.
-        try await stage.waitForText("to assert on.")
-        try await Self.waitForSendIdle(on: stage)
+        try await surface.stage.waitForText("to assert on.")
+        try await surface.waitForSendIdle()
     }
 
     // MARK: - The journey
 
     @Test("Every inline message action produces its advertised result")
     func messageActionsJourney() async throws {
-        let mounted = Self.mountChatSurface()
-        let stage = mounted.stage
+        let surface = GoldenChatSurface.mount()
+        let stage = surface.stage
 
-        try await Self.sendPrompt("original message action prompt", on: stage)
-        try await Self.waitForSettledReply(on: stage)
+        try await surface.sendPrompt("original message action prompt")
+        try await Self.waitForSettledReply(on: surface)
 
         // Discover the per-message action identifiers from the live tree,
         // exactly as the bash flow did — no test-only entry points.
@@ -293,17 +101,17 @@ struct ChatMessageActionsGoldenTests {
         // beat after Cancel; give it that beat so the assertion can catch it.
         try await Task.sleep(nanoseconds: 300_000_000)
         #expect(
-            !RecordingSSEProtocol.recordedPrompts().contains { $0.contains("cancelled edit must not send") },
+            !surface.fake.recordedPrompts().contains { $0.contains("cancelled edit must not send") },
             "cancelling a message edit sent the draft"
         )
 
         // Retry sends a replacement request.
-        let requestsBeforeRetry = RecordingSSEProtocol.recordedBodies().count
+        let requestsBeforeRetry = surface.fake.recordedBodies().count
         try stage.press(retryID)
         try await stage.wait(for: "replacement request after Retry") {
-            RecordingSSEProtocol.recordedBodies().count > requestsBeforeRetry
+            surface.fake.recordedBodies().count > requestsBeforeRetry
         }
-        try await Self.waitForSettledReply(on: stage)
+        try await Self.waitForSettledReply(on: surface)
 
         // Edit, then save: the edited prompt replaces the turn and sends.
         guard let editAfterRetry = stage.identifier(withPrefix: "ChatView.Message.Edit.") else {
@@ -319,24 +127,24 @@ struct ChatMessageActionsGoldenTests {
         )
         try stage.press("ChatView.Message.SaveEdit.\(saveSuffix)")
         try await stage.wait(for: "the edited prompt to be sent") {
-            RecordingSSEProtocol.recordedPrompts().contains("saved edited message prompt")
+            surface.fake.recordedPrompts().contains("saved edited message prompt")
         }
-        try await Self.waitForSettledReply(on: stage)
+        try await Self.waitForSettledReply(on: surface)
         #expect(stage.treeText().contains("saved edited message prompt"))
     }
 
     @Test("Jump to latest returns a settled transcript to its tail")
     func jumpToLatestOnSettledTranscript() async throws {
-        let mounted = Self.mountChatSurface()
-        let stage = mounted.stage
+        let surface = GoldenChatSurface.mount()
+        let stage = surface.stage
 
         // #1904 regression shape: a long, fully settled answer, moved away
         // from its tail. Jump to latest used to re-pin the follow flag but
         // leave the transcript physically scrolled up, because nothing was
         // streaming and no document-frame change would ever fire again.
-        try await Self.sendPrompt("shape:long finished answer for jump-to-bottom", on: stage)
+        try await surface.sendPrompt("shape:long finished answer for jump-to-bottom")
         try await stage.waitForText("END-OF-LONG-ANSWER")
-        try await Self.waitForSendIdle(on: stage)
+        try await surface.waitForSendIdle()
         try await stage.wait(for: "the settled transcript to rest at its tail") {
             (stage.scrollFraction() ?? 0) > 0.97
         }
@@ -359,12 +167,12 @@ struct ChatMessageActionsGoldenTests {
 
     @Test("Model info opens from its anchor, dismisses, and can reopen")
     func modelInfoPopoverRoundTrip() async throws {
-        let mounted = Self.mountChatSurface()
-        let stage = mounted.stage
+        let surface = GoldenChatSurface.mount()
+        let stage = surface.stage
 
         try stage.press("ModelPickerBar.ModelInfo")
         try await stage.waitForText("Parameters")
-        #expect(stage.treeText().contains(Self.alias))
+        #expect(stage.treeText().contains(GoldenChatSurface.alias))
         // Esc is the user's dismissal gesture for a transient popover.
         // Dismiss-then-reopen proves it is not a one-way overlay that traps
         // the rest of the composer, and that the anchor stays live — the

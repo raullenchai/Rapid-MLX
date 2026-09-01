@@ -118,12 +118,3 @@ done
         "fresh-install=1",
         "all=0",
     ]
-
-
-def test_restored_tool_flow_waits_for_relaunched_sidecar_before_sending():
-    source = (ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh").read_text()
-    flow = source.split("flow_restored_tools() {", 1)[1].split("\n}", 1)[0]
-    opened = flow.index('press "$OUT/restored.json"')
-    ready = flow.index('wait_send_idle "$OUT/restored-ready.json"')
-    followup = flow.index('send_prompt "What about technology?')
-    assert opened < ready < followup
