@@ -567,6 +567,26 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_status_exposes_mtp_prompt_lookup_counters(self, mock_engine):
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "mtp_vendored": {
+                "prompt_lookup_proposals": 12.0,
+                "prompt_lookup_drafted_tokens": 96.0,
+                "prompt_lookup_accepted_tokens": 91.0,
+                "prompt_lookup_rejections": 2.0,
+                "prompt_lookup_cache_fallthroughs": 3.0,
+            },
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            assert data["mtp_prompt_lookup"]["prompt_lookup_proposals"] == 12.0
+            assert data["mtp_prompt_lookup"]["prompt_lookup_accepted_tokens"] == 91.0
+            assert data["mtp_prompt_lookup"]["prompt_lookup_cache_fallthroughs"] == 3.0
+        finally:
+            self._restore_config(orig)
+
     def test_status_handles_non_dict_batch_generator(self, mock_engine):
         """Defensive: malformed batch_generator (not a dict) must not 500.
 

@@ -44,6 +44,18 @@ def _restore(cache: Any, checkpoint) -> None:
     vars(cache).update(state)
 
 
+def _logical_size(cache: Any) -> int | None:
+    """Return a scalar cache cursor across legacy and current cache APIs."""
+    size = getattr(cache, "size", None)
+    value = size() if callable(size) else getattr(cache, "offset", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def can_trim(cache: Any, n: int) -> bool:
     """Return whether ``cache.trim(n)`` can commit without partial mutation."""
     if n < 0:
@@ -58,14 +70,10 @@ def can_trim(cache: Any, n: int) -> bool:
     if callable(can_undo) and can_undo(n):
         return True
     check = getattr(cache, "is_trimmable", None)
-    size = getattr(cache, "size", None)
-    if not (callable(check) and check() and callable(size)):
+    if not (callable(check) and check()):
         return False
-    logical_size = size()
-    try:
-        return int(logical_size) >= n
-    except (TypeError, ValueError):
-        return False
+    logical_size = _logical_size(cache)
+    return logical_size is not None and logical_size >= n
 
 
 def can_advance(cache: Any, n: int) -> bool:
@@ -96,7 +104,15 @@ def trim_all(caches: Iterable[Any], n: int) -> bool:
         checkpoints = [(cache, _checkpoint(cache)) for cache in leaves]
         try:
             for cache in leaves:
-                if cache.trim(n) != n:
+                before = _logical_size(cache)
+                result = cache.trim(n)
+                if result is None:
+                    after = _logical_size(cache)
+                    if before is None or after != before - n:
+                        raise RuntimeError(
+                            "cache trim did not advance by requested amount"
+                        )
+                elif result != n:
                     raise RuntimeError("cache returned a short trim")
         except Exception:
             for cache, checkpoint in reversed(checkpoints):

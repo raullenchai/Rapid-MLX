@@ -161,6 +161,8 @@ def inject_qwen4_exp_mtp_support(
     import mlx.core as mx
     from mlx.utils import tree_flatten
 
+    from .prompt_lookup import PromptLookupPolicy
+
     inner = _resolve_inner(model)
     if inner is None:
         return False
@@ -202,7 +204,13 @@ def inject_qwen4_exp_mtp_support(
         original_class = type(inner)
 
         class _Qwen4ExpWithMTP(original_class):  # type: ignore[valid-type, misc]
-            mtp_prompt_lookup_supported = False
+            mtp_prompt_lookup_supported = True
+            mtp_prompt_lookup_policy = PromptLookupPolicy(
+                enabled_by_default=True,
+                min_ngram=16,
+                max_ngram=64,
+                max_tokens=8,
+            )
 
             def mtp_forward(
                 self,
@@ -233,6 +241,9 @@ def inject_qwen4_exp_mtp_support(
         inner.mtp_max_speculative_tokens = 1
         model.mtp_max_speculative_tokens = 1
         inner.__class__ = _Qwen4ExpWithMTP
+        if model is not inner:
+            model.mtp_prompt_lookup_supported = True
+            model.mtp_prompt_lookup_policy = inner.mtp_prompt_lookup_policy
         mx.eval(mtp.parameters())
         return True
     except Exception:

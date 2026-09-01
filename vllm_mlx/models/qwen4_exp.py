@@ -680,6 +680,7 @@ class QSAIndexer(nn.Module):
         cache: QSAIndexCache,
         *,
         physical_kv_length: int,
+        record_rollback: bool = False,
     ) -> mx.array | None:
         batch, length, _ = hidden_states.shape
         cache._ensure_batch(batch)
@@ -729,6 +730,7 @@ class QSAIndexer(nn.Module):
             raw_keys,
             transform_group,
             transform_groups=transform_groups,
+            record_rollback=record_rollback,
         )
         # The architecture reference stays on ordinary causal attention while
         # every complete block fits the QSA budget. Preserve that exact math
@@ -879,6 +881,8 @@ class QSAAttention(nn.Module):
         x: mx.array,
         cache: Any | None = None,
         mask: mx.array | str | None = None,
+        *,
+        record_rollback: bool = False,
     ) -> mx.array:
         batch, length, _ = x.shape
         kv_cache = None if cache is None else cache[0]
@@ -900,6 +904,7 @@ class QSAAttention(nn.Module):
             x,
             index_cache,
             physical_kv_length=physical_length,
+            record_rollback=record_rollback,
         )
 
         projected = self.q_proj(x).reshape(
@@ -1331,6 +1336,7 @@ class DecoderLayer(nn.Module):
         mask: mx.array | None,
         cache: Any | None,
         record_rollback: bool = False,
+        record_qsa_rollback: bool = False,
     ) -> mx.array:
         if self.ple is not None:
             hidden_states = hidden_states + self.ple(
@@ -1349,7 +1355,12 @@ class DecoderLayer(nn.Module):
                 record_rollback=record_rollback,
             )
         else:
-            output = self.self_attn(mixed, cache=cache, mask=mask)
+            output = self.self_attn(
+                mixed,
+                cache=cache,
+                mask=mask,
+                record_rollback=record_qsa_rollback,
+            )
         hidden_states = self._combine(output, residual, injection)
 
         mixed, residual, injection = self.mlp_hyper_connection(hidden_states)
@@ -1376,6 +1387,7 @@ class Qwen4ExpTextModel(nn.Module):
         *,
         return_hidden: bool = False,
         record_rollback: bool = False,
+        record_qsa_rollback: bool = False,
     ) -> mx.array | tuple[mx.array, mx.array]:
         hidden_states = (
             input_embeddings
@@ -1411,6 +1423,7 @@ class Qwen4ExpTextModel(nn.Module):
                 mask=linear_mask if layer.is_linear else attention_mask,
                 cache=layer_cache,
                 record_rollback=record_rollback,
+                record_qsa_rollback=record_qsa_rollback,
             )
         output = self.hyper_connection_mixer(hidden_states)
         return (output, hidden_states) if return_hidden else output
@@ -1439,6 +1452,7 @@ class TextModel(nn.Module):
             input_embeddings,
             return_hidden=return_hidden,
             record_rollback=n_confirmed > 0 and inputs.shape[1] > 1,
+            record_qsa_rollback=n_confirmed > 1 and inputs.shape[1] > 2,
         )
         if return_hidden:
             hidden, mtp_hidden = cast(tuple[mx.array, mx.array], hidden_result)

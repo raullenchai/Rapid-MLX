@@ -1227,7 +1227,11 @@ def _install_mtp_vendored(
     # patches ArraysCache; keep the import off the scheduler boot path so a
     # non-MTP build has zero cost.
     from .spec_decode.mtp.draft_k_controller_v2 import derive_controller_key
-    from .spec_decode.mtp.generator import mtp_generate_step
+    from .spec_decode.mtp.generator import (
+        _effective_prompt_lookup_policy,
+        _prompt_lookup_is_enabled,
+        mtp_generate_step,
+    )
 
     model_max_k = getattr(mtp_model, "mtp_max_speculative_tokens", max_k)
     if max_k > model_max_k:
@@ -1306,6 +1310,13 @@ def _install_mtp_vendored(
         "gen_exhausted": 0,
         "gen_raised": 0,
         "invariant_violations": 0,
+        "prompt_lookup_proposals": 0.0,
+        "prompt_lookup_drafted_tokens": 0.0,
+        "prompt_lookup_matched_suffix_tokens": 0.0,
+        "prompt_lookup_accepted_tokens": 0.0,
+        "prompt_lookup_rejections": 0.0,
+        "prompt_lookup_cache_fallthroughs": 0.0,
+        "prompt_lookup_mtp_sync_seconds": 0.0,
     }
 
     _initial_skip_logged: set[tuple[int, str]] = set()
@@ -1793,6 +1804,13 @@ def _install_mtp_vendored(
             # permanently disabled so we don't retry construction on
             # every subsequent step.
             try:
+                prompt_lookup_policy = _effective_prompt_lookup_policy(mtp_model)
+                prompt_lookup_enabled = sampling_options[
+                    "temp"
+                ] == 0 and _prompt_lookup_is_enabled(
+                    mtp_model,
+                    requested=prompt_lookup_policy.enabled_by_default,
+                )
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
                     model=mtp_model,
@@ -1837,6 +1855,17 @@ def _install_mtp_vendored(
                     # priming token. Both owners run on this generation
                     # thread; never re-derive from the public seed.
                     lane_rng=sampling_options["lane_rng"],
+                    timing_stats=_stats,
+                    # Prompt lookup is request-scoped. Capture both the
+                    # route decision and immutable prompt history before the
+                    # generator mutates GenerationBatch bookkeeping.
+                    prompt_lookup_enabled=prompt_lookup_enabled,
+                    prompt_lookup_history=(
+                        list(gb.tokens[0]) + [first_tok]
+                        if prompt_lookup_enabled
+                        else None
+                    ),
+                    prompt_lookup_policy=prompt_lookup_policy,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -9215,6 +9244,10 @@ class Scheduler:
             stats["kv_checkpoint"] = _dkc.get_stats()
         except Exception:  # pragma: no cover — defensive
             pass
+        if self.batch_generator is not None:
+            mtp_vendored = getattr(self.batch_generator, "_mtp_vendored_stats", None)
+            if isinstance(mtp_vendored, dict):
+                stats["mtp_vendored"] = dict(mtp_vendored)
         # Include Metal memory stats
         try:
             if mx.metal.is_available():

@@ -17,6 +17,24 @@ class PromptLookupMatch:
     tokens: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class PromptLookupPolicy:
+    """Model-qualified prompt lookup policy captured at request start."""
+
+    enabled_by_default: bool = False
+    min_ngram: int = 8
+    max_ngram: int = 10
+    max_tokens: int = 24
+
+    def __post_init__(self) -> None:
+        if self.min_ngram < 2:
+            raise ValueError("min_ngram must be at least 2")
+        if self.max_ngram < self.min_ngram:
+            raise ValueError("max_ngram must be >= min_ngram")
+        if self.max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
+
+
 class PromptLookupIndex:
     """Index prompt n-grams and propose their following token block.
 
@@ -95,4 +113,4 @@ class PromptLookupIndex:
         return PromptLookupMatch(best_start, best_suffix, proposal)
 
 
-__all__ = ["PromptLookupIndex", "PromptLookupMatch"]
+__all__ = ["PromptLookupIndex", "PromptLookupMatch", "PromptLookupPolicy"]

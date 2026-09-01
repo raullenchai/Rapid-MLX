@@ -83,6 +83,45 @@ def test_trim_transaction_restores_earlier_cache_when_later_trim_fails() -> None
     assert later.offset == 9
 
 
+def test_trim_transaction_accepts_turboquant_void_return_contract() -> None:
+    """TurboQuant mutates its scalar cursor and deliberately returns None."""
+    from vllm_mlx.cache_rollback import can_trim, trim_all
+    from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
+
+    keys = mx.zeros((1, 1, 5, 2))
+    values = mx.zeros((1, 1, 5, 1))
+    cache = TurboQuantKVCache(
+        keys,
+        (values, values, values),
+        offset=5,
+        config=TurboQuantConfig(),
+        head_dim=2,
+    )
+
+    assert can_trim(cache, 3)
+    assert trim_all([cache], 3)
+    assert cache.offset == 2
+    assert cache.keys.shape[-2] == 2
+
+
+def test_trim_transaction_rejects_void_return_without_cursor_change() -> None:
+    from vllm_mlx.cache_rollback import trim_all
+
+    class BrokenVoidCache:
+        def __init__(self):
+            self.offset = 5
+
+        def is_trimmable(self):
+            return True
+
+        def trim(self, _n):
+            return None
+
+    cache = BrokenVoidCache()
+    assert not trim_all([cache], 3)
+    assert cache.offset == 5
+
+
 def test_trim_admission_guards_and_custom_checkpoint_restore() -> None:
     from vllm_mlx.cache_rollback import can_trim, trim_all
 
@@ -123,10 +162,15 @@ def test_trim_admission_guards_and_custom_checkpoint_restore() -> None:
         def size(self):
             return object()
 
+    class MissingSizeCache:
+        def is_trimmable(self):
+            return True
+
     assert can_trim(UndoCache(), 2)
     assert not can_trim(object(), 1)
     assert can_trim(LegacyCache(2), 2)
     assert not can_trim(InvalidSizeCache(2), 1)
+    assert not can_trim(MissingSizeCache(), 1)
     assert not can_trim(LegacyCache(2), -1)
     assert trim_all([], 0)
     assert not trim_all([], -1)

@@ -2383,11 +2383,19 @@ class _CountingKVCache:
     def is_trimmable(self):
         return True
 
+    def can_trim(self, n):
+        return 0 <= n <= self.offset
+
+    def size(self):
+        return self.offset
+
     def trim(self, n):
         if n < 0:
             raise AssertionError(f"negative trim: {n}")
         self.trim_calls.append(n)
-        self.offset -= min(self.offset, n)
+        trimmed = min(self.offset, n)
+        self.offset -= trimmed
+        return trimmed
 
 
 class _CacheAdvancingQwen35Model(_MockedQwen35Model):
@@ -2829,6 +2837,67 @@ def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
     assert ssm.rollback_state is None
 
 
+def test_generator_legacy_ssm_snapshot_is_limited_to_one_token():
+    """The legacy tuple restores K=1 and fails closed for a K>1 rollback."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class LegacySSMCache:
+        rollback_state = None
+
+        def __init__(self):
+            self.cache = [mx.array([0]), mx.array([0])]
+
+        def __getitem__(self, idx):
+            return self.cache[idx]
+
+        def __setitem__(self, idx, value):
+            self.cache[idx] = value
+
+        def is_trimmable(self):
+            return False
+
+    class LegacySnapshotModel(_MockedQwen35Model):
+        def __init__(self, *, max_k):
+            super().__init__([7, 99, 0, 0, 0], list(range(11, 11 + max_k)))
+            self.layers = [object()]
+
+        def __call__(self, inputs, cache=None, **kwargs):
+            result = super().__call__(inputs, cache=cache, **kwargs)
+            if cache and inputs.shape[1] > 1:
+                cache[0].rollback_state = (mx.array([101]), mx.array([201]))
+                cache[0][0], cache[0][1] = mx.array([999]), mx.array([999])
+            return result
+
+    k1_cache = LegacySSMCache()
+    list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            LegacySnapshotModel(max_k=1),
+            prompt_cache=[k1_cache],
+            max_tokens=2,
+            max_k=1,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+    assert k1_cache[0].item() == 101
+    assert k1_cache[1].item() == 201
+
+    with pytest.raises(AssertionError, match="only roll back one token"):
+        list(
+            mtp_generate_step(
+                mx.array([1], dtype=mx.uint32),
+                LegacySnapshotModel(max_k=3),
+                prompt_cache=[LegacySSMCache()],
+                max_tokens=4,
+                max_k=3,
+                disable_auto_k=True,
+                accept_counter=MTPAcceptCounter(),
+            )
+        )
+
+
 def test_generator_rolls_back_verify_round_on_early_materialization_abort(
     monkeypatch,
 ):
@@ -2943,11 +3012,30 @@ def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
     # 7, rejects MTP's 99 in favour of target token 8, and finds prompt suffix
     # [7, 8] -> [20, 21]. The copied block is accepted only because the target
     # independently predicts 20 and 21; 22 is its ordinary bonus token.
-    model = _CacheAdvancingQwen35Model(
+    class CompositeCache:
+        def __init__(self):
+            self.caches = [_CountingKVCache()]
+
+        @property
+        def offset(self):
+            return self.caches[0].offset
+
+        @offset.setter
+        def offset(self, value):
+            self.caches[0].offset = value
+
+    class SnapshottingModel(_CacheAdvancingQwen35Model):
+        def __call__(self, inputs, cache=None, **kwargs):
+            result = super().__call__(inputs, cache=cache, **kwargs)
+            if cache and inputs.shape[1] > 2:
+                cache[0].caches[0].rollback_state = object()
+            return result
+
+    model = SnapshottingModel(
         backbone_outputs=[0, 0, 0, 7, 8, 0, 20, 21, 22],
         mtp_outputs=[0, 0, 0, 99, 0, 0],
     )
-    model_cache = _CountingKVCache()
+    model_cache = CompositeCache()
     mtp_cache = _CountingKVCache()
     timing: dict[str, float] = {}
 
@@ -2961,6 +3049,7 @@ def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
             prompt_cache=[model_cache, mtp_cache],
             accept_counter=MTPAcceptCounter(),
             timing_stats=timing,
+            prompt_lookup_history=mx.array([7, 8, 20, 21], dtype=mx.uint32),
         )
     )
 
@@ -2977,9 +3066,70 @@ def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
     # Three prefill positions + one ordinary draft + two lookup-history sync
     # positions. Prompt lookup itself consumed no MTP proposal.
     assert model._mtp_cursor == 6
-    assert model_cache.trim_calls == [1]
+    assert model_cache.caches[0].trim_calls == [1]
+    assert model_cache.caches[0].rollback_state is None
     assert mtp_cache.trim_calls == [1]
     assert mtp_cache.offset == 5
+
+
+def test_generator_prompt_lookup_falls_through_when_cache_cannot_recover(monkeypatch):
+    """A matching prompt never bypasses a failed full-width cache preflight."""
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import (
+        _safe_prompt_lookup_draft_count,
+        mtp_generate_step,
+    )
+
+    assert _safe_prompt_lookup_draft_count([object()], 2) == 0
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+    monkeypatch.setattr(generator_mod, "_safe_prompt_lookup_draft_count", lambda *_: 0)
+
+    timing: dict[str, float] = {}
+    list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            _CacheAdvancingQwen35Model(
+                backbone_outputs=[0, 0, 0, 7, 8, 20, 21, 22],
+                mtp_outputs=[0, 0, 0, 99, 20, 21],
+            ),
+            max_tokens=3,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert timing["prompt_lookup_cache_fallthroughs"] == 1
+
+
+def test_generator_fails_closed_when_trim_breaks_its_contract():
+    """A short target-cache trim aborts rather than emitting from stale state."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class ShortTrimCache(_CountingKVCache):
+        def trim(self, n):
+            self.trim_calls.append(n)
+            return 0
+
+    with pytest.raises(RuntimeError, match="violated speculative rollback"):
+        list(
+            mtp_generate_step(
+                mx.array([1], dtype=mx.uint32),
+                _CacheAdvancingQwen35Model([7, 12, 99], [11]),
+                prompt_cache=[ShortTrimCache(), _CountingKVCache()],
+                max_tokens=2,
+                max_k=1,
+                disable_auto_k=True,
+                accept_counter=MTPAcceptCounter(),
+            )
+        )
 
 
 def test_prompt_lookup_requires_an_audited_model_capability(monkeypatch):
@@ -2987,11 +3137,18 @@ def test_prompt_lookup_requires_an_audited_model_capability(monkeypatch):
     from types import SimpleNamespace
 
     from vllm_mlx.spec_decode.mtp.generator import _prompt_lookup_is_enabled
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
     assert not _prompt_lookup_is_enabled(
         SimpleNamespace(mtp_prompt_lookup_supported=True)
     )
+    qualified = SimpleNamespace(
+        mtp_prompt_lookup_supported=True,
+        mtp_prompt_lookup_policy=PromptLookupPolicy(enabled_by_default=True),
+    )
+    assert _prompt_lookup_is_enabled(qualified)
+    assert not _prompt_lookup_is_enabled(qualified, requested=False)
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     assert not _prompt_lookup_is_enabled(SimpleNamespace())
@@ -2999,11 +3156,13 @@ def test_prompt_lookup_requires_an_audited_model_capability(monkeypatch):
         SimpleNamespace(mtp_prompt_lookup_supported=False)
     )
     assert _prompt_lookup_is_enabled(SimpleNamespace(mtp_prompt_lookup_supported=True))
+    assert _prompt_lookup_is_enabled(qualified)
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "off")
     assert not _prompt_lookup_is_enabled(
         SimpleNamespace(mtp_prompt_lookup_supported=True)
     )
+    assert not _prompt_lookup_is_enabled(qualified)
 
 
 def test_generator_prompt_lookup_partial_reject_keeps_mtp_cache_aligned(
@@ -3055,6 +3214,55 @@ def test_generator_prompt_lookup_partial_reject_keeps_mtp_cache_aligned(
     assert mtp_cache.trim_calls == [1]
     assert mtp_cache.offset == 4
     assert model._mtp_cursor == 5
+
+
+def test_generator_prompt_lookup_rolls_back_on_verify_materialization_abort(
+    monkeypatch,
+):
+    """A cancelled PLD verify drops every uncommitted target position."""
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+
+    model = _CacheAdvancingQwen35Model(
+        backbone_outputs=[0, 0, 0, 7, 8, 0, 20, 21, 22],
+        mtp_outputs=[0, 0, 0, 99],
+    )
+    model_cache = _CountingKVCache()
+    mtp_cache = _CountingKVCache()
+    gen = mtp_generate_step(
+        mx.array([7, 8, 20, 21], dtype=mx.uint32),
+        model,
+        max_tokens=5,
+        max_k=1,
+        disable_auto_k=True,
+        prompt_cache=[model_cache, mtp_cache],
+        accept_counter=MTPAcceptCounter(),
+    )
+
+    assert next(gen)[0] == 7
+    assert next(gen)[0] == 8
+    assert model_cache.trim_calls == [1]
+    assert mtp_cache.trim_calls == [1]
+
+    monkeypatch.setattr(
+        generator_mod.mx,
+        "eval",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("sentinel PLD verify abort")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="sentinel PLD verify abort"):
+        next(gen)
+
+    assert model_cache.trim_calls == [1, 2]
+    # PLD bypasses the MTP drafter, so its uncommitted cache never advanced.
+    assert mtp_cache.trim_calls == [1]
 
 
 def test_generator_runs_with_int4_quantized_kv_cache_kwargs():
