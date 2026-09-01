@@ -163,6 +163,52 @@ struct AtomicModelCatalogTests {
         #expect(ModelSelectionPurpose.textToSpeech.accepts(tts))
         #expect(ModelSelectionPurpose.speechToText.accepts(stt))
         #expect(!ModelSelectionPurpose.chat.accepts(stt))
+
+        let genericAtomicTTS = ModelEntry(
+            alias: "future-tts", hfRepo: "org/future-tts", sizeOnDisk: nil,
+            cached: false, kind: .audio, audioCapability: .speech,
+            audioFamily: "future_tts", taskTypes: [.speechSynthesis],
+            operationModes: [.presetVoice]
+        )
+        #expect(ModelSelectionPurpose.textToSpeech.accepts(genericAtomicTTS))
+        let legacyTTS = ModelEntry(
+            alias: "legacy-future-tts", hfRepo: "org/future-tts", sizeOnDisk: nil,
+            cached: false, kind: .audio, audioCapability: .speech,
+            audioFamily: "future_tts"
+        )
+        #expect(!ModelSelectionPurpose.textToSpeech.accepts(legacyTTS))
+    }
+
+    @Test("atomic model sources reject unsafe subfolders before projection")
+    func atomicSourceSubfoldersFailClosed() throws {
+        for invalid in ["../escape", "/absolute", "line\nbreak"] {
+            let payload = Self.mutated { root in
+                var atomic = root["atomic"] as! [String: Any]
+                var snapshot = atomic["snapshot"] as! [String: Any]
+                var models = snapshot["models"] as! [[String: Any]]
+                var source = models[0]["source"] as! [String: Any]
+                source["subfolder"] = invalid
+                models[0]["source"] = source
+                snapshot["models"] = models
+                atomic["snapshot"] = snapshot
+                root["atomic"] = atomic
+            }
+            #expect(ModelCatalog.parseAtomicModelEntriesJSON(payload) == nil)
+        }
+
+        let valid = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var models = snapshot["models"] as! [[String: Any]]
+            var source = models[0]["source"] as! [String: Any]
+            source["subfolder"] = "quant/4bit"
+            models[0]["source"] = source
+            snapshot["models"] = models
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(valid))
+        #expect(entries.first { $0.alias == "chat" }?.sourceSubfolder == "quant/4bit")
     }
 
     @Test("text-to-image plus inpainting exposes both image operations")
