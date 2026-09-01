@@ -43,6 +43,8 @@ struct GitHubStarPromptTests {
 
         #expect(card.contains("Enjoying Rapid-MLX?"))
         #expect(card.contains("Rapid-MLX is open source."))
+        #expect(card.contains("Text(\"Star on GitHub\")"))
+        #expect(!card.contains("Text(\"Open GitHub\")"))
         #expect(card.contains(".frame(width: 360)"))
         #expect(card.contains(".frame(width: 84, height: RapidTheme.ControlHeight.medium)"))
         #expect(card.contains(".padding(14)"))
@@ -65,6 +67,12 @@ struct GitHubStarPromptTests {
         #expect(!card.contains("@FocusState"))
         #expect(!card.contains(".keyboardShortcut"))
         #expect(!card.contains(".isModal"))
+        #expect(
+            card.components(separatedBy: ".disabled(prompt.isStarring)").count - 1 == 3,
+            "Star, Later, and close must all be disabled while the external mutation is in flight"
+        )
+        #expect(coordinator.contains("if let status = child.terminationStatusIfExited()"))
+        #expect(!coordinator.contains("guard clock.now < deadline"))
         #expect(coordinator.contains("NSEvent.addLocalMonitorForEvents(matching: [.keyDown])"))
         #expect(!coordinator.contains("URLSession"), "eligibility must not probe GitHub or the network")
     }

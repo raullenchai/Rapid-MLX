@@ -75,15 +75,30 @@ struct GitHubStarPromptCard: View {
 
                 HStack(spacing: RapidTheme.Space.sm) {
                     Button {
-                        openURL(GitHubCommunity.repositoryURL) { accepted in
-                            guard accepted else { return }
-                            prompt.repositoryOpened()
+                        Task {
+                            switch await prompt.attemptDirectStar() {
+                            case .starred, .cancelled:
+                                return
+                            case .unavailable:
+                                break
+                            }
+
+                            guard prompt.isPresented, !prompt.isStarring else { return }
+
+                            openURL(GitHubCommunity.repositoryURL) { accepted in
+                                guard accepted else { return }
+                                prompt.repositoryOpened()
+                            }
                         }
                     } label: {
                         HStack(spacing: RapidTheme.Space.xs) {
-                            Text("Open GitHub")
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 10, weight: .semibold))
+                            if prompt.isStarring {
+                                Text("Starring…")
+                            } else {
+                                Text("Star on GitHub")
+                                Image(systemName: "star")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -93,7 +108,10 @@ struct GitHubStarPromptCard: View {
                         font: .system(size: 14, weight: .medium)
                     ))
                     .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
-                    .accessibilityHint("Opens the Rapid-MLX repository in your browser")
+                    .disabled(prompt.isStarring)
+                    .accessibilityHint(
+                        "Stars the Rapid-MLX repository using GitHub CLI, or opens GitHub if unavailable"
+                    )
                     .accessibilityIdentifier("GitHub.Star.ValueMoment.Open")
 
                     Button("Later") { prompt.deferPrompt() }
@@ -102,6 +120,7 @@ struct GitHubStarPromptCard: View {
                             font: .system(size: 14, weight: .medium)
                         ))
                         .frame(width: 84, height: RapidTheme.ControlHeight.medium)
+                        .disabled(prompt.isStarring)
                         .accessibilityIdentifier("GitHub.Star.ValueMoment.Later")
 
                     Menu("Feedback") {
@@ -142,6 +161,7 @@ struct GitHubStarPromptCard: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(prompt.isStarring)
             .foregroundStyle(RapidTheme.textSecondary)
             .help("Later")
             .accessibilityLabel("Show the GitHub invitation later")
