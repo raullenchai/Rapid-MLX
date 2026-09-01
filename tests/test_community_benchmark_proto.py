@@ -144,6 +144,26 @@ def test_v2_alias_rejects_conflicting_mode_spellings(schemas, registry) -> None:
     assert any(list(error.absolute_path) == ["capabilities"] for error in errors)
 
 
+def test_v2_alias_requires_exactly_one_nonempty_operation_field(
+    schemas, registry
+) -> None:
+    example = _load(CATALOG_ROOT / "examples" / "model-alias.example.json")
+    del example["capabilities"]["operation_modes"]
+    errors = list(
+        _validator(schemas["model-alias.schema.json"], registry).iter_errors(example)
+    )
+    assert any(list(error.absolute_path) == ["capabilities"] for error in errors)
+
+    example["capabilities"]["operation_modes"] = []
+    errors = list(
+        _validator(schemas["model-alias.schema.json"], registry).iter_errors(example)
+    )
+    assert any(
+        list(error.absolute_path) == ["capabilities", "operation_modes"]
+        for error in errors
+    )
+
+
 def test_model_alias_v1_remains_backward_compatible() -> None:
     schema = _load(CATALOG_V1_ROOT / "model-alias.schema.json")
     example = _load(CATALOG_V1_ROOT / "examples" / "model-alias.example.json")

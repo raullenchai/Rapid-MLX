@@ -25,6 +25,15 @@ _SCHEMA_FILES = {
     "catalog_snapshot": "catalog-snapshot.schema.json",
 }
 
+_TASK_OPERATIONS = {
+    "text_generation": {"chat"},
+    "vision_language": {"chat", "image_understanding"},
+    "image_generation": {"text_to_image", "image_to_image", "inpainting"},
+    "video_generation": {"text_to_video", "image_to_video", "video_to_video"},
+    "speech_synthesis": {"preset_voice", "voice_cloning", "voice_design"},
+    "speech_recognition": {"transcription", "translation", "forced_alignment"},
+}
+
 
 @dataclass(frozen=True)
 class CatalogValidationError(ValueError):
@@ -123,6 +132,19 @@ class ContractValidator:
                     "catalog_snapshot", "aliases", f"duplicate alias {alias_name!r}"
                 )
             seen_aliases.add(alias_name)
+            capabilities = alias["capabilities"]
+            operations = set(
+                capabilities.get(
+                    "operation_modes", capabilities.get("generation_modes", [])
+                )
+            )
+            for task_type in capabilities["task_types"]:
+                if operations.isdisjoint(_TASK_OPERATIONS[task_type]):
+                    raise CatalogValidationError(
+                        "catalog_snapshot",
+                        f"aliases/{alias_name}/capabilities",
+                        f"task_type {task_type!r} has no compatible operation",
+                    )
             preset_ids: set[str] = set()
             for preset_index, preset in enumerate(alias["execution_presets"]):
                 preset_id = preset["preset_id"]

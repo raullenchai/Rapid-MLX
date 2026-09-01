@@ -370,6 +370,26 @@ def test_catalog_snapshot_rejects_alias_target_drift() -> None:
         ContractValidator().validate_catalog_snapshot(snapshot)
 
 
+def test_catalog_snapshot_rejects_task_without_compatible_operation() -> None:
+    snapshot = build_legacy_catalog_snapshot()
+    alias = snapshot["aliases"][0]
+    alias["capabilities"]["task_types"] = ["text_generation"]
+    alias["capabilities"]["operation_modes"] = ["text_to_image"]
+    snapshot["catalog_digest"] = rcj_digest(
+        {
+            key: snapshot[key]
+            for key in (
+                "schema_version",
+                "models",
+                "aliases",
+                "recommendation_policy_digests",
+            )
+        }
+    )
+    with pytest.raises(CatalogValidationError, match="no compatible operation"):
+        ContractValidator().validate_catalog_snapshot(snapshot)
+
+
 def test_catalog_snapshot_rejects_duplicate_execution_preset_ids() -> None:
     snapshot = build_legacy_catalog_snapshot()
     alias = snapshot["aliases"][0]
