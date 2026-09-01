@@ -977,9 +977,15 @@ def list_builtin_aliases() -> dict[str, str]:
 
 def user_alias_reserved_names() -> frozenset[str]:
     """Names user aliases may not shadow across any product model surface."""
-    from .audio.registry import list_audio_aliases
+    try:
+        from .audio.registry import list_audio_aliases
 
-    audio_aliases = frozenset(entry.alias for entry in list_audio_aliases())
+        audio_aliases = frozenset(entry.alias for entry in list_audio_aliases())
+    except Exception:
+        # Audio is an optional product lane. A corrupt/unavailable registry
+        # must not take down legacy text discovery; the combined atomic shadow
+        # is omitted by its caller until that registry is healthy again.
+        audio_aliases = frozenset()
     return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES) | audio_aliases
 
 

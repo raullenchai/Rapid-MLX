@@ -195,6 +195,25 @@ struct AtomicModelCatalogTests {
         #expect(!ModelSelectionPurpose.textToSpeech.accepts(legacyTTS))
     }
 
+    @Test("image-understanding VLM remains reachable from Chat")
+    func imageUnderstandingVLMProjectsToChat() throws {
+        let vlmPayload = Self.mutated { root in
+            Self.mutateCapabilities(in: &root, aliasIndex: 0) {
+                $0["task_types"] = ["vision_language"]
+                $0["operation_modes"] = ["image_understanding"]
+                $0["is_text_only"] = false
+            }
+        }
+        let vlm = try #require(
+            ModelCatalog.parseAtomicModelEntriesJSON(vlmPayload)?.first {
+                $0.alias == "chat"
+            }
+        )
+        #expect(vlm.supports(.chat))
+        #expect(ModelSelectionPurpose.chat.accepts(vlm))
+        #expect(ModelCatalog.parseAvailableJSON(vlmPayload)?.entries.map(\.0) == ["chat"])
+    }
+
     @Test("atomic model sources reject unsafe subfolders before projection")
     func atomicSourceSubfoldersFailClosed() throws {
         for invalid in ["../escape", "/absolute", "line\nbreak"] {

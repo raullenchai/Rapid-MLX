@@ -109,8 +109,10 @@ enum ModelSelectionPurpose: Sendable, Hashable {
             switch self {
             case .chat:
                 return (entry.taskTypes.contains(.textGeneration)
-                    || entry.taskTypes.contains(.visionLanguage))
-                    && entry.operationModes.contains(.chat)
+                    && entry.operationModes.contains(.chat))
+                    || (entry.taskTypes.contains(.visionLanguage)
+                        && (entry.operationModes.contains(.chat)
+                            || entry.operationModes.contains(.imageUnderstanding)))
             case .imageGeneration:
                 return entry.taskTypes.contains(.imageGeneration)
                     && entry.operationModes.contains(.textToImage)
@@ -276,8 +278,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
         switch candidate {
         case .chat:
             return (taskTypes.contains(.textGeneration)
-                || taskTypes.contains(.visionLanguage))
-                && operationModes.contains(.chat)
+                && operationModes.contains(.chat))
+                || (taskTypes.contains(.visionLanguage)
+                    && (operationModes.contains(.chat)
+                        || operationModes.contains(.imageUnderstanding)))
         case .image:
             return taskTypes.contains(.imageGeneration)
         case .audio:

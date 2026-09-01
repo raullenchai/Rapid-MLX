@@ -76,7 +76,8 @@ def test_rejects_separately_reserved_retired_name(alias_file: Path) -> None:
 
 
 def test_audio_alias_names_are_reserved_across_cli_and_loading(
-    alias_file: Path, capsys: pytest.CaptureFixture[str],
+    alias_file: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from vllm_mlx.cli import alias_command, build_parser
     from vllm_mlx.model_aliases import (
