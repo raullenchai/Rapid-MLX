@@ -196,6 +196,7 @@ final class BenchmarkProcessBox: @unchecked Sendable {
     }
 
     func waitForCompletion(_ child: ProcessGroupChild) -> pid_t? {
+        defer { clearTrackedChild(child) }
         while child.isRunning {
             lock.lock()
             let shouldCancel = cancelled
@@ -213,6 +214,18 @@ final class BenchmarkProcessBox: @unchecked Sendable {
             return Self.terminateAndReap(child)
         }
         return nil
+    }
+
+    private func clearTrackedChild(_ completedChild: ProcessGroupChild) {
+        lock.lock()
+        if child === completedChild { child = nil }
+        lock.unlock()
+    }
+
+    internal var _testHasTrackedChild: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return child != nil
     }
 
     private static func terminateAndReap(_ child: ProcessGroupChild) -> pid_t? {

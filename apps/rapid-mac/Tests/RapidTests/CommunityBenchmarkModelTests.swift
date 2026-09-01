@@ -159,6 +159,24 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Cancellation after process exit cannot signal a stale process group")
+    func cancellationAfterExitClearsTrackedChild() throws {
+        let box = BenchmarkProcessBox()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let child = try box.start(
+            binary: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: [],
+            standardOutput: stdout,
+            standardError: stderr
+        )
+
+        #expect(box.waitForCompletion(child) == nil)
+        #expect(!box._testHasTrackedChild)
+        box.cancel()
+        #expect(!box._testHasTrackedChild)
+    }
+
     @Test("Cancelling a benchmark reaps its descendant process group")
     func cancellationReapsDescendant() async throws {
         let root = FileManager.default.temporaryDirectory
