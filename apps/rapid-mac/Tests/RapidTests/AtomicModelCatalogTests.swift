@@ -209,7 +209,7 @@ struct AtomicModelCatalogTests {
 
     @Test("atomic model sources reject unsafe subfolders before projection")
     func atomicSourceSubfoldersFailClosed() throws {
-        for invalid in ["../escape", "/absolute", "line\nbreak"] {
+        for invalid in ["../escape", "/absolute", "quant/", "line\nbreak"] {
             let payload = Self.mutated { root in
                 var atomic = root["atomic"] as! [String: Any]
                 var snapshot = atomic["snapshot"] as! [String: Any]
@@ -237,6 +237,17 @@ struct AtomicModelCatalogTests {
         }
         let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(valid))
         #expect(entries.first { $0.alias == "chat" }?.sourceSubfolder == "quant/4bit")
+
+        let booleanSize = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var models = snapshot["models"] as! [[String: Any]]
+            models[0]["estimated_download_size_bytes"] = true
+            snapshot["models"] = models
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(booleanSize) == nil)
     }
 
     @Test("text-to-image plus inpainting exposes both image operations")

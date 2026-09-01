@@ -896,7 +896,12 @@ enum ModelCatalog {
             else { return nil }
             let size: String?
             if let bytes = model["estimated_download_size_bytes"] as? NSNumber {
-                guard bytes.int64Value > 0 else { return nil }
+                guard CFGetTypeID(bytes) != CFBooleanGetTypeID(),
+                      bytes.doubleValue.isFinite,
+                      bytes.doubleValue == Double(bytes.int64Value),
+                      bytes.int64Value > 0,
+                      bytes.int64Value <= 9_007_199_254_740_991
+                else { return nil }
                 size = ByteCountFormatter.string(
                     fromByteCount: bytes.int64Value,
                     countStyle: .binary

@@ -50,6 +50,13 @@ def test_packaged_schemas_are_exact_proto_copies() -> None:
         assert (packaged / destination).read_bytes() == source.read_bytes()
 
 
+def test_registry_subfolder_contract_matches_consumers() -> None:
+    record = copy.deepcopy(build_legacy_catalog_snapshot()["models"][0])
+    record["source"]["subfolder"] = "quant/"
+    with pytest.raises(CatalogValidationError, match="subfolder"):
+        ContractValidator().validate("model_registry_record", record)
+
+
 def test_rcj_is_stable_and_rejects_nonportable_numbers() -> None:
     assert canonical_json_bytes({"z": "e\u0301", "a": 1}) == (
         '{"a":1,"z":"é"}'.encode()
