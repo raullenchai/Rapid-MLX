@@ -108,8 +108,9 @@ enum ModelSelectionPurpose: Sendable, Hashable {
         if !entry.taskTypes.isEmpty {
             switch self {
             case .chat:
-                return entry.taskTypes.contains(.textGeneration)
-                    || entry.taskTypes.contains(.visionLanguage)
+                return (entry.taskTypes.contains(.textGeneration)
+                    || entry.taskTypes.contains(.visionLanguage))
+                    && entry.operationModes.contains(.chat)
             case .imageGeneration:
                 return entry.taskTypes.contains(.imageGeneration)
                     && entry.operationModes.contains(.textToImage)
@@ -270,8 +271,9 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
         guard !taskTypes.isEmpty else { return kind == candidate }
         switch candidate {
         case .chat:
-            return taskTypes.contains(.textGeneration)
-                || taskTypes.contains(.visionLanguage)
+            return (taskTypes.contains(.textGeneration)
+                || taskTypes.contains(.visionLanguage))
+                && operationModes.contains(.chat)
         case .image:
             return taskTypes.contains(.imageGeneration)
         case .audio:

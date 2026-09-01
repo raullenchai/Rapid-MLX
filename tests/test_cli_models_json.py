@@ -16,7 +16,6 @@ from types import SimpleNamespace
 from vllm_mlx.cli import (
     _available_models_json_payload,
     _cached_models_json_payload,
-    _cached_subfolder_size,
     models_command,
 )
 
@@ -164,7 +163,7 @@ def test_cached_payload_reports_every_complete_alias_subfolder(monkeypatch) -> N
         lambda _repo, subfolder: {"4bit": 400, "8bit": 800}.get(subfolder),
     )
 
-    rows = _cached_models_json_payload()["cached"]
+    rows = cli._cached_models_json_payload()["cached"]
     assert [(row["alias"], row["subfolder"], row["size_bytes"]) for row in rows] == [
         ("nested-8bit", "8bit", 800),
         ("nested-4bit", "4bit", 400),
@@ -177,6 +176,8 @@ def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
 ) -> None:
     import huggingface_hub.constants as hub_constants
 
+    import vllm_mlx.cli as cli
+
     monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
     repo_root = tmp_path / "models--org--multi-quant"
     checkpoint = repo_root / "snapshots" / "abc123" / "4bit"
@@ -187,10 +188,10 @@ def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
     weights = b"complete weights"
     (checkpoint / "model.safetensors").write_bytes(weights)
 
-    size = _cached_subfolder_size("org/multi-quant", "4bit")
+    size = cli._cached_subfolder_size("org/multi-quant", "4bit")
     assert size is not None
     assert size >= len(weights)
-    assert _cached_subfolder_size("org/multi-quant", "8bit") is None
+    assert cli._cached_subfolder_size("org/multi-quant", "8bit") is None
 
 
 def test_command_emits_single_valid_json_available(capfd) -> None:

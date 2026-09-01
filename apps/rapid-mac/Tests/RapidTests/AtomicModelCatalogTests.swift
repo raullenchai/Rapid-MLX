@@ -153,6 +153,12 @@ struct AtomicModelCatalogTests {
         let tts = try #require(entries.first { $0.alias == "tts" })
         let stt = try #require(entries.first { $0.alias == "stt" })
         #expect(ModelSelectionPurpose.imageGeneration.accepts(image))
+        let completionOnly = ModelEntry(
+            alias: "completion-only", hfRepo: "org/completion", sizeOnDisk: nil,
+            cached: false, taskTypes: [.textGeneration], operationModes: []
+        )
+        #expect(!completionOnly.supports(.chat))
+        #expect(!ModelSelectionPurpose.chat.accepts(completionOnly))
         #expect(ModelSelectionPurpose.imageEditing.accepts(image))
         #expect(ModelSelectionPurpose.textToSpeech.accepts(tts))
         #expect(ModelSelectionPurpose.speechToText.accepts(stt))
