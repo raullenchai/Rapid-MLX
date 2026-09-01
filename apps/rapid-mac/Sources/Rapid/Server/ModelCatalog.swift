@@ -30,7 +30,6 @@ enum ModelTask: String, Sendable, Hashable {
     case videoGeneration = "video_generation"
     case speechSynthesis = "speech_synthesis"
     case speechRecognition = "speech_recognition"
-    case forcedAlignment = "forced_alignment"
 }
 
 enum ModelOperation: String, Sendable, Hashable {
@@ -810,7 +809,7 @@ enum ModelCatalog {
     static func parseAtomicModelEntriesJSON(_ root: [String: Any]) -> [ModelEntry]? {
         guard let atomic = root["atomic"] as? [String: Any],
               let snapshot = atomic["snapshot"] as? [String: Any],
-              snapshot["schema_version"] as? Int == 1,
+              snapshot["schema_version"] as? Int == 2,
               let declaredDigest = snapshot["catalog_digest"] as? String,
               atomicCatalogDigest(snapshot) == declaredDigest,
               let shadow = atomic["shadow_report"] as? [String: Any],
@@ -860,7 +859,7 @@ enum ModelCatalog {
         var entries: [ModelEntry] = []
         var seenAliases: Set<String> = []
         for row in aliasRows {
-            guard row["schema_version"] as? Int == 1,
+            guard row["schema_version"] as? Int == 2,
                   let alias = row["alias"] as? String, isSafeAlias(alias),
                   seenAliases.insert(alias).inserted,
                   let origin = row["origin"] as? String,
@@ -903,7 +902,12 @@ enum ModelCatalog {
             // place. Reject the atomic envelope and use the versioned legacy
             // projection; never turn an unknown task into Chat by default.
             guard !tasks.isEmpty, tasks.count == rawTasks.count else { return nil }
-            let rawOperations = capabilities["operation_modes"] as? [String] ?? []
+            // v2 standardizes on operation_modes. Accept the v1
+            // generation_modes spelling only as a bounded migration fallback
+            // so an older schema-valid image/video producer remains usable.
+            let rawOperations = capabilities["operation_modes"] as? [String]
+                ?? capabilities["generation_modes"] as? [String]
+                ?? []
             let operations = Set(rawOperations.compactMap(ModelOperation.init(rawValue:)))
             guard operations.count == rawOperations.count else { return nil }
             let kind: ModelKind
@@ -912,7 +916,7 @@ enum ModelCatalog {
             } else if tasks.contains(.videoGeneration) {
                 kind = .video
             } else if !tasks.isDisjoint(with: [
-                .speechSynthesis, .speechRecognition, .forcedAlignment,
+                .speechSynthesis, .speechRecognition,
             ]) {
                 kind = .audio
             } else {
@@ -1096,9 +1100,10 @@ enum ModelCatalog {
             } else if !alias.isEmpty && !isStatusAlias(alias) {
                 cachedByAlias[alias] = (repo, size)
                 if let source = atomicByAlias[alias],
+                   source.sourceSubfolder == nil,
                    let sourceRepo = source.hfRepo,
                    let key = artifactCacheKey(source),
-                   repo == nil || sanitizedHuggingFaceRepo(repo) == sourceRepo,
+                   sanitizedHuggingFaceRepo(repo) == sourceRepo,
                    cachedByArtifact[key] == nil {
                     cachedByArtifact[key] = (sourceRepo, size)
                 }
@@ -1113,7 +1118,20 @@ enum ModelCatalog {
         var consumedExternal: Set<String> = []
         var seenAliases = Set(enrichedAtomic.map(\.alias))
         var entries = enrichedAtomic.map { entry -> ModelEntry in
-            let cachedHit = cachedByAlias[entry.alias]
+            // `rapid-mlx ls` currently reports repo but not subfolder. A
+            // missing subfolder is evidence for a root artifact only, never
+            // a wildcard match for a nested checkpoint. Also require the
+            // repo to match exactly so an alias retarget cannot inherit stale
+            // cache state from its previous artifact.
+            let cachedHit: (repo: String?, size: String?)? = cachedByAlias[
+                entry.alias
+            ].flatMap { hit in
+                guard entry.sourceSubfolder == nil,
+                      let expectedRepo = entry.hfRepo,
+                      sanitizedHuggingFaceRepo(hit.repo) == expectedRepo
+                else { return nil }
+                return hit
+            }
             let siblingHit = artifactCacheKey(entry).flatMap { cachedByArtifact[$0] }
             let unmappedRoot = entry.sourceSubfolder == nil
                 ? entry.hfRepo.flatMap { repo in

@@ -132,6 +132,13 @@ Implemented foundation:
   and schema-drift checks are reusable by Server, GUI tooling, and a future
   website build.
 
+The shadow projection emits `ModelAlias v2` and `CatalogSnapshot v2`. The v1
+catalog contracts remain byte-compatible with the initial atomic-schema merge;
+v2 is the product-wide capability layer that adds provenance, availability,
+runtime adapters, and audio operations. Forced alignment is represented as a
+`speech_recognition` task plus a `forced_alignment` operation so every alias
+still maps to a reachable v1 ModelIdentity and ExecutionConfig task.
+
 The current projection is deliberately unresolved: legacy repo IDs are resolver
 inputs, not immutable model identities. It also centralizes existing image and
 audio capability inference in the adapter; image-input support is already an

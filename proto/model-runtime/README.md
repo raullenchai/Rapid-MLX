@@ -12,7 +12,9 @@ They are not owned by the community benchmark feature.
   volatile run conditions. It never contains a device identifier.
 - `ExecutionConfig` records the effective post-resolution configuration. Its
   task-discriminated union covers text, VLM, image, video, speech synthesis,
-  and speech recognition execution.
+  and speech recognition execution. Forced alignment uses the speech
+  recognition task with an alias operation mode; it does not fork runtime
+  identity.
 
 Atomic means each object can be stored, validated, hashed, and reused without a
 benchmark run. A consumer composes these objects rather than creating a local

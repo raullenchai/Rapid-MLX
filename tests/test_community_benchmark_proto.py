@@ -16,7 +16,8 @@ import referencing
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTO_ROOT = REPO_ROOT / "proto"
 RUNTIME_ROOT = PROTO_ROOT / "model-runtime" / "v1"
-CATALOG_ROOT = PROTO_ROOT / "model-catalog" / "v1"
+CATALOG_V1_ROOT = PROTO_ROOT / "model-catalog" / "v1"
+CATALOG_ROOT = PROTO_ROOT / "model-catalog" / "v2"
 BENCH_ROOT = PROTO_ROOT / "community-benchmark" / "v1"
 
 SCHEMA_PATHS = (
@@ -24,8 +25,8 @@ SCHEMA_PATHS = (
     RUNTIME_ROOT / "machine-observation.schema.json",
     RUNTIME_ROOT / "execution-config.schema.json",
     CATALOG_ROOT / "model-alias.schema.json",
-    CATALOG_ROOT / "model-registry-record.schema.json",
-    CATALOG_ROOT / "recommendation-policy.schema.json",
+    CATALOG_V1_ROOT / "model-registry-record.schema.json",
+    CATALOG_V1_ROOT / "recommendation-policy.schema.json",
     CATALOG_ROOT / "catalog-snapshot.schema.json",
     BENCH_ROOT / "benchmark-run.schema.json",
 )
@@ -132,6 +133,15 @@ def test_alias_is_a_reference_layer_not_embedded_identity(schemas, registry) -> 
     assert "hf_path" not in json.dumps(example)
     assert "model_identity_digest" in example["target"]
     assert "execution_config_digest" in example["execution_presets"][0]
+
+
+def test_model_alias_v1_remains_backward_compatible() -> None:
+    schema = _load(CATALOG_V1_ROOT / "model-alias.schema.json")
+    example = _load(CATALOG_V1_ROOT / "examples" / "model-alias.example.json")
+    jsonschema.Draft202012Validator(schema).validate(example)
+    assert example["schema_version"] == 1
+    assert "origin" not in example
+    assert "availability" not in example
 
 
 def test_promoted_alias_preset_requires_scoped_evidence(schemas, registry) -> None:

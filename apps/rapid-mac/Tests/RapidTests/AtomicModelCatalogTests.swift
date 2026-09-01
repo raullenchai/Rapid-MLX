@@ -9,7 +9,7 @@ struct AtomicModelCatalogTests {
       "text": [{"alias":"chat","supports_spec_decode":true}],
       "atomic": {
         "snapshot": {
-          "schema_version": 1,
+          "schema_version": 2,
           "models": [
             {"registry_model_id":"legacy/hf/chat","source":{"provider":"huggingface","repo_id":"org/chat"},"estimated_download_size_bytes":1073741824},
             {"registry_model_id":"legacy/hf/image","source":{"provider":"huggingface","repo_id":"org/image"}},
@@ -46,7 +46,7 @@ struct AtomicModelCatalogTests {
             models[index]["resolution_status"] = "unresolved"
         }
         for index in aliases.indices {
-            aliases[index]["schema_version"] = 1
+            aliases[index]["schema_version"] = 2
             aliases[index]["origin"] = "builtin"
             var capabilities = aliases[index]["capabilities"] as! [String: Any]
             capabilities["is_text_only"] = index == 0
@@ -128,6 +128,29 @@ struct AtomicModelCatalogTests {
         #expect(ModelSelectionPurpose.textToSpeech.accepts(tts))
         #expect(ModelSelectionPurpose.speechToText.accepts(stt))
         #expect(!ModelSelectionPurpose.chat.accepts(stt))
+    }
+
+    @Test("v1 generation_modes remains a bounded image migration fallback")
+    func generationModesMigrationFallback() throws {
+        let legacySpelling = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            var capabilities = aliases[1]["capabilities"] as! [String: Any]
+            capabilities["generation_modes"] = capabilities.removeValue(
+                forKey: "operation_modes"
+            )
+            aliases[1]["capabilities"] = capabilities
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(
+            ModelCatalog.parseAtomicModelEntriesJSON(legacySpelling)
+        )
+        let image = try #require(entries.first { $0.alias == "image" })
+        #expect(ModelSelectionPurpose.imageGeneration.accepts(image))
+        #expect(ModelSelectionPurpose.imageEditing.accepts(image))
     }
 
     @Test("chat projection keeps legacy speculative behavior during shadow mode")
@@ -322,9 +345,19 @@ struct AtomicModelCatalogTests {
             cached: [("sub-a", "org/shared", "1 GiB")],
             excluded: []
         )
-        #expect(managed.first { $0.alias == "sub-a" }?.cached == true)
-        #expect(managed.first { $0.alias == "sub-a-sibling" }?.cached == true)
+        #expect(managed.first { $0.alias == "sub-a" }?.cached == false)
+        #expect(managed.first { $0.alias == "sub-a-sibling" }?.cached == false)
         #expect(managed.first { $0.alias == "sub-b" }?.cached == false)
+
+        let retargeted = ModelCatalog.mergeAtomicAndCached(
+            atomic: [ModelEntry(
+                alias: "root", hfRepo: "org/new", sizeOnDisk: nil, cached: false
+            )],
+            cached: [("root", "org/old", "9 GiB")],
+            excluded: []
+        )
+        #expect(retargeted.first?.cached == false)
+        #expect(retargeted.first?.hfRepo == "org/new")
 
         let external = ModelCatalog.mergeAtomicAndCached(
             atomic: [root, subA],

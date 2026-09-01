@@ -78,7 +78,11 @@ def _audio_capabilities(entry: Any) -> dict[str, Any]:
     alias = entry.alias.casefold()
     if entry.type == "stt":
         if entry.family == "qwen3_aligner":
-            tasks, operations = ["forced_alignment"], ["forced_alignment"]
+            # Alignment is an operation of the speech-recognition pipeline,
+            # not a distinct model/runtime identity kind. Keeping the atomic
+            # task broad lets one recognizer expose transcription and/or
+            # alignment without inventing an unreachable ExecutionConfig.
+            tasks, operations = ["speech_recognition"], ["forced_alignment"]
         else:
             tasks, operations = ["speech_recognition"], ["transcription"]
             if entry.family == "whisper":
@@ -109,7 +113,7 @@ def _alias_record(
     desktop: bool = True,
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "alias": alias,
         "origin": origin,
         "target": {"registry_model_id": model_id, "resolution_status": "unresolved"},
@@ -184,7 +188,7 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
         )
 
     snapshot: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "models": sorted(models.values(), key=lambda item: item["registry_model_id"]),
         "aliases": sorted(aliases, key=lambda item: item["alias"]),
         "recommendation_policy_digests": [],

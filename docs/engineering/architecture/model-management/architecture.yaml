@@ -57,7 +57,7 @@ components:
     phase: 2
     owner: atlas
     summary: What a variant can do, without quality judgement or default selection.
-    files: [vllm_mlx/model_profile.py, proto/model-catalog/v1/model-alias.schema.json]
+    files: [vllm_mlx/model_profile.py, proto/model-catalog/v2/model-alias.schema.json]
     tests: [tests/test_aliases_contract.py]
     missing: Separate capability contract from the general ModelProfile.
   runtime_compatibility:
@@ -77,7 +77,7 @@ components:
     phase: 2
     owner: pixel
     summary: Mutable user-facing names, branding, descriptions, icons, and aliases.
-    files: [vllm_mlx/aliases.json, vllm_mlx/audio/aliases.json, proto/model-catalog/v1/model-alias.schema.json, vllm_mlx/catalog/legacy.py]
+    files: [vllm_mlx/aliases.json, vllm_mlx/audio/aliases.json, proto/model-catalog/v2/model-alias.schema.json, vllm_mlx/catalog/legacy.py]
     tests: [tests/test_aliases_contract.py, tests/test_atomic_model_catalog.py]
     migrations: [migrations/002-aliases-to-atomic-contracts.md]
     missing: Replace bridge inference with explicit generated capabilities and resolve immutable identities.

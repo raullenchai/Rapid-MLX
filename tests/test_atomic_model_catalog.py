@@ -26,10 +26,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_packaged_schemas_are_exact_proto_copies() -> None:
     packaged = ROOT / "vllm_mlx" / "catalog" / "schemas"
-    sources = list((ROOT / "proto" / "model-runtime" / "v1").glob("*.schema.json"))
-    sources += list((ROOT / "proto" / "model-catalog" / "v1").glob("*.schema.json"))
-    for source in sources:
-        assert (packaged / source.name).read_bytes() == source.read_bytes()
+    copies = {
+        ROOT
+        / "proto/model-runtime/v1/model-identity.schema.json": "model-identity.schema.json",
+        ROOT
+        / "proto/model-runtime/v1/machine-observation.schema.json": "machine-observation.schema.json",
+        ROOT
+        / "proto/model-runtime/v1/execution-config.schema.json": "execution-config.schema.json",
+        ROOT
+        / "proto/model-catalog/v1/model-alias.schema.json": "model-alias-v1.schema.json",
+        ROOT
+        / "proto/model-catalog/v2/model-alias.schema.json": "model-alias.schema.json",
+        ROOT
+        / "proto/model-catalog/v1/model-registry-record.schema.json": "model-registry-record.schema.json",
+        ROOT
+        / "proto/model-catalog/v1/recommendation-policy.schema.json": "recommendation-policy.schema.json",
+        ROOT
+        / "proto/model-catalog/v1/catalog-snapshot.schema.json": "catalog-snapshot-v1.schema.json",
+        ROOT
+        / "proto/model-catalog/v2/catalog-snapshot.schema.json": "catalog-snapshot.schema.json",
+    }
+    for source, destination in copies.items():
+        assert (packaged / destination).read_bytes() == source.read_bytes()
 
 
 def test_rcj_is_stable_and_rejects_nonportable_numbers() -> None:
@@ -68,6 +86,9 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
         "image_to_image",
     ]
     assert aliases["qwen3-aligner"]["capabilities"]["task_types"] == [
+        "speech_recognition"
+    ]
+    assert aliases["qwen3-aligner"]["capabilities"]["operation_modes"] == [
         "forced_alignment"
     ]
     assert aliases["qwen3-tts-clone"]["capabilities"]["operation_modes"] == [

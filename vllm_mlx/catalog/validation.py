@@ -17,9 +17,11 @@ _SCHEMA_FILES = {
     "model_identity": "model-identity.schema.json",
     "machine_observation": "machine-observation.schema.json",
     "execution_config": "execution-config.schema.json",
+    "model_alias_v1": "model-alias-v1.schema.json",
     "model_alias": "model-alias.schema.json",
     "model_registry_record": "model-registry-record.schema.json",
     "recommendation_policy": "recommendation-policy.schema.json",
+    "catalog_snapshot_v1": "catalog-snapshot-v1.schema.json",
     "catalog_snapshot": "catalog-snapshot.schema.json",
 }
 

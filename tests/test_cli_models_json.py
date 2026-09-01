@@ -23,7 +23,9 @@ from vllm_mlx.cli import (
 def test_available_payload_shape() -> None:
     payload = _available_models_json_payload()
     assert set(payload) == {"text", "audio", "video", "image", "atomic"}
-    assert all(isinstance(payload[k], list) for k in ("text", "audio", "video", "image"))
+    assert all(
+        isinstance(payload[k], list) for k in ("text", "audio", "video", "image")
+    )
     assert set(payload["atomic"]) == {
         "snapshot",
         "recommendation_policies",
