@@ -593,6 +593,38 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     assert archive.get(run["run_id"]) == run
 
 
+def test_run_local_stops_when_image_warmup_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    calls = 0
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    def post(*args, **kwargs) -> _Response:
+        nonlocal calls
+        calls += 1
+        return _Response({"cancelled": True})
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(local_runner.requests, "post", post)
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert calls == 1
+    assert error.value.run["outcome"] == {
+        "status": "cancelled",
+        "failure_code": "user_cancelled",
+    }
+    assert archive.list() == [error.value.run]
+
+
 def test_run_local_rejects_wrong_image_artifact_dimensions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

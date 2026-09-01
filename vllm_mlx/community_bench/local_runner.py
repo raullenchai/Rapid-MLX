@@ -229,9 +229,9 @@ def _run_image(
             response.raise_for_status()
             result = response.json()
             duration_ms = (time.perf_counter() - started) * 1000
+            if result.get("cancelled", False):
+                raise BenchmarkCancelledError("image benchmark was cancelled")
             if index >= case["warmup_rounds"]:
-                if result.get("cancelled", False):
-                    raise BenchmarkCancelledError("image benchmark was cancelled")
                 image_count = _validated_image_count(
                     result, width=case["width"], height=case["height"]
                 )
