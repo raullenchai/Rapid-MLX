@@ -62,8 +62,10 @@ records rather than parse legacy submission JSON.
   used as a stand-in for unavailable evidence.
 - Completed video jobs expose their generated `size`, `frames`, and `fps` as
   response metadata. The registered runner rejects a result whose metadata
-  differs from the protocol workload, and treats every non-active job status
-  as terminal instead of waiting until the benchmark timeout.
+  differs from the protocol workload, then downloads the MP4 into a private
+  temporary file and probes its actual dimensions, frame count, and frame
+  rate. Missing, empty, corrupt, or shape-drifted artifacts fail closed. Every
+  non-active job status is terminal instead of waiting until timeout.
 - Image results are decoded before measurement so their actual dimensions and
   count must match the registered workload. Observed zero token counts remain
   zero and fail comparability validation instead of being replaced by targets.

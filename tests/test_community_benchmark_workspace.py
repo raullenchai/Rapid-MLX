@@ -555,6 +555,7 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     )
     serve_options: dict = {}
     posts: list[dict] = []
+    artifacts: list[tuple] = []
     job_states = iter(("running", "completed"))
 
     @contextlib.contextmanager
@@ -583,6 +584,11 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     monkeypatch.setattr(_server, "serve", serve)
     monkeypatch.setattr(local_runner.requests, "post", post)
     monkeypatch.setattr(local_runner.requests, "get", get)
+    monkeypatch.setattr(
+        local_runner,
+        "_validated_video_artifact",
+        lambda base_url, job_id, **shape: artifacts.append((base_url, job_id, shape)),
+    )
     monkeypatch.setattr(local_runner.time, "sleep", lambda seconds: None)
     timings = iter((10.0, 15.0))
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
@@ -605,6 +611,13 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
             "timeout": 30,
         }
     ]
+    assert artifacts == [
+        (
+            "http://local/v1",
+            "job-1",
+            {"width": 832, "height": 480, "frames": 81, "fps": 24.0},
+        )
+    ]
     assert run["measurements"][0] == {
         "case_id": "t2v-480p-81f",
         "round_index": 1,
@@ -615,6 +628,105 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         "width": 832,
         "height": 480,
     }
+
+
+def test_video_artifact_is_downloaded_and_probed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ContentResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            assert chunk_size == 1024 * 1024
+            yield b"small-mp4-fixture"
+
+    def get(url: str, *, stream: bool, timeout: float) -> ContentResponse:
+        assert url == "http://local/v1/videos/job-1/content"
+        assert stream is True
+        assert timeout == 60
+        return ContentResponse({})
+
+    def probe(path: str) -> tuple[int, int, int, float]:
+        assert Path(path).read_bytes() == b"small-mp4-fixture"
+        return 832, 480, 81, 24.0
+
+    monkeypatch.setattr(local_runner.requests, "get", get)
+    monkeypatch.setattr(local_runner, "_probe_video_artifact", probe)
+
+    local_runner._validated_video_artifact(
+        "http://local/v1",
+        "job-1",
+        width=832,
+        height=480,
+        frames=81,
+        fps=24,
+    )
+
+
+@pytest.mark.parametrize("mode", ["empty", "corrupt"])
+def test_video_artifact_rejects_missing_or_corrupt_content(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    class ContentResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            if mode == "corrupt":
+                yield b"not-an-mp4"
+
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: ContentResponse({}),
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_probe_video_artifact",
+        lambda path: (_ for _ in ()).throw(RuntimeError("invalid MP4")),
+    )
+
+    with pytest.raises(RuntimeError, match="empty MP4|invalid MP4"):
+        local_runner._validated_video_artifact(
+            "http://local/v1",
+            "job-1",
+            width=832,
+            height=480,
+            frames=81,
+            fps=24,
+        )
+
+
+@pytest.mark.parametrize(
+    ("probe_result", "message"),
+    [
+        ((640, 480, 81, 24.0), "640x480"),
+        ((832, 480, 41, 24.0), "41 frames"),
+        ((832, 480, 81, 16.0), "16 fps"),
+    ],
+)
+def test_video_artifact_rejects_actual_shape_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    probe_result: tuple[int, int, int, float],
+    message: str,
+) -> None:
+    class ContentResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            yield b"mp4"
+
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: ContentResponse({}),
+    )
+    monkeypatch.setattr(
+        local_runner, "_probe_video_artifact", lambda path: probe_result
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        local_runner._validated_video_artifact(
+            "http://local/v1",
+            "job-1",
+            width=832,
+            height=480,
+            frames=81,
+            fps=24,
+        )
 
 
 @pytest.mark.parametrize("terminal_status", ["cancelled", "canceled"])

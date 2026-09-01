@@ -9,6 +9,7 @@ import binascii
 import concurrent.futures
 import io
 import math
+import tempfile
 import time
 from typing import Any
 
@@ -99,6 +100,76 @@ def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -
                 f"registered workload requires {width}x{height}"
             )
     return len(data)
+
+
+def _probe_video_artifact(path: str) -> tuple[int, int, int, float]:
+    try:
+        import imageio.v2 as imageio
+    except ImportError as exc:  # pragma: no cover - video extra owns this dependency
+        raise RuntimeError(
+            "video artifact validation requires rapid-mlx[video]"
+        ) from exc
+
+    try:
+        reader = imageio.get_reader(path, format="ffmpeg")
+        try:
+            metadata = reader.get_meta_data()
+            size = metadata.get("size")
+            if not isinstance(size, (tuple, list)) or len(size) != 2:
+                raise RuntimeError("video artifact has no dimensions")
+            frames = reader.count_frames()
+            fps = float(metadata.get("fps"))
+        finally:
+            reader.close()
+    except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError("video benchmark returned an invalid MP4 artifact") from exc
+    return int(size[0]), int(size[1]), int(frames), fps
+
+
+def _validated_video_artifact(
+    base_url: str,
+    job_id: str,
+    *,
+    width: int,
+    height: int,
+    frames: int,
+    fps: float,
+) -> None:
+    response = requests.get(
+        f"{base_url}/videos/{job_id}/content",
+        stream=True,
+        timeout=60,
+    )
+    response.raise_for_status()
+    with tempfile.NamedTemporaryFile(prefix="rapid-benchmark-", suffix=".mp4") as file:
+        size_bytes = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            file.write(chunk)
+            size_bytes += len(chunk)
+        if size_bytes == 0:
+            raise RuntimeError("video benchmark returned an empty MP4 artifact")
+        file.flush()
+        actual_width, actual_height, actual_frames, actual_fps = _probe_video_artifact(
+            file.name
+        )
+    if (actual_width, actual_height) != (width, height):
+        raise RuntimeError(
+            f"video artifact is {actual_width}x{actual_height}; "
+            f"registered workload requires {width}x{height}"
+        )
+    if actual_frames != frames:
+        raise RuntimeError(
+            f"video artifact has {actual_frames} frames; "
+            f"registered workload requires {frames}"
+        )
+    if not math.isclose(actual_fps, fps, rel_tol=0, abs_tol=0.01):
+        raise RuntimeError(
+            f"video artifact is {actual_fps:g} fps; registered workload requires {fps:g}"
+        )
 
 
 def _run_image(
@@ -214,6 +285,7 @@ def _run_video(
                     "message", f"video generation ended with status {status!r}"
                 )
             )
+        duration_ms = (time.perf_counter() - started) * 1000
         expected_size = f"{case['width']}x{case['height']}"
         if (
             job.get("size") != expected_size
@@ -225,7 +297,14 @@ def _run_video(
             raise RuntimeError(
                 "video benchmark artifact metadata does not match the registered workload"
             )
-        duration_ms = (time.perf_counter() - started) * 1000
+        _validated_video_artifact(
+            server["base_url"],
+            str(job["id"]),
+            width=case["width"],
+            height=case["height"],
+            frames=case["frames"],
+            fps=case["fps_milli"] / 1000,
+        )
         return [
             {
                 "case_id": case["case_id"],
