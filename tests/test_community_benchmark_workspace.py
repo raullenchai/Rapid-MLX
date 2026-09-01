@@ -101,7 +101,7 @@ def _mock_local_context(
 def test_packaged_benchmark_contracts_are_exact_proto_copies(
     packaged: str, source: str
 ) -> None:
-    installed = resources.files("vllm_mlx.community_bench.contracts").joinpath(packaged)
+    installed = resources.files("vllm_mlx.catalog.schemas").joinpath(packaged)
     proto = REPO_ROOT / "proto" / "community-benchmark" / "v1" / source
     assert installed.read_bytes() == proto.read_bytes()
 

@@ -30,7 +30,10 @@ _PROTOCOL_HISTORY = {
 
 
 def _read_json(name: str) -> dict[str, Any]:
-    root = resources.files("vllm_mlx.community_bench.contracts")
+    # Installed projections share the already-packaged atomic contract
+    # resource bundle. Top-level ``proto/`` remains the cross-product SSOT;
+    # tests pin every projection byte-for-byte to that source.
+    root = resources.files("vllm_mlx.catalog.schemas")
     return json.loads(root.joinpath(name).read_text(encoding="utf-8"))
 
 
