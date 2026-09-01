@@ -77,6 +77,10 @@ struct RapidApp: App {
     /// Local speech-to-text and text-to-speech workflows. Like Images, this
     /// shares the one embedded server and swaps models only on explicit work.
     @State private var audio: AudioViewModel
+    /// Experimental Video-tab state. Creating this controller is inert: no
+    /// catalog lookup, download, or server start occurs until the gated view
+    /// appears and the user explicitly acts.
+    @State private var video: VideoGenViewModel
     /// Owned by the app, not the Audio tab: dictation must keep working
     /// while Rapid's own window is closed.
     @State private var dictation: DictationController
@@ -341,6 +345,7 @@ struct RapidApp: App {
         }
         _imageGen = State(initialValue: imageGenViewModel)
         _audio = State(initialValue: AudioViewModel(server: manager))
+        _video = State(initialValue: VideoGenViewModel(server: manager))
         _dictation = State(initialValue: dictationController)
         _updater = State(initialValue: updateChecker)
         _sparkleUpdater = State(initialValue: sparkleUpdateController)
@@ -375,6 +380,7 @@ struct RapidApp: App {
                 .environment(chatViewModel)
                 .environment(imageGen)
                 .environment(audio)
+                .environment(video)
                 .environment(dictation)
                 .environment(updater)
                 .environment(sparkleUpdater)

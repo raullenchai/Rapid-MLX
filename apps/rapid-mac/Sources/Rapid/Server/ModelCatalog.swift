@@ -54,7 +54,7 @@ enum ImageModelCapability: String, Sendable, Hashable {
 
 /// Request shapes advertised by a video-generation alias. The engine owns
 /// this metadata; Desktop never infers it from an alias or model family.
-enum VideoModelCapability: String, Sendable, Hashable {
+enum VideoModelCapability: String, Codable, Sendable, Hashable {
     case textToVideo = "text-to-video"
     case imageToVideo = "image-to-video"
 }
@@ -72,6 +72,8 @@ enum ModelSelectionPurpose: Sendable, Hashable {
     case imageEditing
     case speechToText
     case textToSpeech
+    case textToVideo
+    case imageToVideo
 
     func accepts(_ entry: ModelEntry) -> Bool {
         switch self {
@@ -93,6 +95,12 @@ enum ModelSelectionPurpose: Sendable, Hashable {
             return entry.kind == .audio
                 && entry.audioCapability?.supportsPresetSpeech == true
                 && entry.audioFamily == "qwen3_tts"
+        case .textToVideo:
+            return entry.kind == .video
+                && entry.videoCapabilities.contains(.textToVideo)
+        case .imageToVideo:
+            return entry.kind == .video
+                && entry.videoCapabilities.contains(.imageToVideo)
         }
     }
 
@@ -765,7 +773,7 @@ enum ModelCatalog {
         }
     }
 
-    /// Video aliases for the future Video surface. This intentionally uses
+    /// Video aliases for the experimental Video surface. This intentionally uses
     /// the machine-readable catalog: request modes and the physical-memory
     /// floor are serving contracts, not presentation strings that Desktop
     /// should reconstruct from the human-readable table.

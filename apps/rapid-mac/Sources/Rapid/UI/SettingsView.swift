@@ -45,6 +45,8 @@ struct SettingsView: View {
     @Environment(DeferredTelemetryConsentCoordinator.self) private var deferredTelemetryConsent
     @State private var confirmingSetupRestart = false
     @State private var restartingSetup = false
+    @AppStorage(VideoFeatureConfig.enabledKey)
+    private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -88,6 +90,10 @@ struct SettingsView: View {
         /// the same thing. Mixing them would invite the "I moved a slider and
         /// quality changed" confusion the issue is written to avoid.
         case performance
+        /// Resource-intensive product surfaces that are still being validated
+        /// on the range of Macs Rapid supports. Their opt-ins are explicit,
+        /// persistent, and take effect immediately without restarting.
+        case experimentalFeatures
         case appearance
         case privacy
         /// Rapid-MLX Desktop app updates. The .app self-update is the
@@ -110,6 +116,7 @@ struct SettingsView: View {
             case .tools: return "Tools"
             case .connectors: return "Connectors"
             case .performance: return "Performance"
+            case .experimentalFeatures: return "Experimental Features"
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
@@ -126,6 +133,7 @@ struct SettingsView: View {
             case .tools: return "wrench.and.screwdriver.fill"
             case .connectors: return "powerplug.fill"
             case .performance: return "speedometer"
+            case .experimentalFeatures: return "flask.fill"
             case .appearance: return "paintpalette.fill"
             case .privacy: return "lock.shield.fill"
             case .app: return "app.badge.fill"
@@ -492,6 +500,8 @@ struct SettingsView: View {
             SettingsConnectorsPanel()
         case .performance:
             SettingsPerformancePanel()
+        case .experimentalFeatures:
+            experimentalFeaturesPanel
         case .appearance:
             appearancePanel
         case .privacy:
@@ -503,6 +513,27 @@ struct SettingsView: View {
             SettingsDeveloperPanel()
         #endif
         }
+    }
+
+    private var experimentalFeaturesPanel: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Experimental Features",
+                subtitle: "Opt in to features that are still being validated across supported Macs.",
+                emphasis: .page
+            )
+            SettingsSection {
+                Toggle(isOn: $videoGenerationEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable Video Generation",
+                        description: "Shows the Video tab. Video models need Apple silicon, large downloads, and typically 24 GB or more of unified memory. Nothing downloads or starts until you choose a model."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.VideoGenerationToggle")
+            }
+        }
+        .accessibilityIdentifier("Settings.Experimental.Panel")
     }
 
     private var instructionsPanel: some View {
