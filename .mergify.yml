@@ -10,6 +10,52 @@ merge_protections_settings:
         - label = merge-ready
         - label = merge-ready-mac
 
+# ``auto_merge_conditions`` admits a ready head initially, but Mergify keeps a
+# head in a terminal dequeued state after a batch outcome. The explicit queue
+# actions are the diagnosed re-entry edge: re-applying the same
+# ready label records ``merge-requeue-required``, clears the bot-owned
+# ``dequeued`` marker, and issues the one-shot ``merge-requeue-trigger`` label
+# in authorize-merge-ready.yml. These rules consume the trigger while queueing
+# the still-authorized exact head. The persistent, head-bound recovery marker
+# lets a fresh authorization mint another trigger after any partial provider
+# action failure. Neither marker alone can retry the head.
+pull_request_rules:
+  - name: enqueue an explicitly authorized no-Mac head
+    conditions:
+      - base = main
+      - -draft
+      - -from-fork
+      - label = merge-ready
+      - -label = merge-ready-mac
+      - label = merge-requeue-required
+      - label = merge-requeue-trigger
+      - -label = dequeued
+      - check-success = merge-ready-head
+    actions:
+      queue:
+        name: no-mac-batch
+      label:
+        remove:
+          - merge-requeue-trigger
+
+  - name: enqueue an explicitly authorized Mac head
+    conditions:
+      - base = main
+      - -draft
+      - -from-fork
+      - label = merge-ready-mac
+      - -label = merge-ready
+      - label = merge-requeue-required
+      - label = merge-requeue-trigger
+      - -label = dequeued
+      - check-success = merge-ready-head
+    actions:
+      queue:
+        name: mac-batch
+      label:
+        remove:
+          - merge-requeue-trigger
+
 queue_rules:
   - name: no-mac-batch
     queue_branch_prefix: mergify/merge-queue/

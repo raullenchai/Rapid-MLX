@@ -14,21 +14,178 @@ jobs:
        github.event.label.name == 'merge-ready-mac')
     runs-on: ubuntu-latest
     permissions:
+      issues: write
+      pull-requests: read
       statuses: write
     steps:
       - name: Bind ready authorization to the current head
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
           script: |
+            // A historical Actions rerun must not replay an old labeled event
+            // to clear a dequeue that happened later.  A maintainer can always
+            // create a fresh authorization event by removing/re-applying the
+            // ready label.
+            if (Number(process.env.GITHUB_RUN_ATTEMPT) !== 1) {
+              core.setFailed(
+                "A merge-ready authorization event cannot be replayed; remove and re-apply the ready label.",
+              );
+              return;
+            }
+
             const readyLabels = new Set(["merge-ready", "merge-ready-mac"]);
-            const present = context.payload.pull_request.labels
-              .map((label) => label.name)
-              .filter((label) => readyLabels.has(label));
-            const authorized = present.length === 1;
+            // Close the stale-success window before any fallible live-state
+            // lookup. Mergify cannot admit this event head again unless every
+            // validation and recovery step below completes and publishes the
+            // final success status.
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: "pending",
+              context: "merge-ready-head",
+              description: `Validating ${context.payload.label.name} on this exact head`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+            });
+            const { data: livePull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const currentLabels = new Set(
+              livePull.labels.map((label) => label.name),
+            );
+            const present = [...currentLabels].filter((label) =>
+              readyLabels.has(label),
+            );
+            const sameHead =
+              livePull.head.sha === context.payload.pull_request.head.sha;
+            const baseAuthorized =
+              sameHead &&
+              present.length === 1 &&
+              present[0] === context.payload.label.name;
+            const wasDequeued = currentLabels.has("dequeued");
+            const recoveryRequired =
+              wasDequeued || currentLabels.has("merge-requeue-required");
+            const latestLabeledAt = (events, name) =>
+              events
+                .filter(
+                  (event) =>
+                    event.event === "labeled" && event.label?.name === name,
+                )
+                .map((event) => Date.parse(event.created_at))
+                .filter(Number.isFinite)
+                .reduce((latest, value) => Math.max(latest, value), -Infinity);
+            let recoveryEventFresh = true;
+            if (baseAuthorized && recoveryRequired) {
+              const events = await github.paginate(
+                github.rest.issues.listEvents,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  per_page: 100,
+                },
+              );
+              const readyLabeledAt = latestLabeledAt(
+                events,
+                context.payload.label.name,
+              );
+              const dequeuedLabeledAt = latestLabeledAt(events, "dequeued");
+              // GitHub documents created_at for issue events. Require a strict
+              // ordering; same-second or missing events fail closed and can be
+              // resolved by re-applying the ready label once more.
+              recoveryEventFresh = readyLabeledAt > dequeuedLabeledAt;
+            }
+            const authorized = baseAuthorized && recoveryEventFresh;
             const state = authorized ? "success" : "failure";
             const description = authorized
               ? `Authorized ${present[0]} on this exact head`
-              : "Apply exactly one merge-ready label";
+              : recoveryRequired && !recoveryEventFresh
+                ? "Re-apply merge-ready after the latest dequeue"
+                : "Apply exactly one merge-ready label";
+
+            // Mergify records a terminal dequeue for this exact head after a
+            // batch outcome. Only a fresh, valid ready-label event may start
+            // one diagnosed retry. A persistent recovery marker makes partial
+            // provider action failure recoverable, while the consumed trigger
+            // prevents either marker from retrying the head by itself.
+            if (authorized && recoveryRequired) {
+              // Mint the one-shot token while the pending status blocks
+              // Mergify (and, on first recovery, the dequeue marker does too).
+              // Every interruption point is fail-closed and recoverable by a
+              // fresh label event: addLabels is idempotent, and a surviving
+              // token remains blocked until the final success status.
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ["merge-requeue-required", "merge-requeue-trigger"],
+              });
+              if (wasDequeued) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    name: "dequeued",
+                  });
+                  core.notice(
+                    `Cleared stale dequeued state before re-authorizing ${present[0]}.`,
+                  );
+                } catch (error) {
+                  // A concurrent Mergify reconciliation may remove the label
+                  // first. Missing is desired; every other error must fail
+                  // closed instead of claiming the head was re-authorized.
+                  if (error.status !== 404) {
+                    throw error;
+                  }
+                }
+                // Close the check/remove race: a new dequeue can arrive after
+                // the first event snapshot but before marker removal. Re-read
+                // the authoritative event sequence before publishing success.
+                const postRemovalEvents = await github.paginate(
+                  github.rest.issues.listEvents,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    per_page: 100,
+                  },
+                );
+                const postReadyAt = latestLabeledAt(
+                  postRemovalEvents,
+                  context.payload.label.name,
+                );
+                const postDequeueAt = latestLabeledAt(
+                  postRemovalEvents,
+                  "dequeued",
+                );
+                if (!(postReadyAt > postDequeueAt)) {
+                  // Restore the circuit breaker removed above. The pending
+                  // status already blocks admission while this call runs.
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    labels: ["dequeued"],
+                  });
+                  const staleDescription =
+                    "Re-apply merge-ready after the latest dequeue";
+                  await github.rest.repos.createCommitStatus({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    sha: context.payload.pull_request.head.sha,
+                    state: "failure",
+                    context: "merge-ready-head",
+                    description: staleDescription,
+                    target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/pull/${context.issue.number}`,
+                  });
+                  core.setFailed(staleDescription);
+                  return;
+                }
+              }
+            }
 
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
@@ -42,4 +199,5 @@ jobs:
 
             if (!authorized) {
               core.setFailed(description);
+              return;
             }
