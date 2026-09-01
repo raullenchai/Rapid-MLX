@@ -261,6 +261,32 @@ struct ServerRuntimeCapabilitiesTests {
         )
     }
 
+    @Test("Community Benchmark rejects a waiter cancelled before registration")
+    @MainActor
+    func benchmarkPreCancelledWaiterDoesNotHang() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        let gate = RuntimeProbeGate()
+        let cancelledOwner = Task { @MainActor in
+            await gate.wait()
+            return try await manager.prepareForCommunityBenchmark()
+        }
+
+        await gate.waitUntilEntered()
+        cancelledOwner.cancel()
+        await gate.release()
+        do {
+            _ = try await cancelledOwner.value
+            Issue.record("pre-cancelled benchmark unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: registration observes cancellation and never queues.
+        }
+
+        manager.finishCommunityBenchmark(firstReservation)
+        let replacement = try await manager.prepareForCommunityBenchmark()
+        manager.finishCommunityBenchmark(replacement)
+    }
+
     @Test("Community Benchmark cancellation releases an operating wait")
     @MainActor
     func benchmarkCancellationReleasesOperatingWait() async throws {

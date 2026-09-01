@@ -49,7 +49,7 @@ struct CommunityBenchmarkModelTests {
         )
         let model = try #require(CommunityBenchmarkModel.models(from: [text]).first)
         #expect(model.task == .textGeneration)
-        #expect(model.protocolName == "Rapid Community Speed v1")
+        #expect(model.protocolName == "Rapid Community Speed v2")
     }
 
     @Test("Legacy diffusion kinds cannot invent registered protocol eligibility")
@@ -100,7 +100,8 @@ struct CommunityBenchmarkModelTests {
             alias: image.alias,
             focus: true,
             estimatedMemoryGib: 64,
-            memoryFit: "does_not_fit"
+            memoryFit: "does_not_fit",
+            protocolVersion: 1
         )
         let model = try #require(
             CommunityBenchmarkModel.models(
@@ -131,7 +132,8 @@ struct CommunityBenchmarkModelTests {
             alias: retained.alias,
             focus: true,
             estimatedMemoryGib: 8,
-            memoryFit: "fits"
+            memoryFit: "fits",
+            protocolVersion: 2
         )
         let filtered = CommunityBenchmarkModel.models(
             from: [removed, retained],

@@ -3206,7 +3206,16 @@ final class ServerManager {
         if communityBenchmarkReserved {
             let waiterID = UUID()
             _ = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<UUID, any Error>) in
+                    // Cancellation handlers may fire before their operation
+                    // registers this waiter. Since both registration and the
+                    // cancellation callback are MainActor-isolated, checking
+                    // here closes that ordering gap without a lock.
+                    guard !Task.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     communityBenchmarkWaiters.append(
                         (waiterID, reservation, continuation)
                     )

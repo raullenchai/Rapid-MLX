@@ -73,6 +73,7 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
         if task == "video_generation" and alias["alias"] not in _REGISTERED_WAN_ALIASES:
             continue
         model = models[alias["target"]["registry_model_id"]]
+        workload = registered_workload(task)
         size = model.get("estimated_download_size_bytes")
         estimated_memory_gib = None
         estimate_source = "unknown"
@@ -94,6 +95,7 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
                 "repo_id": model["source"]["repo_id"],
                 "task_type": task,
                 "protocol_id": _TASK_PROTOCOL[task],
+                "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
                 "memory_estimate_source": estimate_source,

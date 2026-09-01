@@ -111,8 +111,11 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     by_alias = {model["alias"]: model for model in catalog["models"]}
 
     assert by_alias["flux2-klein-4b"]["protocol_id"] == "rapid-image-speed"
+    assert by_alias["flux2-klein-4b"]["protocol_version"] == 1
     assert by_alias["wan2.2-ti2v-5b-q8"]["protocol_id"] == "rapid-video-speed"
+    assert by_alias["wan2.2-ti2v-5b-q8"]["protocol_version"] == 1
     assert by_alias["qwen3.8-27b-4bit"]["protocol_id"] == "rapid-community-speed"
+    assert by_alias["qwen3.8-27b-4bit"]["protocol_version"] == 2
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
     assert by_alias["qwen-image"]["estimated_memory_gib"] == 64

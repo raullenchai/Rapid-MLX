@@ -52,11 +52,18 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 task = nil
             }
             guard let task else { return nil }
+            let protocolVersion = catalogModel?.protocolVersion ?? {
+                switch task {
+                case .textGeneration: 2
+                case .imageGeneration, .videoGeneration: 1
+                default: 1
+                }
+            }()
             let protocolName: String
             switch task {
-            case .imageGeneration: protocolName = "Rapid Image Speed v1"
-            case .videoGeneration: protocolName = "Rapid Video Speed v1"
-            case .textGeneration: protocolName = "Rapid Community Speed v1"
+            case .imageGeneration: protocolName = "Rapid Image Speed v\(protocolVersion)"
+            case .videoGeneration: protocolName = "Rapid Video Speed v\(protocolVersion)"
+            case .textGeneration: protocolName = "Rapid Community Speed v\(protocolVersion)"
             default: return nil
             }
             return Self(
@@ -86,11 +93,13 @@ struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
     let focus: Bool
     let estimatedMemoryGib: Int?
     let memoryFit: String
+    let protocolVersion: Int?
 
     enum CodingKeys: String, CodingKey {
         case alias, focus
         case estimatedMemoryGib = "estimated_memory_gib"
         case memoryFit = "memory_fit"
+        case protocolVersion = "protocol_version"
     }
 }
 
