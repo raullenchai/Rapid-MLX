@@ -202,7 +202,9 @@ _model_registry = ModelRegistry()
 _residency_manager: ResidentModelManager | None = None
 _resident_memory_limit_bytes: int = 0
 _resident_idle_ttl_seconds: float = 0.0
-_resident_gpu_memory_utilization: float = 0.90
+# ``None`` = per-model auto budgeting (#2858); a float is the operator's
+# explicit --gpu-memory-utilization, applied to every resident model.
+_resident_gpu_memory_utilization: float | None = None
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
@@ -1946,7 +1948,7 @@ def load_model(
     stream_interval: int = 1,
     max_tokens: int | None = None,
     force_mllm: bool = False,
-    gpu_memory_utilization: float = 0.90,
+    gpu_memory_utilization: float | None = None,
     prefill_step_size: int | None = None,
     *,
     served_model_name: str | None = None,
@@ -1976,7 +1978,9 @@ def load_model(
             programmatic callers that pass ``max_tokens`` are treated as
             explicit while callers that omit it keep the implicit default.
         force_mllm: Force loading as MLLM even if not auto-detected
-        gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
+        gpu_memory_utilization: Fraction of device memory (0.0-1.0).
+            ``None`` (default) auto-sizes the Metal budget to the loaded
+            model (#2858); an explicit float is honored verbatim.
         prefill_step_size: DEPRECATED — pass via
             ``scheduler_config.prefill_step_size`` instead. Pre-0.6.52 this
             parameter was accepted but silently ignored (the value never
@@ -2705,7 +2709,7 @@ def configure_model_residency(
     *,
     memory_limit_gb: float = 0,
     idle_ttl_seconds: float = 0,
-    gpu_memory_utilization: float = 0.90,
+    gpu_memory_utilization: float | None = None,
 ) -> ResidentModelManager:
     """Configure the process-wide resident-model manager before startup."""
 
@@ -2716,7 +2720,9 @@ def configure_model_residency(
 
     _resident_memory_limit_bytes = max(0, int(float(memory_limit_gb) * 1024**3))
     _resident_idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
-    _resident_gpu_memory_utilization = float(gpu_memory_utilization)
+    _resident_gpu_memory_utilization = (
+        float(gpu_memory_utilization) if gpu_memory_utilization is not None else None
+    )
     _residency_manager = ResidentModelManager(
         _model_registry,
         _load_dynamic_resident_model,
