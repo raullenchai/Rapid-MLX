@@ -201,6 +201,46 @@ def test_failed_attempt_is_archived_without_exception_text(
     assert "secret path" not in json.dumps(saved[0])
 
 
+def test_machine_probe_failure_is_archived_without_traceback_or_fake_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "collect",
+        lambda: (_ for _ in ()).throw(RuntimeError("sysctl unavailable")),
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias: pytest.fail("executor must not start after probe failure"),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="sysctl unavailable"
+    ) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    failed = error.value.run
+    assert failed["outcome"] == {
+        "status": "failed",
+        "failure_code": "machine_probe_failed",
+    }
+    assert "machine" not in failed  # Never fabricate an atomic machine identity.
+    assert failed["execution"]["task_type"] == "image_generation"
+    assert archive.list() == [failed]
+
+
+def test_completed_run_cannot_omit_atomic_machine_identity() -> None:
+    run = _image_run()
+    del run["machine"]
+    with pytest.raises(ValueError, match="machine"):
+        BenchmarkRunValidator().validate(run)
+
+
 def test_run_local_executes_image_protocol_and_excludes_warmup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

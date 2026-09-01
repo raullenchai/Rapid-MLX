@@ -230,14 +230,17 @@ struct ServerRuntimeCapabilitiesTests {
         }
 
         await witness.waitUntilEntered()
-        await manager.prepareForCommunityBenchmark()
+        let firstReservation = await manager.prepareForCommunityBenchmark()
+        let secondReservation = await manager.prepareForCommunityBenchmark()
 
         #expect(await probe.value == nil)
         #expect(await witness.wasCancelled)
         #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
         #expect(await manager.ensureServing(alias: "qwen3.5-4b") == false)
 
-        manager.finishCommunityBenchmark()
+        manager.finishCommunityBenchmark(firstReservation)
+        #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
+        manager.finishCommunityBenchmark(secondReservation)
         manager.runtimeCapabilitiesProvider = { _ in .allKnown }
         #expect(
             await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == .allKnown

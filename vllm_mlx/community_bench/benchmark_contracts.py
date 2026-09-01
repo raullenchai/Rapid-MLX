@@ -82,14 +82,16 @@ class BenchmarkRunValidator:
             raise CatalogValidationError("benchmark_run", path, failure.message)
 
         self._atomic.validate_model_identity(run["model"])
-        self._atomic.validate("machine_observation", run["machine"])
+        if "machine" in run:
+            self._atomic.validate("machine_observation", run["machine"])
         self._atomic.validate("execution_config", run["execution"])
 
-        machine = run["machine"]
-        if machine["profile_digest"] != rcj_digest(machine["profile"]):
-            raise CatalogValidationError(
-                "benchmark_run", "machine/profile_digest", "does not match profile"
-            )
+        if "machine" in run:
+            machine = run["machine"]
+            if machine["profile_digest"] != rcj_digest(machine["profile"]):
+                raise CatalogValidationError(
+                    "benchmark_run", "machine/profile_digest", "does not match profile"
+                )
         execution = run["execution"]
         execution_projection = {
             "task_type": execution["task_type"],

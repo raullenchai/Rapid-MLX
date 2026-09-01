@@ -4,7 +4,7 @@
   "title": "Rapid-MLX BenchmarkRun v1",
   "description": "Privacy-allowlisted raw benchmark upload for text, vision-language, image, or video generation.",
   "type": "object", "additionalProperties": false,
-  "required": ["schema_version", "run_id", "started_at", "completed_at", "collector", "model", "machine", "execution", "workload", "outcome"],
+  "required": ["schema_version", "run_id", "started_at", "completed_at", "collector", "model", "execution", "workload", "outcome"],
   "properties": {
     "schema_version": {"const": 1},
     "run_id": {"$ref": "#/$defs/uuid"},
@@ -21,7 +21,7 @@
     "measurements": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/measurement"}}
   },
   "allOf": [
-    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "completed"}}, "required": ["status"]}}}, "then": {"required": ["measurements"], "properties": {"measurements": {"items": {"properties": {"completed": {"const": true}}, "required": ["completed"]}}}}},
+    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "completed"}}, "required": ["status"]}}}, "then": {"required": ["machine", "measurements"], "properties": {"measurements": {"items": {"properties": {"completed": {"const": true}}, "required": ["completed"]}}}}},
     {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "text_generation"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "text_generation"}}}, "workload": {"properties": {"task_type": {"const": "text_generation"}}}}}},
     {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "vision_language"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "vision_language"}}}, "workload": {"properties": {"task_type": {"const": "vision_language"}}}}}},
     {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "image_generation"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "image_generation"}}}, "workload": {"properties": {"task_type": {"const": "image_generation"}}}}}},
@@ -126,7 +126,7 @@
     "measurement": {"oneOf": [{"$ref": "#/$defs/textMeasurement"}, {"$ref": "#/$defs/vlmMeasurement"}, {"$ref": "#/$defs/imageMeasurement"}, {"$ref": "#/$defs/videoMeasurement"}]},
     "outcome": {
       "type": "object", "additionalProperties": false, "required": ["status"],
-      "properties": {"status": {"enum": ["completed", "failed", "cancelled"]}, "failure_code": {"enum": ["model_load_oom", "runtime_oom", "unsupported_task", "invalid_model", "timeout", "user_cancelled", "runtime_error", "unknown"]}},
+      "properties": {"status": {"enum": ["completed", "failed", "cancelled"]}, "failure_code": {"enum": ["machine_probe_failed", "model_load_oom", "runtime_oom", "unsupported_task", "invalid_model", "timeout", "user_cancelled", "runtime_error", "unknown"]}},
       "allOf": [{"if": {"properties": {"status": {"const": "completed"}}}, "then": {"not": {"required": ["failure_code"]}}, "else": {"required": ["failure_code"]}}]
     }
   }

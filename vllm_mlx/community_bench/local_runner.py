@@ -226,12 +226,14 @@ def run_local(alias: str, *, archive: LocalRunArchive | None = None) -> dict[str
 
     plan = plan_for_alias(alias)
     model = plan["model"]
-    hardware, software = collect()
     started_at = utc_now()
     task_type = model["task_type"]
     context_length = None
+    hardware = None
+    software = None
     destination = archive or LocalRunArchive.default()
     try:
+        hardware, software = collect()
         if task_type == "text_generation":
             measurements, context_length = asyncio.run(
                 _text_measurements(model["repo_id"])
@@ -243,6 +245,11 @@ def run_local(alias: str, *, archive: LocalRunArchive | None = None) -> dict[str
         else:
             raise ValueError(f"unsupported benchmark task {task_type!r}")
     except Exception as exc:
+        failure_code = (
+            "machine_probe_failed"
+            if hardware is None or software is None
+            else _failure_code(exc)
+        )
         failed = build_run(
             repo_id=model["repo_id"],
             task_type=task_type,
@@ -250,7 +257,7 @@ def run_local(alias: str, *, archive: LocalRunArchive | None = None) -> dict[str
             software=software,
             started_at=started_at,
             status="failed",
-            failure_code=_failure_code(exc),
+            failure_code=failure_code,
             context_length=context_length,
         )
         destination.save(failed)

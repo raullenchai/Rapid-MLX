@@ -696,7 +696,11 @@ final class ServerManager {
     /// remains active until the benchmark subprocess exits, closing the gap
     /// where an auto-start or model selection could otherwise race a second
     /// model into memory.
-    private var communityBenchmarkReserved = false
+    private var communityBenchmarkReservations: Set<UUID> = []
+
+    private var communityBenchmarkReserved: Bool {
+        !communityBenchmarkReservations.isEmpty
+    }
 
     /// Owns the cancellable `serve --help` capability probe between catalog
     /// resolution and the atomic spawn section. `start()` is MainActor-
@@ -3183,21 +3187,23 @@ final class ServerManager {
     /// memory. A start already inside its short spawn critical section is
     /// allowed to finish atomically, then is stopped here; starts suspended in
     /// pre-spawn work observe ``communityBenchmarkReserved`` before launch.
-    func prepareForCommunityBenchmark() async {
-        communityBenchmarkReserved = true
+    func prepareForCommunityBenchmark() async -> UUID {
+        let reservation = UUID()
+        communityBenchmarkReservations.insert(reservation)
         cancelAutoRespawn()
         cancelRuntimeProbe()
         while isOperating {
             await Task.yield()
         }
         await stop(preservingLastServedAlias: false)
+        return reservation
     }
 
     /// Release the lifecycle reservation after the benchmark subprocess has
     /// exited. The prior model is intentionally not auto-restored in the
     /// internal beta; the user can start it again explicitly.
-    func finishCommunityBenchmark() {
-        communityBenchmarkReserved = false
+    func finishCommunityBenchmark(_ reservation: UUID) {
+        communityBenchmarkReservations.remove(reservation)
     }
 
     /// Shared expected-stop path. Model replacement keeps the previous

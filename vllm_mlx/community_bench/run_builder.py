@@ -134,8 +134,8 @@ def build_run(
     *,
     repo_id: str,
     task_type: str,
-    hardware: Hardware,
-    software: Software,
+    hardware: Hardware | None,
+    software: Software | None,
     started_at: str,
     measurements: list[dict[str, Any]] | None = None,
     status: str = "completed",
@@ -152,11 +152,12 @@ def build_run(
         "completed_at": utc_now(),
         "collector": {"name": "rapid-mlx-community-bench", "version": __version__},
         "model": unresolved_model_identity(repo_id, task_type),
-        "machine": machine_observation(hardware, software),
         "execution": execution_config(task_type, context_length=context_length),
         "workload": registered_workload(task_type),
         "outcome": outcome,
     }
+    if hardware is not None and software is not None:
+        run["machine"] = machine_observation(hardware, software)
     if measurements:
         run["measurements"] = measurements
     BenchmarkRunValidator().validate(run)

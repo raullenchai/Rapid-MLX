@@ -30,8 +30,13 @@ records rather than parse legacy submission JSON.
   `~/.rapid-mlx/benchmarks/runs/` with directory mode `0700` and file mode
   `0600`. No network upload or share control is part of this execution path.
 - Desktop stops its active inference server before benchmarking so two large
-  model processes cannot compete for unified memory. Cancellation terminates
-  the benchmark process; its child server has the existing parent watchdog.
+  model processes cannot compete for unified memory. An owner-scoped lifecycle
+  reservation remains active until cancellation has terminated and reaped the
+  benchmark CLI's entire process group, including its child server.
+- A completed run always contains its atomic `MachineObservation`. If the
+  privacy-allowlisted machine probe itself fails, the local failed attempt uses
+  `machine_probe_failed` and omits `machine` rather than fabricating identity;
+  this exception is permitted only for non-completed outcomes.
 - Model aliases are presentation/routing metadata, not model identity. The v1
   local run stores an unresolved `ModelIdentity` until the registry can pin a
   revision and artifact manifest. Such a result is useful local evidence but
