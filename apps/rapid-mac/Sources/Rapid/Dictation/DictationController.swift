@@ -179,6 +179,10 @@ final class DictationController {
     /// running cannot let its stale continuation start the microphone later.
     private var beginRecordingTask: Task<Void, Never>?
     private var beginRecordingRequestID: UUID?
+    /// The record-start page-in probe (see ``startRecordStartWarmup()``),
+    /// retained so ``disable()`` and a model change can cancel it.
+    private var recordStartWarmupTask: Task<Void, Never>?
+    private var recordStartWarmupRequestID: UUID?
     /// The in-flight prewarm, retained so ``disable()`` and a hotkey press
     /// can cancel it and so concurrent triggers join it (single-flight)
     /// instead of stacking probes in the engine's serial STT lane.
@@ -531,6 +535,9 @@ final class DictationController {
         beginRecordingTask?.cancel()
         beginRecordingTask = nil
         beginRecordingRequestID = nil
+        recordStartWarmupTask?.cancel()
+        recordStartWarmupTask = nil
+        recordStartWarmupRequestID = nil
         prewarmTask?.cancel()
         prewarmTask = nil
         prewarmRequestID = nil
@@ -552,6 +559,9 @@ final class DictationController {
         beginRecordingTask?.cancel()
         beginRecordingTask = nil
         beginRecordingRequestID = nil
+        recordStartWarmupTask?.cancel()
+        recordStartWarmupTask = nil
+        recordStartWarmupRequestID = nil
         if phase == .starting || phase == .recording {
             if let testingRecorderCancel {
                 testingRecorderCancel()
@@ -762,11 +772,15 @@ final class DictationController {
         guard server.isVoiceLaneReady(for: modelAlias) else {
             return false
         }
+        return await sendSilentWarmupProbe(alias: modelAlias)
+    }
+
+    private func sendSilentWarmupProbe(alias: String) async -> Bool {
         if let testingWarmup { return await testingWarmup() }
         do {
             _ = try await client.transcribe(
                 audioData: Self.silentProbeWAV,
-                model: modelAlias,
+                model: alias,
                 context: nil,
                 port: server.activePort,
                 bearer: server.activeBearer
@@ -779,8 +793,37 @@ final class DictationController {
             // Not user-facing — the cost of a failed probe is only that the
             // first real dictation pays the weight load again — but leave a
             // trace so a recurring failure is diagnosable.
-            NSLog("Dictation prewarm probe failed for %@: %@", modelAlias, String(describing: error))
+            NSLog("Dictation prewarm probe failed for %@: %@", alias, String(describing: error))
             return false
+        }
+    }
+
+    /// Fired alongside a successful `startCapture()`. After hours of idle,
+    /// macOS pages the resident STT weights out to disk even though the
+    /// process never unloaded them, and that page-in used to be paid at the
+    /// head of the first real transcription. Probing while the user is still
+    /// speaking overlaps the swap-in with the utterance itself. The engine
+    /// serialises transcriptions, so on a warm engine the probe costs one
+    /// ~0.2 s silence decode; on a cold one it is exactly the work the
+    /// utterance would otherwise pay after the recording stopped.
+    private func startRecordStartWarmup() {
+        // One probe per recording; an enable-time prewarm already in flight
+        // is doing this same page-in.
+        guard recordStartWarmupTask == nil, prewarmTask == nil else { return }
+        let alias = modelAlias
+        let requestID = UUID()
+        recordStartWarmupRequestID = requestID
+        recordStartWarmupTask = Task { [weak self] in
+            if self?.server.isVoiceLaneReady(for: alias) == true {
+                _ = await self?.sendSilentWarmupProbe(alias: alias)
+            }
+            // Only the flight that still owns the slot may clear it — a
+            // cancelled probe finishing late must not free the slot a newer
+            // recording claimed.
+            if let self, self.recordStartWarmupRequestID == requestID {
+                self.recordStartWarmupTask = nil
+                self.recordStartWarmupRequestID = nil
+            }
         }
     }
 
@@ -916,6 +959,7 @@ final class DictationController {
         phase = .starting
         hud.show(.starting)
         startTicking()
+        startRecordStartWarmup()
     }
 
     /// Fresh cache truth used at the recording boundary. Internal so the
@@ -1124,6 +1168,7 @@ final class DictationController {
     /// CoreAudio work behind for the next MainActor test.
     internal var testingHasActiveTicker: Bool { tickTimer?.isValid == true }
     internal var testingHasRecorder: Bool { recorderStorage != nil }
+    internal var testingHasRecordStartWarmup: Bool { recordStartWarmupTask != nil }
 
     // MARK: - Text
 
