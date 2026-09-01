@@ -301,11 +301,18 @@ enum CommunityBenchmarkCommand {
                     let errorTask = Task.detached {
                         try stderr.fileHandleForReading.readToEnd() ?? Data()
                     }
-                    if let processGroupID = box.waitForCompletion(child) {
+                    defer {
+                        // A read error on either stream must not strand the
+                        // sibling detached reader or its descriptor. Closing
+                        // first wakes a blocking read; cancellation then
+                        // prevents any remaining detached work from escaping
+                        // this command invocation.
                         try? stdout.fileHandleForReading.close()
                         try? stderr.fileHandleForReading.close()
                         outputTask.cancel()
                         errorTask.cancel()
+                    }
+                    if let processGroupID = box.waitForCompletion(child) {
                         return RunOutcome.deferredReap(processGroupID)
                     }
                     let output = try await outputTask.value
