@@ -89,9 +89,15 @@ class BucketResult:
         }
 
 
-def _reported_token_count(observed: int | None, expected: int) -> int:
-    """Use the protocol target only when an older engine omits the counter."""
+def _reported_token_count(
+    observed: int | None, expected: int, *, require_observed: bool = False
+) -> int:
+    """Return evidence from the engine, with fallback only for legacy benches."""
 
+    if observed is None and require_observed:
+        raise RuntimeError(
+            "registered benchmark requires observed token counters from the engine"
+        )
     return expected if observed is None else observed
 
 
@@ -226,6 +232,8 @@ async def _run_one_round(
     sampling_params,
     target_prompt_tokens: int,
     expected_completion_tokens: int,
+    *,
+    require_observed_counts: bool = False,
 ) -> RoundResult:
     """Drive one bench round through ``AsyncEngineCore`` and capture timing.
 
@@ -263,10 +271,14 @@ async def _run_one_round(
         )
 
     prompt_tokens_actual = _reported_token_count(
-        last_output.prompt_tokens, target_prompt_tokens
+        last_output.prompt_tokens,
+        target_prompt_tokens,
+        require_observed=require_observed_counts,
     )
     completion_tokens = _reported_token_count(
-        last_output.completion_tokens, len(last_output.output_token_ids)
+        last_output.completion_tokens,
+        len(last_output.output_token_ids),
+        require_observed=require_observed_counts,
     )
 
     # EOS / early-stop guard. The standardized bench depends on every
@@ -359,7 +371,14 @@ async def _run_bucket(
     # Warmup rounds (discarded — first-pass JIT + kernel cache warm-up
     # dominates these and would skew the median).
     for _ in range(ROUNDS_WARMUP):
-        await _run_one_round(engine, prompt, sampling, target_prompt_tokens, max_tokens)
+        await _run_one_round(
+            engine,
+            prompt,
+            sampling,
+            target_prompt_tokens,
+            max_tokens,
+            require_observed_counts=registered_token_ids,
+        )
 
     # Reset the Metal peak-memory counter AFTER warmup, immediately
     # before the measured rounds. Resetting upstream of warmup (the
@@ -377,7 +396,12 @@ async def _run_bucket(
     for _ in range(ROUNDS_MEASURED):
         measured.append(
             await _run_one_round(
-                engine, prompt, sampling, target_prompt_tokens, max_tokens
+                engine,
+                prompt,
+                sampling,
+                target_prompt_tokens,
+                max_tokens,
+                require_observed_counts=registered_token_ids,
             )
         )
 

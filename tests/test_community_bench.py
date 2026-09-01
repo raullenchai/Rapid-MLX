@@ -224,8 +224,17 @@ def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
 
     observed = []
 
-    async def run_one(engine, prompt, sampling, target_prompt_tokens, max_tokens):
+    async def run_one(
+        engine,
+        prompt,
+        sampling,
+        target_prompt_tokens,
+        max_tokens,
+        *,
+        require_observed_counts=False,
+    ):
         observed.append(prompt)
+        assert require_observed_counts is True
         return runner.RoundResult(
             decode_tps=1,
             prefill_tps=1,

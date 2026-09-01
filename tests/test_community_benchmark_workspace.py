@@ -365,6 +365,8 @@ def test_reported_zero_token_count_is_never_replaced_by_protocol_target() -> Non
 
     assert _reported_token_count(0, 512) == 0
     assert _reported_token_count(None, 512) == 512
+    with pytest.raises(RuntimeError, match="requires observed token counters"):
+        _reported_token_count(None, 512, require_observed=True)
 
 
 def test_run_local_archives_registered_token_drift_as_failure(
