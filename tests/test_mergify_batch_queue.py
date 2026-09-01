@@ -15,8 +15,6 @@ REQUIRED_CHECKS = {
     "check-success = @github-actions/version-bump-guard",
 }
 HEAD_AUTHORIZATION = "check-success = merge-ready-head"
-REQUEUE_TRIGGER = "label = merge-requeue-trigger"
-REQUEUE_REQUIRED = "label = merge-requeue-required"
 LANE_CHECKS = {
     "no-mac-batch": "check-success = @github-actions/merge-lane-no-mac",
     "mac-batch": "check-success = @github-actions/merge-lane-mac",
@@ -64,45 +62,13 @@ def test_queue_revalidates_every_required_check_on_the_combined_batch():
         assert rule["queue_branch_prefix"] == "mergify/merge-queue/"
 
 
-def test_ready_labels_autoqueue_without_enabling_blind_retries():
+def test_ready_labels_autoqueue_without_unsupported_recovery_rules():
     config = _config()
     queues = _rules_by_name("queue_rules")
     auto_merge = config["merge_protections_settings"]["auto_merge_conditions"]
-    enqueue_rules = _rules_by_name("pull_request_rules")
 
     assert auto_merge == [{"or": ["label = merge-ready", "label = merge-ready-mac"]}]
-    assert set(enqueue_rules) == {
-        "enqueue an explicitly authorized no-Mac head",
-        "enqueue an explicitly authorized Mac head",
-    }
-
-    expected_enqueue = {
-        "enqueue an explicitly authorized no-Mac head": (
-            {"label = merge-ready", "-label = merge-ready-mac"},
-            "no-mac-batch",
-        ),
-        "enqueue an explicitly authorized Mac head": (
-            {"label = merge-ready-mac", "-label = merge-ready"},
-            "mac-batch",
-        ),
-    }
-    for name, (labels, queue_name) in expected_enqueue.items():
-        rule = enqueue_rules[name]
-        conditions = set(rule["conditions"])
-        assert labels <= conditions
-        assert {
-            "base = main",
-            "-draft",
-            "-from-fork",
-            REQUEUE_REQUIRED,
-            REQUEUE_TRIGGER,
-            "-label = dequeued",
-            HEAD_AUTHORIZATION,
-        } <= conditions
-        assert rule["actions"] == {
-            "queue": {"name": queue_name},
-            "label": {"remove": ["merge-requeue-trigger"]},
-        }
+    assert "pull_request_rules" not in config
 
     expected_labels = {
         "no-mac-batch": {"label = merge-ready", "-label = merge-ready-mac"},
@@ -155,8 +121,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "merge-ready" in job["if"]
     assert "merge-ready-mac" in job["if"]
     assert job["permissions"] == {
-        "issues": "write",
-        "pull-requests": "write",
+        "pull-requests": "read",
         "statuses": "write",
     }
 
@@ -170,14 +135,9 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "GITHUB_RUN_ATTEMPT" in script
     assert "github.rest.pulls.get" in script
     assert "livePull.head.sha === context.payload.pull_request.head.sha" in script
-    assert 'currentLabels.has("dequeued")' in script
-    assert 'name: "dequeued"' in script
-    assert 'labels: ["merge-requeue-required", "merge-requeue-trigger"]' in script
-    assert "github.paginate" in script
-    assert "github.rest.issues.listEvents" in script
-    assert "readyLabeledAt > dequeuedLabeledAt" in script
-    assert "authorized &&" in script
-    assert "error.status !== 404" in script
+    assert "github.paginate" not in script
+    assert "github.rest.issues" not in script
+    assert "merge-requeue" not in script
     assert "checkout" not in script.lower()
 
 
@@ -189,12 +149,6 @@ def _run_authorization_script(
     live_head: str = "head-sha",
     fail_status_call: int | None = None,
     fail_get: bool = False,
-    fail_add: bool = False,
-    remove_error_status: int | None = None,
-    ready_event_at: str = "2026-09-01T04:01:00Z",
-    dequeue_event_at: str = "2026-09-01T04:00:00Z",
-    late_dequeue_event_at: str | None = None,
-    fail_events: bool = False,
 ) -> dict[str, object]:
     """Execute the exact github-script body against deterministic API mocks."""
 
@@ -211,19 +165,12 @@ def _run_authorization_script(
             "liveHead": live_head,
             "failStatusCall": fail_status_call,
             "failGet": fail_get,
-            "failAdd": fail_add,
-            "removeErrorStatus": remove_error_status,
-            "readyEventAt": ready_event_at,
-            "dequeueEventAt": dequeue_event_at,
-            "lateDequeueEventAt": late_dequeue_event_at,
-            "failEvents": fail_events,
         }
     )
     harness = f"""
 const scenario = {scenario};
 const calls = [];
 let statusCalls = 0;
-let eventCalls = 0;
 process.env.GITHUB_RUN_ATTEMPT = String(scenario.runAttempt);
 const context = {{
   repo: {{ owner: "owner", repo: "repo" }},
@@ -235,47 +182,23 @@ const context = {{
   }},
 }};
 const github = {{
-  paginate: async () => {{
-    calls.push(["events"]);
-    eventCalls += 1;
-    if (scenario.failEvents) throw Object.assign(new Error("events failure"), {{ status: 500 }});
-    const dequeueAt = eventCalls > 1 && scenario.lateDequeueEventAt
-      ? scenario.lateDequeueEventAt
-      : scenario.dequeueEventAt;
-    return [
-      {{ event: "labeled", label: {{ name: scenario.eventLabel }}, created_at: scenario.readyEventAt }},
-      {{ event: "labeled", label: {{ name: "dequeued" }}, created_at: dequeueAt }},
-    ];
-  }},
   rest: {{
-  pulls: {{ get: async () => {{
-    calls.push(["get"]);
-    if (scenario.failGet) throw Object.assign(new Error("get failure"), {{ status: 500 }});
-    return {{ data: {{
-      head: {{ sha: scenario.liveHead }},
-      labels: scenario.labels.map((name) => ({{ name }})),
-    }} }};
-  }} }},
-  repos: {{ createCommitStatus: async (args) => {{
-    statusCalls += 1;
-    calls.push(["status", args.state]);
-    if (scenario.failStatusCall === statusCalls) throw Object.assign(new Error("status failure"), {{ status: 500 }});
-  }} }},
-  issues: {{
-    removeLabel: async () => {{
-      calls.push(["remove"]);
-      if (scenario.removeErrorStatus) throw Object.assign(new Error("remove failure"), {{ status: scenario.removeErrorStatus }});
-    }},
-    addLabels: async (args) => {{
-      calls.push(["add", args.labels]);
-      if (scenario.failAdd) throw Object.assign(new Error("add failure"), {{ status: 500 }});
-    }},
+    pulls: {{ get: async () => {{
+      calls.push(["get"]);
+      if (scenario.failGet) throw new Error("get failure");
+      return {{ data: {{
+        head: {{ sha: scenario.liveHead }},
+        labels: scenario.labels.map((name) => ({{ name }})),
+      }} }};
+    }} }},
+    repos: {{ createCommitStatus: async (args) => {{
+      statusCalls += 1;
+      calls.push(["status", args.state]);
+      if (scenario.failStatusCall === statusCalls) throw new Error("status failure");
+    }} }},
   }},
-}} }};
-const core = {{
-  setFailed: (message) => calls.push(["failed", message]),
-  notice: (message) => calls.push(["notice", message]),
 }};
+const core = {{ setFailed: (message) => calls.push(["failed", message]) }};
 (async () => {{
   try {{
     await (async () => {{
@@ -296,31 +219,7 @@ const core = {{
     return {"calls": json.loads(completed.stdout)}
 
 
-def test_dequeued_head_is_blocked_before_marker_removal_then_reauthorized():
-    result = _run_authorization_script(labels=["merge-ready-mac", "dequeued"])
-    operations = [call[0] for call in result["calls"]]
-
-    assert operations == [
-        "status",
-        "get",
-        "events",
-        "add",
-        "remove",
-        "notice",
-        "events",
-        "status",
-    ]
-    assert [call[1] for call in result["calls"] if call[0] == "status"] == [
-        "pending",
-        "success",
-    ]
-    assert result["calls"][3] == [
-        "add",
-        ["merge-requeue-required", "merge-requeue-trigger"],
-    ]
-
-
-def test_initial_authorization_does_not_issue_a_requeue_trigger():
+def test_initial_authorization_publishes_success_for_the_exact_head():
     result = _run_authorization_script(labels=["merge-ready-mac"])
 
     assert result["calls"] == [
@@ -330,188 +229,52 @@ def test_initial_authorization_does_not_issue_a_requeue_trigger():
     ]
 
 
-def test_consumed_trigger_can_be_reissued_from_persistent_recovery_marker():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "merge-requeue-required"]
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["status", "success"],
-    ]
-
-
-def test_status_failure_cannot_remove_the_dequeue_circuit_breaker():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], fail_status_call=1
-    )
-
-    assert result["calls"] == [
+def test_status_or_live_pull_failure_remains_fail_closed():
+    assert _run_authorization_script(labels=["merge-ready-mac"], fail_status_call=1)[
+        "calls"
+    ] == [
         ["status", "pending"],
         ["threw", "status failure"],
     ]
-
-
-def test_delayed_ready_event_cannot_authorize_a_later_dequeue():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"],
-        ready_event_at="2026-09-01T04:00:00Z",
-        dequeue_event_at="2026-09-01T04:01:00Z",
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["status", "failure"],
-        ["failed", "Re-apply merge-ready after the latest dequeue"],
-    ]
-
-
-def test_recovery_event_lookup_failure_remains_pending():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], fail_events=True
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["threw", "events failure"],
-    ]
-
-
-def test_live_pull_failure_remains_blocked_by_pending_status():
-    result = _run_authorization_script(labels=["merge-ready-mac"], fail_get=True)
-
-    assert result["calls"] == [
+    assert _run_authorization_script(labels=["merge-ready-mac"], fail_get=True)[
+        "calls"
+    ] == [
         ["status", "pending"],
         ["get"],
         ["threw", "get failure"],
     ]
 
 
-def test_trigger_failure_keeps_both_queue_circuit_breakers():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], fail_add=True
-    )
+def test_historical_authorization_rerun_cannot_replay_the_label_event():
+    result = _run_authorization_script(labels=["merge-ready-mac"], run_attempt=2)
 
     assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["threw", "add failure"],
-    ]
-
-
-def test_marker_failure_leaves_trigger_blocked_and_retryable():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], remove_error_status=500
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["remove"],
-        ["threw", "remove failure"],
-    ]
-
-
-def test_concurrent_marker_removal_proceeds_to_final_authorization():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], remove_error_status=404
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["remove"],
-        ["events"],
-        ["status", "success"],
-    ]
-
-
-def test_new_dequeue_between_check_and_removal_restores_circuit_breaker():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"],
-        late_dequeue_event_at="2026-09-01T04:02:00Z",
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["remove"],
         [
-            "notice",
-            "Cleared stale dequeued state before re-authorizing merge-ready-mac.",
-        ],
-        ["events"],
-        ["add", ["dequeued"]],
-        ["status", "failure"],
-        ["failed", "Re-apply merge-ready after the latest dequeue"],
+            "failed",
+            "A merge-ready authorization event cannot be replayed; remove and re-apply the ready label.",
+        ]
     ]
 
 
-def test_activation_docs_provision_the_internal_requeue_label():
-    docs = (ROOT / "docs/engineering/operations/path-aware-merge-queue.md").read_text()
-
-    assert "Create the `merge-ready`, `merge-ready-mac`," in docs
-    assert "`merge-requeue-required`, and `merge-requeue-trigger` labels" in docs
-    assert "internal, bot-owned" in docs
-
-
-def test_final_status_failure_leaves_trigger_blocked_and_retryable():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], fail_status_call=2
-    )
-
-    assert result["calls"] == [
-        ["status", "pending"],
-        ["get"],
-        ["events"],
-        ["add", ["merge-requeue-required", "merge-requeue-trigger"]],
-        ["remove"],
-        [
-            "notice",
-            "Cleared stale dequeued state before re-authorizing merge-ready-mac.",
-        ],
-        ["events"],
-        ["status", "success"],
-        ["threw", "status failure"],
-    ]
-
-
-def test_historical_authorization_rerun_cannot_clear_a_newer_dequeue():
-    result = _run_authorization_script(
-        labels=["merge-ready-mac", "dequeued"], run_attempt=2
-    )
-
-    assert result["calls"][0][0] == "failed"
-    assert all(
-        call[0] not in {"get", "status", "remove", "add"} for call in result["calls"]
-    )
-
-
-def test_stale_head_or_double_ready_labels_cannot_clear_dequeue():
+def test_stale_head_or_double_ready_labels_fail_authorization():
     for labels, live_head in (
-        (["merge-ready-mac", "dequeued"], "new-head"),
-        (["merge-ready", "merge-ready-mac", "dequeued"], "head-sha"),
+        (["merge-ready-mac"], "new-head"),
+        (["merge-ready", "merge-ready-mac"], "head-sha"),
     ):
         result = _run_authorization_script(labels=labels, live_head=live_head)
-        assert [call[0] for call in result["calls"]] == [
-            "status",
-            "get",
-            "status",
-            "failed",
+        assert result["calls"] == [
+            ["status", "pending"],
+            ["get"],
+            ["status", "failure"],
+            ["failed", "Apply exactly one merge-ready label"],
         ]
-        assert result["calls"][2] == ["status", "failure"]
+
+
+def test_operations_guide_uses_provider_supported_terminal_requeue():
+    docs = (ROOT / "docs/engineering/operations/path-aware-merge-queue.md").read_text()
+
+    assert "@mergifyio queue no-mac-batch" in docs
+    assert "@mergifyio queue mac-batch" in docs
+    assert "does not bypass `queue_conditions`" in docs
+    assert "merge-requeue-trigger" not in docs
+    assert "merge-requeue-required" not in docs
