@@ -13,6 +13,7 @@ milestones have independent numerical and lifecycle coverage.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, cast
@@ -35,7 +36,18 @@ from mlx_lm.models.gated_delta import gated_delta_update  # noqa: E402
 from mlx_lm.models.rope_utils import initialize_rope  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
+from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
+    admit_qwen4_fused_gdn_decode,
+    fused_gdn_runtime_supported,
+    probe_qwen4_fused_gdn_decode,
+    qwen4_fused_gdn_decode,
+)
 from .qwen4_exp_cache import QSAIndexCache, Qwen4ExpStateCache  # noqa: E402
+
+_FUSED_GDN_MODES = ("stock", "fused")
+_FUSED_GDN_DEFAULT = os.environ.get(
+    "RAPID_MLX_QWEN4_FUSED_GDN_DECODE", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -387,6 +399,107 @@ class GatedDeltaNet(nn.Module):
             activation=args.output_gate_type or args.hidden_act,
         )
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
+        self.sharding_group = None
+        self.fused_gdn_decode_mode = "fused" if _FUSED_GDN_DEFAULT else "stock"
+        self.fused_gdn_decode_calls = 0
+        self.fused_gdn_decode_fallbacks = 0
+        self.fused_gdn_decode_last_fallback: str | None = None
+
+    def set_fused_gdn_decode_mode(self, mode: str) -> None:
+        """Select the decode path without replacing resident weights."""
+        if mode not in _FUSED_GDN_MODES:
+            raise ValueError(
+                f"unknown fused GDN decode mode {mode!r}; "
+                f"expected one of {_FUSED_GDN_MODES}"
+            )
+        self.fused_gdn_decode_mode = mode
+
+    def _fused_gdn_fallback(self, reason: str):
+        self.fused_gdn_decode_fallbacks += 1
+        self.fused_gdn_decode_last_fallback = reason
+        return None
+
+    def _try_fused_decode(
+        self,
+        qkv: mx.array,
+        z: mx.array,
+        beta: mx.array,
+        alpha: mx.array,
+        mask: mx.array | None,
+        cache: Any | None,
+        *,
+        record_rollback: bool,
+    ) -> mx.array | None:
+        if self.fused_gdn_decode_mode == "stock":
+            return None
+        if cache is None or cache[0] is None or cache[1] is None:
+            return self._fused_gdn_fallback("uninitialized cache")
+
+        admission = admit_qwen4_fused_gdn_decode(
+            qkv=qkv,
+            z=z,
+            beta=beta,
+            alpha=alpha,
+            conv_state=cache[0],
+            recurrent_state=cache[1],
+            conv_weight=self.conv1d.weight,
+            a_log=self.A_log,
+            dt_bias=self.dt_bias,
+            norm_weight=self.norm.weight,
+            mask=mask,
+            cache_lengths=getattr(cache, "lengths", None),
+            record_rollback=record_rollback,
+            training=bool(self.training),
+            sharded=self.sharding_group is not None,
+            num_key_heads=self.num_k_heads,
+            num_value_heads=self.num_v_heads,
+            key_head_dim=self.head_k_dim,
+            value_head_dim=self.head_v_dim,
+            conv_kernel=self.conv_kernel_size,
+            gate_activation=self.norm.activation,
+        )
+        if not admission.accepted:
+            return self._fused_gdn_fallback(admission.reason)
+        if not fused_gdn_runtime_supported():
+            return self._fused_gdn_fallback("Metal runtime unavailable")
+
+        try:
+            threadgroup_y = probe_qwen4_fused_gdn_decode(qkv.dtype)
+            if threadgroup_y is None:
+                return self._fused_gdn_fallback("Metal kernel probe declined")
+            output, conv_state, recurrent_state = qwen4_fused_gdn_decode(
+                qkv,
+                z,
+                beta,
+                alpha,
+                cache[0],
+                self.conv1d.weight,
+                self.A_log,
+                self.dt_bias,
+                cache[1],
+                self.norm.weight,
+                self.norm.eps,
+                threadgroup_y=threadgroup_y,
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional fast path fails closed
+            return self._fused_gdn_fallback(
+                f"Metal kernel dispatch failed: {type(exc).__name__}"
+            )
+        # The probe compile-and-runs this exact dtype/geometry before this
+        # path is admitted. Do not mx.eval here: a per-layer synchronization
+        # barrier would serialize decode and erase the fusion's benefit.
+        # Custom-kernel outputs are fresh arrays, so constructing them cannot
+        # mutate the live cache; commit their lazy graph only after dispatch
+        # construction succeeds. A later command-buffer failure is a fatal
+        # generation error, not a retryable kernel-selection error: the
+        # scheduler closes the entire BatchGenerator and discards every
+        # affected request cache before any future step.
+        cache[0] = conv_state
+        cache[1] = recurrent_state
+        cache.advance(1)
+        self.fused_gdn_decode_calls += 1
+        self.fused_gdn_decode_last_fallback = None
+        return self.out_proj(output)
 
     def __call__(
         self,
@@ -398,11 +511,23 @@ class GatedDeltaNet(nn.Module):
     ) -> mx.array:
         batch, length, _ = inputs.shape
         mixed = self.in_proj_qkv(inputs)
-        z = self.in_proj_z(inputs).reshape(
-            batch, length, self.num_v_heads, self.head_v_dim
-        )
+        z = self.in_proj_z(inputs)
         beta = self.in_proj_b(inputs)
         alpha = self.in_proj_a(inputs)
+
+        fused = self._try_fused_decode(
+            mixed,
+            z,
+            beta,
+            alpha,
+            mask,
+            cache,
+            record_rollback=record_rollback,
+        )
+        if fused is not None:
+            return fused
+
+        z = z.reshape(batch, length, self.num_v_heads, self.head_v_dim)
 
         if cache is not None and cache[0] is not None:
             conv_state = cache[0]
@@ -491,6 +616,50 @@ class GatedDeltaNet(nn.Module):
             cache.advance(length)
         output = self.norm(output, z)
         return self.out_proj(output.reshape(batch, length, -1))
+
+
+def set_qwen4_fused_gdn_mode(model: nn.Module, mode: str) -> int:
+    """Switch every resident Qwen4 GDN layer between stock and fused."""
+    if mode not in _FUSED_GDN_MODES:
+        raise ValueError(
+            f"unknown fused GDN decode mode {mode!r}; "
+            f"expected one of {_FUSED_GDN_MODES}"
+        )
+    layers = [
+        module
+        for _, module in model.named_modules()
+        if isinstance(module, GatedDeltaNet)
+    ]
+    for layer in layers:
+        layer.set_fused_gdn_decode_mode(mode)
+    return len(layers)
+
+
+def qwen4_fused_gdn_mode_counts(model: nn.Module) -> dict[str, int]:
+    """Return current GDN modes without evaluating model arrays."""
+    counts = {mode: 0 for mode in _FUSED_GDN_MODES}
+    for _, module in model.named_modules():
+        if isinstance(module, GatedDeltaNet):
+            counts[module.fused_gdn_decode_mode] += 1
+    return counts
+
+
+def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
+    """Return fused call and fallback counters without host synchronization."""
+    stats: dict[str, Any] = {
+        "fused_calls": 0,
+        "fallbacks": 0,
+        "last_fallbacks": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, GatedDeltaNet):
+            continue
+        stats["fused_calls"] += module.fused_gdn_decode_calls
+        stats["fallbacks"] += module.fused_gdn_decode_fallbacks
+        reason = module.fused_gdn_decode_last_fallback
+        if reason is not None:
+            stats["last_fallbacks"][reason] = stats["last_fallbacks"].get(reason, 0) + 1
+    return stats
 
 
 def apply_rotary_positions(
