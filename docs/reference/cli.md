@@ -31,7 +31,8 @@ Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
 inventory used by the Desktop app. Each row includes `repo`, `alias`,
 `subfolder`, `size_bytes`, `state`, and `external`; `subfolder: null` means the
 repository root. For multi-variant repositories, the reported alias and
-subfolder follow the same persisted variant selection used by `serve`.
+subfolder rows enumerate every complete catalog checkpoint still present, not
+only the variant most recently selected for `serve`.
 
 Agent integrations can be configured without hand-editing dotfiles:
 

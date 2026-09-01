@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from vllm_mlx.cli import (
     _available_models_json_payload,
     _cached_models_json_payload,
+    _cached_subfolder_size,
     models_command,
 )
 
@@ -140,8 +141,7 @@ def test_cached_payload_shape() -> None:
             assert m["subfolder"] is None
 
 
-def test_cached_payload_carries_exact_alias_subfolder(monkeypatch) -> None:
-    import vllm_mlx._download_gate as download_gate
+def test_cached_payload_reports_every_complete_alias_subfolder(monkeypatch) -> None:
     import vllm_mlx.cli as cli
     import vllm_mlx.model_aliases as aliases
 
@@ -151,7 +151,6 @@ def test_cached_payload_carries_exact_alias_subfolder(monkeypatch) -> None:
     }
     monkeypatch.setattr(aliases, "list_profiles", lambda: profiles)
     monkeypatch.setattr(aliases, "resolve_subfolder", lambda _repo: "4bit")
-    monkeypatch.setattr(download_gate, "pulled_variant", lambda _repo: "8bit")
     monkeypatch.setattr(
         cli,
         "_scan_hf_cache_models",
@@ -159,11 +158,39 @@ def test_cached_payload_carries_exact_alias_subfolder(monkeypatch) -> None:
     )
     monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
     monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: True)
+    monkeypatch.setattr(
+        cli,
+        "_cached_subfolder_size",
+        lambda _repo, subfolder: {"4bit": 400, "8bit": 800}.get(subfolder),
+    )
 
-    row = _cached_models_json_payload()["cached"][0]
-    assert row["alias"] == "nested-8bit"
-    assert row["repo"] == "org/multi-quant"
-    assert row["subfolder"] == "8bit"
+    rows = _cached_models_json_payload()["cached"]
+    assert [(row["alias"], row["subfolder"], row["size_bytes"]) for row in rows] == [
+        ("nested-8bit", "8bit", 800),
+        ("nested-4bit", "4bit", 400),
+    ]
+    assert all(row["repo"] == "org/multi-quant" for row in rows)
+
+
+def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
+    monkeypatch, tmp_path
+) -> None:
+    import huggingface_hub.constants as hub_constants
+
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    repo_root = tmp_path / "models--org--multi-quant"
+    checkpoint = repo_root / "snapshots" / "abc123" / "4bit"
+    checkpoint.mkdir(parents=True)
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text("abc123", encoding="utf-8")
+    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
+    weights = b"complete weights"
+    (checkpoint / "model.safetensors").write_bytes(weights)
+
+    size = _cached_subfolder_size("org/multi-quant", "4bit")
+    assert size is not None
+    assert size >= len(weights)
+    assert _cached_subfolder_size("org/multi-quant", "8bit") is None
 
 
 def test_command_emits_single_valid_json_available(capfd) -> None:
