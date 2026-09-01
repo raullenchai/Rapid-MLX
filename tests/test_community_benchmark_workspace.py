@@ -6,11 +6,13 @@ import json
 import os
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
+from vllm_mlx.community_bench import cli as community_cli
 from vllm_mlx.community_bench import local_runner
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
@@ -100,6 +102,52 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     assert plan["model"]["identity_strength"] == "unresolved"
     assert plan["model"]["comparable"] is False
     assert plan["privacy"] == {"storage": "local", "uploads": False}
+
+
+def test_unknown_run_model_returns_structured_unsaved_cli_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        community_cli,
+        "run_local",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            local_runner.LocalBenchmarkError(
+                "unknown or unsupported benchmark model 'missing'",
+                None,
+                saved=False,
+            )
+        ),
+    )
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="missing",
+        inherit_process_group=False,
+        json=True,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    assert json.loads(capsys.readouterr().err) == {
+        "error": "unknown or unsupported benchmark model 'missing'",
+        "saved": False,
+    }
+
+
+def test_run_local_translates_planning_error_without_fabricating_a_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "plan_for_alias",
+        lambda alias: (_ for _ in ()).throw(ValueError(f"unknown model {alias}")),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="unknown model missing"
+    ) as error:
+        local_runner.run_local("missing")
+
+    assert error.value.run is None
+    assert error.value.saved is False
 
 
 @pytest.mark.parametrize(
@@ -285,6 +333,31 @@ def test_failed_attempt_is_archived_without_exception_text(
     assert "secret path" not in json.dumps(saved[0])
 
 
+def test_archive_failure_reports_execution_and_persistence_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias, **kwargs: (_ for _ in ()).throw(RuntimeError("generation broke")),
+    )
+
+    class BrokenArchive:
+        def save(self, run: dict) -> None:
+            raise OSError("disk full")
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-image", archive=BrokenArchive())
+
+    assert error.value.saved is False
+    assert error.value.run is not None
+    assert "generation broke" in str(error.value)
+    assert "failed outcome could not be saved: disk full" in str(error.value)
+
+
 def test_machine_probe_failure_is_archived_without_traceback_or_fake_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -410,7 +483,16 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     def get(url: str, *, timeout: float) -> _Response:
         if url.endswith("/status"):
             return _Response({"metal": {"peak_memory_gb": 12.5}})
-        return _Response({"id": "job-1", "status": next(job_states)})
+        status = next(job_states)
+        return _Response(
+            {
+                "id": "job-1",
+                "status": status,
+                "size": "832x480",
+                "frames": 81,
+                "fps": 24,
+            }
+        )
 
     monkeypatch.setattr(_server, "serve", serve)
     monkeypatch.setattr(local_runner.requests, "post", post)
@@ -446,6 +528,99 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         "frames": 81,
         "width": 832,
         "height": 480,
+    }
+
+
+@pytest.mark.parametrize("terminal_status", ["cancelled", "canceled"])
+def test_run_local_video_cancellation_is_terminal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terminal_status: str
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": terminal_status}),
+    )
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.run["outcome"] == {
+        "status": "cancelled",
+        "failure_code": "user_cancelled",
+    }
+
+
+@pytest.mark.parametrize("terminal_status", ["failed", "expired"])
+def test_run_local_video_other_terminal_errors_do_not_poll_to_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, terminal_status: str
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": terminal_status}),
+    )
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.run["outcome"]["failure_code"] == "runtime_error"
+
+
+def test_run_local_video_rejects_mismatched_artifact_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {
+                "id": "job-1",
+                "status": "completed",
+                "size": "832x480",
+                "frames": 41,
+                "fps": 24,
+            }
+        ),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="artifact metadata"
+    ) as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.run["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
     }
 
 

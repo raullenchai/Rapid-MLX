@@ -21,15 +21,28 @@ _VIDEO_POLL_INTERVAL_S = 1.0
 
 
 class LocalBenchmarkError(RuntimeError):
-    """A failed attempt whose privacy-safe outcome was archived locally."""
+    """A failed attempt plus any privacy-safe outcome available to the caller."""
 
-    def __init__(self, message: str, run: dict[str, Any]):
+    def __init__(
+        self,
+        message: str,
+        run: dict[str, Any] | None,
+        *,
+        saved: bool,
+    ):
         super().__init__(message)
         self.run = run
+        self.saved = saved
+
+
+class BenchmarkCancelledError(RuntimeError):
+    """The local runtime reported a terminal user/system cancellation."""
 
 
 def _failure_code(error: Exception) -> str:
     message = str(error).lower()
+    if isinstance(error, BenchmarkCancelledError) or "cancelled" in message:
+        return "user_cancelled"
     if (
         isinstance(error, MemoryError)
         or "out of memory" in message
@@ -93,7 +106,7 @@ def _run_image(
             duration_ms = (time.perf_counter() - started) * 1000
             if index >= case["warmup_rounds"]:
                 if result.get("cancelled", False):
-                    raise RuntimeError("image benchmark was cancelled")
+                    raise BenchmarkCancelledError("image benchmark was cancelled")
                 if len(result.get("data", [])) != case["image_count"]:
                     raise RuntimeError("image benchmark returned an incomplete batch")
                 measurements.append(
@@ -142,7 +155,9 @@ def _run_video(
         response.raise_for_status()
         job = response.json()
         deadline = time.monotonic() + _VIDEO_JOB_TIMEOUT_S
-        while job["status"] not in {"completed", "failed"}:
+        active_statuses = {"queued", "running", "in_progress", "processing"}
+        status = str(job.get("status", "")).lower()
+        while status in active_statuses:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
@@ -155,9 +170,29 @@ def _run_video(
             )
             response.raise_for_status()
             job = response.json()
-        if job["status"] != "completed":
+            status = str(job.get("status", "")).lower()
+        if status in {"cancelled", "canceled"}:
+            raise BenchmarkCancelledError(
+                (job.get("error") or {}).get(
+                    "message", "video generation was cancelled"
+                )
+            )
+        if status != "completed":
             raise RuntimeError(
-                job.get("error", {}).get("message", "video generation failed")
+                (job.get("error") or {}).get(
+                    "message", f"video generation ended with status {status!r}"
+                )
+            )
+        expected_size = f"{case['width']}x{case['height']}"
+        if (
+            job.get("size") != expected_size
+            or type(job.get("frames")) is not int
+            or job["frames"] != case["frames"]
+            or type(job.get("fps")) is not int
+            or job["fps"] * 1000 != case["fps_milli"]
+        ):
+            raise RuntimeError(
+                "video benchmark artifact metadata does not match the registered workload"
             )
         duration_ms = (time.perf_counter() - started) * 1000
         return [
@@ -248,7 +283,10 @@ def run_local(
 ) -> dict[str, Any]:
     """Run a registered protocol, validate it, and save it locally only."""
 
-    plan = plan_for_alias(alias)
+    try:
+        plan = plan_for_alias(alias)
+    except Exception as exc:
+        raise LocalBenchmarkError(str(exc), None, saved=False) from exc
     model = plan["model"]
     started_at = utc_now()
     task_type = model["task_type"]
@@ -295,12 +333,21 @@ def run_local(
             hardware=hardware,
             software=software,
             started_at=started_at,
-            status="failed",
+            status=(
+                "cancelled" if isinstance(exc, BenchmarkCancelledError) else "failed"
+            ),
             failure_code=failure_code,
             context_length=context_length,
         )
-        destination.save(failed)
-        raise LocalBenchmarkError(str(exc), failed) from exc
+        try:
+            destination.save(failed)
+        except Exception as archive_exc:
+            raise LocalBenchmarkError(
+                f"{exc}; failed outcome could not be saved: {archive_exc}",
+                failed,
+                saved=False,
+            ) from exc
+        raise LocalBenchmarkError(str(exc), failed, saved=True) from exc
 
 
 __all__ = ["LocalBenchmarkError", "run_local"]

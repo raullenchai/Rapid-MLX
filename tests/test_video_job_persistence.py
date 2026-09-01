@@ -53,6 +53,21 @@ def _completed_job(job_id: str, *, created_at: int = 1) -> video._VideoJob:
     )
 
 
+def test_video_job_reports_artifact_shape_when_known() -> None:
+    job = video._VideoJob(
+        id="video_" + "f" * 32,
+        model="wan",
+        prompt="prompt",
+        seconds="4",
+        size="832x480",
+        frames=81,
+        fps=24,
+    )
+
+    assert job.public()["frames"] == 81
+    assert job.public()["fps"] == 24
+
+
 def _write_completed_job(job: video._VideoJob) -> None:
     job_dir = video._jobs_root / job.id
     job_dir.mkdir(mode=0o700)

@@ -60,6 +60,13 @@ records rather than parse legacy submission JSON.
 - Peak memory uses the status endpoint's decimal-GB definition converted to
   MiB (`GB × 1e9 / 2^20`). Missing metrics remain JSON `null`; zero is never
   used as a stand-in for unavailable evidence.
+- Completed video jobs expose their generated `size`, `frames`, and `fps` as
+  response metadata. The registered runner rejects a result whose metadata
+  differs from the protocol workload, and treats every non-active job status
+  as terminal instead of waiting until the benchmark timeout.
+- Planning and archive failures remain structured CLI errors. The CLI states
+  whether a privacy-safe failed run was actually saved; it never claims local
+  persistence after a disk or permission error.
 
 ## Product flow
 

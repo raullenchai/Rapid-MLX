@@ -31,17 +31,26 @@ def benchmark_command(args) -> int:
             )
         except LocalBenchmarkError as exc:
             if args.json:
+                payload = {"error": str(exc), "saved": exc.saved}
+                if exc.run is not None:
+                    payload["run"] = exc.run
                 print(
-                    json.dumps(
-                        {"error": str(exc), "run": exc.run},
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    file=sys.stderr,
+                )
+            elif exc.saved and exc.run is not None:
+                print(
+                    f"Benchmark failed; local outcome saved as {exc.run['run_id']}: {exc}",
+                    file=sys.stderr,
+                )
+            elif exc.run is not None:
+                print(
+                    f"Benchmark failed; local outcome could not be saved: {exc}",
                     file=sys.stderr,
                 )
             else:
                 print(
-                    f"Benchmark failed; local outcome saved as {exc.run['run_id']}: {exc}",
+                    f"Benchmark could not start: {exc}",
                     file=sys.stderr,
                 )
             return 1
