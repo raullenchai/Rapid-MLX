@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
       statuses: write
     steps:
       - name: Bind ready authorization to the current head

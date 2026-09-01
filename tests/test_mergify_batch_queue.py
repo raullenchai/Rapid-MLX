@@ -156,7 +156,7 @@ def test_ready_authorization_is_bound_to_the_exact_head_commit():
     assert "merge-ready-mac" in job["if"]
     assert job["permissions"] == {
         "issues": "write",
-        "pull-requests": "read",
+        "pull-requests": "write",
         "statuses": "write",
     }
 
