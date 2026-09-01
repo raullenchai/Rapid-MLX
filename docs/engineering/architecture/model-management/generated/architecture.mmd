@@ -6,7 +6,7 @@ flowchart LR
     artifact["Artifact<br/><small>partial</small>"]
     capabilities["Capabilities<br/><small>partial</small>"]
     runtime_compatibility["RuntimeCompatibility<br/><small>partial</small>"]
-    alias_metadata["Alias / DisplayMetadata<br/><small>partial</small>"]
+    alias_metadata["Alias / DisplayMetadata<br/><small>migrating</small>"]
     variant_qualification["VariantQualification<br/><small>planned</small>"]
   end
   subgraph lane_evidence["Machine, workload, and evidence"]
@@ -83,7 +83,7 @@ flowchart LR
   class artifact partial
   class capabilities partial
   class runtime_compatibility partial
-  class alias_metadata partial
+  class alias_metadata migrating
   class variant_qualification planned
   class machine_fingerprint partial
   class machine_class planned

@@ -14,6 +14,38 @@ The target and preset records are deliberately references instead of embedded
 copies. This prevents `hf_path`, modality, MTP defaults, and memory advice from
 drifting into competing sources of truth.
 
+The product graph has four records:
+
+- `ModelRegistryRecord` gives a Rapid-owned stable ID a resolver input and,
+  after resolution, an immutable `ModelIdentity` digest. Download size is an
+  advisory catalog fact, never identity.
+- `ModelAlias` is the mutable product layer: display entry point, task and
+  operation capabilities, runtime adapter, surface availability, and execution
+  preset references.
+- `RecommendationPolicy` ranks aliases for one task and machine dimension. Its
+  legacy evidence states are intentionally not promotion states.
+- `CatalogSnapshot` publishes an ordered, content-digested graph of registry
+  records, aliases, and recommendation-policy digest references.
+
+Product surfaces project from `task_types` and `operation_modes`. A GUI tab is
+not an identity field, and consumers must not infer it from an alias or repo
+name. One model may consequently appear in more than one operation picker.
+Current task types cover LLM, VLM, image, video, TTS, and STT. Forced
+alignment is an operation of a speech-recognition pipeline, not a separate
+model/runtime identity kind.
+
+`v1/` remains the immutable foundation contract introduced with the atomic
+schemas. `v2/ModelAlias` adds explicit provenance, surface availability,
+runtime adapters, audio capabilities, and the generalized `operation_modes`
+field; `v2/CatalogSnapshot` composes those aliases with unchanged v1 registry
+records. New producers emit v2. Consumers may accept v1 `generation_modes` as
+a bounded migration fallback, but must not rewrite or reinterpret v1 itself.
+
+`scripts/sync_model_catalog_schemas.py` copies both compatibility versions and
+the current schemas into the Python
+wheel. CI runs it with `--check`; consumers validate the packaged copies so an
+installed sidecar does not depend on a source checkout.
+
 Semantic validation resolves `registry_model_id` to exactly the accompanying
 identity digest, requires unique preset IDs, and requires the target pipeline
 kind among advertised task types. Extra task types are allowed only when a
