@@ -161,8 +161,8 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         try Data("not an attachment".utf8).write(to: unsupported)
 
         // dragFile(expectedChip:) waits for each dropped chip's remove control
-        // to settle (exists + hittable) and re-issues the drop if it is lost, so
-        // the control is guaranteed before we send (#2481).
+        // to settle (exists + hittable) without retrying, so the control is
+        // guaranteed before we send (#2481).
         let imageChip = harness.element("ChatView.Attachment.Remove.\(image.lastPathComponent)")
         let recoveredAttempts = harness.dragFile(
             image,

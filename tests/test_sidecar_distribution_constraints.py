@@ -37,6 +37,8 @@ def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
         "transformers==5.15.1",
         "mlx-vlm==0.6.17",
         "mflux==0.19.0",
+        "mlx-video-with-audio==0.1.36",
+        "mlx-arsenal==0.12.1",
     ]
 
 
@@ -48,6 +50,7 @@ def test_emit_constraints_needs_only_the_python_standard_library() -> None:
         text=True,
     )
     assert "mlx-vlm==0.6.17" in result.stdout
+    assert "mlx-video-with-audio==0.1.36" in result.stdout
 
 
 def _write_metadata(

@@ -969,6 +969,114 @@ def test_start_model_waits_for_an_interactive_readiness_action():
     assert ".leftMouseDown" in click and ".leftMouseUp" in click
 
 
+def test_wait_send_idle_follows_an_intentionally_deferred_auto_start(tmp_path):
+    """A low-memory relaunch stays idle until the flow performs visible consent."""
+    source = HARNESS.read_text()
+    helper_body = source.split("wait_send_idle() {", 1)[1].split("\n}", 1)[0]
+    helper = f"wait_send_idle() {{{helper_body}\n}}"
+
+    assert 'identifier == "Readiness.Action"' in helper
+    assert 'and .description == "Start"' in helper
+    assert "and .enabled == true" in helper
+    assert '"$AX_DRIVER" click-center "$APP_PID" Readiness.Action' in helper
+    assert "follow_memory_confirmation_edge" in helper
+    assert helper.index('"$AX_DRIVER" click-center "$APP_PID" Readiness.Action') < (
+        helper.index("follow_memory_confirmation_edge")
+    )
+    assert "deferred-start" in helper
+
+    fixtures = [
+        [
+            {
+                "identifier": "ChatView.SendOrStopButton",
+                "description": "Send message",
+                "enabled": False,
+                "help": "fake-alias is still starting",
+            },
+            {
+                "identifier": "Readiness.Action",
+                "description": "Start",
+                "enabled": True,
+            },
+        ],
+        [
+            {
+                "identifier": "ChatView.SendOrStopButton",
+                "description": "Send message",
+                "enabled": False,
+                "help": "fake-alias is still starting",
+            },
+            {"identifier": "MemoryWarning.Confirm", "enabled": True},
+        ],
+        [
+            {
+                "identifier": "ChatView.SendOrStopButton",
+                "description": "Send message",
+                "enabled": False,
+            }
+        ],
+        [
+            {
+                "identifier": "ChatView.SendOrStopButton",
+                "description": "Send message",
+                "enabled": False,
+            }
+        ],
+    ]
+    for index, elements in enumerate(fixtures):
+        (tmp_path / f"fixture-{index}.json").write_text(
+            json.dumps({"data": {"ui_elements": elements}})
+        )
+    driver = tmp_path / "driver.sh"
+    driver.write_text('#!/bin/bash\nprintf "%s\\n" "$3" >> "$CLICK_LOG"\n')
+    driver.chmod(0o755)
+    click_log = tmp_path / "clicks.txt"
+
+    script = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        fixture_dir={str(tmp_path)!r}
+        AX_DRIVER={str(driver)!r}
+        CLICK_LOG={str(click_log)!r}
+        export CLICK_LOG
+        APP_PID=42
+        calls=0
+        follow_memory_confirmation_edge() {{
+            MEMORY_CONFIRMATION_SIGNATURE="$3"
+            MEMORY_CONFIRMATION_POLLS="$4"
+            MEMORY_CONFIRMATION_ATTEMPTS="$5"
+            MEMORY_CONFIRMATION_VISIBLE=0
+            if jq -e '.data.ui_elements[]?
+                       | select(.identifier == "MemoryWarning.Confirm"
+                                and .enabled == true)' "$1" >/dev/null; then
+                "$AX_DRIVER" click-center "$APP_PID" MemoryWarning.Confirm > "$2"
+                MEMORY_CONFIRMATION_VISIBLE=1
+            fi
+        }}
+        see_main() {{
+            local destination="$1" index="$calls"
+            (( index > 3 )) && index=3
+            cp "$fixture_dir/fixture-$index.json" "$destination"
+            calls=$((calls + 1))
+        }}
+        log() {{ :; }}
+        die() {{ printf '%s\n' "$*" >&2; exit 97; }}
+        sleep() {{ :; }}
+        {helper}
+        wait_send_idle "$fixture_dir/current.json" 8
+        """
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output=True, check=False, text=True
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert click_log.read_text().splitlines() == [
+        "Readiness.Action",
+        "MemoryWarning.Confirm",
+    ]
+
+
 def test_start_model_witnesses_the_selected_download_alias(tmp_path):
     """Fresh install starts the downloaded pick, not the persona's fallback."""
     source = HARNESS.read_text()
