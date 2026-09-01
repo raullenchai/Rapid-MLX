@@ -741,6 +741,31 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
 def test_video_artifact_is_downloaded_and_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def download(base_url: str, job_id: str, path: str) -> None:
+        assert base_url == "http://local/v1"
+        assert job_id == "job-1"
+        Path(path).write_bytes(b"small-mp4-fixture")
+
+    def probe(path: str) -> tuple[int, int, int, float]:
+        assert Path(path).read_bytes() == b"small-mp4-fixture"
+        return 832, 480, 81, 24.0
+
+    monkeypatch.setattr(local_runner, "_download_video_artifact", download)
+    monkeypatch.setattr(local_runner, "_probe_video_artifact", probe)
+
+    local_runner._validated_video_artifact(
+        "http://local/v1",
+        "job-1",
+        width=832,
+        height=480,
+        frames=81,
+        fps=24,
+    )
+
+
+def test_video_download_worker_logic_streams_and_closes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class ContentResponse(_Response):
         def iter_content(self, *, chunk_size: int):
             assert chunk_size == 1024 * 1024
@@ -754,21 +779,13 @@ def test_video_artifact_is_downloaded_and_probed(
         assert timeout == 60
         return content_response
 
-    def probe(path: str) -> tuple[int, int, int, float]:
-        assert Path(path).read_bytes() == b"small-mp4-fixture"
-        return 832, 480, 81, 24.0
-
+    artifact = tmp_path / "artifact.mp4"
     monkeypatch.setattr(local_runner.requests, "get", get)
-    monkeypatch.setattr(local_runner, "_probe_video_artifact", probe)
-
-    local_runner._validated_video_artifact(
-        "http://local/v1",
-        "job-1",
-        width=832,
-        height=480,
-        frames=81,
-        fps=24,
+    local_runner._download_video_artifact_unbounded(
+        "http://local/v1", "job-1", str(artifact)
     )
+
+    assert artifact.read_bytes() == b"small-mp4-fixture"
     assert content_response.closed is True
 
 
@@ -794,16 +811,12 @@ def test_video_artifact_probe_returns_worker_validation_error(tmp_path: Path) ->
 def test_video_artifact_rejects_missing_or_corrupt_content(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    class ContentResponse(_Response):
-        def iter_content(self, *, chunk_size: int):
-            if mode == "corrupt":
-                yield b"not-an-mp4"
+    def download(base_url: str, job_id: str, path: str) -> None:
+        if mode == "empty":
+            raise RuntimeError("video benchmark returned an empty MP4 artifact")
+        Path(path).write_bytes(b"not-an-mp4")
 
-    monkeypatch.setattr(
-        local_runner.requests,
-        "get",
-        lambda *args, **kwargs: ContentResponse({}),
-    )
+    monkeypatch.setattr(local_runner, "_download_video_artifact", download)
     monkeypatch.setattr(
         local_runner,
         "_probe_video_artifact",
@@ -822,7 +835,7 @@ def test_video_artifact_rejects_missing_or_corrupt_content(
 
 
 def test_video_artifact_continuous_stream_is_size_bounded(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     class ContentResponse(_Response):
         def iter_content(self, *, chunk_size: int):
@@ -836,44 +849,21 @@ def test_video_artifact_continuous_stream_is_size_bounded(
         lambda *args, **kwargs: content_response,
     )
     monkeypatch.setattr(local_runner, "_MAX_VIDEO_ARTIFACT_BYTES", 5)
-    monkeypatch.setattr(local_runner.time, "monotonic", lambda: 0.0)
+    artifact = tmp_path / "oversized.mp4"
 
     with pytest.raises(RuntimeError, match="safety limit"):
-        local_runner._validated_video_artifact(
-            "http://local/v1",
-            "job-1",
-            width=832,
-            height=480,
-            frames=81,
-            fps=24,
+        local_runner._download_video_artifact_unbounded(
+            "http://local/v1", "job-1", str(artifact)
         )
     assert content_response.closed is True
 
 
-def test_video_artifact_continuous_stream_has_overall_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class ContentResponse(_Response):
-        def iter_content(self, *, chunk_size: int):
-            yield b"still-streaming"
+def test_video_artifact_download_has_process_hard_deadline(tmp_path: Path) -> None:
+    artifact = tmp_path / "deadline.mp4"
 
-    monkeypatch.setattr(
-        local_runner.requests,
-        "get",
-        lambda *args, **kwargs: ContentResponse({}),
-    )
-    monkeypatch.setattr(local_runner, "_VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S", 1.0)
-    clock = iter((0.0, 0.1, 1.1))
-    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(clock))
-
-    with pytest.raises(TimeoutError, match="overall deadline"):
-        local_runner._validated_video_artifact(
-            "http://local/v1",
-            "job-1",
-            width=832,
-            height=480,
-            frames=81,
-            fps=24,
+    with pytest.raises(TimeoutError, match="download exceeded its hard deadline"):
+        local_runner._download_video_artifact(
+            "http://local/v1", "job-1", str(artifact), timeout_s=0
         )
 
 
@@ -890,14 +880,10 @@ def test_video_artifact_rejects_actual_shape_drift(
     probe_result: tuple[int, int, int, float],
     message: str,
 ) -> None:
-    class ContentResponse(_Response):
-        def iter_content(self, *, chunk_size: int):
-            yield b"mp4"
-
     monkeypatch.setattr(
-        local_runner.requests,
-        "get",
-        lambda *args, **kwargs: ContentResponse({}),
+        local_runner,
+        "_download_video_artifact",
+        lambda base_url, job_id, path: Path(path).write_bytes(b"mp4"),
     )
     monkeypatch.setattr(
         local_runner, "_probe_video_artifact", lambda path: probe_result

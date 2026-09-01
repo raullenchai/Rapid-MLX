@@ -154,7 +154,7 @@ def _video_probe_worker(path: str, sender) -> None:
         sender.close()
 
 
-def _terminate_video_probe(process: multiprocessing.Process) -> None:
+def _terminate_worker_process(process: multiprocessing.Process) -> None:
     pid = process.pid
     if pid is None:
         return
@@ -194,7 +194,7 @@ def _probe_video_artifact(
     sender.close()
     try:
         if not receiver.poll(timeout_s):
-            _terminate_video_probe(process)
+            _terminate_worker_process(process)
             raise TimeoutError("video artifact probe exceeded its hard deadline")
         try:
             status, payload = receiver.recv()
@@ -204,30 +204,23 @@ def _probe_video_artifact(
         receiver.close()
         process.join(timeout=1)
         if process.is_alive():
-            _terminate_video_probe(process)
+            _terminate_worker_process(process)
     if status != "ok":
         raise RuntimeError(str(payload))
     return tuple(payload)
 
 
-def _validated_video_artifact(
-    base_url: str,
-    job_id: str,
-    *,
-    width: int,
-    height: int,
-    frames: int,
-    fps: float,
+def _download_video_artifact_unbounded(
+    base_url: str, job_id: str, destination_path: str
 ) -> None:
-    deadline = time.monotonic() + _VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S
+    """Download and size-check an artifact inside the terminable worker."""
+
     with requests.get(
         f"{base_url}/videos/{job_id}/content",
         stream=True,
         timeout=60,
     ) as response:
         response.raise_for_status()
-        if time.monotonic() >= deadline:
-            raise TimeoutError("video artifact download exceeded its overall deadline")
         content_length = (getattr(response, "headers", {}) or {}).get("content-length")
         if content_length is not None:
             try:
@@ -240,15 +233,9 @@ def _validated_video_artifact(
                 raise RuntimeError("video artifact has an invalid Content-Length")
             if declared_bytes > _MAX_VIDEO_ARTIFACT_BYTES:
                 raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
-        with tempfile.NamedTemporaryFile(
-            prefix="rapid-benchmark-", suffix=".mp4"
-        ) as file:
-            size_bytes = 0
+        size_bytes = 0
+        with open(destination_path, "wb") as file:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        "video artifact download exceeded its overall deadline"
-                    )
                 if not chunk:
                     continue
                 next_size = size_bytes + len(chunk)
@@ -256,12 +243,81 @@ def _validated_video_artifact(
                     raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
                 file.write(chunk)
                 size_bytes = next_size
-            if size_bytes == 0:
-                raise RuntimeError("video benchmark returned an empty MP4 artifact")
-            file.flush()
-            actual_width, actual_height, actual_frames, actual_fps = (
-                _probe_video_artifact(file.name)
-            )
+        if size_bytes == 0:
+            raise RuntimeError("video benchmark returned an empty MP4 artifact")
+
+
+def _video_download_worker(
+    base_url: str, job_id: str, destination_path: str, sender
+) -> None:
+    try:
+        os.setsid()
+        _download_video_artifact_unbounded(base_url, job_id, destination_path)
+        sender.send(("ok", None))
+    except BaseException as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, RuntimeError)
+            else "video artifact download failed"
+        )
+        try:
+            sender.send(("error", message))
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        sender.close()
+
+
+def _download_video_artifact(
+    base_url: str,
+    job_id: str,
+    destination_path: str,
+    *,
+    timeout_s: float = _VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S,
+) -> None:
+    """Download behind a wall-clock deadline immune to socket trickle."""
+
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_video_download_worker,
+        args=(base_url, job_id, destination_path, sender),
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout_s):
+            _terminate_worker_process(process)
+            raise TimeoutError("video artifact download exceeded its hard deadline")
+        try:
+            status, payload = receiver.recv()
+        except EOFError as exc:
+            raise RuntimeError(
+                "video artifact download exited without a result"
+            ) from exc
+    finally:
+        receiver.close()
+        process.join(timeout=1)
+        if process.is_alive():
+            _terminate_worker_process(process)
+    if status != "ok":
+        raise RuntimeError(str(payload))
+
+
+def _validated_video_artifact(
+    base_url: str,
+    job_id: str,
+    *,
+    width: int,
+    height: int,
+    frames: int,
+    fps: float,
+) -> None:
+    with tempfile.NamedTemporaryFile(prefix="rapid-benchmark-", suffix=".mp4") as file:
+        _download_video_artifact(base_url, job_id, file.name)
+        actual_width, actual_height, actual_frames, actual_fps = _probe_video_artifact(
+            file.name
+        )
     if (actual_width, actual_height) != (width, height):
         raise RuntimeError(
             f"video artifact is {actual_width}x{actual_height}; "
