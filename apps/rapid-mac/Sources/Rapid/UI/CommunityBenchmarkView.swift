@@ -71,6 +71,11 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
             return $0.entry.alias.localizedStandardCompare($1.entry.alias) == .orderedAscending
         }
     }
+
+    static func reconciledSelection(current: String, models: [Self]) -> String {
+        if models.contains(where: { $0.entry.alias == current }) { return current }
+        return models.first?.entry.alias ?? ""
+    }
 }
 
 struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
@@ -278,7 +283,7 @@ struct CommunityBenchmarkView: View {
     }
 
     private var selected: CommunityBenchmarkModel? {
-        models.first { $0.entry.alias == selectedAlias } ?? models.first
+        models.first { $0.entry.alias == selectedAlias }
     }
 
     var body: some View {
@@ -465,7 +470,10 @@ struct CommunityBenchmarkView: View {
             benchmarkMetadata = Dictionary(
                 uniqueKeysWithValues: envelope.models.map { ($0.alias, $0) }
             )
-            if selected == nil { selectedAlias = models.first?.entry.alias ?? "" }
+            selectedAlias = CommunityBenchmarkModel.reconciledSelection(
+                current: selectedAlias,
+                models: models
+            )
         } catch {
             // The existing atomic Desktop catalog remains a safe fallback. A
             // sidecar from before this feature simply lacks the richer plan.

@@ -261,6 +261,29 @@ struct ServerRuntimeCapabilitiesTests {
         )
     }
 
+    @Test("Community Benchmark cancellation releases an operating wait")
+    @MainActor
+    func benchmarkCancellationReleasesOperatingWait() async throws {
+        let manager = ServerManager(testingState: .idle)
+        manager._testSetOperating(true)
+        let owner = Task { @MainActor in
+            try await manager.prepareForCommunityBenchmark()
+        }
+        for _ in 0..<10 { await Task.yield() }
+
+        owner.cancel()
+        do {
+            _ = try await owner.value
+            Issue.record("cancelled operating wait unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: cancellation releases the reservation before throwing.
+        }
+
+        manager._testSetOperating(false)
+        let replacement = try await manager.prepareForCommunityBenchmark()
+        manager.finishCommunityBenchmark(replacement)
+    }
+
     @Test("probe bounds a descendant that retains the output pipe")
     func probeBoundsRetainedOutputPipe() async throws {
         let runtime = try makeRuntimeScript(retainedOutputPipe: true)

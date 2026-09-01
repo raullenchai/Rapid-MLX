@@ -77,6 +77,42 @@ struct CommunityBenchmarkModelTests {
         #expect(model.memoryFit == "does_not_fit")
     }
 
+    @Test("CLI catalog filtering repairs an asynchronously selected alias")
+    func asynchronousCatalogSelectionRepair() throws {
+        let removed = ModelEntry(
+            alias: "custom-local-text",
+            hfRepo: "mlx-community/custom-local-text",
+            sizeOnDisk: nil,
+            cached: true
+        )
+        let retained = ModelEntry(
+            alias: "another-local-text",
+            hfRepo: "mlx-community/another-local-text",
+            sizeOnDisk: nil,
+            cached: false
+        )
+        let initial = CommunityBenchmarkModel.models(from: [removed, retained])
+        let selectedBeforeCLIResponse = try #require(initial.first).entry.alias
+        let metadata = CommunityBenchmarkCatalogModel(
+            alias: retained.alias,
+            focus: true,
+            estimatedMemoryGib: 8,
+            memoryFit: "fits"
+        )
+        let filtered = CommunityBenchmarkModel.models(
+            from: [removed, retained],
+            metadata: [retained.alias: metadata]
+        )
+
+        #expect(selectedBeforeCLIResponse == removed.alias)
+        #expect(
+            CommunityBenchmarkModel.reconciledSelection(
+                current: selectedBeforeCLIResponse,
+                models: filtered
+            ) == retained.alias
+        )
+    }
+
     @Test("Desktop keeps benchmark servers in its owned process group")
     func benchmarkRunTopologyFlag() {
         #expect(

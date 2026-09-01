@@ -1333,6 +1333,10 @@ final class ServerManager {
         self.state = newState
     }
 
+    internal func _testSetOperating(_ value: Bool) {
+        isOperating = value
+    }
+
     /// Publish the selection consequence of a successful health transition.
     /// Kept as one lifecycle boundary so tests exercise the same call that the
     /// real `/healthz` success path uses instead of calling persistence policy
@@ -3215,17 +3219,22 @@ final class ServerManager {
         } else {
             communityBenchmarkReservations.insert(reservation)
         }
-        if Task.isCancelled {
-            finishCommunityBenchmark(reservation)
-            throw CancellationError()
-        }
+        try throwIfCommunityBenchmarkCancelled(reservation)
         cancelAutoRespawn()
         cancelRuntimeProbe()
         while isOperating {
+            try throwIfCommunityBenchmarkCancelled(reservation)
             await Task.yield()
         }
+        try throwIfCommunityBenchmarkCancelled(reservation)
         await stop(preservingLastServedAlias: false)
         return reservation
+    }
+
+    private func throwIfCommunityBenchmarkCancelled(_ reservation: UUID) throws {
+        guard Task.isCancelled else { return }
+        finishCommunityBenchmark(reservation)
+        throw CancellationError()
     }
 
     private func cancelCommunityBenchmarkWaiter(_ id: UUID) {
