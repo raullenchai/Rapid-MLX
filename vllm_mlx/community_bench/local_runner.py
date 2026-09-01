@@ -15,6 +15,9 @@ from .hardware import collect
 from .run_builder import build_run, utc_now
 from .workspace import LocalRunArchive, plan_for_alias
 
+_VIDEO_JOB_TIMEOUT_S = 3600.0
+_VIDEO_POLL_INTERVAL_S = 1.0
+
 
 class LocalBenchmarkError(RuntimeError):
     """A failed attempt whose privacy-safe outcome was archived locally."""
@@ -124,10 +127,17 @@ def _run_video(alias: str) -> list[dict[str, Any]]:
         )
         response.raise_for_status()
         job = response.json()
+        deadline = time.monotonic() + _VIDEO_JOB_TIMEOUT_S
         while job["status"] not in {"completed", "failed"}:
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"video benchmark timed out after {_VIDEO_JOB_TIMEOUT_S:g} seconds"
+                )
+            time.sleep(min(_VIDEO_POLL_INTERVAL_S, remaining))
             response = requests.get(
-                f"{server['base_url']}/videos/{job['id']}", timeout=10
+                f"{server['base_url']}/videos/{job['id']}",
+                timeout=min(10, max(0.001, deadline - time.monotonic())),
             )
             response.raise_for_status()
             job = response.json()

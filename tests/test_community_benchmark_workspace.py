@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from importlib import resources
@@ -16,6 +17,7 @@ from vllm_mlx.community_bench.benchmark_contracts import (
 )
 from vllm_mlx.community_bench.hardware import Hardware, Software
 from vllm_mlx.community_bench.run_builder import build_run, utc_now
+from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
@@ -23,6 +25,37 @@ from vllm_mlx.community_bench.workspace import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _Response:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _mock_local_context(
+    monkeypatch: pytest.MonkeyPatch, task_type: str, repo_id: str
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {"alias": alias, "repo_id": repo_id, "task_type": task_type}
+        },
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "collect",
+        lambda: (
+            Hardware("Apple M4 Pro", 24, 12, 16),
+            Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -166,6 +199,230 @@ def test_failed_attempt_is_archived_without_exception_text(
     assert saved == [failure.value.run]
     assert saved[0]["outcome"] == {"status": "failed", "failure_code": "runtime_oom"}
     assert "secret path" not in json.dumps(saved[0])
+
+
+def test_run_local_executes_image_protocol_and_excludes_warmup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    calls: list[dict] = []
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        assert alias == "example-image"
+        yield {"base_url": "http://local/v1"}
+
+    def post(url: str, *, json: dict, timeout: float) -> _Response:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return _Response({"data": [{"b64_json": "unused"}]})
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(local_runner.requests, "post", post)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: _Response({"metal": {"peak_memory_gb": 8}}),
+    )
+    timings = iter((0.0, 1.0, 2.0, 4.5))
+    monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
+
+    run = local_runner.run_local("example-image", archive=archive)
+
+    assert len(calls) == 2  # one warmup plus one measured round
+    assert calls[0]["url"] == "http://local/v1/images/generations"
+    assert calls[0]["json"] == {
+        "model": "example-image",
+        "prompt": "A handcrafted ceramic teapot beside three red pears on a linen cloth, soft window light, neutral studio background, realistic product photography.",
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json",
+        "steps": 20,
+        "guidance": 3.5,
+        "seed": 12648430,
+    }
+    assert run["measurements"] == [
+        {
+            "case_id": "t2i-1024-square",
+            "round_index": 1,
+            "total_duration_ms": 2500.0,
+            "peak_active_memory_mib": 8192,
+            "completed": True,
+            "image_count": 1,
+            "width": 1024,
+            "height": 1024,
+        }
+    ]
+    assert archive.get(run["run_id"]) == run
+
+
+def test_run_local_executes_video_protocol_and_polls_to_completion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+    serve_options: dict = {}
+    posts: list[dict] = []
+    job_states = iter(("running", "completed"))
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        serve_options.update(kwargs)
+        yield {"base_url": "http://local/v1"}
+
+    def post(url: str, *, data: dict, timeout: float) -> _Response:
+        posts.append({"url": url, "data": data, "timeout": timeout})
+        return _Response({"id": "job-1", "status": "queued"})
+
+    def get(url: str, *, timeout: float) -> _Response:
+        if url.endswith("/status"):
+            return _Response({"metal": {"peak_memory_gb": 12.5}})
+        return _Response({"id": "job-1", "status": next(job_states)})
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(local_runner.requests, "post", post)
+    monkeypatch.setattr(local_runner.requests, "get", get)
+    monkeypatch.setattr(local_runner.time, "sleep", lambda seconds: None)
+    timings = iter((10.0, 15.0))
+    monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
+
+    run = local_runner.run_local("example-video", archive=archive)
+
+    assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
+    assert posts == [
+        {
+            "url": "http://local/v1/videos",
+            "data": {
+                "model": "example-video",
+                "prompt": "A wide coastal cliff at sunrise as the camera slowly moves forward above the grass, ocean waves below, stable horizon, natural cinematic light.",
+                "size": "832x480",
+                "frames": "81",
+                "fps": "24",
+                "seed": "12648430",
+                "guidance_scale": "5.0",
+            },
+            "timeout": 30,
+        }
+    ]
+    assert run["measurements"][0] == {
+        "case_id": "t2v-480p-81f",
+        "round_index": 1,
+        "total_duration_ms": 5000.0,
+        "peak_active_memory_mib": 12800,
+        "completed": True,
+        "frames": 81,
+        "width": 832,
+        "height": 480,
+    }
+
+
+def test_run_local_video_deadline_archives_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": "queued"}),
+    )
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": "running"}),
+    )
+    monkeypatch.setattr(local_runner.time, "sleep", lambda seconds: None)
+    monotonic = iter((0.0, 0.2, 0.4, 0.6))
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(local_runner, "_VIDEO_JOB_TIMEOUT_S", 0.5)
+
+    with pytest.raises(local_runner.LocalBenchmarkError, match="timed out") as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.run["outcome"] == {
+        "status": "failed",
+        "failure_code": "timeout",
+    }
+    assert archive.list() == [error.value.run]
+
+
+def test_run_local_converts_text_engine_result_to_atomic_measurements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vllm_mlx import engine_core
+    from vllm_mlx.community_bench import runner
+    from vllm_mlx.service import helpers
+    from vllm_mlx.utils import tokenizer as tokenizer_module
+
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+
+    class Engine:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+    async def standardized(engine, tokenizer, *, sampling: str) -> BenchResult:
+        assert sampling == "greedy"
+        short = [RoundResult(100, 200, 10, prompt_tokens=510, output_tokens=128)] * 5
+        long = [RoundResult(50, 150, 20, prompt_tokens=2046, output_tokens=512)] * 5
+        return BenchResult(
+            short=BucketResult(short),
+            long=BucketResult(long),
+            peak_ram_mb=4096,
+            prompt_hash="unused",
+            sampling="greedy",
+        )
+
+    monkeypatch.setattr(engine_core, "AsyncEngineCore", Engine)
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(
+        tokenizer_module,
+        "load_model_with_fallback",
+        lambda repo_id: (object(), object()),
+    )
+    monkeypatch.setattr(helpers, "get_model_max_context", lambda engine: 32768)
+    monkeypatch.setattr(runner, "run_standardized_bench", standardized)
+
+    run = local_runner.run_local("example-text", archive=archive)
+
+    assert len(run["measurements"]) == 10
+    assert [(row["case_id"], row["round_index"]) for row in run["measurements"]] == [
+        *(("pp512-tg128", index) for index in range(1, 6)),
+        *(("pp2048-tg512", index) for index in range(1, 6)),
+    ]
+    assert run["measurements"][0] == {
+        "case_id": "pp512-tg128",
+        "round_index": 1,
+        "total_duration_ms": 1280.0,
+        "peak_active_memory_mib": 4096,
+        "completed": True,
+        "prompt_tokens": 510,
+        "output_tokens": 128,
+        "ttft_ms": 10,
+        "decode_duration_ms": 1270.0,
+    }
+    assert run["execution"]["task"]["language"]["context_length"] == 32768
+    assert archive.get(run["run_id"]) == run
 
 
 def test_execution_digest_is_over_effective_task_and_resources() -> None:
