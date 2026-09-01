@@ -124,6 +124,11 @@ enum ModelSelectionPurpose: Sendable, Hashable {
             case .textToSpeech:
                 return entry.taskTypes.contains(.speechSynthesis)
                     && entry.operationModes.contains(.presetVoice)
+                    // Task and operation describe request shape, not whether
+                    // the signed Desktop runtime bundles family-specific
+                    // assets. Keep the current Qwen3-only product contract
+                    // until atomic runtime requirements are representable.
+                    && entry.audioFamily == "qwen3_tts"
             }
         }
         switch self {

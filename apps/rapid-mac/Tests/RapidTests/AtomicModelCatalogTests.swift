@@ -186,7 +186,7 @@ struct AtomicModelCatalogTests {
             audioFamily: "future_tts", taskTypes: [.speechSynthesis],
             operationModes: [.presetVoice]
         )
-        #expect(ModelSelectionPurpose.textToSpeech.accepts(genericAtomicTTS))
+        #expect(!ModelSelectionPurpose.textToSpeech.accepts(genericAtomicTTS))
         let legacyTTS = ModelEntry(
             alias: "legacy-future-tts", hfRepo: "org/future-tts", sizeOnDisk: nil,
             cached: false, kind: .audio, audioCapability: .speech,
