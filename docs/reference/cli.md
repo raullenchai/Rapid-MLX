@@ -90,7 +90,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 | `--completion-batch-size` | Completion batch size | 32 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing; larger values use more memory but can improve prefill throughput | 2048 |
 | `--stream-interval` | Tokens to batch before streaming (1 = smooth, higher = throughput) | 1 |
-| `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit and emergency cache-clear threshold (0.0-1.0); increase to 0.95 for very large (200GB+) models | 0.90 |
+| `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit and admission cap (0.0-1.0). Advanced override — by default the budget is sized automatically to the loaded model (measured weights + headroom, 0.90–0.97 of the device working-set budget) | auto |
 
 #### Prefix, KV, and response caching
 

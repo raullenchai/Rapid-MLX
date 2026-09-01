@@ -445,6 +445,7 @@ jobs:
             tests/test_response_format_json_schema_strict.py \
             tests/test_mllm_cache.py \
             tests/test_memory_cache.py \
+            tests/test_metal_memory_budget.py \
             tests/test_optimizations.py \
             tests/test_batching.py \
             tests/test_continuous_batching.py \

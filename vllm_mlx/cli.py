@@ -3457,8 +3457,10 @@ def serve_command(args):
             )
             sys.exit(2)
 
-    # Validate gpu-memory-utilization range
-    if not (0.0 < args.gpu_memory_utilization <= 1.0):
+    # Validate gpu-memory-utilization range (None = auto budgeting, #2858)
+    if args.gpu_memory_utilization is not None and not (
+        0.0 < args.gpu_memory_utilization <= 1.0
+    ):
         print(
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
@@ -3950,10 +3952,9 @@ def serve_command(args):
             _dflash_ignored.append("--kv-cache-turboquant")
         if getattr(args, "pflash", None) not in (None, "auto"):
             _dflash_ignored.append("--pflash")
-        # gpu-memory-utilization defaults to 0.90 (not None) in the serve
-        # parser, so an ``is not None`` check would fire on every invocation.
-        # Compare to the real default — only warn when the user explicitly
-        # tuned it. Tolerate a tiny float-equality slack for safety.
+        # gpu-memory-utilization defaults to None (auto, #2858) in the
+        # serve parser; only warn when the user explicitly tuned it away
+        # from the historical 0.90. Tolerate float-equality slack.
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _dflash_ignored.append("--gpu-memory-utilization")
@@ -4407,8 +4408,12 @@ def serve_command(args):
         # site — without this line, ``--gpu-memory-utilization 0.45``
         # would still set the soft Metal hint but the admission-time
         # check would stay disabled (SchedulerConfig default 0.0),
-        # silently recreating the D-METAL-CAP regression.
-        gpu_memory_utilization=args.gpu_memory_utilization,
+        # silently recreating the D-METAL-CAP regression. ``None``
+        # (auto, #2858) maps to 0.0 here: BatchedEngine resolves the
+        # per-model budget after load and engine_core's D-METAL-CAP
+        # propagation fills the scheduler config with the RESOLVED
+        # utilization, so both enforcement points share one cap.
+        gpu_memory_utilization=args.gpu_memory_utilization or 0.0,
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -10824,10 +10829,12 @@ Examples:
     serve_parser.add_argument(
         "--gpu-memory-utilization",
         type=float,
-        default=0.90,
-        help="Fraction of device memory for Metal allocation limit and emergency "
-        "cache clear threshold (0.0-1.0, default: 0.90). Increase to 0.95 for "
-        "large models (200GB+) that need more memory headroom.",
+        default=None,
+        help="Fraction of device memory for the Metal allocation limit and "
+        "admission cap (0.0-1.0). Default: auto — the budget is sized to the "
+        "loaded model (measured weights + headroom, between 0.90 and 0.97 of "
+        "the device working-set budget). Pass an explicit value only as an "
+        "advanced override.",
     )
     serve_parser.add_argument(
         "--resident-memory-limit-gb",
