@@ -140,44 +140,48 @@ def _validated_video_artifact(
     fps: float,
 ) -> None:
     deadline = time.monotonic() + _VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S
-    response = requests.get(
+    with requests.get(
         f"{base_url}/videos/{job_id}/content",
         stream=True,
         timeout=60,
-    )
-    response.raise_for_status()
-    if time.monotonic() >= deadline:
-        raise TimeoutError("video artifact download exceeded its overall deadline")
-    content_length = (getattr(response, "headers", {}) or {}).get("content-length")
-    if content_length is not None:
-        try:
-            declared_bytes = int(content_length)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("video artifact has an invalid Content-Length") from exc
-        if declared_bytes < 0:
-            raise RuntimeError("video artifact has an invalid Content-Length")
-        if declared_bytes > _MAX_VIDEO_ARTIFACT_BYTES:
-            raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
-    with tempfile.NamedTemporaryFile(prefix="rapid-benchmark-", suffix=".mp4") as file:
-        size_bytes = 0
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    "video artifact download exceeded its overall deadline"
-                )
-            if not chunk:
-                continue
-            next_size = size_bytes + len(chunk)
-            if next_size > _MAX_VIDEO_ARTIFACT_BYTES:
+    ) as response:
+        response.raise_for_status()
+        if time.monotonic() >= deadline:
+            raise TimeoutError("video artifact download exceeded its overall deadline")
+        content_length = (getattr(response, "headers", {}) or {}).get("content-length")
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "video artifact has an invalid Content-Length"
+                ) from exc
+            if declared_bytes < 0:
+                raise RuntimeError("video artifact has an invalid Content-Length")
+            if declared_bytes > _MAX_VIDEO_ARTIFACT_BYTES:
                 raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
-            file.write(chunk)
-            size_bytes = next_size
-        if size_bytes == 0:
-            raise RuntimeError("video benchmark returned an empty MP4 artifact")
-        file.flush()
-        actual_width, actual_height, actual_frames, actual_fps = _probe_video_artifact(
-            file.name
-        )
+        with tempfile.NamedTemporaryFile(
+            prefix="rapid-benchmark-", suffix=".mp4"
+        ) as file:
+            size_bytes = 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "video artifact download exceeded its overall deadline"
+                    )
+                if not chunk:
+                    continue
+                next_size = size_bytes + len(chunk)
+                if next_size > _MAX_VIDEO_ARTIFACT_BYTES:
+                    raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
+                file.write(chunk)
+                size_bytes = next_size
+            if size_bytes == 0:
+                raise RuntimeError("video benchmark returned an empty MP4 artifact")
+            file.flush()
+            actual_width, actual_height, actual_frames, actual_fps = (
+                _probe_video_artifact(file.name)
+            )
     if (actual_width, actual_height) != (width, height):
         raise RuntimeError(
             f"video artifact is {actual_width}x{actual_height}; "

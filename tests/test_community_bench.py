@@ -189,17 +189,28 @@ def test_registered_token_ids_match_dataset_golden_vector() -> None:
 
     class _Tokenizer:
         vocab_size = 1000
+        all_special_ids = [368, 522, 834, 999]
 
     assert runner._build_registered_token_ids(_Tokenizer(), 8, seed=12_648_430) == [
-        368,
-        834,
-        582,
-        522,
-        419,
-        672,
-        421,
-        651,
+        469,
+        845,
+        945,
+        415,
+        950,
+        718,
+        771,
+        464,
     ]
+
+
+def test_registered_token_ids_require_special_token_evidence() -> None:
+    from vllm_mlx.community_bench import runner
+
+    class _Tokenizer:
+        vocab_size = 1000
+
+    with pytest.raises(RuntimeError, match="all_special_ids"):
+        runner._build_registered_token_ids(_Tokenizer(), 8, seed=12_648_430)
 
 
 def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
@@ -209,6 +220,7 @@ def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
 
     class _Tokenizer:
         vocab_size = 1000
+        all_special_ids = [368, 522, 834, 999]
 
     observed = []
 
@@ -235,7 +247,7 @@ def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
         )
     )
 
-    assert prompt_ids == [368, 834, 582, 522, 419, 672, 421, 651]
+    assert prompt_ids == [469, 845, 945, 415, 950, 718, 771, 464]
     assert observed == [prompt_ids] * 6  # one warmup + five measured rounds
     assert len(result.rounds_raw) == 5
 

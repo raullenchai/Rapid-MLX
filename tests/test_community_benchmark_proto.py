@@ -581,13 +581,20 @@ def test_synthetic_token_dataset_has_cross_language_golden_vector() -> None:
     assert generator["input_representation"] == "token_ids"
     state = generator["seed"]
     upper_exclusive = min(dataset["golden_vector"]["tokenizer_vocab_size"], 100000)
+    special = set(dataset["golden_vector"]["special_token_ids"])
+    eligible = [
+        token_id
+        for token_id in range(generator["minimum_token_id"], upper_exclusive)
+        if token_id not in special
+    ]
     actual = []
     for _ in dataset["golden_vector"]["first_token_ids"]:
         state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
         state = (state ^ (state >> 17)) & 0xFFFFFFFF
         state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
-        actual.append(256 + state % (upper_exclusive - 256))
+        actual.append(eligible[state % len(eligible)])
     assert actual == dataset["golden_vector"]["first_token_ids"]
+    assert not special.intersection(actual)
 
 
 def test_registered_launch_examples_exactly_match_protocol_registry() -> None:

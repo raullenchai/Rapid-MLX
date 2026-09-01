@@ -58,8 +58,11 @@ records rather than parse legacy submission JSON.
   the case targets. A tokenizer round-trip that turns `pp512` into 510 tokens
   is archived as a failed attempt, never admitted as comparable `pp512` data.
   The atomic runner uses the dataset's xorshift32 golden algorithm and passes
-  its IDs directly to the engine; legacy `rapid-mlx bench` keeps its historical
-  decoded-text generator until that separate submission format is migrated.
+  its IDs directly to the engine. The registered eligible-ID list explicitly
+  excludes `tokenizer.all_special_ids`; a tokenizer that cannot provide that
+  evidence cannot claim the registered protocol. Legacy `rapid-mlx bench`
+  keeps its historical decoded-text generator until that separate submission
+  format is migrated.
 - Peak memory uses the status endpoint's decimal-GB definition converted to
   MiB (`GB × 1e9 / 2^20`). Missing metrics remain JSON `null`; zero is never
   used as a stand-in for unavailable evidence.
@@ -76,6 +79,10 @@ records rather than parse legacy submission JSON.
 - Catalog, planning, archive, and inspect failures remain structured CLI
   errors. The CLI states whether a privacy-safe failed run was actually saved;
   it never claims local persistence after a disk or permission error.
+- Execution fields are evidence, not defaults: unobserved diffusion, temporal
+  chunking, KV-cache, context-length, and offload details remain unknown/null
+  or omitted. A later runtime-observation layer can strengthen them without
+  changing the atomic shape or fabricating present-day configuration.
 
 ## Product flow
 

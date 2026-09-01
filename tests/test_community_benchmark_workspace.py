@@ -20,7 +20,7 @@ from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
 )
 from vllm_mlx.community_bench.hardware import Hardware, Software
-from vllm_mlx.community_bench.run_builder import build_run, utc_now
+from vllm_mlx.community_bench.run_builder import build_run, execution_config, utc_now
 from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
@@ -34,6 +34,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class _Response:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.closed = True
 
     def raise_for_status(self) -> None:
         pass
@@ -217,6 +224,22 @@ def test_peak_memory_converts_decimal_gb_and_preserves_unknown(
         lambda *args, **kwargs: _Response({"metal": {"peak_memory_gb": decimal_gb}}),
     )
     assert local_runner._peak_memory_mib("http://local/v1") == expected_mib
+
+
+@pytest.mark.parametrize("task_type", ["image_generation", "video_generation"])
+def test_unobserved_diffusion_execution_fields_remain_unknown(task_type: str) -> None:
+    execution = execution_config(task_type)
+    diffusion = execution["task"]["diffusion"]
+
+    assert diffusion == {
+        "attention_backend": "unknown",
+        "compilation": "unknown",
+        "vae_tiling": None,
+        "vae_slicing": None,
+    }
+    assert "offload" not in execution["resources"]
+    if task_type == "video_generation":
+        assert execution["task"]["temporal_chunking"] == {"enabled": None}
 
 
 def _image_run() -> dict:
@@ -638,11 +661,13 @@ def test_video_artifact_is_downloaded_and_probed(
             assert chunk_size == 1024 * 1024
             yield b"small-mp4-fixture"
 
+    content_response = ContentResponse({})
+
     def get(url: str, *, stream: bool, timeout: float) -> ContentResponse:
         assert url == "http://local/v1/videos/job-1/content"
         assert stream is True
         assert timeout == 60
-        return ContentResponse({})
+        return content_response
 
     def probe(path: str) -> tuple[int, int, int, float]:
         assert Path(path).read_bytes() == b"small-mp4-fixture"
@@ -659,6 +684,7 @@ def test_video_artifact_is_downloaded_and_probed(
         frames=81,
         fps=24,
     )
+    assert content_response.closed is True
 
 
 @pytest.mark.parametrize("mode", ["empty", "corrupt"])
@@ -700,10 +726,11 @@ def test_video_artifact_continuous_stream_is_size_bounded(
             yield b"123"
             yield b"456"  # Continuous progress must not bypass the total cap.
 
+    content_response = ContentResponse({})
     monkeypatch.setattr(
         local_runner.requests,
         "get",
-        lambda *args, **kwargs: ContentResponse({}),
+        lambda *args, **kwargs: content_response,
     )
     monkeypatch.setattr(local_runner, "_MAX_VIDEO_ARTIFACT_BYTES", 5)
     monkeypatch.setattr(local_runner.time, "monotonic", lambda: 0.0)
@@ -717,6 +744,7 @@ def test_video_artifact_continuous_stream_is_size_bounded(
             frames=81,
             fps=24,
         )
+    assert content_response.closed is True
 
 
 def test_video_artifact_continuous_stream_has_overall_deadline(

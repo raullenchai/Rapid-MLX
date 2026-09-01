@@ -178,13 +178,29 @@ def _build_registered_token_ids(
             "tokenizer vocab too small for registered token workload "
             f"(vocab_size={vocab_size})"
         )
+    special_token_ids = getattr(tokenizer, "all_special_ids", None)
+    if special_token_ids is None:
+        raise RuntimeError(
+            "tokenizer does not expose all_special_ids required by the "
+            "registered non-special-token workload"
+        )
+    special = {
+        token_id
+        for token_id in special_token_ids
+        if type(token_id) is int and 0 <= token_id < upper_exclusive
+    }
+    eligible_ids = [
+        token_id for token_id in range(256, upper_exclusive) if token_id not in special
+    ]
+    if not eligible_ids:
+        raise RuntimeError("tokenizer has no eligible non-special workload tokens")
     state = seed & 0xFFFFFFFF
     ids: list[int] = []
     for _ in range(target_tokens):
         state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
         state = (state ^ (state >> 17)) & 0xFFFFFFFF
         state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
-        ids.append(256 + state % (upper_exclusive - 256))
+        ids.append(eligible_ids[state % len(eligible_ids)])
     return ids
 
 

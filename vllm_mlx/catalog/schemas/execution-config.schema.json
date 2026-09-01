@@ -78,7 +78,7 @@
     "kvCache": {
       "type": "object", "additionalProperties": false, "required": ["mode", "dtype"],
       "properties": {
-        "mode": {"enum": ["full_precision", "quantized"]},
+        "mode": {"enum": ["full_precision", "quantized", "unknown"]},
         "dtype": {"enum": ["float32", "float16", "bfloat16", "q8", "q6", "q4", "q3", "q2", "other", "unknown"]},
         "bits_x2": {"type": "integer", "minimum": 2, "maximum": 64},
         "group_size": {"type": "integer", "minimum": 1, "maximum": 4096}
@@ -86,14 +86,20 @@
       "allOf": [{
         "if": {"properties": {"mode": {"const": "quantized"}}, "required": ["mode"]},
         "then": {"required": ["bits_x2", "group_size"], "properties": {"dtype": {"enum": ["q8", "q6", "q4", "q3", "q2", "other"]}}},
-        "else": {"properties": {"dtype": {"enum": ["float32", "float16", "bfloat16"]}}, "not": {"anyOf": [{"required": ["bits_x2"]}, {"required": ["group_size"]}]}}
+        "else": {"not": {"anyOf": [{"required": ["bits_x2"]}, {"required": ["group_size"]}]}}
+      }, {
+        "if": {"properties": {"mode": {"const": "full_precision"}}, "required": ["mode"]},
+        "then": {"properties": {"dtype": {"enum": ["float32", "float16", "bfloat16"]}}}
+      }, {
+        "if": {"properties": {"mode": {"const": "unknown"}}, "required": ["mode"]},
+        "then": {"properties": {"dtype": {"const": "unknown"}}}
       }]
     },
     "languageFeatures": {
       "type": "object", "additionalProperties": false,
       "required": ["context_length", "speculative_decoding", "kv_cache", "prefix_cache_enabled", "prefill_backend"],
       "properties": {
-        "context_length": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "context_length": {"type": ["integer", "null"], "minimum": 1, "maximum": 2147483647},
         "speculative_decoding": {"$ref": "#/$defs/speculative"},
         "kv_cache": {"$ref": "#/$defs/kvCache"},
         "prefix_cache_enabled": {"type": "boolean"},
@@ -123,10 +129,10 @@
       "type": "object", "additionalProperties": false,
       "required": ["attention_backend", "compilation", "vae_tiling", "vae_slicing"],
       "properties": {
-        "attention_backend": {"enum": ["native", "split_einsum", "flash", "other"]},
-        "compilation": {"enum": ["disabled", "enabled"]},
-        "vae_tiling": {"type": "boolean"},
-        "vae_slicing": {"type": "boolean"},
+        "attention_backend": {"enum": ["native", "split_einsum", "flash", "other", "unknown"]},
+        "compilation": {"enum": ["disabled", "enabled", "unknown"]},
+        "vae_tiling": {"type": ["boolean", "null"]},
+        "vae_slicing": {"type": ["boolean", "null"]},
         "denoiser_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}
       }
     },
@@ -143,7 +149,7 @@
         "diffusion": {"$ref": "#/$defs/diffusionFeatures"},
         "temporal_chunking": {
           "type": "object", "additionalProperties": false, "required": ["enabled"],
-          "properties": {"enabled": {"type": "boolean"}, "frames_per_chunk": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}},
+          "properties": {"enabled": {"type": ["boolean", "null"]}, "frames_per_chunk": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}},
           "allOf": [{"if": {"properties": {"enabled": {"const": true}}}, "then": {"required": ["frames_per_chunk"]}, "else": {"not": {"required": ["frames_per_chunk"]}}}]
         }
       }

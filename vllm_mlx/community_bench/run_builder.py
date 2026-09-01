@@ -92,20 +92,20 @@ def execution_config(
         installed = _installed(package)
         if installed is not None:
             runtime[field] = installed
-    resources = {"max_concurrency": 1, "compute_dtype": "unknown", "offload": "none"}
+    resources = {"max_concurrency": 1, "compute_dtype": "unknown"}
     diffusion = {
-        "attention_backend": "native",
-        "compilation": "disabled",
-        "vae_tiling": False,
-        "vae_slicing": False,
+        "attention_backend": "unknown",
+        "compilation": "unknown",
+        "vae_tiling": None,
+        "vae_slicing": None,
     }
     if task_type == "text_generation":
         task = {
             "kind": task_type,
             "language": {
-                "context_length": context_length or 2560,
+                "context_length": context_length,
                 "speculative_decoding": {"method": "none"},
-                "kv_cache": {"mode": "full_precision", "dtype": "float16"},
+                "kv_cache": {"mode": "unknown", "dtype": "unknown"},
                 "prefix_cache_enabled": False,
                 "prefill_backend": "gpu",
                 "prefill_chunk_size": None,
@@ -117,7 +117,7 @@ def execution_config(
         task = {
             "kind": task_type,
             "diffusion": diffusion,
-            "temporal_chunking": {"enabled": False},
+            "temporal_chunking": {"enabled": None},
         }
     else:
         raise ValueError(f"unsupported task type {task_type!r}")
