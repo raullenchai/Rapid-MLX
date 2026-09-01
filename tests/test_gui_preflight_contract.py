@@ -395,6 +395,116 @@ def test_transcript_settler_accepts_stable_visible_tail_after_scrollbar_hides(tm
     assert completed.stdout.strip() == "3"
 
 
+def test_transcript_settler_rechecks_after_a_stale_jump_press(tmp_path):
+    """A vanished stale AX element still needs the physical tail proof."""
+    source = HARNESS.read_text()
+    helper_body = source.split("settle_transcript_at_bottom() {", 1)[1].split("\n}", 1)[
+        0
+    ]
+    helper = f"settle_transcript_at_bottom() {{{helper_body}\n}}"
+
+    fixture_dir = tmp_path / "fixtures"
+    fixture_dir.mkdir()
+    initial_elements = [
+        {
+            "role": "AXScrollBar",
+            "value": 0.25,
+            "bounds": {"x": 704, "width": 17, "height": 320},
+        },
+        {
+            "identifier": "ChatView.SendOrStopButton",
+            "bounds": {"x": 658, "width": 28, "height": 28},
+        },
+        {"identifier": "Transcript.JumpToBottom"},
+    ]
+    settled_elements = [
+        {
+            "role": "AXScrollBar",
+            "value": 1.0,
+            "bounds": {"x": 704, "width": 17, "height": 320},
+        },
+        {
+            "identifier": "ChatView.SendOrStopButton",
+            "bounds": {"x": 658, "width": 28, "height": 28},
+        },
+    ]
+    for index, elements in enumerate(
+        (initial_elements, settled_elements, settled_elements, settled_elements)
+    ):
+        (fixture_dir / f"fixture-{index}.json").write_text(
+            json.dumps({"data": {"ui_elements": elements}})
+        )
+
+    script = textwrap.dedent(
+        f"""
+        set -u
+        fixture_dir={str(fixture_dir)!r}
+        calls=0
+        see_main() {{
+            local destination="$1" index="$calls"
+            (( index > 3 )) && index=3
+            cp "$fixture_dir/fixture-$index.json" "$destination"
+            calls=$((calls + 1))
+        }}
+        press() {{ return 1; }}
+        die() {{ printf '%s\n' "$*" >&2; exit 97; }}
+        sleep() {{ :; }}
+        {helper}
+        settle_transcript_at_bottom "$fixture_dir/current.json" "$fixture_dir/press.json"
+        printf '%s\n' "$calls"
+        """
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output=True, check=False, text=True
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "4"
+
+
+def test_transcript_settler_rejects_failed_press_when_jump_remains(tmp_path):
+    """A live but unpressable affordance must continue to fail closed."""
+    source = HARNESS.read_text()
+    helper_body = source.split("settle_transcript_at_bottom() {", 1)[1].split("\n}", 1)[
+        0
+    ]
+    helper = f"settle_transcript_at_bottom() {{{helper_body}\n}}"
+
+    elements = [
+        {
+            "role": "AXScrollBar",
+            "value": 0.25,
+            "bounds": {"x": 704, "width": 17, "height": 320},
+        },
+        {
+            "identifier": "ChatView.SendOrStopButton",
+            "bounds": {"x": 658, "width": 28, "height": 28},
+        },
+        {"identifier": "Transcript.JumpToBottom"},
+    ]
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"data": {"ui_elements": elements}}))
+
+    script = textwrap.dedent(
+        f"""
+        set -u
+        fixture={str(fixture)!r}
+        see_main() {{ cp "$fixture" "$1"; }}
+        press() {{ return 1; }}
+        die() {{ printf '%s\n' "$*" >&2; exit 97; }}
+        sleep() {{ :; }}
+        {helper}
+        settle_transcript_at_bottom "$fixture.current.json" "$fixture.press.json"
+        """
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output=True, check=False, text=True
+    )
+
+    assert completed.returncode == 97
+    assert "was not pressable" in completed.stderr
+
+
 def test_transcript_settler_rejects_a_stable_intermediate_position(tmp_path):
     """Progress plus a hidden button is not proof that the tail was reached."""
     source = HARNESS.read_text()

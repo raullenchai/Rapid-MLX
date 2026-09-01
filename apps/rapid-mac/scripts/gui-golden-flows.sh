@@ -920,8 +920,19 @@ settle_transcript_at_bottom() {
     if jq -e '.data.ui_elements[]?
               | select(.identifier == "Transcript.JumpToBottom")' \
         "$destination" >/dev/null; then
-        press "$destination" Transcript.JumpToBottom "$press_result" \
-            || die "transcript was not at its tail and Jump to latest was not pressable"
+        if ! press "$destination" Transcript.JumpToBottom "$press_result"; then
+            # The transcript can finish its own scroll between the AX dump and
+            # AXPress, replacing the overlay element that the dump described.
+            # Re-read before calling that a broken control. Disappearance is
+            # not success by itself: the stability loop below must still prove
+            # the correlated transcript is physically at its tail twice.
+            see_main "$destination"
+            if jq -e '.data.ui_elements[]?
+                      | select(.identifier == "Transcript.JumpToBottom")' \
+                "$destination" >/dev/null; then
+                die "transcript was not at its tail and Jump to latest was not pressable"
+            fi
+        fi
     fi
     local previous_tail_key="" stable_samples=0
     for _ in {1..60}; do
