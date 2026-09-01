@@ -3266,6 +3266,39 @@ final class ServerManager {
         }
     }
 
+    /// Atomically replace a foreground benchmark lease with a quarantine
+    /// lease before the former is released. A SIGKILL-pending process group
+    /// may outlive bounded UI teardown, but it must continue excluding model
+    /// launches until the kernel confirms that the group is gone.
+    func retainCommunityBenchmarkDuringDeferredReap(_ processGroupID: pid_t) {
+        retainCommunityBenchmarkDuringDeferredReap { onExit in
+            ProcessGroupChild.monitorProcessGroupUntilExit(
+                processGroupID: processGroupID,
+                onExit: onExit
+            )
+        }
+    }
+
+    private func retainCommunityBenchmarkDuringDeferredReap(
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) {
+        let quarantine = UUID()
+        communityBenchmarkReservations.insert(quarantine)
+        startMonitoring { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finishCommunityBenchmark(quarantine)
+            }
+        }
+    }
+
+    internal func _testRetainCommunityBenchmarkDuringDeferredReap(
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) {
+        retainCommunityBenchmarkDuringDeferredReap(
+            startMonitoring: startMonitoring
+        )
+    }
+
     /// Shared expected-stop path. Model replacement keeps the previous
     /// known-good alias until the replacement reaches ``.ready`` and writes
     /// its own alias; a user-facing Stop continues to clear it immediately.
@@ -5141,6 +5174,18 @@ final class ProcessGroupChild: @unchecked Sendable {
             if kill(-processGroupID, SIGKILL) != 0 && errno != ESRCH {
                 return
             }
+        }
+    }
+
+    static func monitorProcessGroupUntilExit(
+        processGroupID: pid_t,
+        onExit: @escaping @Sendable () -> Void
+    ) {
+        Task.detached(priority: .utility) {
+            while kill(-processGroupID, 0) == 0 || errno == EPERM {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            onExit()
         }
     }
 

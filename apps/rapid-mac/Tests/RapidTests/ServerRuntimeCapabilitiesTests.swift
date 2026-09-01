@@ -287,6 +287,32 @@ struct ServerRuntimeCapabilitiesTests {
         manager.finishCommunityBenchmark(replacement)
     }
 
+    @Test("Deferred reap quarantine blocks the next benchmark owner")
+    @MainActor
+    func benchmarkDeferredReapTransfersReservation() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let foreground = try await manager.prepareForCommunityBenchmark()
+        let monitor = DeferredReapCompletionBox()
+        manager._testRetainCommunityBenchmarkDuringDeferredReap {
+            monitor.install($0)
+        }
+        manager.finishCommunityBenchmark(foreground)
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        monitor.finish()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        manager.finishCommunityBenchmark(replacementReservation)
+    }
+
     @Test("Community Benchmark cancellation releases an operating wait")
     @MainActor
     func benchmarkCancellationReleasesOperatingWait() async throws {
@@ -411,6 +437,25 @@ private actor RuntimeProbeGate {
         released = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private final class DeferredReapCompletionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: (@Sendable () -> Void)?
+
+    func install(_ completion: @escaping @Sendable () -> Void) {
+        lock.lock()
+        self.completion = completion
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        let completion = completion
+        self.completion = nil
+        lock.unlock()
+        completion?()
     }
 }
 

@@ -36,9 +36,10 @@ records rather than parse legacy submission JSON.
   hidden supervisor flag keeps that server in the owned group; navigation away
   cancels the run, and a replacement view waits for the prior lease to drain.
   A cancelled queued view is removed immediately rather than acquiring later.
-  Foreground teardown is bounded after SIGKILL so an uninterruptible process
-  cannot permanently reserve the Desktop lifecycle; a bounded background
-  reaper retains best-effort ownership after the UI lease is released.
+  Foreground teardown is bounded after SIGKILL. If a process group remains,
+  the foreground lease is atomically replaced by a ServerManager quarantine
+  lease; UI cancellation can finish, but model launches remain excluded until
+  a background monitor confirms the process group is gone.
 - A completed run always contains its atomic `MachineObservation`. If the
   privacy-allowlisted machine probe itself fails, the local failed attempt uses
   `machine_probe_failed` and omits `machine` rather than fabricating identity;

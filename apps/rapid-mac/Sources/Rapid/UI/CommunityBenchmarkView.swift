@@ -195,7 +195,7 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         runningChild?.signalProcessGroup(SIGTERM)
     }
 
-    func waitForCompletion(_ child: ProcessGroupChild) -> Bool {
+    func waitForCompletion(_ child: ProcessGroupChild) -> pid_t? {
         while child.isRunning {
             lock.lock()
             let shouldCancel = cancelled
@@ -212,34 +212,17 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         if child.isProcessGroupAlive {
             return Self.terminateAndReap(child)
         }
-        return true
+        return nil
     }
 
-    private static func terminateAndReap(_ child: ProcessGroupChild) -> Bool {
+    private static func terminateAndReap(_ child: ProcessGroupChild) -> pid_t? {
         let exited = boundedTermination(
             isAlive: { child.isProcessGroupAlive },
             signal: { child.signalProcessGroup($0) },
             termGrace: 2,
             killGrace: 1
         )
-        if !exited {
-            // A process stuck in uninterruptible I/O can remain visible with
-            // SIGKILL pending. The UI task may finish cancelling only after
-            // the group disappears: releasing its server reservation earlier
-            // would permit a second MLX workload into unified memory.
-            waitForReapConfirmation(
-                isAlive: { child.isProcessGroupAlive },
-                sleep: Thread.sleep(forTimeInterval:)
-            )
-        }
-        return true
-    }
-
-    static func waitForReapConfirmation(
-        isAlive: () -> Bool,
-        sleep: (TimeInterval) -> Void
-    ) {
-        while isAlive() { sleep(0.1) }
+        return exited ? nil : child.processGroupID
     }
 
     static func boundedTermination(
@@ -268,6 +251,11 @@ enum CommunityBenchmarkCommand {
         var errorDescription: String? { message }
     }
 
+    private enum RunOutcome {
+        case output(Data)
+        case deferredReap(pid_t)
+    }
+
     static func benchmarkRunArguments(alias: String) -> [String] {
         [
             "benchmark", "run", alias, "--json",
@@ -275,12 +263,17 @@ enum CommunityBenchmarkCommand {
         ]
     }
 
-    static func run(binary: URL, arguments: [String]) async throws -> Data {
+    @MainActor
+    static func run(
+        binary: URL,
+        arguments: [String],
+        onDeferredReap: ((pid_t) -> Void)? = nil
+    ) async throws -> Data {
         let box = BenchmarkProcessBox()
         return try await withTaskCancellationHandler {
-            let data: Data
+            let outcome: RunOutcome
             do {
-                data = try await Task.detached(priority: .userInitiated) {
+                outcome = try await Task.detached(priority: .userInitiated) {
                     let stdout = Pipe()
                     let stderr = Pipe()
                     let child = try box.start(
@@ -295,13 +288,12 @@ enum CommunityBenchmarkCommand {
                     let errorTask = Task.detached {
                         try stderr.fileHandleForReading.readToEnd() ?? Data()
                     }
-                    let exited = box.waitForCompletion(child)
-                    if !exited {
+                    if let processGroupID = box.waitForCompletion(child) {
                         try? stdout.fileHandleForReading.close()
                         try? stderr.fileHandleForReading.close()
                         outputTask.cancel()
                         errorTask.cancel()
-                        throw CancellationError()
+                        return RunOutcome.deferredReap(processGroupID)
                     }
                     let output = try await outputTask.value
                     let errorData = try await errorTask.value
@@ -312,11 +304,23 @@ enum CommunityBenchmarkCommand {
                             ?? "Benchmark exited with code \(child.terminationStatus)."
                         throw Failure(message: message)
                     }
-                    return output
+                    return RunOutcome.output(output)
                 }.value
             } catch {
                 try Task.checkCancellation()
                 throw error
+            }
+            guard case let .output(data) = outcome else {
+                if case let .deferredReap(processGroupID) = outcome {
+                    if let onDeferredReap {
+                        onDeferredReap(processGroupID)
+                    } else {
+                        ProcessGroupChild.reapProcessGroupInBackground(
+                            processGroupID: processGroupID
+                        )
+                    }
+                }
+                throw CancellationError()
             }
             try Task.checkCancellation()
             return data
@@ -331,6 +335,7 @@ struct CommunityBenchmarkView: View {
     let binary: URL?
     let prepareServer: () async throws -> UUID
     let releaseServer: (UUID) -> Void
+    let retainServerDuringDeferredReap: (pid_t) -> Void
 
     @State private var selectedAlias = ""
     @State private var results: [CommunityBenchmarkResult] = []
@@ -496,7 +501,8 @@ struct CommunityBenchmarkView: View {
                     binary: binary,
                     arguments: CommunityBenchmarkCommand.benchmarkRunArguments(
                         alias: selected.entry.alias
-                    )
+                    ),
+                    onDeferredReap: retainServerDuringDeferredReap
                 )
                 await refreshResults()
             } catch is CancellationError {
