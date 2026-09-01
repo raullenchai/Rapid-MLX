@@ -400,6 +400,7 @@ struct CommunityBenchmarkView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("CommunityBenchmark.ModelPicker")
 
             if let selected {
                 HStack(spacing: 10) {
@@ -429,6 +430,7 @@ struct CommunityBenchmarkView: View {
                     isRunning ? runTask?.cancel() : startRun()
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("CommunityBenchmark.RunOrStop")
                 .disabled(
                     !isRunning
                         && (selected == nil || binary == nil || !benchmarkCLIAvailable)

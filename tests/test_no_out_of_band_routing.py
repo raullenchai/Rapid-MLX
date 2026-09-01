@@ -125,6 +125,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_RUNTIME_PYTHON",
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
+        # Local-only archive location for reproducible benchmark records. It
+        # changes storage placement, never model/task/parser selection.
+        "RAPID_MLX_BENCHMARK_HOME",
         # Security policy knobs, none of which selects a model, parser, tier,
         # or engine route. TRUST_REMOTE_CODE only constrains whether an
         # already-selected checkpoint may import repository Python;
