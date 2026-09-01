@@ -195,8 +195,8 @@ struct AtomicModelCatalogTests {
         #expect(!ModelSelectionPurpose.textToSpeech.accepts(legacyTTS))
     }
 
-    @Test("image-understanding-only VLM downgrades instead of entering Chat")
-    func imageUnderstandingOnlyVLMRejectsAtomicEnvelope() {
+    @Test("image-understanding-only VLM remains atomic without entering Chat")
+    func imageUnderstandingOnlyVLMDoesNotEnterChat() throws {
         let vlmPayload = Self.mutated { root in
             Self.mutateCapabilities(in: &root, aliasIndex: 0) {
                 $0["task_types"] = ["vision_language"]
@@ -204,7 +204,11 @@ struct AtomicModelCatalogTests {
                 $0["is_text_only"] = false
             }
         }
-        #expect(ModelCatalog.parseAtomicModelEntriesJSON(vlmPayload) == nil)
+        let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(vlmPayload))
+        let vlm = try #require(entries.first { $0.alias == "chat" })
+        #expect(vlm.taskTypes == [.visionLanguage])
+        #expect(vlm.operationModes == [.imageUnderstanding])
+        #expect(!ModelSelectionPurpose.chat.accepts(vlm))
     }
 
     @Test("atomic model sources reject unsafe subfolders before projection")

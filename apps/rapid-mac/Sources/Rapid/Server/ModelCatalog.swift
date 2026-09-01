@@ -1017,9 +1017,10 @@ enum ModelCatalog {
                 case .textGeneration:
                     return operations.contains(.chat)
                 case .visionLanguage:
-                    // Desktop currently serves VLMs through Chat. Image input
-                    // is an additional capability, not a standalone surface.
-                    return operations.contains(.chat)
+                    // A VLM can advertise multimodal understanding without a
+                    // conversational surface. Preserve that atomic capability;
+                    // picker eligibility is derived from operation modes below.
+                    return !operations.isDisjoint(with: [.chat, .imageUnderstanding])
                 case .imageGeneration:
                     return !operations.isDisjoint(with: [
                         .textToImage, .imageToImage, .inpainting,
