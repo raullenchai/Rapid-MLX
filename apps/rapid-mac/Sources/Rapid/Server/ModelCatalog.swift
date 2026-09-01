@@ -846,7 +846,11 @@ enum ModelCatalog {
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
                let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
                 speculative[alias] = SpeculativeDecodingPreset(
-                    method: .mtp, model: model, tokens: tokens
+                    method: .mtp,
+                    model: model,
+                    tokens: tokens,
+                    defaultEnabled: row["mtp_continuous_batching_tier"] as? String
+                        == "verified"
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(

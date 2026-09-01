@@ -310,6 +310,25 @@ struct AtomicModelCatalogTests {
         #expect(parsed.profiles["chat"]?.isTextOnly == true)
     }
 
+    @Test("atomic shadow preserves verified MTP default policy")
+    func atomicShadowPreservesMTPDefaultPolicy() throws {
+        let mtpPayload = Self.mutated { root in
+            root["text"] = [[
+                "alias": "chat",
+                "mtp_draft_model": "org/chat-mtp",
+                "mtp_speculative_tokens": 3,
+                "mtp_continuous_batching_tier": "verified",
+            ]]
+        }
+        let preset = try #require(
+            ModelCatalog.parseAvailableJSON(mtpPayload)?.speculative["chat"]
+        )
+        #expect(preset.method == .mtp)
+        #expect(preset.model == "org/chat-mtp")
+        #expect(preset.tokens == 3)
+        #expect(preset.isDefaultEnabled)
+    }
+
     @Test("unknown atomic tasks fail closed into the legacy downgrade path")
     func unknownTaskRejectsAtomicEnvelope() {
         let future = Self.signed(Self.payload.replacingOccurrences(
