@@ -171,7 +171,7 @@ def test_cached_payload_reports_every_complete_alias_subfolder(monkeypatch) -> N
     assert all(row["repo"] == "org/multi-quant" for row in rows)
 
 
-def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
+def test_cached_subfolder_size_accepts_one_complete_unreferenced_snapshot(
     monkeypatch, tmp_path
 ) -> None:
     import huggingface_hub.constants as hub_constants
@@ -182,8 +182,6 @@ def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
     repo_root = tmp_path / "models--org--multi-quant"
     checkpoint = repo_root / "snapshots" / "abc123" / "4bit"
     checkpoint.mkdir(parents=True)
-    (repo_root / "refs").mkdir()
-    (repo_root / "refs" / "main").write_text("abc123", encoding="utf-8")
     (checkpoint / "config.json").write_text("{}", encoding="utf-8")
     weights = b"complete weights"
     (checkpoint / "model.safetensors").write_bytes(weights)
@@ -192,6 +190,9 @@ def test_cached_subfolder_size_requires_a_complete_pinned_checkpoint(
     assert size is not None
     assert size >= len(weights)
     assert cli._cached_subfolder_size("org/multi-quant", "8bit") is None
+
+    (repo_root / "snapshots" / "other").mkdir()
+    assert cli._cached_subfolder_size("org/multi-quant", "4bit") is None
 
 
 def test_command_emits_single_valid_json_available(capfd) -> None:

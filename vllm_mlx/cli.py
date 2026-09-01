@@ -6368,6 +6368,7 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
         _snapshot_is_complete,
         _valid_variant_subfolder,
     )
+    from vllm_mlx.model_metadata import resolve_unreferenced_cached_subfolder
 
     if not _valid_variant_subfolder(subfolder):
         return None
@@ -6376,16 +6377,20 @@ def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
         f"models--{repo_id.replace('/', '--')}",
     )
     sha = _resolved_snapshot_sha(repo_root)
-    if sha is None:
-        return None
-    snapshot = os.path.join(repo_root, "snapshots", sha)
-    checkpoint = os.path.join(snapshot, *subfolder.split("/"))
-    snapshot_real = os.path.realpath(snapshot)
-    checkpoint_real = os.path.realpath(checkpoint)
-    if not checkpoint_real.startswith(snapshot_real + os.sep):
-        return None
-    if not _snapshot_is_complete(checkpoint):
-        return None
+    if sha is not None:
+        snapshot = os.path.join(repo_root, "snapshots", sha)
+        checkpoint = os.path.join(snapshot, *subfolder.split("/"))
+        snapshot_real = os.path.realpath(snapshot)
+        checkpoint_real = os.path.realpath(checkpoint)
+        if not checkpoint_real.startswith(snapshot_real + os.sep):
+            return None
+        if not _snapshot_is_complete(checkpoint):
+            return None
+    else:
+        unreferenced = resolve_unreferenced_cached_subfolder(repo_id, subfolder)
+        if unreferenced is None:
+            return None
+        checkpoint = str(unreferenced)
 
     total = 0
     try:
