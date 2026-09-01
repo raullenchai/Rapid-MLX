@@ -26,10 +26,13 @@ import json
 import os
 import platform
 import plistlib
+import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,6 +40,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any, cast
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -110,16 +117,39 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
     ("rapid-mlx", "rapid-mlx"),
 ]
 
+_DISTRIBUTION_MODULES: dict[str, str] = {
+    "mlx": "mlx",
+    "mlx-lm": "mlx_lm",
+    "transformers": "transformers",
+    "fastapi": "fastapi",
+    "uvicorn": "uvicorn",
+    "rapid-mlx": "vllm_mlx",
+    "mlx-vlm": "mlx_vlm",
+    "mlx-audio": "mlx_audio",
+    "mlx-embeddings": "mlx_embeddings",
+    "pillow": "PIL",
+}
+
+# These are runtime compatibility contracts, not update recommendations. A
+# version outside them can import successfully and still make the next server
+# start fail. Keep them aligned with pyproject.toml.
+_SUPPORTED_VERSIONS: dict[str, str] = {
+    "mlx": ">=0.32.1,<0.33",
+    "mlx-lm": ">=0.31.3,<0.32",
+    "transformers": ">=5.0.0,!=5.13.0,<5.16",
+    "mlx-vlm": "==0.6.17",
+}
+
 # Each tuple: (distribution, label, install hint). Missing optionals are ⚠
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'rapid-mlx[vision]'"),
-    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'rapid-mlx[audio]'"),
+    ("mlx-vlm", "mlx-vlm (vision extras)", "rapid-mlx[vision]"),
+    ("mlx-audio", "mlx-audio (audio extras)", "rapid-mlx[audio]"),
     (
         "mlx-embeddings",
         "mlx-embeddings (embeddings extras)",
-        "pip install 'rapid-mlx[embeddings]'",
+        "rapid-mlx[embeddings]",
     ),
 ]
 
@@ -209,17 +239,875 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
     "replaces it — install the current Rapid-MLX Desktop.app (its DMG ships a "
     "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
 )
+_DOCTOR_BUDGET_S = 5.0
+_DOCTOR_DEADLINE: float | None = None
+_RUNTIME_CONTEXTS: dict[Path, tuple[Path, dict[str, str]]] = {}
+_RUNTIME_DISTRIBUTION_CACHE: dict[Path, bool] = {}
+_TRUSTED_SYS_PATH_ROOTS: tuple[Path, ...] = ()
+_SELECTED_RUNTIME: Path | None = None
+_SELECTED_SERVER_RUNTIME = False
+_RUNTIME_SELECTION_DONE = False
 
 
-def _module_available(module: str) -> bool:
-    """Return whether *module* is discoverable, without importing it."""
+def _runtime_uses_context(runtime: Path) -> bool:
+    """Whether a runtime requires its captured server context for probing."""
+    return runtime != Path(sys.executable).absolute() or runtime in _RUNTIME_CONTEXTS
+
+
+def _runtime_has_rapid_mlx_distribution(
+    runtime: Path,
+    cwd: Path,
+    env: dict[str, str],
+) -> bool:
+    """Return whether *runtime* has ``vllm_mlx`` registered by a Rapid-MLX wheel.
+
+    ``python -m vllm_mlx.cli`` is a useful process signature, but by itself it
+    would also match an unrelated top-level module. This probe imports only
+    packaging metadata; it never imports the server or a user's module.
+    """
+    cache_key = runtime.absolute()
+    if cache_key in _RUNTIME_DISTRIBUTION_CACHE:
+        return _RUNTIME_DISTRIBUTION_CACHE[cache_key]
+    if _DOCTOR_DEADLINE is not None and time.monotonic() >= _DOCTOR_DEADLINE:
+        return False
+    if runtime == Path("/usr/bin/python3") and cwd != Path("/"):
+        if _runtime_has_rapid_mlx_distribution(
+            Path("/usr/bin/python3"),
+            Path("/"),
+            {"PATH": env.get("PATH", os.environ.get("PATH", "/usr/bin:/bin"))},
+        ):
+            return True
     try:
+        result = subprocess.run(  # noqa: S603 — runtime path is validated by caller
+            [
+                str(runtime),
+                "-I",
+                "-c",
+                "import importlib.metadata, json, sys; "
+                "print(json.dumps(importlib.metadata.packages_distributions().get("
+                "'vllm_mlx', [])))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(3),
+            cwd=str(cwd),
+            env={"PATH": env.get("PATH", os.environ.get("PATH", "/usr/bin:/bin"))},
+            check=True,
+        )
+        names = json.loads(result.stdout)
+        installed = isinstance(names, list) and bool(
+            {str(name).lower().replace("_", "-") for name in names}
+            & {"rapid-mlx", "vllm-mlx"}
+        )
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        installed = False
+    _RUNTIME_DISTRIBUTION_CACHE[cache_key] = installed
+    return installed
+
+
+def _runtime_environment(
+    exe: Path,
+    prefix: Path | None = None,
+    base_prefix: Path | None = None,
+) -> str:
+    if _bundled_sidecar_root(exe) is not None:
+        return "desktop sidecar"
+    home = Path.home()
+    application_bin = home / ".rapid-mlx" / "bin"
+    runtime_root = (home / ".rapid-mlx-python").resolve()
+    if (
+        exe in {application_bin / "python", application_bin / "python3"}
+        or exe.parent == application_bin
+    ):
+        return "Rapid-MLX application environment"
+    effective_prefix = prefix if prefix is not None else Path(sys.prefix).resolve()
+    effective_base_prefix = Path(
+        str(base_prefix or getattr(sys, "base_prefix", "") or sys.prefix)
+    ).resolve()
+    if exe == runtime_root / "bin" / "python3" or effective_prefix == runtime_root:
+        return "Rapid-MLX runtime environment"
+    project = Path(__file__).resolve().parents[2]
+    if (project / "pyproject.toml").is_file() and project in exe.parents:
+        return "developer installation"
+    if effective_prefix != effective_base_prefix:
+        return "virtual environment"
+    return "system environment"
+
+
+def _module_available(
+    module: str,
+    runtime: Path | None = None,
+    *,
+    real_import: bool = False,
+) -> bool:
+    """Return whether *module* is discoverable, without importing it."""
+    if runtime is not None and _runtime_uses_context(runtime):
+        probe = _probe_runtime(
+            runtime,
+            _bundled_sidecar_root(runtime),
+        )
+        if not probe:
+            return False
+        return _runtime_module_importable(
+            runtime,
+            module,
+            _bundled_sidecar_root(runtime),
+        )
+    try:
+        if real_import:
+            if not _module_origin_is_trusted(module):
+                return False
+            return _runtime_module_importable(
+                Path(sys.executable).absolute(),
+                "PIL.Image" if module == "PIL" else module,
+                None,
+                trusted_roots=_TRUSTED_SYS_PATH_ROOTS,
+                exercise=module == "PIL",
+            )
         return _iu.find_spec(module) is not None
     except (ImportError, AttributeError, ValueError):
         return False
+    except (Exception, SystemExit):
+        return False
 
 
-def _bundled_sidecar_root() -> Path | None:
+def _module_origin_is_trusted(module: str) -> bool:
+    """Reject shadow modules outside the active runtime/package roots."""
+    try:
+        spec = _iu.find_spec(module)
+        if spec is None:
+            return False
+        locations: list[Path] = []
+        if spec.origin:
+            locations.append(Path(spec.origin).parent)
+        locations.extend(
+            Path(location) for location in spec.submodule_search_locations or []
+        )
+        trusted_roots = set(_TRUSTED_SYS_PATH_ROOTS)
+        sidecar_root = _bundled_sidecar_root()
+        if sidecar_root is not None:
+            trusted_roots.add(sidecar_root.resolve())
+        vllm_mlx_source = Path(__file__).resolve().parents[1]
+        trusted_roots.add(vllm_mlx_source)
+        return any(
+            location.resolve().is_relative_to(trusted_root)
+            for location in locations
+            for trusted_root in trusted_roots
+        )
+    except (OSError, ValueError, ImportError):
+        return False
+
+
+def _trusted_sys_path_roots() -> set[Path]:
+    """Return safe active roots from which local real imports may execute."""
+    unsafe_roots: set[Path] = set()
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        if entry:
+            unsafe_roots.add(Path(entry).expanduser().resolve())
+    unsafe_roots.add(Path.cwd().resolve())
+    unsafe_roots.add(Path(__file__).resolve().parents[2])
+
+    trusted_roots: set[Path] = set()
+    for entry in sys.path:
+        if not entry:
+            continue
+        candidate = Path(entry).expanduser()
+        if not candidate.is_absolute():
+            continue
+        resolved = candidate.resolve()
+        if resolved in unsafe_roots:
+            continue
+        trusted_roots.add(resolved)
+    return trusted_roots
+
+
+_TRUSTED_SYS_PATH_ROOTS = tuple(_trusted_sys_path_roots())
+
+
+def _is_diagnostic_python_override(candidate: Path) -> bool:
+    """Accept an explicit Python path; runtime probing reports real failures."""
+    if not candidate.is_file() or not candidate.name.lower().startswith("python"):
+        return False
+    return True
+
+
+def _filesystem_runtime_has_rapid_mlx_distribution(runtime: Path) -> bool:
+    """Validate a runtime's Rapid-MLX install without executing it."""
+    runtime = runtime.absolute()
+    if _bundled_sidecar_root(runtime) is not None:
+        return True
+    for parent in (runtime.parent, *runtime.parents):
+        candidates = [
+            *parent.glob("lib/python3.*/site-packages"),
+            *parent.glob("lib/python3/dist-packages"),
+            *parent.glob("lib/site-packages"),
+            *parent.glob("site-packages"),
+        ]
+        for site_root in candidates:
+            package_root = site_root / "vllm_mlx"
+            if not (package_root / "cli.py").is_file():
+                continue
+            if any(site_root.glob("rapid_mlx-*.dist-info")):
+                return True
+    return False
+
+
+def _is_trusted_runtime_executable(runtime: Path) -> bool:
+    """Authenticate a candidate before doctor executes any probe."""
+    return _filesystem_runtime_has_rapid_mlx_distribution(runtime)
+
+
+def _runtime_python_path() -> Path:
+    """Return the authoritative Python executable for runtime checks.
+
+    A running Rapid-MLX server wins because its interpreter defines the
+    production dependency set. An explicit override covers a stopped server;
+    the CLI interpreter is the fallback for the common single-runtime setup.
+    """
+    global _SELECTED_SERVER_RUNTIME
+    _SELECTED_SERVER_RUNTIME = False
+    try:
+        import psutil
+
+        def _is_installed_rapid_mlx_entrypoint(entry: Path) -> bool:
+            if not entry.is_file():
+                return False
+            try:
+                content = entry.read_bytes()[:8192].decode(errors="ignore")
+            except OSError:
+                return False
+            imported_names = re.findall(
+                r"^from\s+vllm_mlx\.cli\s+import\s+([^#\n]+)$",
+                content,
+                re.M,
+            )
+            imported = {
+                name.strip()
+                for part in imported_names
+                for name in part.split(",")
+                if name.strip()
+            }
+            return bool(
+                imported
+                and imported <= {"main", "cli_entrypoint"}
+                and re.search(
+                    r"^[ \t]*(?:(?:main|cli_entrypoint)\(\)|"
+                    r"sys\.exit\((?:main|cli_entrypoint)\(\)\))[ \t]*$",
+                    content,
+                    re.M,
+                )
+            )
+
+        def _is_installed_rapid_mlx_module(entry: Path) -> bool:
+            package_root = entry.parent
+            site_root = package_root.parent
+            try:
+                content = (
+                    package_root.joinpath("cli.py")
+                    .read_bytes()[:8192]
+                    .decode(errors="ignore")
+                )
+            except OSError:
+                return False
+            return (
+                package_root.joinpath("__init__.py").is_file()
+                and "from vllm_mlx." in content
+                and any(site_root.glob("rapid_mlx-*.dist-info"))
+            )
+
+        def _python_sibling(entry: Path) -> Path | None:
+            for name in ("python3.12", "python3", "python"):
+                candidate = entry.with_name(name)
+                if candidate.is_file():
+                    return candidate.absolute()
+            return None
+
+        def _python_from_entrypoint(entry: Path, process: Any) -> Path | None:
+            try:
+                shebang = entry.read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, UnicodeDecodeError, IndexError):
+                return None
+            if not shebang.startswith("#!"):
+                return _python_sibling(entry)
+            shebang_parts = shebang[2:].strip().split()
+            if len(shebang_parts) >= 1 and Path(shebang_parts[0]).name.startswith(
+                "env"
+            ):
+                process_exe = Path(process.exe()).absolute()
+                if process_exe.is_file() and process_exe.name.lower().startswith(
+                    "python"
+                ):
+                    return process_exe
+                return _python_sibling(entry)
+            if shebang_parts:
+                interpreter = Path(shebang_parts[0]).absolute()
+                if interpreter.is_file() and interpreter.name.lower().startswith(
+                    "python"
+                ):
+                    return interpreter
+            return _python_sibling(entry)
+
+        def _python_from_module_command(
+            command: list[str], context_env: dict[str, str]
+        ) -> Path | None:
+            interpreter = Path(command[0])
+            if not interpreter.is_absolute():
+                found = shutil.which(command[0], path=context_env.get("PATH", ""))
+                if found is None:
+                    return None
+                interpreter = Path(found)
+            return interpreter.absolute()
+
+        def _module_command_entry(command: list[str]) -> str | None:
+            value_options = {"-X", "-W", "--check-hash-based-pycs"}
+            index = 1
+            while index < len(command):
+                argument = command[index]
+                if argument == "-m":
+                    return command[index + 1] if index + 1 < len(command) else None
+                if argument in value_options:
+                    index += 2
+                    continue
+                if argument.startswith("-"):
+                    index += 1
+                    continue
+                return None
+            return None
+
+        def _runtime_candidate(cmdline: list[str], process: Any) -> Path | None:
+            if hasattr(os, "getuid") and hasattr(process, "uids"):
+                try:
+                    if process.uids().real != os.getuid():
+                        return None
+                except Exception:
+                    return None
+            try:
+                context_env = {
+                    str(key): str(value) for key, value in process.environ().items()
+                }
+                context_cwd = Path(process.cwd()).resolve()
+            except Exception:
+                return None
+            try:
+                serve_index = cmdline.index("serve")
+            except ValueError:
+                return None
+            command = cmdline[:serve_index]
+            if not command:
+                return None
+            entry_argument = command[-1]
+            entry = Path(entry_argument)
+            module_entry = _module_command_entry(command)
+            if module_entry is not None:
+                entry_argument = module_entry
+                entry = Path(module_entry)
+            if entry.name == "rapid-mlx" and not entry.is_absolute():
+                if "/" in entry_argument:
+                    entry = context_cwd / entry
+                else:
+                    found = shutil.which(
+                        entry_argument, path=context_env.get("PATH", "")
+                    )
+                    if found is None:
+                        return None
+                    entry = Path(found)
+            if entry.name == "rapid-mlx":
+                if not _is_installed_rapid_mlx_entrypoint(entry):
+                    return None
+                candidate = _python_from_entrypoint(entry, process)
+            elif (module_entry is not None and entry.name == "vllm_mlx.cli") or (
+                len(command) >= 2
+                and entry.name == "cli.py"
+                and entry.parent.name == "vllm_mlx"
+                and _is_installed_rapid_mlx_module(entry)
+            ):
+                candidate = _python_from_module_command(command, context_env)
+            else:
+                return None
+            if candidate is None:
+                candidate = Path(process.exe()).absolute()
+            if (
+                not candidate.is_absolute()
+                or not candidate.is_file()
+                or not candidate.name.lower().startswith("python")
+                or not (
+                    _is_trusted_runtime_executable(candidate)
+                    or _runtime_has_rapid_mlx_distribution(
+                        candidate,
+                        context_cwd,
+                        context_env,
+                    )
+                )
+            ):
+                return None
+            return candidate
+
+        candidates: list[tuple[float, Path, Path, dict[str, str]]] = []
+        for process in psutil.process_iter(["pid", "cmdline", "create_time"]):
+            try:
+                if (
+                    _DOCTOR_DEADLINE is not None
+                    and time.monotonic() >= _DOCTOR_DEADLINE
+                ):
+                    break
+                cmdline = process.info.get("cmdline") or []
+                if process.info["pid"] == os.getpid():
+                    continue
+                candidate = _runtime_candidate(cmdline, process)
+                if candidate is None:
+                    continue
+                context_env = {
+                    str(key): str(value) for key, value in process.environ().items()
+                }
+                context_cwd = Path(process.cwd()).resolve()
+                candidates.append(
+                    (
+                        float(process.info["create_time"]),
+                        candidate,
+                        context_cwd,
+                        context_env,
+                    )
+                )
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+                psutil.ZombieProcess,
+                OSError,
+                TypeError,
+            ):
+                continue
+        if candidates:
+            _created, selected, selected_cwd, selected_env = max(
+                candidates, key=lambda item: item[0]
+            )
+            _RUNTIME_CONTEXTS[selected] = (selected_cwd, selected_env)
+            _SELECTED_SERVER_RUNTIME = True
+            return selected
+    except (Exception, SystemExit):
+        pass
+
+    override = os.environ.get("RAPID_MLX_RUNTIME_PYTHON", "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if _is_diagnostic_python_override(candidate):
+            return candidate.absolute()
+
+    return Path(sys.executable).absolute()
+
+
+def _selected_runtime() -> tuple[Path, bool]:
+    """Return the cached runtime selection for one doctor invocation."""
+    global _SELECTED_RUNTIME, _RUNTIME_SELECTION_DONE
+    if not _RUNTIME_SELECTION_DONE:
+        _SELECTED_RUNTIME = _runtime_python_path()
+        _RUNTIME_SELECTION_DONE = True
+    selected_runtime = _SELECTED_RUNTIME
+    if selected_runtime is None:
+        selected_runtime = _runtime_python_path()
+        _SELECTED_RUNTIME = selected_runtime
+    return selected_runtime, _SELECTED_SERVER_RUNTIME
+
+
+_PROBE_SCRIPT = """\
+import importlib
+import importlib.util
+import importlib.metadata
+import json
+import sys
+from pathlib import Path
+
+probe_paths = json.loads(sys.argv[2])
+trusted_roots = [root for root in probe_paths["trusted"] if root]
+trusted_metadata_roots = list(trusted_roots)
+for site_root in trusted_roots:
+    sys.path.insert(0, site_root)
+trusted_metadata_roots.extend(sys.path)
+module_trusted_roots = [*trusted_roots, *sys.path]
+for site_root in reversed(probe_paths["context"]):
+    sys.path.insert(0, site_root)
+context_metadata_roots = [root for root in probe_paths["context"] if root]
+trusted_roots = [
+    str(Path(root).resolve()) for root in module_trusted_roots
+]
+
+def _path_is_trusted(path):
+    resolved = Path(path).resolve()
+    return any(resolved == Path(root) or resolved.is_relative_to(root) for root in trusted_roots)
+
+def _module_path_is_trusted(spec):
+    locations = []
+    if spec.origin:
+        locations.append(str(Path(spec.origin).parent))
+    if spec.submodule_search_locations:
+        locations.extend(spec.submodule_search_locations)
+    return any(_path_is_trusted(location) for location in locations)
+
+distributions = json.loads(sys.argv[1])
+
+def distribution_version(name, module_path):
+    for metadata_roots in (trusted_metadata_roots, context_metadata_roots):
+        for distribution in importlib.metadata.distributions(path=metadata_roots):
+            dist_name = (distribution.metadata.get("Name") or "").lower()
+            if dist_name != name.lower() or not _distribution_owns_module(
+                distribution, module_path
+            ):
+                continue
+            return distribution.version
+    return None
+
+def _distribution_owns_module(distribution, module_path):
+    if module_path is None:
+        return False
+    module_path = Path(module_path).resolve()
+    owned_paths = [module_path]
+    if module_path.name == "__init__.py":
+        owned_paths.append(module_path.parent)
+    for installed_file in distribution.files or []:
+        try:
+            installed_path = Path(distribution.locate_file(installed_file)).resolve()
+        except (Exception, SystemExit):
+            continue
+        for owned_path in owned_paths:
+            if installed_path == owned_path or installed_path.is_relative_to(
+                owned_path
+            ):
+                return True
+    return False
+
+packages = {}
+for distribution, module_name in distributions.items():
+    version = None
+    discoverable = False
+    spec = None
+    try:
+        spec = importlib.util.find_spec(module_name)
+        version = None if spec is None else distribution_version(
+            distribution,
+            spec.origin,
+        )
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    except (Exception, SystemExit):
+        version = None
+    discoverable = spec is not None
+    try:
+        trusted_origin = spec is not None and _module_path_is_trusted(spec)
+    except (Exception, SystemExit):
+        spec = None
+        discoverable = False
+        trusted_origin = False
+    packages[distribution] = {
+        "importable": None,
+        "discoverable": discoverable,
+        "trusted_origin": trusted_origin,
+        "module": module_name,
+        "version": version,
+    }
+print(json.dumps({
+    "executable": sys.executable,
+    "base_prefix": sys.base_prefix,
+    "packages": packages,
+    "path": sys.path,
+    "prefix": sys.prefix,
+}))
+"""
+
+_RUNTIME_PACKAGES: dict[str, str] = dict(_DISTRIBUTION_MODULES)
+for _audio_dist, _audio_module in (*_AUDIO_IMPORTS, *_AUDIO_DESKTOP_IMPORTS):
+    _RUNTIME_PACKAGES.setdefault(_audio_dist, _audio_module)
+_RUNTIME_PROBE_CACHE: dict[
+    tuple[Path, Path | None, tuple[Path, ...]], dict[str, object] | None
+] = {}
+_PROBE_RESULT_PREFIX = "__RAPID_MLX_IMPORT_RESULT__"
+_RUNTIME_IMPORT_SCRIPT = """\
+import importlib
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+_PROBE_SENTINEL = "__RAPID_MLX_IMPORT_RESULT__"
+module_name = sys.argv[1]
+probe_paths = json.loads(sys.argv[2])
+exercise = module_name == "PIL.Image"
+trusted_roots = [root for root in probe_paths["trusted"] if root]
+trusted_roots = [str(Path(root).resolve()) for root in [*trusted_roots, *sys.path]]
+for root in reversed(trusted_roots):
+    sys.path.insert(0, root)
+
+def _path_is_trusted(path):
+    resolved = Path(path).resolve()
+    return any(
+        resolved == Path(root) or resolved.is_relative_to(root)
+        for root in trusted_roots
+    )
+
+def _module_path_is_trusted(spec):
+    locations = []
+    if spec.origin:
+        locations.append(str(Path(spec.origin).parent))
+    if spec.submodule_search_locations:
+        locations.extend(spec.submodule_search_locations)
+    return any(_path_is_trusted(location) for location in locations)
+
+def _emit_import_result(payload):
+    print(_PROBE_SENTINEL + json.dumps(payload))
+
+spec = importlib.util.find_spec(module_name)
+if spec is None or not _module_path_is_trusted(spec):
+    _emit_import_result({"importable": False, "trusted_origin": False})
+else:
+    if exercise:
+        import PIL.Image as Image
+
+        Image.new("RGB", (1, 1))
+        _emit_import_result({"importable": True, "trusted_origin": True})
+    else:
+        try:
+            importlib.import_module(module_name)
+        except (Exception, SystemExit):
+            _emit_import_result({"importable": False, "trusted_origin": True})
+            sys.exit(0)
+        _emit_import_result({"importable": True, "trusted_origin": True})
+"""
+_RUNTIME_IMPORT_CACHE: dict[
+    tuple[Path, str, str, bool, bool, tuple[str, ...]],
+    bool,
+] = {}
+_RUNTIME_IMPORT_TIMEOUTS: set[tuple[Path, str, str, bool, bool, tuple[str, ...]]] = (
+    set()
+)
+
+
+def _bounded_timeout(default_s: float) -> float:
+    """Return the remaining doctor budget without yielding a zero timeout."""
+    if _DOCTOR_DEADLINE is None:
+        return default_s
+    return max(0.05, min(default_s, _DOCTOR_DEADLINE - time.monotonic()))
+
+
+def _import_probe_cache_key(
+    runtime: Path,
+    module: str,
+    sidecar_root: Path | None,
+    *,
+    trusted_roots: tuple[Path, ...] = (),
+    exercise: bool = False,
+    isolated: bool = True,
+) -> tuple[Path, str, str, bool, bool, tuple[str, ...]]:
+    return (
+        runtime,
+        module,
+        str(sidecar_root.resolve()) if sidecar_root else "",
+        exercise,
+        isolated,
+        tuple(sorted(str(root.resolve()) for root in trusted_roots)),
+    )
+
+
+def _import_probe_was_interrupted(
+    runtime: Path,
+    module: str,
+    sidecar_root: Path | None,
+    *,
+    trusted_roots: tuple[Path, ...] = (),
+    exercise: bool = False,
+    isolated: bool = True,
+) -> bool:
+    cache_key = _import_probe_cache_key(
+        runtime,
+        module,
+        sidecar_root,
+        trusted_roots=trusted_roots,
+        exercise=exercise,
+        isolated=isolated,
+    )
+    return cache_key in _RUNTIME_IMPORT_TIMEOUTS
+
+
+def _probe_package(
+    probe: dict[str, object],
+    distribution: str,
+) -> dict[str, object] | None:
+    packages = probe.get("packages")
+    if not isinstance(packages, dict):
+        return None
+    package = packages.get(distribution)
+    if not isinstance(package, dict):
+        return None
+    return cast("dict[str, object]", package)
+
+
+def _probe_package_by_module(
+    probe: dict[str, object],
+    module: str,
+) -> dict[str, object] | None:
+    packages = probe.get("packages")
+    if not isinstance(packages, dict):
+        return None
+    for package in packages.values():
+        if isinstance(package, dict) and package.get("module") == module:
+            return cast("dict[str, object]", package)
+    return None
+
+
+def _runtime_module_importable(
+    runtime: Path,
+    module: str,
+    sidecar_root: Path | None,
+    *,
+    trusted_roots: tuple[Path, ...] = (),
+    exercise: bool = False,
+    isolated: bool = True,
+) -> bool:
+    """Import one trusted module in *runtime*, independently of other probes."""
+    cache_key = _import_probe_cache_key(
+        runtime,
+        module,
+        sidecar_root,
+        trusted_roots=trusted_roots,
+        exercise=exercise,
+        isolated=isolated,
+    )
+    if cache_key in _RUNTIME_IMPORT_CACHE:
+        return _RUNTIME_IMPORT_CACHE[cache_key]
+    _RUNTIME_IMPORT_TIMEOUTS.discard(cache_key)
+    if _DOCTOR_DEADLINE is not None and time.monotonic() >= _DOCTOR_DEADLINE:
+        _RUNTIME_IMPORT_CACHE[cache_key] = False
+        _RUNTIME_IMPORT_TIMEOUTS.add(cache_key)
+        return False
+    importable = False
+    try:
+        command = [str(runtime)]
+        if isolated:
+            command.append("-I")
+        command.extend(
+            [
+                "-c",
+                _RUNTIME_IMPORT_SCRIPT,
+                "PIL.Image" if exercise else module,
+                json.dumps(
+                    {
+                        "trusted": [str(sidecar_root / "site-packages")]
+                        if sidecar_root
+                        else [str(root) for root in trusted_roots],
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(  # noqa: S603 — runtime path is caller-validated
+            command,
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(10),
+            env={
+                "HOME": os.environ.get("HOME", str(Path.home())),
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            },
+            cwd="/",
+            check=True,
+        )
+        probe_lines = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith(_PROBE_RESULT_PREFIX)
+        ]
+        if not probe_lines:
+            importable = False
+            _RUNTIME_IMPORT_CACHE[cache_key] = importable
+            return importable
+        result_json = json.loads(probe_lines[-1].removeprefix(_PROBE_RESULT_PREFIX))
+        if not isinstance(result_json, dict):
+            importable = False
+        else:
+            importable = bool(result_json.get("importable"))
+    except subprocess.TimeoutExpired:
+        importable = False
+        _RUNTIME_IMPORT_TIMEOUTS.add(cache_key)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        importable = False
+    _RUNTIME_IMPORT_CACHE[cache_key] = importable
+    return importable
+
+
+def _probe_runtime(
+    runtime: Path,
+    sidecar_root: Path | None = None,
+) -> dict[str, object] | None:
+    """Inspect one interpreter without importing the server runtime."""
+    sanitized_context = tuple(_server_import_paths(runtime))
+    cache_key = (
+        runtime,
+        sidecar_root.resolve() if sidecar_root else None,
+        sanitized_context,
+    )
+    cache = _RUNTIME_PROBE_CACHE
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        if _DOCTOR_DEADLINE is not None and time.monotonic() >= _DOCTOR_DEADLINE:
+            cache[cache_key] = None
+            return None
+        env = {
+            "HOME": os.environ.get("HOME", str(Path.home())),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        }
+        result = subprocess.run(  # noqa: S603 — runtime path is resolved above
+            [
+                str(runtime),
+                "-I",
+                "-c",
+                _PROBE_SCRIPT,
+                json.dumps(_RUNTIME_PACKAGES),
+                json.dumps(
+                    {
+                        "trusted": [str(sidecar_root / "site-packages")]
+                        if sidecar_root
+                        else [],
+                        "context": [
+                            str(path) for path in _server_import_paths(runtime)
+                        ],
+                    }
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(20),
+            env=env,
+            cwd="/",
+            check=True,
+        )
+        probe: object = json.loads(result.stdout)
+        if not isinstance(probe, dict):
+            cache[cache_key] = None
+            return None
+        typed_probe = cast("dict[str, object]", probe)
+        cache[cache_key] = typed_probe
+        return typed_probe
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        cache[cache_key] = None
+        return None
+
+
+def _server_import_paths(runtime: Path) -> list[Path]:
+    """Return sanitized server-context paths for a selected remote runtime."""
+    context = _RUNTIME_CONTEXTS.get(runtime)
+    if not context:
+        return []
+    cwd, context_env = context
+    paths = [cwd]
+    pythonpath = context_env.get("PYTHONPATH", "")
+    paths.extend(
+        (cwd / entry).resolve() for entry in pythonpath.split(os.pathsep) if entry
+    )
+    unique_paths: list[Path] = []
+    for path in paths:
+        if path.is_absolute() and path not in unique_paths:
+            unique_paths.append(path)
+    return unique_paths
+
+
+def _bundled_sidecar_root(python: Path | None = None) -> Path | None:
     """Return the sidecar bundle root when doctor is running from a managed
     sidecar's embedded interpreter, else ``None``.
 
@@ -239,7 +1127,7 @@ def _bundled_sidecar_root() -> Path | None:
     the two locations ``ServerLocator`` owns before changing doctor contracts.
     """
     try:
-        exe = Path(sys.executable).resolve()
+        exe = (python or Path(sys.executable)).resolve()
     except OSError:
         return None
     if len(exe.parents) < 3:
@@ -557,11 +1445,11 @@ def section_system() -> Section:
 # ---------------------------------------------------------------------------
 
 
-def _install_location() -> tuple[str, Path]:
+def _install_location(exe: Path | None = None) -> tuple[str, Path]:
     """Classify where ``rapid-mlx`` is installed: ``uv tool``, ``pipx``,
     ``virtualenv``, ``system``. Returned label is for display; the path
     is shown in --verbose."""
-    exe = Path(sys.executable).resolve()
+    exe = (exe or Path(sys.executable)).resolve()
     parts = exe.parts
     lower = str(exe).lower()
     if "uv/tools" in lower or "/uv/tools/" in lower:
@@ -583,6 +1471,7 @@ def section_python() -> Section:
     s = Section("Python")
 
     py_ver = ".".join(str(x) for x in sys.version_info[:3])
+    exe = Path(sys.executable).absolute()
     # Defensive: pyproject pins ``requires-python = ">=3.10"`` so install-
     # time pip would already have refused — but doctor should still tell the
     # user clearly if they somehow got rapid-mlx onto an older interpreter
@@ -592,20 +1481,77 @@ def section_python() -> Section:
         s.add(
             f"Python {py_ver}",
             CheckStatus.OK,
-            detail=f"executable={sys.executable}",
+            detail=f"executable={exe}; prefix={Path(sys.prefix).resolve()}",
         )
     else:  # pragma: no cover — only reachable on unsupported interpreters
         s.add(
             f"Python {py_ver} (rapid-mlx requires >= 3.10)",
             CheckStatus.FAIL,
-            detail=f"executable={sys.executable}",
+            detail=f"executable={exe}; prefix={Path(sys.prefix).resolve()}",
         )
 
-    label, path = _install_location()
+    selected_runtime, server_runtime_selected = _selected_runtime()
+    server_differs = server_runtime_selected or selected_runtime != exe
+    runtime_noun = (
+        "Active server runtime"
+        if server_runtime_selected
+        else "Selected diagnostic runtime"
+    )
+    runtime_probe = (
+        _probe_runtime(selected_runtime, _bundled_sidecar_root(selected_runtime))
+        if server_differs
+        else None
+    )
+    runtime = _runtime_environment(exe, Path(sys.prefix))
+    detail = (
+        f"runtime_type={runtime}; sys.executable={exe}; "
+        f"sys.prefix={Path(sys.prefix).resolve()}; "
+        f"relevant_sys.path={json.dumps([entry for entry in sys.path if entry])}"
+    )
+    if server_differs:
+        if runtime_probe is not None:
+            selected_exe = runtime_probe.get("executable", selected_runtime)
+            selected_prefix = runtime_probe.get("prefix", selected_runtime.parent)
+            selected_base_prefix = runtime_probe.get("base_prefix", selected_prefix)
+            selected_path = runtime_probe.get("path", [])
+            selected_kind = _runtime_environment(
+                Path(str(selected_exe)),
+                Path(str(selected_prefix)),
+                Path(str(selected_base_prefix)),
+            )
+            label = (
+                f"{runtime_noun} differs from the doctor CLI; "
+                f"package checks use {selected_kind}"
+            )
+            detail += (
+                f"; server_sys.executable={selected_exe}; "
+                f"server_sys.prefix={selected_prefix}; "
+                f"server_sys.path={json.dumps(selected_path)}"
+            )
+        else:
+            label = (
+                f"{runtime_noun} differs from the doctor CLI and could not be inspected"
+            )
+            detail += (
+                f"; server_runtime={selected_runtime}; "
+                "override=RAPID_MLX_RUNTIME_PYTHON"
+            )
+        s.add(label, CheckStatus.WARN, detail=detail)
+    else:
+        s.add(
+            f"Active runtime: {runtime}",
+            CheckStatus.OK,
+            detail=detail,
+        )
+
+    install_label, path = _install_location(exe)
     s.add(
-        f"Install location: {label} ({path})",
+        f"Install location: {install_label} ({path})",
         CheckStatus.OK,
-        detail=f"sys.executable={path}",
+        detail=(
+            f"sys.executable={path}; all package checks use this runtime's "
+            "sys.path (or the running server's equivalent runtime)"
+        ),
     )
 
     return s
@@ -616,14 +1562,108 @@ def section_python() -> Section:
 # ---------------------------------------------------------------------------
 
 
-def _safe_version(dist: str) -> str | None:
+def _safe_version(
+    dist: str,
+    runtime: Path | None = None,
+) -> str | None:
+    runtime = runtime or Path(sys.executable).absolute()
+    if _runtime_uses_context(runtime):
+        probe = _probe_runtime(
+            runtime,
+            _bundled_sidecar_root(runtime),
+        )
+        package = _probe_package(probe, dist) if probe else None
+        if package is not None:
+            version = package.get("version")
+            return str(version) if version else None
+        return None
     try:
         return _im.version(dist)
     except _im.PackageNotFoundError:
         return None
 
 
-def _pil_importable() -> bool:
+def _visible_without_metadata(
+    dist: str,
+    runtime: Path | None = None,
+) -> bool:
+    """Whether this runtime can import *dist* despite missing dist metadata.
+
+    Layered/relocatable runtimes can expose a package directory on ``sys.path``
+    without exposing its sibling ``*.dist-info`` directory. Calling that
+    package "not installed" is a false negative: the server launched by this
+    interpreter can see it. We report the metadata defect separately instead.
+    """
+    runtime = runtime or Path(sys.executable).absolute()
+    module = _DISTRIBUTION_MODULES.get(dist)
+    if module is None:
+        return False
+    if _runtime_uses_context(runtime):
+        return _module_visibility(dist, runtime)[0]
+    return _module_available(module, real_import=True)
+
+
+def _module_visibility(
+    dist: str,
+    runtime: Path | None = None,
+) -> tuple[bool, bool]:
+    """Return (module visible, doctor verified a real import).
+
+    Context paths supplied by a running server can make a module discoverable,
+    but doctor must not execute code from those paths merely to diagnose it.
+    Such a module is reported as visible but unverified rather than missing.
+    """
+    runtime = runtime or Path(sys.executable).absolute()
+    if _runtime_uses_context(runtime):
+        probe = _probe_runtime(
+            runtime,
+            _bundled_sidecar_root(runtime),
+        )
+        package = _probe_package(probe, dist) if probe else None
+        if package is None:
+            return False, False
+        importable = package.get("importable")
+        trusted_origin = bool(
+            package.get("trusted_origin", isinstance(importable, bool) and importable)
+        )
+        if trusted_origin and _runtime_module_importable(
+            runtime,
+            str(package.get("module", "")),
+            _bundled_sidecar_root(runtime),
+        ):
+            return True, True
+        if bool(
+            package.get("discoverable", isinstance(importable, bool) and importable)
+        ):
+            return True, False
+        return False, False
+    importable = _module_available(_DISTRIBUTION_MODULES[dist], real_import=True)
+    return importable, importable
+
+
+def _version_supported(dist: str, version: str) -> bool:
+    spec = _SUPPORTED_VERSIONS.get(dist)
+    if spec is None:
+        return True
+    try:
+        return Version(version) in SpecifierSet(spec)
+    except (InvalidVersion, InvalidSpecifier):
+        return False
+
+
+def _runtime_pip_command(
+    *requirements: str,
+    runtime: Path | None = None,
+) -> str:
+    """Return an unambiguous repair command for the interpreter under test."""
+    quoted = " ".join(shlex.quote(requirement) for requirement in requirements)
+    selected_runtime = runtime or _runtime_python_path()
+    return f"{shlex.quote(str(selected_runtime))} -m pip install --upgrade {quoted}"
+
+
+def _pil_importable(
+    runtime: Path | None = None,
+) -> bool:
     """Lightweight probe: does mlx-vlm's ``from PIL import Image`` actually
     work?
 
@@ -644,13 +1684,29 @@ def _pil_importable() -> bool:
     does NOT pull torch the way a real ``import mlx_vlm`` would, so it stays
     well within doctor's ≤5 s budget. ANY failure (missing, shadowed, broken
     native ext) ⇒ not importable."""
+    if runtime is not None and _runtime_uses_context(runtime):
+        probe = _probe_runtime(
+            runtime,
+            _bundled_sidecar_root(runtime),
+        )
+        if not probe:
+            return False
+        return _runtime_module_importable(
+            runtime,
+            "PIL.Image",
+            _bundled_sidecar_root(runtime),
+            exercise=True,
+        )
+
     try:
+        if not _module_origin_is_trusted("PIL.Image"):
+            return False
         from PIL import Image
 
         # Force the native ``_imaging`` backend to actually initialise — a
         # broken/ABI-mismatched C ext otherwise slips through as healthy.
         Image.new("RGB", (1, 1))
-    except Exception:
+    except (Exception, SystemExit):
         # ImportError (absent/shadowed), OSError (broken native ext), or any
         # other load-time failure — all mean the real vision import can't run.
         return False
@@ -689,19 +1745,168 @@ def _version_at_least(ver: str, minimum: tuple[int, ...]) -> bool:
 
 def section_required_packages() -> Section:
     s = Section("Required Packages")
+    runtime = _selected_runtime()[0]
+    sidecar_root = _bundled_sidecar_root(runtime)
+    sidecar_hint = _sidecar_repair_hint(sidecar_root) if sidecar_root else None
+    runtime_probe = (
+        _probe_runtime(
+            runtime,
+            sidecar_root,
+        )
+        if _runtime_uses_context(runtime)
+        else None
+    )
+    if _runtime_uses_context(runtime) and runtime_probe is None:
+        s.add(
+            "Could not inspect the active server runtime",
+            CheckStatus.FAIL,
+            detail=(
+                f"runtime={runtime}; set RAPID_MLX_RUNTIME_PYTHON to its "
+                "Python executable, ensure that interpreter is readable and "
+                "runnable, then run doctor again"
+            ),
+        )
+        return s
     for dist, label in REQUIRED_PACKAGES:
-        ver = _safe_version(dist)
-        if ver:
+        ver = (
+            _safe_version(dist, runtime)
+            if _runtime_uses_context(runtime)
+            else _safe_version(dist)
+        )
+        if ver and not _version_supported(dist, ver):
+            supported = _SUPPORTED_VERSIONS[dist]
+            if sidecar_hint:
+                repair = sidecar_hint
+            elif dist == "transformers":
+                repair = _runtime_pip_command(
+                    "rapid-mlx",
+                    f"transformers{supported}",
+                    runtime=runtime,
+                )
+            else:
+                repair = _runtime_pip_command(
+                    "rapid-mlx",
+                    f"{dist}{supported}",
+                    runtime=runtime,
+                )
+            s.add(
+                f"{label} {ver} is incompatible (requires {supported}) — "
+                f"run `{repair}`",
+                CheckStatus.FAIL,
+                detail=(
+                    f"distribution={dist} version={ver} supported={supported} "
+                    f"runtime={runtime}"
+                ),
+            )
+        elif ver:
+            repair = sidecar_hint or _runtime_pip_command("rapid-mlx", runtime=runtime)
+            module = _DISTRIBUTION_MODULES[dist]
+            if _import_probe_was_interrupted(
+                runtime,
+                module,
+                sidecar_root,
+            ):
+                s.add(
+                    f"{label} {ver} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            visible, import_verified = _module_visibility(
+                dist,
+                runtime if _runtime_uses_context(runtime) else None,
+            )
+            if _import_probe_was_interrupted(runtime, module, sidecar_root):
+                s.add(
+                    f"{label} {ver} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            if not visible:
+                s.add(
+                    f"{label} {ver} has broken metadata or cannot import in "
+                    f"{runtime} — run `{repair}`",
+                    CheckStatus.FAIL,
+                    detail=(
+                        f"distribution={dist} version={ver} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"importable=False runtime={runtime}"
+                    ),
+                )
+                continue
+            if not import_verified:
+                s.add(
+                    f"{label} {ver} is visible but importability cannot be "
+                    "verified safely",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} version={ver} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"runtime={runtime}; module is in server context, "
+                        "but doctor does not execute server context paths"
+                    ),
+                )
+                continue
             s.add(
                 f"{label} {ver}",
                 CheckStatus.OK,
                 detail=f"distribution={dist} version={ver}",
             )
         else:
+            module = _DISTRIBUTION_MODULES[dist]
+            if _import_probe_was_interrupted(
+                runtime,
+                module,
+                sidecar_root,
+            ):
+                s.add(
+                    f"{label} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            visible, import_verified = _module_visibility(
+                dist,
+                runtime if _runtime_uses_context(runtime) else None,
+            )
+            if _import_probe_was_interrupted(runtime, module, sidecar_root):
+                s.add(
+                    f"{label} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            if not visible:
+                repair = sidecar_hint or _runtime_pip_command(
+                    "rapid-mlx", runtime=runtime
+                )
+                s.add(
+                    f"{label} not installed in {runtime} — run `{repair}`",
+                    CheckStatus.FAIL,
+                    detail=(f"distribution={dist} missing runtime={runtime}"),
+                )
+                continue
+            if not import_verified:
+                s.add(
+                    f"{label} is visible but importability cannot be verified safely",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"runtime={runtime}; module is in server context, "
+                        "but doctor does not execute server context paths"
+                    ),
+                )
+                continue
             s.add(
-                f"{label} not installed",
-                CheckStatus.FAIL,
-                detail=f"distribution={dist} missing",
+                f"{label} is importable but version metadata is unavailable",
+                CheckStatus.WARN,
+                detail=(
+                    f"distribution={dist} module={_DISTRIBUTION_MODULES[dist]} "
+                    f"runtime={runtime}; reinstall this "
+                    "runtime to restore compatibility checks"
+                ),
             )
     return s
 
@@ -778,19 +1983,50 @@ def section_updates(
 
 def section_optional_packages() -> Section:
     s = Section("Optional Packages")
+    runtime = _selected_runtime()[0]
     # RC 0.12.18: the signed desktop bundle installs the bounded
     # ``[audio-desktop]`` extra, but doctor graded it against the full
     # ``[audio]`` contract and reported a healthy build as "incomplete", then
     # told the user to pip-install into a code-signed app. Detect the managed
     # sidecar once and swap the contract, the remediation hint, and the
     # treatment of extras the bundle intentionally omits.
-    sidecar_root = _bundled_sidecar_root()
+    sidecar_root = _bundled_sidecar_root(runtime)
     bundled = sidecar_root is not None
     audio_contract = _AUDIO_DESKTOP_IMPORTS if bundled else _AUDIO_IMPORTS
     repair_hint = _sidecar_repair_hint(sidecar_root) if sidecar_root else None
+    runtime_probe = (
+        _probe_runtime(
+            runtime,
+            sidecar_root,
+        )
+        if _runtime_uses_context(runtime)
+        else None
+    )
+    if _runtime_uses_context(runtime) and runtime_probe is None:
+        s.add(
+            "Could not inspect the active server runtime",
+            CheckStatus.FAIL,
+            detail=(
+                f"runtime={runtime}; set RAPID_MLX_RUNTIME_PYTHON to its "
+                "Python executable, ensure that interpreter is readable and "
+                "runnable, then run doctor again"
+            ),
+        )
+        return s
     for dist, label, install_hint in OPTIONAL_PACKAGES:
-        hint = repair_hint if repair_hint else install_hint
-        ver = _safe_version(dist)
+        # ``pip`` on PATH may belong to ~/.rapid-mlx-python or Homebrew while
+        # the server runs from ~/.rapid-mlx. Bind every CLI remediation to the
+        # interpreter whose package visibility doctor just inspected.
+        hint = (
+            repair_hint
+            if repair_hint
+            else _runtime_pip_command(install_hint, runtime=runtime)
+        )
+        ver = (
+            _safe_version(dist, runtime)
+            if _runtime_uses_context(runtime)
+            else _safe_version(dist)
+        )
         if bundled and not ver and dist in _DESKTOP_EXCLUDED_DISTS:
             # Not a defect: this extra is outside the desktop product surface,
             # so there is nothing for the user to repair. ⚠ + "reinstall" here
@@ -800,6 +2036,25 @@ def section_optional_packages() -> Section:
                 f"{label} not bundled with Rapid-MLX Desktop (not required)",
                 CheckStatus.OK,
                 detail=f"distribution={dist} bundled=false reason=excluded-from-desktop",
+            )
+            continue
+        if ver and not _version_supported(dist, ver):
+            supported = _SUPPORTED_VERSIONS[dist]
+            if repair_hint:
+                repair = repair_hint
+            else:
+                repair = _runtime_pip_command(
+                    "rapid-mlx[vision]",
+                    f"transformers{_SUPPORTED_VERSIONS['transformers']}",
+                    runtime=runtime,
+                )
+            s.add(
+                f"{label} {ver} is incompatible (requires {supported}) — {repair}",
+                CheckStatus.FAIL,
+                detail=(
+                    f"distribution={dist} version={ver} supported={supported} "
+                    f"runtime={runtime}"
+                ),
             )
             continue
         if ver:
@@ -824,7 +2079,10 @@ def section_optional_packages() -> Section:
                 missing = [
                     distribution
                     for distribution, module in audio_contract
-                    if not _module_available(module)
+                    if not _module_available(
+                        module,
+                        runtime if _runtime_uses_context(runtime) else None,
+                    )
                 ]
                 if missing:
                     missing_text = ", ".join(missing)
@@ -845,7 +2103,9 @@ def section_optional_packages() -> Section:
             # every vision path crashes on `from PIL import Image` deep in
             # the FastAPI lifespan. Report it honestly and name the real
             # gap so the user fixes the right thing.
-            if dist == "mlx-vlm" and not _pil_importable():
+            if dist == "mlx-vlm" and not _pil_importable(
+                runtime if _runtime_uses_context(runtime) else None,
+            ):
                 s.add(
                     f"{label} {ver} present but Pillow (PIL) missing or "
                     f"broken — vision paths will fail (`{hint}`)",
@@ -856,18 +2116,82 @@ def section_optional_packages() -> Section:
                     ),
                 )
                 continue
+            visible, import_verified = _module_visibility(
+                dist,
+                runtime if _runtime_uses_context(runtime) else None,
+            )
+            if not visible or not import_verified:
+                s.add(
+                    f"{label} {ver} present but importability is broken or unverified",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} version={ver} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"visible={visible} verified={import_verified} "
+                        f"runtime={runtime}"
+                    ),
+                )
+                continue
             s.add(
                 f"{label} {ver}",
                 CheckStatus.OK,
                 detail=f"distribution={dist} version={ver}",
             )
         else:
-            s.add(
-                f"{label} not installed (`{hint}`)",
-                CheckStatus.WARN,
-                detail=f"distribution={dist} hint={hint}",
+            module = _DISTRIBUTION_MODULES[dist]
+            if _import_probe_was_interrupted(
+                runtime,
+                module,
+                sidecar_root,
+            ):
+                s.add(
+                    f"{label} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            visible, import_verified = _module_visibility(
+                dist,
+                runtime if _runtime_uses_context(runtime) else None,
             )
-
+            if _import_probe_was_interrupted(runtime, module, sidecar_root):
+                s.add(
+                    f"{label} importability unknown — doctor probe timed out",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} module={module} timeout=true",
+                )
+                continue
+            if not visible:
+                s.add(
+                    f"{label} not installed (`{hint}`)",
+                    CheckStatus.WARN,
+                    detail=f"distribution={dist} hint={hint}",
+                )
+            elif import_verified:
+                s.add(
+                    f"{label} is importable in {runtime} but version metadata "
+                    "is unavailable",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"visible=true verified=true runtime={runtime}; "
+                        "package is not missing, but compatibility cannot be "
+                        "verified"
+                    ),
+                )
+            else:
+                s.add(
+                    f"{label} is visible in {runtime} but importability is "
+                    "not verified and version metadata is unavailable",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} "
+                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"visible=true verified=false runtime={runtime}; "
+                        "package is not missing, but health cannot be verified"
+                    ),
+                )
     # DFlash is the headline 0.9.x feature and is gated on mlx-vlm >= 0.5.0.
     # The plain optional-package row above only reports presence/version —
     # it cannot say "you have mlx-vlm but it's too old for [dflash]". This
@@ -879,14 +2203,28 @@ def section_optional_packages() -> Section:
     # mlx-embeddings this row is a real contract on a bundled sidecar and stays
     # gradeable; only the remediation wording changes.
     dflash_min = (0, 5, 0)
-    dflash_hint = repair_hint or "pip install 'rapid-mlx[dflash]'"
-    vision_hint = repair_hint or "pip install 'rapid-mlx[vision]'"
-    vlm_ver = _safe_version("mlx-vlm")
-    if vlm_ver and _version_at_least(vlm_ver, dflash_min):
+    dflash_hint = repair_hint or _runtime_pip_command(
+        "rapid-mlx[dflash]", runtime=runtime
+    )
+    vision_hint = repair_hint or _runtime_pip_command(
+        "rapid-mlx[vision]", runtime=runtime
+    )
+    vlm_ver = (
+        _safe_version("mlx-vlm", runtime)
+        if _runtime_uses_context(runtime)
+        else _safe_version("mlx-vlm")
+    )
+    if (
+        vlm_ver
+        and _version_supported("mlx-vlm", vlm_ver)
+        and _version_at_least(vlm_ver, dflash_min)
+    ):
         # #1126: same PIL honesty as the vision row — a version-adequate
         # mlx-vlm whose Pillow dep is missing can't actually run the
         # dflash/vision runtime, so don't paint it green.
-        if not _pil_importable():
+        if not _pil_importable(
+            runtime if _runtime_uses_context(runtime) else None,
+        ):
             s.add(
                 "mlx-vlm 0.5.0+ (dflash extras) present but Pillow (PIL) "
                 "missing or broken — dflash/vision paths will fail",
@@ -897,16 +2235,32 @@ def section_optional_packages() -> Section:
                 ),
             )
         else:
-            s.add(
-                "mlx-vlm 0.5.0+ (dflash extras)",
-                CheckStatus.OK,
-                detail=f"distribution=mlx-vlm version={vlm_ver}",
+            _, vlm_verified = _module_visibility(
+                "mlx-vlm",
+                runtime if _runtime_uses_context(runtime) else None,
             )
+            if not vlm_verified:
+                s.add(
+                    "mlx-vlm 0.5.0+ (dflash extras) present but importability "
+                    "is broken or unverified",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution=mlx-vlm version={vlm_ver} "
+                        f"verified=False runtime={runtime}"
+                    ),
+                )
+            else:
+                s.add(
+                    "mlx-vlm 0.5.0+ (dflash extras)",
+                    CheckStatus.OK,
+                    detail=f"distribution=mlx-vlm version={vlm_ver}",
+                )
     else:
         current = vlm_ver or "not installed"
         s.add(
-            f"mlx-vlm 0.5.0+ (dflash extras) not installed or too old "
-            f"(current: {current}, need: 0.5.0+)",
+            f"mlx-vlm 0.5.0+ (dflash extras) not installed, too old, or "
+            f"incompatible (current: {current}, need: 0.5.0+ and "
+            f"{_SUPPORTED_VERSIONS['mlx-vlm']})",
             CheckStatus.WARN,
             detail=dflash_hint,
         )
@@ -1304,7 +2658,7 @@ def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
         for root in cline_roots
     )
 
-    integrations = []
+    integrations: list[tuple[str, Path, str | None]] = []
     for name, path in configs:
         if not path.is_file():
             continue
@@ -1421,16 +2775,28 @@ def run_all() -> Report:
     report as a single ✗ row labelled with the exception class — that's
     still a useful signal ("doctor is broken, file a bug").
     """
+    global _DOCTOR_DEADLINE, _RUNTIME_SELECTION_DONE
     report = Report()
-    for builder in _SECTION_BUILDERS:
-        try:
-            report.sections.append(builder())
-        except Exception as e:  # noqa: BLE001 — see docstring above
-            crashed = Section(builder.__name__.replace("section_", "").title())
-            crashed.add(
-                f"probe crashed: {type(e).__name__}: {e}",
-                CheckStatus.FAIL,
-                detail=f"{type(e).__module__}.{type(e).__name__}: {e}",
-            )
-            report.sections.append(crashed)
+    try:
+        _DOCTOR_DEADLINE = time.monotonic() + _DOCTOR_BUDGET_S
+        _RUNTIME_SELECTION_DONE = False
+        _RUNTIME_PROBE_CACHE.clear()
+        _RUNTIME_IMPORT_CACHE.clear()
+        _RUNTIME_IMPORT_TIMEOUTS.clear()
+        _RUNTIME_DISTRIBUTION_CACHE.clear()
+        _RUNTIME_CONTEXTS.clear()
+        _selected_runtime()
+        for builder in _SECTION_BUILDERS:
+            try:
+                report.sections.append(builder())
+            except Exception as e:  # noqa: BLE001 — see docstring above
+                crashed = Section(builder.__name__.replace("section_", "").title())
+                crashed.add(
+                    f"probe crashed: {type(e).__name__}: {e}",
+                    CheckStatus.FAIL,
+                    detail=f"{type(e).__module__}.{type(e).__name__}: {e}",
+                )
+                report.sections.append(crashed)
+    finally:
+        _DOCTOR_DEADLINE = None
     return report

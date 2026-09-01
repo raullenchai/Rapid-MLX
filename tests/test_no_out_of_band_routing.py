@@ -119,6 +119,10 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
 # (debug verbosity, version-check disable, etc.).
 ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
+        # Read-only diagnostic override for doctor: selects which existing
+        # interpreter is inspected; it does not route a request or mutate server
+        # behavior. Invalid values are ignored by doctor.
+        "RAPID_MLX_RUNTIME_PYTHON",
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
         # Security policy knobs, none of which selects a model, parser, tier,

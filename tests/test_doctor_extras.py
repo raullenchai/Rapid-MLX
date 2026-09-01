@@ -18,7 +18,16 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
+
 from vllm_mlx.doctor import env_health as eh
+
+
+@pytest.fixture(autouse=True)
+def clean_runtime_probe_state(clean_doctor_runtime_state):
+    """Keep host server processes out of doctor's runtime selection."""
+    yield
+
 
 # ---------------------------------------------------------------------------
 # Rip 1: YouTube cookies row removed from Network section
@@ -100,13 +109,16 @@ def test_anthropic_sdk_check_gone_even_when_installed():
 # ---------------------------------------------------------------------------
 
 
-def test_dflash_row_ok_when_mlx_vlm_at_min_version():
-    """``mlx-vlm == 0.5.0`` exactly → ✓ DFlash row."""
+def test_dflash_row_ok_when_mlx_vlm_is_validated_version():
+    """``mlx-vlm == 0.6.17`` exactly → ✓ DFlash row."""
 
-    def fake_ver(dist: str) -> str | None:
-        return "0.5.0" if dist == "mlx-vlm" else "1.0.0"
+    def fake_ver(dist: str, runtime=None) -> str | None:
+        return "0.6.17" if dist == "mlx-vlm" else "1.0.0"
 
-    with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
+    with (
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(eh, "_module_visibility", return_value=(True, True)),
+    ):
         section = eh.section_optional_packages()
 
     dflash = next((c for c in section.checks if "dflash" in c.label), None)
@@ -115,23 +127,23 @@ def test_dflash_row_ok_when_mlx_vlm_at_min_version():
         f"got rows: {[c.label for c in section.checks]}"
     )
     assert dflash.status is eh.CheckStatus.OK, (
-        f"DFlash row should be OK at mlx-vlm 0.5.0; got {dflash.status!r}"
+        f"DFlash row should be OK at mlx-vlm 0.6.17; got {dflash.status!r}"
     )
     assert "0.5.0+" in dflash.label and "dflash extras" in dflash.label
 
 
-def test_dflash_row_ok_when_mlx_vlm_above_min_version():
-    """``mlx-vlm == 1.2.3`` → ✓ DFlash row (version comparison handles
-    multi-component bumps, not just exact-match)."""
+def test_dflash_row_warns_when_mlx_vlm_is_above_min_but_unsupported():
+    """A version above the DFlash floor must not mask incompatibility."""
 
-    def fake_ver(dist: str) -> str | None:
+    def fake_ver(dist: str, runtime=None) -> str | None:
         return "1.2.3" if dist == "mlx-vlm" else "1.0.0"
 
     with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
         section = eh.section_optional_packages()
 
     dflash = next(c for c in section.checks if "dflash" in c.label)
-    assert dflash.status is eh.CheckStatus.OK
+    assert dflash.status is not eh.CheckStatus.OK
+    assert "incompatible" in dflash.label
 
 
 def test_dflash_row_warns_when_mlx_vlm_too_old():
@@ -139,7 +151,7 @@ def test_dflash_row_warns_when_mlx_vlm_too_old():
     surfaced in the label so the user can see exactly how far they're
     behind without digging through `pip show`."""
 
-    def fake_ver(dist: str) -> str | None:
+    def fake_ver(dist: str, runtime=None) -> str | None:
         return "0.4.9" if dist == "mlx-vlm" else "1.0.0"
 
     with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
@@ -155,7 +167,7 @@ def test_dflash_row_warns_when_mlx_vlm_missing():
     """``mlx-vlm`` not installed at all → ⚠ DFlash row labelled
     ``current: not installed``."""
 
-    def fake_ver(dist: str) -> str | None:
+    def fake_ver(dist: str, runtime=None) -> str | None:
         return None if dist == "mlx-vlm" else "1.0.0"
 
     with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):

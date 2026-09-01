@@ -37,7 +37,7 @@ vllm_mlx/chat_mcp.py 2
 vllm_mlx/cli.py 27
 vllm_mlx/community_bench/submission.py 1
 vllm_mlx/disk_stream_patch.py 2
-vllm_mlx/doctor/env_health.py 2
+vllm_mlx/doctor/env_health.py 1
 vllm_mlx/embedding.py 7
 vllm_mlx/engine/base.py 1
 vllm_mlx/engine/batched.py 44
