@@ -52,6 +52,9 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.instructions" desc="System Prompt" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
+              AXButton id="Settings.Category.memory" desc="Memory" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
               AXButton id="Settings.Category.tools" desc="Tools" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true

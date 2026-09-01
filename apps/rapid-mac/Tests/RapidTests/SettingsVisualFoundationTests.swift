@@ -81,7 +81,7 @@ struct SettingsVisualFoundationTests {
         // change deliberate and reviewed, not to freeze the list forever —
         // update this literal alongside the enum when a feature adds one.
         var expected: Set<String> = [
-            "modelManagement", "instructions", "tools", "connectors", "performance",
+            "modelManagement", "instructions", "memory", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
         ]
         // `swift test` builds debug, so the debug-only category is present
@@ -108,7 +108,7 @@ struct SettingsVisualFoundationTests {
     @Test("Category order is unchanged, so arrow-key navigation is unchanged")
     func categoryOrderIsStable() {
         var expectedOrder = [
-            "modelManagement", "instructions", "tools", "connectors", "performance",
+            "modelManagement", "instructions", "memory", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
         ]
         #if DEBUG

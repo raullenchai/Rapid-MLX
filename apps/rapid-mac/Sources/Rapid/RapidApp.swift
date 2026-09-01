@@ -92,6 +92,8 @@ struct RapidApp: App {
     @State private var sampling: SamplingConfig
     /// App-wide custom instructions shared by Settings and every chat turn.
     @State private var customInstructions: CustomInstructionsConfig
+    /// Persistent memory entries shared by chat injection and Settings.
+    @State private var memoryStore: MemoryStore
     /// Persisted theme override exposed via Settings → Appearance.
     @State private var appearance: AppearanceConfig
     /// Deep-link channel into the Settings window.
@@ -176,6 +178,7 @@ struct RapidApp: App {
         let manager = ServerManager()
         let samplingConfig = SamplingConfig()
         let customInstructionsConfig = CustomInstructionsConfig()
+        let memoryStore = MemoryStore()
         let appearanceConfig = AppearanceConfig()
         // Apply the persisted theme override before the first window
         // renders so the user doesn't see a flash of the wrong mode.
@@ -264,6 +267,7 @@ struct RapidApp: App {
             tools: toolRegistry,
             sampling: samplingConfig,
             customInstructions: customInstructionsConfig,
+            memoryStore: memoryStore,
             server: manager,
             onProductValueDelivered: { [weak consentCoordinator, weak starPromptCoordinator] kind in
                 consentCoordinator?.productValueDelivered(kind)
@@ -342,6 +346,7 @@ struct RapidApp: App {
         _sparkleUpdater = State(initialValue: sparkleUpdateController)
         _sampling = State(initialValue: samplingConfig)
         _customInstructions = State(initialValue: customInstructionsConfig)
+        _memoryStore = State(initialValue: memoryStore)
         _appearance = State(initialValue: appearanceConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
         _deferredTelemetryConsent = State(initialValue: consentCoordinator)
@@ -375,6 +380,7 @@ struct RapidApp: App {
                 .environment(sparkleUpdater)
                 .environment(sampling)
                 .environment(customInstructions)
+                .environment(memoryStore)
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(commandPaletteRequest)
@@ -537,6 +543,7 @@ struct RapidApp: App {
                 .environment(chatViewModel)
                 .environment(sampling)
                 .environment(customInstructions)
+                .environment(memoryStore)
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(server)

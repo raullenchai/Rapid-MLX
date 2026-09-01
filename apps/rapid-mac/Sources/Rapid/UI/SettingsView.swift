@@ -70,6 +70,8 @@ struct SettingsView: View {
         /// Global system-prompt default applied before any conversation-specific
         /// override. Stored locally in UserDefaults under the legacy key.
         case instructions
+        /// Persistent memory entries learned from conversations.
+        case memory
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
         case tools
@@ -104,6 +106,7 @@ struct SettingsView: View {
             switch self {
             case .modelManagement: return "Model Management"
             case .instructions: return "System Prompt"
+            case .memory: return "Memory"
             case .tools: return "Tools"
             case .connectors: return "Connectors"
             case .performance: return "Performance"
@@ -119,6 +122,7 @@ struct SettingsView: View {
             switch self {
             case .modelManagement: return "externaldrive.fill"
             case .instructions: return "text.bubble.fill"
+            case .memory: return "brain"
             case .tools: return "wrench.and.screwdriver.fill"
             case .connectors: return "powerplug.fill"
             case .performance: return "speedometer"
@@ -480,6 +484,8 @@ struct SettingsView: View {
             SettingsModelManagementPanel()
         case .instructions:
             instructionsPanel
+        case .memory:
+            SettingsMemoryPanel()
         case .tools:
             SettingsToolsPanel()
         case .connectors:
