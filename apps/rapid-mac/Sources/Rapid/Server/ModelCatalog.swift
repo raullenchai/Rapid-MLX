@@ -508,36 +508,50 @@ enum ModelCatalog {
         return out
     }
 
-    /// Pure: re-mark uncached entries whose resolved HF repo equals a
-    /// cached entry's repo. The rebuilt entry carries the cached repo +
-    /// size so the picker caption / size column match the sibling that
-    /// is actually on disk. ``resolvedRepos`` maps alias → HF repo.
-    /// Matching is exact on the sanitized repo string — never
-    /// case-folded — so two repos differing only by case are never
-    /// merged.
+    /// Pure: re-mark uncached entries whose resolved artifact identity equals
+    /// a cached entry's exact repo + subfolder. ``resolvedRepos`` maps alias →
+    /// HF repo; the catalog entry supplies the expected subfolder. Matching is
+    /// case-sensitive and never lets a nested checkpoint prove a repo-root
+    /// checkpoint is installed.
     static func remarkCachedByRepo(
         _ entries: [ModelEntry],
         resolvedRepos: [String: String]
     ) -> [ModelEntry] {
-        var cachedByRepo: [String: (repo: String, size: String?)] = [:]
+        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
         for entry in entries where entry.cached {
-            if let repo = sanitizedHuggingFaceRepo(entry.hfRepo) {
-                cachedByRepo[repo] = (repo, entry.sizeOnDisk)
+            if let key = artifactCacheKey(entry),
+               let repo = sanitizedHuggingFaceRepo(entry.hfRepo) {
+                cachedByArtifact[key] = (repo, entry.sizeOnDisk)
             }
         }
-        guard !cachedByRepo.isEmpty else { return entries }
+        guard !cachedByArtifact.isEmpty else { return entries }
 
         return entries.map { entry in
             guard !entry.cached,
                   let raw = resolvedRepos[entry.alias],
                   let repo = sanitizedHuggingFaceRepo(raw),
-                  let hit = cachedByRepo[repo]
+                  let key = artifactCacheKey(
+                    repo: repo, subfolder: entry.sourceSubfolder
+                  ),
+                  let hit = cachedByArtifact[key]
             else { return entry }
             return ModelEntry(
                 alias: entry.alias,
                 hfRepo: hit.repo,
                 sizeOnDisk: hit.size,
-                cached: true
+                cached: true,
+                isExternal: entry.isExternal,
+                kind: entry.kind,
+                audioCapability: entry.audioCapability,
+                audioFamily: entry.audioFamily,
+                imageCapability: entry.imageCapability,
+                taskTypes: entry.taskTypes,
+                operationModes: entry.operationModes,
+                runtimeAdapter: entry.runtimeAdapter,
+                sourceSubfolder: entry.sourceSubfolder,
+                speculativeDecodingPreset: entry.speculativeDecodingPreset,
+                isBuiltinProfile: entry.isBuiltinProfile,
+                isTextOnly: entry.isTextOnly
             )
         }
     }
@@ -598,10 +612,12 @@ enum ModelCatalog {
         cached: [CachedModelInventoryEntry],
         excluded: Set<String>
     ) -> [ModelEntry] {
-        var cachedIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, _, size) in cached
+        var cachedIndex: [String: (
+            hfRepo: String?, subfolder: String?, size: String?
+        )] = [:]
+        for (alias, hf, subfolder, size) in cached
         where !alias.isEmpty && !isStatusAlias(alias) {
-            cachedIndex[alias] = (hf, size)
+            cachedIndex[alias] = (hf, subfolder, size)
         }
         var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
         for (alias, hf, _, size) in cached where alias == "(external)" {
@@ -629,7 +645,8 @@ enum ModelCatalog {
                 sizeOnDisk: cachedHit?.size
                     ?? externalIdentifier.flatMap { externalIndex[$0]?.size },
                 cached: cachedHit != nil || externalIdentifier != nil,
-                isExternal: cachedHit == nil && externalIdentifier != nil
+                isExternal: cachedHit == nil && externalIdentifier != nil,
+                sourceSubfolder: cachedHit?.subfolder
             ))
         }
         // A cached model with no row in ``rapid-mlx models`` is unusual
@@ -641,7 +658,7 @@ enum ModelCatalog {
         // cached audio or video model has no row in ``models`` for
         // exactly the reason it must stay hidden, and would be re-admitted
         // here on that basis (#1603).
-        for (alias, hf, _, size) in cached
+        for (alias, hf, subfolder, size) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -650,7 +667,8 @@ enum ModelCatalog {
                 alias: alias,
                 hfRepo: hf,
                 sizeOnDisk: size,
-                cached: true
+                cached: true,
+                sourceSubfolder: subfolder
             ))
         }
 
@@ -1327,8 +1345,14 @@ enum ModelCatalog {
     }
 
     private static func artifactCacheKey(_ entry: ModelEntry) -> String? {
-        guard let repo = sanitizedHuggingFaceRepo(entry.hfRepo) else { return nil }
-        return repo + "\0" + (entry.sourceSubfolder ?? "")
+        artifactCacheKey(repo: entry.hfRepo, subfolder: entry.sourceSubfolder)
+    }
+
+    private static func artifactCacheKey(
+        repo: String?, subfolder: String?
+    ) -> String? {
+        guard let repo = sanitizedHuggingFaceRepo(repo) else { return nil }
+        return repo + "\0" + (subfolder ?? "")
     }
 
     /// Image aliases with explicit generation/edit capabilities for the Images tab's
