@@ -1382,7 +1382,7 @@ final class ServerManager {
             // not survive it.
             guard let current = catalog.first(where: {
                 $0.alias.caseInsensitiveCompare(record.entry.alias) == .orderedSame
-            }), current.kind == .chat else { return }
+            }), current.supports(.chat) else { return }
             // Refresh every field, not just lane membership. Capability
             // metadata participates in process-lane selection on a later
             // same-epoch empty probe.

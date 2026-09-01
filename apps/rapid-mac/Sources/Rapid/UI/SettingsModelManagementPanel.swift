@@ -733,7 +733,7 @@ struct SettingsModelManagementPanel: View {
         // the number in the heading and the rows under it can never
         // describe different sets.
         let entries = visibleEntries
-        let kindEntries = catalog.filter { $0.kind == capability }
+        let kindEntries = catalog.filter { $0.supports(capability) }
         let heading = ModelCacheActions.listHeading(
             filter: filterMode,
             query: query,
@@ -1069,7 +1069,7 @@ struct SettingsModelManagementPanel: View {
     // MARK: - List
 
     private var visibleEntries: [ModelEntry] {
-        let byCapability = catalog.filter { $0.kind == capability }
+        let byCapability = catalog.filter { $0.supports(capability) }
         let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: query)
         let sorted = ModelCacheActions.sorted(filtered, order: sortOrder)
         return ModelFavorites.favoritesFirst(sorted, favorites: favorites)
@@ -1085,7 +1085,7 @@ struct SettingsModelManagementPanel: View {
     /// Kinds that actually have models to manage — the tab bar only offers
     /// these (Video stays hidden until the video lane surfaces aliases).
     private var availableKinds: [ModelKind] {
-        ModelKind.allCases.filter { kind in catalog.contains { $0.kind == kind } }
+        ModelKind.allCases.filter { kind in catalog.contains { $0.supports(kind) } }
     }
 
     @ViewBuilder
@@ -1099,7 +1099,7 @@ struct SettingsModelManagementPanel: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.alias) { idx, entry in
-                    if entry.kind == .chat {
+                    if capability == .chat {
                         row(for: entry)
                     } else {
                         capabilityRow(for: entry)
@@ -1185,12 +1185,12 @@ struct SettingsModelManagementPanel: View {
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if entry.kind == .audio, let audioCapability = entry.audioCapability {
+                if capability == .audio, let audioCapability = entry.audioCapability {
                     Text(audioCapabilityLabel(audioCapability))
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                 }
-                if entry.kind == .image, let imageCapability = entry.imageCapability {
+                if capability == .image, let imageCapability = entry.imageCapability {
                     Text(imageCapability.label)
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)

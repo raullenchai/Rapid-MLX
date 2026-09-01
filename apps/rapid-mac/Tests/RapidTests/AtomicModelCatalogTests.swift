@@ -117,6 +117,35 @@ struct AtomicModelCatalogTests {
         #expect(entries.first { $0.alias == "hidden" } == nil)
     }
 
+    @Test("multi-task aliases project into every supported product surface")
+    func multiTaskAliasesAreNotExclusivelyClassified() throws {
+        let multiTask = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            var capabilities = aliases[1]["capabilities"] as! [String: Any]
+            capabilities["task_types"] = ["text_generation", "image_generation"]
+            capabilities["operation_modes"] = [
+                "chat", "text_to_image", "image_to_image",
+            ]
+            aliases[1]["capabilities"] = capabilities
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(
+            ModelCatalog.parseAtomicModelEntriesJSON(multiTask)
+        )
+        let image = try #require(entries.first { $0.alias == "image" })
+        #expect(image.kind == .image)
+        #expect(image.supports(.chat))
+        #expect(image.supports(.image))
+
+        let projection = try #require(ModelCatalog.parseAvailableJSON(multiTask))
+        #expect(projection.entries.map(\.0) == ["chat", "image"])
+        #expect(!projection.excluded.contains("image"))
+    }
+
     @Test("atomic operations drive picker eligibility without alias heuristics")
     func operationsDriveSelection() throws {
         let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))

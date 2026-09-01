@@ -261,6 +261,26 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var isTextOnly: Bool? = nil
 
     var id: String { alias }
+
+    /// Whether this entry belongs on a product capability surface. Atomic
+    /// aliases may advertise several tasks and therefore appear in several
+    /// tabs/pickers; `kind` remains only the single-value compatibility hint
+    /// for legacy sidecars whose task set is empty.
+    func supports(_ candidate: ModelKind) -> Bool {
+        guard !taskTypes.isEmpty else { return kind == candidate }
+        switch candidate {
+        case .chat:
+            return taskTypes.contains(.textGeneration)
+                || taskTypes.contains(.visionLanguage)
+        case .image:
+            return taskTypes.contains(.imageGeneration)
+        case .audio:
+            return taskTypes.contains(.speechSynthesis)
+                || taskTypes.contains(.speechRecognition)
+        case .video:
+            return taskTypes.contains(.videoGeneration)
+        }
+    }
 }
 
 /// Loads the rapid-mlx alias catalog by shelling out to the CLI. The
@@ -756,7 +776,9 @@ enum ModelCatalog {
         profiles: [String: CatalogProfileCapability]
     )? {
         guard let allEntries = parseAtomicModelEntriesJSON(root) else { return nil }
-        let entries = allEntries.filter { $0.kind == .chat }.map { ($0.alias, $0.hfRepo) }
+        let entries = allEntries.filter { $0.supports(.chat) }.map {
+            ($0.alias, $0.hfRepo)
+        }
         guard let atomic = root["atomic"] as? [String: Any],
               let snapshot = atomic["snapshot"] as? [String: Any],
               let aliasRows = snapshot["aliases"] as? [[String: Any]]
@@ -773,7 +795,7 @@ enum ModelCatalog {
         // audio/video model as an untyped Chat row.
         let excluded = allAliases.subtracting(chatAliases)
         let profiles = Dictionary(
-            uniqueKeysWithValues: allEntries.filter { $0.kind == .chat }.map { entry in
+            uniqueKeysWithValues: allEntries.filter { $0.supports(.chat) }.map { entry in
                 (
                     entry.alias,
                     CatalogProfileCapability(
@@ -1227,7 +1249,7 @@ enum ModelCatalog {
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
             return mergeAtomicAndCached(
                 atomic: atomic, cached: cached, excluded: []
-            ).filter { $0.kind == .image }
+            ).filter { $0.supports(.image) }
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseImageRows(modelsOut)
@@ -1287,7 +1309,7 @@ enum ModelCatalog {
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
             return mergeAtomicAndCached(
                 atomic: atomic, cached: cached, excluded: []
-            ).filter { $0.kind == .audio }
+            ).filter { $0.supports(.audio) }
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseAudioRows(modelsOut).filter {
