@@ -75,6 +75,36 @@ def test_rejects_separately_reserved_retired_name(alias_file: Path) -> None:
         set_user_alias("retired", "fast", BUILTINS, frozenset({"retired"}))
 
 
+def test_audio_alias_names_are_reserved_across_cli_and_loading(
+    alias_file: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from vllm_mlx.cli import alias_command, build_parser
+    from vllm_mlx.model_aliases import (
+        list_builtin_aliases,
+        list_profiles,
+        user_alias_reserved_names,
+    )
+
+    builtins = list_builtin_aliases()
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        alias_command(parser.parse_args(["alias", "set", "kokoro", "org/model"]))
+    assert exc_info.value.code == 1
+    assert "reserved built-in" in capsys.readouterr().err
+    assert not alias_file.exists()
+
+    # Loading a config written by an older client applies the same unified
+    # namespace contract before the atomic text + audio projection is built.
+    alias_file.parent.mkdir(parents=True)
+    alias_file.write_text(
+        json.dumps({"version": 1, "aliases": {"KOKORO": "org/model"}})
+    )
+    with pytest.raises(UserAliasError, match="reserved built-in"):
+        validated_user_aliases(builtins, user_alias_reserved_names())
+    with pytest.raises(UserAliasError, match="reserved built-in"):
+        list_profiles()
+
+
 def test_corrupt_config_fails_closed(alias_file: Path) -> None:
     alias_file.parent.mkdir(parents=True)
     alias_file.write_text('{"version": 1, "aliases": ')

@@ -976,8 +976,11 @@ def list_builtin_aliases() -> dict[str, str]:
 
 
 def user_alias_reserved_names() -> frozenset[str]:
-    """Names user aliases may not shadow, including retired catalog names."""
-    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES)
+    """Names user aliases may not shadow across any product model surface."""
+    from .audio.registry import list_audio_aliases
+
+    audio_aliases = frozenset(entry.alias for entry in list_audio_aliases())
+    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES) | audio_aliases
 
 
 def list_profiles() -> dict[str, AliasProfile]:
