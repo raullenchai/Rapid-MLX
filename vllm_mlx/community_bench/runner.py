@@ -53,6 +53,8 @@ class RoundResult:
     prefill_tps: float
     ttft_ms: float
     peak_ram_mb: int | None = None
+    prompt_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +270,8 @@ async def _run_one_round(
         prefill_tps=prompt_tokens_actual / prefill_window_s,
         decode_tps=decode_tps,
         ttft_ms=(t_first_token - t_start) * 1000.0,
+        prompt_tokens=prompt_tokens_actual,
+        output_tokens=completion_tokens,
     )
 
 

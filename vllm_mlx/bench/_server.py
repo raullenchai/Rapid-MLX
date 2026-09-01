@@ -33,6 +33,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
 from ..doctor.runner import REPO_ROOT, python_executable
@@ -63,6 +64,7 @@ def serve(
     extra_args: list[str] | None = None,
     boot_timeout_s: int = 180,
     model_path: str | Path | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ):
     """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
 
@@ -135,6 +137,8 @@ def serve(
         # the watchdog at the wrong PID.
         spawn_env = os.environ.copy()
         spawn_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+        if extra_env:
+            spawn_env.update(extra_env)
         proc = subprocess.Popen(  # noqa: S603 — args constructed by us
             cmd,
             cwd=REPO_ROOT,

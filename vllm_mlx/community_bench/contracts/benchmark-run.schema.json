@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/community-benchmark/v1/benchmark-run.schema.json",
+  "title": "Rapid-MLX BenchmarkRun v1",
+  "description": "Privacy-allowlisted raw benchmark upload for text, vision-language, image, or video generation.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "run_id", "started_at", "completed_at", "collector", "model", "machine", "execution", "workload", "outcome"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"$ref": "#/$defs/uuid"},
+    "experiment": {"$ref": "#/$defs/experiment"},
+    "install_id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "collector": {"type": "object", "additionalProperties": false, "required": ["name", "version"], "properties": {"name": {"const": "rapid-mlx-community-bench"}, "version": {"$ref": "#/$defs/versionString"}}},
+    "model": {"$ref": "../../model-runtime/v1/model-identity.schema.json"},
+    "machine": {"$ref": "../../model-runtime/v1/machine-observation.schema.json"},
+    "execution": {"$ref": "../../model-runtime/v1/execution-config.schema.json"},
+    "workload": {"$ref": "#/$defs/workload"},
+    "outcome": {"$ref": "#/$defs/outcome"},
+    "measurements": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/measurement"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"outcome": {"properties": {"status": {"const": "completed"}}, "required": ["status"]}}}, "then": {"required": ["measurements"], "properties": {"measurements": {"items": {"properties": {"completed": {"const": true}}, "required": ["completed"]}}}}},
+    {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "text_generation"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "text_generation"}}}, "workload": {"properties": {"task_type": {"const": "text_generation"}}}}}},
+    {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "vision_language"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "vision_language"}}}, "workload": {"properties": {"task_type": {"const": "vision_language"}}}}}},
+    {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "image_generation"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "image_generation"}}}, "workload": {"properties": {"task_type": {"const": "image_generation"}}}}}},
+    {"if": {"properties": {"model": {"properties": {"pipeline_kind": {"const": "video_generation"}}, "required": ["pipeline_kind"]}}}, "then": {"properties": {"execution": {"properties": {"task_type": {"const": "video_generation"}}}, "workload": {"properties": {"task_type": {"const": "video_generation"}}}}}},
+    {"if": {"properties": {"workload": {"properties": {"task_type": {"const": "text_generation"}}}}}, "then": {"properties": {"measurements": {"items": {"$ref": "#/$defs/textMeasurement"}}}}},
+    {"if": {"properties": {"workload": {"properties": {"task_type": {"const": "vision_language"}}}}}, "then": {"properties": {"measurements": {"items": {"$ref": "#/$defs/vlmMeasurement"}}}}},
+    {"if": {"properties": {"workload": {"properties": {"task_type": {"const": "image_generation"}}}}}, "then": {"properties": {"measurements": {"items": {"$ref": "#/$defs/imageMeasurement"}}}}},
+    {"if": {"properties": {"workload": {"properties": {"task_type": {"const": "video_generation"}}}}}, "then": {"properties": {"measurements": {"items": {"$ref": "#/$defs/videoMeasurement"}}}}}
+  ],
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "versionString": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]*$"},
+    "taskType": {"enum": ["text_generation", "vision_language", "image_generation", "video_generation"]},
+    "experiment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["group_id", "arm_id", "role", "sequence_index", "order_strategy", "varied_fields"],
+      "properties": {
+        "group_id": {"$ref": "#/$defs/uuid"},
+        "arm_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "role": {"enum": ["baseline", "candidate"]},
+        "sequence_index": {"type": "integer", "minimum": 1, "maximum": 64},
+        "order_strategy": {"enum": ["fixed", "alternating", "randomized"]},
+        "assignment_seed": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "varied_fields": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "pattern": "^/execution/(resources|task)(/[^/~]+)+$"}}
+      },
+      "allOf": [{"if": {"properties": {"order_strategy": {"const": "randomized"}}}, "then": {"required": ["assignment_seed"]}}]
+    },
+    "dataset": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version", "digest"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "digest": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
+    "caseBase": {
+      "type": "object",
+      "required": ["case_id", "warmup_rounds", "measured_rounds"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "warmup_rounds": {"type": "integer", "minimum": 0, "maximum": 20},
+        "measured_rounds": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "textCase": {
+      "allOf": [{"$ref": "#/$defs/caseBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "warmup_rounds", "measured_rounds", "target_prompt_tokens", "target_output_tokens"], "properties": {
+        "case_id": true, "warmup_rounds": true, "measured_rounds": true,
+        "target_prompt_tokens": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "target_output_tokens": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }}]
+    },
+    "vlmCase": {
+      "allOf": [{"$ref": "#/$defs/caseBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "warmup_rounds", "measured_rounds", "media_kind", "media_count", "width", "height", "target_output_tokens"], "properties": {
+        "case_id": true, "warmup_rounds": true, "measured_rounds": true,
+        "media_kind": {"enum": ["image", "video"]}, "media_count": {"type": "integer", "minimum": 1, "maximum": 64},
+        "width": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "height": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "frames": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "target_prompt_tokens": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "target_output_tokens": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }}, {"if": {"properties": {"media_kind": {"const": "video"}}, "required": ["media_kind"]}, "then": {"required": ["frames"]}, "else": {"not": {"required": ["frames"]}}}]
+    },
+    "imageCase": {
+      "allOf": [{"$ref": "#/$defs/caseBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "warmup_rounds", "measured_rounds", "mode", "width", "height", "steps", "guidance_millionths", "seed", "image_count"], "properties": {
+        "case_id": true, "warmup_rounds": true, "measured_rounds": true,
+        "mode": {"enum": ["text_to_image", "image_to_image", "inpainting"]}, "width": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "height": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "steps": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "guidance_millionths": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}, "image_count": {"type": "integer", "minimum": 1, "maximum": 16}
+      }}]
+    },
+    "videoCase": {
+      "allOf": [{"$ref": "#/$defs/caseBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "warmup_rounds", "measured_rounds", "mode", "width", "height", "frames", "fps_milli", "steps", "guidance_millionths", "seed"], "properties": {
+        "case_id": true, "warmup_rounds": true, "measured_rounds": true,
+        "mode": {"enum": ["text_to_video", "image_to_video", "video_to_video"]}, "width": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "height": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "frames": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "fps_milli": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "steps": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "guidance_millionths": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }}]
+    },
+    "workloadCommon": {
+      "type": "object",
+      "required": ["protocol_id", "protocol_version", "protocol_strength", "protocol_digest", "task_type", "dataset", "concurrency", "cases"],
+      "properties": {
+        "protocol_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "protocol_version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "protocol_strength": {"enum": ["registered", "custom"]}, "protocol_digest": {"$ref": "#/$defs/sha256Digest"},
+        "task_type": {"$ref": "#/$defs/taskType"}, "dataset": {"$ref": "#/$defs/dataset"}, "concurrency": {"type": "integer", "minimum": 1, "maximum": 4096}, "cases": {"type": "array", "minItems": 1, "maxItems": 64}
+      }
+    },
+    "workload": {
+      "oneOf": [
+        {"allOf": [{"$ref": "#/$defs/workloadCommon"}, {"type": "object", "additionalProperties": false, "properties": {"protocol_id": true, "protocol_version": true, "protocol_strength": true, "protocol_digest": true, "task_type": {"const": "text_generation"}, "dataset": true, "concurrency": true, "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/textCase"}}}}]},
+        {"allOf": [{"$ref": "#/$defs/workloadCommon"}, {"type": "object", "additionalProperties": false, "properties": {"protocol_id": true, "protocol_version": true, "protocol_strength": true, "protocol_digest": true, "task_type": {"const": "vision_language"}, "dataset": true, "concurrency": true, "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/vlmCase"}}}}]},
+        {"allOf": [{"$ref": "#/$defs/workloadCommon"}, {"type": "object", "additionalProperties": false, "properties": {"protocol_id": true, "protocol_version": true, "protocol_strength": true, "protocol_digest": true, "task_type": {"const": "image_generation"}, "dataset": true, "concurrency": true, "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/imageCase"}}}}]},
+        {"allOf": [{"$ref": "#/$defs/workloadCommon"}, {"type": "object", "additionalProperties": false, "properties": {"protocol_id": true, "protocol_version": true, "protocol_strength": true, "protocol_digest": true, "task_type": {"const": "video_generation"}, "dataset": true, "concurrency": true, "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/videoCase"}}}}]}
+      ]
+    },
+    "measurementBase": {
+      "type": "object", "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed"],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1, "maxLength": 64}, "round_index": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "total_duration_ms": {"type": "number", "minimum": 0}, "peak_active_memory_mib": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "completed": {"type": "boolean"}
+      }
+    },
+    "textMeasurement": {"allOf": [{"$ref": "#/$defs/measurementBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed", "prompt_tokens", "output_tokens", "ttft_ms", "decode_duration_ms"], "properties": {"case_id": true, "round_index": true, "total_duration_ms": true, "peak_active_memory_mib": true, "completed": true, "prompt_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "output_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "ttft_ms": {"type": "number", "minimum": 0}, "decode_duration_ms": {"type": "number", "minimum": 0}}}]},
+    "vlmMeasurement": {"allOf": [{"$ref": "#/$defs/measurementBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed", "prompt_tokens", "output_tokens", "ttft_ms", "decode_duration_ms", "media_encode_duration_ms"], "properties": {"case_id": true, "round_index": true, "total_duration_ms": true, "peak_active_memory_mib": true, "completed": true, "prompt_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "output_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "ttft_ms": {"type": "number", "minimum": 0}, "decode_duration_ms": {"type": "number", "minimum": 0}, "media_encode_duration_ms": {"type": "number", "minimum": 0}}}]},
+    "imageMeasurement": {"allOf": [{"$ref": "#/$defs/measurementBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed", "image_count", "width", "height"], "properties": {"case_id": true, "round_index": true, "total_duration_ms": true, "peak_active_memory_mib": true, "completed": true, "image_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "width": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "height": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "text_encode_duration_ms": {"type": "number", "minimum": 0}, "denoise_duration_ms": {"type": "number", "minimum": 0}, "vae_decode_duration_ms": {"type": "number", "minimum": 0}}}]},
+    "videoMeasurement": {"allOf": [{"$ref": "#/$defs/measurementBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed", "frames", "width", "height"], "properties": {"case_id": true, "round_index": true, "total_duration_ms": true, "peak_active_memory_mib": true, "completed": true, "frames": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "width": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "height": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "text_encode_duration_ms": {"type": "number", "minimum": 0}, "denoise_duration_ms": {"type": "number", "minimum": 0}, "vae_decode_duration_ms": {"type": "number", "minimum": 0}}}]},
+    "measurement": {"oneOf": [{"$ref": "#/$defs/textMeasurement"}, {"$ref": "#/$defs/vlmMeasurement"}, {"$ref": "#/$defs/imageMeasurement"}, {"$ref": "#/$defs/videoMeasurement"}]},
+    "outcome": {
+      "type": "object", "additionalProperties": false, "required": ["status"],
+      "properties": {"status": {"enum": ["completed", "failed", "cancelled"]}, "failure_code": {"enum": ["model_load_oom", "runtime_oom", "unsupported_task", "invalid_model", "timeout", "user_cancelled", "runtime_error", "unknown"]}},
+      "allOf": [{"if": {"properties": {"status": {"const": "completed"}}}, "then": {"not": {"required": ["failure_code"]}}, "else": {"required": ["failure_code"]}}]
+    }
+  }
+}
