@@ -11,7 +11,8 @@ hypothesis>=6.100.0
 prometheus_client>=0.16.0
 pydantic
 fastapi>=0.100.0
-jsonschema>=4.0.0
+jsonschema>=4.18.0
+referencing>=0.28.4
 httpx
 psutil>=5.9.0
 transformers>=5.0.0,!=5.13.0,<5.16

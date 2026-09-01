@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "run_id": "12345678-1234-4abc-8def-1234567890ab",
+  "started_at": "2026-08-31T19:30:00Z", "completed_at": "2026-08-31T19:33:00Z",
+  "collector": {"name": "rapid-mlx-community-bench", "version": "0.14.0"},
+  "model": {
+    "schema_version": 1, "identity_strength": "registry_pinned", "pipeline_kind": "image_generation",
+    "components": [
+      {"component_id": "primary", "role": "primary", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "transformer"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "weights", "method": "affine", "weight_bits_x2": 8}},
+      {"component_id": "text-encoder", "role": "text_encoder", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "text_encoder"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}},
+      {"component_id": "vae", "role": "vae", "source": {"kind": "huggingface", "repo_id": "example-org/sample-image", "resolved_revision": "2222222222222222222222222222222222222222", "subfolder": "vae"}, "artifact": {"format": "safetensors", "manifest_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "manifest_basis": "huggingface_tree"}, "quantization": {"kind": "none", "base_dtype": "bfloat16"}}
+    ],
+    "identity_digest": "sha256:69e798dd8ffbe25a9d3876227056016fd692a257caf32a733b6d96472f67caf0"
+  },
+  "machine": {
+    "schema_version": 1, "profile_completeness": "complete",
+    "profile": {"chip": "Apple M4 Max", "memory_gib": 128, "cpu_cores": 16, "performance_cores": 12, "efficiency_cores": 4, "gpu_cores": 40},
+    "profile_digest": "sha256:c805ee05c006a80c867d83f59bfc157af147d9258277f1f2994d1ae1ae2703d0",
+    "os": {"name": "macOS", "version": "26.0", "architecture": "arm64"},
+    "conditions_before": {"power_source": "ac", "power_mode": "automatic", "low_power_mode": false, "thermal_state": "nominal", "memory_pressure": "normal", "available_memory_mib": 98304},
+    "conditions_after": {"power_source": "ac", "power_mode": "automatic", "low_power_mode": false, "thermal_state": "nominal", "memory_pressure": "normal", "available_memory_mib": 92160}
+  },
+  "execution": {
+    "schema_version": 1, "config_digest": "sha256:89f69f97fd129c690adb7465a7aa495e196cc66fab212c5421e45403eb9dad7c",
+    "runtime": {"distribution": "release", "rapid_mlx": "0.14.0", "mlx": "0.32.1", "mflux": "0.12.0", "python": "3.12.11"},
+    "task_type": "image_generation", "resources": {"max_concurrency": 1, "compute_dtype": "bfloat16", "offload": "none"},
+    "task": {"kind": "image_generation", "diffusion": {"attention_backend": "native", "compilation": "disabled", "vae_tiling": false, "vae_slicing": false, "denoiser_chunk_size": null}}
+  },
+  "workload": {
+    "protocol_id": "rapid-image-speed", "protocol_version": 1, "protocol_strength": "registered",
+    "protocol_digest": "sha256:176afc2f841db939d04c25b91fbd5030f349ed77f1a5adc564cc4c68666fa438", "task_type": "image_generation",
+    "dataset": {"id": "rapid-public-prompts", "version": 1, "digest": "sha256:1364a3627ef40d98e2920fe188f0941fe6f4a78ea306e4c81964e3b6b705c44c"},
+    "concurrency": 1,
+    "cases": [{"case_id": "t2i-1024-square", "warmup_rounds": 1, "measured_rounds": 1, "mode": "text_to_image", "width": 1024, "height": 1024, "steps": 20, "guidance_millionths": 3500000, "seed": 12648430, "image_count": 1}]
+  },
+  "outcome": {"status": "completed"},
+  "measurements": [{"case_id": "t2i-1024-square", "round_index": 1, "total_duration_ms": 42137.4, "peak_active_memory_mib": 25395, "completed": true, "image_count": 1, "width": 1024, "height": 1024, "text_encode_duration_ms": 312.1, "denoise_duration_ms": 39780.2, "vae_decode_duration_ms": 2045.1}]
+}

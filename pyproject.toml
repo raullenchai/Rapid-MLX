@@ -107,7 +107,7 @@ dependencies = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
     "mcp>=1.9.3",  # ClientSessionGroup: official multi-server lifecycle for chat
-    "jsonschema>=4.0.0",
+    "jsonschema>=4.18.0",
     # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
     # pure-Python package (~50 KB) wired into argparse via the magic
     # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
@@ -272,6 +272,10 @@ all = [
 # canonical source, instead of every script hand-maintaining a list.
 test = [
     "pytest>=7.0.0",
+    # Community protocol tests use jsonschema's external Registry API. Keep
+    # this explicit so a partial/no-deps test install fails instead of skipping
+    # the complete contract suite.
+    "referencing>=0.28.4",
     # pytest-asyncio is REQUIRED — pytest.ini sets `asyncio_mode = auto`,
     # which means every `async def test_*` is collected as an asyncio
     # test. Without the plugin, those tests fail at collection with
@@ -346,7 +350,8 @@ ci-linux = [
     # tests/test_ci_apple_coverage_union.py fails closed on any gap).
     "pydantic",
     "fastapi>=0.100.0",
-    "jsonschema>=4.0.0",
+    "jsonschema>=4.18.0",
+    "referencing>=0.28.4",
     "httpx",
     "psutil>=5.9.0",
     "transformers>=5.0.0,!=5.13.0,<5.16",
@@ -386,6 +391,7 @@ dev = [
     # "install dev, run pytest" workflow contributors have used since
     # day one).
     "pytest>=7.0.0",
+    "referencing>=0.28.4",
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
     'tomli>=2.0.1; python_version < "3.11"',

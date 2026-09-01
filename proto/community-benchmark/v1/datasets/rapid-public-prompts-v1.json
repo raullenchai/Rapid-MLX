@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "rapid-public-prompts",
+  "version": 1,
+  "digest": "sha256:1364a3627ef40d98e2920fe188f0941fe6f4a78ea306e4c81964e3b6b705c44c",
+  "license": "CC0-1.0",
+  "cases": [
+    {"case_id": "t2i-1024-square", "prompt_id": "still-life-composition-v1", "prompt": "A handcrafted ceramic teapot beside three red pears on a linen cloth, soft window light, neutral studio background, realistic product photography."},
+    {"case_id": "t2v-480p-81f", "prompt_id": "coastal-camera-motion-v1", "prompt": "A wide coastal cliff at sunrise as the camera slowly moves forward above the grass, ocean waves below, stable horizon, natural cinematic light."}
+  ]
+}

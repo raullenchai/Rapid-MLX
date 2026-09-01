@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "identity_strength": "registry_pinned",
+  "pipeline_kind": "text_generation",
+  "components": [{
+    "component_id": "primary", "role": "primary",
+    "source": {"kind": "huggingface", "repo_id": "example-org/qwen-27b-mlx-4bit", "resolved_revision": "0123456789abcdef0123456789abcdef01234567"},
+    "artifact": {"format": "mlx-safetensors", "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "manifest_basis": "huggingface_tree", "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "total_size_bytes": 19400000000},
+    "quantization": {"kind": "weights", "method": "affine", "weight_bits_x2": 8, "group_size": 64, "base_dtype": "bfloat16"}
+  }],
+  "identity_digest": "sha256:607097228109ff9ed05fe09c70b2e815f71bd28ae8eacec409ddde19bc9dae08"
+}

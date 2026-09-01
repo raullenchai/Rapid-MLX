@@ -3,16 +3,16 @@ flowchart LR
     model_family["ModelFamily<br/><small>partial</small>"]
     model_release["ModelRelease<br/><small>planned</small>"]
     model_variant["ModelVariant<br/><small>partial</small>"]
-    artifact["Artifact<br/><small>planned</small>"]
+    artifact["Artifact<br/><small>partial</small>"]
     capabilities["Capabilities<br/><small>partial</small>"]
     runtime_compatibility["RuntimeCompatibility<br/><small>partial</small>"]
     alias_metadata["Alias / DisplayMetadata<br/><small>partial</small>"]
     variant_qualification["VariantQualification<br/><small>planned</small>"]
   end
   subgraph lane_evidence["Machine, workload, and evidence"]
-    machine_fingerprint["MachineFingerprint<br/><small>planned</small>"]
+    machine_fingerprint["MachineFingerprint<br/><small>partial</small>"]
     machine_class["MachineClass<br/><small>planned</small>"]
-    workload_profile["WorkloadProfile<br/><small>planned</small>"]
+    workload_profile["WorkloadProfile<br/><small>partial</small>"]
     benchmark_submission["CommunityBenchmarkSubmission<br/><small>partial</small>"]
     validated_benchmark_run["ValidatedBenchmarkRun<br/><small>partial</small>"]
     benchmark_aggregate["BenchmarkAggregate<br/><small>partial</small>"]
@@ -80,14 +80,14 @@ flowchart LR
   class model_family partial
   class model_release planned
   class model_variant partial
-  class artifact planned
+  class artifact partial
   class capabilities partial
   class runtime_compatibility partial
   class alias_metadata partial
   class variant_qualification planned
-  class machine_fingerprint planned
+  class machine_fingerprint partial
   class machine_class planned
-  class workload_profile planned
+  class workload_profile partial
   class benchmark_submission partial
   class validated_benchmark_run partial
   class benchmark_aggregate partial

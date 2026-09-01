@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/model-runtime/v1/execution-config.schema.json",
+  "title": "Rapid-MLX ExecutionConfig v1",
+  "description": "Effective post-resolution runtime configuration for an LLM, VLM, image, or video run. Prompt/request choices belong to Workload, not ExecutionConfig.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "config_digest", "runtime", "task_type", "resources", "task"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "config_digest": {"$ref": "#/$defs/sha256Digest", "description": "RCJ-1 digest of {task_type, resources, task}. Runtime versions remain separate cohort axes."},
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "task_type": {"$ref": "#/$defs/taskType"},
+    "resources": {"$ref": "#/$defs/resources"},
+    "task": {
+      "oneOf": [
+        {"$ref": "#/$defs/textExecution"},
+        {"$ref": "#/$defs/vlmExecution"},
+        {"$ref": "#/$defs/imageExecution"},
+        {"$ref": "#/$defs/videoExecution"}
+      ]
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"task_type": {"const": "text_generation"}}}, "then": {"properties": {"task": {"$ref": "#/$defs/textExecution"}}}},
+    {"if": {"properties": {"task_type": {"const": "vision_language"}}}, "then": {"properties": {"task": {"$ref": "#/$defs/vlmExecution"}}}},
+    {"if": {"properties": {"task_type": {"const": "image_generation"}}}, "then": {"properties": {"task": {"$ref": "#/$defs/imageExecution"}}}},
+    {"if": {"properties": {"task_type": {"const": "video_generation"}}}, "then": {"properties": {"task": {"$ref": "#/$defs/videoExecution"}}}}
+  ],
+  "$defs": {
+    "sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "versionString": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]*$"},
+    "taskType": {"enum": ["text_generation", "vision_language", "image_generation", "video_generation"]},
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["distribution", "rapid_mlx", "mlx", "python"],
+      "properties": {
+        "distribution": {"enum": ["release", "source"]},
+        "rapid_mlx": {"$ref": "#/$defs/versionString"},
+        "mlx": {"$ref": "#/$defs/versionString"},
+        "mlx_lm": {"$ref": "#/$defs/versionString"},
+        "mlx_vlm": {"$ref": "#/$defs/versionString"},
+        "mflux": {"$ref": "#/$defs/versionString"},
+        "python": {"$ref": "#/$defs/versionString"},
+        "rapid_mlx_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      },
+      "allOf": [{"if": {"properties": {"distribution": {"const": "source"}}}, "then": {"required": ["rapid_mlx_revision"]}, "else": {"not": {"required": ["rapid_mlx_revision"]}}}]
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_concurrency"],
+      "properties": {
+        "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "wired_memory_limit_mib": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+        "compute_dtype": {"enum": ["float32", "float16", "bfloat16", "mixed", "unknown"]},
+        "offload": {"enum": ["none", "memory", "disk", "hybrid"]}
+      }
+    },
+    "speculative": {
+      "type": "object", "additionalProperties": false, "required": ["method"],
+      "properties": {
+        "method": {"enum": ["none", "mtp", "draft_model", "dflash", "ddtree", "dspark", "suffix"]},
+        "max_draft_tokens": {"type": "integer", "minimum": 1, "maximum": 64},
+        "assistant_source": {"enum": ["embedded_head", "external_model"], "description": "For MTP, whether predictions come from weights embedded in the target model or a separately identified assistant model."},
+        "draft_model_identity_digest": {"$ref": "#/$defs/sha256Digest"}
+      },
+      "allOf": [
+        {"if": {"properties": {"method": {"const": "none"}}}, "then": {"not": {"anyOf": [{"required": ["max_draft_tokens"]}, {"required": ["assistant_source"]}, {"required": ["draft_model_identity_digest"]}]}}, "else": {"required": ["max_draft_tokens"]}},
+        {"if": {"properties": {"method": {"const": "mtp"}}}, "then": {"required": ["assistant_source"]}, "else": {"not": {"required": ["assistant_source"]}}},
+        {"if": {"properties": {"method": {"const": "mtp"}, "assistant_source": {"const": "external_model"}}, "required": ["method", "assistant_source"]}, "then": {"required": ["draft_model_identity_digest"]}},
+        {"if": {"properties": {"method": {"const": "mtp"}, "assistant_source": {"const": "embedded_head"}}, "required": ["method", "assistant_source"]}, "then": {"not": {"required": ["draft_model_identity_digest"]}}},
+        {"if": {"properties": {"method": {"enum": ["draft_model", "dflash", "ddtree", "dspark"]}}}, "then": {"required": ["draft_model_identity_digest"]}}
+      ]
+    },
+    "kvCache": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "dtype"],
+      "properties": {
+        "mode": {"enum": ["full_precision", "quantized"]},
+        "dtype": {"enum": ["float32", "float16", "bfloat16", "q8", "q6", "q4", "q3", "q2", "other", "unknown"]},
+        "bits_x2": {"type": "integer", "minimum": 2, "maximum": 64},
+        "group_size": {"type": "integer", "minimum": 1, "maximum": 4096}
+      },
+      "allOf": [{
+        "if": {"properties": {"mode": {"const": "quantized"}}, "required": ["mode"]},
+        "then": {"required": ["bits_x2", "group_size"], "properties": {"dtype": {"enum": ["q8", "q6", "q4", "q3", "q2", "other"]}}},
+        "else": {"properties": {"dtype": {"enum": ["float32", "float16", "bfloat16"]}}, "not": {"anyOf": [{"required": ["bits_x2"]}, {"required": ["group_size"]}]}}
+      }]
+    },
+    "languageFeatures": {
+      "type": "object", "additionalProperties": false,
+      "required": ["context_length", "speculative_decoding", "kv_cache", "prefix_cache_enabled", "prefill_backend"],
+      "properties": {
+        "context_length": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "speculative_decoding": {"$ref": "#/$defs/speculative"},
+        "kv_cache": {"$ref": "#/$defs/kvCache"},
+        "prefix_cache_enabled": {"type": "boolean"},
+        "prefill_backend": {"enum": ["gpu", "cpu", "hybrid"]},
+        "prefill_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "mediaInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["preprocess_backend", "encoder_cache_enabled"],
+      "properties": {
+        "preprocess_backend": {"enum": ["cpu", "gpu", "hybrid"]},
+        "encoder_cache_enabled": {"type": "boolean"}
+      }
+    },
+    "textExecution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "language"],
+      "properties": {"kind": {"const": "text_generation"}, "language": {"$ref": "#/$defs/languageFeatures"}}
+    },
+    "vlmExecution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "language", "media_input"],
+      "properties": {"kind": {"const": "vision_language"}, "language": {"$ref": "#/$defs/languageFeatures"}, "media_input": {"$ref": "#/$defs/mediaInput"}}
+    },
+    "diffusionFeatures": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attention_backend", "compilation", "vae_tiling", "vae_slicing"],
+      "properties": {
+        "attention_backend": {"enum": ["native", "split_einsum", "flash", "other"]},
+        "compilation": {"enum": ["disabled", "enabled"]},
+        "vae_tiling": {"type": "boolean"},
+        "vae_slicing": {"type": "boolean"},
+        "denoiser_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "imageExecution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "diffusion"],
+      "properties": {"kind": {"const": "image_generation"}, "diffusion": {"$ref": "#/$defs/diffusionFeatures"}}
+    },
+    "videoExecution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "diffusion", "temporal_chunking"],
+      "properties": {
+        "kind": {"const": "video_generation"},
+        "diffusion": {"$ref": "#/$defs/diffusionFeatures"},
+        "temporal_chunking": {
+          "type": "object", "additionalProperties": false, "required": ["enabled"],
+          "properties": {"enabled": {"type": "boolean"}, "frames_per_chunk": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}},
+          "allOf": [{"if": {"properties": {"enabled": {"const": true}}}, "then": {"required": ["frames_per_chunk"]}, "else": {"not": {"required": ["frames_per_chunk"]}}}]
+        }
+      }
+    }
+  }
+}
