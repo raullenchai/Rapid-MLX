@@ -260,6 +260,13 @@ def _make_scheduler_with_stub_cache(stub_cache):
     sched.num_prefix_cache_pressure_evictions = 0
     sched._metal_cap_bytes = 0
     sched._metal_cap_bytes_resolved = True
+    # The resolved-cap short-circuit also checks the process-wide
+    # utilization-ratchet generation (#2858); pin the stub to the current
+    # generation so the pre-resolved cap of 0 keeps meaning "disabled"
+    # instead of tripping a re-resolve against the missing attribute.
+    from vllm_mlx.memory_budget import process_utilization_floor
+
+    _, sched._metal_cap_floor_generation = process_utilization_floor()
     return sched
 
 
