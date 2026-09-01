@@ -210,7 +210,8 @@ private enum CommunityBenchmarkCommand {
 struct CommunityBenchmarkView: View {
     let catalog: [ModelEntry]
     let binary: URL?
-    let stopServer: () async -> Void
+    let prepareServer: () async -> Void
+    let releaseServer: () -> Void
 
     @State private var selectedAlias = ""
     @State private var results: [CommunityBenchmarkResult] = []
@@ -357,7 +358,8 @@ struct CommunityBenchmarkView: View {
         errorMessage = nil
         isRunning = true
         runTask = Task {
-            await stopServer()
+            await prepareServer()
+            defer { releaseServer() }
             guard !Task.isCancelled else {
                 isRunning = false
                 runTask = nil

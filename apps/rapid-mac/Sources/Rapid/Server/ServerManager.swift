@@ -691,6 +691,13 @@ final class ServerManager {
     /// first into spawning a duplicate child.
     private(set) var isOperating: Bool = false
 
+    /// Prevents any model launch while Community Benchmark owns unified
+    /// memory. The reservation begins before the current child is stopped and
+    /// remains active until the benchmark subprocess exits, closing the gap
+    /// where an auto-start or model selection could otherwise race a second
+    /// model into memory.
+    private var communityBenchmarkReserved = false
+
     /// Owns the cancellable `serve --help` capability probe between catalog
     /// resolution and the atomic spawn section. `start()` is MainActor-
     /// reentrant across the probe await, so this token prevents a second
@@ -1654,6 +1661,7 @@ final class ServerManager {
         catalogEntryHint: CatalogEntryHint? = nil,
         videoOutputDirectory: String? = nil
     ) async -> Bool {
+        guard !communityBenchmarkReserved else { return false }
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         var catalogGeneration = downloads?.cacheGeneration ?? 0
@@ -2418,6 +2426,7 @@ final class ServerManager {
         videoOutputDirectory: String? = nil,
         estimatedMemoryGB: Double? = nil
     ) async {
+        guard !communityBenchmarkReserved else { return }
         // Issue #278: a manual restart is the user taking over the
         // lifecycle — reset the budget at entry so a previously
         // exhausted counter doesn't make a quick post-restart crash
@@ -2573,7 +2582,7 @@ final class ServerManager {
             // and ``start`` would happily spawn a NEW child the user
             // just clicked Stop on. Bail before doing any further
             // work — every later check is gated on the same Task.
-            if Task.isCancelled { return }
+            if Task.isCancelled || communityBenchmarkReserved { return }
             if didSignalShutdown { return }
             // codex r1 BLOCKING: the await above is a MainActor
             // suspension point and ``start(alias:)`` is reentrant. A
@@ -2622,7 +2631,7 @@ final class ServerManager {
             probed: probedCatalogEntry,
             hint: catalogProvenStartEntries[trimmedAlias.lowercased()]?.entry
         )
-        if Task.isCancelled || didSignalShutdown { return }
+        if Task.isCancelled || didSignalShutdown || communityBenchmarkReserved { return }
         guard !isOperating, child == nil else { return }
         let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
             forAlias: trimmedAlias,
@@ -2633,7 +2642,7 @@ final class ServerManager {
             return
         }
         guard !Task.isCancelled, !didSignalShutdown,
-              !isOperating, child == nil else {
+              !communityBenchmarkReserved, !isOperating, child == nil else {
             releaseRuntimeProbe(runtimeProbe.id)
             return
         }
@@ -3169,6 +3178,28 @@ final class ServerManager {
         await stop(preservingLastServedAlias: false)
     }
 
+    /// Reserve the server lifecycle for a local Community Benchmark and
+    /// return only after no embedded model process can contend for unified
+    /// memory. A start already inside its short spawn critical section is
+    /// allowed to finish atomically, then is stopped here; starts suspended in
+    /// pre-spawn work observe ``communityBenchmarkReserved`` before launch.
+    func prepareForCommunityBenchmark() async {
+        communityBenchmarkReserved = true
+        cancelAutoRespawn()
+        cancelRuntimeProbe()
+        while isOperating {
+            await Task.yield()
+        }
+        await stop(preservingLastServedAlias: false)
+    }
+
+    /// Release the lifecycle reservation after the benchmark subprocess has
+    /// exited. The prior model is intentionally not auto-restored in the
+    /// internal beta; the user can start it again explicitly.
+    func finishCommunityBenchmark() {
+        communityBenchmarkReserved = false
+    }
+
     /// Shared expected-stop path. Model replacement keeps the previous
     /// known-good alias until the replacement reaches ``.ready`` and writes
     /// its own alias; a user-facing Stop continues to clear it immediately.
@@ -3289,7 +3320,8 @@ final class ServerManager {
     private func claimRuntimeCapabilitiesForStart(
         binary: URL
     ) async -> (id: UUID, capabilities: ServerRuntimeCapabilities)? {
-        guard runtimeProbeOperation == nil, !isOperating, child == nil,
+        guard !communityBenchmarkReserved, runtimeProbeOperation == nil,
+              !isOperating, child == nil,
               !didSignalShutdown else { return nil }
         let id = UUID()
         let provider = runtimeCapabilitiesProvider

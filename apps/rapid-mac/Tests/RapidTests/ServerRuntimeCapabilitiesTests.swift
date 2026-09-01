@@ -216,6 +216,34 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(await witness.wasCancelled)
     }
 
+    @Test("Community Benchmark cancels pre-spawn work and reserves lifecycle")
+    @MainActor
+    func benchmarkReservationCancelsStartRace() async {
+        let witness = RuntimeProbeCancellationWitness()
+        let binary = URL(fileURLWithPath: "/usr/bin/true")
+        let manager = ServerManager(testingState: .idle, binaryPath: binary)
+        manager.runtimeCapabilitiesProvider = { _ in
+            await witness.run()
+        }
+        let probe = Task { @MainActor in
+            await manager._testProbeRuntimeCapabilitiesForStart(binary: binary)
+        }
+
+        await witness.waitUntilEntered()
+        await manager.prepareForCommunityBenchmark()
+
+        #expect(await probe.value == nil)
+        #expect(await witness.wasCancelled)
+        #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
+        #expect(await manager.ensureServing(alias: "qwen3.5-4b") == false)
+
+        manager.finishCommunityBenchmark()
+        manager.runtimeCapabilitiesProvider = { _ in .allKnown }
+        #expect(
+            await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == .allKnown
+        )
+    }
+
     @Test("probe bounds a descendant that retains the output pipe")
     func probeBoundsRetainedOutputPipe() async throws {
         let runtime = try makeRuntimeScript(retainedOutputPipe: true)

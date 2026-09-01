@@ -1142,7 +1142,8 @@ struct ContentView: View {
             CommunityBenchmarkView(
                 catalog: catalogEntries,
                 binary: server.binaryPath,
-                stopServer: { await server.stop() }
+                prepareServer: { await server.prepareForCommunityBenchmark() },
+                releaseServer: { server.finishCommunityBenchmark() }
             )
         }
     }
