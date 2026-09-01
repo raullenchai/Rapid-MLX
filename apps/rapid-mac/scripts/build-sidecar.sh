@@ -60,6 +60,9 @@ PBS_VERSION="${PBS_VERSION:-3.12.13}"
 # compileall uses all cores by default. Restricted builders that cannot query
 # process semaphore limits can set this to 1 without changing bundle contents.
 COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
+FFMPEG_VERSION="7.1.5"
+FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+FFMPEG_BUILD_JOBS="${FFMPEG_BUILD_JOBS:-4}"
 
 # How many Mach-Os we expect to sign. A drift here means a new wheel
 # added a .so OR a dependency moved a binary, both of which need
@@ -103,9 +106,9 @@ COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
 #
 # NOTE: the 174 above was itself stale — a pre-change bundle measures 173, so
 # the committed baseline had drifted by one and was being masked by
-# MACHO_TOLERANCE. 172 is the directly measured post-trim count (173 - 1),
-# not 174 - 1.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-172}"
+# MACHO_TOLERANCE. The libpython trim brought that to 172; the bounded FFmpeg
+# executable added here brings the directly measured baseline back to 173.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-173}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
@@ -168,6 +171,10 @@ require curl
 require tar
 require codesign
 require shasum
+require make
+require otool
+require strip
+require xcrun
 
 if [ ! -f "$ENTITLEMENTS" ] && [ "$SKIP_CODESIGN" != "1" ]; then
     echo "ERR: entitlements file missing at $ENTITLEMENTS" >&2
@@ -244,6 +251,91 @@ echo "==> extracting python interpreter"
 tar -xzf "$PBS_TAR" -C "$STAGE"
 test -x "$STAGE/python/bin/python3.12" \
     || { echo "ERR: extracted python is missing executable" >&2; exit 1; }
+
+# ----- step 1.5: minimal LGPL ffmpeg ----------------------------------
+
+# Video generation needs raw-RGB encoding plus MP4 crop/remux. Build only
+# those codecs and Apple VideoToolbox; the ordinary prebuilt distributions
+# include GPL codecs and tens of megabytes of unrelated network/protocol
+# surface. The exact corresponding source archive travels in the app.
+FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_TAR="/tmp/rapid-ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_TAR_TMP="${FFMPEG_TAR}.tmp"
+if [ -f "$FFMPEG_TAR" ]; then
+    CACHED_FFMPEG_SHA="$(shasum -a 256 "$FFMPEG_TAR" | awk '{print $1}')"
+    if [ "$CACHED_FFMPEG_SHA" != "$FFMPEG_SHA256" ] \
+        || ! tar -tJf "$FFMPEG_TAR" > /dev/null 2>&1; then
+        echo "warning: discarding invalid FFmpeg source cache" >&2
+        rm -f "$FFMPEG_TAR"
+    fi
+fi
+if [ ! -f "$FFMPEG_TAR" ]; then
+    echo "==> downloading FFmpeg $FFMPEG_VERSION source"
+    rm -f "$FFMPEG_TAR_TMP"
+    curl --http1.1 -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+        -o "$FFMPEG_TAR_TMP" "$FFMPEG_URL"
+    DOWNLOADED_FFMPEG_SHA="$(shasum -a 256 "$FFMPEG_TAR_TMP" | awk '{print $1}')"
+    if [ "$DOWNLOADED_FFMPEG_SHA" != "$FFMPEG_SHA256" ] \
+        || ! tar -tJf "$FFMPEG_TAR_TMP" > /dev/null 2>&1; then
+        echo "ERR: FFmpeg source archive failed integrity validation" >&2
+        rm -f "$FFMPEG_TAR_TMP"
+        exit 1
+    fi
+    mv "$FFMPEG_TAR_TMP" "$FFMPEG_TAR"
+fi
+
+echo "==> building minimal LGPL FFmpeg with VideoToolbox"
+(
+    set -e
+    FFMPEG_BUILD_DIR="$(mktemp -d -t rapid-ffmpeg-build.XXXXXX)"
+    trap 'rm -rf "$FFMPEG_BUILD_DIR"' EXIT INT TERM
+    tar -xJf "$FFMPEG_TAR" -C "$FFMPEG_BUILD_DIR"
+    cd "$FFMPEG_BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
+    MACOSX_DEPLOYMENT_TARGET=14.0 ./configure \
+        --disable-everything \
+        --disable-doc \
+        --disable-debug \
+        --disable-network \
+        --disable-autodetect \
+        --disable-shared \
+        --disable-swresample \
+        --enable-ffmpeg \
+        --enable-avcodec \
+        --enable-avformat \
+        --enable-avfilter \
+        --enable-swscale \
+        --enable-protocol=file,pipe \
+        --enable-demuxer=mov,rawvideo \
+        --enable-muxer=mov,mp4 \
+        --enable-decoder=h264,rawvideo \
+        --enable-parser=h264 \
+        --enable-encoder=h264_videotoolbox \
+        --enable-filter=crop,format,scale \
+        --enable-videotoolbox > /dev/null
+    if ! MACOSX_DEPLOYMENT_TARGET=14.0 make -j "$FFMPEG_BUILD_JOBS" ffmpeg \
+        > ffmpeg-build.log 2>&1; then
+        echo "ERR: minimal FFmpeg build failed; compiler tail:" >&2
+        tail -n 200 ffmpeg-build.log >&2
+        exit 1
+    fi
+    strip -x ffmpeg
+    cp ffmpeg "$STAGE/bin/ffmpeg"
+    mkdir -p "$STAGE/licenses/sources"
+    cp COPYING.LGPLv2.1 "$STAGE/licenses/FFmpeg-LGPL-2.1.txt"
+    cp "$FFMPEG_TAR" "$STAGE/licenses/sources/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+)
+chmod +x "$STAGE/bin/ffmpeg"
+otool -l "$STAGE/bin/ffmpeg" | grep -q 'minos 14.0' || {
+    echo "ERR: bundled FFmpeg does not target Desktop's macOS 14 minimum" >&2
+    exit 1
+}
+FFMPEG_CONFIG="$("$STAGE/bin/ffmpeg" -version | sed -n '2p')"
+case "$FFMPEG_CONFIG" in
+    *--enable-gpl*|*--enable-nonfree*)
+        echo "ERR: bundled FFmpeg unexpectedly enables GPL/nonfree components" >&2
+        exit 1
+        ;;
+esac
 
 # ----- step 2: install rapid-mlx + runtime deps ------------------------
 
@@ -485,6 +577,86 @@ importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
 if "torch" in sys.modules:
     raise SystemExit("ERR: mflux still pulls torch at import time")
 print("==> mflux image lane imports without torch: OK")
+PY
+
+# ----- step 2.7: bundle minimal video runtime --no-deps ---------------
+#
+# The full [video] extra pulls OpenCV and a second, conflicting vision stack.
+# Desktop already carries every dependency reached by LTX-2.3 and Wan except
+# these two small pure-Python distributions. Encoding is routed through the
+# first-party bridge and the minimal FFmpeg above, so OpenCV/imageio remain
+# absent from the signed app.
+echo "==> bundling minimal LTX/Wan video runtime (no OpenCV)"
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    --constraint "$SIDECAR_CONSTRAINTS" \
+    'mlx-video-with-audio' \
+    'mlx-arsenal'
+
+# Upstream 0.1.36 writes MP4 through optional OpenCV/imageio. Replace only
+# the two pinned encoder seams with Rapid's atomic VideoToolbox bridge. Hashes
+# make an upstream reshaping a hard build failure instead of a guessed patch.
+"$STAGE/python/bin/python3.12" - "$STAGE/site-packages" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+ltx = root / "mlx_video/generate_av.py"
+wan = root / "mlx_video/models/wan/postprocess.py"
+expected = {
+    ltx: "df0b12b32639815bb53bc1803e00fa0fa5ecfcbbc3ecc1f81c2817f9494a4687",
+    wan: "772904d1447ab109417141c6cbde43561cb32eb4f800f66d50a4b83b0ab877ff",
+}
+for path, digest in expected.items():
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(
+            f"ERR: pinned video runtime changed at {path}; "
+            "re-audit the OpenCV-free encoder patch"
+        )
+
+ltx_source = ltx.read_text()
+old = '''    try:
+        import cv2
+
+        h, w = video_np.shape[1], video_np.shape[2]
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        out = cv2.VideoWriter(str(temp_video_path), fourcc, fps, (w, h))
+        for frame in video_np:
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        out.release()
+        print(f"{Colors.GREEN}✅ Video encoded{Colors.RESET}")
+    except Exception as e:
+        print(f"{Colors.RED}❌ Video encoding failed: {e}{Colors.RESET}")
+        return None, None
+'''
+new = '''    try:
+        from vllm_mlx.video.encoding import encode_rgb_video
+
+        encode_rgb_video(video_np, temp_video_path, fps)
+        print(f"{Colors.GREEN}✅ Video encoded{Colors.RESET}")
+    except Exception as e:
+        print(f"{Colors.RED}❌ Video encoding failed: {e}{Colors.RESET}")
+        return None, None
+'''
+if ltx_source.count(old) != 1:
+    raise SystemExit("ERR: LTX encoder block no longer matches the audited patch")
+ltx.write_text(ltx_source.replace(old, new, 1))
+
+wan.write_text('''import numpy as np
+
+
+def save_video(frames: np.ndarray, output_path: str, fps: int = 16):
+    """Save RGB video frames through Rapid's bundled VideoToolbox bridge."""
+    from vllm_mlx.video.encoding import encode_rgb_video
+
+    encode_rgb_video(frames, output_path, fps)
+''')
+print("==> mlx-video encoders routed through bundled FFmpeg: OK")
 PY
 
 # ``--no-deps`` is intentional for bundle size, but it must not hide version
@@ -837,6 +1009,7 @@ trap 'rm -f "$MACHOS_LIST"' EXIT INT TERM
 {
     find "$STAGE" -type f \( -name '*.so' -o -name '*.dylib' \)
     echo "$STAGE/python/bin/python3.12"
+    echo "$STAGE/bin/ffmpeg"
 } > "$MACHOS_LIST"
 MACHO_COUNT="$(wc -l < "$MACHOS_LIST" | tr -d ' ')"
 echo "    found $MACHO_COUNT Mach-Os (baseline $MACHO_BASELINE_COUNT, tolerance $MACHO_TOLERANCE)"
@@ -997,6 +1170,42 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
         exit 3
     }
     echo "    audio import: $AUDIO_OUT"
+
+    VIDEO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        PYTHONHOME="$STAGE/python" \
+        PYTHONPATH="$STAGE/site-packages" \
+        PYTHONNOUSERSITE=1 \
+        FFMPEG_BINARY="$STAGE/bin/ffmpeg" \
+        "$STAGE/python/bin/python3.12" -s -c \
+        'import importlib.util
+import tempfile
+from pathlib import Path
+import numpy as np
+import mlx_video
+from mlx_video import generate_video_with_audio
+from mlx_video.generate_wan import generate_video
+from vllm_mlx.runtime.video_lane import VideoEngine
+from vllm_mlx.video.encoding import encode_rgb_video
+assert importlib.util.find_spec("cv2") is None
+assert importlib.util.find_spec("imageio") is None
+with tempfile.TemporaryDirectory() as directory:
+    output = Path(directory) / "smoke.mp4"
+    encode_rgb_video(np.zeros((2, 32, 16, 3), dtype=np.uint8), output, 2)
+    VideoEngine._crop_generated_output(
+        output_path=output,
+        width=16,
+        height=32,
+        output_width=16,
+        output_height=16,
+        family="smoke",
+    )
+    assert output.stat().st_size > 0
+print("mlx_video minimal runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
+        echo "ERR: bundled video runtime or encoder smoke failed:" >&2
+        echo "$VIDEO_OUT" >&2
+        exit 3
+    }
+    echo "    video runtime: $VIDEO_OUT"
 
     # codex r3 B1: capture inside an `if` instead of separate
     # `X=$(...); RC=$?` lines — under `set -e`, a command-substitution
