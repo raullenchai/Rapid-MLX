@@ -39,9 +39,12 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
             } else if entry.taskTypes.contains(.textGeneration) {
                 task = .textGeneration
             } else if entry.taskTypes.isEmpty {
+                // A pre-atomic Desktop row has no capability evidence. Text
+                // keeps its historical fallback, but diffusion/video rows
+                // must not advertise a registered protocol based on `kind`
+                // alone: the shared CLI may reject their operation/family.
                 switch entry.kind {
-                case .image: task = .imageGeneration
-                case .video: task = .videoGeneration
+                case .image, .video: task = nil
                 case .chat: task = .textGeneration
                 case .audio: task = nil
                 }

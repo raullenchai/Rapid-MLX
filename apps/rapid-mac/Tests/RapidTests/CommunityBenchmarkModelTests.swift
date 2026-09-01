@@ -52,6 +52,40 @@ struct CommunityBenchmarkModelTests {
         #expect(model.protocolName == "Rapid Community Speed v1")
     }
 
+    @Test("Legacy diffusion kinds cannot invent registered protocol eligibility")
+    func legacyDiffusionFallbackIsConservative() {
+        let image = ModelEntry(
+            alias: "legacy-image",
+            hfRepo: "mlx-community/legacy-image",
+            sizeOnDisk: nil,
+            cached: true,
+            kind: .image
+        )
+        let video = ModelEntry(
+            alias: "ltx-2.3-mlx-q4",
+            hfRepo: "mlx-community/ltx",
+            sizeOnDisk: nil,
+            cached: true,
+            kind: .video
+        )
+
+        #expect(CommunityBenchmarkModel.models(from: [image, video]).isEmpty)
+    }
+
+    @Test("Atomic non-Wan video remains excluded from the Wan protocol")
+    func nonWanAtomicVideoIsExcluded() {
+        let ltx = ModelEntry(
+            alias: "ltx-2.3-mlx-q4",
+            hfRepo: "mlx-community/ltx",
+            sizeOnDisk: nil,
+            cached: true,
+            taskTypes: [.videoGeneration],
+            operationModes: [.textToVideo]
+        )
+
+        #expect(CommunityBenchmarkModel.models(from: [ltx]).isEmpty)
+    }
+
     @Test("CLI planning metadata is the shared memory-fit authority")
     func planningMetadata() throws {
         let image = ModelEntry(
