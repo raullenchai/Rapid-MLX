@@ -218,7 +218,7 @@ struct ServerRuntimeCapabilitiesTests {
 
     @Test("Community Benchmark cancels pre-spawn work and reserves lifecycle")
     @MainActor
-    func benchmarkReservationCancelsStartRace() async {
+    func benchmarkReservationCancelsStartRace() async throws {
         let witness = RuntimeProbeCancellationWitness()
         let binary = URL(fileURLWithPath: "/usr/bin/true")
         let manager = ServerManager(testingState: .idle, binaryPath: binary)
@@ -230,10 +230,10 @@ struct ServerRuntimeCapabilitiesTests {
         }
 
         await witness.waitUntilEntered()
-        let firstReservation = await manager.prepareForCommunityBenchmark()
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
         var secondAcquired = false
         let secondOwner = Task { @MainActor in
-            let reservation = await manager.prepareForCommunityBenchmark()
+            let reservation = try await manager.prepareForCommunityBenchmark()
             secondAcquired = true
             return reservation
         }
@@ -245,10 +245,16 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
         #expect(await manager.ensureServing(alias: "qwen3.5-4b") == false)
 
+        secondOwner.cancel()
+        do {
+            _ = try await secondOwner.value
+            Issue.record("cancelled queued benchmark unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: cancellation removes and resumes the queued waiter.
+        }
+        #expect(!secondAcquired)
+
         manager.finishCommunityBenchmark(firstReservation)
-        let secondReservation = await secondOwner.value
-        #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
-        manager.finishCommunityBenchmark(secondReservation)
         manager.runtimeCapabilitiesProvider = { _ in .allKnown }
         #expect(
             await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == .allKnown

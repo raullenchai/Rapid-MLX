@@ -116,7 +116,7 @@
       "type": "object", "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed"],
       "properties": {
         "case_id": {"type": "string", "minLength": 1, "maxLength": 64}, "round_index": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
-        "total_duration_ms": {"type": "number", "minimum": 0}, "peak_active_memory_mib": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "completed": {"type": "boolean"}
+        "total_duration_ms": {"type": "number", "minimum": 0}, "peak_active_memory_mib": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991}, "completed": {"type": "boolean"}
       }
     },
     "textMeasurement": {"allOf": [{"$ref": "#/$defs/measurementBase"}, {"type": "object", "additionalProperties": false, "required": ["case_id", "round_index", "total_duration_ms", "peak_active_memory_mib", "completed", "prompt_tokens", "output_tokens", "ttft_ms", "decode_duration_ms"], "properties": {"case_id": true, "round_index": true, "total_duration_ms": true, "peak_active_memory_mib": true, "completed": true, "prompt_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "output_tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "ttft_ms": {"type": "number", "minimum": 0}, "decode_duration_ms": {"type": "number", "minimum": 0}}}]},

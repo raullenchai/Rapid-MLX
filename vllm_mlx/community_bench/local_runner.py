@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import math
 import time
 from typing import Any
 
@@ -45,14 +46,18 @@ def _failure_code(error: Exception) -> str:
     return "runtime_error"
 
 
-def _peak_memory_mib(base_url: str) -> int:
+def _peak_memory_mib(base_url: str) -> int | None:
     try:
         response = requests.get(f"{base_url}/status", timeout=5)
         response.raise_for_status()
         peak = response.json().get("metal", {}).get("peak_memory_gb")
-        return max(0, round(float(peak) * 1024)) if peak is not None else 0
+        value = float(peak)
+        if not math.isfinite(value) or value <= 0:
+            return None
+        # `/status` reports decimal GB (bytes / 1e9); the contract stores MiB.
+        return round(value * 1_000_000_000 / (1 << 20))
     except (requests.RequestException, TypeError, ValueError):
-        return 0
+        return None
 
 
 def _run_image(
@@ -211,7 +216,7 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
     workload = registered_workload("text_generation")
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []
-    peak = result.peak_ram_mb or 0
+    peak = result.peak_ram_mb
     for case, bucket in zip(workload["cases"], buckets, strict=True):
         for index, round_result in enumerate(bucket.rounds_raw, start=1):
             decode_ms = (

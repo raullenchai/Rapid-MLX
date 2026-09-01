@@ -35,6 +35,7 @@ records rather than parse legacy submission JSON.
   benchmark CLI's entire process group, including its child server. Desktop's
   hidden supervisor flag keeps that server in the owned group; navigation away
   cancels the run, and a replacement view waits for the prior lease to drain.
+  A cancelled queued view is removed immediately rather than acquiring later.
 - A completed run always contains its atomic `MachineObservation`. If the
   privacy-allowlisted machine probe itself fails, the local failed attempt uses
   `machine_probe_failed` and omits `machine` rather than fabricating identity;
@@ -56,6 +57,9 @@ records rather than parse legacy submission JSON.
   The atomic runner uses the dataset's xorshift32 golden algorithm and passes
   its IDs directly to the engine; legacy `rapid-mlx bench` keeps its historical
   decoded-text generator until that separate submission format is migrated.
+- Peak memory uses the status endpoint's decimal-GB definition converted to
+  MiB (`GB × 1e9 / 2^20`). Missing metrics remain JSON `null`; zero is never
+  used as a stand-in for unavailable evidence.
 
 ## Product flow
 

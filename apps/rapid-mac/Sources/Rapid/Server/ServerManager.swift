@@ -698,7 +698,11 @@ final class ServerManager {
     /// model into memory.
     private var communityBenchmarkReservations: Set<UUID> = []
     private var communityBenchmarkWaiters: [
-        (reservation: UUID, continuation: CheckedContinuation<UUID, Never>)
+        (
+            id: UUID,
+            reservation: UUID,
+            continuation: CheckedContinuation<UUID, any Error>
+        )
     ] = []
 
     private var communityBenchmarkReserved: Bool {
@@ -3190,17 +3194,30 @@ final class ServerManager {
     /// memory. A start already inside its short spawn critical section is
     /// allowed to finish atomically, then is stopped here; starts suspended in
     /// pre-spawn work observe ``communityBenchmarkReserved`` before launch.
-    func prepareForCommunityBenchmark() async -> UUID {
+    func prepareForCommunityBenchmark() async throws -> UUID {
         // A second view instance can appear while the first is still reaping
         // its cancelled subprocess. Serialize benchmark ownership so two
         // heavyweight local runners never overlap in unified memory.
         let reservation = UUID()
         if communityBenchmarkReserved {
-            _ = await withCheckedContinuation { continuation in
-                communityBenchmarkWaiters.append((reservation, continuation))
+            let waiterID = UUID()
+            _ = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    communityBenchmarkWaiters.append(
+                        (waiterID, reservation, continuation)
+                    )
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.cancelCommunityBenchmarkWaiter(waiterID)
+                }
             }
         } else {
             communityBenchmarkReservations.insert(reservation)
+        }
+        if Task.isCancelled {
+            finishCommunityBenchmark(reservation)
+            throw CancellationError()
         }
         cancelAutoRespawn()
         cancelRuntimeProbe()
@@ -3209,6 +3226,14 @@ final class ServerManager {
         }
         await stop(preservingLastServedAlias: false)
         return reservation
+    }
+
+    private func cancelCommunityBenchmarkWaiter(_ id: UUID) {
+        guard let index = communityBenchmarkWaiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = communityBenchmarkWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     /// Release the lifecycle reservation after the benchmark subprocess has

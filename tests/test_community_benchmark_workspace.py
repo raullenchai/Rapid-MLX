@@ -102,6 +102,23 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     assert plan["privacy"] == {"storage": "local", "uploads": False}
 
 
+@pytest.mark.parametrize(
+    ("decimal_gb", "expected_mib"),
+    [(8, 7629), (12.5, 11921), (0, None), (None, None)],
+)
+def test_peak_memory_converts_decimal_gb_and_preserves_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    decimal_gb: float | None,
+    expected_mib: int | None,
+) -> None:
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: _Response({"metal": {"peak_memory_gb": decimal_gb}}),
+    )
+    assert local_runner._peak_memory_mib("http://local/v1") == expected_mib
+
+
 def _image_run() -> dict:
     return build_run(
         repo_id="mlx-community/example-image-model",
@@ -184,6 +201,12 @@ def test_completed_run_requires_every_declared_round() -> None:
     run["measurements"] = []
     with pytest.raises(ValueError, match="measurements"):
         BenchmarkRunValidator().validate(run)
+
+
+def test_completed_run_can_mark_peak_memory_unavailable() -> None:
+    run = _image_run()
+    run["measurements"][0]["peak_active_memory_mib"] = None
+    BenchmarkRunValidator().validate(run)
 
 
 def test_registered_text_run_rejects_actual_token_count_drift() -> None:
@@ -354,7 +377,7 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
             "case_id": "t2i-1024-square",
             "round_index": 1,
             "total_duration_ms": 2500.0,
-            "peak_active_memory_mib": 8192,
+            "peak_active_memory_mib": 7629,
             "completed": True,
             "image_count": 1,
             "width": 1024,
@@ -418,7 +441,7 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         "case_id": "t2v-480p-81f",
         "round_index": 1,
         "total_duration_ms": 5000.0,
-        "peak_active_memory_mib": 12800,
+        "peak_active_memory_mib": 11921,
         "completed": True,
         "frames": 81,
         "width": 832,
