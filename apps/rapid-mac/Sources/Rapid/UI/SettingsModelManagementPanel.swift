@@ -1432,6 +1432,24 @@ struct SettingsModelManagementPanel: View {
 
     // MARK: - Actions
 
+    /// Load an atomic product snapshot only from a stable cache epoch.
+    /// Downloads can finish while the CLI probes are suspended; retrying here
+    /// prevents that older result from landing after the completion-triggered
+    /// refresh and turning an on-disk row back into Download.
+    @MainActor
+    static func stableAtomicCatalogSnapshot(
+        currentGeneration: @escaping @MainActor () -> UInt,
+        loader: @escaping @MainActor () async -> [ModelEntry]?
+    ) async -> [ModelEntry]? {
+        while !Task.isCancelled {
+            let generation = currentGeneration()
+            let entries = await loader()
+            guard !Task.isCancelled else { return nil }
+            if generation == currentGeneration() { return entries }
+        }
+        return nil
+    }
+
     private func refreshCatalog() async {
         guard let binary = server.binaryPath else {
             catalog = []
@@ -1442,12 +1460,16 @@ struct SettingsModelManagementPanel: View {
         // independent `models --json` calls and prevents tab-to-tab drift if a
         // sidecar or catalog changes during refresh. Older sidecars fall
         // through to the established per-surface compatibility loaders.
-        if let atomic = await ModelCatalog.productEntries(binary: binary) {
+        if let atomic = await Self.stableAtomicCatalogSnapshot(
+            currentGeneration: { downloads.cacheGeneration },
+            loader: { await ModelCatalog.productEntries(binary: binary) }
+        ) {
             catalog = atomic
             reconcileCapability()
             loading = false
             return
         }
+        guard !Task.isCancelled else { return }
         let generation = downloads.cacheGeneration
         // Show a cached snapshot straight away and skip the spinner entirely —
         // flashing "loading" over data we already have makes every visit to

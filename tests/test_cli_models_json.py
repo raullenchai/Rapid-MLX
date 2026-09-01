@@ -146,12 +146,8 @@ def test_cached_payload_carries_exact_alias_subfolder(monkeypatch) -> None:
     import vllm_mlx.model_aliases as aliases
 
     profiles = {
-        "nested-4bit": SimpleNamespace(
-            hf_path="org/multi-quant", subfolder="4bit"
-        ),
-        "nested-8bit": SimpleNamespace(
-            hf_path="org/multi-quant", subfolder="8bit"
-        ),
+        "nested-4bit": SimpleNamespace(hf_path="org/multi-quant", subfolder="4bit"),
+        "nested-8bit": SimpleNamespace(hf_path="org/multi-quant", subfolder="8bit"),
     }
     monkeypatch.setattr(aliases, "list_profiles", lambda: profiles)
     monkeypatch.setattr(aliases, "resolve_subfolder", lambda _repo: "4bit")
