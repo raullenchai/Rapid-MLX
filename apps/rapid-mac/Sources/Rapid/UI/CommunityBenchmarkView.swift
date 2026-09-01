@@ -189,8 +189,9 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         cancelled = true
         let runningChild = child
         lock.unlock()
-        // Wake the detached waiter immediately. It owns the bounded TERM/KILL
-        // sequence so the cancellation callback itself never blocks AppKit.
+        // Wake the detached waiter immediately. It owns TERM/KILL escalation
+        // and final liveness confirmation, so this callback never blocks
+        // AppKit while the server reservation remains held by `startRun`.
         runningChild?.signalProcessGroup(SIGTERM)
     }
 
@@ -223,13 +224,22 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         )
         if !exited {
             // A process stuck in uninterruptible I/O can remain visible with
-            // SIGKILL pending. Do not strand the Desktop server lease forever;
-            // leave a bounded background reaper to repeat the final signal.
-            ProcessGroupChild.reapProcessGroupInBackground(
-                processGroupID: child.processGroupID
+            // SIGKILL pending. The UI task may finish cancelling only after
+            // the group disappears: releasing its server reservation earlier
+            // would permit a second MLX workload into unified memory.
+            waitForReapConfirmation(
+                isAlive: { child.isProcessGroupAlive },
+                sleep: Thread.sleep(forTimeInterval:)
             )
         }
-        return exited
+        return true
+    }
+
+    static func waitForReapConfirmation(
+        isAlive: () -> Bool,
+        sleep: (TimeInterval) -> Void
+    ) {
+        while isAlive() { sleep(0.1) }
     }
 
     static func boundedTermination(

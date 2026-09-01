@@ -226,6 +226,20 @@ struct CommunityBenchmarkModelTests {
         #expect(signals == [SIGTERM, SIGKILL])
     }
 
+    @Test("Benchmark lease waits for process-group reap confirmation")
+    func teardownRetainsLeaseUntilGroupIsGone() {
+        var liveness = [true, true, false]
+        var sleeps: [TimeInterval] = []
+
+        BenchmarkProcessBox.waitForReapConfirmation(
+            isAlive: { liveness.removeFirst() },
+            sleep: { sleeps.append($0) }
+        )
+
+        #expect(liveness.isEmpty)
+        #expect(sleeps == [0.1, 0.1])
+    }
+
     private func processExists(_ pid: pid_t) -> Bool {
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
