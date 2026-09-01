@@ -457,8 +457,6 @@ def run_local(
             measurements=measurements,
             context_length=context_length,
         )
-        destination.save(run)
-        return run
     except Exception as exc:
         failure_code = (
             "machine_probe_failed"
@@ -486,6 +484,16 @@ def run_local(
                 saved=False,
             ) from exc
         raise LocalBenchmarkError(str(exc), failed, saved=True) from exc
+
+    try:
+        destination.save(run)
+    except Exception as exc:
+        raise LocalBenchmarkError(
+            f"benchmark completed but result could not be saved: {exc}",
+            run,
+            saved=False,
+        ) from exc
+    return run
 
 
 __all__ = ["LocalBenchmarkError", "run_local"]

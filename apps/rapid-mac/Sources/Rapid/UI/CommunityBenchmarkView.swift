@@ -116,8 +116,13 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
         enum CodingKeys: String, CodingKey { case taskType = "task_type" }
     }
     struct Outcome: Decodable { let status: String }
-    struct Measurement: Decodable { let totalDurationMS: Double
-        enum CodingKeys: String, CodingKey { case totalDurationMS = "total_duration_ms" }
+    struct Measurement: Decodable {
+        let caseID: String
+        let totalDurationMS: Double
+        enum CodingKeys: String, CodingKey {
+            case caseID = "case_id"
+            case totalDurationMS = "total_duration_ms"
+        }
     }
     struct Model: Decodable {
         struct Component: Decodable {
@@ -144,9 +149,11 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
     var duration: String? {
         guard let values = measurements?.map(\.totalDurationMS), !values.isEmpty else { return nil }
         let average = values.reduce(0, +) / Double(values.count)
-        return average >= 1_000
+        let spansCases = Set(measurements?.map(\.caseID) ?? []).count > 1
+        let value = average >= 1_000
             ? String(format: "%.1f s avg", average / 1_000)
             : String(format: "%.0f ms avg", average)
+        return spansCases ? "\(value) across cases" : value
     }
 
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
@@ -321,6 +328,7 @@ struct CommunityBenchmarkView: View {
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
+    @State private var benchmarkCLIAvailable = false
 
     private var models: [CommunityBenchmarkModel] {
         CommunityBenchmarkModel.models(from: catalog, metadata: benchmarkMetadata)
@@ -406,7 +414,10 @@ struct CommunityBenchmarkView: View {
                     isRunning ? runTask?.cancel() : startRun()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!isRunning && (selected == nil || binary == nil))
+                .disabled(
+                    !isRunning
+                        && (selected == nil || binary == nil || !benchmarkCLIAvailable)
+                )
                 if isRunning {
                     ProgressView().controlSize(.small)
                     Text("The active server will stop while this model is measured.")
@@ -463,7 +474,7 @@ struct CommunityBenchmarkView: View {
     }
 
     private func startRun() {
-        guard let selected, let binary else { return }
+        guard benchmarkCLIAvailable, let selected, let binary else { return }
         errorMessage = nil
         isRunning = true
         runTask = Task {
@@ -489,7 +500,7 @@ struct CommunityBenchmarkView: View {
     }
 
     private func refreshResults() async {
-        guard let binary else { return }
+        guard benchmarkCLIAvailable, let binary else { return }
         do {
             let data = try await CommunityBenchmarkCommand.run(
                 binary: binary, arguments: ["benchmark", "results", "--json"]
@@ -501,7 +512,11 @@ struct CommunityBenchmarkView: View {
     }
 
     private func refreshBenchmarkCatalog() async {
-        guard let binary else { return }
+        guard let binary else {
+            benchmarkCLIAvailable = false
+            errorMessage = "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again."
+            return
+        }
         let memory = max(1, Int(MacHardware.detect().physicalRAMGB.rounded()))
         do {
             let data = try await CommunityBenchmarkCommand.run(
@@ -511,6 +526,7 @@ struct CommunityBenchmarkView: View {
             let envelope = try JSONDecoder().decode(
                 CommunityBenchmarkCatalogEnvelope.self, from: data
             )
+            benchmarkCLIAvailable = true
             benchmarkMetadata = Dictionary(
                 uniqueKeysWithValues: envelope.models.map { ($0.alias, $0) }
             )
@@ -519,8 +535,9 @@ struct CommunityBenchmarkView: View {
                 models: models
             )
         } catch {
-            // The existing atomic Desktop catalog remains a safe fallback. A
-            // sidecar from before this feature simply lacks the richer plan.
+            benchmarkCLIAvailable = false
+            benchmarkMetadata = [:]
+            errorMessage = "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again."
         }
     }
 }

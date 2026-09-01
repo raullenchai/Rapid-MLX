@@ -461,6 +461,36 @@ def test_archive_failure_reports_execution_and_persistence_errors(
     assert "failed outcome could not be saved: disk full" in str(error.value)
 
 
+def test_completed_run_persistence_failure_does_not_fabricate_failed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias, **kwargs: _image_run()["measurements"],
+    )
+
+    class BrokenArchive:
+        def __init__(self) -> None:
+            self.attempts: list[dict] = []
+
+        def save(self, run: dict) -> None:
+            self.attempts.append(run)
+            raise OSError("disk full")
+
+    archive = BrokenArchive()
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert error.value.saved is False
+    assert error.value.run["outcome"] == {"status": "completed"}
+    assert archive.attempts == [error.value.run]
+    assert "completed but result could not be saved: disk full" in str(error.value)
+
+
 def test_machine_probe_failure_is_archived_without_traceback_or_fake_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
