@@ -111,16 +111,29 @@ jobs:
             // provider action failure recoverable, while the consumed trigger
             // prevents either marker from retrying the head by itself.
             if (authorized && recoveryRequired) {
-              // Mint the one-shot token while the pending status blocks
-              // Mergify (and, on first recovery, the dequeue marker does too).
-              // Every interruption point is fail-closed and recoverable by a
-              // fresh label event: addLabels is idempotent, and a surviving
-              // token remains blocked until the final success status.
+              // Clear any token left by a partial recovery while the pending
+              // status still blocks Mergify. A successful recovery mints a new
+              // token only after the exact-head success status is visible, so
+              // that label event can activate the queue rule immediately.
+              if (currentLabels.has("merge-requeue-trigger")) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.issue.number,
+                    name: "merge-requeue-trigger",
+                  });
+                } catch (error) {
+                  if (error.status !== 404) {
+                    throw error;
+                  }
+                }
+              }
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                labels: ["merge-requeue-required", "merge-requeue-trigger"],
+                labels: ["merge-requeue-required"],
               });
               if (wasDequeued) {
                 try {
@@ -200,4 +213,17 @@ jobs:
             if (!authorized) {
               core.setFailed(description);
               return;
+            }
+
+            if (recoveryRequired) {
+              // This must be the final provider-visible mutation. Mergify does
+              // not reliably re-evaluate pull-request rules for a legacy
+              // commit-status update, so mint the one-shot trigger only after
+              // every other recovery condition is already true.
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ["merge-requeue-trigger"],
+              });
             }
