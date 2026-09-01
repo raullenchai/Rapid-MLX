@@ -154,6 +154,15 @@ class ContinuousMTPDriver:
     def pending_join_uids(self) -> tuple[int, ...]:
         return tuple(spec.uid for join in self._pending_joins for spec in join.specs)
 
+    def owns_uid(self, uid: int) -> bool:
+        """Return whether this driver owns live, queued, or draining state."""
+        return uid in (
+            set(self.lane_uids)
+            | set(self.pending_join_uids)
+            | set(self._delivery_queues)
+            | set(self._held_detaches)
+        )
+
     @property
     def dynamic_membership(self) -> bool:
         return self._batch.dynamic_membership

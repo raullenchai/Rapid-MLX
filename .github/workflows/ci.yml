@@ -470,6 +470,8 @@ jobs:
             tests/test_routing_groups_0131.py \
             tests/test_qwen4_exp_vendored.py \
             tests/test_mtp_cli_wiring.py \
+            tests/test_continuous_mtp_routing.py \
+            tests/test_continuous_self_mtp_mlx_backend.py \
             tests/test_glm5_next_processor_patch.py \
             tests/test_glm5_next_forget_gate_quant.py \
             tests/test_glm5_next_runtime_patch.py \

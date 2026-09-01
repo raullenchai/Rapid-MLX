@@ -393,7 +393,19 @@ def install_ragged_cache_rollback(
             raise RaggedCacheUnsupportedError(
                 f"{label} is not an ArraysCache subclass from this mlx-lm runtime"
             )
-    ops = array_ops or _DefaultArrayOps(cache_module)
+    installed_ops = {
+        cls.__dict__.get("_rapid_ragged_ops")
+        for cls in (arrays_cls, batch_kv_cls)
+        if cls.__dict__.get("_rapid_ragged_ops") is not None
+    }
+    if len(installed_ops) > 1:
+        raise RaggedCacheUnsupportedError(
+            "mlx-lm cache classes use different ragged array adapters"
+        )
+    if array_ops is None and installed_ops:
+        ops = next(iter(installed_ops))
+    else:
+        ops = array_ops or _DefaultArrayOps(cache_module)
     specs, classes = _patch_specs(cache_module, qwen4_state_cls, qsa_cls, ops)
 
     patched: list[str] = []

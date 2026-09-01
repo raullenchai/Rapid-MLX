@@ -2158,6 +2158,8 @@ def _normalize_speculative_config_or_exit(args):
             "mtp_sidecar": None,
             "mtp_max_k": 1,
             "mtp_disable_auto_k": False,
+            "mtp_continuous_batching": False,
+            "mtp_allow_dynamic_membership": False,
             "suffix_decoding": False,
         }
         for name, value in defaults.items():
@@ -2433,6 +2435,8 @@ def _normalize_speculative_config_or_exit(args):
         args.dspark_num_speculative_tokens = config.num_speculative_tokens or 5
     elif config.method == "mtp":
         args.spec_decode = "mtp"
+        args.mtp_continuous_batching = config.continuous_batching
+        args.mtp_allow_dynamic_membership = config.allow_dynamic_membership
         if legacy_enable_mtp_requested:
             args.enable_mtp = True
             if config.num_speculative_tokens is not None:
@@ -4233,6 +4237,11 @@ def serve_command(args):
         # 0.9.13 PR-B: EV depth controller knobs.
         mtp_max_k=getattr(args, "mtp_max_k", 3),
         mtp_disable_auto_k=getattr(args, "mtp_disable_auto_k", False),
+        # Default-off live coordinator for persistent continuous self-MTP.
+        mtp_continuous_batching=getattr(args, "mtp_continuous_batching", False),
+        mtp_allow_dynamic_membership=getattr(
+            args, "mtp_allow_dynamic_membership", False
+        ),
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -10507,7 +10516,10 @@ Examples:
             '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'
-            '"disable_auto_k":false}\'. SuffixDecoding is an explicit, '
+            '"disable_auto_k":false,"continuous_batching":false,'
+            '"allow_dynamic_membership":false}\'. '
+            "Continuous self-MTP and dynamic membership are default-off. "
+            "SuffixDecoding is an explicit, "
             "workload-specific flag for high prompt/output-overlap traffic "
             "and is available with "
             '\'{"method":"suffix","num_speculative_tokens":8}\'.'

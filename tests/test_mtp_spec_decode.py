@@ -1395,6 +1395,26 @@ def test_inject_mtp_support_attaches_four_surfaces():
     assert model.mtp_prompt_lookup_supported is True
 
 
+def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():
+    """The scheduler may retain the outer model returned by mlx-lm."""
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+
+    try:
+        inner = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch in this mlx-lm: {exc}")
+
+    class _Outer:
+        def __init__(self, language_model):
+            self.language_model = language_model
+
+    outer = _Outer(inner)
+    assert inject_mtp_support(outer, allow_random_init=True) is True
+    assert outer.mtp_batch_forward.__self__ is inner
+    assert outer.batched_mtp_capability is inner.batched_mtp_capability
+    assert outer.mtp_recursive_draft_depth == 2
+
+
 def test_inject_mtp_support_rejects_non_qwen35_model():
     """A non-Qwen3.5 model (no ``args.mtp_num_hidden_layers``) must
     return False and not patch anything.

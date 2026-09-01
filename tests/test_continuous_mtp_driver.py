@@ -352,6 +352,8 @@ def test_driver_construction_resume_and_inspection_contracts():
     assert batch_driver.batch is batch
     assert batch_driver.last_burst is None
     assert batch_driver.has_work is True
+    assert batch_driver.owns_uid(1) is True
+    assert batch_driver.owns_uid(99) is False
     batch_driver.next()
     package = batch_driver.detach_all()[0]
     assert batch_driver.lane_uids == ()

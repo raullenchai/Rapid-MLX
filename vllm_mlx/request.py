@@ -205,6 +205,13 @@ class Request:
         default_factory=tuple, init=False, repr=False
     )
 
+    # Detached target/draft cache and seed-hidden sidecar owned by the
+    # continuous MTP transaction.  This is explicit request state rather than
+    # a scheduler-added dynamic attribute so APC handoff and cancellation can
+    # share one typed lifecycle boundary.  ``init=False`` preserves every
+    # positional Request constructor used by existing clients.
+    _continuous_mtp_state: Any | None = field(default=None, init=False, repr=False)
+
     # PFlash prompt compression state. When pflash_metadata["compressed"]
     # is True, prompt_token_ids is the compressed list and
     # original_prompt_token_ids holds the pre-compression sequence so

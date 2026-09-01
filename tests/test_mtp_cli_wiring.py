@@ -1766,6 +1766,146 @@ def test_mtp_running_limit_serializes_requests_without_changing_queue_capacity()
     assert scheduler._max_running_sequences() == 17
 
 
+def test_mtp_running_limit_uses_only_attested_continuous_capacity():
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SimpleNamespace(
+        spec_decode="mtp",
+        max_num_seqs=8,
+        mtp_continuous_batching=True,
+        mtp_allow_dynamic_membership=True,
+    )
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+
+    router_config = SimpleNamespace(
+        allow_dynamic_membership=True,
+        max_lanes=4,
+    )
+    runtime_capabilities = SimpleNamespace(
+        target_return_hidden=True,
+        mtp_return_hidden=True,
+        confirmed_target_forward=True,
+        ragged_rollback=True,
+        atomic_cache_commit=True,
+        dynamic_membership=True,
+    )
+    scheduler.batch_generator = SimpleNamespace(
+        _continuous_mtp_router=SimpleNamespace(config=router_config),
+        _continuous_mtp_runtime=SimpleNamespace(
+            capabilities=runtime_capabilities,
+        ),
+        _continuous_mtp_driver=SimpleNamespace(dynamic_membership=True),
+    )
+    scheduler.running = {}
+
+    assert scheduler._max_running_sequences() == 4
+
+    # Any missing fixed-core runtime fact fails closed before the legacy
+    # verifier can be exposed to a multi-row generation batch.
+    runtime_capabilities.atomic_cache_commit = False
+    assert scheduler._max_running_sequences() == 1
+
+    runtime_capabilities.atomic_cache_commit = True
+    scheduler.batch_generator._continuous_mtp_router.config = None
+    assert scheduler._max_running_sequences() == 1
+
+    scheduler.batch_generator._continuous_mtp_router.config = router_config
+    scheduler.batch_generator._continuous_mtp_runtime.capabilities = None
+    assert scheduler._max_running_sequences() == 1
+
+
+def test_mtp_fixed_membership_collects_initial_wave_then_freezes_admission():
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SimpleNamespace(
+        spec_decode="mtp",
+        max_num_seqs=8,
+        mtp_continuous_batching=True,
+        mtp_allow_dynamic_membership=False,
+    )
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+    scheduler.running = {}
+    scheduler.batch_generator = SimpleNamespace(
+        _continuous_mtp_router=SimpleNamespace(
+            config=SimpleNamespace(
+                allow_dynamic_membership=False,
+                max_lanes=4,
+            )
+        ),
+        _continuous_mtp_runtime=SimpleNamespace(
+            capabilities=SimpleNamespace(
+                target_return_hidden=True,
+                mtp_return_hidden=True,
+                confirmed_target_forward=True,
+                ragged_rollback=True,
+                atomic_cache_commit=True,
+                dynamic_membership=False,
+            )
+        ),
+        _continuous_mtp_driver=None,
+    )
+
+    # The scheduler can collect a B=2+ initial wave even though later joins
+    # are disabled.
+    assert scheduler._max_running_sequences() == 4
+
+    scheduler.running = {"req-1": object(), "req-2": object()}
+    scheduler.batch_generator._continuous_mtp_driver = SimpleNamespace(
+        dynamic_membership=False
+    )
+    assert scheduler._max_running_sequences() == 2
+
+    # Once the fixed cohort turns over, the next wave may be collected.
+    scheduler.batch_generator._continuous_mtp_driver = None
+    assert scheduler._max_running_sequences() == 4
+
+
+def test_mtp_running_limit_clamps_malformed_continuous_capacity_to_one():
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.config = SimpleNamespace(
+        spec_decode="mtp",
+        max_num_seqs=8,
+        mtp_continuous_batching=True,
+        mtp_allow_dynamic_membership=True,
+    )
+    scheduler.spec_decode_runtime_attempted = True
+    scheduler.spec_decode_runtime_method = "mtp"
+    scheduler.batch_generator = SimpleNamespace(
+        _continuous_mtp_router=SimpleNamespace(
+            config=SimpleNamespace(
+                allow_dynamic_membership=True,
+                max_lanes="invalid",
+            )
+        ),
+        _continuous_mtp_runtime=SimpleNamespace(
+            capabilities=SimpleNamespace(
+                target_return_hidden=True,
+                mtp_return_hidden=True,
+                confirmed_target_forward=True,
+                ragged_rollback=True,
+                atomic_cache_commit=True,
+                dynamic_membership=True,
+            ),
+        ),
+        _continuous_mtp_driver=SimpleNamespace(dynamic_membership=True),
+    )
+    scheduler.running = {}
+
+    assert scheduler._max_running_sequences() == 1
+
+
 def test_mtp_install_gate_miss_restores_plain_batch_width_in_same_schedule_tick():
     """An unsupported MTP runtime must not serialize ordinary decoding."""
     from unittest.mock import MagicMock
@@ -1910,6 +2050,62 @@ def test_install_mtp_vendored_reaps_request_state_on_departure(
     assert closed == [7]
     assert gb._mtp_vendored_state == {}
     assert gb._mtp_vendored_disabled_uids == {}
+
+
+def test_install_mtp_vendored_reaps_plain_fallthrough_log_key_on_finish(
+    monkeypatch,
+):
+    """A logged plain-decode skip must not crash request completion.
+
+    ``set.difference_update(generator_over_same_set)`` mutates the set while
+    its generator is live. Tool grammars and other custom processors take this
+    ordinary-MTP fallthrough path, so the failure surfaced as request-wide
+    503s immediately after a constrained request produced its final token.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    def _unexpected_generator(*args, **kwargs):
+        raise AssertionError("custom processor must keep request on plain decode")
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _unexpected_generator)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [7]
+    gb.tokens = [[101, 102]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    custom_processor = lambda tokens, logits: logits
+    request = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            min_p=0.0,
+            seed=None,
+        ),
+        _mtp_safe_logits_processors=(),
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-7": request},
+        uid_to_request_id={7: "req-7"},
+        uid_to_request_processors={7: [custom_processor]},
+    )
+    gb._step()
+    assert gb.orig_step_calls == 1
+
+    response = SimpleNamespace(uid=7, finish_reason="stop", prompt_cache=[object()])
+    gb.next_responses = [response]
+
+    assert gb.next() == [response]
+    assert response.prompt_cache is not None
 
 
 def test_install_mtp_vendored_discards_finished_cache_after_partial_round(
@@ -2255,6 +2451,178 @@ def test_scheduler_stop_retirement_requires_live_batch_generator():
 
     with pytest.raises(RuntimeError, match="without a BatchGenerator"):
         scheduler._retire_scheduler_finished_uid(SimpleNamespace(uid=7))
+
+
+def test_scheduler_installs_continuous_router_before_vendored_fallback(monkeypatch):
+    import vllm_mlx.scheduler as scheduler_module
+    from vllm_mlx.request import SamplingParams
+
+    events = []
+    batch_generator = object()
+    monkeypatch.setattr(
+        scheduler_module, "BatchGenerator", lambda **_kwargs: batch_generator
+    )
+    monkeypatch.setattr(scheduler_module, "make_sampler", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scheduler_module,
+        "_install_continuous_mtp_router",
+        lambda *_args, **_kwargs: events.append("continuous") or True,
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "_install_mtp_vendored",
+        lambda *_args, **_kwargs: events.append("vendored") or True,
+    )
+    monkeypatch.setattr(
+        scheduler_module, "_install_dense_sampler_fastpath", lambda _bg: None
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
+        lambda: None,
+    )
+
+    scheduler = scheduler_module.Scheduler.__new__(scheduler_module.Scheduler)
+    scheduler.model = object()
+    scheduler.model_config = SimpleNamespace(
+        supports_spec_decode=True,
+        name="Qwen3.8-27B",
+    )
+    scheduler.requests = {}
+    scheduler.uid_to_request_id = {}
+    scheduler.uid_to_request_processors = {}
+    scheduler._get_stop_tokens = lambda: set()
+    scheduler._continuous_mtp_free_bytes = lambda: 1
+    scheduler.config = SimpleNamespace(
+        prefill_batch_size=1,
+        completion_batch_size=4,
+        prefill_step_size=512,
+        kv_cache_quantization=False,
+        kv_cache_turboquant=None,
+        spec_decode="mtp",
+        mtp_model_type="qwen3_5",
+        mtp_continuous_batching=True,
+        mtp_max_k=3,
+        mtp_disable_auto_k=False,
+        mtp_sidecar=None,
+        enable_suffix_decoding=False,
+    )
+
+    created = scheduler._create_batch_generator(SamplingParams(max_tokens=8))
+
+    assert created is batch_generator
+    assert events == ["continuous", "vendored"]
+    assert scheduler.spec_decode_runtime_method == "mtp"
+
+
+@pytest.mark.parametrize(
+    ("cap", "metal", "resident", "expected"),
+    [
+        (0, 10, 20, 0),
+        (100, 40, 60, 40),
+        (100, 140, 60, 0),
+    ],
+)
+def test_scheduler_continuous_mtp_headroom_uses_unified_process_pressure(
+    cap,
+    metal,
+    resident,
+    expected,
+):
+    from vllm_mlx.scheduler import Scheduler
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._resolve_metal_cap_bytes = lambda: cap
+    scheduler._current_metal_active_bytes = lambda: metal
+    scheduler._current_process_resident_bytes = lambda: resident
+
+    assert scheduler._continuous_mtp_free_bytes() == expected
+
+
+def test_scheduler_native_stop_promotes_continuous_mtp_detach_state():
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.request import Request, RequestStatus, SamplingParams
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda _text: [1]
+    scheduler = Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=4))
+
+    uid = 7
+    request = Request(
+        "req-7",
+        "prompt",
+        SamplingParams(max_tokens=8, temperature=0.0),
+    )
+    request.status = RequestStatus.RUNNING
+    request.batch_uid = uid
+    request.num_prompt_tokens = 1
+    scheduler.running[request.request_id] = request
+    scheduler.uid_to_request_id[uid] = request.request_id
+    scheduler.request_id_to_uid[request.request_id] = uid
+
+    target_cache = [object()]
+    mtp_state = ("draft-cache", "seed-hidden")
+
+    class _Driver:
+        def owns_uid(self, candidate):
+            return candidate == uid
+
+    class _BatchGenerator:
+        _continuous_mtp_driver = _Driver()
+        _continuous_mtp_removed_states = {uid: mtp_state}
+
+        def remove(self, uids, *, return_prompt_caches):
+            assert uids == [uid]
+            assert return_prompt_caches is True
+            return {uid: (target_cache, [1, 2, 3])}
+
+    scheduler.batch_generator = _BatchGenerator()
+    response = SimpleNamespace(
+        uid=uid,
+        token=2,
+        finish_reason="stop",
+        logprobs=None,
+    )
+
+    outputs, finished = scheduler._process_batch_responses([response])
+
+    assert outputs[0].finish_reason == "stop"
+    assert finished == {request.request_id}
+    assert response.prompt_cache is target_cache
+    assert response.all_tokens == [1, 2, 3]
+    assert response.mtp_state == mtp_state
+    assert request._continuous_mtp_state == mtp_state
+    assert _BatchGenerator._continuous_mtp_removed_states == {}
+
+
+def test_scheduler_continuous_mtp_detach_failure_does_not_hide_terminal():
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.request import Request, RequestStatus, SamplingParams
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda _text: [1]
+    scheduler = Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=4))
+    request = Request("req-9", "prompt", SamplingParams(max_tokens=8))
+    request.status = RequestStatus.RUNNING
+    request.batch_uid = 9
+    scheduler.running[request.request_id] = request
+    scheduler.uid_to_request_id[9] = request.request_id
+
+    scheduler.batch_generator = SimpleNamespace(
+        _continuous_mtp_driver=SimpleNamespace(owns_uid=lambda _uid: True),
+        remove=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("detach failed")
+        ),
+    )
+    outputs, finished = scheduler._process_batch_responses(
+        [SimpleNamespace(uid=9, token=2, finish_reason="stop", logprobs=None)]
+    )
+
+    assert outputs[0].finish_reason == "stop"
+    assert finished == {request.request_id}
 
 
 def test_install_mtp_vendored_first_call_construction_failure_does_not_double_book(

@@ -218,6 +218,42 @@ def test_install_is_idempotent_and_preserves_scalar_methods():
     assert Qwen.restore_rollback is scalar_qwen
 
 
+def test_installer_reuses_one_existing_adapter_and_rejects_split_brain_ops():
+    class Arrays(FakeArraysCache):
+        pass
+
+    class Batch(FakeBatchKVCache):
+        pass
+
+    module = SimpleNamespace(ArraysCache=Arrays, BatchKVCache=Batch)
+    ops = FakeOps()
+    _install(ops, module=module)
+    reused = install_ragged_cache_rollback(
+        mlx_lm_version="0.31.3",
+        cache_module=module,
+        qwen4_state_cls=None,
+        qsa_cls=None,
+        array_ops=None,
+    )
+    assert reused.already_present
+
+    class SplitArrays(FakeArraysCache):
+        _rapid_ragged_ops = object()
+
+    class SplitBatch(FakeBatchKVCache):
+        _rapid_ragged_ops = object()
+
+    split = SimpleNamespace(ArraysCache=SplitArrays, BatchKVCache=SplitBatch)
+    with pytest.raises(RaggedCacheUnsupportedError, match="different ragged"):
+        install_ragged_cache_rollback(
+            mlx_lm_version="0.31.3",
+            cache_module=split,
+            qwen4_state_cls=None,
+            qsa_cls=None,
+            array_ops=None,
+        )
+
+
 def test_installer_refuses_to_replace_an_unknown_existing_method():
     class ConflictingArrays(FakeArraysCache):
         def trim_ragged(self, values, **kwargs):

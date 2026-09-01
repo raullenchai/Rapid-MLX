@@ -29,6 +29,8 @@ class SpeculativeConfig:
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
     disable_auto_k: bool | None = None
+    continuous_batching: bool = False
+    allow_dynamic_membership: bool = False
     max_suffix_len: int | None = None
     min_confidence: float | None = None
     min_draft_len: int | None = None
@@ -45,7 +47,15 @@ _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
     "dflash": frozenset({"model"}),
     "dspark": frozenset({"num_speculative_tokens"}),
-    "mtp": frozenset({"model", "num_speculative_tokens", "disable_auto_k"}),
+    "mtp": frozenset(
+        {
+            "model",
+            "num_speculative_tokens",
+            "disable_auto_k",
+            "continuous_batching",
+            "allow_dynamic_membership",
+        }
+    ),
     "suffix": frozenset(
         {
             "num_speculative_tokens",
@@ -142,7 +152,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
             f"unsupported speculative-config key(s) for {method!r}: {joined}"
         )
 
-    return SpeculativeConfig(
+    config = SpeculativeConfig(
         method=method,
         model=_optional_string(payload.get("model"), "model"),
         num_speculative_tokens=_positive_int(
@@ -150,11 +160,27 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
+        continuous_batching=(
+            _optional_bool(payload.get("continuous_batching"), "continuous_batching")
+            or False
+        ),
+        allow_dynamic_membership=(
+            _optional_bool(
+                payload.get("allow_dynamic_membership"),
+                "allow_dynamic_membership",
+            )
+            or False
+        ),
         max_suffix_len=_positive_int(payload.get("max_suffix_len"), "max_suffix_len"),
         min_confidence=_confidence(payload.get("min_confidence"), "min_confidence"),
         min_draft_len=_positive_int(payload.get("min_draft_len"), "min_draft_len"),
         raw=dict(payload),
     )
+    if config.allow_dynamic_membership and not config.continuous_batching:
+        raise SpeculativeConfigError(
+            "allow_dynamic_membership requires continuous_batching=true"
+        )
+    return config
 
 
 def _warn_legacy_config_helper(name: str) -> None:

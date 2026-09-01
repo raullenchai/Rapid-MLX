@@ -50,9 +50,42 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+BATCHED_MTP_CAPABILITY = MappingProxyType(
+    {
+        "protocol_version": 1,
+        "model_family": "qwen3_5",
+        "batch_forward": "mtp_batch_forward",
+        "recursive_draft_depth": 2,
+        "fixed_membership": True,
+        "target_return_hidden": True,
+        "mtp_return_hidden": True,
+        "confirmed_target_forward": True,
+        "ragged_rollback": True,
+        "atomic_cache_commit": True,
+        "dynamic_join": True,
+        "flash_dynamic_membership_attested": False,
+        "quantized_cache": False,
+        "windowed_cache": False,
+        "xtc": False,
+    }
+)
+
+
+def _mtp_batch_forward(self, hidden_states, next_token_ids, mtp_cache):
+    """Batch seam: recursive drafting always needs the returned hidden state."""
+
+    return self.mtp_forward(
+        hidden_states,
+        next_token_ids,
+        mtp_cache,
+        return_hidden=True,
+    )
 
 
 def _resolve_inner_text_model(model: Any) -> Any:
@@ -889,6 +922,9 @@ def inject_mtp_support(
         # backends whose MTP cache-history synchronization has been audited.
         # This injector covers the Qwen 3.5/3.6/3.8 family.
         mtp_prompt_lookup_supported = True
+        batched_mtp_capability = BATCHED_MTP_CAPABILITY
+        mtp_recursive_draft_depth = 2
+        mtp_batch_forward = _mtp_batch_forward
 
         def __call__(  # type: ignore[override]
             self,
@@ -1013,6 +1049,9 @@ def inject_mtp_support(
     # regardless of which supported shape reaches the generator.
     if model is not inner:
         model.mtp_prompt_lookup_supported = True
+        model.mtp_batch_forward = inner.mtp_batch_forward
+    model.batched_mtp_capability = BATCHED_MTP_CAPABILITY
+    model.mtp_recursive_draft_depth = 2
     logger.info(
         "[mtp.inject] Patched %s with MTP surfaces "
         "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache).",
@@ -1048,6 +1087,15 @@ def validate_mtp_support(model: Any) -> bool:
         return False
     if not callable(getattr(inner, "mtp_forward", None)):
         logger.warning("[mtp.validate] model.mtp_forward is missing.")
+        return False
+    if not callable(getattr(inner, "mtp_batch_forward", None)):
+        logger.warning("[mtp.validate] model.mtp_batch_forward is missing.")
+        return False
+    if getattr(inner, "batched_mtp_capability", None) is not BATCHED_MTP_CAPABILITY:
+        logger.warning("[mtp.validate] batched MTP capability descriptor is missing.")
+        return False
+    if getattr(inner, "mtp_recursive_draft_depth", None) != 2:
+        logger.warning("[mtp.validate] recursive batch draft depth is missing.")
         return False
     if not callable(getattr(inner, "make_mtp_cache", None)):
         logger.warning("[mtp.validate] model.make_mtp_cache is missing.")
