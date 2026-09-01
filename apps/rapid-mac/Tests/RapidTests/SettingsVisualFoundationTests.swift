@@ -82,7 +82,7 @@ struct SettingsVisualFoundationTests {
         // update this literal alongside the enum when a feature adds one.
         var expected: Set<String> = [
             "modelManagement", "instructions", "memory", "tools", "connectors", "performance",
-            "appearance", "privacy", "app",
+            "experimentalFeatures", "appearance", "privacy", "app",
         ]
         // `swift test` builds debug, so the debug-only category is present
         // here and absent from the shipped binary. Conditioning the literal
@@ -105,11 +105,11 @@ struct SettingsVisualFoundationTests {
     }
 
     @MainActor
-    @Test("Category order is unchanged, so arrow-key navigation is unchanged")
+    @Test("Category order is deliberate, so arrow-key navigation stays stable")
     func categoryOrderIsStable() {
         var expectedOrder = [
             "modelManagement", "instructions", "memory", "tools", "connectors", "performance",
-            "appearance", "privacy", "app",
+            "experimentalFeatures", "appearance", "privacy", "app",
         ]
         #if DEBUG
         expectedOrder.append("developer")
@@ -119,7 +119,8 @@ struct SettingsVisualFoundationTests {
         // "what the engine is wired to do", ahead of the presentation and
         // app-level sections.
         #expect(SettingsView.category(.connectors, movedBy: 1) == .performance)
-        #expect(SettingsView.category(.performance, movedBy: 1) == .appearance)
+        #expect(SettingsView.category(.performance, movedBy: 1) == .experimentalFeatures)
+        #expect(SettingsView.category(.experimentalFeatures, movedBy: 1) == .appearance)
         // The rail's ↑/↓ handler walks this order and clamps at the ends.
         #expect(SettingsView.category(.modelManagement, movedBy: -1) == nil)
         // Developer sits after App in debug, so App is only the last row in
