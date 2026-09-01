@@ -1,3 +1,5 @@
+import Darwin
+import Foundation
 import Testing
 @testable import Rapid
 
@@ -73,5 +75,55 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(model.estimatedMemoryGib == 64)
         #expect(model.memoryFit == "does_not_fit")
+    }
+
+    @Test("Cancelling a benchmark reaps its descendant process group")
+    func cancellationReapsDescendant() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-benchmark-cancel-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = root.appendingPathComponent("benchmark-fixture")
+        let pidFile = root.appendingPathComponent("descendant.pid")
+        try """
+        #!/bin/sh
+        sleep 30 &
+        echo $! > "$1"
+        wait
+        """.write(to: script, atomically: true, encoding: .utf8)
+        chmod(script.path, 0o755)
+
+        let run = Task {
+            try await CommunityBenchmarkCommand.run(
+                binary: script,
+                arguments: [pidFile.path]
+            )
+        }
+        let spawnDeadline = Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath: pidFile.path),
+              Date() < spawnDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let descendantPID = try #require(pid_t(pidText))
+
+        run.cancel()
+        do {
+            _ = try await run.value
+            Issue.record("cancelled benchmark unexpectedly succeeded")
+        } catch is CancellationError {
+            // Expected. The cancellation handler must finish group teardown
+            // before publishing this result to the view.
+        } catch {
+            Issue.record("cancelled benchmark returned \(error) instead of CancellationError")
+        }
+
+        #expect(!processExists(descendantPID))
+    }
+
+    private func processExists(_ pid: pid_t) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
     }
 }

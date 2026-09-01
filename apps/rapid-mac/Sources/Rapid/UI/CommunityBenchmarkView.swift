@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -134,27 +135,75 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
 }
 
-private final class BenchmarkProcessBox: @unchecked Sendable {
-    let process = Process()
+final class BenchmarkProcessBox: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
+    private var child: ProcessGroupChild?
 
-    func start() throws {
+    func start(
+        binary: URL,
+        arguments: [String],
+        standardOutput: Pipe,
+        standardError: Pipe
+    ) throws -> ProcessGroupChild {
         lock.lock()
         defer { lock.unlock() }
         if cancelled { throw CancellationError() }
-        try process.run()
+        let spawned = try ProcessGroupChild.spawn(
+            executableURL: binary,
+            arguments: arguments,
+            standardInput: .nullDevice,
+            standardOutput: standardOutput,
+            standardError: standardError
+        )
+        child = spawned
+        return spawned
     }
 
     func cancel() {
         lock.lock()
-        defer { lock.unlock() }
         cancelled = true
-        if process.isRunning { process.terminate() }
+        let runningChild = child
+        lock.unlock()
+        if let runningChild {
+            Self.terminateAndReap(runningChild)
+        }
+    }
+
+    func waitForCompletion(_ child: ProcessGroupChild) {
+        while child.isRunning {
+            // Also drives ProcessGroupChild's non-blocking waitpid fallback
+            // when its dispatch exit source is delayed on a saturated host.
+            _ = child.isProcessGroupAlive
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        // A crashed/cancelled CLI can exit before one of its serve descendants.
+        // Never return control (and release the memory reservation) with any
+        // member of the benchmark process group still alive.
+        if child.isProcessGroupAlive {
+            Self.terminateAndReap(child)
+        }
+    }
+
+    private static func terminateAndReap(_ child: ProcessGroupChild) {
+        child.signalProcessGroup(SIGTERM)
+        let deadline = Date().addingTimeInterval(2)
+        while child.isProcessGroupAlive, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if child.isProcessGroupAlive {
+            child.signalProcessGroup(SIGKILL)
+            // SIGKILL is the final ownership boundary: do not return and let
+            // the view release its server reservation until the kernel no
+            // longer reports any process in this group.
+            while child.isProcessGroupAlive {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
     }
 }
 
-private enum CommunityBenchmarkCommand {
+enum CommunityBenchmarkCommand {
     struct Failure: LocalizedError {
         let message: String
         var errorDescription: String? { message }
@@ -163,42 +212,39 @@ private enum CommunityBenchmarkCommand {
     static func run(binary: URL, arguments: [String]) async throws -> Data {
         let box = BenchmarkProcessBox()
         return try await withTaskCancellationHandler {
-            let data = try await Task.detached(priority: .userInitiated) {
-                let identifier = UUID().uuidString
-                let root = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("rapid-community-benchmark-\(identifier)", isDirectory: true)
-                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-                defer { try? FileManager.default.removeItem(at: root) }
-                let stdoutURL = root.appendingPathComponent("stdout")
-                let stderrURL = root.appendingPathComponent("stderr")
-                FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-                FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-                let stdout = try FileHandle(forWritingTo: stdoutURL)
-                let stderr = try FileHandle(forWritingTo: stderrURL)
-                defer {
-                    try? stdout.close()
-                    try? stderr.close()
-                }
-                box.process.executableURL = binary
-                box.process.arguments = arguments
-                box.process.standardOutput = stdout
-                box.process.standardError = stderr
-                box.process.standardInput = FileHandle.nullDevice
-                try box.start()
-                box.process.waitUntilExit()
-                try stdout.synchronize()
-                try stderr.synchronize()
-                let output = try Data(contentsOf: stdoutURL)
-                guard box.process.terminationStatus == 0 else {
-                    let errorData = try Data(contentsOf: stderrURL)
-                    let detail = String(data: errorData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let message = detail.flatMap { $0.isEmpty ? nil : $0 }
-                        ?? "Benchmark exited with code \(box.process.terminationStatus)."
-                    throw Failure(message: message)
-                }
-                return output
-            }.value
+            let data: Data
+            do {
+                data = try await Task.detached(priority: .userInitiated) {
+                    let stdout = Pipe()
+                    let stderr = Pipe()
+                    let child = try box.start(
+                        binary: binary,
+                        arguments: arguments,
+                        standardOutput: stdout,
+                        standardError: stderr
+                    )
+                    let outputTask = Task.detached {
+                        stdout.fileHandleForReading.readDataToEndOfFile()
+                    }
+                    let errorTask = Task.detached {
+                        stderr.fileHandleForReading.readDataToEndOfFile()
+                    }
+                    box.waitForCompletion(child)
+                    let output = await outputTask.value
+                    let errorData = await errorTask.value
+                    guard child.terminationStatus == 0 else {
+                        let detail = String(data: errorData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let message = detail.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? "Benchmark exited with code \(child.terminationStatus)."
+                        throw Failure(message: message)
+                    }
+                    return output
+                }.value
+            } catch {
+                try Task.checkCancellation()
+                throw error
+            }
             try Task.checkCancellation()
             return data
         } onCancel: {
