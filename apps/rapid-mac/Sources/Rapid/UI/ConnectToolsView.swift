@@ -193,6 +193,7 @@ struct ConnectToolsView: View {
     @ViewBuilder
     var cardContent: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            DesktopServerPortField()
             // Honest about readiness rather than presenting a
             // half-filled template as a working config. The sheet is
             // always reachable (see ChatView's empty-state CTA), so

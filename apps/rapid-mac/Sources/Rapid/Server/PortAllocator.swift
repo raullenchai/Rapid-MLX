@@ -9,7 +9,7 @@ import Darwin
 /// fix). v0.5.6 walks a 10-port window so a foreign collision causes
 /// the child to land on :8001 / :8002 / … instead of dying.
 ///
-/// Algorithm — for each candidate ``8000 … 8009``:
+/// Algorithm — for each candidate ``7659 … 7668`` (fallback ``8000 … 8009``):
 ///   1. Run ``PortSweep.sweep(port:)`` so a rapid-owned orphan from a
 ///      previous run gets reaped first (cross-version
 ///      compatibility — rapid-mlx pre-0.7.3 doesn't always SIGTERM
@@ -31,12 +31,13 @@ import Darwin
 /// and stops, giving the user an actionable error rather than a
 /// silent "exited with status 1".
 enum PortAllocator {
-    /// 10-port window. 8000-8009 covers the dev-server collision
-    /// neighbourhood (vite default 5173, jupyter 8888, fastapi 8000,
-    /// flask 5000 — only fastapi overlaps, and never beyond :8000
-    /// itself). Wider windows risk colliding with VPN / proxy ports
-    /// users care about.
-    static let defaultCandidatePorts: [Int] = Array(8000...8009)
+    /// 10-port window. 7659-7668 is R M L X on a phone keypad — a
+    /// port almost nothing else wants, unlike 8000 which every
+    /// gateway and FastAPI dev server claims. 8000…8009 is kept as
+    /// a legacy fallback after the 7659 window so existing
+    /// `http://127.0.0.1:8000` clients keep working without a rebind.
+    static let defaultCandidatePorts: [Int] = Array(7659...7668)
+    static let legacyFallbackPorts: [Int] = Array(8000...8009)
 
     /// Ports the allocator probes, in order. Normally the fixed
     /// ``defaultCandidatePorts`` window; a ``RAPID_DESKTOP_PORT`` env
@@ -56,19 +57,36 @@ enum PortAllocator {
         resolveCandidatePorts(environment: ProcessInfo.processInfo.environment)
     }
 
+    /// UserDefaults key for the GUI-persisted port. Nil means
+    /// "use the default window" (fresh install, or user cleared it).
+    static let storedPortKey = "rapid.desktop.port"
+
+    static func storedPort() -> Int? {
+        // GUI stores as string via AppStorage; legacy/env may have stored int.
+        if let s = UserDefaults.standard.string(forKey: storedPortKey),
+           let p = Int(s.trimmingCharacters(in: .whitespaces)),
+           (1...65_535).contains(p) { return p }
+        let v = UserDefaults.standard.integer(forKey: storedPortKey)
+        guard v != 0, (1...65_535).contains(v) else { return nil }
+        return v
+    }
+
     /// Test seam — resolve the candidate window from an injected
     /// environment dictionary. Production goes through the
     /// ``candidatePorts`` computed property with the live process
-    /// environment. A ``RAPID_DESKTOP_PORT`` that is missing, non-numeric,
-    /// or outside ``1...65535`` is ignored (falls back to the default
-    /// window) rather than crashing the spawn.
+    /// environment. Priority: env var > GUI-stored port > default
+    /// window (7659…7668 plus 8000…8009 legacy fallback). A bad value
+    /// is ignored rather than crashing the spawn.
     static func resolveCandidatePorts(environment: [String: String]) -> [Int] {
         if let raw = environment["RAPID_DESKTOP_PORT"],
            let port = Int(raw.trimmingCharacters(in: .whitespaces)),
            (1...65_535).contains(port) {
-            return [port]
+             return [port]
         }
-        return defaultCandidatePorts
+        if let s = storedPort() {
+            return [s]
+        }
+        return defaultCandidatePorts + legacyFallbackPorts
     }
 
     /// Returns the first port in ``candidatePorts`` that ``rapid-mlx``

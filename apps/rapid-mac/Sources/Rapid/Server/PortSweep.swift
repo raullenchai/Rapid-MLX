@@ -50,7 +50,12 @@ enum PortSweep {
     /// walks ``defaultPort … defaultPort + 9`` when the default port
     /// is held by a foreign process. ``sweep()`` (no arg) targets the
     /// default port so legacy single-port callers stay one-line.
-    static let defaultPort: Int = 8000
+    ///
+    /// 7659 = R M L X on a phone keypad. 8000 is the most contested
+    /// port on a dev Mac (gateways, FastAPI, other runners). New
+    /// installs start on 7659; 8000 remains in the fallback window
+    /// so existing configs keep working.
+    static let defaultPort: Int = 7659
 
     /// Back-compat shim — older call sites reach for ``PortSweep.port``.
     /// New code should prefer ``ServerManager.activePort`` (the actual
