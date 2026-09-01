@@ -400,6 +400,15 @@ struct AtomicModelCatalogTests {
         #expect(managed.first { $0.alias == "sub-a-sibling" }?.cached == false)
         #expect(managed.first { $0.alias == "sub-b" }?.cached == false)
 
+        let structured = ModelCatalog.mergeAtomicAndCached(
+            atomic: [subA, subASibling, subB],
+            cached: [("sub-a", "org/shared", "a", "1 GiB")],
+            excluded: []
+        )
+        #expect(structured.first { $0.alias == "sub-a" }?.cached == true)
+        #expect(structured.first { $0.alias == "sub-a-sibling" }?.cached == true)
+        #expect(structured.first { $0.alias == "sub-b" }?.cached == false)
+
         let retargeted = ModelCatalog.mergeAtomicAndCached(
             atomic: [ModelEntry(
                 alias: "root", hfRepo: "org/new", sizeOnDisk: nil, cached: false
@@ -417,5 +426,26 @@ struct AtomicModelCatalogTests {
         )
         #expect(external.first { $0.alias == "root" }?.isExternal == true)
         #expect(external.first { $0.alias == "sub-a" }?.cached == false)
+    }
+
+    @Test("structured cache inventory preserves exact subfolder identity")
+    func structuredCacheInventory() throws {
+        let output = #"""
+        {"cached":[
+          {"alias":"nested-4bit","repo":"org/multi-quant","subfolder":"4bit","size_bytes":1073741824,"state":"ok","external":false},
+          {"alias":null,"repo":"org/external","subfolder":null,"size_bytes":2048,"state":"external","external":true},
+          {"alias":null,"repo":"org/partial","subfolder":null,"size_bytes":1024,"state":"incomplete","external":false}
+        ]}
+        """#
+        let rows = try #require(ModelCatalog.parseCachedJSON(output))
+        #expect(rows.count == 2)
+        #expect(rows[0].alias == "nested-4bit")
+        #expect(rows[0].hfRepo == "org/multi-quant")
+        #expect(rows[0].subfolder == "4bit")
+        #expect(rows[1].alias == "(external)")
+        #expect(rows[1].subfolder == nil)
+        #expect(ModelCatalog.parseCachedJSON(
+            #"{"cached":[{"alias":"nested-4bit","repo":"org/multi-quant","subfolder":"4bit","size_bytes":true,"state":"ok","external":false}]}"#
+        ) == nil)
     }
 }

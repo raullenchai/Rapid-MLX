@@ -125,11 +125,49 @@ def test_cached_payload_shape() -> None:
     sizes = [m["size_bytes"] for m in payload["cached"]]
     assert sizes == sorted(sizes, reverse=True)
     for m in payload["cached"]:
-        assert set(m) >= {"alias", "repo", "size_bytes", "state", "external"}
+        assert set(m) >= {
+            "alias",
+            "repo",
+            "subfolder",
+            "size_bytes",
+            "state",
+            "external",
+        }
         assert m["state"] in {"ok", "unmapped", "incomplete", "external"}
         # alias is only meaningful for a runnable, registry-mapped entry.
         if m["state"] != "ok":
             assert m["alias"] is None
+            assert m["subfolder"] is None
+
+
+def test_cached_payload_carries_exact_alias_subfolder(monkeypatch) -> None:
+    import vllm_mlx._download_gate as download_gate
+    import vllm_mlx.cli as cli
+    import vllm_mlx.model_aliases as aliases
+
+    profiles = {
+        "nested-4bit": SimpleNamespace(
+            hf_path="org/multi-quant", subfolder="4bit"
+        ),
+        "nested-8bit": SimpleNamespace(
+            hf_path="org/multi-quant", subfolder="8bit"
+        ),
+    }
+    monkeypatch.setattr(aliases, "list_profiles", lambda: profiles)
+    monkeypatch.setattr(aliases, "resolve_subfolder", lambda _repo: "4bit")
+    monkeypatch.setattr(download_gate, "pulled_variant", lambda _repo: "8bit")
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [("org/multi-quant", 1024, 0.0)],
+    )
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: True)
+
+    row = _cached_models_json_payload()["cached"][0]
+    assert row["alias"] == "nested-8bit"
+    assert row["repo"] == "org/multi-quant"
+    assert row["subfolder"] == "8bit"
 
 
 def test_command_emits_single_valid_json_available(capfd) -> None:

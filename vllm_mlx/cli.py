@@ -6356,14 +6356,17 @@ def _cached_models_json_payload() -> dict:
     """Structured form of the ``models --cached`` view — the same rows the
     text table renders, with stable keys instead of fixed-width columns.
 
-    Sizes are raw bytes; ``state`` is one of ``ok`` / ``unmapped`` /
+    Sizes are raw bytes; ``subfolder`` is the exact catalog checkpoint folder
+    for mapped aliases (``None`` means repository root); ``state`` is one of
+    ``ok`` / ``unmapped`` /
     ``incomplete`` / ``external`` mirroring the alias column's parenthesized
     tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
     launchable by alias). Sorted biggest-first, like the table.
     """
     import time as _time
 
-    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx._download_gate import pulled_variant
+    from vllm_mlx.model_aliases import list_profiles, resolve_subfolder
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
@@ -6371,9 +6374,9 @@ def _cached_models_json_payload() -> dict:
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
 
     profiles = list_profiles()
-    hf_to_alias: dict[str, str] = {}
+    artifact_to_alias: dict[tuple[str, str | None], str] = {}
     for alias, p in profiles.items():
-        hf_to_alias.setdefault(p.hf_path, alias)
+        artifact_to_alias.setdefault((p.hf_path, p.subfolder), alias)
 
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
@@ -6382,16 +6385,26 @@ def _cached_models_json_payload() -> dict:
     for repo, size, mtime, is_external in tagged:
         total_bytes += size
         if is_external:
-            alias, state = None, "external"
+            alias, subfolder, state = None, None, "external"
         elif not _cache_entry_is_runnable(repo):
-            alias, state = None, "incomplete"
+            alias, subfolder, state = None, None, "incomplete"
         else:
-            mapped = hf_to_alias.get(repo)
-            alias, state = (mapped, "ok") if mapped is not None else (None, "unmapped")
+            # Inventory and serving must select the same concrete checkpoint.
+            # A narrowed pull records its variant; otherwise the catalog's
+            # repo-level default is authoritative. Joining on repo alone would
+            # arbitrarily label a multi-quant cache as whichever alias happened
+            # to appear first in aliases.json.
+            subfolder = pulled_variant(repo) or resolve_subfolder(repo)
+            alias = artifact_to_alias.get((repo, subfolder))
+            if alias is None:
+                alias, subfolder, state = None, None, "unmapped"
+            else:
+                state = "ok"
         models.append(
             {
                 "alias": alias,
                 "repo": repo,
+                "subfolder": subfolder,
                 "size_bytes": int(size),
                 "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
                 "age_seconds": int(max(0, now - mtime))

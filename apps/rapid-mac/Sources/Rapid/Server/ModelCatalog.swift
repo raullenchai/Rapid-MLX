@@ -283,6 +283,16 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Structured cache inventory emitted by `rapid-mlx models --cached --json`.
+/// Subfolder is part of artifact identity; `nil` means the repository root,
+/// never "unknown or any subfolder."
+typealias CachedModelInventoryEntry = (
+    alias: String,
+    hfRepo: String?,
+    subfolder: String?,
+    size: String?
+)
+
 /// Loads the rapid-mlx alias catalog by shelling out to the CLI. The
 /// picker depends on this *before* the server is spawned, so we can't
 /// use ``GET /v1/models``; the text output of ``rapid-mlx models`` and
@@ -383,7 +393,7 @@ enum ModelCatalog {
             profiles: [String: CatalogProfileCapability]
         ) =
             listAvailableWithExclusions(binary: binary)
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -579,15 +589,16 @@ enum ModelCatalog {
     /// deliberately withheld from ``models`` must NOT be re-admitted here.
     static func mergeAvailableAndCached(
         available: [(String, String?)],
-        cached: [(String, String?, String?)],
+        cached: [CachedModelInventoryEntry],
         excluded: Set<String>
     ) -> [ModelEntry] {
         var cachedIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, size) in cached where !alias.isEmpty && !isStatusAlias(alias) {
+        for (alias, hf, _, size) in cached
+        where !alias.isEmpty && !isStatusAlias(alias) {
             cachedIndex[alias] = (hf, size)
         }
         var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, size) in cached where alias == "(external)" {
+        for (alias, hf, _, size) in cached where alias == "(external)" {
             guard let identifier = hf else { continue }
             externalIndex[identifier] = (hf, size)
         }
@@ -624,7 +635,7 @@ enum ModelCatalog {
         // cached audio or video model has no row in ``models`` for
         // exactly the reason it must stay hidden, and would be re-admitted
         // here on that basis (#1603).
-        for (alias, hf, size) in cached
+        for (alias, hf, _, size) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -647,7 +658,7 @@ enum ModelCatalog {
         // is deletable, which ``isExternal`` conveys to the UI. Dropping them
         // here instead would satisfy "not deletable" by making them invisible
         // — and leave the user re-downloading weights they already have.
-        for (alias, hf, size) in cached
+        for (alias, hf, _, size) in cached
         where alias == "(external)" {
             guard let repo = hf,
                   !consumedExternal.contains(repo),
@@ -663,6 +674,20 @@ enum ModelCatalog {
             ))
         }
         return entries
+    }
+
+    /// Compatibility seam for pure text-parser tests and older callers. Text
+    /// inventory has no subfolder column, so it can prove root artifacts only.
+    static func mergeAvailableAndCached(
+        available: [(String, String?)],
+        cached: [(String, String?, String?)],
+        excluded: Set<String>
+    ) -> [ModelEntry] {
+        mergeAvailableAndCached(
+            available: available,
+            cached: cached.map { ($0.0, $0.1, nil, $0.2) },
+            excluded: excluded
+        )
     }
 
     /// Whether the alias column holds a status marker rather than a name.
@@ -1081,7 +1106,7 @@ enum ModelCatalog {
         async let modelsJSON = runRapidMlxResult(
             binary: binary, args: ["models", "--json"]
         )
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -1105,29 +1130,31 @@ enum ModelCatalog {
     /// non-deletable, and hidden/media aliases cannot re-enter as Chat rows.
     static func mergeAtomicAndCached(
         atomic: [ModelEntry],
-        cached: [(String, String?, String?)],
+        cached: [CachedModelInventoryEntry],
         excluded: Set<String>,
         speculative: [String: SpeculativeDecodingPreset] = [:]
     ) -> [ModelEntry] {
-        var cachedByAlias: [String: (repo: String?, size: String?)] = [:]
+        var cachedByAlias: [String: (
+            repo: String?, subfolder: String?, size: String?
+        )] = [:]
         let atomicByAlias = Dictionary(
             uniqueKeysWithValues: atomic.map { ($0.alias, $0) }
         )
         var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
         var unmappedRootByRepo: [String: (size: String?, present: Bool)] = [:]
         var externalByRepo: [String: (size: String?, present: Bool)] = [:]
-        for (alias, repo, size) in cached {
+        for (alias, repo, subfolder, size) in cached {
             if alias == "(external)", let repo {
                 externalByRepo[repo] = (size, true)
             } else if alias == "(unmapped)", let repo {
                 unmappedRootByRepo[repo] = (size, true)
             } else if !alias.isEmpty && !isStatusAlias(alias) {
-                cachedByAlias[alias] = (repo, size)
+                cachedByAlias[alias] = (repo, subfolder, size)
                 if let source = atomicByAlias[alias],
-                   source.sourceSubfolder == nil,
                    let sourceRepo = source.hfRepo,
                    let key = artifactCacheKey(source),
                    sanitizedHuggingFaceRepo(repo) == sourceRepo,
+                   subfolder == source.sourceSubfolder,
                    cachedByArtifact[key] == nil {
                     cachedByArtifact[key] = (sourceRepo, size)
                 }
@@ -1142,17 +1169,15 @@ enum ModelCatalog {
         var consumedExternal: Set<String> = []
         var seenAliases = Set(enrichedAtomic.map(\.alias))
         var entries = enrichedAtomic.map { entry -> ModelEntry in
-            // `rapid-mlx ls` currently reports repo but not subfolder. A
-            // missing subfolder is evidence for a root artifact only, never
-            // a wildcard match for a nested checkpoint. Also require the
-            // repo to match exactly so an alias retarget cannot inherit stale
-            // cache state from its previous artifact.
-            let cachedHit: (repo: String?, size: String?)? = cachedByAlias[
-                entry.alias
-            ].flatMap { hit in
-                guard entry.sourceSubfolder == nil,
-                      let expectedRepo = entry.hfRepo,
-                      sanitizedHuggingFaceRepo(hit.repo) == expectedRepo
+            // Exact repo + subfolder identity prevents a retargeted alias
+            // from inheriting stale cache state while still recognizing
+            // deliberately nested checkpoints.
+            let cachedHit: (
+                repo: String?, subfolder: String?, size: String?
+            )? = cachedByAlias[entry.alias].flatMap { hit in
+                guard let expectedRepo = entry.hfRepo,
+                      sanitizedHuggingFaceRepo(hit.repo) == expectedRepo,
+                      hit.subfolder == entry.sourceSubfolder
                 else { return nil }
                 return hit
             }
@@ -1196,7 +1221,7 @@ enum ModelCatalog {
             )
         }
 
-        for (alias, repo, size) in cached
+        for (alias, repo, _, size) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -1206,7 +1231,7 @@ enum ModelCatalog {
                 alias: alias, hfRepo: repo, sizeOnDisk: size, cached: true
             ))
         }
-        for (alias, repo, size) in cached where alias == "(external)" {
+        for (alias, repo, _, size) in cached where alias == "(external)" {
             guard let repo,
                   !consumedExternal.contains(repo),
                   !seenAliases.contains(repo),
@@ -1222,6 +1247,20 @@ enum ModelCatalog {
             ))
         }
         return entries
+    }
+
+    static func mergeAtomicAndCached(
+        atomic: [ModelEntry],
+        cached: [(String, String?, String?)],
+        excluded: Set<String>,
+        speculative: [String: SpeculativeDecodingPreset] = [:]
+    ) -> [ModelEntry] {
+        mergeAtomicAndCached(
+            atomic: atomic,
+            cached: cached.map { ($0.0, $0.1, nil, $0.2) },
+            excluded: excluded,
+            speculative: speculative
+        )
     }
 
     private static func artifactCacheKey(_ entry: ModelEntry) -> String? {
@@ -1242,7 +1281,7 @@ enum ModelCatalog {
         async let modelsJSON = runRapidMlxResult(
             binary: binary, args: ["models", "--json"]
         )
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -1295,13 +1334,13 @@ enum ModelCatalog {
         async let modelsJSON = runRapidMlxResult(
             binary: binary, args: ["models", "--json"]
         )
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
         let cached = await cachedTask
         let cachedByRepo = Dictionary(
-            cached.compactMap { _, repo, size -> (String, String?)? in
+            cached.compactMap { _, repo, _, size -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1343,7 +1382,7 @@ enum ModelCatalog {
         hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
     ) async -> [ModelEntry] {
         async let modelsTask = runRapidMlxResult(binary: binary, args: ["models", "--json"])
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -1353,7 +1392,7 @@ enum ModelCatalog {
             packagedVideoAliases.contains($0.alias)
         }
         let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { _, repo, size -> (String, String?)? in
+            (await cachedTask).compactMap { _, repo, _, size -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1576,21 +1615,29 @@ enum ModelCatalog {
         return excluded
     }
 
-    /// Runs ``rapid-mlx ls`` (cached models). Returns
-    /// ``(alias, hfRepo, sizeOnDisk)`` tuples. ``hubCacheOverride``
+    /// Prefer the structured cached inventory so repo subfolders remain part
+    /// of cache identity. Fall back to the legacy text table for an older
+    /// installed sidecar; those rows can safely prove root artifacts only.
+    /// ``hubCacheOverride``
     /// (issue #503) points the probe at the user's chosen models folder
     /// so the listing reflects what's on the folder the engine reads
     /// from, not the default location.
     private static func listCached(
         binary: URL,
         hubCacheOverride: URL?
-    ) async -> [(String, String?, String?)] {
-        let output = await runRapidMlx(
+    ) async -> [CachedModelInventoryEntry] {
+        let json = await runRapidMlx(
+            binary: binary,
+            args: ["models", "--cached", "--json"],
+            hubCacheOverride: hubCacheOverride
+        )
+        if let structured = parseCachedJSON(json) { return structured }
+        let text = await runRapidMlx(
             binary: binary,
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        return parseCached(output)
+        return parseCached(text).map { ($0.0, $0.1, nil, $0.2) }
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -1738,6 +1785,76 @@ enum ModelCatalog {
             "No models cached yet",
         ]
         return bannerPrefixes.contains { line.hasPrefix($0) }
+    }
+
+    /// Parse the stable `models --cached --json` envelope. A malformed row
+    /// invalidates the envelope and lets the caller downgrade to the text
+    /// parser; it never becomes permissive cache evidence.
+    static func parseCachedJSON(_ output: String) -> [CachedModelInventoryEntry]? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["cached"] as? [[String: Any]]
+        else { return nil }
+        var entries: [CachedModelInventoryEntry] = []
+        for row in rows {
+            guard let state = row["state"] as? String,
+                  let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
+                  let bytes = row["size_bytes"] as? NSNumber,
+                  CFGetTypeID(bytes) != CFBooleanGetTypeID(),
+                  bytes.doubleValue.isFinite,
+                  bytes.doubleValue == Double(bytes.int64Value),
+                  bytes.int64Value > 0,
+                  let external = row["external"] as? Bool
+            else { return nil }
+            let size = ByteCountFormatter.string(
+                fromByteCount: bytes.int64Value,
+                countStyle: .binary
+            )
+            switch state {
+            case "ok":
+                guard external == false,
+                      let alias = row["alias"] as? String,
+                      isSafeAlias(alias)
+                else { return nil }
+                let subfolder: String?
+                if row["subfolder"] is NSNull || row["subfolder"] == nil {
+                    subfolder = nil
+                } else if let value = row["subfolder"] as? String,
+                          isSafeSubfolder(value) {
+                    subfolder = value
+                } else {
+                    return nil
+                }
+                entries.append((alias, repo, subfolder, size))
+            case "unmapped":
+                guard external == false, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                entries.append(("(unmapped)", repo, nil, size))
+            case "external":
+                guard external == true, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                entries.append(("(external)", repo, nil, size))
+            case "incomplete":
+                guard external == false, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                continue
+            default:
+                return nil
+            }
+        }
+        return entries
+    }
+
+    private static func isSafeSubfolder(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 512,
+              !value.hasPrefix("/"), !value.hasSuffix("/"),
+              !value.contains("\\"), !value.contains("\r"), !value.contains("\n")
+        else { return false }
+        return !value.split(separator: "/", omittingEmptySubsequences: false)
+            .contains("..")
     }
 
     /// Parses ``rapid-mlx ls`` output. Each row has the alias in the
