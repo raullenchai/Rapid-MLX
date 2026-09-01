@@ -142,24 +142,15 @@ The queue contract lives in `.mergify.yml`:
 
 - label-gated `auto_merge_conditions`, so a ready label automatically enqueues
   the pull request without a second command or checkbox;
-- explicit, named queue actions provide the re-entry edge for a head left in a
-  terminal `dequeued` state after a diagnosed batch outcome. The marker
-  deliberately blocks automatic retry. To authorize one explicit retry of the
-  unchanged head, remove and re-apply its one ready label: the exact-head
-  authorization workflow verifies from the paginated issue-event history that
-  the latest ready-label event occurred strictly after the latest dequeue event,
-  then records a head-bound `merge-requeue-required` marker,
-  clears the stale provider marker, and issues a bot-owned, one-shot
-  `merge-requeue-trigger`. The matching action consumes the trigger while
-  queueing the head again. The persistent recovery marker allows another fresh
-  authorization to mint a replacement if the provider only partially executes
-  its actions. After clearing `dequeued`, the workflow reads the event history
-  again; if a newer dequeue raced the removal, it restores the circuit breaker
-  and fails authorization instead of publishing success. Removing `dequeued` alone
-  cannot reuse an earlier authorization. Do not manually manage either internal label, post a
-  queue command, push an empty commit, or remove `dequeued` by itself. The
-  provider does not expose a machine-readable dequeue-cause condition here, so
-  this fresh maintainer action is the diagnosis and retry boundary;
+- provider-supported recovery for a head left in terminal `dequeued` state.
+  Diagnose the candidate failure and fix the original pull request when the
+  failure is real. Once its exact-head checks are green and exactly one ready
+  label remains, issue `@mergifyio queue no-mac-batch` or
+  `@mergifyio queue mac-batch` in a PR comment. The command resets terminal
+  provider state but does not bypass `queue_conditions`; the authorized head
+  still runs the full combined candidate validation. Re-applying a ready label,
+  removing `dequeued`, pushing an empty commit, or adding a custom trigger label
+  does not reset terminal queue state and must not be used as a substitute;
 - an exact-head authorization status in both queue conditions, preventing a
   newly pushed head from racing asynchronous label revocation;
 - serial mode with one batch in flight, so speculative checks cannot multiply
@@ -224,10 +215,7 @@ Production activation is an owner operation and must happen in this order:
 2. Install the GitHub App for this repository only. Do not grant it access to
    unrelated repositories. Confirm its configuration check validates the
    default-branch policy.
-3. Create the `merge-ready`, `merge-ready-mac`,
-   `merge-requeue-required`, and `merge-requeue-trigger` labels. The last two
-   labels are internal, bot-owned recovery state and must not be applied
-   manually. Applying exactly one
+3. Create the `merge-ready` and `merge-ready-mac` labels. Applying exactly one
    is the explicit authorization to enter the matching queue; removing it
    dequeues the pull request. Applying both fails closed and enters neither.
    Fork pull requests are deliberately ineligible because composing fork code
@@ -236,9 +224,9 @@ Production activation is an owner operation and must happen in this order:
    maintainer branch before authorizing it for the batch queue.
 
 Maintainers who can manage labels are part of the queue's trusted control
-plane: they can already authorize a head by removing and re-applying its ready
-label. Repository label changes remain auditable, but the internal trigger is
-not a security boundary against a malicious maintainer.
+plane: they can authorize a head by applying its ready label. Requeue commands
+remain auditable and are restricted by the provider to users with sufficient
+repository permission.
 4. In the existing `main` protection, retain required contexts `tests`,
    `desktop-tests`, and `version-bump-guard`, required conversation resolution,
    administrator enforcement, and linear history. Disable only **Require
@@ -258,12 +246,12 @@ not a security boundary against a malicious maintainer.
 
 A head update never mutates PR-scoped labels asynchronously. Authorization is a
 commit status, so the prior `merge-ready-head=success` remains attached only to
-the old SHA and cannot admit the new head. Visible ready and recovery labels may
-remain, but the queue stays blocked until a maintainer completes review and
-removes and re-applies the one ready label, creating a fresh authorization event
-for the new exact SHA. Avoiding asynchronous label deletion removes the race in
-which a delayed synchronize job could erase authorization deliberately applied
-to the newer head.
+the old SHA and cannot admit the new head. A visible ready label may remain, but
+the queue stays blocked until a maintainer completes review and removes and
+re-applies that one ready label, creating a fresh authorization event for the
+new exact SHA. Avoiding asynchronous label deletion removes the race in which a
+delayed synchronize job could erase authorization deliberately applied to the
+newer head.
 
 Do not enable batching while strict up-to-date protection remains on, and do
 not weaken or remove any required context to make a batch move. A missing,
