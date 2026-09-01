@@ -105,6 +105,22 @@ struct AtomicModelCatalogTests {
         return resign ? signed(value) : value
     }
 
+    private static func mutateCapabilities(
+        in root: inout [String: Any],
+        aliasIndex: Int,
+        _ update: (inout [String: Any]) -> Void
+    ) {
+        var atomic = root["atomic"] as! [String: Any]
+        var snapshot = atomic["snapshot"] as! [String: Any]
+        var aliases = snapshot["aliases"] as! [[String: Any]]
+        var capabilities = aliases[aliasIndex]["capabilities"] as! [String: Any]
+        update(&capabilities)
+        aliases[aliasIndex]["capabilities"] = capabilities
+        snapshot["aliases"] = aliases
+        atomic["snapshot"] = snapshot
+        root["atomic"] = atomic
+    }
+
     @Test("one graph maps every modality into the correct product kind")
     func mapsTasksToProductKinds() throws {
         let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))
@@ -254,6 +270,35 @@ struct AtomicModelCatalogTests {
         let image = try #require(entries.first { $0.alias == "image" })
         #expect(ModelSelectionPurpose.imageGeneration.accepts(image))
         #expect(ModelSelectionPurpose.imageEditing.accepts(image))
+    }
+
+    @Test("atomic operation contract rejects absent, empty, conflicting, and mismatched modes")
+    func invalidAtomicOperationContractsFailClosed() {
+        let invalidPayloads = [
+            Self.mutated { root in
+                Self.mutateCapabilities(in: &root, aliasIndex: 0) {
+                    $0.removeValue(forKey: "operation_modes")
+                }
+            },
+            Self.mutated { root in
+                Self.mutateCapabilities(in: &root, aliasIndex: 0) {
+                    $0["operation_modes"] = []
+                }
+            },
+            Self.mutated { root in
+                Self.mutateCapabilities(in: &root, aliasIndex: 1) {
+                    $0["generation_modes"] = ["text_to_image"]
+                }
+            },
+            Self.mutated { root in
+                Self.mutateCapabilities(in: &root, aliasIndex: 0) {
+                    $0["operation_modes"] = ["text_to_image"]
+                }
+            },
+        ]
+        for payload in invalidPayloads {
+            #expect(ModelCatalog.parseAtomicModelEntriesJSON(payload) == nil)
+        }
     }
 
     @Test("chat projection keeps legacy speculative behavior during shadow mode")

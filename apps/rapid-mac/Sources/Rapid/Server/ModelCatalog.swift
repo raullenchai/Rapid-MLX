@@ -959,14 +959,52 @@ enum ModelCatalog {
             // place. Reject the atomic envelope and use the versioned legacy
             // projection; never turn an unknown task into Chat by default.
             guard !tasks.isEmpty, tasks.count == rawTasks.count else { return nil }
-            // v2 standardizes on operation_modes. Accept the v1
-            // generation_modes spelling only as a bounded migration fallback
-            // so an older schema-valid image/video producer remains usable.
-            let rawOperations = capabilities["operation_modes"] as? [String]
-                ?? capabilities["generation_modes"] as? [String]
-                ?? []
+            // v2 requires exactly one nonempty operation field. Accept the v1
+            // generation_modes spelling only as a bounded migration fallback;
+            // a self-digested but schema-invalid envelope must downgrade to
+            // the legacy projection instead of silently emptying pickers.
+            let hasOperationModes = capabilities["operation_modes"] != nil
+            let hasGenerationModes = capabilities["generation_modes"] != nil
+            guard hasOperationModes != hasGenerationModes else { return nil }
+            let rawOperations: [String]
+            if hasOperationModes {
+                guard let values = capabilities["operation_modes"] as? [String],
+                      !values.isEmpty
+                else { return nil }
+                rawOperations = values
+            } else {
+                guard let values = capabilities["generation_modes"] as? [String],
+                      !values.isEmpty
+                else { return nil }
+                rawOperations = values
+            }
             let operations = Set(rawOperations.compactMap(ModelOperation.init(rawValue:)))
             guard operations.count == rawOperations.count else { return nil }
+            guard tasks.allSatisfy({ task in
+                switch task {
+                case .textGeneration:
+                    return operations.contains(.chat)
+                case .visionLanguage:
+                    return operations.contains(.chat)
+                        || operations.contains(.imageUnderstanding)
+                case .imageGeneration:
+                    return !operations.isDisjoint(with: [
+                        .textToImage, .imageToImage, .inpainting,
+                    ])
+                case .videoGeneration:
+                    return !operations.isDisjoint(with: [
+                        .textToVideo, .imageToVideo, .videoToVideo,
+                    ])
+                case .speechSynthesis:
+                    return !operations.isDisjoint(with: [
+                        .presetVoice, .voiceCloning, .voiceDesign,
+                    ])
+                case .speechRecognition:
+                    return !operations.isDisjoint(with: [
+                        .transcription, .translation, .forcedAlignment,
+                    ])
+                }
+            }) else { return nil }
             let kind: ModelKind
             if tasks.contains(.imageGeneration) {
                 kind = .image
