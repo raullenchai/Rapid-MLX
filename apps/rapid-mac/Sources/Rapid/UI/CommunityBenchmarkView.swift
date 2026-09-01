@@ -269,6 +269,15 @@ enum CommunityBenchmarkCommand {
         case deferredReap(pid_t)
     }
 
+    private struct PipeCapture: Sendable {
+        let data: Data
+        let truncated: Bool
+    }
+
+    private static let maxStdoutBytes = 8 * 1_024 * 1_024
+    private static let maxStderrBytes = 256 * 1_024
+    private static let pipeChunkBytes = 64 * 1_024
+
     static func benchmarkRunArguments(alias: String) -> [String] {
         [
             "benchmark", "run", alias, "--json",
@@ -296,11 +305,24 @@ enum CommunityBenchmarkCommand {
                         standardError: stderr
                     )
                     let outputTask = Task.detached {
-                        try stdout.fileHandleForReading.readToEnd() ?? Data()
+                        readBoundedPipe(
+                            stdout.fileHandleForReading,
+                            maxBytes: maxStdoutBytes,
+                            retainTail: false
+                        )
                     }
                     let errorTask = Task.detached {
-                        try stderr.fileHandleForReading.readToEnd() ?? Data()
+                        readBoundedPipe(
+                            stderr.fileHandleForReading,
+                            maxBytes: maxStderrBytes,
+                            retainTail: true
+                        )
                     }
+                    // The child owns duplicated write descriptors after spawn.
+                    // Drop the parent's copies so both readers observe EOF when
+                    // the process group exits.
+                    try? stdout.fileHandleForWriting.close()
+                    try? stderr.fileHandleForWriting.close()
                     defer {
                         // A read error on either stream must not strand the
                         // sibling detached reader or its descriptor. Closing
@@ -315,16 +337,21 @@ enum CommunityBenchmarkCommand {
                     if let processGroupID = box.waitForCompletion(child) {
                         return RunOutcome.deferredReap(processGroupID)
                     }
-                    let output = try await outputTask.value
-                    let errorData = try await errorTask.value
+                    let output = await outputTask.value
+                    let errorCapture = await errorTask.value
                     guard child.terminationStatus == 0 else {
-                        let detail = String(data: errorData, encoding: .utf8)?
+                        let detail = String(data: errorCapture.data, encoding: .utf8)?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let message = detail.flatMap { $0.isEmpty ? nil : $0 }
                             ?? "Benchmark exited with code \(child.terminationStatus)."
                         throw Failure(message: message)
                     }
-                    return RunOutcome.output(output)
+                    guard !output.truncated else {
+                        throw Failure(
+                            message: "Benchmark output exceeded the 8 MiB safety limit."
+                        )
+                    }
+                    return RunOutcome.output(output.data)
                 }.value
             } catch {
                 try Task.checkCancellation()
@@ -347,6 +374,53 @@ enum CommunityBenchmarkCommand {
         } onCancel: {
             box.cancel()
         }
+    }
+
+    private static func readBoundedPipe(
+        _ handle: FileHandle,
+        maxBytes: Int,
+        retainTail: Bool
+    ) -> PipeCapture {
+        var data = Data()
+        var truncated = false
+        while true {
+            let chunk: Data?
+            do {
+                chunk = try handle.read(upToCount: pipeChunkBytes)
+            } catch {
+                break
+            }
+            guard let chunk, !chunk.isEmpty else { break }
+            if chunk.count >= maxBytes {
+                truncated = truncated || !data.isEmpty || chunk.count > maxBytes
+                data = retainTail ? Data(chunk.suffix(maxBytes)) : Data(chunk.prefix(maxBytes))
+                continue
+            }
+            let overflow = data.count + chunk.count - maxBytes
+            if overflow > 0 {
+                truncated = true
+                if retainTail {
+                    data.removeFirst(overflow)
+                    data.append(chunk)
+                } else {
+                    data.append(chunk.prefix(maxBytes - data.count))
+                }
+            } else if retainTail || data.count < maxBytes {
+                data.append(chunk)
+            }
+        }
+        return PipeCapture(data: data, truncated: truncated)
+    }
+
+    internal static func _testReadBoundedPipe(
+        _ handle: FileHandle,
+        maxBytes: Int,
+        retainTail: Bool
+    ) -> (data: Data, truncated: Bool) {
+        let capture = readBoundedPipe(
+            handle, maxBytes: maxBytes, retainTail: retainTail
+        )
+        return (capture.data, capture.truncated)
     }
 }
 
@@ -515,8 +589,10 @@ struct CommunityBenchmarkView: View {
         errorMessage = nil
         isRunning = true
         runTask = Task {
+            var acquiredReservation = false
             do {
                 let reservation = try await prepareServer()
+                acquiredReservation = true
                 defer { releaseServer(reservation) }
                 try Task.checkCancellation()
                 _ = try await CommunityBenchmarkCommand.run(
@@ -528,7 +604,9 @@ struct CommunityBenchmarkView: View {
                 )
                 await refreshResults()
             } catch is CancellationError {
-                errorMessage = "Benchmark stopped. No incomplete result was shared."
+                errorMessage = acquiredReservation
+                    ? "Benchmark stopped. No incomplete result was shared."
+                    : "Benchmark request stopped before it started."
             } catch {
                 errorMessage = error.localizedDescription
             }

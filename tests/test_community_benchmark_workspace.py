@@ -955,6 +955,31 @@ def test_run_local_video_other_terminal_errors_do_not_poll_to_timeout(
     assert error.value.run["outcome"]["failure_code"] == "runtime_error"
 
 
+def test_run_local_does_not_infer_cancellation_from_error_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    monkeypatch.setattr(
+        local_runner,
+        "_run_video",
+        lambda alias, *, isolate_process_group: (_ for _ in ()).throw(
+            RuntimeError("backend cancelled an internal request")
+        ),
+    )
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.run["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
+
+
 def test_run_local_video_rejects_mismatched_artifact_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

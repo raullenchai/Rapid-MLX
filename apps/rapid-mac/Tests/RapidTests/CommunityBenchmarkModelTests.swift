@@ -159,6 +159,31 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Benchmark pipe capture bounds stdout heads and stderr tails")
+    func boundedPipeCapture() throws {
+        let headPipe = Pipe()
+        headPipe.fileHandleForWriting.write(Data("abcdefgh".utf8))
+        try headPipe.fileHandleForWriting.close()
+        let head = CommunityBenchmarkCommand._testReadBoundedPipe(
+            headPipe.fileHandleForReading,
+            maxBytes: 4,
+            retainTail: false
+        )
+        #expect(head.data == Data("abcd".utf8))
+        #expect(head.truncated)
+
+        let tailPipe = Pipe()
+        tailPipe.fileHandleForWriting.write(Data("abcdefgh".utf8))
+        try tailPipe.fileHandleForWriting.close()
+        let tail = CommunityBenchmarkCommand._testReadBoundedPipe(
+            tailPipe.fileHandleForReading,
+            maxBytes: 4,
+            retainTail: true
+        )
+        #expect(tail.data == Data("efgh".utf8))
+        #expect(tail.truncated)
+    }
+
     @Test("Cancellation after process exit cannot signal a stale process group")
     func cancellationAfterExitClearsTrackedChild() throws {
         let box = BenchmarkProcessBox()

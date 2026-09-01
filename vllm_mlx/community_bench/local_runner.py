@@ -51,7 +51,7 @@ class BenchmarkCancelledError(RuntimeError):
 
 def _failure_code(error: Exception) -> str:
     message = str(error).lower()
-    if isinstance(error, BenchmarkCancelledError) or "cancelled" in message:
+    if isinstance(error, BenchmarkCancelledError):
         return "user_cancelled"
     if (
         isinstance(error, MemoryError)
