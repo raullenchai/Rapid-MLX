@@ -52,6 +52,13 @@ enum ImageModelCapability: String, Sendable, Hashable {
     }
 }
 
+/// Request shapes advertised by a video-generation alias. The engine owns
+/// this metadata; Desktop never infers it from an alias or model family.
+enum VideoModelCapability: String, Sendable, Hashable {
+    case textToVideo = "text-to-video"
+    case imageToVideo = "image-to-video"
+}
+
 /// The product task a model picker is serving.
 ///
 /// Keep this separate from ``ModelKind``: image generation and editing share
@@ -177,6 +184,11 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Image-only operation metadata. `nil` for chat/audio/video rows.
     var imageCapability: ImageModelCapability? = nil
 
+    /// Video-only operation and hardware metadata. Empty/`nil` for every
+    /// other modality and for older sidecars that do not advertise it.
+    var videoCapabilities: Set<VideoModelCapability> = []
+    var minimumMemoryGB: Double? = nil
+
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
 
@@ -203,6 +215,17 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
 /// short-lived subprocesses concurrently. Cancellation propagates to the
 /// children via ``Task.checkCancellation`` between phases.
 enum ModelCatalog {
+    /// Aliases whose complete generation and encoding closure is present in
+    /// the signed Desktop sidecar. Exact names make a new engine alias fail
+    /// closed until its runtime has been bundled and smoke-tested here.
+    static let packagedVideoAliases: Set<String> = [
+        "ltx-2.3-mlx-q4",
+        "wan2.2-i2v-a14b-q8",
+        "wan2.2-t2v-a14b-bf16",
+        "wan2.2-ti2v-5b-bf16",
+        "wan2.2-ti2v-5b-q8",
+    ]
+
     static let maxAliasBytes = 128
     static let maxHuggingFaceRepoBytes = 192
     static let maxSubprocessStdoutBytes = 1_048_576
@@ -742,6 +765,44 @@ enum ModelCatalog {
         }
     }
 
+    /// Video aliases for the future Video surface. This intentionally uses
+    /// the machine-readable catalog: request modes and the physical-memory
+    /// floor are serving contracts, not presentation strings that Desktop
+    /// should reconstruct from the human-readable table.
+    static func videoEntries(
+        binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+    ) async -> [ModelEntry] {
+        async let modelsTask = runRapidMlxResult(binary: binary, args: ["models", "--json"])
+        async let cachedTask: [(String, String?, String?)] = listCached(
+            binary: binary,
+            hubCacheOverride: hubCacheOverride
+        )
+        let models = await modelsTask
+        guard models.succeeded else { return [] }
+        let rows = parseVideoRowsJSON(models.stdout).filter {
+            packagedVideoAliases.contains($0.alias)
+        }
+        let cachedByRepo = Dictionary(
+            (await cachedTask).compactMap { _, repo, size -> (String, String?)? in
+                guard let repo else { return nil }
+                return (repo, size)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return rows.map { row in
+            ModelEntry(
+                alias: row.alias,
+                hfRepo: row.hfRepo,
+                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? nil,
+                cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                kind: .video,
+                videoCapabilities: row.capabilities,
+                minimumMemoryGB: row.minimumMemoryGB
+            )
+        }
+    }
+
     /// Audio catalog with probe success preserved. The ordinary catalog API
     /// intentionally degrades subprocess failures to an empty list for picker
     /// callers. Readiness decisions cannot do that: a failed `ls` must not be
@@ -868,6 +929,40 @@ enum ModelCatalog {
             rows.append((alias, hfRepo, size, capability))
         }
         return rows
+    }
+
+    /// Parse the video bucket added to `rapid-mlx models --json`. Malformed
+    /// rows fail closed individually so a future engine field change cannot
+    /// make Desktop offer a model without knowing which request shape it
+    /// accepts or how much unified memory it requires.
+    static func parseVideoRowsJSON(
+        _ output: String
+    ) -> [(
+        alias: String,
+        hfRepo: String?,
+        capabilities: Set<VideoModelCapability>,
+        minimumMemoryGB: Double
+    )] {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["video"] as? [[String: Any]] else { return [] }
+        return rows.compactMap { row in
+            guard let alias = row["alias"] as? String, isSafeAlias(alias),
+                  let rawModes = row["video_modes"] as? [String], !rawModes.isEmpty,
+                  rawModes.count == Set(rawModes).count else { return nil }
+            let capabilities = Set(rawModes.compactMap(VideoModelCapability.init(rawValue:)))
+            guard capabilities.count == rawModes.count,
+                  row["min_memory_gb"] as? Bool == nil,
+                  let memoryNumber = row["min_memory_gb"] as? NSNumber,
+                  memoryNumber.doubleValue.isFinite,
+                  memoryNumber.doubleValue > 0 else { return nil }
+            return (
+                alias,
+                sanitizedHuggingFaceRepo(row["hf_path"] as? String),
+                capabilities,
+                memoryNumber.doubleValue
+            )
+        }
     }
 
     /// True when the line carries a non-chat Kind tag in its own column.
