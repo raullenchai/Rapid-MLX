@@ -151,6 +151,37 @@ def _build_synthetic_prompt(
     return text, ids
 
 
+def _build_registered_token_ids(
+    tokenizer,
+    target_tokens: int,
+    seed: int,
+) -> list[int]:
+    """Build the exact xorshift32 token-ID workload registered in v1.
+
+    Unlike the legacy benchmark prompt, this sequence is fed directly to the
+    engine. No decode/re-tokenize round trip is allowed to change its length or
+    contents after the dataset digest has identified it.
+    """
+
+    vocab_size = getattr(tokenizer, "vocab_size", None) or len(
+        getattr(tokenizer, "get_vocab", lambda: {})() or {}
+    )
+    upper_exclusive = min(vocab_size, 100_000)
+    if upper_exclusive <= 256:
+        raise RuntimeError(
+            "tokenizer vocab too small for registered token workload "
+            f"(vocab_size={vocab_size})"
+        )
+    state = seed & 0xFFFFFFFF
+    ids: list[int] = []
+    for _ in range(target_tokens):
+        state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        state = (state ^ (state >> 17)) & 0xFFFFFFFF
+        state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        ids.append(256 + state % (upper_exclusive - 256))
+    return ids
+
+
 def _prompt_hash(token_ids_short: list[int], token_ids_long: list[int]) -> str:
     """SHA256[:16] of the concatenated prompt token IDs.
 
@@ -169,7 +200,7 @@ def _prompt_hash(token_ids_short: list[int], token_ids_long: list[int]) -> str:
 
 async def _run_one_round(
     engine,
-    prompt_text: str,
+    prompt: str | list[int],
     sampling_params,
     target_prompt_tokens: int,
     expected_completion_tokens: int,
@@ -183,7 +214,7 @@ async def _run_one_round(
     t_first_token: float | None = None
     last_output = None
 
-    rid = await engine.add_request(prompt_text, sampling_params)
+    rid = await engine.add_request(prompt, sampling_params)
     # NOTE: don't ``break`` mid-async-for. Breaking abandons the
     # ``stream_outputs`` async generator before its ``finally`` block
     # has a chance to ``_cleanup_request`` (which pops the request
@@ -283,23 +314,28 @@ async def _run_bucket(
     max_tokens: int,
     *,
     reset_peak_after_warmup: bool = False,
+    registered_token_ids: bool = False,
 ) -> tuple[BucketResult, list[int]]:
     """Run one bucket: warmup + 5 measured rounds.
 
     Returns the measured rounds plus the actual prompt token IDs used
     (so callers can hash them for ``prompt_hash``).
     """
-    prompt_text, prompt_ids = _build_synthetic_prompt(
-        tokenizer, target_prompt_tokens, PROMPT_SEED
-    )
+    if registered_token_ids:
+        prompt_ids = _build_registered_token_ids(
+            tokenizer, target_prompt_tokens, PROMPT_SEED
+        )
+        prompt: str | list[int] = prompt_ids
+    else:
+        prompt, prompt_ids = _build_synthetic_prompt(
+            tokenizer, target_prompt_tokens, PROMPT_SEED
+        )
     sampling = sampling_params_factory(max_tokens)
 
     # Warmup rounds (discarded — first-pass JIT + kernel cache warm-up
     # dominates these and would skew the median).
     for _ in range(ROUNDS_WARMUP):
-        await _run_one_round(
-            engine, prompt_text, sampling, target_prompt_tokens, max_tokens
-        )
+        await _run_one_round(engine, prompt, sampling, target_prompt_tokens, max_tokens)
 
     # Reset the Metal peak-memory counter AFTER warmup, immediately
     # before the measured rounds. Resetting upstream of warmup (the
@@ -317,7 +353,7 @@ async def _run_bucket(
     for _ in range(ROUNDS_MEASURED):
         measured.append(
             await _run_one_round(
-                engine, prompt_text, sampling, target_prompt_tokens, max_tokens
+                engine, prompt, sampling, target_prompt_tokens, max_tokens
             )
         )
 
@@ -369,6 +405,8 @@ async def run_standardized_bench(
     engine,
     tokenizer,
     sampling: str = "greedy",
+    *,
+    registered_token_ids: bool = False,
 ) -> BenchResult:
     """Run the full short+long standardized bench against a loaded engine.
 
@@ -394,9 +432,15 @@ async def run_standardized_bench(
         SHORT_PROMPT_TOKENS,
         SHORT_MAX_TOKENS,
         reset_peak_after_warmup=True,
+        registered_token_ids=registered_token_ids,
     )
     long_result, long_ids = await _run_bucket(
-        engine, tokenizer, factory, LONG_PROMPT_TOKENS, LONG_MAX_TOKENS
+        engine,
+        tokenizer,
+        factory,
+        LONG_PROMPT_TOKENS,
+        LONG_MAX_TOKENS,
+        registered_token_ids=registered_token_ids,
     )
 
     peak_ram = _read_peak_ram_mb()

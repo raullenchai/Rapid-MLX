@@ -199,7 +199,12 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
             model, tokenizer, config, executor=executor
         ) as engine:
             context_length = get_model_max_context(engine)
-            result = await run_standardized_bench(engine, tokenizer, sampling="greedy")
+            result = await run_standardized_bench(
+                engine,
+                tokenizer,
+                sampling="greedy",
+                registered_token_ids=True,
+            )
     finally:
         executor.shutdown(wait=False)
 

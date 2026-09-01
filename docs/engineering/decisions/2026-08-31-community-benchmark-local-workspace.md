@@ -53,6 +53,9 @@ records rather than parse legacy submission JSON.
 - Registered language rows bind observed prompt/output token counts exactly to
   the case targets. A tokenizer round-trip that turns `pp512` into 510 tokens
   is archived as a failed attempt, never admitted as comparable `pp512` data.
+  The atomic runner uses the dataset's xorshift32 golden algorithm and passes
+  its IDs directly to the engine; legacy `rapid-mlx bench` keeps its historical
+  decoded-text generator until that separate submission format is migrated.
 
 ## Product flow
 

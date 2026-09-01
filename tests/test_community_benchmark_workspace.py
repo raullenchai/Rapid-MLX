@@ -487,8 +487,11 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
         async def __aexit__(self, *args) -> None:
             pass
 
-    async def standardized(engine, tokenizer, *, sampling: str) -> BenchResult:
+    async def standardized(
+        engine, tokenizer, *, sampling: str, registered_token_ids: bool
+    ) -> BenchResult:
         assert sampling == "greedy"
+        assert registered_token_ids is True
         short = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
         long = [RoundResult(50, 150, 20, prompt_tokens=2048, output_tokens=512)] * 5
         return BenchResult(

@@ -184,6 +184,62 @@ def test_synthetic_prompt_rejects_tiny_vocab() -> None:
         runner._build_synthetic_prompt(_TinyTok(), 100, seed=1)
 
 
+def test_registered_token_ids_match_dataset_golden_vector() -> None:
+    from vllm_mlx.community_bench import runner
+
+    class _Tokenizer:
+        vocab_size = 1000
+
+    assert runner._build_registered_token_ids(_Tokenizer(), 8, seed=12_648_430) == [
+        368,
+        834,
+        582,
+        522,
+        419,
+        672,
+        421,
+        651,
+    ]
+
+
+def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
+    import asyncio
+
+    from vllm_mlx.community_bench import runner
+
+    class _Tokenizer:
+        vocab_size = 1000
+
+    observed = []
+
+    async def run_one(engine, prompt, sampling, target_prompt_tokens, max_tokens):
+        observed.append(prompt)
+        return runner.RoundResult(
+            decode_tps=1,
+            prefill_tps=1,
+            ttft_ms=1,
+            prompt_tokens=target_prompt_tokens,
+            output_tokens=max_tokens,
+        )
+
+    monkeypatch.setattr(runner, "_run_one_round", run_one)
+    monkeypatch.setattr(runner, "_reset_peak_ram", lambda: None)
+    result, prompt_ids = asyncio.run(
+        runner._run_bucket(
+            object(),
+            _Tokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=True,
+        )
+    )
+
+    assert prompt_ids == [368, 834, 582, 522, 419, 672, 421, 651]
+    assert observed == [prompt_ids] * 6  # one warmup + five measured rounds
+    assert len(result.rounds_raw) == 5
+
+
 def test_prompt_hash_stable() -> None:
     from vllm_mlx.community_bench.runner import _prompt_hash
 
