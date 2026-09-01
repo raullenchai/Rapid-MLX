@@ -37,21 +37,33 @@ struct ModelPerfConfigTests {
         #expect(store.configuredAliases.isEmpty)
     }
 
-    @Test("MTP is off by default for both Qwen3.8 aliases")
-    func mtpDefaultsOff() {
+    @Test("Sparse store delegates speculative defaults to the catalog")
+    func mtpDefaultsAreNotDuplicatedInUserOverrides() {
         let store = makeStore()
         #expect(store.launchFlags(forAlias: "qwen3.8-27b-4bit").isEmpty)
         #expect(store.launchFlags(forAlias: "qwen3.8-27b-mixed-3.5bpw").isEmpty)
     }
 
-    @Test("MTP presets are visibly experimental")
-    func mtpPresetIsExperimental() {
+    @Test("Qualified MTP presets use the production label")
+    func mtpPresetUsesProductionLabel() {
         let preset = SpeculativeDecodingPreset(
             method: .mtp,
             model: "mlx-community/Qwen3.5-9B-MTP-4bit",
             tokens: 2
         )
-        #expect(preset.displayName == "Experimental MTP")
+        #expect(preset.displayName == "MTP")
+    }
+
+    @Test("Persisted presets from before default qualification remain decodable")
+    func legacyMTPPresetRemainsDecodable() throws {
+        let data = Data(#"{"method":"mtp","model":"mlx-community/Qwen3.5-9B-MTP-4bit","tokens":2}"#.utf8)
+        let preset = try JSONDecoder().decode(SpeculativeDecodingPreset.self, from: data)
+
+        #expect(preset.method == .mtp)
+        #expect(preset.model == "mlx-community/Qwen3.5-9B-MTP-4bit")
+        #expect(preset.tokens == 2)
+        #expect(preset.defaultEnabled == nil)
+        #expect(!preset.isDefaultEnabled)
     }
 
     @Test("Setting a knob then clearing it removes the row rather than pinning the default")
@@ -126,6 +138,20 @@ struct ModelPerfConfigTests {
         ])
     }
 
+    @Test("MTP default opt-out persists and emits the engine escape hatch")
+    func mtpOptOutPersists() {
+        let defaults = makeDefaults()
+        let first = ModelPerfConfigStore(defaults: defaults)
+        first.setConfig(
+            ModelPerfConfig(speculativeDecodingDisabled: true),
+            forAlias: "Qwen3.8-27B-4bit"
+        )
+
+        let second = ModelPerfConfigStore(defaults: defaults)
+        #expect(second.config(forAlias: "qwen3.8-27b-4bit").speculativeDecodingDisabled == true)
+        #expect(second.launchFlags(forAlias: "qwen3.8-27b-4bit") == ["--no-spec-decode"])
+    }
+
     @Test("A corrupt persisted blob surfaces an error instead of reporting defaults")
     func corruptBlobSurfacesError() {
         let defaults = makeDefaults()
@@ -168,6 +194,13 @@ struct ModelPerfConfigTests {
             #"{"method":"mtp","model":"rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX","num_speculative_tokens":3}"#,
         ])
         #expect(config.speculativePreset?.method == .mtp)
+    }
+
+    @Test("Explicit speculative opt-out round-trips into residency state")
+    func mtpOptOutRoundTrip() {
+        let config = ModelPerfConfig(launchFlags: ["--no-spec-decode"])
+        #expect(config.speculativeDecodingDisabled == true)
+        #expect(config.speculativePreset == nil)
     }
 
     @Test("Registry-selected methods render canonical configs")
@@ -288,6 +321,31 @@ struct ModelPerfConfigTests {
             userOverrides: ["--kv-cache-dtype", "int8", "--enable-prefix-cache"]
         )
         #expect(merged == ["--kv-cache-dtype", "int8", "--enable-prefix-cache"])
+    }
+
+    @Test("Speculative opt-out replaces the qualified Desktop default")
+    func speculativeOptOutReplacesDefault() {
+        let preset = SpeculativeDecodingPreset(
+            method: .mtp,
+            model: "mlx-community/Qwen3.5-9B-MTP-4bit",
+            tokens: 2,
+            defaultEnabled: true
+        )
+        let merged = ServerManager.mergedPerformanceFlags(
+            recommended: preset.launchFlags,
+            userOverrides: ["--no-spec-decode"]
+        )
+        #expect(merged == ["--no-spec-decode"])
+    }
+
+    @Test("Only Engine default and BF16 KV cache are continuous-MTP compatible")
+    func continuousMTPKVCompatibility() {
+        #expect(ModelPerfConfig().isContinuousMTPKVCompatible)
+        #expect(ModelPerfConfig(kvCacheMode: .bf16).isContinuousMTPKVCompatible)
+        #expect(!ModelPerfConfig(kvCacheMode: .int8).isContinuousMTPKVCompatible)
+        #expect(!ModelPerfConfig(kvCacheMode: .int4).isContinuousMTPKVCompatible)
+        #expect(!ModelPerfConfig(kvCacheMode: .turboquantV4).isContinuousMTPKVCompatible)
+        #expect(!ModelPerfConfig(kvCacheMode: .turboquantK8V4).isContinuousMTPKVCompatible)
     }
 
     @Test("A bare value-carrying flag does not swallow the flag after it")

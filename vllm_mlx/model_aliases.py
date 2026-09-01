@@ -189,6 +189,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "supports_native_mtp",
             "mtp_draft_model",
             "mtp_speculative_tokens",
+            "mtp_continuous_batching_tier",
             "default_max_tokens",
             "recommended_prefill_step_size",
             "suffix_decoding_tier",
@@ -590,6 +591,27 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: mtp_speculative_tokens must be a positive integer"
         )
+    mtp_continuous_batching_tier = value.get("mtp_continuous_batching_tier", "unknown")
+    valid_continuous_mtp_tiers = frozenset({"unknown", "verified", "blocked"})
+    if not isinstance(mtp_continuous_batching_tier, str):
+        raise ValueError(
+            f"alias {alias!r}: mtp_continuous_batching_tier must be a string"
+        )
+    if mtp_continuous_batching_tier not in valid_continuous_mtp_tiers:
+        raise ValueError(
+            f"alias {alias!r}: mtp_continuous_batching_tier must be one of "
+            f"{sorted(valid_continuous_mtp_tiers)}"
+        )
+    if (
+        mtp_continuous_batching_tier != "unknown"
+        and mtp_draft_model is None
+        and not supports_native_mtp
+    ):
+        raise ValueError(
+            f"alias {alias!r}: mtp_continuous_batching_tier="
+            f"{mtp_continuous_batching_tier!r} requires supports_native_mtp=true "
+            "or mtp_draft_model"
+        )
 
     chat_template_id = value.get("chat_template_id")
     if chat_template_id is not None:
@@ -620,6 +642,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         supports_native_mtp=supports_native_mtp,
         mtp_draft_model=mtp_draft_model,
         mtp_speculative_tokens=mtp_speculative_tokens,
+        mtp_continuous_batching_tier=mtp_continuous_batching_tier,
         default_max_tokens=value.get("default_max_tokens"),
         recommended_prefill_step_size=recommended_prefill_step_size,
         suffix_decoding_tier=tier,

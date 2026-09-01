@@ -56,7 +56,10 @@ struct SettingsPerformancePanel: View {
     /// condition it described is still true.
     private var needsReload: Bool {
         guard let alias = targetAlias, server.isModelResident(alias) else { return false }
-        let wantsSpeculative = perf.config(forAlias: alias).speculativePreset != nil
+        let wantsSpeculative = wantsSpeculativeDecoding(
+            alias: alias,
+            preset: speculativePreset(for: alias)
+        )
         if wantsSpeculative != server.hasAppliedSpeculativeDecoding(forAlias: alias) {
             return true
         }
@@ -166,7 +169,10 @@ struct SettingsPerformancePanel: View {
     }
 
     private func reloadBanner(alias: String) -> some View {
-        let speculativeChanged = (perf.config(forAlias: alias).speculativePreset != nil)
+        let speculativeChanged = wantsSpeculativeDecoding(
+            alias: alias,
+            preset: speculativePreset(for: alias)
+        )
             != server.hasAppliedSpeculativeDecoding(forAlias: alias)
         return InlineNotice(
             message: speculativeChanged
@@ -246,9 +252,9 @@ struct SettingsPerformancePanel: View {
     }
 
     private func speculativeDecodingSection(alias: String) -> some View {
-        let preset = modelChoices.first {
-            $0.alias.caseInsensitiveCompare(alias) == .orderedSame
-        }?.speculativeDecodingPreset
+        let preset = speculativePreset(for: alias)
+        let kvCompatible = perf.config(forAlias: alias).isContinuousMTPKVCompatible
+            || preset?.method != .mtp
         return SettingsSection(
             "Speculative decoding",
             subtitle: "Drafts candidate tokens and verifies them with the full model."
@@ -260,13 +266,15 @@ struct SettingsPerformancePanel: View {
                     isOn: speculativeDecodingBinding(alias: alias, preset: preset)
                 )
                     .toggleStyle(.switch)
-                    .disabled(preset == nil)
+                    .disabled(preset == nil || !kvCompatible)
                     .accessibilityIdentifier("Settings.Performance.SpeculativeDecoding.Enabled")
                 tradeOffLine(
                     preset == nil
                         ? "This alias does not declare a verified speculative-decoding preset."
+                        : !kvCompatible
+                            ? "MTP requires Engine default or Full precision (bf16) KV cache. It turns back on automatically when that cache mode is selected."
                         : preset?.method == .mtp
-                            ? "Experimental and off by default. It may improve generation speed, but can be slower on some Macs. Enabling downloads an additional draft model and requires a restart; accepted output remains token-exact."
+                            ? "Enabled by default for qualified models. It improves concurrent generation speed; turning it off applies after a restart."
                             : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
                     warns: false
                 )
@@ -377,11 +385,37 @@ struct SettingsPerformancePanel: View {
         preset: SpeculativeDecodingPreset?
     ) -> Binding<Bool> {
         Binding(
-            get: { perf.config(forAlias: alias).speculativePreset != nil },
+            get: { wantsSpeculativeDecoding(alias: alias, preset: preset) },
             set: { enabled in
-                update(alias: alias) { $0.speculativePreset = enabled ? preset : nil }
+                update(alias: alias) { config in
+                    if enabled {
+                        config.speculativeDecodingDisabled = nil
+                        config.speculativePreset = preset?.isDefaultEnabled == true
+                            ? nil : preset
+                    } else {
+                        config.speculativePreset = nil
+                        config.speculativeDecodingDisabled = true
+                    }
+                }
             }
         )
+    }
+
+    private func speculativePreset(for alias: String) -> SpeculativeDecodingPreset? {
+        modelChoices.first {
+            $0.alias.caseInsensitiveCompare(alias) == .orderedSame
+        }?.speculativeDecodingPreset
+    }
+
+    private func wantsSpeculativeDecoding(
+        alias: String,
+        preset: SpeculativeDecodingPreset?
+    ) -> Bool {
+        let config = perf.config(forAlias: alias)
+        if config.speculativeDecodingDisabled == true { return false }
+        if preset?.method == .mtp, !config.isContinuousMTPKVCompatible { return false }
+        if config.speculativePreset != nil { return true }
+        return preset?.isDefaultEnabled == true
     }
 
     private func cacheBudgetBinding(alias: String) -> Binding<Double> {
@@ -405,7 +439,10 @@ struct SettingsPerformancePanel: View {
         applyError = nil
         Task {
             let entry = modelChoices.first { $0.alias.caseInsensitiveCompare(alias) == .orderedSame }
-            let speculativeChanged = (perf.config(forAlias: alias).speculativePreset != nil)
+            let speculativeChanged = wantsSpeculativeDecoding(
+                alias: alias,
+                preset: speculativePreset(for: alias)
+            )
                 != server.hasAppliedSpeculativeDecoding(forAlias: alias)
             if speculativeChanged {
                 let restarted = await server.restartForSpeculativePerformance(

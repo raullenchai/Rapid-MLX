@@ -184,12 +184,14 @@ def _apc_hit(prefix, *, identity=None):
     )
 
 
-def test_speculative_config_continuous_batching_is_explicit_and_mtp_only():
+def test_speculative_config_preserves_continuous_auto_and_explicit_values():
     default = parse_speculative_config('{"method":"mtp"}')
     enabled = parse_speculative_config('{"method":"mtp","continuous_batching":true}')
-    assert default is not None and default.continuous_batching is False
+    disabled = parse_speculative_config('{"method":"mtp","continuous_batching":false}')
+    assert default is not None and default.continuous_batching is None
     assert default.allow_dynamic_membership is False
     assert enabled is not None and enabled.continuous_batching is True
+    assert disabled is not None and disabled.continuous_batching is False
 
     dynamic = parse_speculative_config(
         '{"method":"mtp","continuous_batching":true,"allow_dynamic_membership":true}'
@@ -815,10 +817,11 @@ def test_live_installer_forms_fixed_initial_cohort_without_dynamic_join(monkeypa
     assert list(batch_gen._unprocessed_sequences) == []
 
 
-def test_cli_and_scheduler_config_carry_the_default_off_opt_in_by_ast():
+def test_cli_resolves_artifact_auto_policy_before_default_off_scheduler_by_ast():
     cli_source = (ROOT / "vllm_mlx" / "cli.py").read_text(encoding="utf-8")
     scheduler_source = (ROOT / "vllm_mlx" / "scheduler.py").read_text(encoding="utf-8")
-    assert "args.mtp_continuous_batching = config.continuous_batching" in cli_source
+    assert 'continuous_tier == "verified"' in cli_source
+    assert "if config.continuous_batching is None" in cli_source
     assert (
         'mtp_continuous_batching=getattr(args, "mtp_continuous_batching", False)'
         in cli_source

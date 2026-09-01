@@ -359,7 +359,10 @@ def test_fix3_cli_serve_forwards_parsed_spec_decode_to_lane_contract(
         [
             "rapid-mlx",
             "serve",
-            "qwen3.5-4b-4bit",
+            # Keep this forwarding contract independent from the exact 4-bit
+            # artifact's qualified default-MTP policy. The sibling 8-bit
+            # artifact has the same lane metadata but no automatic method.
+            "qwen3.5-4b-8bit",
             flag,
         ],
     )

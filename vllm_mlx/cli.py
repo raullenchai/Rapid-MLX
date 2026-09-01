@@ -2131,6 +2131,29 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     return sidecar, depth
 
 
+def _alias_continuous_mtp_tier(model_name) -> str:
+    """Return the alias's measured continuous-MTP qualification tier.
+
+    The model runtime still proves tensor, forward, and cache compatibility at
+    load.  This catalog fact answers a different question: whether the exact
+    target artifact has passed paired legacy/continuous output and throughput
+    gates.  Unknown paths remain available through ``--force-spec-decode`` for
+    operator experiments; they are never silently promoted by family name.
+    """
+    if not model_name:
+        return "unknown"
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 - registry failure must fail closed
+        return "unknown"
+    if profile is None:
+        return "unknown"
+    tier = getattr(profile, "mtp_continuous_batching_tier", "unknown")
+    return tier if tier in {"unknown", "verified", "blocked"} else "unknown"
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2393,6 +2416,16 @@ def _normalize_speculative_config_or_exit(args):
         if legacy_payload is not None:
             raw_config = json.dumps(legacy_payload, separators=(",", ":"))
             args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
+            and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
+        ):
+            # Exact artifacts that passed the mixed-workload qualification
+            # select their declared MTP preset by default.  The alias registry
+            # remains the single source of truth, and --no-spec-decode stays
+            # the explicit user escape hatch on every surface.
+            raw_config = '{"method":"mtp"}'
+            args.speculative_config = raw_config
 
     if raw_config is None:
         _fill_runtime_defaults(overwrite=False)
@@ -2435,8 +2468,34 @@ def _normalize_speculative_config_or_exit(args):
         args.dspark_num_speculative_tokens = config.num_speculative_tokens or 5
     elif config.method == "mtp":
         args.spec_decode = "mtp"
-        args.mtp_continuous_batching = config.continuous_batching
+        continuous_tier = _alias_continuous_mtp_tier(getattr(args, "model", None))
+        args.mtp_continuous_batching_tier = continuous_tier
+        continuous_was_explicit = config.continuous_batching is not None
+        args.mtp_continuous_batching = (
+            continuous_tier == "verified"
+            if config.continuous_batching is None
+            else config.continuous_batching
+        )
         args.mtp_allow_dynamic_membership = config.allow_dynamic_membership
+        if (
+            continuous_was_explicit
+            and args.mtp_continuous_batching
+            and continuous_tier != "verified"
+            and not getattr(args, "force_spec_decode", False)
+        ):
+            state = (
+                "failed continuous-MTP qualification"
+                if continuous_tier == "blocked"
+                else "has not completed continuous-MTP qualification"
+            )
+            print(
+                "error: continuous MTP is not verified for "
+                f"{args.model!r}: this target {state}. Use ordinary MTP, or "
+                "pass --force-spec-decode only for an operator-controlled "
+                "experiment.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if legacy_enable_mtp_requested:
             args.enable_mtp = True
             if config.num_speculative_tokens is not None:
@@ -2988,6 +3047,56 @@ def kv_cache_flag_conflict(args) -> str | None:
         )
 
     return None
+
+
+def continuous_mtp_cache_conflict(args) -> str | None:
+    """Return an operator-facing continuous-MTP/cache conflict, if any.
+
+    The continuous coordinator's capability descriptor deliberately attests
+    ``quantized_cache=False``: target and draft lanes share transactional
+    trim/restore state that the quantized cache implementations do not expose.
+    Alias-driven cache defaults are not operator intent and are suppressed by
+    :func:`serve_command`; explicit requests fail here before model loading so
+    the engine never advertises continuous MTP and then silently falls back.
+    """
+    if not getattr(args, "mtp_continuous_batching", False):
+        return None
+    turboquant = getattr(args, "kv_cache_turboquant", None)
+    if turboquant not in (None, "none"):
+        return (
+            "continuous MTP requires an unquantized BF16 KV cache; "
+            f"--kv-cache-turboquant {turboquant} is incompatible. Remove the "
+            "TurboQuant flag or use ordinary MTP."
+        )
+    if getattr(args, "kv_cache_quantization", False):
+        return (
+            "continuous MTP requires an unquantized BF16 KV cache; "
+            "--kv-cache-quantization is incompatible. Remove the cache "
+            "quantization flag or use ordinary MTP."
+        )
+    cache_dtype = getattr(args, "kv_cache_dtype", "bf16")
+    if cache_dtype != "bf16":
+        return (
+            "continuous MTP requires an unquantized BF16 KV cache; "
+            f"--kv-cache-dtype {cache_dtype} is incompatible. Use "
+            "--kv-cache-dtype bf16 or ordinary MTP."
+        )
+    return None
+
+
+def _resolve_turboquant_with_mtp_policy(
+    args, *, model_name: str, **detection
+) -> str | None:
+    """Resolve TurboQuant after applying the speculative cache contract."""
+    if (
+        getattr(args, "mtp_continuous_batching", False)
+        and getattr(args, "kv_cache_turboquant", None) is None
+    ):
+        # Alias metadata is an automatic default, not operator intent.
+        return None
+    from .turboquant import resolve_turboquant_mode_default
+
+    return resolve_turboquant_mode_default(args, model_name=model_name, **detection)
 
 
 def serve_command(args):
@@ -4010,9 +4119,6 @@ def serve_command(args):
     # (#969) — ``python -m vllm_mlx.server`` calls the same helper so
     # the two entrypoints can't drift.
     from .turboquant import (
-        resolve_turboquant_mode_default,
-    )
-    from .turboquant import (
         turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs,
     )
 
@@ -4023,7 +4129,15 @@ def serve_command(args):
         args, "kv_cache_quantization", False
     ):
         turboquant_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
-    args.kv_cache_turboquant = resolve_turboquant_mode_default(
+    _continuous_cache_conflict = continuous_mtp_cache_conflict(args)
+    if _continuous_cache_conflict is not None:
+        print(f"\n  Error: {_continuous_cache_conflict}\n")
+        sys.exit(2)
+
+    # The alias's TurboQuant tier is an automatic serving default, not an
+    # operator request. Continuous MTP's stricter cache capability takes
+    # precedence; an explicit incompatible mode was rejected above.
+    args.kv_cache_turboquant = _resolve_turboquant_with_mtp_policy(
         args, model_name=args.model, **turboquant_detection
     )
 
@@ -4051,14 +4165,24 @@ def serve_command(args):
         )
 
         hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
+        _continuous_mtp = getattr(args, "mtp_continuous_batching", False)
         kv_cache_decision = resolve_kv_cache_dtype(
             args.kv_cache_dtype,
-            reasoning=args.reasoning,
+            # BF16 is at least as quality-preserving as the reasoning
+            # profile's int8 cache. Continuous MTP requires the unquantized
+            # transactional cache, so the method-specific capability wins.
+            reasoning=args.reasoning and not _continuous_mtp,
             model_name=args.model,
             hf_path=(alias_meta or {}).get("hf_path"),
             hf_config=hf_cfg,
             alias_metadata=alias_meta,
         )
+        if _continuous_mtp and args.reasoning:
+            logging.getLogger(__name__).info(
+                "Continuous MTP cache policy: keeping BF16 KV cache; the "
+                "reasoning profile's int8 memory optimization is not "
+                "compatible with transactional trim/restore."
+            )
         log_kv_cache_decision(kv_cache_decision, model_name=args.model)
         quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
         # Mutate args so the existing SchedulerConfig wiring picks up
@@ -6309,6 +6433,9 @@ def _available_models_json_payload() -> dict:
             "supports_native_mtp": bool(getattr(p, "supports_native_mtp", False)),
             "mtp_draft_model": getattr(p, "mtp_draft_model", None),
             "mtp_speculative_tokens": getattr(p, "mtp_speculative_tokens", None),
+            "mtp_continuous_batching_tier": getattr(
+                p, "mtp_continuous_batching_tier", "unknown"
+            ),
             "modality": _modality(p),
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,

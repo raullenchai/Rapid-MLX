@@ -145,9 +145,15 @@ def test_serve_listen_fd_nonnumeric_message(capsys):
 def _minimal_serve_ns(**overrides):
     """Build a Namespace populated with serve defaults via argparse so
     the test stays in sync with the serve subparser. Any field the
-    caller wants to override is patched on the resolved Namespace."""
+    caller wants to override is patched on the resolved Namespace.
+
+    The sibling 8-bit artifact deliberately keeps this fixture independent
+    from the exact 4-bit artifact's qualified MTP default: heavyweight
+    model/config probes are stubbed, and the contract under test is exclusively
+    host/port versus inherited fd.
+    """
     captured: list = []
-    argv = ["rapid-mlx", "serve", "qwen3.5-4b-4bit"]
+    argv = ["rapid-mlx", "serve", "qwen3.5-4b-8bit"]
     for k, v in overrides.items():
         if k == "listen_fd":
             argv += ["--listen-fd", str(v)]

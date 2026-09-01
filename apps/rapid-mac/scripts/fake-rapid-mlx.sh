@@ -1192,6 +1192,9 @@ def _emit_catalog(subcommand, alias):
                         if item == "qwen3.8-27b-4bit" else None
                     ),
                     "mtp_speculative_tokens": 3 if item == "qwen3.8-27b-4bit" else None,
+                    "mtp_continuous_batching_tier": (
+                        "verified" if item == "qwen3.8-27b-4bit" else "unknown"
+                    ),
                     "is_builtin": is_builtin,
                     "is_text_only": item == "qwen3.5-4b-4bit",
                 })

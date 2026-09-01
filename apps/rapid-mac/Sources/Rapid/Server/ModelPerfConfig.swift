@@ -40,19 +40,26 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
     var cacheMemoryMB: Int?
 
     /// Explicit opt-in to the selected alias's registry-advertised preset.
-    /// `nil` is off; the method is persisted so launch remains deterministic.
+    /// `nil` defers to the registry default; the method is persisted so an
+    /// opt-in on an older/non-default preset remains deterministic.
     var speculativePreset: SpeculativeDecodingPreset?
+
+    /// Explicit opt-out from an artifact-qualified engine/Desktop default.
+    /// `nil` means no user opinion; `true` emits `--no-spec-decode`.
+    var speculativeDecodingDisabled: Bool?
 
     init(
         kvCacheMode: KVCacheMode? = nil,
         prefixCacheEnabled: Bool? = nil,
         cacheMemoryMB: Int? = nil,
-        speculativePreset: SpeculativeDecodingPreset? = nil
+        speculativePreset: SpeculativeDecodingPreset? = nil,
+        speculativeDecodingDisabled: Bool? = nil
     ) {
         self.kvCacheMode = kvCacheMode
         self.prefixCacheEnabled = prefixCacheEnabled
         self.cacheMemoryMB = cacheMemoryMB
         self.speculativePreset = speculativePreset
+        self.speculativeDecodingDisabled = speculativeDecodingDisabled
     }
 
     /// True when the user has not overridden anything. Such a config is
@@ -60,7 +67,14 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// that encode "no opinion".
     var isEmpty: Bool {
         kvCacheMode == nil && prefixCacheEnabled == nil && cacheMemoryMB == nil
-            && speculativePreset == nil
+            && speculativePreset == nil && speculativeDecodingDisabled != true
+    }
+
+    /// Continuous MTP currently requires an unquantized KV cache. `nil`
+    /// delegates to the engine default (BF16), while an explicit BF16 choice
+    /// is equivalent. Every compressed mode must take the ordinary lane.
+    var isContinuousMTPKVCompatible: Bool {
+        kvCacheMode == nil || kvCacheMode == .bf16
     }
 
     /// Bounds for ``cacheMemoryMB``. The floor is the engine's own smallest
@@ -97,18 +111,13 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// exact repo keeps relaunch deterministic and avoids a second allowlist.
     func launchFlags(forAlias alias: String) -> [String] {
         var flags = launchFlags
+        if speculativeDecodingDisabled == true {
+            flags.append("--no-spec-decode")
+            return flags
+        }
         let normalizedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalizedAlias.isEmpty, let speculativePreset else { return flags }
-        let payload: String
-        switch speculativePreset.method {
-        case .mtp:
-            guard let model = speculativePreset.model,
-                  let tokens = speculativePreset.tokens else { return flags }
-            payload = #"{"method":"mtp","model":"\#(model)","num_speculative_tokens":\#(tokens)}"#
-        case .suffix:
-            payload = #"{"method":"suffix"}"#
-        }
-        flags.append(contentsOf: ["--speculative-config", payload])
+        flags.append(contentsOf: speculativePreset.launchFlags)
         return flags
     }
 
@@ -143,6 +152,7 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
                    let data = value.data(using: .utf8),
                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let method = payload["method"] as? String {
+                    speculativeDecodingDisabled = nil
                     if method == "mtp", let model = payload["model"] as? String,
                        let tokens = payload["num_speculative_tokens"] as? Int {
                         speculativePreset = SpeculativeDecodingPreset(
@@ -155,6 +165,10 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
                     }
                 }
                 index += 2
+            case "--no-spec-decode":
+                speculativeDecodingDisabled = true
+                speculativePreset = nil
+                index += 1
             default:
                 index += 1
             }
@@ -171,6 +185,7 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
         "--disable-prefix-cache",
         "--cache-memory-mb",
         "--speculative-config",
+        "--no-spec-decode",
     ]
 }
 

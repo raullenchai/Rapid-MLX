@@ -23,6 +23,7 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-4B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "mtp_continuous_batching_tier": "verified",
     "recommended_prefill_step_size": 512,
     "pflash_tier": "verified"
   },
@@ -63,6 +64,7 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.5-9B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "mtp_continuous_batching_tier": "verified",
     "recommended_prefill_step_size": 512,
     "pflash_tier": "verified",
     "turboquant_tier": "k8v4_verified"
@@ -270,6 +272,7 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-27B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "mtp_continuous_batching_tier": "verified",
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-8bit": {
@@ -389,7 +392,8 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
-    "mtp_speculative_tokens": 3
+    "mtp_speculative_tokens": 3,
+    "mtp_continuous_batching_tier": "verified"
   },
   "qwen3.8-27b-mixed-3.5bpw": {
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",

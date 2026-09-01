@@ -2410,31 +2410,31 @@ PY
 }
 
 flow_settings_mtp() {
-    log "settings Qwen3.8 MTP opt-in"
+    log "settings Qwen3.8 MTP qualified default and opt-out"
     start_persona settings-mtp FAKE_SETTINGS_MTP=1
     dismiss_first_run
     open_settings
     wait_settings_stable "$OUT/settings-root.json"
     press "$OUT/settings-root.json" Settings.Category.performance "$OUT/performance-open-press.json"
-    wait_identifier Settings.Performance.SpeculativeDecoding.Enabled "$OUT/performance-mtp-off.json"
+    wait_identifier Settings.Performance.SpeculativeDecoding.Enabled "$OUT/performance-mtp-on.json"
     jq -e '.data.ui_elements[]?
            | select(.identifier == "Settings.Performance.ModelPicker"
                     and .value == "qwen3.8-27b-4bit")' \
-        "$OUT/performance-mtp-off.json" >/dev/null \
+        "$OUT/performance-mtp-on.json" >/dev/null \
         || die "Performance did not select the cached Qwen3.8 MTP fixture"
     jq -e '.data.ui_elements[]?
            | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled"
-                    and .enabled == true and .value == 0)' \
-        "$OUT/performance-mtp-off.json" >/dev/null \
-        || die "Qwen3.8 MTP switch was missing, disabled, or defaulted on"
-    press "$OUT/performance-mtp-off.json" Settings.Performance.SpeculativeDecoding.Enabled \
-        "$OUT/performance-mtp-press.json"
-    wait_settings_stable "$OUT/performance-mtp-on.json" Settings.Performance.SpeculativeDecoding.Enabled
-    jq -e '.data.ui_elements[]?
-           | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled" and .value == 1)' \
+                    and .enabled == true and .value == 1)' \
         "$OUT/performance-mtp-on.json" >/dev/null \
-        || die "Qwen3.8 MTP switch did not stay enabled after pressing"
+        || die "Qualified Qwen3.8 MTP switch was missing, disabled, or not defaulted on"
     baseline settings-mtp.enabled "$OUT/performance-mtp-on.json"
+    press "$OUT/performance-mtp-on.json" Settings.Performance.SpeculativeDecoding.Enabled \
+        "$OUT/performance-mtp-press.json"
+    wait_settings_stable "$OUT/performance-mtp-off.json" Settings.Performance.SpeculativeDecoding.Enabled
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled" and .value == 0)' \
+        "$OUT/performance-mtp-off.json" >/dev/null \
+        || die "Qwen3.8 MTP switch did not persist the explicit opt-out"
     cleanup_persona
 
     # Every chat model gets the same stable control surface. An alias without

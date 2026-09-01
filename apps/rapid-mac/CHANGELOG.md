@@ -17,6 +17,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- **Qualified MTP models are fast by default.** Qwen3.5 4B/9B, Qwen3.6 27B,
+  and Qwen3.8 27B automatically use their validated continuous speculative
+  scheduler in CLI, Server, and Desktop. Desktop shows the active setting and
+  keeps a persistent off switch for users who prefer ordinary decoding.
+
 ## [0.13.3] — 2026-08-31
 
 Rapid-MLX 0.13.3 adds production-safe GLM-5.3-Flash serving, reuses text

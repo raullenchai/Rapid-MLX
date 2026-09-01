@@ -29,7 +29,10 @@ class SpeculativeConfig:
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
     disable_auto_k: bool | None = None
-    continuous_batching: bool = False
+    # ``None`` means artifact-qualified auto selection.  Preserve the
+    # distinction between an omitted key and an explicit ``false`` so users
+    # retain a stable ordinary-MTP opt-out after a target is promoted.
+    continuous_batching: bool | None = None
     allow_dynamic_membership: bool = False
     max_suffix_len: int | None = None
     min_confidence: float | None = None
@@ -160,9 +163,8 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
-        continuous_batching=(
-            _optional_bool(payload.get("continuous_batching"), "continuous_batching")
-            or False
+        continuous_batching=_optional_bool(
+            payload.get("continuous_batching"), "continuous_batching"
         ),
         allow_dynamic_membership=(
             _optional_bool(
@@ -176,7 +178,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         min_draft_len=_positive_int(payload.get("min_draft_len"), "min_draft_len"),
         raw=dict(payload),
     )
-    if config.allow_dynamic_membership and not config.continuous_batching:
+    if config.allow_dynamic_membership and config.continuous_batching is not True:
         raise SpeculativeConfigError(
             "allow_dynamic_membership requires continuous_batching=true"
         )

@@ -103,7 +103,7 @@ AXApplication title="Rapid-MLX"
             AXValueIndicator value=number
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXButton id="Settings.Performance.Reset" desc="Reset to engine defaults" enabled=true
+          AXButton id="Settings.Performance.Reset" desc="Reset to engine defaults" enabled=false
           AXStaticText id="Settings.Performance.AppliesNextLoad" value=text enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true

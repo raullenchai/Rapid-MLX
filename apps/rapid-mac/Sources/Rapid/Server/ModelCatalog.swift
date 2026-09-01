@@ -102,9 +102,39 @@ struct SpeculativeDecodingPreset: Codable, Sendable, Hashable {
     let method: Method
     let model: String?
     let tokens: Int?
+    /// Exact-artifact qualification from the engine alias registry. Optional
+    /// keeps previously persisted explicit presets decodable across upgrades.
+    let defaultEnabled: Bool?
+
+    init(
+        method: Method,
+        model: String?,
+        tokens: Int?,
+        defaultEnabled: Bool? = nil
+    ) {
+        self.method = method
+        self.model = model
+        self.tokens = tokens
+        self.defaultEnabled = defaultEnabled
+    }
 
     var displayName: String {
-        method == .mtp ? "Experimental MTP" : "Suffix decoding"
+        method == .mtp ? "MTP" : "Suffix decoding"
+    }
+
+    var isDefaultEnabled: Bool { defaultEnabled == true }
+
+    var launchFlags: [String] {
+        switch method {
+        case .mtp:
+            guard let model, let tokens else { return [] }
+            return [
+                "--speculative-config",
+                #"{"method":"mtp","model":"\#(model)","num_speculative_tokens":\#(tokens)}"#,
+            ]
+        case .suffix:
+            return ["--speculative-config", #"{"method":"suffix"}"#]
+        }
     }
 }
 
@@ -604,7 +634,11 @@ enum ModelCatalog {
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
                let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
                 speculative[alias] = SpeculativeDecodingPreset(
-                    method: .mtp, model: model, tokens: tokens
+                    method: .mtp,
+                    model: model,
+                    tokens: tokens,
+                    defaultEnabled: row["mtp_continuous_batching_tier"] as? String
+                        == "verified"
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(

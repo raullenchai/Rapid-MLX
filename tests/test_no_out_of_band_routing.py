@@ -1467,6 +1467,12 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # registered here AND in their VALID_*_TIERS enum — adding
             # the dataclass field alone is what broke the gate in #952.
             "turboquant_tier",
+            # Artifact-specific continuous-MTP admission tier. This is a
+            # closed routing enum validated by ``_coerce``; only ``verified``
+            # permits a normal request, while ``blocked``/``unknown`` fail
+            # before model load and remain available solely through the
+            # existing explicit ``--force-spec-decode`` experiment override.
+            "mtp_continuous_batching_tier",
         }
     )
 

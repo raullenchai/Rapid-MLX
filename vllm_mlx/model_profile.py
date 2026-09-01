@@ -174,6 +174,14 @@ class ModelProfile:
     supports_native_mtp: bool = False
     mtp_draft_model: str | None = None
     mtp_speculative_tokens: int = 3
+    # Continuous self-MTP is qualified per concrete target artifact rather
+    # than inferred from ``model_type``.  Checkpoints in the same architecture
+    # family can choose different greedy tokens under a batched target forward
+    # even when their tensor/cache ABI is identical.  ``verified`` is therefore
+    # an explicit product claim; ``blocked`` records a measured no-go; and
+    # ``unknown`` remains available only through the existing operator force
+    # override.  Ordinary single-request MTP is unaffected by this tier.
+    mtp_continuous_batching_tier: str = "unknown"
     default_max_tokens: int | None = None  # Per-model default when user omits
     # Bench-verified service prefill chunk.  This is deliberately an explicit
     # per-profile recommendation rather than an architecture inference:
