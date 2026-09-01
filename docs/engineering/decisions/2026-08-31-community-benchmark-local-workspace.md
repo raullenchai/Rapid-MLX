@@ -50,6 +50,9 @@ records rather than parse legacy submission JSON.
   process. LTX and CogVideoX need separate registered protocols. Image models
   must advertise `text_to_image`; VLM and audio remain excluded until they
   have their own registered workload.
+- Registered language rows bind observed prompt/output token counts exactly to
+  the case targets. A tokenizer round-trip that turns `pp512` into 510 tokens
+  is archived as a failed attempt, never admitted as comparable `pp512` data.
 
 ## Product flow
 

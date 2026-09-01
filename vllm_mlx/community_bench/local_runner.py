@@ -262,6 +262,17 @@ def run_local(
             )
         else:
             raise ValueError(f"unsupported benchmark task {task_type!r}")
+        run = build_run(
+            repo_id=model["repo_id"],
+            task_type=task_type,
+            hardware=hardware,
+            software=software,
+            started_at=started_at,
+            measurements=measurements,
+            context_length=context_length,
+        )
+        destination.save(run)
+        return run
     except Exception as exc:
         failure_code = (
             "machine_probe_failed"
@@ -280,17 +291,6 @@ def run_local(
         )
         destination.save(failed)
         raise LocalBenchmarkError(str(exc), failed) from exc
-    run = build_run(
-        repo_id=model["repo_id"],
-        task_type=task_type,
-        hardware=hardware,
-        software=software,
-        started_at=started_at,
-        measurements=measurements,
-        context_length=context_length,
-    )
-    destination.save(run)
-    return run
 
 
 __all__ = ["LocalBenchmarkError", "run_local"]

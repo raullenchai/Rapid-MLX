@@ -143,6 +143,20 @@ class BenchmarkRunValidator:
                             f"measurements/{index}/{field}",
                             "does not match the registered case",
                         )
+                for measured_field, target_field in (
+                    ("prompt_tokens", "target_prompt_tokens"),
+                    ("output_tokens", "target_output_tokens"),
+                ):
+                    if (
+                        measured_field in measurement
+                        and target_field in case
+                        and measurement[measured_field] != case[target_field]
+                    ):
+                        raise CatalogValidationError(
+                            "benchmark_run",
+                            f"measurements/{index}/{measured_field}",
+                            f"does not match registered {target_field}",
+                        )
                 phases = sum(
                     float(measurement.get(field, 0))
                     for field in (

@@ -124,6 +124,36 @@ def _image_run() -> dict:
     )
 
 
+def _text_run() -> dict:
+    measurements = []
+    for case_id, prompt_tokens, output_tokens in (
+        ("pp512-tg128", 512, 128),
+        ("pp2048-tg512", 2048, 512),
+    ):
+        for round_index in range(1, 6):
+            measurements.append(
+                {
+                    "case_id": case_id,
+                    "round_index": round_index,
+                    "total_duration_ms": 100,
+                    "peak_active_memory_mib": 4096,
+                    "completed": True,
+                    "prompt_tokens": prompt_tokens,
+                    "output_tokens": output_tokens,
+                    "ttft_ms": 10,
+                    "decode_duration_ms": 90,
+                }
+            )
+    return build_run(
+        repo_id="mlx-community/example-text-model",
+        task_type="text_generation",
+        hardware=Hardware("Apple M4 Pro", 24, 12, 16),
+        software=Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
+        started_at=utc_now(),
+        measurements=measurements,
+    )
+
+
 def test_archive_validates_then_writes_private_atomic_result(tmp_path: Path) -> None:
     archive = LocalRunArchive(tmp_path / "benchmark-home")
     run = _image_run()
@@ -154,6 +184,37 @@ def test_completed_run_requires_every_declared_round() -> None:
     run["measurements"] = []
     with pytest.raises(ValueError, match="measurements"):
         BenchmarkRunValidator().validate(run)
+
+
+def test_registered_text_run_rejects_actual_token_count_drift() -> None:
+    run = _text_run()
+    run["measurements"][0]["prompt_tokens"] = 510
+    with pytest.raises(ValueError, match="target_prompt_tokens"):
+        BenchmarkRunValidator().validate(run)
+
+
+def test_run_local_archives_registered_token_drift_as_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    measurements = _text_run()["measurements"]
+    measurements[0]["prompt_tokens"] = 510
+
+    async def drifted_measurements(repo_id: str):
+        return measurements, 32768
+
+    monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
+
+    with pytest.raises(local_runner.LocalBenchmarkError, match="target_prompt_tokens"):
+        local_runner.run_local("example-text", archive=archive)
+
+    assert archive.list()[0]["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
 
 
 def test_machine_profile_digest_is_recomputed() -> None:
@@ -428,8 +489,8 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
 
     async def standardized(engine, tokenizer, *, sampling: str) -> BenchResult:
         assert sampling == "greedy"
-        short = [RoundResult(100, 200, 10, prompt_tokens=510, output_tokens=128)] * 5
-        long = [RoundResult(50, 150, 20, prompt_tokens=2046, output_tokens=512)] * 5
+        short = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
+        long = [RoundResult(50, 150, 20, prompt_tokens=2048, output_tokens=512)] * 5
         return BenchResult(
             short=BucketResult(short),
             long=BucketResult(long),
@@ -461,7 +522,7 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
         "total_duration_ms": 1280.0,
         "peak_active_memory_mib": 4096,
         "completed": True,
-        "prompt_tokens": 510,
+        "prompt_tokens": 512,
         "output_tokens": 128,
         "ttft_ms": 10,
         "decode_duration_ms": 1270.0,
