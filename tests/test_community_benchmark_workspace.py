@@ -1054,6 +1054,23 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     from vllm_mlx.utils import tokenizer as tokenizer_module
 
     archive = LocalRunArchive(tmp_path)
+    shutdown_calls: list[tuple[bool, bool]] = []
+    executor_type = local_runner.concurrent.futures.ThreadPoolExecutor
+
+    class RecordingExecutor:
+        def __init__(self, *args, **kwargs) -> None:
+            self.inner = executor_type(*args, **kwargs)
+
+        def submit(self, *args, **kwargs):
+            return self.inner.submit(*args, **kwargs)
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            shutdown_calls.append((wait, cancel_futures))
+            self.inner.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(
+        local_runner.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor
+    )
     _mock_local_context(
         monkeypatch, "text_generation", "mlx-community/example-text-model"
     )
@@ -1113,6 +1130,7 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     }
     assert run["execution"]["task"]["language"]["context_length"] == 32768
     assert archive.get(run["run_id"]) == run
+    assert shutdown_calls == [(True, True)]
 
 
 def test_execution_digest_is_over_effective_task_and_resources() -> None:

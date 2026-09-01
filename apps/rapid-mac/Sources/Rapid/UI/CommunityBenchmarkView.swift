@@ -542,10 +542,16 @@ struct CommunityBenchmarkView: View {
             let envelope = try JSONDecoder().decode(
                 CommunityBenchmarkCatalogEnvelope.self, from: data
             )
+            var metadata: [String: CommunityBenchmarkCatalogModel] = [:]
+            for model in envelope.models {
+                guard metadata.updateValue(model, forKey: model.alias) == nil else {
+                    throw CommunityBenchmarkCommand.Failure(
+                        message: "Benchmark catalog contains duplicate alias \(model.alias)."
+                    )
+                }
+            }
             benchmarkCLIAvailable = true
-            benchmarkMetadata = Dictionary(
-                uniqueKeysWithValues: envelope.models.map { ($0.alias, $0) }
-            )
+            benchmarkMetadata = metadata
             selectedAlias = CommunityBenchmarkModel.reconciledSelection(
                 current: selectedAlias,
                 models: models

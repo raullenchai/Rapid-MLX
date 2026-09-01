@@ -462,7 +462,14 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
                 registered_token_ids=True,
             )
     finally:
-        executor.shutdown(wait=False)
+        # ThreadPoolExecutor workers are non-daemon and Python joins them again
+        # during interpreter shutdown. Leaving this executor live can make the
+        # CLI appear finished while its process (and Desktop memory lease)
+        # remains stuck. AsyncEngineCore has exited at this point, so cancel
+        # work that never started and synchronously reap the owned worker. The
+        # Desktop's outer CLI process group remains the hard cancellation
+        # boundary for native MLX calls that cannot be interrupted in-process.
+        executor.shutdown(wait=True, cancel_futures=True)
 
     workload = registered_workload("text_generation")
     buckets = (result.short, result.long)
