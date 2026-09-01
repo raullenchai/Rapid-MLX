@@ -1493,12 +1493,12 @@ struct ContentView: View {
                 : .resolved(launchPlan.models.chatAlias)
         }
 
-        async let chatRestore: Void = runLaunchAutoStart(
+        async let chatRestore = runLaunchAutoStart(
             catalogEntries: sessionCatalog,
             launchPlan: launchPlan
         )
         await dictation.bootstrap(deferModelPreparation: true)
-        await chatRestore
+        let chatRestoreOutcome = await chatRestore
         // A failed catalog probe cannot classify the legacy key. Keep the
         // audio barrier established; `refreshCatalogSnapshot` re-enters this
         // same function when its independent probe produces real rows.
@@ -1510,21 +1510,30 @@ struct ContentView: View {
             if resolutionWasPending {
                 restoredChatAlias = .pendingCatalog
             }
-            await dictation.finishDeferredBootstrap()
+            await dictation.finishDeferredBootstrap(
+                waitingForPrimaryLaunch: chatRestoreOutcome == .primaryLaunchPending
+            )
             return
         }
-        await dictation.finishDeferredBootstrap()
+        await dictation.finishDeferredBootstrap(
+            waitingForPrimaryLaunch: chatRestoreOutcome == .primaryLaunchPending
+        )
+    }
+
+    private enum LaunchAutoStartOutcome {
+        case noPrimaryLaunch
+        case primaryLaunchPending
     }
 
     private func runLaunchAutoStart(
         catalogEntries: [ModelEntry],
         launchPlan: SessionModelRestore.LaunchPlan
-    ) async {
+    ) async -> LaunchAutoStartOutcome {
         guard launchPlan.shouldAutoStart else {
             autoStartPendingDownload = nil
-            return
+            return .noPrimaryLaunch
         }
-        guard case .idle = server.state else { return }
+        guard case .idle = server.state else { return .noPrimaryLaunch }
 
         let aliasAtEntry = alias
         let userSelectionRevisionAtEntry = userSelectionRevision
@@ -1541,7 +1550,7 @@ struct ContentView: View {
             : Set(catalogEntries.map(\.alias))
         guard case .idle = server.state else {
             autoStartPendingDownload = nil
-            return
+            return .noPrimaryLaunch
         }
         if Self.launchSelectionWasReplaced(
             aliasAtEntry: aliasAtEntry,
@@ -1549,7 +1558,7 @@ struct ContentView: View {
             userSelectionChanged: userSelectionRevision != userSelectionRevisionAtEntry
         ) {
             autoStartPendingDownload = nil
-            return
+            return .noPrimaryLaunch
         }
         let hardware = MacHardware.detect()
         // A candidate is only "too big" for auto-start if ModelSizing says so
@@ -1618,6 +1627,15 @@ struct ContentView: View {
                 isLaunchAutoStart: true,
                 catalogEntryHint: catalogEntryHint
             )
+            // A successful start has already reached ready and a terminal
+            // failure no longer owns the audio lane. Only an intentionally
+            // deferred or still-starting primary keeps launch ownership.
+            switch server.state {
+            case .idle, .starting:
+                return .primaryLaunchPending
+            case .ready, .crashed, .stopped, .missing:
+                return .noPrimaryLaunch
+            }
         case .promptDownload(let pending):
             let footprint = ModelSizing.estimate(alias: pending)
             let sizeText: String? = footprint.paramsBillions == nil
@@ -1625,8 +1643,10 @@ struct ContentView: View {
                 : String(format: "~%.1f GB", footprint.weightsGB)
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
+            return .noPrimaryLaunch
         case .skip:
             autoStartPendingDownload = nil
+            return .noPrimaryLaunch
         }
     }
 

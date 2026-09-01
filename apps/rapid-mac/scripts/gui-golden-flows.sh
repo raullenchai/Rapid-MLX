@@ -1889,11 +1889,33 @@ baseline() {
 # button, so a single dump can be a hybrid of two states.
 wait_send_idle() {
     local destination="$1" attempts="${2:-160}" stable=0
+    local deferred_start_attempted=0
+    local deferred_start_evidence="${destination%.json}-deferred-start.json"
     local memory_confirmation_signature="" memory_confirmation_polls=0
     local memory_confirmation_attempts=0
     local confirmation_evidence="${destination%.json}-memory-confirm.json"
     for ((i=0; i<attempts; i++)); do
         see_main "$destination"
+        # Launch auto-start intentionally stays idle when live memory would
+        # require explicit consent; it must not surprise the user with a modal
+        # on app open. A journey that explicitly waits for a ready composer is
+        # acting as that user, so follow the visible Start path instead of
+        # timing out on the intentional idle state. Restrict this recovery to
+        # an enabled Start action: never turn a wait into a silent download.
+        if [[ "$deferred_start_attempted" == 0 ]] \
+           && jq -e '.data.ui_elements[]?
+                      | select(.identifier == "Readiness.Action"
+                               and .description == "Start"
+                               and .enabled == true)' \
+                "$destination" >/dev/null; then
+            "$AX_DRIVER" click-center "$APP_PID" Readiness.Action \
+                > "$deferred_start_evidence"
+            deferred_start_attempted=1
+            stable=0
+            log "  followed deferred auto-start through the visible Start action"
+            sleep 0.25
+            continue
+        fi
         # Relaunch/session-restore paths do not pass through start_model(), but
         # they can still hit the same production memory warning on a busy
         # hosted runner.  Waiting for an idle composer means this journey has
@@ -1922,6 +1944,7 @@ wait_send_idle() {
         else
             stable=0
         fi
+
         sleep 0.25
     done
     die "composer never settled into a ready, non-streaming state"

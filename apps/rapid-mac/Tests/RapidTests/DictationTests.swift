@@ -670,6 +670,59 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("an idle primary keeps launch audio deferred until chat becomes ready")
+    func idlePrimaryDoesNotYieldLaunchOwnershipToAudio() async {
+        var prewarmCount = 0
+        var hotkeyStartCount = 0
+        let controller = readinessController(
+            serverState: .idle,
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: {
+                hotkeyStartCount += 1
+                return true
+            }
+        )
+
+        await controller.bootstrap(deferModelPreparation: true)
+        await controller.finishDeferredBootstrap(waitingForPrimaryLaunch: true)
+
+        #expect(hotkeyStartCount == 1, "the persisted shortcut remains armed")
+        #expect(prewarmCount == 0, "idle auto-start must not launch an audio-only sidecar")
+
+        controller.serverStateDidChange(.starting(alias: "chat-model"))
+        await Task.yield()
+        #expect(prewarmCount == 0, "the primary health-check window keeps the barrier")
+
+        controller.serverStateDidChange(.ready(alias: "chat-model"))
+        await controller._testingWaitForLifecycleTask()
+        #expect(prewarmCount == 1, "the real primary ready transition releases preparation")
+        #expect(controller.phase == .idle)
+    }
+
+    @MainActor
+    @Test("an idle server releases audio when no primary launch was requested")
+    func idleServerWithoutPrimaryLaunchReleasesAudio() async {
+        var prewarmCount = 0
+        let controller = readinessController(
+            serverState: .idle,
+            prewarm: {
+                prewarmCount += 1
+                return true
+            },
+            hotkeyStart: { true }
+        )
+
+        await controller.bootstrap(deferModelPreparation: true)
+        await controller.finishDeferredBootstrap()
+
+        #expect(prewarmCount == 1, "disabled auto-start must not strand Dictation")
+        #expect(controller.phase == .idle)
+    }
+
+    @MainActor
     @Test("cold-start revalidation inherits the synchronous launch barrier")
     func coldStartRevalidationCannotPrewarmBeforeChatRestore() async {
         var prewarmCount = 0
@@ -1044,6 +1097,7 @@ struct DictationTests {
     private func readinessController(
         phase: DictationController.Phase = .off,
         initiallyDeferred: Bool = false,
+        serverState: ServerState = .ready(alias: "whisper-small"),
         prewarm: @escaping @MainActor () async -> Bool,
         hotkeyStart: @escaping @MainActor () -> Bool,
         hotkeyStop: @escaping @MainActor () -> Void = {}
@@ -1059,7 +1113,7 @@ struct DictationTests {
         )
         return DictationController(
             server: ServerManager(
-                testingState: .ready(alias: "whisper-small"),
+                testingState: serverState,
                 binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
             testingEnabled: true,

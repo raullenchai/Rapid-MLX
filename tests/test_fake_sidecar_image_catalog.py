@@ -361,7 +361,7 @@ def test_vision_fixture_uses_one_repo_across_models_ls_and_info():
     ]
     assert any(row[:2] == [alias, repo] for row in cached_rows if len(row) >= 2)
     assert any(
-        row[:3] == [alias, repo, "256 MB"] for row in cached_rows if len(row) >= 3
+        row[:3] == [alias, repo, "1 MiB"] for row in cached_rows if len(row) >= 3
     )
     assert run_fake("info", alias, settings=settings).strip() == (
         f"Alias: {alias} -> {repo}"

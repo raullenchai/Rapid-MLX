@@ -331,8 +331,26 @@ final class DictationController {
     /// settled. The shortcut was already armed by ``bootstrap`` so a slow
     /// primary launch never leaves the user's persisted global shortcut
     /// silently unregistered.
-    func finishDeferredBootstrap() async {
+    func finishDeferredBootstrap(waitingForPrimaryLaunch: Bool = false) async {
+        await finishDeferredBootstrap(
+            primaryLaunchReady: !waitingForPrimaryLaunch || server.servingAlias != nil
+        )
+    }
+
+    private func finishDeferredBootstrap(primaryLaunchReady: Bool) async {
         guard isEnabled, modelPreparationDeferred else { return }
+        // `ServerManager.start(isLaunchAutoStart:)` deliberately returns with
+        // no child when live memory would require explicit confirmation. In
+        // that state, releasing the barrier lets Dictation mistake the idle
+        // server for permission to launch its audio-only fallback, replacing
+        // the chat session the app is still trying to restore. Keep the
+        // shortcut armed but its model preparation deferred until a real
+        // primary process reaches ready. Callers explicitly say whether a
+        // primary launch was requested so users who disabled auto-start (or
+        // were offered a download instead) can still use Dictation. The ready
+        // fact is explicit because tests can drive the state-change callback
+        // without mutating ServerManager's separately observed state.
+        guard primaryLaunchReady else { return }
         modelPreparationDeferred = false
         // Cancellation still owns cleanup: leave the already-registered
         // shortcut able to prepare on its next use, but do not start an audio
@@ -348,7 +366,19 @@ final class DictationController {
     /// Re-running the existing preparation flight is therefore idempotent for
     /// the latter and restores the former without inventing another lifecycle.
     func serverStateDidChange(_ newState: ServerState) {
-        guard isEnabled, !modelPreparationDeferred else { return }
+        guard isEnabled else { return }
+        if modelPreparationDeferred {
+            // A low-memory launch may have left auto-start idle. The user's
+            // later explicit chat start is the event that safely releases the
+            // audio barrier; `.starting` is still too early because no voice
+            // lane is reachable until the health check publishes `.ready`.
+            if case .ready = newState {
+                scheduleLifecycleTask { controller in
+                    await controller.finishDeferredBootstrap(primaryLaunchReady: true)
+                }
+            }
+            return
+        }
         lifecycleTask?.cancel()
         lifecycleTask = nil
         switch newState {
