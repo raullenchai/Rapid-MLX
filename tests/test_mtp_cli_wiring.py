@@ -2818,28 +2818,52 @@ def test_install_mtp_vendored_logits_processors_mid_stream_fails_closed(
     assert gb.orig_step_calls == orig_before
 
 
-def test_install_mtp_vendored_seeded_before_state_soft_fallthrough(monkeypatch):
-    """A request-local seed remains outside the MTP safety boundary.
-
-    When the request starts seeded (and never populated ``_state``),
-    the wrapper soft-falls
-    through to ``_orig_step()`` and marks the uid as disabled to
-    prevent re-entry on the next step.
-
-    The vendored generator uses MLX's process-global RNG today. Routing
-    a seeded request through it would violate the per-request replay
-    contract even though stochastic MTP itself is distribution-safe.
-    """
+def test_install_mtp_vendored_carries_seeded_rng_after_priming(monkeypatch):
+    """A seeded request hands its already-advanced key to self-MTP."""
     from types import SimpleNamespace
 
     import mlx.core as mx
 
+    from vllm_mlx._seeded_sampler import make_seeded_sampler
     from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    seen = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    def _recording_generator(*args, **kwargs):
+        seen.update(kwargs)
+        return _FakeGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _recording_generator)
 
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [11]
+    sampler = make_seeded_sampler(seed=1234, temperature=0.7)
+    # GenerationBatch's priming call already consumed one request-local draw.
+    sampler(mx.array([[0.0, -1.0]], dtype=mx.float32))
+    draws_after_priming = sampler.lane_rng.draws
+    # The first decode step may arrive before mlx-lm has populated this
+    # positional row; production carries the sampler on the request.
+    gb.samplers = []
     request_stub = SimpleNamespace(
-        sampling_params=SimpleNamespace(temperature=0.7, seed=1234)
+        _request_sampler=sampler,
+        sampling_params=SimpleNamespace(
+            temperature=0.7,
+            top_p=0.0,
+            top_k=0,
+            min_p=0.0,
+            seed=1234,
+        ),
     )
     ok = _install_mtp_vendored(
         batch_gen,
@@ -2852,11 +2876,11 @@ def test_install_mtp_vendored_seeded_before_state_soft_fallthrough(monkeypatch):
     gb._next_tokens = mx.array([200], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
-    # Should soft-fall-through, not raise.
     gb._step()
-    stats = batch_gen._mtp_vendored_stats
-    assert stats["ft_non_greedy"] >= 1
-    assert gb.orig_step_calls == 1
+    assert seen["lane_rng"] is sampler.lane_rng
+    assert seen["lane_rng"].draws == draws_after_priming
+    assert seen["disable_auto_k"] is True
+    assert gb.orig_step_calls == 0
 
 
 def test_install_mtp_vendored_passes_request_sampling_and_safe_penalty_context(

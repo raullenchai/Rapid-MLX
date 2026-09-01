@@ -991,8 +991,21 @@ def _install_mtp_vendored(
         temp = getattr(sp, "temperature", None)
         if temp is None:
             return None, "temperature is unresolved"
-        if getattr(sp, "seed", None) is not None:
-            return None, "request-local seeded RNG is not yet supported"
+        request_seed = getattr(sp, "seed", None)
+        lane_rng = None
+        if request_seed is not None and float(temp) > 0:
+            # The request is authoritative across the prompt->generation
+            # transition. On its first decode step mlx-lm can expose the uid
+            # before GenerationBatch.samplers has populated the positional
+            # row, exactly like the processor seam below. Keep a positional
+            # fallback for standalone tests/embedders without request state.
+            live_sampler = getattr(req, "_request_sampler", None)
+            if live_sampler is None:
+                samplers = list(getattr(gb, "samplers", ()) or ())
+                live_sampler = samplers[0] if len(samplers) == 1 else None
+            lane_rng = getattr(live_sampler, "lane_rng", None)
+            if lane_rng is None:
+                return None, "request-local seeded RNG state is unavailable"
 
         # The scheduler's uid-keyed map is the processor source of truth. At
         # the PromptProcessingBatch -> persistent GenerationBatch transition,
@@ -1059,6 +1072,7 @@ def _install_mtp_vendored(
                 "logits_processors": row_processors or None,
                 "initial_tokens": initial_tokens,
                 "fingerprint": fingerprint,
+                "lane_rng": lane_rng,
             },
             "",
         )
@@ -1403,7 +1417,14 @@ def _install_mtp_vendored(
                     # one model's learned costs drive another's depth).
                     model_id=controller_key or _derived_controller_key,
                     max_k=max_k,
-                    disable_auto_k=disable_auto_k,
+                    # A process-global adaptive controller can begin two
+                    # otherwise identical seeded requests at different K,
+                    # changing how many proposal/acceptance draws they
+                    # consume. Pin seeded requests to max_k so their random
+                    # program is request-local and replayable.
+                    disable_auto_k=(
+                        disable_auto_k or sampling_options["lane_rng"] is not None
+                    ),
                     # 0.9.13 PR-C: EOS holdout — feed the
                     # BatchGenerator's assembled stop set to the
                     # controller so positions past EOS are not
@@ -1411,6 +1432,10 @@ def _install_mtp_vendored(
                     # tokens are unchanged; only the acceptance
                     # model's training window shrinks.
                     stop_tokens=getattr(batch_gen, "stop_tokens", None),
+                    # Continue the request sampler's carried key after the
+                    # priming token. Both owners run on this generation
+                    # thread; never re-derive from the public seed.
+                    lane_rng=sampling_options["lane_rng"],
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -7063,6 +7088,11 @@ class Scheduler:
             # homogeneous batches share one callable — required for
             # ``_install_dense_sampler_fastpath`` to detect them by identity.
             request_sampler = self._get_request_sampler(request.sampling_params)
+            # Preserve request-local mutable sampler state across mlx-lm's
+            # PromptProcessingBatch -> GenerationBatch seam. Vendored B=1
+            # self-MTP reads this exact object after the priming draw.
+            request_with_sampler: Any = request
+            request_with_sampler._request_sampler = request_sampler
 
             # Issue #427: split the insert at prefix_boundary so the
             # per-message cache snapshot can fire after the prefix

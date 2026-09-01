@@ -53,8 +53,34 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 import mlx.core as mx
+
+
+class RequestSeededRNG:
+    """Generation-thread-owned carried key for one seeded request."""
+
+    __slots__ = ("_key", "_draws")
+
+    def __init__(self, seed: int):
+        self._key = mx.random.key(int(seed))
+        self._draws = 0
+
+    @property
+    def key(self) -> mx.array:
+        return self._key
+
+    @property
+    def draws(self) -> int:
+        return self._draws
+
+    def next_key(self) -> mx.array:
+        # Preserve the sampler's historical split contract exactly: consume
+        # the first child and carry the second child into the next draw.
+        subkey, self._key = mx.random.split(self._key)
+        self._draws += 1
+        return subkey
 
 
 def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
@@ -146,6 +172,9 @@ def make_seeded_sampler(
         def greedy(logprobs: mx.array) -> mx.array:
             return mx.argmax(logprobs, axis=-1)
 
+        greedy_with_state: Any = greedy
+        greedy_with_state.lane_rng = None
+        greedy_with_state.request_seeded = True
         return greedy
 
     # ``temperature == 0`` is already handled by the greedy short-circuit
@@ -193,7 +222,7 @@ def make_seeded_sampler(
     #     32-bit key space and matches the silent narrowing JAX /
     #     mlx-lm would do internally anyway.
     seed_uint32 = int(seed) & 0xFFFFFFFF
-    state = [mx.random.key(seed_uint32)]
+    lane_rng = RequestSeededRNG(seed_uint32)
 
     # Codex round-5 BLOCKING #2 defensive belt: serialize key-state
     # advancement so two concurrent callers of THE SAME closure can't
@@ -345,13 +374,20 @@ def make_seeded_sampler(
 
         # Pull a fresh subkey for this step. Held under the per-closure
         # lock so the read-split-write is atomic — two concurrent
-        # callers can't both read the same ``state[0]`` and then both
+        # callers can't both read the same carried key and then both
         # advance it (which would reuse one subkey and skip the other).
         # See the ``state_lock`` block above for why this is defensive
         # rather than load-bearing under the current scheduler.
         with state_lock:
-            cur_key, next_key = mx.random.split(state[0])
-            state[0] = next_key
-        return mx.random.categorical(masked, key=cur_key)
+            key = lane_rng.next_key()
+        return mx.random.categorical(masked, key=key)
+
+    # The priming sample and the speculative verifier execute on the same
+    # scheduler-owned generation thread. Expose the carried key object so a
+    # B=1 self-MTP request continues after the priming draw rather than
+    # re-deriving the public seed and replaying draw zero.
+    sampler_with_state: Any = sampler
+    sampler_with_state.lane_rng = lane_rng
+    sampler_with_state.request_seeded = True
 
     return sampler

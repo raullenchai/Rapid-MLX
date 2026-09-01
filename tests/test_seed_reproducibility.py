@@ -390,6 +390,17 @@ def test_seeded_sampler_same_seed_same_sequence(logprobs_fixture):
     assert seq1 == seq2
 
 
+def test_seeded_sampler_exposes_the_same_carried_rng_it_advances(logprobs_fixture):
+    sampler = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9)
+    carried = sampler.lane_rng
+    assert carried.draws == 0
+
+    sampler(logprobs_fixture)
+
+    assert sampler.lane_rng is carried
+    assert carried.draws == 1
+
+
 def test_seeded_sampler_different_seed_different_sequence(logprobs_fixture):
     """Different seeds must produce different sequences; if they didn't,
     the seed parameter would be cosmetic."""

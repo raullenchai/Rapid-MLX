@@ -239,6 +239,7 @@ def mtp_generate_step(
     # training window shrinks. ``None`` disables the holdout.
     stop_tokens: set[int] | None = None,
     timing_stats: dict[str, float] | None = None,
+    lane_rng: Any | None = None,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -292,6 +293,17 @@ def mtp_generate_step(
     xtc_special_tokens = xtc_special_tokens or []
     if accept_counter is None:
         accept_counter = get_global_counter()
+
+    def _uniform(*, shape=None):
+        kwargs = {"key": lane_rng.next_key()} if lane_rng is not None else {}
+        if shape is not None:
+            kwargs["shape"] = shape
+        return mx.random.uniform(**kwargs)
+
+    def _categorical(logits):
+        if lane_rng is None:
+            return mx.random.categorical(logits)
+        return mx.random.categorical(logits, key=lane_rng.next_key())
 
     def _timing_add(name: str, elapsed: float) -> None:
         if timing_stats is None:
@@ -420,14 +432,22 @@ def mtp_generate_step(
                 masked = f(masked)
             scaled = masked / temp
             lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
-            token = categorical_sampling(masked, temp)
+            token = (
+                categorical_sampling(masked, temp)
+                if lane_rng is None
+                else _categorical(masked / temp)
+            )
         elif _is_greedy:
             token = mx.argmax(logprobs, axis=-1)
             lp_accept = logprobs
         else:
             scaled = logprobs / temp
             lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
-            token = categorical_sampling(logprobs, temp)
+            token = (
+                categorical_sampling(logprobs, temp)
+                if lane_rng is None
+                else _categorical(logprobs / temp)
+            )
         return token, logprobs, lp_accept
 
     def _clear_rollback():
@@ -574,7 +594,7 @@ def mtp_generate_step(
                 )
             else:
                 tokens_for_proc = prev
-            xtc_draw = mx.random.uniform() if _xtc_cell is not None else None
+            xtc_draw = _uniform() if _xtc_cell is not None else None
             draft_tok, draft_lp, draft_accept_lp = _process_and_sample(
                 tokens_for_proc, mtp_logits, xtc_draw
             )
@@ -981,7 +1001,7 @@ def mtp_generate_step(
             # probability but correlates the sequential accept decisions,
             # changing the joint token distribution for K>1. Independent
             # Bernoulli draws are required by rejection sampling.
-            u = mx.random.uniform(shape=(k_len,))
+            u = _uniform(shape=(k_len,))
             drafts_i32 = drafts_arr.astype(mx.int32)
 
             # --------------------------------------------------------
@@ -1024,7 +1044,7 @@ def mtp_generate_step(
                     residual = mx.maximum(p_target - p_draft, 0.0)
                     z = residual.sum(axis=-1, keepdims=True)
                     dist = mx.where(z > 0, residual, p_target)
-                residual_toks_arr = mx.random.categorical(mx.log(dist))
+                residual_toks_arr = _categorical(mx.log(dist))
                 # Bonus already sampled per-position inside _step_backbone
                 # for temp>0 (categorical over target distro at position K).
                 bonus_tok_arr = toks[k_len]
