@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import concurrent.futures
+import io
 import math
 import time
 from typing import Any
@@ -73,6 +76,31 @@ def _peak_memory_mib(base_url: str) -> int | None:
         return None
 
 
+def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -> int:
+    from PIL import Image, UnidentifiedImageError
+
+    data = result.get("data")
+    if not isinstance(data, list):
+        raise RuntimeError("image benchmark response has no artifact list")
+    for item in data:
+        encoded = item.get("b64_json") if isinstance(item, dict) else None
+        if not isinstance(encoded, str):
+            raise RuntimeError("image benchmark response has no base64 artifact")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+            with Image.open(io.BytesIO(raw)) as image:
+                actual_size = image.size
+                image.verify()
+        except (binascii.Error, OSError, UnidentifiedImageError, ValueError) as exc:
+            raise RuntimeError("image benchmark returned an invalid artifact") from exc
+        if actual_size != (width, height):
+            raise RuntimeError(
+                f"image benchmark returned {actual_size[0]}x{actual_size[1]}; "
+                f"registered workload requires {width}x{height}"
+            )
+    return len(data)
+
+
 def _run_image(
     alias: str, *, isolate_process_group: bool = True
 ) -> list[dict[str, Any]]:
@@ -107,7 +135,10 @@ def _run_image(
             if index >= case["warmup_rounds"]:
                 if result.get("cancelled", False):
                     raise BenchmarkCancelledError("image benchmark was cancelled")
-                if len(result.get("data", [])) != case["image_count"]:
+                image_count = _validated_image_count(
+                    result, width=case["width"], height=case["height"]
+                )
+                if image_count != case["image_count"]:
                     raise RuntimeError("image benchmark returned an incomplete batch")
                 measurements.append(
                     {
@@ -116,7 +147,7 @@ def _run_image(
                         "total_duration_ms": duration_ms,
                         "peak_active_memory_mib": _peak_memory_mib(server["base_url"]),
                         "completed": True,
-                        "image_count": len(result.get("data", [])),
+                        "image_count": image_count,
                         "width": case["width"],
                         "height": case["height"],
                     }
@@ -219,7 +250,7 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
     from vllm_mlx.service.helpers import get_model_max_context
     from vllm_mlx.utils.tokenizer import load_model_with_fallback
 
-    from .runner import run_standardized_bench
+    from .runner import _reported_token_count, run_standardized_bench
 
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
@@ -264,10 +295,12 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
                     "total_duration_ms": round_result.ttft_ms + decode_ms,
                     "peak_active_memory_mib": peak,
                     "completed": True,
-                    "prompt_tokens": round_result.prompt_tokens
-                    or case["target_prompt_tokens"],
-                    "output_tokens": round_result.output_tokens
-                    or case["target_output_tokens"],
+                    "prompt_tokens": _reported_token_count(
+                        round_result.prompt_tokens, case["target_prompt_tokens"]
+                    ),
+                    "output_tokens": _reported_token_count(
+                        round_result.output_tokens, case["target_output_tokens"]
+                    ),
                     "ttft_ms": round_result.ttft_ms,
                     "decode_duration_ms": decode_ms,
                 }

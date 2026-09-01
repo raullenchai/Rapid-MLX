@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import base64
 import contextlib
+import io
 import json
 import os
 from importlib import resources
@@ -38,6 +40,14 @@ class _Response:
 
     def json(self) -> dict:
         return self._payload
+
+
+def _png_base64(width: int, height: int) -> str:
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), color="white").save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def _mock_local_context(
@@ -148,6 +158,48 @@ def test_run_local_translates_planning_error_without_fabricating_a_run(
 
     assert error.value.run is None
     assert error.value.saved is False
+
+
+@pytest.mark.parametrize("action", ["catalog", "plan", "results", "inspect"])
+def test_non_run_cli_actions_return_structured_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    class BrokenArchive:
+        def list(self):
+            raise OSError("archive unavailable")
+
+        def get(self, run_id: str):
+            raise ValueError(f"unknown run {run_id}")
+
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: BrokenArchive()),
+    )
+    monkeypatch.setattr(
+        community_cli,
+        "benchmark_catalog",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("catalog unavailable")),
+    )
+    monkeypatch.setattr(
+        community_cli,
+        "plan_for_alias",
+        lambda alias: (_ for _ in ()).throw(ValueError(f"unknown model {alias}")),
+    )
+    args = SimpleNamespace(
+        benchmark_action=action,
+        benchmark_model="missing",
+        memory_gib=None,
+        run_id="missing-run",
+        json=True,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["saved"] is False
+    assert "error" in payload
 
 
 @pytest.mark.parametrize(
@@ -262,6 +314,13 @@ def test_registered_text_run_rejects_actual_token_count_drift() -> None:
     run["measurements"][0]["prompt_tokens"] = 510
     with pytest.raises(ValueError, match="target_prompt_tokens"):
         BenchmarkRunValidator().validate(run)
+
+
+def test_reported_zero_token_count_is_never_replaced_by_protocol_target() -> None:
+    from vllm_mlx.community_bench.runner import _reported_token_count
+
+    assert _reported_token_count(0, 512) == 0
+    assert _reported_token_count(None, 512) == 512
 
 
 def test_run_local_archives_registered_token_drift_as_failure(
@@ -417,7 +476,7 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
 
     def post(url: str, *, json: dict, timeout: float) -> _Response:
         calls.append({"url": url, "json": json, "timeout": timeout})
-        return _Response({"data": [{"b64_json": "unused"}]})
+        return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
 
     monkeypatch.setattr(_server, "serve", serve)
     monkeypatch.setattr(local_runner.requests, "post", post)
@@ -458,6 +517,33 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
         }
     ]
     assert archive.get(run["run_id"]) == run
+
+
+def test_run_local_rejects_wrong_image_artifact_dimensions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {"data": [{"b64_json": _png_base64(512, 512)}]}
+        ),
+    )
+
+    with pytest.raises(local_runner.LocalBenchmarkError, match="512x512") as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert error.value.run["outcome"]["status"] == "failed"
 
 
 def test_run_local_executes_video_protocol_and_polls_to_completion(

@@ -15,51 +15,54 @@ def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _print_failure(args, exc: Exception) -> int:
+    run = exc.run if isinstance(exc, LocalBenchmarkError) else None
+    saved = exc.saved if isinstance(exc, LocalBenchmarkError) else False
+    if args.json:
+        payload = {"error": str(exc), "saved": saved}
+        if run is not None:
+            payload["run"] = run
+        print(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            file=sys.stderr,
+        )
+    elif saved and run is not None:
+        print(
+            f"Benchmark failed; local outcome saved as {run['run_id']}: {exc}",
+            file=sys.stderr,
+        )
+    elif run is not None:
+        print(
+            f"Benchmark failed; local outcome could not be saved: {exc}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Benchmark command failed: {exc}", file=sys.stderr)
+    return 1
+
+
 def benchmark_command(args) -> int:
     action = args.benchmark_action
     archive = LocalRunArchive.default()
-    if action == "catalog":
-        value = benchmark_catalog(memory_gib=args.memory_gib)
-    elif action == "plan":
-        value = plan_for_alias(args.benchmark_model)
-    elif action == "run":
-        try:
+    try:
+        if action == "catalog":
+            value = benchmark_catalog(memory_gib=args.memory_gib)
+        elif action == "plan":
+            value = plan_for_alias(args.benchmark_model)
+        elif action == "run":
             value = run_local(
                 args.benchmark_model,
                 archive=archive,
                 inherit_process_group=getattr(args, "inherit_process_group", False),
             )
-        except LocalBenchmarkError as exc:
-            if args.json:
-                payload = {"error": str(exc), "saved": exc.saved}
-                if exc.run is not None:
-                    payload["run"] = exc.run
-                print(
-                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                    file=sys.stderr,
-                )
-            elif exc.saved and exc.run is not None:
-                print(
-                    f"Benchmark failed; local outcome saved as {exc.run['run_id']}: {exc}",
-                    file=sys.stderr,
-                )
-            elif exc.run is not None:
-                print(
-                    f"Benchmark failed; local outcome could not be saved: {exc}",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"Benchmark could not start: {exc}",
-                    file=sys.stderr,
-                )
-            return 1
-    elif action == "results":
-        value = {"schema_version": 1, "runs": archive.list()}
-    elif action == "inspect":
-        value = archive.get(args.run_id)
-    else:  # pragma: no cover - argparse owns this invariant
-        raise ValueError(f"unknown benchmark action {action!r}")
+        elif action == "results":
+            value = {"schema_version": 1, "runs": archive.list()}
+        elif action == "inspect":
+            value = archive.get(args.run_id)
+        else:  # pragma: no cover - argparse owns this invariant
+            raise ValueError(f"unknown benchmark action {action!r}")
+    except Exception as exc:
+        return _print_failure(args, exc)
 
     if args.json:
         _print_json(value)
@@ -87,7 +90,9 @@ def benchmark_command(args) -> int:
                 f"{run['run_id']}  {run['workload']['task_type']:<18} "
                 f"{run['outcome']['status']:<10} {run['completed_at']}"
             )
-    else:
+    elif action == "inspect":
+        _print_json(value)
+    else:  # run
         print(f"Saved local result {value['run_id']}")
         print("Nothing was uploaded.")
     return 0

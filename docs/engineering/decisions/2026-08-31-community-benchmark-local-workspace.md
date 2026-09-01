@@ -64,9 +64,12 @@ records rather than parse legacy submission JSON.
   response metadata. The registered runner rejects a result whose metadata
   differs from the protocol workload, and treats every non-active job status
   as terminal instead of waiting until the benchmark timeout.
-- Planning and archive failures remain structured CLI errors. The CLI states
-  whether a privacy-safe failed run was actually saved; it never claims local
-  persistence after a disk or permission error.
+- Image results are decoded before measurement so their actual dimensions and
+  count must match the registered workload. Observed zero token counts remain
+  zero and fail comparability validation instead of being replaced by targets.
+- Catalog, planning, archive, and inspect failures remain structured CLI
+  errors. The CLI states whether a privacy-safe failed run was actually saved;
+  it never claims local persistence after a disk or permission error.
 
 ## Product flow
 

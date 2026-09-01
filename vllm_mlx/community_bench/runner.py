@@ -89,6 +89,12 @@ class BucketResult:
         }
 
 
+def _reported_token_count(observed: int | None, expected: int) -> int:
+    """Use the protocol target only when an older engine omits the counter."""
+
+    return expected if observed is None else observed
+
+
 @dataclass(frozen=True)
 class BenchResult:
     short: BucketResult
@@ -240,9 +246,11 @@ async def _run_one_round(
             "the model failed to load or sampling produced zero output"
         )
 
-    prompt_tokens_actual = last_output.prompt_tokens or target_prompt_tokens
-    completion_tokens = last_output.completion_tokens or len(
-        last_output.output_token_ids
+    prompt_tokens_actual = _reported_token_count(
+        last_output.prompt_tokens, target_prompt_tokens
+    )
+    completion_tokens = _reported_token_count(
+        last_output.completion_tokens, len(last_output.output_token_ids)
     )
 
     # EOS / early-stop guard. The standardized bench depends on every
