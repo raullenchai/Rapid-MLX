@@ -2498,8 +2498,28 @@ final class AutosizingTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        if consumeFileDrop(from: sender.draggingPasteboard) { return true }
+        if consumeFileDrop(from: sender.draggingPasteboard) {
+            recordUITestFileDrop("performed")
+            return true
+        }
         return super.performDragOperation(sender)
+    }
+
+    /// Test-only destination signal for distinguishing an XCUI gesture that
+    /// never reached the compose field from a product drop that was observed
+    /// but failed to render. Production launches do not set this path.
+    private func recordUITestFileDrop(_ phase: String) {
+        guard let path = ProcessInfo.processInfo.environment["RAPID_XCUI_DROP_EVENT_FILE"] else {
+            return
+        }
+        do {
+            try phase.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            // This environment variable exists only in the native UI-test
+            // process. Losing its completion signal must fail closed: treating
+            // a consumed drop as a transport miss could attach the file twice.
+            fatalError("could not record completed UI-test file drop: \(error)")
+        }
     }
 
     /// Returns true when a file drop was consumed, regardless of whether the
