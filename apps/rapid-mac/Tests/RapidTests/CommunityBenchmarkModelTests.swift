@@ -168,6 +168,28 @@ struct CommunityBenchmarkModelTests {
         #expect(!processExists(descendantPID))
     }
 
+    @Test("Benchmark teardown is bounded when SIGKILL remains pending")
+    func teardownBoundsUninterruptibleProcessGroup() {
+        var signals: [Int32] = []
+        var tick: TimeInterval = 0
+        let origin = Date(timeIntervalSince1970: 1_000)
+
+        let exited = BenchmarkProcessBox.boundedTermination(
+            isAlive: { true },
+            signal: { signals.append($0) },
+            termGrace: 1,
+            killGrace: 1,
+            now: {
+                defer { tick += 1 }
+                return origin.addingTimeInterval(tick)
+            },
+            sleep: { _ in }
+        )
+
+        #expect(!exited)
+        #expect(signals == [SIGTERM, SIGKILL])
+    }
+
     private func processExists(_ pid: pid_t) -> Bool {
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM

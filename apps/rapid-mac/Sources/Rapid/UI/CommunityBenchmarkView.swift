@@ -170,13 +170,17 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         cancelled = true
         let runningChild = child
         lock.unlock()
-        if let runningChild {
-            Self.terminateAndReap(runningChild)
-        }
+        // Wake the detached waiter immediately. It owns the bounded TERM/KILL
+        // sequence so the cancellation callback itself never blocks AppKit.
+        runningChild?.signalProcessGroup(SIGTERM)
     }
 
-    func waitForCompletion(_ child: ProcessGroupChild) {
+    func waitForCompletion(_ child: ProcessGroupChild) -> Bool {
         while child.isRunning {
+            lock.lock()
+            let shouldCancel = cancelled
+            lock.unlock()
+            if shouldCancel { return Self.terminateAndReap(child) }
             // Also drives ProcessGroupChild's non-blocking waitpid fallback
             // when its dispatch exit source is delayed on a saturated host.
             _ = child.isProcessGroupAlive
@@ -186,25 +190,46 @@ final class BenchmarkProcessBox: @unchecked Sendable {
         // Never return control (and release the memory reservation) with any
         // member of the benchmark process group still alive.
         if child.isProcessGroupAlive {
-            Self.terminateAndReap(child)
+            return Self.terminateAndReap(child)
         }
+        return true
     }
 
-    private static func terminateAndReap(_ child: ProcessGroupChild) {
-        child.signalProcessGroup(SIGTERM)
-        let deadline = Date().addingTimeInterval(2)
-        while child.isProcessGroupAlive, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
+    private static func terminateAndReap(_ child: ProcessGroupChild) -> Bool {
+        let exited = boundedTermination(
+            isAlive: { child.isProcessGroupAlive },
+            signal: { child.signalProcessGroup($0) },
+            termGrace: 2,
+            killGrace: 1
+        )
+        if !exited {
+            // A process stuck in uninterruptible I/O can remain visible with
+            // SIGKILL pending. Do not strand the Desktop server lease forever;
+            // leave a bounded background reaper to repeat the final signal.
+            ProcessGroupChild.reapProcessGroupInBackground(
+                processGroupID: child.processGroupID
+            )
         }
-        if child.isProcessGroupAlive {
-            child.signalProcessGroup(SIGKILL)
-            // SIGKILL is the final ownership boundary: do not return and let
-            // the view release its server reservation until the kernel no
-            // longer reports any process in this group.
-            while child.isProcessGroupAlive {
-                Thread.sleep(forTimeInterval: 0.01)
-            }
+        return exited
+    }
+
+    static func boundedTermination(
+        isAlive: () -> Bool,
+        signal: (Int32) -> Void,
+        termGrace: TimeInterval,
+        killGrace: TimeInterval,
+        now: () -> Date = Date.init,
+        sleep: (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
+    ) -> Bool {
+        signal(SIGTERM)
+        let termDeadline = now().addingTimeInterval(termGrace)
+        while isAlive(), now() < termDeadline { sleep(0.01) }
+        if isAlive() {
+            signal(SIGKILL)
+            let killDeadline = now().addingTimeInterval(killGrace)
+            while isAlive(), now() < killDeadline { sleep(0.01) }
         }
+        return !isAlive()
     }
 }
 
@@ -236,14 +261,21 @@ enum CommunityBenchmarkCommand {
                         standardError: stderr
                     )
                     let outputTask = Task.detached {
-                        stdout.fileHandleForReading.readDataToEndOfFile()
+                        try stdout.fileHandleForReading.readToEnd() ?? Data()
                     }
                     let errorTask = Task.detached {
-                        stderr.fileHandleForReading.readDataToEndOfFile()
+                        try stderr.fileHandleForReading.readToEnd() ?? Data()
                     }
-                    box.waitForCompletion(child)
-                    let output = await outputTask.value
-                    let errorData = await errorTask.value
+                    let exited = box.waitForCompletion(child)
+                    if !exited {
+                        try? stdout.fileHandleForReading.close()
+                        try? stderr.fileHandleForReading.close()
+                        outputTask.cancel()
+                        errorTask.cancel()
+                        throw CancellationError()
+                    }
+                    let output = try await outputTask.value
+                    let errorData = try await errorTask.value
                     guard child.terminationStatus == 0 else {
                         let detail = String(data: errorData, encoding: .utf8)?
                             .trimmingCharacters(in: .whitespacesAndNewlines)

@@ -36,6 +36,9 @@ records rather than parse legacy submission JSON.
   hidden supervisor flag keeps that server in the owned group; navigation away
   cancels the run, and a replacement view waits for the prior lease to drain.
   A cancelled queued view is removed immediately rather than acquiring later.
+  Foreground teardown is bounded after SIGKILL so an uninterruptible process
+  cannot permanently reserve the Desktop lifecycle; a bounded background
+  reaper retains best-effort ownership after the UI lease is released.
 - A completed run always contains its atomic `MachineObservation`. If the
   privacy-allowlisted machine probe itself fails, the local failed attempt uses
   `machine_probe_failed` and omits `machine` rather than fabricating identity;
@@ -64,8 +67,9 @@ records rather than parse legacy submission JSON.
   response metadata. The registered runner rejects a result whose metadata
   differs from the protocol workload, then downloads the MP4 into a private
   temporary file and probes its actual dimensions, frame count, and frame
-  rate. Missing, empty, corrupt, or shape-drifted artifacts fail closed. Every
-  non-active job status is terminal instead of waiting until timeout.
+  rate. Missing, empty, corrupt, oversized, deadline-exceeding, or shape-drifted
+  artifacts fail closed. Every non-active job status is terminal instead of
+  waiting until timeout.
 - Image results are decoded before measurement so their actual dimensions and
   count must match the registered workload. Observed zero token counts remain
   zero and fail comparability validation instead of being replaced by targets.

@@ -692,6 +692,60 @@ def test_video_artifact_rejects_missing_or_corrupt_content(
         )
 
 
+def test_video_artifact_continuous_stream_is_size_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ContentResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            yield b"123"
+            yield b"456"  # Continuous progress must not bypass the total cap.
+
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: ContentResponse({}),
+    )
+    monkeypatch.setattr(local_runner, "_MAX_VIDEO_ARTIFACT_BYTES", 5)
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: 0.0)
+
+    with pytest.raises(RuntimeError, match="safety limit"):
+        local_runner._validated_video_artifact(
+            "http://local/v1",
+            "job-1",
+            width=832,
+            height=480,
+            frames=81,
+            fps=24,
+        )
+
+
+def test_video_artifact_continuous_stream_has_overall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ContentResponse(_Response):
+        def iter_content(self, *, chunk_size: int):
+            yield b"still-streaming"
+
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: ContentResponse({}),
+    )
+    monkeypatch.setattr(local_runner, "_VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S", 1.0)
+    clock = iter((0.0, 0.1, 1.1))
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(TimeoutError, match="overall deadline"):
+        local_runner._validated_video_artifact(
+            "http://local/v1",
+            "job-1",
+            width=832,
+            height=480,
+            frames=81,
+            fps=24,
+        )
+
+
 @pytest.mark.parametrize(
     ("probe_result", "message"),
     [
