@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """DFlash runtime — lazy bridge into mlx-vlm's spec-decode machinery.
 
-mlx-vlm 0.5.0+ implements DFlash: drafter loading
+mlx-vlm implements DFlash drafter loading
 (``load_drafter``), the per-step draft-verify-walk loop
 (``_dflash_rounds``), and hidden-state capture on Qwen3.5/3.6 language
-models. We don't vendor any of that — we *call into* it from
-``BatchedEngine._step``. This module is the import boundary so the
-mlx-vlm dependency stays optional (``pip install rapid-mlx[dflash]``).
+models. Version 0.6.17 adds DFlash2 under the same dispatch kind. We don't
+vendor any of that — the dedicated DFlash server calls into it. This module is
+the import boundary so the dependency stays optional
+(``pip install rapid-mlx[dflash]``).
 
 Public surface:
   - ``DFlashRuntime`` — handle owning the drafter + the call adapter
@@ -37,6 +38,9 @@ class DFlashRuntime:
     drafter: Any
     kind: str
     drafter_repo: str
+    target_revision: str | None = None
+    drafter_revision: str | None = None
+    algorithm: str = "dflash"
 
     def reset_accept_lens(self) -> None:
         """Clear the per-round acceptance counters between requests so
@@ -65,7 +69,33 @@ class DFlashRuntime:
         return list(accept_lens)
 
 
-def load_runtime(drafter_repo: str, kind: str = "dflash") -> DFlashRuntime:
+def _runtime_algorithm(drafter: Any) -> str:
+    """Return the concrete DFlash architecture loaded by mlx-vlm.
+
+    ``draft_kind`` cannot distinguish DFlash2 because both generations use
+    kind="dflash".  mlx-vlm normalizes DFlash2's config.model_type to
+    ``dflash2``; the class-name check is a compatibility fallback for config
+    wrappers that do not expose attributes directly.
+    """
+    config = getattr(drafter, "config", None)
+    model_type = (
+        config.get("model_type")
+        if isinstance(config, dict)
+        else getattr(config, "model_type", None)
+    )
+    if model_type == "dflash2" or type(drafter).__name__ == "DFlash2DraftModel":
+        return "dflash2"
+    return "dflash"
+
+
+def load_runtime(
+    drafter_repo: str,
+    kind: str = "dflash",
+    *,
+    target_revision: str | None = None,
+    drafter_revision: str | None = None,
+    expected_algorithm: str | None = None,
+) -> DFlashRuntime:
     """Lazy-import mlx-vlm's drafter loader and return a ``DFlashRuntime``.
 
     The mlx-vlm import is deferred to call time so installing rapid-mlx
@@ -81,6 +111,32 @@ def load_runtime(drafter_repo: str, kind: str = "dflash") -> DFlashRuntime:
     # Import here, not at module top, so the optional dep stays optional.
     from mlx_vlm.speculative.drafters import load_drafter
 
-    logger.info("Loading DFlash drafter: %s (kind=%s)", drafter_repo, kind)
-    drafter, resolved_kind = load_drafter(drafter_repo, kind=kind)
-    return DFlashRuntime(drafter=drafter, kind=resolved_kind, drafter_repo=drafter_repo)
+    load_source = drafter_repo
+    if drafter_revision is not None:
+        from mlx_vlm.utils import get_model_path
+
+        load_source = str(get_model_path(drafter_repo, revision=drafter_revision))
+    logger.info(
+        "Loading DFlash drafter: %s revision=%s (kind=%s)",
+        drafter_repo,
+        drafter_revision or "default",
+        kind,
+    )
+    drafter, resolved_kind = load_drafter(load_source, kind=kind)
+    algorithm = _runtime_algorithm(drafter)
+    if expected_algorithm is not None and algorithm != expected_algorithm:
+        raise RuntimeError(
+            "DFlash drafter architecture mismatch: "
+            f"expected {expected_algorithm!r}, loaded {algorithm!r} from "
+            f"{drafter_repo!r}. Refusing to serve with a misleading or "
+            "unqualified speculative-decoding route."
+        )
+    logger.info("Loaded DFlash runtime algorithm=%s", algorithm)
+    return DFlashRuntime(
+        drafter=drafter,
+        kind=resolved_kind,
+        drafter_repo=drafter_repo,
+        target_revision=target_revision,
+        drafter_revision=drafter_revision,
+        algorithm=algorithm,
+    )

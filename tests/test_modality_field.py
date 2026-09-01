@@ -152,6 +152,9 @@ class TestNonTextLaneRejectsARGates:
                     "supports_spec_decode": False,
                     "supports_dflash": True,
                     "dflash_draft_model": "z-lab/whatever",
+                    "dflash_target_revision": "a" * 40,
+                    "dflash_draft_revision": "b" * 40,
+                    "dflash_algorithm": "dflash",
                 },
             )
 

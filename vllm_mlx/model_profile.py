@@ -198,14 +198,23 @@ class ModelProfile:
     suffix_decoding_tier: str = "unknown"
     suffix_bench_speedup: tuple[tuple[str, float], ...] | None = None
     # DFlash speculative-decoding eligibility (issue #264). Explicit opt-in
-    # per alias rather than auto-derived because the PoC showed
-    # precision-dependent regressions: 4-bit kills acceptance even on dense
-    # models. Aliases keep ``supports_dflash=False`` until benched to win
-    # by ≥1.3× on the canonical Fibonacci/Quicksort/HashTable prompts.
+    # per concrete target/drafter pair rather than auto-derived: quantization
+    # and drafter architecture both materially affect acceptance. Aliases keep
+    # ``supports_dflash=False`` until the exact pair clears the mixed-workload
+    # qualification gate.
     # ``dflash_draft_model`` is the matching drafter HF path (e.g.
     # ``z-lab/Qwen3.5-27B-DFlash``); required if ``supports_dflash=True``.
     supports_dflash: bool = False
     dflash_draft_model: str | None = None
+    # Immutable Hub revisions for both sides of the qualified pair. Repository
+    # names alone are mutable and therefore are not a sufficient qualification
+    # receipt.
+    dflash_target_revision: str | None = None
+    dflash_draft_revision: str | None = None
+    # Expected runtime architecture.  Startup compares this receipt with the
+    # loaded drafter's normalized config and fails closed on mismatch, avoiding
+    # a misleading "DFlash enabled" server that loaded a different algorithm.
+    dflash_algorithm: str | None = None
     # Recommended sampling defaults — curated per-family overrides that
     # sit above HF ``generation_config.json`` in the resolve chain (see
     # ``service/helpers.py``). Tuple-of-pairs (not dict) because the

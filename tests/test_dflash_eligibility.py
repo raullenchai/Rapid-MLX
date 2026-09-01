@@ -15,6 +15,7 @@ from vllm_mlx.speculative.dflash.eligibility import (
     DFlashUnavailable,
     _looks_like_4bit,
     check,
+    is_registry_verified_pair,
     report,
 )
 
@@ -27,6 +28,9 @@ def _good_profile() -> AliasProfile:
         is_moe=False,
         supports_dflash=True,
         dflash_draft_model="z-lab/Qwen3.5-27B-DFlash",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash",
     )
 
 
@@ -115,6 +119,96 @@ def test_explicit_4bit_main_model_is_experimental() -> None:
         check(p, alias="qwen3.5-27b-4bit")
 
 
+def test_legacy_dflash_4bit_cannot_become_curated_by_registry_flag_alone() -> None:
+    profile = AliasProfile(
+        hf_path="user/target-4bit",
+        supports_dflash=True,
+        dflash_draft_model="user/legacy-dflash",
+        dflash_algorithm="dflash",
+    )
+    result = report(profile, alias="legacy-4bit")
+    assert result.recommendation == "experimental"
+    assert "explicit experimental opt-in" in " ".join(result.reasons)
+    with pytest.raises(DFlashUnavailable, match="explicit experimental opt-in"):
+        check(profile, alias="legacy-4bit")
+
+
+def test_registry_pair_receipt_requires_exact_verified_tuple(monkeypatch) -> None:
+    from vllm_mlx import model_aliases
+
+    profile = AliasProfile(
+        hf_path="user/target-4bit",
+        supports_dflash=True,
+        dflash_draft_model="user/dflash2",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash2",
+    )
+    monkeypatch.setattr(model_aliases, "list_profiles", lambda: {"target": profile})
+
+    assert is_registry_verified_pair(
+        "user/target-4bit", "a" * 40, "user/dflash2", "b" * 40, "dflash2"
+    )
+    assert not is_registry_verified_pair(
+        "user/other-4bit", "a" * 40, "user/dflash2", "b" * 40, "dflash2"
+    )
+    assert not is_registry_verified_pair(
+        "user/target-4bit", "a" * 40, "user/other-drafter", "b" * 40, "dflash2"
+    )
+    assert not is_registry_verified_pair(
+        "user/target-4bit", "a" * 40, "user/dflash2", "b" * 40, "dflash"
+    )
+    assert not is_registry_verified_pair(
+        "user/target-4bit", "c" * 40, "user/dflash2", "b" * 40, "dflash2"
+    )
+
+
+def test_registry_pair_searches_past_duplicate_experimental_alias(monkeypatch) -> None:
+    from vllm_mlx import model_aliases
+
+    experimental = AliasProfile(
+        hf_path="user/shared-target-4bit",
+        supports_dflash=False,
+        dflash_draft_model="user/shared-dflash2",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash2",
+    )
+    verified = AliasProfile(
+        hf_path="user/shared-target-4bit",
+        supports_dflash=True,
+        dflash_draft_model="user/shared-dflash2",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash2",
+    )
+    monkeypatch.setattr(
+        model_aliases,
+        "list_profiles",
+        lambda: {"experimental-first": experimental, "verified-second": verified},
+    )
+
+    assert is_registry_verified_pair(
+        "user/shared-target-4bit",
+        "a" * 40,
+        "user/shared-dflash2",
+        "b" * 40,
+        "dflash2",
+    )
+
+
+def test_registry_pair_lookup_fails_closed_on_registry_error(monkeypatch) -> None:
+    from vllm_mlx import model_aliases
+
+    def _raise():
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(model_aliases, "list_profiles", _raise)
+    assert not is_registry_verified_pair(
+        "user/target", "a" * 40, "user/drafter", "b" * 40, "dflash"
+    )
+
+
 def test_check_message_lists_eligible_aliases() -> None:
     """Error messages must point users at a working alias — saves a
     docs round-trip."""
@@ -175,6 +269,27 @@ def test_qwen3_5_27b_8bit_alias_passes_check() -> None:
     profile = resolve_profile("qwen3.5-27b-8bit")
     assert profile is not None, "qwen3.5-27b-8bit alias missing"
     check(profile, alias="qwen3.5-27b-8bit")
+
+
+def test_qwen3_8_27b_dflash2_pair_remains_explicit_after_negative_bench() -> None:
+    """Known pairing metadata must not turn a failed qualification into support."""
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile("qwen3.8-27b-4bit")
+    assert profile is not None
+    default_result = report(profile, alias="qwen3.8-27b-4bit")
+    assert default_result.recommendation == "experimental"
+    assert default_result.reasons
+
+    explicit_result = report(
+        profile,
+        alias="qwen3.8-27b-4bit",
+        explicit=True,
+        drafter_model=profile.dflash_draft_model,
+    )
+    assert explicit_result.reasons == ()
+    assert explicit_result.recommendation == "experimental"
+    assert "performance-validated" in " ".join(explicit_result.warnings)
 
 
 def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:

@@ -48,6 +48,9 @@ def test_verified_entries_do_not_require_experimental_opt_in():
         supports_dflash=True,
         supports_ddtree=True,
         dflash_draft_model="user/dflash-drafter",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash",
         ddtree_draft_model="user/ddtree-drafter",
         ddtree_speculative_tokens=16,
         ddtree_tree_budget=24,
@@ -79,12 +82,41 @@ def test_quantized_curated_flags_remain_experimental():
             hf_path=hf_path,
             supports_dflash=True,
             dflash_draft_model="user/drafter",
+            dflash_algorithm="dflash",
             mtp_draft_model="user/mtp-head",
         )
         for method in ("dflash", "mtp"):
             assessment = assess_method(profile, method)
             assert assessment.recommendation == "experimental"
             assert assessment.explicit_opt_in is True
+
+
+def test_quantized_exact_pair_with_runtime_identity_is_verified():
+    profile = AliasProfile(
+        hf_path="user/target-4bit",
+        supports_dflash=True,
+        dflash_draft_model="user/dflash2-drafter",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash2",
+    )
+    assessment = assess_method(profile, "dflash")
+    assert assessment.recommendation == "verified"
+    assert assessment.explicit_opt_in is False
+    assert assessment.capable is True
+
+
+def test_dflash_without_immutable_revision_receipt_is_experimental():
+    profile = AliasProfile(
+        hf_path="user/target-8bit",
+        supports_dflash=True,
+        dflash_draft_model="user/dflash-drafter",
+        dflash_algorithm="dflash",
+    )
+    assessment = assess_method(profile, "dflash")
+    assert assessment.recommendation == "experimental"
+    assert assessment.explicit_opt_in is True
+    assert assessment.capable is None
 
 
 def test_quantization_recognizes_hyphenated_spellings():

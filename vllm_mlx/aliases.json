@@ -247,6 +247,9 @@
     "supports_spec_decode": false,
     "supports_dflash": true,
     "dflash_draft_model": "z-lab/Qwen3.5-27B-DFlash",
+    "dflash_target_revision": "d49462a9487464de69e2240d2bd65e50bb7d1cbc",
+    "dflash_draft_revision": "25ee0025ff950496a634e100b75c2db4515e9824",
+    "dflash_algorithm": "dflash",
     "pflash_tier": "verified",
     "turboquant_tier": "k8v4_verified"
   },
@@ -393,7 +396,11 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
     "mtp_speculative_tokens": 3,
-    "mtp_continuous_batching_tier": "verified"
+    "mtp_continuous_batching_tier": "verified",
+    "dflash_draft_model": "z-lab/Qwen3.8-27B-DFlash2",
+    "dflash_target_revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
+    "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+    "dflash_algorithm": "dflash2"
   },
   "qwen3.8-27b-mixed-3.5bpw": {
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",

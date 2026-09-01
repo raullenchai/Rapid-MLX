@@ -79,6 +79,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "suffix_bench_speedup",
         "supports_dflash",
         "dflash_draft_model",
+        "dflash_target_revision",
+        "dflash_draft_revision",
+        "dflash_algorithm",
         "supports_ddtree",
         "ddtree_draft_model",
         "ddtree_speculative_tokens",
@@ -581,6 +584,15 @@ def test_dflash_requires_drafter(alias: str) -> None:
             f"{alias}: dflash_draft_model={profile.dflash_draft_model!r} "
             f"must be 'org/repo' format"
         )
+        assert profile.dflash_algorithm in {"dflash", "dflash2"}, (
+            f"{alias}: verified DFlash pair must pin its runtime algorithm"
+        )
+        assert (
+            profile.dflash_target_revision and len(profile.dflash_target_revision) == 40
+        )
+        assert (
+            profile.dflash_draft_revision and len(profile.dflash_draft_revision) == 40
+        )
 
 
 @pytest.mark.parametrize("alias", _alias_ids())
@@ -601,13 +613,9 @@ def test_dflash_excludes_moe_architectures(alias: str) -> None:
 
 
 @pytest.mark.parametrize("alias", _alias_ids())
-def test_dflash_excludes_4bit_precision(alias: str) -> None:
-    """DFlash on a 4-bit MLX main model regresses (PoC: 0.63-0.96× on
-    Qwen3.5-4B-MLX-4bit, accept_len 2.35-3.88). 4-bit AR is already at
-    memory-bandwidth floor; drafter overhead dominates. Pattern is
-    detected from the HF path naming convention (``-4bit`` suffix or
-    ``-4bit-`` infix), which is how mlx-community publishes quantized
-    variants."""
+def test_dflash_4bit_precision_requires_dflash2_qualification(alias: str) -> None:
+    """Legacy DFlash remains blocked on 4-bit; a separately qualified
+    DFlash2 pair may opt in with an explicit runtime-identity receipt."""
     profile = list_profiles()[alias]
     if not profile.supports_dflash:
         return
@@ -617,14 +625,14 @@ def test_dflash_excludes_4bit_precision(alias: str) -> None:
     # the two would let an alias green-light here but crash at boot.
     hf_lc = hf.lower()
     is_4bit = "-4bit" in hf_lc or "mxfp4" in hf_lc or "nvfp4" in hf_lc
-    assert not is_4bit, (
-        f"{alias}: supports_dflash=True but hf_path={hf!r} looks like a "
-        f"4-bit quantized variant. DFlash regresses on 4-bit precision "
-        f"(accept rate collapses). Use an 8-bit or higher quantization."
-    )
+    if is_4bit:
+        assert profile.dflash_algorithm == "dflash2", (
+            f"{alias}: only an explicitly qualified DFlash2 pair may enable "
+            f"DFlash on 4-bit target {hf!r}"
+        )
 
 
-def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
+def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
     """DFlash drafters today are published by ``z-lab/`` for Qwen3,
     Qwen3.5, Qwen3.6, Gemma-4 and LLaMA-3.1 families. Any eligible
     alias must point at one of these prefixes and bear the ``DFlash``
@@ -636,6 +644,7 @@ def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
         "z-lab/Qwen3-",
         "z-lab/Qwen3.5-",
         "z-lab/Qwen3.6-",
+        "z-lab/Qwen3.8-",
         "z-lab/gemma-4-",
         "z-lab/LLaMA3.1-",
     )
@@ -649,7 +658,7 @@ def test_dflash_eligible_aliases_have_qwen35_36_drafter() -> None:
         # end-of-string so we don't accept ``-notDFlash-utils`` or
         # other strings where ``DFlash`` is just a substring of an
         # unrelated word.
-        has_marker = bool(re.search(r"(?:^|-)DFlash(?:$|-)", d))
+        has_marker = bool(re.search(r"(?:^|-)DFlash(?:2)?(?:$|-)", d))
         assert has_marker and ok, (
             f"{alias}: dflash_draft_model={d!r} doesn't match the "
             f"expected ``z-lab/{{Qwen3,Qwen3.5,Qwen3.6,gemma-4,LLaMA3.1}}-*"
@@ -685,6 +694,82 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         _coerce(
             "fake-alias",
             {"hf_path": "fake/Model", "supports_dflash": True},
+        )
+
+
+def test_negative_control_dflash_missing_algorithm_is_caught() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="dflash_algorithm"):
+        _coerce(
+            "fake-alias",
+            {
+                "hf_path": "fake/Model",
+                "supports_dflash": True,
+                "dflash_draft_model": "fake/DFlash",
+            },
+        )
+
+
+def test_negative_control_dflash_algorithm_without_drafter_is_caught() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="requires dflash_draft_model"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "dflash_algorithm": "dflash2"},
+        )
+
+
+def test_negative_control_unknown_dflash_algorithm_is_caught() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="not in"):
+        _coerce(
+            "fake-alias",
+            {
+                "hf_path": "fake/Model",
+                "dflash_draft_model": "fake/DFlash",
+                "dflash_algorithm": "unknown",
+            },
+        )
+
+
+def test_negative_control_dflash_revision_without_drafter_is_caught() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="revision pins require"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "dflash_target_revision": "a" * 40},
+        )
+
+
+@pytest.mark.parametrize(
+    "target_revision,draft_revision",
+    [
+        (None, "b" * 40),
+        ("a" * 40, None),
+        ("short", "b" * 40),
+        ("A" * 40, "b" * 40),
+    ],
+)
+def test_dflash_pair_requires_immutable_full_revision_pins(
+    target_revision, draft_revision
+) -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="revision"):
+        _coerce(
+            "fake-alias",
+            {
+                "hf_path": "fake/Model",
+                "supports_dflash": True,
+                "dflash_draft_model": "fake/DFlash",
+                "dflash_algorithm": "dflash",
+                "dflash_target_revision": target_revision,
+                "dflash_draft_revision": draft_revision,
+            },
         )
 
 

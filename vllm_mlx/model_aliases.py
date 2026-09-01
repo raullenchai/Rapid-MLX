@@ -79,6 +79,11 @@ VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 # explicit CLI still wins. Mirrors ``pflash_tier`` in shape.
 VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
 
+# Drafter architectures whose runtime identity can be asserted at startup.
+# This is intentionally narrower than mlx-vlm's generic ``draft_kind``
+# (DFlash and DFlash2 both dispatch through kind="dflash").
+VALID_DFLASH_ALGORITHMS: frozenset[str] = frozenset({"dflash", "dflash2"})
+
 # Bundled chat-template contracts that may be selected by a model profile.
 # The value is declarative model data, not a request-time heuristic: aliases
 # opt into one exact template and the tokenizer loader resolves it once.
@@ -196,6 +201,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "suffix_bench_speedup",
             "supports_dflash",
             "dflash_draft_model",
+            "dflash_target_revision",
+            "dflash_draft_revision",
+            "dflash_algorithm",
             "supports_ddtree",
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
@@ -369,6 +377,45 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: dflash_draft_model must be a string, "
             f"got {type(dflash_draft_model).__name__}"
         )
+    dflash_algorithm = value.get("dflash_algorithm")
+    if dflash_draft_model and not dflash_algorithm:
+        raise ValueError(
+            f"alias {alias!r}: dflash_draft_model requires dflash_algorithm to be set"
+        )
+    if dflash_algorithm and not dflash_draft_model:
+        raise ValueError(
+            f"alias {alias!r}: dflash_algorithm requires dflash_draft_model to be set"
+        )
+    if dflash_algorithm is not None and dflash_algorithm not in VALID_DFLASH_ALGORITHMS:
+        raise ValueError(
+            f"alias {alias!r}: dflash_algorithm={dflash_algorithm!r} not in "
+            f"{sorted(VALID_DFLASH_ALGORITHMS)}"
+        )
+    dflash_target_revision = value.get("dflash_target_revision")
+    dflash_draft_revision = value.get("dflash_draft_revision")
+    revisions = (dflash_target_revision, dflash_draft_revision)
+    if dflash_draft_model and any(revision is None for revision in revisions):
+        raise ValueError(
+            f"alias {alias!r}: dflash_draft_model requires immutable "
+            "dflash_target_revision and dflash_draft_revision pins"
+        )
+    if not dflash_draft_model and any(revision is not None for revision in revisions):
+        raise ValueError(
+            f"alias {alias!r}: DFlash revision pins require dflash_draft_model"
+        )
+    for key, revision in (
+        ("dflash_target_revision", dflash_target_revision),
+        ("dflash_draft_revision", dflash_draft_revision),
+    ):
+        if revision is not None and (
+            not isinstance(revision, str)
+            or len(revision) != 40
+            or any(char not in "0123456789abcdef" for char in revision)
+        ):
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a full lowercase 40-character "
+                "Hub commit SHA"
+            )
     supports_ddtree = _strict_bool("supports_ddtree", False)
     ddtree_draft_model = value.get("ddtree_draft_model")
     if supports_ddtree and not ddtree_draft_model:
@@ -649,6 +696,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         suffix_bench_speedup=speedup,
         supports_dflash=supports_dflash,
         dflash_draft_model=dflash_draft_model,
+        dflash_target_revision=dflash_target_revision,
+        dflash_draft_revision=dflash_draft_revision,
+        dflash_algorithm=dflash_algorithm,
         supports_ddtree=supports_ddtree,
         ddtree_draft_model=ddtree_draft_model,
         ddtree_speculative_tokens=ddtree_speculative_tokens,

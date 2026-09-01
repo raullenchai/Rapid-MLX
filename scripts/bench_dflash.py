@@ -3,7 +3,7 @@
 """DFlash speculative-decoding speedup bench (Model Onboarding SOP §6).
 
 Measures the per-workload TPS speedup of ``--enable-dflash`` vs the
-baseline (autoregressive) decode on a fixed prompt set. Mirrors the
+alias's default decode policy on a fixed prompt set. Mirrors the
 sequential two-server pattern of ``bench_suffix_decoding_integrated.py``
 and reuses the same reliability gates (decode-time floor, TPS ceiling,
 raw-runs persistence).
@@ -20,7 +20,8 @@ Decision rule (SOP §6 / Model Onboarding SOP):
 
 Usage:
     python3.12 scripts/bench_dflash.py \\
-        --model qwen3.5-4b-8bit --runs 3 --max-tokens 256
+        --model qwen3.5-4b-8bit --expected-algorithm dflash \\
+        --runs 3 --max-tokens 256
 
 The script does NOT auto-edit aliases.json. It prints the patch the
 contributor can paste, and persists the raw bench data to
@@ -166,6 +167,7 @@ class ServerHandle:
     proc: subprocess.Popen
     base_url: str
     model: str
+    algorithm: str | None = None
     # File the child's stdout/stderr is piped into. Held for the
     # lifetime of the server so the OS keeps the descriptor open for
     # writes from the child; closed in stop() once the process exits.
@@ -186,13 +188,24 @@ class ServerHandle:
                     pass
 
 
-def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
+def start_server(
+    model: str,
+    port: int,
+    dflash: bool,
+    draft_model: str | None = None,
+    expected_algorithm: str | None = None,
+    speculative_config: str | None = None,
+) -> ServerHandle:
     """Spin up ``rapid-mlx serve`` and wait for /v1/models to answer.
 
     Sets ``--disable-prefix-cache`` to prevent disk-persisted cache
     entries from a prior session pinning TPS to bogus 1000+ tok/s.
     DFlash speedup measurement requires real decode work on every run.
     """
+    if dflash and expected_algorithm is None:
+        raise ValueError(
+            "DFlash qualification requires expected_algorithm='dflash' or 'dflash2'"
+        )
     log_path = f"/tmp/bench_dflash_{port}.log"
     cmd = [
         sys.executable,
@@ -208,6 +221,10 @@ def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
     ]
     if dflash:
         cmd.append("--enable-dflash")
+        if draft_model:
+            cmd.extend(["--dflash-drafter-path", draft_model])
+    elif speculative_config is not None:
+        cmd.extend(["--speculative-config", speculative_config])
 
     logger.info("  starting server: port=%d dflash=%s", port, dflash)
     logf = open(log_path, "w")
@@ -239,18 +256,58 @@ def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
                 raise RuntimeError("server died during startup")
             try:
                 r = httpx.get(f"{base_url}/models", timeout=2.0)
-                if r.status_code == 200:
-                    logger.info("  server up at %s", base_url)
-                    return ServerHandle(
-                        proc=proc, base_url=base_url, model=model, logf=logf
-                    )
-            except Exception:
-                pass
+            except httpx.HTTPError:
+                r = None
+            if r is not None and r.status_code == 200:
+                algorithm = None
+                if dflash:
+                    try:
+                        health = httpx.get(
+                            f"http://127.0.0.1:{port}/healthz", timeout=2.0
+                        )
+                    except httpx.HTTPError:
+                        time.sleep(2)
+                        continue
+                    if health.status_code != 200:
+                        raise RuntimeError(
+                            "DFlash server became ready without a healthy "
+                            f"runtime receipt (HTTP {health.status_code})"
+                        )
+                    payload = health.json()
+                    algorithm = payload.get("algorithm")
+                    if algorithm not in {"dflash", "dflash2"}:
+                        raise RuntimeError(
+                            "DFlash /healthz did not report a recognized "
+                            f"algorithm: {algorithm!r}"
+                        )
+                    if algorithm != expected_algorithm:
+                        raise RuntimeError(
+                            "DFlash runtime algorithm mismatch: expected "
+                            f"{expected_algorithm!r}, got {algorithm!r}"
+                        )
+                logger.info(
+                    "  server up at %s%s",
+                    base_url,
+                    f" (algorithm={algorithm})" if algorithm else "",
+                )
+                return ServerHandle(
+                    proc=proc,
+                    base_url=base_url,
+                    model=model,
+                    algorithm=algorithm,
+                    logf=logf,
+                )
             time.sleep(2)
 
-        proc.kill()
         raise RuntimeError(f"server did not become ready within deadline (port={port})")
     except BaseException:
+        if proc.poll() is None:
+            try:
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         logf.close()
         raise
 
@@ -376,6 +433,78 @@ def _classify_run(
 class ModeResult:
     median_tps: dict[str, float | None]
     raw_runs: dict[str, list[WorkloadRun]]
+    algorithm: str | None = None
+
+
+@dataclass(frozen=True)
+class PairReceipt:
+    target_model: str
+    target_revision: str | None
+    draft_model: str
+    draft_revision: str | None
+    algorithm: str
+    baseline_mtp_tokens: int | None = None
+
+    @property
+    def immutable(self) -> bool:
+        return bool(self.target_revision and self.draft_revision)
+
+
+@dataclass(frozen=True)
+class QualificationResult:
+    code_median: float | None
+    non_code_speedups: dict[str, float]
+    median_speedup: float | None
+    ship: bool
+    decision: str
+
+
+def _qualify(
+    speedup: dict[str, float],
+    *,
+    gate: float,
+    non_code_floor: float,
+    immutable_receipt: bool = True,
+) -> QualificationResult:
+    """Apply the mixed-workload gate, failing closed on missing evidence."""
+    code_speedups = [v for k, v in speedup.items() if k in _CODE_WORKLOADS]
+    code_median = median(code_speedups) if code_speedups else None
+    non_code_speedups = {k: v for k, v in speedup.items() if k not in _CODE_WORKLOADS}
+    median_speedup = median(speedup.values()) if speedup else None
+    missing = [name for name in WORKLOADS if name not in speedup]
+    non_code_regress = {
+        key: value for key, value in non_code_speedups.items() if value < non_code_floor
+    }
+
+    if not immutable_receipt:
+        ship = False
+        decision = "DO NOT SHIP (missing immutable target/drafter revision receipt)"
+    elif missing:
+        ship = False
+        decision = f"DO NOT SHIP (missing valid workloads: {', '.join(missing)})"
+    elif code_median is None:
+        ship = False
+        decision = "DO NOT SHIP (no valid code workloads)"
+    elif code_median < gate:
+        ship = False
+        decision = "DO NOT SHIP"
+    elif non_code_regress:
+        ship = False
+        regressed = ", ".join(
+            f"{key} {value:.2f}x" for key, value in non_code_regress.items()
+        )
+        decision = f"DO NOT SHIP (non-code regression: {regressed})"
+    else:
+        ship = True
+        decision = "SHIP (supports_dflash=true)"
+
+    return QualificationResult(
+        code_median=code_median,
+        non_code_speedups=non_code_speedups,
+        median_speedup=median_speedup,
+        ship=ship,
+        decision=decision,
+    )
 
 
 def bench_one_mode(
@@ -384,8 +513,18 @@ def bench_one_mode(
     dflash: bool,
     runs: int,
     max_tokens: int,
+    draft_model: str | None = None,
+    expected_algorithm: str | None = None,
+    speculative_config: str | None = None,
 ) -> ModeResult:
-    handle = start_server(model, port, dflash)
+    handle = start_server(
+        model,
+        port,
+        dflash,
+        draft_model=draft_model,
+        expected_algorithm=expected_algorithm,
+        speculative_config=speculative_config,
+    )
     try:
         # Discard warmup: Metal JIT + cache population + drafter load.
         run_workload(handle, WORKLOADS["fibonacci"], max_tokens=32)
@@ -412,9 +551,113 @@ def bench_one_mode(
             valid = [r.tps for r in workload_runs if r.tps is not None]
             median_tps[name] = median(valid) if valid else None
             raw[name] = workload_runs
-        return ModeResult(median_tps=median_tps, raw_runs=raw)
+        return ModeResult(
+            median_tps=median_tps,
+            raw_runs=raw,
+            algorithm=handle.algorithm,
+        )
     finally:
         handle.stop()
+
+
+def _resolve_pair_receipt(
+    model: str,
+    draft_model: str | None,
+    explicit: str | None,
+) -> PairReceipt:
+    """Resolve and persist the effective immutable benchmark pair."""
+
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(model)
+    target_model = profile.hf_path if profile is not None else model
+    effective_draft = draft_model
+    if effective_draft is None and profile is not None and profile.supports_dflash:
+        effective_draft = profile.dflash_draft_model
+    if not effective_draft:
+        raise ValueError(
+            "cannot infer the DFlash drafter for this model; pass --draft-model"
+        )
+
+    algorithm = explicit
+    exact_registry_draft = (
+        profile is not None and effective_draft == profile.dflash_draft_model
+    )
+    if algorithm is None and exact_registry_draft:
+        algorithm = profile.dflash_algorithm
+    if algorithm not in {"dflash", "dflash2"}:
+        raise ValueError(
+            "cannot infer the DFlash algorithm for this model/drafter pair; "
+            "pass --expected-algorithm dflash or --expected-algorithm dflash2"
+        )
+    return PairReceipt(
+        target_model=target_model,
+        target_revision=(
+            profile.dflash_target_revision if profile is not None else None
+        ),
+        draft_model=effective_draft,
+        draft_revision=(
+            profile.dflash_draft_revision if exact_registry_draft else None
+        ),
+        algorithm=algorithm,
+        baseline_mtp_tokens=(
+            profile.mtp_speculative_tokens
+            if profile is not None
+            and profile.mtp_continuous_batching_tier == "verified"
+            else None
+        ),
+    )
+
+
+def _resolve_expected_algorithm(
+    model: str,
+    draft_model: str | None,
+    explicit: str | None,
+) -> str:
+    """Compatibility wrapper for callers that only need algorithm identity."""
+
+    return _resolve_pair_receipt(model, draft_model, explicit).algorithm
+
+
+def _materialize_target(pair: PairReceipt) -> str:
+    """Return one immutable target snapshot shared by both benchmark modes."""
+
+    if pair.target_revision is None:
+        return pair.target_model
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(
+        repo_id=pair.target_model,
+        revision=pair.target_revision,
+    )
+
+
+def _materialize_drafter(pair: PairReceipt) -> str:
+    """Return the pinned drafter snapshot, or the explicit local source."""
+
+    if pair.draft_revision is None:
+        return pair.draft_model
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(
+        repo_id=pair.draft_model,
+        revision=pair.draft_revision,
+    )
+
+
+def _baseline_speculative_config(pair: PairReceipt, target_source: str) -> str | None:
+    """Reproduce a verified alias MTP default against the pinned snapshot."""
+
+    if pair.baseline_mtp_tokens is None:
+        return None
+    return json.dumps(
+        {
+            "method": "mtp",
+            "model": target_source,
+            "num_speculative_tokens": pair.baseline_mtp_tokens,
+        },
+        separators=(",", ":"),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -424,6 +667,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True, help="HF repo or alias")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--runs", type=int, default=3, help="runs per workload")
+    parser.add_argument(
+        "--draft-model",
+        default=None,
+        help=(
+            "Explicit DFlash drafter repo or local path. Omit to use the "
+            "alias-qualified drafter."
+        ),
+    )
+    parser.add_argument(
+        "--expected-algorithm",
+        choices=("dflash", "dflash2"),
+        default=None,
+        help=(
+            "Require /healthz to report this concrete drafter algorithm. "
+            "Known alias pairs infer it for backward compatibility; explicit "
+            "or local drafters must set it."
+        ),
+    )
     parser.add_argument("--port", type=int, default=8765, help="ephemeral port")
     parser.add_argument(
         "--output",
@@ -447,6 +708,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    try:
+        pair = _resolve_pair_receipt(
+            args.model, args.draft_model, args.expected_algorithm
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    target_source = _materialize_target(pair)
+    draft_source = _materialize_drafter(pair)
+    baseline_speculative_config = _baseline_speculative_config(pair, target_source)
 
     logger.info("Bench DFlash: %s", args.model)
     if os.environ.get("RAPID_MLX_DFLASH_BYPASS_MOE_GATE") == "1":
@@ -455,22 +725,25 @@ def main(argv: list[str] | None = None) -> int:
             "bypassed (PoC mode)"
         )
 
-    logger.info("--- baseline (autoregressive) ---")
+    logger.info("--- baseline (alias default policy) ---")
     base = bench_one_mode(
-        args.model,
+        target_source,
         args.port,
         dflash=False,
         runs=args.runs,
         max_tokens=args.max_tokens,
+        speculative_config=baseline_speculative_config,
     )
 
     logger.info("--- DFlash ---")
     dflash = bench_one_mode(
-        args.model,
+        target_source,
         args.port,
         dflash=True,
         runs=args.runs,
         max_tokens=args.max_tokens,
+        draft_model=draft_source,
+        expected_algorithm=pair.algorithm,
     )
 
     speedup: dict[str, float] = {}
@@ -488,36 +761,18 @@ def main(argv: list[str] | None = None) -> int:
             continue
         speedup[name] = round(s / v, 3)
 
-    # Code median = the four code-gen workloads only. Chat is graded
-    # separately as a non-regression floor — prior bench rounds showed
-    # DFlash speedup is heavily code-biased and SHIPping a 1.3x code
-    # model that regresses to 0.8x on chat would be a bad user trade.
-    code_speedups = [v for k, v in speedup.items() if k in _CODE_WORKLOADS]
-    code_median = median(code_speedups) if code_speedups else None
-    non_code_speedups = {k: v for k, v in speedup.items() if k not in _CODE_WORKLOADS}
     non_code_floor = args.non_code_floor
-    non_code_regress = {
-        k: v for k, v in non_code_speedups.items() if v < non_code_floor
-    }
-
-    median_speedup = median(speedup.values()) if speedup else None
-
-    # Boolean ship/no-ship is the load-bearing signal; the human-readable
-    # ``decision`` string is just for the scorecard. Keeping them separate
-    # avoids string-shape coupling in callers / exit codes.
-    if code_median is None:
-        ship = False
-        decision = "DO NOT SHIP (no valid code workloads)"
-    elif code_median < args.gate:
-        ship = False
-        decision = "DO NOT SHIP"
-    elif non_code_regress:
-        ship = False
-        regressed = ", ".join(f"{k} {v:.2f}x" for k, v in non_code_regress.items())
-        decision = f"DO NOT SHIP (non-code regression: {regressed})"
-    else:
-        ship = True
-        decision = "SHIP (supports_dflash=true)"
+    qualification = _qualify(
+        speedup,
+        gate=args.gate,
+        non_code_floor=non_code_floor,
+        immutable_receipt=pair.immutable,
+    )
+    code_median = qualification.code_median
+    non_code_speedups = qualification.non_code_speedups
+    median_speedup = qualification.median_speedup
+    ship = qualification.ship
+    decision = qualification.decision
 
     def _serialize_runs(raw: dict[str, list[WorkloadRun]]) -> dict[str, list[dict]]:
         return {
@@ -536,6 +791,11 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "model": args.model,
+        "target_model": pair.target_model,
+        "target_revision": pair.target_revision,
+        "draft_model": pair.draft_model,
+        "draft_revision": pair.draft_revision,
+        "dflash_algorithm": dflash.algorithm,
         "max_tokens": args.max_tokens,
         "runs": args.runs,
         "gate": args.gate,

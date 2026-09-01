@@ -1450,6 +1450,13 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             "chat_template_id",
             "suffix_decoding_tier",  # one of VALID_SUFFIX_TIERS — non-routing data
             "dflash_draft_model",  # HF path for the spec-decode drafter
+            # Immutable Hub commit SHAs. They constrain artifact identity and
+            # cannot select an engine lane; _coerce requires full 40-char pins.
+            "dflash_target_revision",
+            "dflash_draft_revision",
+            # Closed runtime identity receipt validated against
+            # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
+            "dflash_algorithm",
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             "mtp_draft_model",  # HF 'org/repo' path for the MTP drafter (#1987);
             # validated as non-empty org/repo at JSON load in model_aliases.py,
