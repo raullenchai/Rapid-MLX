@@ -18,6 +18,8 @@ from vllm_mlx.community_bench import cli as community_cli
 from vllm_mlx.community_bench import local_runner
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
+    registered_workload,
+    registered_workload_history,
 )
 from vllm_mlx.community_bench.hardware import Hardware, Software
 from vllm_mlx.community_bench.run_builder import build_run, execution_config, utc_now
@@ -82,12 +84,17 @@ def _mock_local_context(
     [
         ("benchmark-run.schema.json", "benchmark-run.schema.json"),
         ("rapid-community-speed-v1.json", "protocols/rapid-community-speed-v1.json"),
+        ("rapid-community-speed-v2.json", "protocols/rapid-community-speed-v2.json"),
         ("rapid-image-speed-v1.json", "protocols/rapid-image-speed-v1.json"),
         ("rapid-video-speed-v1.json", "protocols/rapid-video-speed-v1.json"),
         ("rapid-public-prompts-v1.json", "datasets/rapid-public-prompts-v1.json"),
         (
             "rapid-synthetic-token-dataset-v1.json",
             "datasets/rapid-synthetic-token-dataset-v1.json",
+        ),
+        (
+            "rapid-synthetic-token-dataset-v2.json",
+            "datasets/rapid-synthetic-token-dataset-v2.json",
         ),
     ],
 )
@@ -119,6 +126,17 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     assert plan["model"]["identity_strength"] == "unresolved"
     assert plan["model"]["comparable"] is False
     assert plan["privacy"] == {"storage": "local", "uploads": False}
+    assert registered_workload("text_generation")["protocol_version"] == 2
+
+
+def test_v1_text_run_remains_visible_in_local_archive(tmp_path: Path) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    run["workload"] = registered_workload_history("text_generation")[0]
+
+    archive.save(run)
+
+    assert archive.list() == [run]
 
 
 def test_unknown_run_model_returns_structured_unsaved_cli_error(

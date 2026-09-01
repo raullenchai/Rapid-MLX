@@ -15,9 +15,17 @@ from vllm_mlx.catalog import rcj_digest
 from vllm_mlx.catalog.validation import CatalogValidationError, ContractValidator
 
 _PROTOCOL_FILES = {
-    "text_generation": "rapid-community-speed-v1.json",
+    "text_generation": "rapid-community-speed-v2.json",
     "image_generation": "rapid-image-speed-v1.json",
     "video_generation": "rapid-video-speed-v1.json",
+}
+_PROTOCOL_HISTORY = {
+    "text_generation": (
+        "rapid-community-speed-v1.json",
+        "rapid-community-speed-v2.json",
+    ),
+    "image_generation": ("rapid-image-speed-v1.json",),
+    "video_generation": ("rapid-video-speed-v1.json",),
 }
 
 
@@ -36,6 +44,18 @@ def registered_workload(task_type: str) -> dict[str, Any]:
             f"no registered community benchmark for {task_type!r}"
         ) from exc
     return copy.deepcopy(_read_json(filename)["workload"])
+
+
+def registered_workload_history(task_type: str) -> list[dict[str, Any]]:
+    """All immutable protocol versions accepted for local archive reads."""
+
+    try:
+        filenames = _PROTOCOL_HISTORY[task_type]
+    except KeyError as exc:
+        raise ValueError(
+            f"no registered community benchmark for {task_type!r}"
+        ) from exc
+    return [copy.deepcopy(_read_json(name)["workload"]) for name in filenames]
 
 
 def public_prompt(case_id: str) -> str:
@@ -107,12 +127,12 @@ class BenchmarkRunValidator:
 
         workload = run["workload"]
         if workload["protocol_strength"] == "registered":
-            expected = registered_workload(workload["task_type"])
-            if workload != expected:
+            expected = registered_workload_history(workload["task_type"])
+            if workload not in expected:
                 raise CatalogValidationError(
                     "benchmark_run",
                     "workload",
-                    "registered workload differs from the packaged protocol",
+                    "registered workload differs from every packaged protocol version",
                 )
 
         if run["outcome"]["status"] == "completed":

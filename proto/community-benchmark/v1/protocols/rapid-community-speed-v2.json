@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "protocol_digest": "sha256:bf2e8220a74527a18974f7e9aba433cf366d615bde3b2fc1b0c21c8cdb39dddd",
+  "protocol_digest": "sha256:566cce441fa3ce6c1886337bdbc113ec725a1a59f5c9d99e2ea6e5c400b95577",
   "workload": {
     "protocol_id": "rapid-community-speed",
-    "protocol_version": 1,
+    "protocol_version": 2,
     "protocol_strength": "registered",
-    "protocol_digest": "sha256:bf2e8220a74527a18974f7e9aba433cf366d615bde3b2fc1b0c21c8cdb39dddd",
+    "protocol_digest": "sha256:566cce441fa3ce6c1886337bdbc113ec725a1a59f5c9d99e2ea6e5c400b95577",
     "task_type": "text_generation",
     "dataset": {
       "id": "rapid-synthetic-token-corpus",
-      "version": 1,
-      "digest": "sha256:c78c1d1638b8c3a38ca51928d56ffde73653171ff85381beefb50caf637dcdc6"
+      "version": 2,
+      "digest": "sha256:dcda5aef5ec99200db1ef5d1bdedd6db38acea9e159a483357e94c872f72e5ad"
     },
     "concurrency": 1,
     "cases": [

@@ -576,7 +576,7 @@ def test_public_media_dataset_contains_reproducible_inputs() -> None:
 
 
 def test_synthetic_token_dataset_has_cross_language_golden_vector() -> None:
-    dataset = _load(BENCH_ROOT / "datasets" / "rapid-synthetic-token-dataset-v1.json")
+    dataset = _load(BENCH_ROOT / "datasets" / "rapid-synthetic-token-dataset-v2.json")
     generator = dataset["generator"]
     assert generator["input_representation"] == "token_ids"
     state = generator["seed"]
