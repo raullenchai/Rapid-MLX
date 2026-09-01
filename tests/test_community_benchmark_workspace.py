@@ -1050,7 +1050,6 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
 ) -> None:
     from vllm_mlx import engine_core
     from vllm_mlx.community_bench import runner
-    from vllm_mlx.service import helpers
     from vllm_mlx.utils import tokenizer as tokenizer_module
 
     archive = LocalRunArchive(tmp_path)
@@ -1076,8 +1075,8 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     )
 
     class Engine:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
+        def __init__(self, model, tokenizer, *args, **kwargs) -> None:
+            self.engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
 
         async def __aenter__(self):
             return self
@@ -1105,9 +1104,11 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     monkeypatch.setattr(
         tokenizer_module,
         "load_model_with_fallback",
-        lambda repo_id: (object(), object()),
+        lambda repo_id: (
+            SimpleNamespace(args=SimpleNamespace(max_position_embeddings=32768)),
+            object(),
+        ),
     )
-    monkeypatch.setattr(helpers, "get_model_max_context", lambda engine: 32768)
     monkeypatch.setattr(runner, "run_standardized_bench", standardized)
 
     run = local_runner.run_local("example-text", archive=archive)
