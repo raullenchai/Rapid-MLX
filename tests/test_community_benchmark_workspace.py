@@ -15,7 +15,7 @@ import pytest
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
 from vllm_mlx.community_bench import cli as community_cli
-from vllm_mlx.community_bench import local_runner
+from vllm_mlx.community_bench import local_runner, run_builder
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
     registered_workload,
@@ -142,6 +142,63 @@ def test_v1_text_run_remains_visible_in_local_archive(tmp_path: Path) -> None:
     assert archive.list() == [run]
 
 
+def test_local_archive_can_return_only_the_latest_runs(tmp_path: Path) -> None:
+    archive = LocalRunArchive(tmp_path)
+    for index in range(3):
+        run = _text_run()
+        run["run_id"] = f"00000000-0000-4000-8000-{index:012d}"
+        run["started_at"] = f"2026-08-{index + 1:02d}T00:00:00Z"
+        run["completed_at"] = f"2026-08-{index + 1:02d}T00:01:00Z"
+        archive.save(run)
+
+    assert [run["run_id"] for run in archive.list(limit=2)] == [
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000001",
+    ]
+
+
+def test_execution_records_source_checkout_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "a" * 40
+    monkeypatch.setattr(run_builder, "_source_checkout_revision", lambda: revision)
+
+    runtime = execution_config("text_generation")["runtime"]
+
+    assert runtime["distribution"] == "source"
+    assert runtime["rapid_mlx_revision"] == revision
+
+
+def test_execution_records_release_without_source_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run_builder, "_source_checkout_revision", lambda: None)
+
+    runtime = execution_config("text_generation")["runtime"]
+
+    assert runtime["distribution"] == "release"
+    assert "rapid_mlx_revision" not in runtime
+
+
+def test_results_cli_forwards_latest_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Archive:
+        def list(self, *, limit=None):
+            assert limit == 8
+            return []
+
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: Archive()),
+    )
+    args = SimpleNamespace(benchmark_action="results", limit=8, json=True)
+
+    assert community_cli.benchmark_command(args) == 0
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "runs": []}
+
+
 def test_unknown_run_model_returns_structured_unsaved_cli_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -195,7 +252,7 @@ def test_non_run_cli_actions_return_structured_errors(
     action: str,
 ) -> None:
     class BrokenArchive:
-        def list(self):
+        def list(self, *, limit=None):
             raise OSError("archive unavailable")
 
         def get(self, run_id: str):

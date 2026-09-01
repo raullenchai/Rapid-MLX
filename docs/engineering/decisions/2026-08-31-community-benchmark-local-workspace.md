@@ -16,7 +16,7 @@ The initial commands are:
 rapid-mlx benchmark catalog [--memory-gib N] [--json]
 rapid-mlx benchmark plan MODEL [--json]
 rapid-mlx benchmark run MODEL [--json]
-rapid-mlx benchmark results [--json]
+rapid-mlx benchmark results [--limit N] [--json]
 rapid-mlx benchmark inspect RUN_ID [--json]
 ```
 

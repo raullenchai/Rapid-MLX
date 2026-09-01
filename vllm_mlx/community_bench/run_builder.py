@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import platform
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
 from vllm_mlx import __version__
@@ -75,15 +77,73 @@ def _installed(name: str, fallback: str | None = None) -> str | None:
         return fallback
 
 
+def _source_checkout_revision(start: Path | None = None) -> str | None:
+    """Return HEAD when the imported runtime lives inside a Git checkout."""
+
+    location = (start or Path(__file__)).resolve()
+    root = next(
+        (
+            parent
+            for parent in (location.parent, *location.parents)
+            if (parent / ".git").exists()
+        ),
+        None,
+    )
+    if root is None:
+        return None
+    try:
+        relative = location.relative_to(root)
+        tracked = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                str(relative),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        # A wheel installed into a repository-local virtualenv can still have
+        # a .git ancestor. It is a release unless this exact imported module
+        # belongs to the checkout index.
+        if tracked.returncode != 0:
+            return None
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not resolve the Rapid-MLX source revision") from exc
+    revision = result.stdout.strip().lower()
+    if (
+        result.returncode != 0
+        or len(revision) != 40
+        or any(character not in "0123456789abcdef" for character in revision)
+    ):
+        raise RuntimeError("could not resolve the Rapid-MLX source revision")
+    return revision
+
+
 def execution_config(
     task_type: str, *, context_length: int | None = None
 ) -> dict[str, Any]:
+    source_revision = _source_checkout_revision()
     runtime: dict[str, Any] = {
-        "distribution": "release",
+        "distribution": "source" if source_revision is not None else "release",
         "rapid_mlx": __version__,
         "mlx": _installed("mlx", "unknown"),
         "python": platform.python_version(),
     }
+    if source_revision is not None:
+        runtime["rapid_mlx_revision"] = source_revision
     for package, field in (
         ("mlx-lm", "mlx_lm"),
         ("mlx-vlm", "mlx_vlm"),

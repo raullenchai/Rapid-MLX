@@ -285,6 +285,10 @@ enum CommunityBenchmarkCommand {
         ]
     }
 
+    static func benchmarkResultsArguments(limit: Int = 8) -> [String] {
+        ["benchmark", "results", "--limit", String(limit), "--json"]
+    }
+
     @MainActor
     static func run(
         binary: URL,
@@ -619,7 +623,8 @@ struct CommunityBenchmarkView: View {
         guard benchmarkCLIAvailable, let binary else { return }
         do {
             let data = try await CommunityBenchmarkCommand.run(
-                binary: binary, arguments: ["benchmark", "results", "--json"]
+                binary: binary,
+                arguments: CommunityBenchmarkCommand.benchmarkResultsArguments()
             )
             results = try JSONDecoder().decode(CommunityBenchmarkResults.self, from: data).runs
         } catch {

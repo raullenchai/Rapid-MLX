@@ -157,6 +157,11 @@ struct CommunityBenchmarkModelTests {
                 "--inherit-process-group",
             ]
         )
+        #expect(
+            CommunityBenchmarkCommand.benchmarkResultsArguments() == [
+                "benchmark", "results", "--limit", "8", "--json",
+            ]
+        )
     }
 
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")

@@ -56,7 +56,10 @@ def benchmark_command(args) -> int:
                 inherit_process_group=getattr(args, "inherit_process_group", False),
             )
         elif action == "results":
-            value = {"schema_version": 1, "runs": archive.list()}
+            value = {
+                "schema_version": 1,
+                "runs": archive.list(limit=getattr(args, "limit", None)),
+            }
         elif action == "inspect":
             value = archive.get(args.run_id)
         else:  # pragma: no cover - argparse owns this invariant

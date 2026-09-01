@@ -11771,6 +11771,9 @@ Examples:
     community_results = community_subparsers.add_parser(
         "results", help="List locally saved benchmark results"
     )
+    community_results.add_argument(
+        "--limit", type=positive_int, default=None, help="Return only the latest N runs"
+    )
     community_results.add_argument("--json", action="store_true")
     community_inspect = community_subparsers.add_parser(
         "inspect", help="Print one locally saved benchmark result"

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import os
 import tempfile
@@ -177,13 +178,29 @@ class LocalRunArchive:
         BenchmarkRunValidator().validate(run)
         return run
 
-    def list(self) -> list[dict[str, Any]]:
+    def list(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        if limit is not None and limit < 1:
+            raise ValueError("result limit must be positive")
         if not self.runs_dir.exists():
             return []
         runs: list[dict[str, Any]] = []
+        latest: list[tuple[str, str, dict[str, Any]]] = []
         for path in self.runs_dir.glob("*.json"):
             try:
-                runs.append(self.get(path.stem))
+                run = self.get(path.stem)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
+            if limit is None:
+                runs.append(run)
+                continue
+            # The filename is unique even if a hand-edited archive duplicates
+            # the embedded run_id, so heap comparisons never fall through to
+            # comparing the unorderable run dictionaries.
+            item = (run["started_at"], path.stem, run)
+            if len(latest) < limit:
+                heapq.heappush(latest, item)
+            elif item[:2] > latest[0][:2]:
+                heapq.heapreplace(latest, item)
+        if limit is not None:
+            return [item[2] for item in sorted(latest, reverse=True)]
         return sorted(runs, key=lambda run: run["started_at"], reverse=True)
