@@ -80,6 +80,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     chat_source = (
         MAC / "Tests/RapidUITests/Tests/ChatAttachmentJourneyTests.swift"
     ).read_text()
+    chat_view = (MAC / "Sources/Rapid/UI/ChatView.swift").read_text()
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
@@ -118,6 +119,25 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
         'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")' in harness
     )
     assert 'matching(identifier: "RapidUITests.FileDragSource")' in harness
+    assert "let maximumAttempts = 2" in harness
+    assert "FileDropRetryPolicy.shouldRetry(" in harness
+    assert "func testFileDropRetryPolicyIsBoundedAndCompletionAware()" in chat_source
+    assert "func testDropEventFileClearIsIdempotent()" in chat_source
+    assert "func testDropEventFileCompletionFailsClosed()" in chat_source
+    assert "try DropEventFile.clear(at: dropEventFile)" in harness
+    assert "try DropEventFile.completedPhase(at: dropEventFile)" in harness
+    assert "Date().addingTimeInterval(dropSettleTimeout)" in harness
+    assert '"RAPID_XCUI_DROP_EVENT_FILE": dropEventFile.path' in harness
+    assert 'recordUITestFileDrop("entered")' not in chat_view
+    assert 'recordUITestFileDrop("performed")' in chat_view
+    assert "try? phase.write" not in chat_view
+    assert 'fatalError("could not record completed UI-test file drop' in chat_view
+    assert (
+        '"RAPID_XCUI_DROP_FIRST_GESTURE": simulateMissedFirstGesture ? "1" : "0"'
+        in harness
+    )
+    assert "XCTAssertEqual(recoveredAttempts, 2)" in chat_source
+    assert "XCTAssertEqual(delayedChipAttempts, 1)" in chat_source
     assert 'let dropTarget = element("rapid.chat.compose")' in harness
     assert "click(forDuration: 1, thenDragTo: dropTarget)" in harness
     assert "func testDragPasteAndRemovalPreserveWireIdentity()" in chat_source

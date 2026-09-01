@@ -13,6 +13,70 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         executionTimeAllowance = 120
     }
 
+    func testFileDropRetryPolicyIsBoundedAndCompletionAware() {
+        XCTAssertTrue(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: false,
+                attempt: 1,
+                maximumAttempts: 2,
+                remainingTime: FileDropRetryPolicy.minimumRetryBudget
+            )
+        )
+        XCTAssertFalse(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: false,
+                attempt: 2,
+                maximumAttempts: 2,
+                remainingTime: FileDropRetryPolicy.minimumRetryBudget
+            )
+        )
+        XCTAssertFalse(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: true,
+                attempt: 1,
+                maximumAttempts: 2,
+                remainingTime: FileDropRetryPolicy.minimumRetryBudget
+            )
+        )
+        XCTAssertFalse(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: false,
+                attempt: 1,
+                maximumAttempts: 2,
+                remainingTime: FileDropRetryPolicy.minimumRetryBudget - 0.001
+            )
+        )
+    }
+
+    func testDropEventFileClearIsIdempotent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-drop-marker-\(UUID().uuidString)")
+        let marker = directory.appendingPathComponent("completed.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "performed".write(to: marker, atomically: true, encoding: .utf8)
+
+        try DropEventFile.clear(at: marker)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        try DropEventFile.clear(at: marker)
+    }
+
+    func testDropEventFileCompletionFailsClosed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-drop-completion-\(UUID().uuidString)")
+        let marker = directory.appendingPathComponent("completed.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertNil(try DropEventFile.completedPhase(at: marker))
+        try "performed".write(to: marker, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try DropEventFile.completedPhase(at: marker), "performed")
+        try "entered".write(to: marker, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try DropEventFile.completedPhase(at: marker)) { error in
+            XCTAssertEqual(error as? DropEventFile.EventError, .invalidPhase("entered"))
+        }
+    }
+
     func testPickerAttachmentsStayWithTheirConversationAndWirePayload() throws {
         continueAfterFailure = false
         let harness = try RapidUITestHarness(
@@ -100,11 +164,21 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         // to settle (exists + hittable) and re-issues the drop if it is lost, so
         // the control is guaranteed before we send (#2481).
         let imageChip = harness.element("ChatView.Attachment.Remove.\(image.lastPathComponent)")
-        harness.dragFile(image, expectedChip: imageChip)
+        let recoveredAttempts = harness.dragFile(
+            image,
+            expectedChip: imageChip,
+            simulateMissedFirstGesture: true
+        )
+        XCTAssertEqual(recoveredAttempts, 2)
         harness.send("Dragged photo", expectedRequestCount: 1)
 
         let documentChip = harness.element("ChatView.Attachment.Remove.\(document.lastPathComponent)")
-        harness.dragFile(document, expectedChip: documentChip)
+        let delayedChipAttempts = harness.dragFile(
+            document,
+            expectedChip: documentChip,
+            simulateChipVisibilityDelay: 3
+        )
+        XCTAssertEqual(delayedChipAttempts, 1)
         harness.send("Dragged document", expectedRequestCount: 2)
 
         let pdfChip = harness.element("ChatView.Attachment.Remove.\(pdf.lastPathComponent)")

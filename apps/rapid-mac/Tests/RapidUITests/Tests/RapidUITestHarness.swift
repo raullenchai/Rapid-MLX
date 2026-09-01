@@ -56,6 +56,49 @@ struct MemoryConfirmationRetryPolicy {
     }
 }
 
+enum FileDropRetryPolicy {
+    static let minimumRetryBudget: TimeInterval = 3
+
+    static func shouldRetry(
+        completedDrop: Bool,
+        attempt: Int,
+        maximumAttempts: Int,
+        remainingTime: TimeInterval
+    ) -> Bool {
+        !completedDrop
+            && attempt < maximumAttempts
+            && remainingTime >= minimumRetryBudget
+    }
+}
+
+enum DropEventFile {
+    enum EventError: Error, Equatable {
+        case remainedAfterRemoval
+        case invalidPhase(String)
+    }
+
+    static func clear(at url: URL, fileManager: FileManager = .default) throws {
+        do {
+            try fileManager.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // An absent marker is the required pre-drag state.
+        }
+        guard !fileManager.fileExists(atPath: url.path) else {
+            throw EventError.remainedAfterRemoval
+        }
+    }
+
+    static func completedPhase(
+        at url: URL,
+        fileManager: FileManager = .default
+    ) throws -> String? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let phase = try String(contentsOf: url, encoding: .utf8)
+        guard phase == "performed" else { throw EventError.invalidPhase(phase) }
+        return phase
+    }
+}
+
 @MainActor
 final class RapidUITestHarness {
     let app: XCUIApplication
@@ -66,6 +109,7 @@ final class RapidUITestHarness {
     private let conversationStore: URL
     private let sidecarAlias: String
     private let sidecarPIDFile: URL
+    private let dropEventFile: URL
     private var portReservation: Int32?
     private var originalPasteboardItems: [[NSPasteboard.PasteboardType: Data]]?
     private var ownedPasteboardChangeCount: Int?
@@ -125,6 +169,7 @@ final class RapidUITestHarness {
         let appURL = rapidMacRoot.appendingPathComponent("build/Rapid-MLX Desktop.app")
         eventLog = testHome.appendingPathComponent("fake-events.jsonl")
         sidecarPIDFile = testHome.appendingPathComponent("fake-sidecar.pid")
+        dropEventFile = testHome.appendingPathComponent("xcui-drop-event.txt")
         sidecarAlias = fakeSettings["FAKE_VISION_CHAT"] == "1"
             ? "qwen3-vl-2b-4bit"
             : "fake-alias"
@@ -146,6 +191,7 @@ final class RapidUITestHarness {
             "CFFIXED_USER_HOME": testHome.path,
             "RAPID_BIN": fakeSidecar,
             "FAKE_EVENT_LOG": eventLog.path,
+            "RAPID_XCUI_DROP_EVENT_FILE": dropEventFile.path,
             "RAPID_DESKTOP_PORT": String(reservedPort.port),
             "RAPID_DESKTOP_NO_PORT_SWEEP": "1",
         ].merging(fakeSettings) { _, fixture in fixture }
@@ -273,22 +319,29 @@ final class RapidUITestHarness {
     /// ``expectedChip`` is the remove control the drop must produce, fetched at
     /// the call site via ``element(_:)`` (which keeps the query literal in the
     /// test source for the xcui workflow contract). A landed drop is treated as
-    /// one whose chip settles (exists and is hittable); the helper waits
-    /// ``dropSettleTimeout`` for that and asserts if it never appears. The chip
-    /// element is polled directly (``exists``/``isHittable``) — never
-    /// dereferenced before it exists, so a not-yet-matched ``firstMatch``
-    /// cannot throw. There is deliberately NO silent re-issue of the synthetic
-    /// drag: a first drop that does not land despite the hittable gate is a
-    /// real product defect the test should surface, not retry over (#2481).
+    /// one whose chip settles (exists and is hittable). The product's compose
+    /// destination emits a test-only marker after `performDragOperation`
+    /// consumes the drop. A gesture with no completion marker may be retried
+    /// once within the original settle budget. A consumed drop is never
+    /// retried: if its chip does not appear, the test still exposes the
+    /// product/AX regression. The
+    /// chip is never dereferenced before it exists, so a not-yet-matched
+    /// ``firstMatch`` cannot throw (#2481).
     /// Callers without an expected chip (the unsupported-file negative case)
     /// keep the original single-drop behaviour.
+    @discardableResult
     func dragFile(
         _ url: URL,
         expectedChip chip: XCUIElement? = nil,
-        dropSettleTimeout: TimeInterval = 10
-    ) {
+        dropSettleTimeout: TimeInterval = 10,
+        simulateMissedFirstGesture: Bool = false,
+        simulateChipVisibilityDelay: TimeInterval = 0
+    ) -> Int {
         let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
-        dragSource.launchEnvironment = ["RAPID_XCUI_DRAG_FILE": url.path]
+        dragSource.launchEnvironment = [
+            "RAPID_XCUI_DRAG_FILE": url.path,
+            "RAPID_XCUI_DROP_FIRST_GESTURE": simulateMissedFirstGesture ? "1" : "0",
+        ]
         dragSource.launch()
         defer { dragSource.terminate() }
         let source = dragSource.descendants(matching: .any)
@@ -308,11 +361,60 @@ final class RapidUITestHarness {
 
         guard let chip = chip else {
             source.click(forDuration: 1, thenDragTo: dropTarget)
-            return
+            return 1
         }
-        source.click(forDuration: 1, thenDragTo: dropTarget)
-        XCTAssertTrue(waitUntil(timeout: dropSettleTimeout) { chip.exists && chip.isHittable },
-                      "dropped attachment chip did not settle within \(dropSettleTimeout)s")
+        let settleDeadline = Date().addingTimeInterval(dropSettleTimeout)
+        let chipObservationStart = Date().addingTimeInterval(simulateChipVisibilityDelay)
+        let chipIsSettled = {
+            Date() >= chipObservationStart && chip.exists && chip.isHittable
+        }
+        let maximumAttempts = 2
+        for attempt in 1...maximumAttempts {
+            do {
+                try DropEventFile.clear(at: dropEventFile)
+            } catch {
+                XCTFail("could not clear UI-test drop marker before gesture: \(error)")
+                return attempt
+            }
+            source.click(forDuration: 1, thenDragTo: dropTarget)
+
+            // The drop-completion marker and the product render arrive
+            // independently. First wait briefly for either authoritative
+            // signal, then spend the rest of the original budget on an
+            // observed drop's chip.
+            _ = waitUntil(timeout: min(2, max(0, settleDeadline.timeIntervalSinceNow))) {
+                chipIsSettled()
+                    || FileManager.default.fileExists(atPath: self.dropEventFile.path)
+            }
+            if chipIsSettled() { return attempt }
+
+            let observedPhase: String?
+            do {
+                observedPhase = try DropEventFile.completedPhase(at: dropEventFile)
+            } catch {
+                XCTFail("could not read valid UI-test drop marker after gesture: \(error)")
+                return attempt
+            }
+            if FileDropRetryPolicy.shouldRetry(
+                completedDrop: observedPhase != nil,
+                attempt: attempt,
+                maximumAttempts: maximumAttempts,
+                remainingTime: settleDeadline.timeIntervalSinceNow
+            ) {
+                continue
+            }
+
+            let remaining = max(0, settleDeadline.timeIntervalSinceNow)
+            if waitUntil(timeout: remaining, condition: chipIsSettled) {
+                return attempt
+            }
+            XCTFail(
+                "dropped attachment chip did not settle within \(dropSettleTimeout)s "
+                    + "(drop phase: \(observedPhase ?? "not performed"), attempts: \(attempt))"
+            )
+            return attempt
+        }
+        return maximumAttempts
     }
 
     func pasteImage(_ url: URL) throws {
