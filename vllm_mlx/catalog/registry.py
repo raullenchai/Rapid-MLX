@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .canonical import canonical_json_bytes, rcj_digest
 from .validation import CatalogValidationError, ContractValidator
@@ -175,7 +175,7 @@ class AtomicRegistry:
         if any(character not in "0123456789abcdef" for character in suffix):
             raise ValueError("digest must be sha256:<64 lowercase hex characters>")
         path = self.root / kind / f"{suffix}.json"
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
         self._validate_document(kind, document, catalog_snapshot=catalog_snapshot)
         projection, digest_field = _projection(kind, document)
         computed = rcj_digest(projection)

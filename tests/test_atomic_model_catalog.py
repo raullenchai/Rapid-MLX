@@ -7,6 +7,7 @@ import copy
 import json
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,6 +69,29 @@ def test_rcj_is_stable_and_rejects_nonportable_numbers() -> None:
         canonical_json_bytes({"integer": 9_007_199_254_740_992})
     with pytest.raises(TypeError, match="ASCII"):
         canonical_json_bytes({"é": "not an ASCII key"})
+    with pytest.raises(TypeError, match="keys must be strings"):
+        canonical_json_bytes({1: "not a string key"})
+    with pytest.raises(TypeError, match="cannot encode bytes"):
+        canonical_json_bytes(b"not JSON")
+
+
+def test_legacy_projection_covers_image_edit_and_vision_profiles() -> None:
+    from vllm_mlx.catalog.legacy import _main_capabilities
+
+    image = SimpleNamespace(
+        modality="image-gen",
+        hf_path="publisher/qwen-image-edit",
+        is_text_only=False,
+        experimental=False,
+    )
+    vision = SimpleNamespace(
+        modality="vision",
+        hf_path="publisher/vlm",
+        is_text_only=False,
+        experimental=False,
+    )
+    assert _main_capabilities(image)["operation_modes"] == ["image_to_image"]
+    assert _main_capabilities(vision)["runtime_adapter"] == "mlx_vlm"
 
 
 def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
@@ -176,6 +200,21 @@ def test_shadow_bundle_preserves_legacy_alias_surface() -> None:
     assert report["task_counts"]["speech_synthesis"] > 0
     assert report["task_counts"]["speech_recognition"] > 0
     assert report["task_counts"]["video_generation"] > 0
+
+
+def test_shadow_report_names_alias_and_recommendation_drift() -> None:
+    from vllm_mlx.catalog.legacy import build_shadow_report
+
+    bundle = build_catalog_bundle()
+    snapshot = copy.deepcopy(bundle["snapshot"])
+    policy = copy.deepcopy(bundle["recommendation_policies"][0])
+    removed = snapshot["aliases"].pop()
+    policy["tiers"][0]["picks"][0]["alias"] = removed["alias"]
+    report = build_shadow_report(snapshot, policy)
+    assert report["failures"] == [
+        "alias_set_mismatch",
+        "recommendation_alias_missing",
+    ]
 
 
 def test_atomic_registry_is_idempotent_and_detects_tampering(tmp_path: Path) -> None:
@@ -357,6 +396,163 @@ def test_atomic_registry_syncs_directory_after_publication(
     monkeypatch.setattr(registry_module.os, "fsync", observing_fsync)
     AtomicRegistry(tmp_path).put("model_identity", identity)
     assert synced_directory is True
+
+
+def test_atomic_registry_supports_each_atomic_projection(tmp_path: Path) -> None:
+    examples = ROOT / "proto/model-runtime/v1/examples"
+    execution = json.loads((examples / "execution.text.example.json").read_text())
+    profile = {"chip": "Apple M4", "memory_gib": 32, "cpu_cores": 10}
+    conditions = {
+        "power_source": "ac",
+        "low_power_mode": False,
+        "thermal_state": "nominal",
+        "memory_pressure": "normal",
+    }
+    machine = {
+        "schema_version": 1,
+        "profile_completeness": "partial",
+        "profile": profile,
+        "profile_digest": rcj_digest(profile),
+        "os": {"name": "macOS", "version": "26.0", "architecture": "arm64"},
+        "conditions_before": conditions,
+        "conditions_after": conditions,
+    }
+    snapshot = build_legacy_catalog_snapshot()
+    registry = AtomicRegistry(tmp_path)
+    for kind, document in (
+        ("machine_observation", machine),
+        ("execution_config", execution),
+        ("catalog_snapshot", snapshot),
+    ):
+        digest = registry.put(kind, document)
+        assert registry.get(kind, digest) == document
+
+
+def test_atomic_registry_rejects_unreferenced_policy_and_bad_addresses(
+    tmp_path: Path,
+) -> None:
+    bundle = build_catalog_bundle()
+    snapshot = copy.deepcopy(bundle["snapshot"])
+    policy = bundle["recommendation_policies"][0]
+    snapshot["recommendation_policy_digests"] = []
+    snapshot["catalog_digest"] = rcj_digest(
+        {
+            key: snapshot[key]
+            for key in (
+                "schema_version",
+                "models",
+                "aliases",
+                "recommendation_policy_digests",
+            )
+        }
+    )
+    registry = AtomicRegistry(tmp_path)
+    with pytest.raises(CatalogValidationError, match="not referenced"):
+        registry.put("recommendation_policy", policy, catalog_snapshot=snapshot)
+    for digest in ("not-a-digest", "sha256:" + "G" * 64):
+        with pytest.raises(ValueError, match="digest must be"):
+            registry.get("model_identity", digest)
+
+
+def test_contract_validator_rejects_unknown_contract() -> None:
+    with pytest.raises(KeyError, match="unknown contract"):
+        ContractValidator().validate("not_registered", {})
+
+
+def _rehash_snapshot(snapshot: dict) -> None:
+    snapshot["catalog_digest"] = rcj_digest(
+        {
+            key: snapshot[key]
+            for key in (
+                "schema_version",
+                "models",
+                "aliases",
+                "recommendation_policy_digests",
+            )
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda value: value["models"].append(copy.deepcopy(value["models"][0])),
+            "duplicate registry_model_id",
+        ),
+        (
+            lambda value: value["aliases"].append(copy.deepcopy(value["aliases"][0])),
+            "duplicate alias",
+        ),
+        (
+            lambda value: value["aliases"][0].update(
+                default_execution_preset_id="missing",
+                execution_presets=[
+                    {
+                        "preset_id": "balanced",
+                        "execution_config_digest": "sha256:" + "a" * 64,
+                        "evidence": {"status": "unverified_legacy"},
+                    }
+                ],
+            ),
+            "does not resolve to exactly one",
+        ),
+    ],
+)
+def test_catalog_snapshot_rejects_cross_record_duplicates_and_missing_defaults(
+    mutation, message: str
+) -> None:
+    snapshot = build_legacy_catalog_snapshot()
+    mutation(snapshot)
+    _rehash_snapshot(snapshot)
+    with pytest.raises(CatalogValidationError, match=message):
+        ContractValidator().validate_catalog_snapshot(snapshot)
+
+
+def test_catalog_snapshot_rejects_target_metadata_and_digest_drift() -> None:
+    snapshot = build_legacy_catalog_snapshot()
+    alias = snapshot["aliases"][0]
+    alias["target"]["resolution_status"] = "resolved"
+    alias["target"]["model_identity_digest"] = "sha256:" + "a" * 64
+    _rehash_snapshot(snapshot)
+    with pytest.raises(CatalogValidationError, match="does not match"):
+        ContractValidator().validate_catalog_snapshot(snapshot)
+
+    snapshot = build_legacy_catalog_snapshot()
+    snapshot["catalog_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(CatalogValidationError, match="RCJ-1 projection"):
+        ContractValidator().validate_catalog_snapshot(snapshot)
+
+
+def test_recommendation_policy_rejects_duplicate_roles_missing_alias_and_digest() -> (
+    None
+):
+    bundle = build_catalog_bundle()
+    aliases = {item["alias"]: item for item in bundle["snapshot"]["aliases"]}
+    validator = ContractValidator()
+
+    duplicate = copy.deepcopy(bundle["recommendation_policies"][0])
+    duplicate["tiers"][0]["picks"].append(
+        copy.deepcopy(duplicate["tiers"][0]["picks"][0])
+    )
+    duplicate["policy_digest"] = rcj_digest(
+        {key: value for key, value in duplicate.items() if key != "policy_digest"}
+    )
+    with pytest.raises(CatalogValidationError, match="roles must be unique"):
+        validator.validate_recommendation_policy(duplicate, aliases=aliases)
+
+    missing = copy.deepcopy(bundle["recommendation_policies"][0])
+    missing["tiers"][0]["picks"][0]["alias"] = "missing-alias"
+    missing["policy_digest"] = rcj_digest(
+        {key: value for key, value in missing.items() if key != "policy_digest"}
+    )
+    with pytest.raises(CatalogValidationError, match="does not resolve in the catalog"):
+        validator.validate_recommendation_policy(missing, aliases=aliases)
+
+    drifted = copy.deepcopy(bundle["recommendation_policies"][0])
+    drifted["policy_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(CatalogValidationError, match="RCJ-1 projection"):
+        validator.validate_recommendation_policy(drifted, aliases=aliases)
 
 
 def test_catalog_snapshot_rejects_alias_target_drift() -> None:

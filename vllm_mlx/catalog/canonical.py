@@ -30,10 +30,9 @@ def _normalize(value: Any) -> Any:
                 raise TypeError("RCJ-1 object keys must be strings")
             if not key.isascii():
                 raise TypeError("RCJ-1 object keys must be ASCII")
-            normalized_key = unicodedata.normalize("NFC", key)
-            if normalized_key in normalized:
-                raise ValueError("RCJ-1 key collision after NFC normalization")
-            normalized[normalized_key] = _normalize(child)
+            # ASCII keys are already NFC-normalized and cannot collide after
+            # normalization. Values still receive full Unicode NFC handling.
+            normalized[key] = _normalize(child)
         return {key: normalized[key] for key in sorted(normalized)}
     if isinstance(value, Sequence) and not isinstance(
         value, (bytes, bytearray, memoryview)

@@ -195,6 +195,83 @@ def test_cached_subfolder_size_accepts_one_complete_unreferenced_snapshot(
     assert cli._cached_subfolder_size("org/multi-quant", "4bit") is None
 
 
+def test_cached_subfolder_size_fails_closed_for_invalid_current_snapshots(
+    monkeypatch, tmp_path
+) -> None:
+    import os
+
+    import huggingface_hub.constants as hub_constants
+
+    import vllm_mlx.cli as cli
+
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    repo_root = tmp_path / "models--org--multi-quant"
+    snapshot = repo_root / "snapshots" / "abc123"
+    refs = repo_root / "refs"
+    snapshot.mkdir(parents=True)
+    refs.mkdir()
+    (refs / "main").write_text("abc123", encoding="utf-8")
+
+    assert cli._cached_subfolder_size("org/multi-quant", "../escape") is None
+    assert cli._cached_subfolder_size("org/multi-quant", "4bit") is None
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (snapshot / "4bit").symlink_to(outside, target_is_directory=True)
+    assert cli._cached_subfolder_size("org/multi-quant", "4bit") is None
+    (snapshot / "4bit").unlink()
+    checkpoint = snapshot / "4bit"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+
+    def broken_walk(*_args, **_kwargs):
+        raise OSError("cache disappeared")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(os, "walk", broken_walk)
+    assert cli._cached_subfolder_size("org/multi-quant", "4bit") is None
+
+
+def test_cached_payload_reconciles_root_duplicates_external_and_unknown(
+    monkeypatch,
+) -> None:
+    import vllm_mlx.cli as cli
+    import vllm_mlx.model_aliases as aliases
+
+    profiles = {
+        "root-a": SimpleNamespace(hf_path="org/root", subfolder=None),
+        "root-b": SimpleNamespace(hf_path="org/root", subfolder=None),
+    }
+    monkeypatch.setattr(aliases, "list_profiles", lambda: profiles)
+    monkeypatch.setattr(aliases, "resolve_subfolder", lambda _repo: None)
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [
+            ("org/root", 100, 1.0),
+            ("org/unmapped", 80, 0.0),
+            ("org/incomplete", 60, 0.0),
+        ],
+    )
+    monkeypatch.setattr(
+        cli, "_scan_external_model_dirs", lambda: [("local/model", 40, 0.0)]
+    )
+    monkeypatch.setattr(
+        cli,
+        "_cache_entry_is_runnable",
+        lambda repo: repo != "org/incomplete",
+    )
+
+    rows = cli._cached_models_json_payload()["cached"]
+    assert [(row["repo"], row["alias"], row["state"]) for row in rows] == [
+        ("org/root", "root-a", "ok"),
+        ("org/unmapped", None, "unmapped"),
+        ("org/incomplete", None, "incomplete"),
+        ("local/model", None, "external"),
+    ]
+
+
 def test_command_emits_single_valid_json_available(capfd) -> None:
     models_command(SimpleNamespace(cached=False, json=True))
     out = capfd.readouterr().out
