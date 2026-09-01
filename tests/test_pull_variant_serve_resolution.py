@@ -237,6 +237,9 @@ def test_serving_checkpoint_resolves_explicit_alias_before_lane_selection(
         return str(snapshot)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        server, "_prefetch_routing_metadata", lambda _name: str(checkpoint)
+    )
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _path: None)
     monkeypatch.setattr(
         server,

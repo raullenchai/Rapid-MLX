@@ -123,6 +123,7 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
     # ``captured`` that then trips a confusing "cfg is None" assertion.
     with (
         mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
         mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
         mock.patch("vllm_mlx.server.resolve_serving_lane", lambda name, **kw: lane),
         mock.patch("vllm_mlx.pflash.validate_model_support", _capture_validate),
@@ -168,6 +169,7 @@ def _run_server_main_capturing_scheduler(
     with (
         import_guard,
         mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server._preflight_vision_runtime", lambda *a, **k: None),
         mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
         mock.patch(
             "vllm_mlx.server.resolve_serving_lane", lambda _name, **_kw: (False, False)

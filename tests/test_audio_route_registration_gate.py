@@ -540,6 +540,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         # PFlash lane probe before the stubbed ``load_model``; stub it so the
         # uncached placeholder id doesn't fail-fast here (#1178).
         monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+        monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *a, **k: None)
         # ``uvicorn.run`` is imported as a top-level name in server.main;
         # patch through the module attr to dodge the real network bind.
         import uvicorn
@@ -884,6 +885,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         # config-materialization seam so the routing fail-fast doesn't preempt
         # the register-hook path under test (#1178).
         monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+        monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *a, **k: None)
 
         try:
             with (

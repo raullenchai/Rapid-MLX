@@ -1055,7 +1055,9 @@ class TestMllmBackboneIsHybrid:
         assert server._engine.kwargs["model_name"] == str(snapshot)
         assert server._engine.kwargs["force_text"] is True
         assert routing_config_inputs == [repo, repo]
-        assert lane_inputs == [str(snapshot), str(snapshot)]
+        # Each load resolves once during the pre-weight runtime preflight and
+        # once again against the final checkpoint contract.
+        assert lane_inputs == [str(snapshot)] * 4
 
         # A removed/corrupt prior identity is stale process state, not a reason
         # to reject a valid current canonical request.

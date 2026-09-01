@@ -40,6 +40,7 @@ import gc
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import uvicorn
@@ -1665,11 +1666,6 @@ def _ensure_routing_config(model_name: str) -> None:
     """
     from .model_metadata import read_model_metadata
 
-    # Config already readable (warm cache / local checkpoint dir) -> the routing
-    # probe has real evidence; skip the prefetch so warm starts and the unit
-    # suite never download.
-    if read_model_metadata(model_name) is not None:
-        return
     # A local path the user pointed us at: trust their files. If a config is
     # genuinely absent the engine's own loader surfaces it with its own
     # message; we must not try to "download" a filesystem path.
@@ -1728,6 +1724,152 @@ class _ServingCheckpoint:
     load_path: str
     auto_text_fallback: bool
     lane_reason: str
+    is_mllm: bool = False
+
+
+def _prefetch_routing_metadata(model_name: str) -> str:
+    """Return a config/index-only checkpoint path for pre-weight routing."""
+    if os.path.exists(model_name):
+        return model_name
+
+    from huggingface_hub import model_info, snapshot_download
+
+    from ._download_gate import (
+        _HF_RESOLVE_TIMEOUT_SECONDS,
+        _escape_variant_glob_literal,
+        _snapshot_is_complete,
+        call_with_deadline,
+        pulled_variant,
+    )
+    from .model_aliases import resolve_model, resolve_subfolder
+
+    repo_id = resolve_model(model_name)
+    # External-model roots resolve a Hub-shaped display name to a local path.
+    # Preserve that supported in-place load instead of handing the path back to
+    # huggingface_hub as though it were a repository identifier.
+    if os.path.exists(repo_id):
+        return repo_id
+    # Warm/offline starts must never require a Hub round trip.  Reuse only a
+    # verified-complete snapshot here; a metadata-only or interrupted snapshot
+    # must continue to the bounded online resolution below.
+    from .model_metadata import read_model_metadata
+
+    for candidate in (model_name, repo_id):
+        cached = read_model_metadata(candidate)
+        cached_dir = getattr(cached, "snapshot_dir", None)
+        if cached_dir is not None and _snapshot_is_complete(str(cached_dir)):
+            return str(cached_dir)
+    catalog_subfolder = resolve_subfolder(model_name)
+    explicit_subfolder = catalog_subfolder if model_name != repo_id else None
+    subfolder = explicit_subfolder or pulled_variant(repo_id) or catalog_subfolder
+    prefix = f"{_escape_variant_glob_literal(subfolder)}/" if subfolder else ""
+    try:
+        info = call_with_deadline(
+            model_info,
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            repo_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - canonical mirror path owns recovery
+        # A configured R2/custom mirror can be healthy while Hugging Face is
+        # blocked.  Do not let this optional lightweight probe preempt the
+        # canonical downloader's mirror-first recovery path.
+        if os.environ.get(
+            "RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com"
+        ).strip():
+            logger.warning(
+                "Could not prefetch routing metadata from Hugging Face (%s); "
+                "continuing through the configured model mirror.",
+                exc,
+            )
+            return model_name
+        raise
+    revision = getattr(info, "sha", None)
+    if not revision:
+        raise RuntimeError("HuggingFace metadata did not include a revision")
+    try:
+        snapshot = call_with_deadline(
+            snapshot_download,
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            repo_id,
+            revision=revision,
+            allow_patterns=[
+                f"{prefix}config.json",
+                f"{prefix}model.safetensors.index.json",
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 - mirror owns recovery, as above
+        if os.environ.get(
+            "RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com"
+        ).strip():
+            logger.warning(
+                "Could not download routing metadata from Hugging Face (%s); "
+                "continuing through the configured model mirror.",
+                exc,
+            )
+            return model_name
+        raise
+    return str(Path(snapshot) / subfolder) if subfolder else str(snapshot)
+
+
+def _preflight_vision_runtime(
+    model_name: str,
+    *,
+    force_mllm: bool = False,
+    force_text: bool = False,
+    requested_spec_decode: str = "none",
+) -> None:
+    """Reject a proven vision lane before materializing model weights."""
+    if force_text or requested_spec_decode not in (None, "none"):
+        return
+
+    from .model_aliases import resolve_model, resolve_profile
+
+    model_path = resolve_model(model_name)
+    profile = resolve_profile(model_name) or resolve_profile(model_path)
+    if force_mllm:
+        preflight_path = model_path
+        has_vision_weights = True
+    else:
+        preflight_path = _prefetch_routing_metadata(model_name)
+        from .model_metadata import (
+            checkpoint_has_multimodal_weights,
+            config_indicates_multimodal,
+            read_model_metadata,
+        )
+
+        metadata = read_model_metadata(preflight_path)
+        snapshot_dir = getattr(metadata, "snapshot_dir", None)
+        has_vision_weights = bool(
+            metadata is not None
+            and checkpoint_has_multimodal_weights(
+                Path(snapshot_dir) if snapshot_dir is not None else None,
+                getattr(metadata, "config", None),
+            )
+            is True
+        )
+        # An unsharded cold checkpoint has no index/header available without
+        # downloading its sole weight file.  A VLM config plus an independently
+        # VLM-identifying repo/alias name is sufficient conservative evidence;
+        # a blandly named text-only fork remains inconclusive and is deferred.
+        has_named_vision_identity = bool(
+            metadata is not None
+            and config_indicates_multimodal(getattr(metadata, "config", None) or {})
+            and is_mllm_model(model_name)
+        )
+    if not has_vision_weights and not (not force_mllm and has_named_vision_identity):
+        return
+    decision = resolve_serving_lane_decision(
+        preflight_path,
+        force_mllm=force_mllm,
+        vision_min_memory_gb=(
+            profile.vision_min_memory_gb if profile is not None else None
+        ),
+        requested_spec_decode=requested_spec_decode,
+    )
+    if getattr(decision, "is_mllm", False):
+        from .models.mllm import _require_mlx_vlm
+
+        _require_mlx_vlm(preflight_path)
 
 
 def _resolve_serving_checkpoint(
@@ -1748,6 +1890,17 @@ def _resolve_serving_checkpoint(
     from .utils.tokenizer import _resolve_subfolder_checkpoint
 
     model_path = resolve_model(model_name)
+    # Desktop/direct callers have no CLI boot guard. Fetch only lightweight
+    # routing evidence, decide the provisional lane, and reject an unusable
+    # vision runtime before the subfolder resolver or normal prefetch can pull
+    # model tensors. The final decision below is repeated after the complete
+    # checkpoint materializes so single-file weight evidence remains exact.
+    _preflight_vision_runtime(
+        model_name,
+        force_mllm=force_mllm,
+        force_text=force_text,
+        requested_spec_decode=requested_spec_decode,
+    )
     # Resolve a multi-variant repository before reading metadata or choosing a
     # serving lane. This is the one checkpoint-identity choke point shared by
     # startup and residency: an explicit alias keeps its declared subfolder,
@@ -1783,6 +1936,7 @@ def _resolve_serving_checkpoint(
         load_path=load_path,
         auto_text_fallback=decision.auto_text_fallback,
         lane_reason=decision.reason,
+        is_mllm=getattr(decision, "is_mllm", False),
     )
 
 
@@ -1854,6 +2008,21 @@ def load_model(
             model reaches ``AsyncEngineCore``. Default False keeps every
             existing caller's behavior unchanged.
     """
+    if force_mllm and force_text:
+        raise ValueError(
+            "force_mllm and force_text are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
+    if force_hybrid and no_hybrid:
+        raise ValueError(
+            "force_hybrid and no_hybrid are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
+    if force_spec_decode and no_spec_decode:
+        raise ValueError(
+            "force_spec_decode and no_spec_decode are mutually exclusive — "
+            "pick at most one to override auto-detection."
+        )
     max_tokens_was_supplied = max_tokens is not None
     if max_tokens is None:
         max_tokens = 32768
@@ -2104,6 +2273,15 @@ def load_model(
         _engine_model_path = _serving_checkpoint.load_path
         _auto_text_fallback = _serving_checkpoint.auto_text_fallback
         _serving_lane_reason = _serving_checkpoint.lane_reason
+        # Desktop and direct ``server.load_model`` callers bypass cli.py's
+        # early optional-dependency guard. Enforce the same contract here,
+        # after metadata has selected the FINAL lane but before BatchedEngine
+        # can allocate model weights. A verified/explicit text lane does not
+        # need mlx-vlm; a vision lane must have the exact validated runtime.
+        if getattr(_serving_checkpoint, "is_mllm", False):
+            from .models.mllm import _require_mlx_vlm
+
+            _require_mlx_vlm(_serving_checkpoint.load_path)
 
     # A bare multi-variant repo has no useful config at its root. Resolve the
     # concrete checkpoint first, then derive every checkpoint-owned default
@@ -2163,21 +2341,6 @@ def load_model(
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
         logger.debug(f"mxfp4/moe guardrail probe failed (non-fatal): {_e}")
 
-    if force_mllm and force_text:
-        raise ValueError(
-            "force_mllm and force_text are mutually exclusive — "
-            "pick at most one to override auto-detection."
-        )
-    if force_hybrid and no_hybrid:
-        raise ValueError(
-            "force_hybrid and no_hybrid are mutually exclusive — "
-            "pick at most one to override auto-detection."
-        )
-    if force_spec_decode and no_spec_decode:
-        raise ValueError(
-            "force_spec_decode and no_spec_decode are mutually exclusive — "
-            "pick at most one to override auto-detection."
-        )
     if force_openai_harmony_streaming and no_openai_harmony_streaming:
         raise ValueError(
             "force_openai_harmony_streaming and no_openai_harmony_streaming "
@@ -2446,6 +2609,14 @@ async def _load_dynamic_resident_model(
             profile_force_text or serving_checkpoint.auto_text_fallback
         )
         serving_lane_reason = serving_checkpoint.lane_reason
+        # Runtime residency is a second model-load entry point used by the
+        # Desktop control plane. Apply the same pre-weight vision guard as
+        # primary startup so a dynamically selected MLLM cannot become
+        # "ready" through a missing/broken/incompatible mlx-vlm stack.
+        if getattr(serving_checkpoint, "is_mllm", False):
+            from .models.mllm import _require_mlx_vlm
+
+            _require_mlx_vlm(serving_checkpoint.load_path)
     model_config = profile
     if model_config is None:
         from .model_auto_config import detect_model_config
@@ -3355,6 +3526,29 @@ Examples:
     if args.mcp_config:
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
+    # Parser/auto-config discovery below may resolve a subfolder checkpoint.
+    # Guard vision runtime compatibility before that can download its weights.
+    from .model_aliases import resolve_profile as _early_resolve_profile
+
+    _early_profile = _early_resolve_profile(args.model)
+    _early_generative_media = (
+        _early_profile is not None
+        and _early_profile.modality in ("image-gen", "video-gen")
+    )
+    _early_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if _early_spec_decode == "none" and getattr(args, "force_spec_decode", False):
+        _early_spec_decode = "auto"
+    if not _early_generative_media:
+        _preflight_vision_runtime(
+            args.model,
+            force_mllm=getattr(args, "mllm", False),
+            force_text=(
+                getattr(args, "no_mllm", False)
+                or bool(_early_profile is not None and _early_profile.is_text_only)
+            ),
+            requested_spec_decode=_early_spec_decode,
+        )
+
     # Resolve checkpoint/profile metadata lazily and at most once for every
     # standalone-server default below. Cache admission is best-effort; parser,
     # PFlash, and TurboQuant retain their existing error policy when they are
@@ -3493,13 +3687,13 @@ Examples:
     )
     _srv_force_mllm = getattr(args, "mllm", False)
     _srv_force_text = getattr(args, "no_mllm", False)
-    if not _srv_force_mllm and not _srv_force_text and not _srv_generative_media:
-        _ensure_routing_config(args.model)
     _srv_requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     if _srv_requested_spec_decode == "none" and getattr(
         args, "force_spec_decode", False
     ):
         _srv_requested_spec_decode = "auto"
+    if not _srv_force_mllm and not _srv_force_text and not _srv_generative_media:
+        _ensure_routing_config(args.model)
     _srv_is_mllm, _ = resolve_serving_lane(
         args.model,
         force_mllm=_srv_force_mllm,

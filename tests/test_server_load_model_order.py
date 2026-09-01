@@ -86,6 +86,7 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     # fetch — skip the config prefetch so the empty hermetic cache never turns
     # this into a real download.
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
     server.load_model("mlx-community/Qwen3.5-9B-4bit")
 
@@ -117,6 +118,7 @@ def test_load_model_tracks_explicit_served_model_name(monkeypatch, served, expec
     monkeypatch.setattr(server, "_served_model_name_set", not expected, raising=False)
     # #2518: no config prefetch — the repo id is a label for the stub engine.
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
     server.load_model("mlx-community/Qwen3.5-9B-4bit", served_model_name=served)
 
@@ -135,6 +137,7 @@ def _stub_routing_globals(monkeypatch, server):
     monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
     monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
     monkeypatch.setattr(server, "_model_alias", None, raising=False)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
 
 def test_load_model_materializes_config_before_hybrid_routing_probe(
@@ -197,11 +200,16 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
     so a working VLM is never downgraded."""
     from vllm_mlx import server
     from vllm_mlx.api import utils as api_utils
+    from vllm_mlx.models import mllm
 
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: True)
     monkeypatch.setattr(api_utils, "mllm_backbone_cache_mode", lambda name: None)
+    # This routing unit test runs in the Linux/no-MLX CI lane. Runtime health
+    # is covered separately; keep this assertion focused on lane selection.
+    monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda model_name=None: None)
 
     server.load_model("some/genuine-vlm-4bit")
 
@@ -209,6 +217,405 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
     # No downgrade → force_text stays False; BatchedEngine does its own MLLM
     # auto-detection from there.
     assert server._engine.kwargs.get("force_text") is False
+
+
+def test_load_model_preflights_mllm_runtime_before_engine_construction(monkeypatch):
+    """Desktop/direct callers must fail before any model weights are touched."""
+    from vllm_mlx import server
+    from vllm_mlx.models import mllm
+
+    _stub_routing_globals(monkeypatch, server)
+    monkeypatch.setattr(
+        server,
+        "_resolve_serving_checkpoint",
+        lambda _name, **_kwargs: server._ServingCheckpoint(
+            model_path="publisher/vision-model",
+            load_path="/cache/vision-model",
+            auto_text_fallback=False,
+            lane_reason="vision_checkpoint",
+            is_mllm=True,
+        ),
+    )
+    constructed = []
+
+    class _MustNotConstruct:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+
+    monkeypatch.setattr(server, "BatchedEngine", _MustNotConstruct)
+    monkeypatch.setattr(
+        mllm,
+        "_require_mlx_vlm",
+        lambda model_name=None: (_ for _ in ()).throw(
+            ImportError(f"vision runtime unavailable for {model_name}")
+        ),
+    )
+
+    with pytest.raises(ImportError, match="/cache/vision-model"):
+        server.load_model("publisher/vision-model", force_mllm=True)
+
+    assert constructed == []
+
+
+def test_load_model_explicit_text_lane_does_not_require_vision_runtime(monkeypatch):
+    """A supported explicit text-only route remains usable without mlx-vlm."""
+    from vllm_mlx import server
+    from vllm_mlx.models import mllm
+
+    _stub_routing_globals(monkeypatch, server)
+    monkeypatch.setattr(
+        server,
+        "_resolve_serving_checkpoint",
+        lambda _name, **_kwargs: server._ServingCheckpoint(
+            model_path="publisher/hybrid-model",
+            load_path="/cache/hybrid-model",
+            auto_text_fallback=False,
+            lane_reason="forced_text",
+            is_mllm=False,
+        ),
+    )
+    monkeypatch.setattr(
+        mllm,
+        "_require_mlx_vlm",
+        lambda model_name=None: (_ for _ in ()).throw(
+            AssertionError("text-only lane must not inspect mlx-vlm")
+        ),
+    )
+
+    server.load_model("publisher/hybrid-model", force_text=True)
+
+    assert server._engine is not None
+    assert server._engine.kwargs["force_text"] is True
+
+
+def test_metadata_preflight_rejects_before_subfolder_weight_download(monkeypatch):
+    """A subfolder VLM must fail before its complete checkpoint is fetched."""
+    from types import SimpleNamespace
+
+    from vllm_mlx import model_metadata, server
+    from vllm_mlx.models import mllm
+
+    monkeypatch.setattr(
+        server,
+        "_prefetch_routing_metadata",
+        lambda _name: "/cache/metadata-only/vision-model",
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda _name: SimpleNamespace(snapshot_dir="/cache/metadata-only", config={}),
+    )
+    monkeypatch.setattr(
+        model_metadata, "checkpoint_has_multimodal_weights", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_serving_lane_decision",
+        lambda *_args, **_kwargs: SimpleNamespace(is_mllm=True),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("weight-bearing subfolder resolution ran too early")
+        ),
+    )
+    monkeypatch.setattr(
+        mllm,
+        "_require_mlx_vlm",
+        lambda model_name=None: (_ for _ in ()).throw(
+            ImportError(f"invalid vision runtime for {model_name}")
+        ),
+    )
+
+    with pytest.raises(ImportError, match="metadata-only"):
+        server._resolve_serving_checkpoint("publisher/vision-alias")
+
+
+def test_inconclusive_metadata_preflight_defers_runtime_rejection(monkeypatch):
+    """Config-only evidence may be a text-only single-file fork."""
+    from types import SimpleNamespace
+
+    from vllm_mlx import model_metadata, server
+    from vllm_mlx.models import mllm
+
+    monkeypatch.setattr(
+        server,
+        "_prefetch_routing_metadata",
+        lambda _name: "/cache/metadata-only/vision-model",
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda _name: SimpleNamespace(snapshot_dir="/cache/metadata-only", config={}),
+    )
+    monkeypatch.setattr(
+        model_metadata, "checkpoint_has_multimodal_weights", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        mllm,
+        "_require_mlx_vlm",
+        lambda _name=None: (_ for _ in ()).throw(
+            AssertionError("inconclusive metadata must not reject before weights")
+        ),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("full resolution reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="full resolution reached"):
+        server._resolve_serving_checkpoint("publisher/vision-alias")
+
+
+def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    calls = []
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda _name: "publisher/multi-variant",
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_subfolder", lambda _name: "4bit"
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda _repo: SimpleNamespace(sha="abc123"),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda repo, **kwargs: calls.append((repo, kwargs)) or "/cache/snapshot",
+    )
+
+    path = server._prefetch_routing_metadata("vision-4bit")
+
+    assert path == "/cache/snapshot/4bit"
+    assert calls == [
+        (
+            "publisher/multi-variant",
+            {
+                "revision": "abc123",
+                "allow_patterns": [
+                    "4bit/config.json",
+                    "4bit/model.safetensors.index.json",
+                ],
+            },
+        )
+    ]
+
+
+def test_routing_metadata_prefetch_preserves_external_local_model(
+    tmp_path, monkeypatch
+):
+    from vllm_mlx import server
+
+    external = tmp_path / "publisher" / "model"
+    external.mkdir(parents=True)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model", lambda _name: str(external)
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("local external model must not reach the Hub")
+        ),
+    )
+
+    assert server._prefetch_routing_metadata("publisher/model") == str(external)
+
+
+def test_routing_metadata_prefetch_defers_to_configured_mirror(monkeypatch):
+    from vllm_mlx import server
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("HF blocked")),
+    )
+
+    assert server._prefetch_routing_metadata("publisher/model") == "publisher/model"
+
+
+def test_routing_metadata_download_defers_to_configured_mirror(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("CDN blocked")),
+    )
+
+    assert server._prefetch_routing_metadata("publisher/model") == "publisher/model"
+
+
+def test_routing_metadata_hub_failure_raises_without_mirror(monkeypatch):
+    from vllm_mlx import server
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("HF blocked")),
+    )
+
+    with pytest.raises(OSError, match="HF blocked"):
+        server._prefetch_routing_metadata("publisher/model")
+
+
+def test_routing_metadata_requires_hub_revision(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha=None)
+    )
+
+    with pytest.raises(RuntimeError, match="did not include a revision"):
+        server._prefetch_routing_metadata("publisher/model")
+
+
+def test_routing_metadata_download_failure_raises_without_mirror(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha="abc123")
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("CDN blocked")),
+    )
+
+    with pytest.raises(OSError, match="CDN blocked"):
+        server._prefetch_routing_metadata("publisher/model")
+
+
+def test_routing_metadata_prefetch_reuses_complete_warm_cache(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import model_metadata, server
+
+    cached = "/cache/snapshots/abc123"
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda _name: SimpleNamespace(snapshot_dir=cached),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate._snapshot_is_complete", lambda path: path == cached
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete warm cache must not reach the Hub")
+        ),
+    )
+
+    assert server._prefetch_routing_metadata("publisher/model") == cached
+
+
+def test_vision_preflight_honors_automatic_text_fallback(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import model_metadata, server
+    from vllm_mlx.models import mllm
+
+    monkeypatch.setattr(
+        server, "_prefetch_routing_metadata", lambda _name: "/cache/vision-model"
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda _name: SimpleNamespace(snapshot_dir="/cache", config={}),
+    )
+    monkeypatch.setattr(
+        model_metadata, "checkpoint_has_multimodal_weights", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_serving_lane_decision",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            is_mllm=False,
+            auto_text_fallback=True,
+            reason="vision_memory_insufficient",
+        ),
+    )
+    monkeypatch.setattr(
+        mllm,
+        "_require_mlx_vlm",
+        lambda _name=None: (_ for _ in ()).throw(
+            AssertionError("text fallback must not require mlx-vlm")
+        ),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+    )
+    monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+
+    resolved = server._resolve_serving_checkpoint("publisher/vision-model")
+
+    assert resolved.is_mllm is False
+    assert resolved.lane_reason == "vision_memory_insufficient"
+
+
+def test_speculative_decode_skips_vision_runtime_preflight(monkeypatch):
+    from vllm_mlx import server
+    from vllm_mlx.api.utils import ServingLaneDecision
+
+    monkeypatch.setattr(
+        server,
+        "_prefetch_routing_metadata",
+        lambda _name: (_ for _ in ()).throw(
+            AssertionError("speculative decode selects the text lane")
+        ),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        lambda name: name,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_metadata.read_model_metadata", lambda _name: None
+    )
+    monkeypatch.setattr(
+        server,
+        "resolve_serving_lane_decision",
+        lambda *_args, **_kwargs: ServingLaneDecision(
+            False, "text_lane_speculative_decode", auto_text_fallback=True
+        ),
+    )
+
+    resolved = server._resolve_serving_checkpoint(
+        "publisher/vision-model",
+        force_mllm=True,
+        requested_spec_decode="mtp",
+    )
+
+    assert resolved.is_mllm is False
+
+
+def test_forced_mllm_preflight_checks_resolved_model_without_metadata(monkeypatch):
+    from vllm_mlx import server
+
+    checks = []
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda _name: "publisher/resolved-vision-model",
+    )
+    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("vllm_mlx.models.mllm._require_mlx_vlm", checks.append)
+
+    server._preflight_vision_runtime("vision-alias", force_mllm=True)
+
+    assert checks == ["publisher/resolved-vision-model"]
 
 
 def test_load_model_threads_saved_cli_alias_into_checkpoint_resolution(monkeypatch):
@@ -309,6 +716,7 @@ def test_materialized_checkpoint_keeps_catalog_vision_memory_floor(monkeypatch):
         lambda _name: ModelProfile(vision_min_memory_gb=32.0),
     )
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
     monkeypatch.setattr(
         model_metadata,
         "read_model_metadata",
@@ -356,7 +764,11 @@ async def test_startup_and_runtime_use_identical_checkpoint_lane_contract(
         load_path="/cache/snapshots/revision",
         auto_text_fallback=auto_text_fallback,
         lane_reason=lane_reason,
+        is_mllm=True,
     )
+
+    vision_checks = []
+    monkeypatch.setattr("vllm_mlx.models.mllm._require_mlx_vlm", vision_checks.append)
 
     def resolve_once(model_name, **kwargs):
         calls.append((model_name, kwargs))
@@ -376,6 +788,7 @@ async def test_startup_and_runtime_use_identical_checkpoint_lane_contract(
     startup = server._model_registry.get_entry("publisher/model")
     assert startup.experimental is True
     assert runtime.experimental is True
+    assert vision_checks == ["/cache/snapshots/revision"] * 2
 
     assert calls == [
         (
@@ -505,21 +918,25 @@ def test_ensure_routing_config_succeeds_when_prefetch_materializes(monkeypatch):
     assert state["materialized"] is True
 
 
-def test_ensure_routing_config_skips_prefetch_when_config_already_readable(monkeypatch):
-    """Warm cache / local checkpoint: config already readable → no download is
-    attempted (keeps warm starts and the unit suite fully offline)."""
+def test_ensure_routing_config_completes_remote_snapshot_with_readable_config(
+    monkeypatch,
+):
+    """A metadata-only remote snapshot must still materialize its weights."""
     from vllm_mlx import cli as cli_mod
     from vllm_mlx import model_metadata as mm
     from vllm_mlx import server
 
     monkeypatch.setattr(mm, "read_model_metadata", lambda name: object())
 
-    def _must_not_run(name):  # pragma: no cover - asserted never called
-        raise AssertionError("prefetch must be skipped when config is readable")
+    downloaded = []
 
-    monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _must_not_run)
+    def _complete_snapshot(name):
+        downloaded.append(name)
+
+    monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _complete_snapshot)
 
     server._ensure_routing_config("mlx-community/Qwen3.5-9B-4bit")
+    assert downloaded == ["mlx-community/Qwen3.5-9B-4bit"]
 
 
 def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
@@ -556,6 +973,7 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     monkeypatch.setattr(server, "_model_alias", None, raising=False)
     # #2518: no config prefetch — the repo id is a label for the stub engine.
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
     server.load_model("mlx-community/Qwen3.5-9B-4bit")
     cfg = get_config()
@@ -603,6 +1021,7 @@ def test_load_model_mtp_kwarg_translates_to_scheduler_config(
     # (``scheduler_config_stub`` shims ``mlx`` on the no-MLX lane, so the
     # ``importorskip`` above does NOT skip this test there.)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
     with pytest.warns(DeprecationWarning, match="load_model\\(mtp=True\\)"):
         server.load_model("mlx-community/Qwen3.5-9B-4bit", mtp=True)
@@ -706,6 +1125,7 @@ def test_load_model_response_cache_reconfigure_failure_forces_disabled(monkeypat
 
     # #2518: no config prefetch — the repo id is a label for the stub engine.
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
+    monkeypatch.setattr(server, "_prefetch_routing_metadata", lambda name: name)
 
     # load_model must NOT raise (best-effort), but must force the cache safe.
     server.load_model("mlx-community/Qwen3.5-9B-4bit")

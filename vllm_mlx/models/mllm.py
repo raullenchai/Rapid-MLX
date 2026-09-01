@@ -20,7 +20,9 @@ import ipaddress
 import logging
 import math
 import os
+import plistlib
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -30,6 +32,7 @@ import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
@@ -150,12 +153,106 @@ def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
 # The bare-mlx-vlm line is pinned to the same validated runtime as the
 # ``rapid-mlx[vision]`` extra. Keeping both recovery paths aligned avoids
 # resolver-dependent behavior between direct installs and the packaged app.
-VLM_EXTRA_INSTALL_HINT = (
-    "Install it with:\n"
-    "    pip install 'rapid-mlx[vision]'\n"
-    "or directly (pinned to stay compatible with rapid-mlx's transformers pin):\n"
-    "    pip install 'mlx-vlm==0.6.17'"
-)
+VALIDATED_MLX_VLM_VERSION = "0.6.17"
+
+
+def _managed_desktop_runtime_kind() -> str | None:
+    """Return the Desktop-managed runtime slot for this interpreter."""
+    executable_path = Path(sys.executable).resolve()
+    executable = str(executable_path)
+    if "/Library/Application Support/Rapid/runtime-override/" in executable:
+        try:
+            root = executable_path.parents[2]
+        except (IndexError, OSError):  # pragma: no cover - defensive Path guard
+            return None
+        if (
+            executable_path.parent.name == "bin"
+            and executable_path.parent.parent.name == "python"
+            and executable_path.name.startswith("python")
+            and root.name == "rapid-mlx"
+            and root.parent.name == "runtime-override"
+            and root.parent.parent.name == "Rapid"
+            and root.parent.parent.parent.name == "Application Support"
+        ):
+            return "runtime-override"
+        return None
+    if ".app/Contents/Resources/rapid-mlx/" in executable:
+        try:
+            root = executable_path.parents[2]
+            app_root = root.parents[2]
+            with (app_root / "Contents" / "Info.plist").open("rb") as handle:
+                bundle_id = plistlib.load(handle).get("CFBundleIdentifier", "")
+        except (  # pragma: no cover - individual filesystem failures tested via result
+            IndexError,
+            OSError,
+            plistlib.InvalidFileException,
+        ):
+            return None
+        if (
+            executable_path.parent.name == "bin"
+            and executable_path.parent.parent.name == "python"
+            and executable_path.name.startswith("python")
+            and root.name == "rapid-mlx"
+            and root.parent.name == "Resources"
+            and root.parent.parent.name == "Contents"
+            and app_root.name.endswith(".app")
+            and (
+                bundle_id == "com.rapidmlx.rapid"
+                or bundle_id.startswith("com.rapidmlx.rapid.dogfood-")
+            )
+        ):
+            return "embedded"
+        return None
+    return None
+
+
+def _managed_desktop_runtime() -> bool:
+    """Whether this interpreter belongs to a Desktop-managed runtime tree."""
+    return _managed_desktop_runtime_kind() is not None
+
+
+def _managed_desktop_runtime_root() -> Path:
+    """Return the active sidecar root derived from its interpreter layout."""
+    return Path(sys.executable).resolve().parents[2]
+
+
+def _vision_install_hint() -> str:
+    """Return a repair path that cannot accidentally target another Python.
+
+    A signed Desktop runtime is immutable product state: mutating it with pip
+    invalidates the tested dependency set (and can invalidate a bundle seal).
+    Standalone environments use the active interpreter explicitly so a
+    two-venv installation cannot repair the wrong environment.
+    """
+    managed_kind = _managed_desktop_runtime_kind()
+    if managed_kind == "runtime-override":
+        runtime_root = _managed_desktop_runtime_root()
+        return (
+            "Install the current Rapid-MLX Desktop.app first (its DMG ships a "
+            "validated sidecar), then remove "
+            f"{runtime_root} "
+            "and relaunch so Desktop uses the bundled sidecar. Do not "
+            "pip-install into the managed runtime override."
+        )
+    if managed_kind == "embedded":
+        return (
+            "Reinstall Rapid-MLX Desktop.app to restore its validated vision "
+            "runtime. Do not pip-install into the code-signed bundled sidecar."
+        )
+    python = shlex.quote(sys.executable)
+    return (
+        "Install the validated vision stack into this runtime with:\n"
+        f"    {python} -m pip install --upgrade --force-reinstall "
+        "'rapid-mlx[vision]'\n"
+        "or repair mlx-vlm directly (pinned to Rapid-MLX's validated set):\n"
+        f"    {python} -m pip install --upgrade --force-reinstall "
+        f"'mlx-vlm=={VALIDATED_MLX_VLM_VERSION}'"
+    )
+
+
+# Backwards-compatible public constant used by docs/tests. It is generated
+# from the active runtime so its commands cannot land in a different venv.
+VLM_EXTRA_INSTALL_HINT = _vision_install_hint()
 
 
 # Import-module → PyPI-distribution name for the runtime deps mlx-vlm
@@ -172,7 +269,7 @@ def _pip_name_for_module(module: str) -> str:
 
 
 class VisionRuntimeStatus(str, Enum):
-    """Tri-state health of the vision runtime (``mlx-vlm`` + its deps).
+    """Health of the vision runtime (``mlx-vlm`` + its dependencies).
 
     * ``OK`` — ``import mlx_vlm`` succeeds; vision paths are usable.
     * ``ABSENT`` — ``mlx-vlm`` is not installed at all (plain
@@ -186,11 +283,16 @@ class VisionRuntimeStatus(str, Enum):
       ``mlx_vlm.<sub>`` submodule, an incompatible symbol (``ImportError``),
       and a missing shared library (``OSError``/``RuntimeError``): all mean
       "installed but not loadable", never "absent".
+    * ``INCOMPATIBLE`` — the package imports, but its distribution version is
+      not the exact version validated with this Rapid-MLX release. Import
+      success is insufficient: mlx-vlm and Transformers are a coupled stack,
+      and an unbounded upgrade can make the next server boot fail.
     """
 
     OK = "ok"
     ABSENT = "absent"
     BROKEN = "broken"
+    INCOMPATIBLE = "incompatible"
 
 
 def _mlx_vlm_installed() -> bool:
@@ -248,6 +350,8 @@ def vision_runtime_status() -> tuple[VisionRuntimeStatus, str | None]:
     * ``(BROKEN, detail)`` — the package IS installed but its import chain
       raised; ``detail`` is always truthy (a missing-module name like
       ``PIL``, or an exception summary for an opaque failure).
+    * ``(INCOMPATIBLE, version)`` — import succeeded, but the installed
+      distribution does not match :data:`VALIDATED_MLX_VLM_VERSION`.
 
     We perform the REAL ``import mlx_vlm`` (not a bare ``find_spec`` /
     ``importlib.metadata.version`` probe) so a broken dependency chain
@@ -266,6 +370,12 @@ def vision_runtime_status() -> tuple[VisionRuntimeStatus, str | None]:
         if not _mlx_vlm_installed():
             return VisionRuntimeStatus.ABSENT, "mlx_vlm"
         return VisionRuntimeStatus.BROKEN, _broken_detail(exc)
+    try:
+        installed_version = version("mlx-vlm")
+    except PackageNotFoundError:
+        return VisionRuntimeStatus.BROKEN, "mlx-vlm version metadata unavailable"
+    if installed_version != VALIDATED_MLX_VLM_VERSION:
+        return VisionRuntimeStatus.INCOMPATIBLE, installed_version
     return VisionRuntimeStatus.OK, None
 
 
@@ -287,18 +397,20 @@ def _vlm_broken_install_hint(detail: str | None) -> str:
     """
     if detail in _MISSING_MODULE_PIP_NAME:
         pip_name = _pip_name_for_module(detail)
-        return (
+        hint = (
             f"`mlx-vlm` is installed but its dependency {detail!r} is not, so "
-            f"the vision runtime cannot load. Install the full vision stack:\n"
-            f"    pip install 'rapid-mlx[vision]'\n"
-            f"or just the missing piece:\n"
-            f"    pip install {pip_name}"
+            f"the vision runtime cannot load. {_vision_install_hint()}"
+        )
+        if _managed_desktop_runtime():
+            return hint
+        return (
+            hint + "\nAlternatively, repair just the missing dependency in this "
+            f"runtime:\n    {shlex.quote(sys.executable)} -m pip install {pip_name}"
         )
     suffix = f" ({detail})" if detail else ""
     return (
         f"`mlx-vlm` is installed but its import chain is broken, so the "
-        f"vision runtime cannot load{suffix}. Reinstall the vision stack:\n"
-        f"    pip install --force-reinstall 'rapid-mlx[vision]'"
+        f"vision runtime cannot load{suffix}. {_vision_install_hint()}"
     )
 
 
@@ -341,7 +453,16 @@ def require_mlx_vlm_or_exit(model_name: str) -> None:
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
-    if status is VisionRuntimeStatus.BROKEN:
+    if status is VisionRuntimeStatus.INCOMPATIBLE:
+        print(
+            f"error: model {model_name!r} requires the Rapid-MLX vision lane, "
+            f"but mlx-vlm {detail!r} is incompatible; this release validates "
+            f"exactly {VALIDATED_MLX_VLM_VERSION}. This is a vision-runtime "
+            f"compatibility error, not a Metal out-of-memory error.\n"
+            + _vision_install_hint(),
+            file=sys.stderr,
+        )
+    elif status is VisionRuntimeStatus.BROKEN:
         print(
             f"error: model {model_name!r} is a vision/multimodal alias, but "
             f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail),
@@ -360,7 +481,7 @@ def require_mlx_vlm_or_exit(model_name: str) -> None:
     sys.exit(2)
 
 
-def _require_mlx_vlm() -> None:
+def _require_mlx_vlm(model_name: str | None = None) -> None:
     """Verify the vision runtime can load; raise actionable error if not.
 
     Engine-side last-line-of-defence: ``rapid-mlx serve`` is supposed
@@ -376,13 +497,21 @@ def _require_mlx_vlm() -> None:
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
+    model_context = f" for model {model_name!r}" if model_name else ""
+    if status is VisionRuntimeStatus.INCOMPATIBLE:
+        raise ImportError(
+            f"Vision/multimodal runtime{model_context} is incompatible: "
+            f"installed mlx-vlm {detail!r}, validated version "
+            f"{VALIDATED_MLX_VLM_VERSION}. This is not a Metal "
+            "out-of-memory error.\n" + _vision_install_hint()
+        )
     if status is VisionRuntimeStatus.BROKEN:
         raise ImportError(
-            "Vision/multimodal models cannot load the vision runtime.\n"
-            + _vlm_broken_install_hint(detail)
+            f"Vision/multimodal models{model_context} cannot load the vision "
+            "runtime.\n" + _vlm_broken_install_hint(detail)
         )
     raise ImportError(
-        "Vision/multimodal models require the optional `mlx-vlm` "
+        f"Vision/multimodal models{model_context} require the optional `mlx-vlm` "
         "dependency.\n" + VLM_EXTRA_INSTALL_HINT
     )
 
