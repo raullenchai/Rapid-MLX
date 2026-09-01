@@ -40,6 +40,9 @@ records rather than parse legacy submission JSON.
   the foreground lease is atomically replaced by a ServerManager quarantine
   lease; UI cancellation can finish, but model launches remain excluded until
   a background monitor confirms the process group is gone.
+  The same quarantine rule applies before a run: if the embedded inference
+  server survives its TERM/KILL grace, Desktop aborts the benchmark and keeps
+  launches excluded until that prior server group is confirmed gone.
 - A completed run always contains its atomic `MachineObservation`. If the
   privacy-allowlisted machine probe itself fails, the local failed attempt uses
   `machine_probe_failed` and omits `machine` rather than fabricating identity;

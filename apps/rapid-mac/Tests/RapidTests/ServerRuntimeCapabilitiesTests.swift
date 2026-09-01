@@ -313,6 +313,37 @@ struct ServerRuntimeCapabilitiesTests {
         manager.finishCommunityBenchmark(replacementReservation)
     }
 
+    @Test("Lingering embedded server aborts benchmark and transfers quarantine")
+    @MainActor
+    func benchmarkRejectsLingeringEmbeddedServer() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let foreground = try await manager.prepareForCommunityBenchmark()
+        let monitor = DeferredReapCompletionBox()
+
+        do {
+            try manager._testRejectCommunityBenchmarkForLingeringServer(
+                reservation: foreground,
+                startMonitoring: { monitor.install($0) }
+            )
+        } catch {
+            #expect(error.localizedDescription.contains("previous model is still stopping"))
+        }
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        monitor.finish()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        manager.finishCommunityBenchmark(replacementReservation)
+    }
+
     @Test("Community Benchmark cancellation releases an operating wait")
     @MainActor
     func benchmarkCancellationReleasesOperatingWait() async throws {

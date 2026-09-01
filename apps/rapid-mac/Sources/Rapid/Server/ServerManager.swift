@@ -1996,7 +1996,7 @@ final class ServerManager {
                     plan: .releaseResidentModels
                 )
             }
-            await stop(preservingLastServedAlias: true)
+            _ = await stop(preservingLastServedAlias: true)
         }
         let memoryRequestID = UUID()
         await start(
@@ -2388,7 +2388,7 @@ final class ServerManager {
         ) else { return }
         memoryConfirmRunning.insert(seq)
         if child != nil {
-            await stop(
+            _ = await stop(
                 preservingLastServedAlias: Self.memoryConfirmationPreservesResumeAlias(
                     currentWarning
                 )
@@ -3166,7 +3166,7 @@ final class ServerManager {
         // stall rather than a wall-clock timeout so the user
         // understands the failure mode (not "you ran out of time"
         // but "we stopped seeing any signs of life from rapid-mlx").
-        await terminateChild(
+        _ = await terminateChild(
             reason: "The model stopped responding for \(Int(healthStallWindow / 60)) minutes."
         )
     }
@@ -3190,7 +3190,7 @@ final class ServerManager {
     /// SIGKILL if still alive. State transitions to `.stopped` on
     /// success.
     func stop() async {
-        await stop(preservingLastServedAlias: false)
+        _ = await stop(preservingLastServedAlias: false)
     }
 
     /// Reserve the server lifecycle for a local Community Benchmark and
@@ -3236,7 +3236,19 @@ final class ServerManager {
             await Task.yield()
         }
         try throwIfCommunityBenchmarkCancelled(reservation)
-        await stop(preservingLastServedAlias: false)
+        if let lingeringProcessGroupID = await stop(preservingLastServedAlias: false) {
+            // Transfer exclusion before releasing this foreground owner. A
+            // benchmark must never start while the embedded server's SIGKILL
+            // is still pending in unified memory.
+            try rejectCommunityBenchmarkForLingeringServer(
+                reservation: reservation
+            ) { onExit in
+                ProcessGroupChild.monitorProcessGroupUntilExit(
+                    processGroupID: lingeringProcessGroupID,
+                    onExit: onExit
+                )
+            }
+        }
         return reservation
     }
 
@@ -3299,10 +3311,34 @@ final class ServerManager {
         )
     }
 
+    private func rejectCommunityBenchmarkForLingeringServer(
+        reservation: UUID,
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) throws -> Never {
+        retainCommunityBenchmarkDuringDeferredReap(
+            startMonitoring: startMonitoring
+        )
+        finishCommunityBenchmark(reservation)
+        if Task.isCancelled { throw CancellationError() }
+        throw CommunityBenchmarkPreparationError(
+            message: "The previous model is still stopping. Wait a moment, then run the benchmark again."
+        )
+    }
+
+    internal func _testRejectCommunityBenchmarkForLingeringServer(
+        reservation: UUID,
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) throws -> Never {
+        try rejectCommunityBenchmarkForLingeringServer(
+            reservation: reservation,
+            startMonitoring: startMonitoring
+        )
+    }
+
     /// Shared expected-stop path. Model replacement keeps the previous
     /// known-good alias until the replacement reaches ``.ready`` and writes
     /// its own alias; a user-facing Stop continues to clear it immediately.
-    private func stop(preservingLastServedAlias: Bool) async {
+    private func stop(preservingLastServedAlias: Bool) async -> pid_t? {
         // Issue #270: the user clicked Stop. A pending auto-respawn
         // racing them would defeat the click — cancel it AND reset
         // the retry budget so a subsequent user-driven Start gets a
@@ -3311,12 +3347,12 @@ final class ServerManager {
         // a queued respawn would still race a subsequent state change).
         cancelAutoRespawn()
         cancelRuntimeProbe()
-        guard !isOperating else { return }
-        guard child != nil else { return }
+        guard !isOperating else { return nil }
+        guard child != nil else { return nil }
         isOperating = true
         defer { isOperating = false }
         preservingLastServedAliasDuringStop = preservingLastServedAlias
-        await terminateChild(reason: nil)
+        return await terminateChild(reason: nil)
     }
 
     /// Synchronous, fire-and-forget teardown used by app shutdown
@@ -3466,8 +3502,10 @@ final class ServerManager {
     /// the loop's natural ``return`` after the call clears the
     /// ``runtimeHealthTask`` handle via ``handleChildExit``'s
     /// cancel-on-exit branch.
-    private func terminateChild(reason: String?, cancelMonitor: Bool = true) async {
-        guard let process = child else { return }
+    private func terminateChild(
+        reason: String?, cancelMonitor: Bool = true
+    ) async -> pid_t? {
+        guard let process = child else { return nil }
         let alias: String
         switch state {
         case .starting(let a), .ready(let a), .crashed(let a, _):
@@ -3513,7 +3551,8 @@ final class ServerManager {
         // `.crashed`. But if for some reason the handler doesn't run
         // promptly (we've never seen this, but defensive), nil it out
         // here so a subsequent start() can proceed.
-        if !process.isProcessGroupAlive {
+        let groupStillAlive = process.isProcessGroupAlive
+        if !groupStillAlive {
             teardownPipes()
             child = nil
             launchedImageInputLane = nil
@@ -3541,6 +3580,7 @@ final class ServerManager {
                 state = .stopped
             }
         }
+        return groupStillAlive ? process.processGroupID : nil
     }
 
     /// Runs on the main actor when the child terminates. Decides whether
@@ -4087,7 +4127,9 @@ final class ServerManager {
                 // ``terminateChild``'s own ``Task.sleep`` grace
                 // windows (5 s SIGTERM, 1 s SIGKILL) aren't
                 // collapsed to zero by us-cancelling-ourselves.
-                await terminateChild(reason: "The model stopped responding.", cancelMonitor: false)
+                _ = await terminateChild(
+                    reason: "The model stopped responding.", cancelMonitor: false
+                )
                 return
             }
         }
@@ -5302,6 +5344,11 @@ final class ProcessGroupChild: @unchecked Sendable {
             throw ProcessGroupSpawnError(operation: operation, code: result)
         }
     }
+}
+
+private struct CommunityBenchmarkPreparationError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 private struct ProcessGroupSpawnError: LocalizedError {
