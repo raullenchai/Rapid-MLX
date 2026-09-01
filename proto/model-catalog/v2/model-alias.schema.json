@@ -45,7 +45,10 @@
         "reasoning_parser": {"type": "string", "minLength": 1, "maxLength": 64},
         "chat_template_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "experimental": {"type": "boolean"}
-      }
+      },
+      "allOf": [{
+        "not": {"required": ["generation_modes", "operation_modes"]}
+      }]
     },
     "availability": {
       "type": "object", "additionalProperties": false,

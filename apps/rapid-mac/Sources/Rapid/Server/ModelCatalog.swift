@@ -964,9 +964,11 @@ enum ModelCatalog {
                 audioCapability = nil
             }
             let imageCapability: ImageModelCapability?
-            if operations.contains(.textToImage) && operations.contains(.imageToImage) {
+            let supportsImageEditing = operations.contains(.imageToImage)
+                || operations.contains(.inpainting)
+            if operations.contains(.textToImage) && supportsImageEditing {
                 imageCapability = .generationAndEditing
-            } else if operations.contains(.imageToImage) || operations.contains(.inpainting) {
+            } else if supportsImageEditing {
                 imageCapability = .editing
             } else if operations.contains(.textToImage) {
                 imageCapability = .generation

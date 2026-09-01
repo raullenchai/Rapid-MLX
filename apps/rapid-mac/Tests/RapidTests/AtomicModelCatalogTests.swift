@@ -159,6 +159,28 @@ struct AtomicModelCatalogTests {
         #expect(!ModelSelectionPurpose.chat.accepts(stt))
     }
 
+    @Test("text-to-image plus inpainting exposes both image operations")
+    func inpaintingAndGenerationCapability() throws {
+        let inpainting = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            var capabilities = aliases[1]["capabilities"] as! [String: Any]
+            capabilities["operation_modes"] = ["text_to_image", "inpainting"]
+            aliases[1]["capabilities"] = capabilities
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(
+            ModelCatalog.parseAtomicModelEntriesJSON(inpainting)
+        )
+        let image = try #require(entries.first { $0.alias == "image" })
+        #expect(image.imageCapability == .generationAndEditing)
+        #expect(ModelSelectionPurpose.imageGeneration.accepts(image))
+        #expect(ModelSelectionPurpose.imageEditing.accepts(image))
+    }
+
     @Test("v1 generation_modes remains a bounded image migration fallback")
     func generationModesMigrationFallback() throws {
         let legacySpelling = Self.mutated { root in

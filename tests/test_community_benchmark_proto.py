@@ -135,6 +135,15 @@ def test_alias_is_a_reference_layer_not_embedded_identity(schemas, registry) -> 
     assert "execution_config_digest" in example["execution_presets"][0]
 
 
+def test_v2_alias_rejects_conflicting_mode_spellings(schemas, registry) -> None:
+    example = _load(CATALOG_ROOT / "examples" / "model-alias.example.json")
+    example["capabilities"]["generation_modes"] = ["inpainting"]
+    errors = list(
+        _validator(schemas["model-alias.schema.json"], registry).iter_errors(example)
+    )
+    assert any(list(error.absolute_path) == ["capabilities"] for error in errors)
+
+
 def test_model_alias_v1_remains_backward_compatible() -> None:
     schema = _load(CATALOG_V1_ROOT / "model-alias.schema.json")
     example = _load(CATALOG_V1_ROOT / "examples" / "model-alias.example.json")
