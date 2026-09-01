@@ -17,6 +17,47 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.13.3] — 2026-08-31
+
+Rapid-MLX 0.13.3 adds production-safe GLM-5.3-Flash serving, reuses text
+prefixes on hybrid vision models, and improves Desktop navigation, video-job
+recovery, streaming presentation, and failure diagnosis.
+
+### Added
+
+- **GLM-5.3-Flash runs locally through the normal serving path.** The new
+  `glm5.3-flash-4bit` alias includes the processor, quantization, image-layout,
+  and runtime compatibility needed for text and multimodal requests. The
+  qualified 4-bit checkpoint decoded a sustained 512-token response at a
+  median 29.2 tok/s on an M3 Ultra and requires the 192 GB memory tier.
+- **Desktop commands are easier to reach.** A native command palette exposes
+  common actions from the keyboard, completed interactions can offer a
+  lightweight feedback entry, and failure diagnostics have a direct shortcut.
+
+### Changed
+
+- **Hybrid vision conversations reuse eligible text prefixes.** Repeated
+  text-only phases on the multimodal lane retain compatible prefix state
+  instead of recomputing it, while media-bearing requests continue through
+  their validated vision path.
+- **Large-model performance claims are reproducible.** The README now links
+  exact M3 Ultra workloads, checkpoint revisions, memory measurements, and
+  ordinary-versus-MTP results for Qwen3.8 and GLM-5.3-Flash.
+- GUI regression coverage begins moving deterministic journeys into the Swift
+  test process, shortening the expensive hosted-Mac merge lane without
+  dropping the accessibility contracts those journeys enforce.
+
+### Fixed
+
+- Completed video jobs survive server restarts, and video capabilities are
+  available before a model is loaded so clients can reject unsupported work
+  early.
+- Model pickers stay scoped to the active task, streaming Markdown reveals
+  smoothly, and packaged Desktop builds can recover the engine after a failed
+  post-DMG installation.
+- Native XCUITest bootstrap and merge-queue dependency evidence are more
+  reliable, reducing false release blocks without weakening required checks.
+
 ## [0.13.2] — 2026-08-30
 
 Rapid-MLX 0.13.2 makes long-running local assistants faster and more reliable,
@@ -3614,7 +3655,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...HEAD
+[0.13.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...rapid-mac-v0.13.3
 [0.13.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2-rc1...rapid-mac-v0.13.2
 [0.13.2-rc1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.1...rapid-mac-v0.13.2-rc1
 [0.13.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.0...rapid-mac-v0.13.1
