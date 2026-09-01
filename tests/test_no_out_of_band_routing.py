@@ -168,6 +168,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # loads, which parser fires, which tier engages — none of that
         # changes. Read by ``gdn_in_proj_fusion.fuse_gdn_in_proj()`` only.
         "RAPID_MLX_GDN_IN_PROJ_FUSION",
+        # Opt-in fused Qwen4 single-token GDN recurrence. This selects a
+        # bit-exact kernel for an already-selected model and falls back for
+        # unsupported shapes; it does not select a model, parser, or lane.
+        "RAPID_MLX_QWEN4_FUSED_GDN_DECODE",
         # Opt-in re-quantization of the lm_head when serving fp8-block
         # checkpoints through the load-time mxfp8 repack
         # (vllm_mlx/fp8_repack.py). A precision/speed knob on an
