@@ -24,7 +24,7 @@ import requests
 
 from .benchmark_contracts import public_prompt, registered_workload
 from .hardware import collect
-from .run_builder import build_run, utc_now
+from .run_builder import build_run, execution_config, utc_now
 from .workspace import LocalRunArchive, plan_for_alias
 
 _VIDEO_JOB_TIMEOUT_S = 3600.0
@@ -678,9 +678,13 @@ def run_local(
     model = plan["model"]
     started_at = utc_now()
     task_type = model["task_type"]
+    if task_type not in {"text_generation", "image_generation", "video_generation"}:
+        raise ValueError(f"unsupported task type {task_type!r}")
     context_length = None
     hardware = None
     software = None
+    execution = None
+    measurements_completed = False
     destination = archive or LocalRunArchive.default()
     try:
         hardware, software = collect()
@@ -696,8 +700,8 @@ def run_local(
             measurements = _run_video(
                 alias, isolate_process_group=not inherit_process_group
             )
-        else:
-            raise ValueError(f"unsupported benchmark task {task_type!r}")
+        measurements_completed = True
+        execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],
             task_type=task_type,
@@ -706,25 +710,46 @@ def run_local(
             started_at=started_at,
             measurements=measurements,
             context_length=context_length,
+            execution=execution,
         )
     except Exception as exc:
+        if measurements_completed and execution is None:
+            raise LocalBenchmarkError(
+                f"benchmark completed but result could not be constructed: {exc}",
+                None,
+                saved=False,
+            ) from exc
         failure_code = (
             "machine_probe_failed"
             if hardware is None or software is None
             else _failure_code(exc)
         )
-        failed = build_run(
-            repo_id=model["repo_id"],
-            task_type=task_type,
-            hardware=hardware,
-            software=software,
-            started_at=started_at,
-            status=(
-                "cancelled" if isinstance(exc, BenchmarkCancelledError) else "failed"
-            ),
-            failure_code=failure_code,
-            context_length=context_length,
-        )
+        try:
+            if execution is None:
+                execution = execution_config(
+                    task_type, context_length=context_length
+                )
+            failed = build_run(
+                repo_id=model["repo_id"],
+                task_type=task_type,
+                hardware=hardware,
+                software=software,
+                started_at=started_at,
+                status=(
+                    "cancelled"
+                    if isinstance(exc, BenchmarkCancelledError)
+                    else "failed"
+                ),
+                failure_code=failure_code,
+                context_length=context_length,
+                execution=execution,
+            )
+        except Exception as envelope_exc:
+            raise LocalBenchmarkError(
+                f"{exc}; failed outcome could not be constructed: {envelope_exc}",
+                None,
+                saved=False,
+            ) from exc
         try:
             destination.save(failed)
         except Exception as archive_exc:

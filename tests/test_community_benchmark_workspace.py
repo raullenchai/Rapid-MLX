@@ -564,6 +564,72 @@ def test_completed_run_persistence_failure_does_not_fabricate_failed_outcome(
     assert "completed but result could not be saved: disk full" in str(error.value)
 
 
+def test_completed_run_construction_failure_is_not_retried_as_failed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias, **kwargs: _image_run()["measurements"],
+    )
+    execution_calls = 0
+
+    def unresolved_revision(*args, **kwargs):
+        nonlocal execution_calls
+        execution_calls += 1
+        raise RuntimeError("could not resolve the Rapid-MLX source revision")
+
+    monkeypatch.setattr(local_runner, "execution_config", unresolved_revision)
+    monkeypatch.setattr(
+        local_runner, "build_run", lambda **kwargs: pytest.fail("must not build twice")
+    )
+    archive = SimpleNamespace(save=lambda run: pytest.fail("must not save"))
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError,
+        match="completed but result could not be constructed: could not resolve",
+    ) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert execution_calls == 1
+    assert error.value.run is None
+    assert error.value.saved is False
+
+
+def test_execution_and_failure_envelope_errors_are_both_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias, **kwargs: (_ for _ in ()).throw(RuntimeError("generation broke")),
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "build_run",
+        lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("could not resolve the Rapid-MLX source revision")
+        ),
+    )
+    archive = SimpleNamespace(save=lambda run: pytest.fail("must not save"))
+
+    with pytest.raises(local_runner.LocalBenchmarkError) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert error.value.run is None
+    assert error.value.saved is False
+    assert "generation broke" in str(error.value)
+    assert "failed outcome could not be constructed: could not resolve" in str(
+        error.value
+    )
+
+
 def test_machine_probe_failure_is_archived_without_traceback_or_fake_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

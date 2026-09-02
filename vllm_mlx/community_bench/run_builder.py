@@ -201,6 +201,7 @@ def build_run(
     status: str = "completed",
     failure_code: str | None = None,
     context_length: int | None = None,
+    execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome = {"status": status}
     if failure_code is not None:
@@ -212,7 +213,11 @@ def build_run(
         "completed_at": utc_now(),
         "collector": {"name": "rapid-mlx-community-bench", "version": __version__},
         "model": unresolved_model_identity(repo_id, task_type),
-        "execution": execution_config(task_type, context_length=context_length),
+        "execution": (
+            execution
+            if execution is not None
+            else execution_config(task_type, context_length=context_length)
+        ),
         "workload": registered_workload(task_type),
         "outcome": outcome,
     }
