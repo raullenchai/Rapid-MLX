@@ -29,7 +29,21 @@ SCHEMA_PATHS = (
     CATALOG_V1_ROOT / "recommendation-policy.schema.json",
     CATALOG_ROOT / "catalog-snapshot.schema.json",
     BENCH_ROOT / "benchmark-run.schema.json",
+    BENCH_ROOT / "submission-receipt.schema.json",
 )
+
+
+def test_submission_receipt_contract(schemas, registry) -> None:
+    receipt = {
+        "schema_version": 1,
+        "submission_id": "00000000-0000-4000-8000-000000000001",
+        "status": "accepted",
+        "already_exists": False,
+        "accepted_at": "2026-09-01T20:00:00Z",
+        "run_digest": "sha256:" + "a" * 64,
+        "contributor": {"name": "quiet-amber-orca", "tag": "0af"},
+    }
+    _validator(schemas["submission-receipt.schema.json"], registry).validate(receipt)
 
 
 def _load(path: Path) -> dict:

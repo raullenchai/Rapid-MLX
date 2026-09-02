@@ -162,6 +162,14 @@ struct CommunityBenchmarkModelTests {
                 "benchmark", "results", "--limit", "8", "--json",
             ]
         )
+        #expect(
+            CommunityBenchmarkCommand.benchmarkShareArguments(
+                runID: "00000000-0000-4000-8000-000000000001"
+            ) == [
+                "benchmark", "share", "00000000-0000-4000-8000-000000000001",
+                "--yes", "--json",
+            ]
+        )
     }
 
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")

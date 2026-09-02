@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/community-benchmark/v1/submission-receipt.schema.json",
+  "title": "Community Benchmark Submission Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "submission_id",
+    "status",
+    "already_exists",
+    "accepted_at",
+    "run_digest",
+    "contributor"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "submission_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": { "const": "accepted" },
+    "already_exists": { "type": "boolean" },
+    "accepted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "run_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "contributor": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "tag"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 96
+            },
+            "tag": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{3}$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

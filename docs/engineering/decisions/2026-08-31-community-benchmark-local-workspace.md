@@ -18,6 +18,7 @@ rapid-mlx benchmark plan MODEL [--json]
 rapid-mlx benchmark run MODEL [--json]
 rapid-mlx benchmark results [--limit N] [--json]
 rapid-mlx benchmark inspect RUN_ID [--json]
+rapid-mlx benchmark share RUN_ID
 ```
 
 `rapid-mlx bench` remains available as the legacy freeform/submission surface
@@ -28,7 +29,9 @@ records rather than parse legacy submission JSON.
 
 - A run is private by default. The client writes a schema-valid JSON record to
   `~/.rapid-mlx/benchmarks/runs/` with directory mode `0700` and file mode
-  `0600`. No network upload or share control is part of this execution path.
+  `0600`. Running a benchmark never uploads it. A separate share action shows
+  the complete wire payload and destination, requires explicit consent, then
+  adds only a random resettable install ID for abuse control.
 - Desktop stops its active inference server before benchmarking so two large
   model processes cannot compete for unified memory. An owner-scoped lifecycle
   reservation remains active until cancellation has terminated and reaped the
@@ -109,7 +112,12 @@ Wan alias, matching the CLI planner rather than advertising LTX/CogVideoX.
 
 ## Follow-up
 
-Sharing is a separate post-result capability. It must show the exact privacy
-allowlist, resolve model identity where possible, revalidate the record, and
-require explicit user action. Server ingestion, public aggregation, campaign
-prompts, rewards, and leaderboard growth mechanics do not belong in this PR.
+The internal-beta share action revalidates a run, POSTs it to the separate
+atomic ingestion endpoint, and saves a schema-valid acceptance receipt under
+`~/.rapid-mlx/benchmarks/receipts/`. Retries are idempotent by run ID and exact
+run digest. Atomic rows remain outside the legacy public aggregation path.
+
+Model-identity resolution, public aggregation, campaign prompts, rewards, and
+leaderboard growth mechanics remain later work. The ingestion boundary accepts
+the current unresolved identities deliberately; it never upgrades them to
+formally comparable evidence.

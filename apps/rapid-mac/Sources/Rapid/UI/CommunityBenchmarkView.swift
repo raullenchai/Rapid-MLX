@@ -109,6 +109,30 @@ private struct CommunityBenchmarkCatalogEnvelope: Decodable {
 
 private struct CommunityBenchmarkResults: Decodable {
     let runs: [CommunityBenchmarkResult]
+    let receipts: [String: CommunityBenchmarkReceipt]?
+}
+
+private struct CommunityBenchmarkReceipt: Decodable {
+    let submissionID: String
+    let alreadyExists: Bool
+    let acceptedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case submissionID = "submission_id"
+        case alreadyExists = "already_exists"
+        case acceptedAt = "accepted_at"
+    }
+}
+
+private struct CommunityBenchmarkShareResponse: Decodable {
+    let uploaded: Bool
+    let receiptSaved: Bool
+    let receipt: CommunityBenchmarkReceipt
+
+    enum CodingKeys: String, CodingKey {
+        case uploaded, receipt
+        case receiptSaved = "receipt_saved"
+    }
 }
 
 private struct CommunityBenchmarkResult: Decodable, Identifiable {
@@ -133,17 +157,56 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
         }
         let components: [Component]
     }
+    struct Machine: Decodable {
+        struct Profile: Decodable {
+            let chip: String
+            let memoryGib: Int
+            let cpuCores: Int
+            let gpuCores: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case chip
+                case memoryGib = "memory_gib"
+                case cpuCores = "cpu_cores"
+                case gpuCores = "gpu_cores"
+            }
+        }
+        struct OS: Decodable { let version: String }
+        let profile: Profile
+        let os: OS
+    }
+    struct Execution: Decodable {
+        struct Runtime: Decodable {
+            let rapidMLX: String
+            let mlx: String
+            let python: String
+
+            enum CodingKeys: String, CodingKey {
+                case rapidMLX = "rapid_mlx"
+                case mlx, python
+            }
+        }
+        let runtime: Runtime
+        let configDigest: String
+
+        enum CodingKeys: String, CodingKey {
+            case runtime
+            case configDigest = "config_digest"
+        }
+    }
     let id: String
     let completedAt: String
     let workload: Workload
     let outcome: Outcome
     let measurements: [Measurement]?
     let model: Model
+    let machine: Machine?
+    let execution: Execution
 
     enum CodingKeys: String, CodingKey {
         case id = "run_id"
         case completedAt = "completed_at"
-        case workload, outcome, measurements, model
+        case workload, outcome, measurements, model, machine, execution
     }
 
     var duration: String? {
@@ -157,6 +220,21 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
     }
 
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
+
+    var shareDisclosure: String {
+        let profile = machine.map {
+            let gpu = $0.profile.gpuCores.map { ", \($0) GPU cores" } ?? ""
+            return "\($0.profile.chip), \($0.profile.memoryGib) GB memory, "
+                + "\($0.profile.cpuCores) CPU cores\(gpu), macOS \($0.os.version)"
+        } ?? "machine probe unavailable"
+        let digest = execution.configDigest.replacingOccurrences(of: "sha256:", with: "")
+        return "Model: \(repoID)\nMachine: \(profile)\nRuntime: rapid-mlx "
+            + "\(execution.runtime.rapidMLX), MLX \(execution.runtime.mlx), Python "
+            + "\(execution.runtime.python)\nExecution: \(workload.taskType), config "
+            + "\(digest.prefix(12))…\nMeasurements: \(measurements?.count ?? 0) rows\n\n"
+            + "A random, resettable install ID is added for abuse control. No name, "
+            + "hostname, serial number, prompts, outputs, or file paths are sent."
+    }
 }
 
 final class BenchmarkProcessBox: @unchecked Sendable {
@@ -287,6 +365,10 @@ enum CommunityBenchmarkCommand {
 
     static func benchmarkResultsArguments(limit: Int = 8) -> [String] {
         ["benchmark", "results", "--limit", String(limit), "--json"]
+    }
+
+    static func benchmarkShareArguments(runID: String) -> [String] {
+        ["benchmark", "share", runID, "--yes", "--json"]
     }
 
     @MainActor
@@ -440,6 +522,10 @@ struct CommunityBenchmarkView: View {
     @State private var isRunning = false
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
+    @State private var shareTask: Task<Void, Never>?
+    @State private var shareCandidate: CommunityBenchmarkResult?
+    @State private var sharingRunID: String?
+    @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
 
@@ -474,6 +560,20 @@ struct CommunityBenchmarkView: View {
             // control disappears. ServerManager keeps the lease until the
             // subprocess tree has actually been reaped.
             runTask?.cancel()
+            shareTask?.cancel()
+        }
+        .alert(
+            "Share benchmark result?",
+            isPresented: Binding(
+                get: { shareCandidate != nil },
+                set: { if !$0 { shareCandidate = nil } }
+            ),
+            presenting: shareCandidate
+        ) { result in
+            Button("Cancel", role: .cancel) { shareCandidate = nil }
+            Button("Share") { share(result) }
+        } message: { result in
+            Text(result.shareDisclosure)
         }
     }
 
@@ -560,9 +660,21 @@ struct CommunityBenchmarkView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 3) {
+                        VStack(alignment: .trailing, spacing: 5) {
                             Text(result.duration ?? result.outcome.status.capitalized)
-                            Text("Local").font(.caption).foregroundStyle(.secondary)
+                            if receipts[result.id] != nil {
+                                Label("Shared", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Button(sharingRunID == result.id ? "Sharing…" : "Share") {
+                                    shareCandidate = result
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .disabled(sharingRunID != nil || binary == nil)
+                                .accessibilityIdentifier("CommunityBenchmark.Share.\(result.id)")
+                            }
                         }
                     }
                     .padding(.vertical, 8)
@@ -619,6 +731,41 @@ struct CommunityBenchmarkView: View {
         }
     }
 
+    private func share(_ result: CommunityBenchmarkResult) {
+        guard let binary else { return }
+        shareCandidate = nil
+        sharingRunID = result.id
+        errorMessage = nil
+        shareTask = Task {
+            do {
+                let data = try await CommunityBenchmarkCommand.run(
+                    binary: binary,
+                    arguments: CommunityBenchmarkCommand.benchmarkShareArguments(
+                        runID: result.id
+                    )
+                )
+                let response = try JSONDecoder().decode(
+                    CommunityBenchmarkShareResponse.self, from: data
+                )
+                guard response.uploaded else {
+                    throw CommunityBenchmarkCommand.Failure(
+                        message: "The benchmark was not uploaded."
+                    )
+                }
+                receipts[result.id] = response.receipt
+                if !response.receiptSaved {
+                    errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
+                }
+            } catch is CancellationError {
+                // Navigation cancelled the upload command and its subprocess.
+            } catch {
+                errorMessage = "Couldn’t share benchmark: \(error.localizedDescription)"
+            }
+            sharingRunID = nil
+            shareTask = nil
+        }
+    }
+
     private func refreshResults() async {
         guard benchmarkCLIAvailable, let binary else { return }
         do {
@@ -626,7 +773,9 @@ struct CommunityBenchmarkView: View {
                 binary: binary,
                 arguments: CommunityBenchmarkCommand.benchmarkResultsArguments()
             )
-            results = try JSONDecoder().decode(CommunityBenchmarkResults.self, from: data).runs
+            let envelope = try JSONDecoder().decode(CommunityBenchmarkResults.self, from: data)
+            results = envelope.runs
+            receipts = envelope.receipts ?? [:]
         } catch {
             if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
         }

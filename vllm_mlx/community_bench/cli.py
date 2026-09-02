@@ -7,6 +7,7 @@ import json
 import sys
 from typing import Any
 
+from .atomic_upload import upload_run
 from .local_runner import LocalBenchmarkError, run_local
 from .workspace import LocalRunArchive, benchmark_catalog, plan_for_alias
 
@@ -56,12 +57,37 @@ def benchmark_command(args) -> int:
                 inherit_process_group=getattr(args, "inherit_process_group", False),
             )
         elif action == "results":
+            runs = archive.list(limit=getattr(args, "limit", None))
             value = {
                 "schema_version": 1,
-                "runs": archive.list(limit=getattr(args, "limit", None)),
+                "runs": runs,
+                "receipts": {
+                    run["run_id"]: receipt
+                    for run in runs
+                    if (receipt := archive.receipt(run["run_id"])) is not None
+                },
             }
         elif action == "inspect":
             value = archive.get(args.run_id)
+        elif action == "share":
+            if args.json and not args.yes:
+                raise ValueError("benchmark share --json requires --yes")
+            run = archive.get(args.run_id)
+            receipt = upload_run(run, assume_yes=args.yes)
+            if receipt is None:
+                value = {"schema_version": 1, "uploaded": False, "cancelled": True}
+            else:
+                receipt_saved = True
+                try:
+                    archive.save_receipt(receipt)
+                except OSError:
+                    receipt_saved = False
+                value = {
+                    "schema_version": 1,
+                    "uploaded": True,
+                    "receipt_saved": receipt_saved,
+                    "receipt": receipt,
+                }
         else:  # pragma: no cover - argparse owns this invariant
             raise ValueError(f"unknown benchmark action {action!r}")
     except Exception as exc:
@@ -83,7 +109,7 @@ def benchmark_command(args) -> int:
         print(
             f"Protocol: {model['protocol_id']} v{value['workload']['protocol_version']}"
         )
-        print("Storage:  local only (no upload)")
+        print("Storage:  local; upload requires a separate share command and consent")
     elif action == "results":
         runs = value["runs"]
         if not runs:
@@ -95,6 +121,17 @@ def benchmark_command(args) -> int:
             )
     elif action == "inspect":
         _print_json(value)
+    elif action == "share":
+        if value["uploaded"]:
+            receipt = value["receipt"]
+            suffix = " (already uploaded)" if receipt["already_exists"] else ""
+            print(f"Accepted benchmark {receipt['submission_id']}{suffix}.")
+            if not value["receipt_saved"]:
+                print(
+                    "Warning: the upload succeeded but its local receipt could not be saved."
+                )
+        else:
+            print("Upload cancelled. Nothing was sent.")
     else:  # run
         print(f"Saved local result {value['run_id']}")
         print("Nothing was uploaded.")

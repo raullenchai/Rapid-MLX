@@ -8,6 +8,8 @@ Community benchmark is one consumer of the product-neutral atomic contracts:
   layer built on those objects.
 - [`v1/benchmark-run.schema.json`](v1/benchmark-run.schema.json) adds only a
   workload, raw measurements, outcome, collector, and run envelope.
+- [`v1/submission-receipt.schema.json`](v1/submission-receipt.schema.json)
+  records the server acceptance boundary without mutating the archived run.
 
 The run union supports `text_generation`, `vision_language`,
 `image_generation`, and `video_generation`. Image and video are first-class,
@@ -16,8 +18,9 @@ resolution, frames, steps, guidance, prompt/output length, and seed live in the
 workload. Runtime choices such as MTP, KV cache, attention backend, VAE tiling,
 offload, and temporal chunking live in `ExecutionConfig`.
 
-The production `community-benchmarks/schema.json` v1-v3 remains unchanged until
-a later rollout PR adds an adapter and switches producers/ingestion.
+The legacy production `community-benchmarks/schema.json` v1-v3 remains
+unchanged. Atomic runs use a separate internal-beta ingestion endpoint and do
+not enter the legacy public leaderboard.
 
 ## Registered protocols and datasets
 

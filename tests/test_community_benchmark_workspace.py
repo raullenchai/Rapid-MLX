@@ -23,7 +23,12 @@ import pytest
 
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
-from vllm_mlx.community_bench import benchmark_contracts, local_runner, run_builder
+from vllm_mlx.community_bench import (
+    atomic_upload,
+    benchmark_contracts,
+    local_runner,
+    run_builder,
+)
 from vllm_mlx.community_bench import cli as community_cli
 from vllm_mlx.community_bench import runner as bench_runner
 from vllm_mlx.community_bench import workspace as workspace_module
@@ -94,6 +99,7 @@ def _mock_local_context(
     ("packaged", "source"),
     [
         ("benchmark-run.schema.json", "benchmark-run.schema.json"),
+        ("submission-receipt.schema.json", "submission-receipt.schema.json"),
         ("rapid-community-speed-v1.json", "protocols/rapid-community-speed-v1.json"),
         ("rapid-community-speed-v2.json", "protocols/rapid-community-speed-v2.json"),
         ("rapid-image-speed-v1.json", "protocols/rapid-image-speed-v1.json"),
@@ -139,7 +145,10 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     plan = plan_for_alias("flux2-klein-4b")
     assert plan["model"]["identity_strength"] == "unresolved"
     assert plan["model"]["comparable"] is False
-    assert plan["privacy"] == {"storage": "local", "uploads": False}
+    assert plan["privacy"] == {
+        "storage": "local",
+        "upload": "explicit_consent_only",
+    }
     assert registered_workload("text_generation")["protocol_version"] == 2
 
 
@@ -207,7 +216,126 @@ def test_results_cli_forwards_latest_limit(
     args = SimpleNamespace(benchmark_action="results", limit=8, json=True)
 
     assert community_cli.benchmark_command(args) == 0
-    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "runs": []}
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 1,
+        "runs": [],
+        "receipts": {},
+    }
+
+
+def _receipt(run_id: str, *, already: bool = False) -> dict:
+    return {
+        "schema_version": 1,
+        "submission_id": run_id,
+        "status": "accepted",
+        "already_exists": already,
+        "accepted_at": "2026-09-01T20:00:00Z",
+        "run_digest": "sha256:" + "a" * 64,
+        "contributor": {"name": "rapid-silver-otter", "tag": "abc"},
+    }
+
+
+def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    called = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: called.append(1),
+    )
+
+    result = atomic_upload.upload_run(
+        run,
+        stdin=io.StringIO("n\n"),
+        stdout=io.StringIO(),
+        url="https://rapidmlx.com/api/benchmarks/atomic",
+    )
+
+    assert result is None
+    assert called == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = {}
+
+    def post(payload, **kwargs):
+        assert kwargs["url"] == "https://rapidmlx.com/api/benchmarks/atomic"
+        sent.update(payload)
+        return {"ok": True, "receipt": _receipt(run["run_id"])}
+
+    monkeypatch.setattr(atomic_upload, "post_submission", post)
+    monkeypatch.setattr(
+        atomic_upload,
+        "board_url",
+        lambda: "https://rapidmlx.com/api/benchmarks",
+    )
+
+    receipt = atomic_upload.upload_run(run, assume_yes=True)
+
+    assert receipt == _receipt(run["run_id"])
+    assert len(sent["install_id"]) == 12
+    assert "install_id" not in run
+    assert sent
+    BenchmarkRunValidator().validate(sent)
+
+
+def test_local_archive_receipt_marks_only_an_existing_run_shared(
+    tmp_path: Path,
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    receipt = _receipt(run["run_id"])
+
+    path = archive.save_receipt(receipt)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert archive.receipt(run["run_id"]) == receipt
+    unknown = dict(receipt, submission_id="00000000-0000-4000-8000-000000000099")
+    with pytest.raises(FileNotFoundError):
+        archive.save_receipt(unknown)
+
+    malformed = dict(receipt, status="maybe")
+    with pytest.raises(ValueError, match="submission_receipt"):
+        archive.save_receipt(malformed)
+
+
+def test_share_cli_saves_server_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    receipt = _receipt(run["run_id"])
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(
+        community_cli,
+        "upload_run",
+        lambda local_run, **kwargs: receipt,
+    )
+    args = SimpleNamespace(
+        benchmark_action="share", run_id=run["run_id"], yes=True, json=True
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uploaded"] is True
+    assert payload["receipt"] == receipt
+    assert archive.receipt(run["run_id"]) == receipt
 
 
 def test_unknown_run_model_returns_structured_unsaved_cli_error(
