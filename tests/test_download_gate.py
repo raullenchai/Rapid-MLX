@@ -744,27 +744,89 @@ def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> N
 
 
 def _wan21_diffusers_files() -> dict[str, bytes]:
-    names = (
-        "model_index.json",
-        "transformer/config.json",
-        "transformer/diffusion_pytorch_model.safetensors.index.json",
-        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
-        "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
-        "text_encoder/config.json",
-        "text_encoder/model.safetensors.index.json",
-        "text_encoder/model-00001-of-00005.safetensors",
-        "text_encoder/model-00002-of-00005.safetensors",
-        "text_encoder/model-00003-of-00005.safetensors",
-        "text_encoder/model-00004-of-00005.safetensors",
-        "text_encoder/model-00005-of-00005.safetensors",
-        "vae/config.json",
-        "vae/diffusion_pytorch_model.safetensors",
-        "tokenizer/special_tokens_map.json",
-        "tokenizer/spiece.model",
-        "tokenizer/tokenizer.json",
-        "tokenizer/tokenizer_config.json",
+    """A cache image the RUNTIME contract accepts, not just the filename pin.
+
+    The gate now re-validates the pinned 1.3B Diffusers snapshot with the same
+    ``is_diffusers_wan21_layout`` probe the runtime router uses, so the fixture
+    must carry actually-valid component manifests and exact-cardinality weight
+    maps (transformer 825 keys over 2 shards, T5 242 keys over 5 shards) that
+    reference the pinned shard filenames — not placeholder bytes.
+    """
+    transformer_shards = tuple(
+        f"diffusion_pytorch_model-{i:05d}-of-00002.safetensors" for i in (1, 2)
     )
-    return {name: b"complete" for name in names}
+    t5_shards = tuple(f"model-{i:05d}-of-00005.safetensors" for i in range(1, 6))
+    transformer_index = {
+        "metadata": {"total_size": 2867589632},
+        "weight_map": {
+            f"blocks.{i}.weight": transformer_shards[i % len(transformer_shards)]
+            for i in range(825)
+        },
+    }
+    t5_index = {
+        "metadata": {"total_size": 11361920000},
+        "weight_map": {
+            f"encoder.block.{i}.weight": t5_shards[i % len(t5_shards)]
+            for i in range(242)
+        },
+    }
+    model_index = {
+        "_class_name": "WanPipeline",
+        "_diffusers_version": "0.33.0",
+        "scheduler": ["diffusers", "UniPCMultistepScheduler"],
+        "text_encoder": ["transformers", "UMT5EncoderModel"],
+        "tokenizer": ["transformers", "T5TokenizerFast"],
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    transformer_config = {
+        "_class_name": "WanTransformer3DModel",
+        "patch_size": [1, 2, 2],
+        "in_channels": 16,
+        "out_channels": 16,
+        "num_attention_heads": 12,
+        "attention_head_dim": 128,
+        "num_layers": 30,
+        "ffn_dim": 8960,
+        "text_dim": 4096,
+    }
+    text_encoder_config = {
+        "model_type": "umt5",
+        "vocab_size": 256384,
+        "d_model": 4096,
+        "d_ff": 10240,
+        "num_heads": 64,
+        "num_layers": 24,
+        "relative_attention_num_buckets": 32,
+    }
+    vae_config = {
+        "_class_name": "AutoencoderKLWan",
+        "base_dim": 96,
+        "z_dim": 16,
+        "dim_mult": [1, 2, 4, 4],
+        "num_res_blocks": 2,
+        "temperal_downsample": [False, True, True],
+    }
+    files: dict[str, bytes] = {
+        "model_index.json": json.dumps(model_index).encode(),
+        "transformer/config.json": json.dumps(transformer_config).encode(),
+        "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+            transformer_index
+        ).encode(),
+        "text_encoder/config.json": json.dumps(text_encoder_config).encode(),
+        "text_encoder/model.safetensors.index.json": json.dumps(t5_index).encode(),
+        "vae/config.json": json.dumps(vae_config).encode(),
+        "vae/diffusion_pytorch_model.safetensors": b"v" * 1024,
+        "tokenizer/special_tokens_map.json": b"{}",
+        "tokenizer/spiece.model": b"spiece-model-bytes",
+        "tokenizer/tokenizer.json": b"{}",
+        "tokenizer/tokenizer_config.json": b"{}",
+    }
+    for shard in transformer_shards:
+        files[f"transformer/{shard}"] = b"w" * 1024
+    for shard in t5_shards:
+        files[f"text_encoder/{shard}"] = b"t" * 1024
+    return files
 
 
 def test_wan_cache_accepts_complete_21_diffusers_layout(tmp_path, monkeypatch):
@@ -785,6 +847,84 @@ def test_wan_cache_rejects_incomplete_21_diffusers_layout(tmp_path, monkeypatch)
     repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
     files = _wan21_diffusers_files()
     files.pop("tokenizer/spiece.model")
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    "index_name",
+    [
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        "text_encoder/model.safetensors.index.json",
+    ],
+)
+def test_wan_cache_rejects_21_diffusers_malformed_index(
+    tmp_path, monkeypatch, index_name
+):
+    """Every pinned filename present and non-empty, but an index is not JSON.
+
+    Runtime routing (``is_diffusers_wan21_layout``) refuses such a tree, so the
+    gate must send it back through repair/download instead of reporting cached
+    — otherwise the cache skips the gate and fails forever at runtime.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    files[index_name] = b"complete"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_21_diffusers_wrong_index_cardinality(tmp_path, monkeypatch):
+    """A parseable transformer index with 824 keys instead of the pinned 825
+    fails the runtime cardinality contract, so the gate must reject it too."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    index_name = "transformer/diffusion_pytorch_model.safetensors.index.json"
+    index = json.loads(files[index_name])
+    index["weight_map"].pop(next(iter(index["weight_map"])))
+    files[index_name] = json.dumps(index).encode()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    ("config_name", "mutation"),
+    [
+        ("model_index.json", {"_class_name": "StableDiffusionPipeline"}),
+        ("transformer/config.json", {"num_layers": 29}),
+        ("text_encoder/config.json", {"d_model": 2048}),
+        ("vae/config.json", {"z_dim": 4}),
+    ],
+)
+def test_wan_cache_rejects_21_diffusers_mismatched_component_config(
+    tmp_path, monkeypatch, config_name, mutation
+):
+    """A component config that contradicts the pinned architecture contract
+    (wrong pipeline class, layer count, width, ...) is not the audited
+    checkpoint and must not count as cached."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    payload = json.loads(files[config_name])
+    payload.update(mutation)
+    files[config_name] = json.dumps(payload).encode()
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
     _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)

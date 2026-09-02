@@ -1218,7 +1218,21 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             return real.startswith(blobs_prefix)
 
         if required_names:
-            return all(_on_repo(name) for name in required_names)
+            if not all(_on_repo(name) for name in required_names):
+                return False
+            # Presence + blob containment alone is not loadability. Runtime
+            # routing (``video/wan_diffusers.py``) additionally validates the
+            # exact component manifests, index cardinality/schema/safe shard
+            # references and tokenizer artifacts — enforce the same contract
+            # here so a corrupt-but-fully-present cache goes back through
+            # repair/download instead of passing the gate and failing forever
+            # at runtime. This supplements the stricter blob-containment
+            # checks above; it does not replace them.
+            from pathlib import Path
+
+            from vllm_mlx.video.wan_diffusers import is_diffusers_wan21_layout
+
+            return is_diffusers_wan21_layout(Path(snap_dir))
         transformer_ok = all(_on_repo(n) for n in transformer_names)
         return (
             transformer_ok
