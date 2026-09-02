@@ -313,7 +313,8 @@ physically tested. GLM-5.3-Flash reached 27.3 tok/s decode at 32K, but its TTFT
 was 118.34s and its 195.6 GB allocator peak leaves no safe system headroom on
 a 192 GB Mac. Use a 256 GB Mac for this measured 32K workload; 192 GB remains
 the catalog floor for shorter contexts. Qwen3.8-27B remains the 32 GB
-recommendation.
+recommendation for the standard approximately 8K workload; its 32K automatic
+MTP path was not physically qualified on a 32 GB Mac.
 
 → [Environment, exact methods, full context curves, and qualification notes](docs/benchmarks/recent-large-models-m3-ultra.md)
 
@@ -345,7 +346,10 @@ standing caveat for every quantized pick here). On the measured 8K workload it
 prefills at 330.8 tok/s and decodes at 43.6 tok/s, with zero new swap. The
 verified 4-bit artifact automatically enables its MTP path when the selected
 cache and serving lane are compatible; `--no-spec-decode` remains the explicit
-opt-out.
+opt-out. The 32 GB recommendation is based on the approximately 8K
+qualification (about 20 GB for the complete process tree). The 32K Studio run
+reached a 27.1 GB MLX allocator peak before non-MLX process and macOS memory;
+on a 32 GB Mac, reduce context/cache use or choose a larger-memory machine.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
 → [Every alias, quant, and family (170 text + 2 text-diffusion + 2 image + 8 video + 44 audio aliases, 226 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)

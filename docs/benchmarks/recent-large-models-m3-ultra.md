@@ -115,7 +115,11 @@ reported 20.0 GB active plus 6.5 GB allocator cache.
 
 The model-recommendation qualification uses a separate complete-process-tree
 memory boundary. Do not compare its RSS number directly with the MLX allocator
-figures above.
+figures above. Its 32 GB recommendation is scoped to the approximately 8K
+workload, where that qualification measured about 20 GB for the complete
+process tree. The automatic-MTP 32K path was not physically qualified on a
+32 GB Mac; this Studio sweep reached a 27.1 GB MLX allocator peak before
+non-MLX process and macOS memory.
 
 The version comparison used the same no-flag user command from fresh source
 trees at the two exact Rapid-MLX commits in the environment table. Before
