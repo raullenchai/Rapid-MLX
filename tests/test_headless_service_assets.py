@@ -6,7 +6,6 @@ import plistlib
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 PLIST = ROOT / "examples/launchd/com.rapidmlx.server.plist"
 SMOKE = ROOT / "scripts/headless_service_smoke.sh"
