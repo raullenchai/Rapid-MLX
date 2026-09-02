@@ -347,6 +347,40 @@ def test_unreferenced_snapshot_does_not_override_existing_main_ref(
     assert metadata.resolve_unreferenced_cached_snapshot("publisher/model") is None
 
 
+def test_unreferenced_subfolder_resolver_fails_closed_at_each_boundary(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    assert metadata.resolve_unreferenced_cached_subfolder("local-path", "4bit") is None
+    assert (
+        metadata.resolve_unreferenced_cached_subfolder("publisher/model", "../escape")
+        is None
+    )
+
+    repo_root = tmp_path / "models--publisher--model"
+    refs = repo_root / "refs"
+    refs.mkdir(parents=True)
+    (refs / "main").write_text("selected", encoding="utf-8")
+    assert (
+        metadata.resolve_unreferenced_cached_subfolder("publisher/model", "4bit")
+        is None
+    )
+
+    (refs / "main").unlink()
+    assert (
+        metadata.resolve_unreferenced_cached_subfolder("publisher/model", "4bit")
+        is None
+    )
+
+    snapshots = repo_root / "snapshots"
+    snapshots.mkdir()
+    monkeypatch.setattr(Path, "iterdir", lambda _self: (_ for _ in ()).throw(OSError()))
+    assert (
+        metadata.resolve_unreferenced_cached_subfolder("publisher/model", "4bit")
+        is None
+    )
+
+
 def test_offline_resolver_uses_unique_complete_snapshot_when_main_is_incomplete(
     monkeypatch, tmp_path
 ):

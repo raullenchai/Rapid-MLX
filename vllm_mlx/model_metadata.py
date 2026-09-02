@@ -221,7 +221,11 @@ def _cached_file(model_name: str, filename: str) -> Path | None:
 
 
 def _complete_cached_checkpoint(
-    repo_root: Path, snapshot: Path, model_name: str
+    repo_root: Path,
+    snapshot: Path,
+    model_name: str,
+    *,
+    checkpoint_subfolder: str | None = None,
 ) -> Path | None:
     """Validate one immutable snapshot and return its checkpoint directory."""
     try:
@@ -230,7 +234,11 @@ def _complete_cached_checkpoint(
 
         if snapshot.is_symlink() or not snapshot.is_dir():
             return None
-        checkpoint = snapshot / checkpoint_prefix(model_name)
+        checkpoint = snapshot / (
+            checkpoint_subfolder
+            if checkpoint_subfolder is not None
+            else checkpoint_prefix(model_name)
+        )
         if checkpoint.is_symlink() or not checkpoint.is_dir():
             return None
         config_path = checkpoint / "config.json"
@@ -292,6 +300,48 @@ def resolve_unreferenced_cached_snapshot(model_name: str) -> Path | None:
         if len(candidates) != 1:
             return None
         return _complete_cached_checkpoint(repo_root, candidates[0], model_name)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
+def resolve_unreferenced_cached_subfolder(
+    model_name: str, subfolder: str
+) -> Path | None:
+    """Return one exact complete subfolder from an unreferenced snapshot.
+
+    This is the inventory counterpart to
+    :func:`resolve_unreferenced_cached_snapshot`: it preserves the same sole
+    snapshot, no-main-ref, containment, config, and weight-completeness gates,
+    but does not collapse a multi-checkpoint repo to its catalog default.
+    """
+    if not _looks_like_hub_repo_id(model_name):
+        return None
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        from ._download_gate import _valid_variant_subfolder
+
+        if not _valid_variant_subfolder(subfolder):
+            return None
+        repo_root = Path(HF_HUB_CACHE) / ("models--" + model_name.replace("/", "--"))
+        if os.path.lexists(repo_root / "refs" / "main"):
+            return None
+        snapshots_root = repo_root / "snapshots"
+        if snapshots_root.is_symlink() or not snapshots_root.is_dir():
+            return None
+        candidates = [
+            entry
+            for entry in snapshots_root.iterdir()
+            if entry.is_dir() and not entry.is_symlink()
+        ]
+        if len(candidates) != 1:
+            return None
+        return _complete_cached_checkpoint(
+            repo_root,
+            candidates[0],
+            model_name,
+            checkpoint_subfolder=subfolder,
+        )
     except (ImportError, OSError, RuntimeError, ValueError):
         return None
 
