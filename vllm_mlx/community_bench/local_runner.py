@@ -726,9 +726,7 @@ def run_local(
         )
         try:
             if execution is None:
-                execution = execution_config(
-                    task_type, context_length=context_length
-                )
+                execution = execution_config(task_type, context_length=context_length)
             failed = build_run(
                 repo_id=model["repo_id"],
                 task_type=task_type,
