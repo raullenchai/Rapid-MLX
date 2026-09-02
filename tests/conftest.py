@@ -50,6 +50,18 @@ _HF_CACHE_ENV_VARS = ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE")
 _NETWORK_OPT_IN_MARKER = "requires_network"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_model_performance_registry():
+    """Keep process-owned per-model ledgers isolated between unit tests."""
+    from vllm_mlx.runtime.model_performance import (
+        _reset_model_performance_registry_for_tests,
+    )
+
+    _reset_model_performance_registry_for_tests()
+    yield
+    _reset_model_performance_registry_for_tests()
+
+
 class HermeticNetworkAccessError(RuntimeError):
     """A hermetic (non-``requires_network``) test tried to reach the network.
 
