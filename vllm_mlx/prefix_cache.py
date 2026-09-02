@@ -1401,25 +1401,29 @@ class BlockAwarePrefixCache:
         cached_tokens: list[int],
         block_ids: list[int],
     ) -> bool:
-        """Return True when a live block no longer owns the cumulative
-        token prefix this index entry records.
+        """Return True when this index entry can no longer serve the
+        cumulative token prefix it records — safe to prune as metadata.
 
-        Used by pressure eviction to prune index entries whose slots were
-        freed and reallocated for different tokens — clearing such a slot
-        would destroy another request's live KV. Absent blocks are NOT
-        stale (the caller's eligibility checks handle them, and later
-        identities cannot be verified past a missing span). Blocks that
-        claim no identity (``hash_value`` None — legacy/unhashed fixtures)
-        are tolerated. A block that claims an identity WITHOUT a
-        consistent span is unverifiable — fail closed: prune the entry,
-        touch no block.
+        Used by pressure eviction to prune index entries without touching
+        any physical block. Two prunable conditions:
+
+        * A referenced block is ABSENT from ``allocated_blocks`` (its
+          owner released it): the entry can never be acquired again
+          (``increment_ref`` fails on absent slots), so keeping it would
+          leak dead metadata forever after owner release.
+        * A block was reallocated for different tokens (identity
+          mismatch), or claims an identity WITHOUT a consistent span —
+          unverifiable, fail closed: prune the entry, touch no block.
+
+        Blocks that claim no identity (``hash_value`` None —
+        legacy/unhashed fixtures) are tolerated as live.
         """
         hasher = PrefixHasher()
         end = 0
         for block_id in block_ids:
             block = self.paged_cache.allocated_blocks.get(block_id)
             if block is None:
-                return False
+                return True
             if block.hash_value is None:
                 # Nothing to verify; extend the chain on a best-effort span
                 # so later hashed blocks can still be checked. When the

@@ -48,7 +48,7 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
-from .errors import BackpressureError  # noqa: E402
+from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
 from .kv_estimation import (  # noqa: E402
     _cfg_get,
     _valid_layer_types,
@@ -3771,6 +3771,21 @@ class Scheduler:
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
         self.paged_cache_manager: PagedCacheManager | None = None
         self.block_aware_cache: BlockAwarePrefixCache | None = None
+
+        # Fail closed on the contradictory pair BEFORE the enablement
+        # branch: an explicit --use-paged-cache with the prefix cache
+        # disabled would otherwise be silently ignored (the paged store IS
+        # a prefix-cache backend, so nothing would be constructed) — the
+        # same silent-option failure the capability gate below exists to
+        # prevent (#2955).
+        if self.config.use_paged_cache and not self.config.enable_prefix_cache:
+            raise PagedCacheUnsupportedLayoutError(
+                "--use-paged-cache requires the prefix cache: the paged "
+                "block store is a prefix-cache backend, and prefix caching "
+                "is disabled in this configuration, so the explicit paged "
+                "request cannot take effect. Remove --use-paged-cache, or "
+                "drop --disable-prefix-cache so the prefix cache is enabled."
+            )
 
         if self.config.enable_prefix_cache:
             if self.config.use_paged_cache:

@@ -1173,6 +1173,72 @@ class TestSchedulerStartupGate:
         assert "--use-paged-cache" in message
         assert "TurboQuant" in message
 
+    @pytest.mark.parametrize(
+        "layout, config_overrides",
+        [
+            # Plain supported layout: the contradiction alone must reject.
+            ("plain", {}),
+            # Unsupported layout: still the same fail-closed rejection —
+            # never a silent no-cache boot.
+            ("rotating", {}),
+            # Explicit transforms on top of the contradiction: rejected.
+            ("plain", {"kv_cache_quantization": True, "kv_cache_quantization_bits": 4}),
+            ("plain", {"kv_cache_turboquant": True}),
+        ],
+    )
+    def test_paged_without_prefix_cache_rejected(self, layout, config_overrides):
+        """use_paged_cache=True with enable_prefix_cache=False is a
+        contradictory config: pre-fix the capability gate was nested under
+        the enablement branch, so the explicit paged request was silently
+        ignored. It must fail closed at construction with the typed
+        actionable error, regardless of layout or transform flags."""
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.scheduler import Scheduler
+
+        config = self._config()
+        config.enable_prefix_cache = False
+        for key, value in config_overrides.items():
+            setattr(config, key, value)
+
+        model = MagicMock()
+        if layout == "plain":
+            model.make_cache = lambda: [KVCache(), KVCache()]
+        else:
+            model.make_cache = lambda: [KVCache(), RotatingKVCache(max_size=512)]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            Scheduler(model=model, tokenizer=tokenizer, config=config)
+        message = str(excinfo.value)
+        assert "--use-paged-cache" in message
+        assert "prefix cache" in message
+
+    def test_prefix_cache_disabled_without_paged_boots(self):
+        """Negative control: disabling the prefix cache WITHOUT an explicit
+        paged request is a valid configuration and boots with no caches."""
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import Scheduler
+
+        config = self._config()
+        config.enable_prefix_cache = False
+        config.use_paged_cache = False
+
+        model = MagicMock()
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        sched = Scheduler(model=model, tokenizer=tokenizer, config=config)
+        assert sched.block_aware_cache is None
+        assert sched.paged_cache_manager is None
+        assert sched.prefix_cache is None
+        assert sched.memory_aware_cache is None
+
 
 class TestStoreMaterializationFailure:
     """A store whose block materialization fails must report failure (None),

@@ -783,6 +783,64 @@ class TestBlockAwareCacheEviction:
             assert b.block_id in paged.allocated_blocks
         assert sched.num_prefix_cache_pressure_evictions == 2
 
+    def test_released_missing_block_metadata_pruned_without_touching_live_blocks(
+        self,
+    ):
+        """Codex round 2 #1: after owner release a referenced block is
+        ABSENT from ``allocated_blocks``, making the index entry forever
+        unreachable (``increment_ref`` fails on absent slots) — pressure
+        must prune that dead metadata. It must do so without clearing or
+        freeing anything physical: live blocks referenced by other entries
+        keep their KV/refs, and the released slot's resident slab is left
+        for the free-queue sweep."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        bs = paged.block_size  # 4 in this fixture
+        live_tokens = list(range(bs))
+
+        # Live entry first, so the slot released below cannot be handed
+        # back as this allocation.
+        live = paged.allocate_block()
+        live.cache_data = [MagicMock()]
+        live.token_count = bs
+        live.hash_value = paged.compute_block_hash(live_tokens)
+        live_key = paged.compute_block_hash(live_tokens)
+
+        # Released block: its owner freed it, so the slot left
+        # allocated_blocks for the free queue (KV still resident).
+        gone = paged.allocate_block()
+        gone.cache_data = [MagicMock()]
+        gid = gone.block_id
+        paged.free_block(gid)
+        assert gid not in paged.allocated_blocks
+
+        bac._prefix_index["h_gone"] = ([11, 12, 13, 14], [gid])
+        bac._prefix_index[live_key] = (live_tokens, [live.block_id])
+
+        free_before = paged.free_block_queue.num_free_blocks
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+        # Exactly the dead metadata was pruned; the live entry survives.
+        assert n == 1
+        assert "h_gone" not in bac._prefix_index
+        assert live_key in bac._prefix_index
+        assert live.cache_data is not None
+        assert live.ref_count == 1
+        assert live.block_id in paged.allocated_blocks
+        assert bac._find_best_prefix_match(live_tokens) is not None
+        # Nothing physical was touched: the released slot was not freed
+        # again and its resident slab is intact (reclaiming it is the
+        # free-queue sweep's job, not the metadata prune's).
+        assert paged.free_block_queue.num_free_blocks == free_before
+        assert gone.cache_data is not None
+
     def test_no_eviction_when_index_empty(self):
         """Empty prefix index -> no-op (no crash, no counter tick)."""
         sched = self._make_paged_scheduler()
