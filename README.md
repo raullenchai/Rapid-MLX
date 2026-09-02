@@ -281,8 +281,9 @@ Also compatible with OpenAI-compatible clients that allow direct local endpoints
 Single-request (`B=1`) serving on a 256 GB M3 Ultra, with one 4-bit model
 resident. Each row is the median of three requests after server readiness,
 with the prefix cache cleared before every run. These are local serving
-measurements, not model quality scores. All three rows use the same
-8,156-token prompt and 256-token decode workload.
+measurements, not model quality scores. All three rows target an 8K prompt and
+256-token decode; after chat templating the Qwen prompts contain 8,156 tokens
+and the GLM prompt contains 8,192.
 
 | Model | Shape | Median TTFT | Prefill | Decode | MLX memory observed through 32K |
 |---|---|---:|---:|---:|---:|
@@ -309,8 +310,10 @@ Flash-Next prefill reaches 262 / 875 / 868 / 716 tok/s at 128 / 2K / 8K / 32K;
 median TTFT is 0.35 / 2.30 / 9.40 / 45.73s. Its 99 GB quantized weights make
 **192 GB the practical recommended tier**; 128 GB is tight and was not
 physically tested. GLM-5.3-Flash reached 27.3 tok/s decode at 32K, but its TTFT
-was 118.34s and MLX active memory reached 180.6 GB, so it also requires the
-192 GB tier. Qwen3.8-27B remains the 32 GB recommendation.
+was 118.34s and its 195.6 GB allocator peak leaves no safe system headroom on
+a 192 GB Mac. Use a 256 GB Mac for this measured 32K workload; 192 GB remains
+the catalog floor for shorter contexts. Qwen3.8-27B remains the 32 GB
+recommendation.
 
 → [Environment, exact methods, full context curves, and qualification notes](docs/benchmarks/recent-large-models-m3-ultra.md)
 

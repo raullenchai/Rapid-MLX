@@ -137,7 +137,9 @@ The first 128-token request paid a one-time Metal compilation cost; the
 three-run median shown above reflects the other two consistent requests. After
 the 32K sweep, the target process reported 180.6 GB MLX active memory and a
 195.6 GB peak. The earlier 165.4 GB short-prompt measurement therefore must
-not be used as a 32K sizing claim. The alias retains a 192 GB memory floor.
+not be used as a 32K sizing claim. The alias retains a 192 GB catalog floor for
+shorter contexts, but this measured 32K workload needs the headroom of a 256 GB
+Mac; it was not physically qualified on a 192 GB machine.
 
 Resolve the exact measured checkpoint revision first, then serve that immutable
 local snapshot. This avoids accidentally benchmarking a newer cached revision:
