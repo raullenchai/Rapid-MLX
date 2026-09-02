@@ -458,6 +458,8 @@ enum ModelCatalog {
             enriched.speculativeDecodingPreset = speculativeCapabilities[entry.alias]
             enriched.isBuiltinProfile = availableResult.profiles[entry.alias]?.isBuiltin
             enriched.isTextOnly = availableResult.profiles[entry.alias]?.isTextOnly
+            enriched.recommendationPolicyDigests =
+                availableResult.profiles[entry.alias]?.recommendationPolicyDigests ?? []
             return enriched
         }
 
@@ -569,6 +571,7 @@ enum ModelCatalog {
                 operationModes: entry.operationModes,
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
+                recommendationPolicyDigests: entry.recommendationPolicyDigests,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly
@@ -780,6 +783,7 @@ enum ModelCatalog {
     struct CatalogProfileCapability: Equatable, Sendable {
         let isBuiltin: Bool
         let isTextOnly: Bool
+        let recommendationPolicyDigests: Set<String>
     }
 
     /// Parse the machine-readable alias SSOT used for Desktop launch policy.
@@ -805,7 +809,9 @@ enum ModelCatalog {
             if let isBuiltin = row["is_builtin"] as? Bool,
                let isTextOnly = row["is_text_only"] as? Bool {
                 profiles[alias] = CatalogProfileCapability(
-                    isBuiltin: isBuiltin, isTextOnly: isTextOnly
+                    isBuiltin: isBuiltin,
+                    isTextOnly: isTextOnly,
+                    recommendationPolicyDigests: []
                 )
             }
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
@@ -869,7 +875,8 @@ enum ModelCatalog {
                     entry.alias,
                     CatalogProfileCapability(
                         isBuiltin: entry.isBuiltinProfile == true,
-                        isTextOnly: entry.isTextOnly == true
+                        isTextOnly: entry.isTextOnly == true,
+                        recommendationPolicyDigests: entry.recommendationPolicyDigests
                     )
                 )
             }
@@ -1129,9 +1136,10 @@ enum ModelCatalog {
     }
 
     private static func isSHA256Address(_ value: String) -> Bool {
-        guard value.count == 71, value.hasPrefix("sha256:") else { return false }
-        return value.dropFirst(7).allSatisfy { character in
-            character.isNumber || ("a"..."f").contains(character)
+        let bytes = value.utf8
+        guard bytes.count == 71, value.hasPrefix("sha256:") else { return false }
+        return bytes.dropFirst(7).allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
         }
     }
 
@@ -1336,6 +1344,7 @@ enum ModelCatalog {
                 operationModes: entry.operationModes,
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
+                recommendationPolicyDigests: entry.recommendationPolicyDigests,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly

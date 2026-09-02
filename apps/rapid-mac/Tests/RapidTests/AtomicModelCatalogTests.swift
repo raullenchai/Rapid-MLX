@@ -148,11 +148,14 @@ struct AtomicModelCatalogTests {
         }
         let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(advertised))
         #expect(entries.allSatisfy { $0.recommendationPolicyDigests == [digest] })
+        let projection = try #require(ModelCatalog.parseAvailableJSON(advertised))
+        #expect(projection.profiles["chat"]?.recommendationPolicyDigests == [digest])
 
         for invalid in [
             ["not-a-content-address"],
             [digest, digest],
             ["sha256:" + String(repeating: "A", count: 64)],
+            ["sha256:" + String(repeating: "١", count: 64)],
         ] {
             let payload = Self.mutated { root in
                 var atomic = root["atomic"] as! [String: Any]
@@ -500,7 +503,15 @@ struct AtomicModelCatalogTests {
 
     @Test("atomic Settings merge preserves custom and external cached models")
     func cacheMergePreservesUserModels() throws {
-        let atomic = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))
+        let digest = "sha256:" + String(repeating: "b", count: 64)
+        let advertised = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["recommendation_policy_digests"] = [digest]
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let atomic = try #require(ModelCatalog.parseAtomicModelEntriesJSON(advertised))
         let cached: [(String, String?, String?)] = [
             ("chat", "org/chat", "1 GiB"),
             ("custom", "org/custom", "2 GiB"),
@@ -513,9 +524,29 @@ struct AtomicModelCatalogTests {
             excluded: ["image", "video", "tts", "stt", "hidden"]
         )
         #expect(merged.first { $0.alias == "chat" }?.cached == true)
+        #expect(merged.first {
+            $0.alias == "chat"
+        }?.recommendationPolicyDigests == [digest])
         #expect(merged.first { $0.alias == "custom" }?.kind == .chat)
         #expect(merged.first { $0.alias == "hidden" } == nil)
         #expect(merged.first { $0.alias == "org/external" }?.isExternal == true)
+
+        let remarked = ModelCatalog.remarkCachedByRepo(
+            [
+                ModelEntry(
+                    alias: "chat", hfRepo: "org/chat", sizeOnDisk: nil,
+                    cached: false, recommendationPolicyDigests: [digest]
+                ),
+                ModelEntry(
+                    alias: "chat-4bit", hfRepo: "org/chat", sizeOnDisk: "1 GiB",
+                    cached: true
+                ),
+            ],
+            resolvedRepos: ["chat": "org/chat"]
+        )
+        #expect(remarked.first {
+            $0.alias == "chat"
+        }?.recommendationPolicyDigests == [digest])
     }
 
     @Test("alias origin and repository siblings preserve legacy safety semantics")
