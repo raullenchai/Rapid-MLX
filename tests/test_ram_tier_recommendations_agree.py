@@ -68,7 +68,7 @@ def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
     """``[(floor_gb, primary_alias, flags)]`` from the shared SSOT."""
     payload = json.loads(RECOMMENDATIONS.read_text())
     return [
-        (tier["floor_gb"], tier["picks"][0]["alias"], tier["picks"][0]["launch_flags"])
+        (tier["minimum_memory_mib"] // 1024, tier["picks"][0]["alias"], [])
         for tier in payload["tiers"]
     ]
 
@@ -244,7 +244,7 @@ def test_readme_peak_rss_matches_the_ssot():
     ssot: dict[str, float] = {}
     for tier in json.loads(RECOMMENDATIONS.read_text())["tiers"]:
         for pick in tier["picks"]:
-            ssot[pick["alias"]] = pick["footprint_gb"]
+            ssot[pick["alias"]] = round(pick["footprint_mib"] / 1024, 1)
     rows = _readme_table_tiers()
     assert rows, "no tier rows parsed from README.md"
     for floor, alias, rss, _flags in rows:

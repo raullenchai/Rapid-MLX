@@ -14,6 +14,8 @@
 //
 
 import Foundation
+import CryptoKit
+import CoreFoundation
 
 // Faithful copies of the pure logic under test (RapidTests is excluded
 // from Package.swift, so this standalone script is the real verification).
@@ -21,35 +23,140 @@ import Foundation
 struct Pick: Equatable, Decodable {
     let role: String
     let alias: String
-    let footprintGB: Double
-    let capabilityPct: Int
-    let tokensPerSec: Double?
-    let launchFlags: [String]
-    let caveat: String?
+    let footprintMiB: Int
+    let capabilityScoreX100: Int
+    let decodeTokensPerSecondX100: Int?
+    let limitationIDs: [String]
+    var footprintGB: Double {
+        (Double(footprintMiB) / 1024 * 10).rounded(.toNearestOrEven) / 10
+    }
+    var capabilityPct: Int { capabilityScoreX100 / 100 }
+    var tokensPerSec: Double? { decodeTokensPerSecondX100.map { Double($0) / 100 } }
+    var launchFlags: [String] { [] }
+    var caveat: String? {
+        limitationIDs.first.flatMap {
+            ["not_for_coding": "Not for coding", "basic_chat": "Basic chat"][$0]
+        }
+    }
     enum CodingKeys: String, CodingKey {
-        case role, alias, caveat
-        case footprintGB = "footprint_gb"
-        case capabilityPct = "capability_pct"
-        case tokensPerSec = "tokens_per_sec"
-        case launchFlags = "launch_flags"
+        case role, alias
+        case footprintMiB = "footprint_mib"
+        case capabilityScoreX100 = "capability_score_x100"
+        case decodeTokensPerSecondX100 = "decode_tokens_per_second_x100"
+        case limitationIDs = "limitation_ids"
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        role = try values.decode(String.self, forKey: .role)
+        alias = try values.decode(String.self, forKey: .alias)
+        footprintMiB = try values.decode(Int.self, forKey: .footprintMiB)
+        capabilityScoreX100 = try values.decode(Int.self, forKey: .capabilityScoreX100)
+        decodeTokensPerSecondX100 = try values.decodeIfPresent(
+            Int.self, forKey: .decodeTokensPerSecondX100
+        )
+        limitationIDs = try values.decodeIfPresent(
+            [String].self, forKey: .limitationIDs
+        ) ?? []
     }
 }
 struct Tier: Equatable, Decodable {
-    let floorGB: Double
+    let minimumMemoryMiB: Int
     let picks: [Pick]
+    var floorGB: Double { Double(minimumMemoryMiB / 1024) }
     var primary: Pick { picks[0] }
     var alt: Pick? { picks.count > 1 ? picks[1] : nil }
     enum CodingKeys: String, CodingKey {
-        case floorGB = "floor_gb"
+        case minimumMemoryMiB = "minimum_memory_mib"
         case picks
     }
 }
-struct Payload: Decodable { let tiers: [Tier] }
+struct Payload: Decodable {
+    let schemaVersion: Int
+    let policyID: String
+    let policyDigest: String
+    let taskType: String
+    let machineDimension: String
+    let tiers: [Tier]
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case policyID = "policy_id"
+        case policyDigest = "policy_digest"
+        case taskType = "task_type"
+        case machineDimension = "machine_dimension"
+        case tiers
+    }
+}
+
+// RCJ-1 canonicalization mirrors ModelCatalog.atomicObjectDigest. The
+// standalone verifier must authenticate the same addressed policy before it
+// exercises any derived tier behavior; otherwise a stale digest can pass CI.
+func rcjNormalized(_ value: Any) -> Any? {
+    if value is NSNull { return NSNull() }
+    if let string = value as? String {
+        return string.precomposedStringWithCanonicalMapping
+    }
+    if let number = value as? NSNumber {
+        if CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return number.boolValue
+        }
+        let double = number.doubleValue
+        guard double.isFinite,
+              double.rounded(.towardZero) == double,
+              abs(double) <= 9_007_199_254_740_991 else { return nil }
+        return number.int64Value
+    }
+    if let array = value as? [Any] {
+        var normalized: [Any] = []
+        normalized.reserveCapacity(array.count)
+        for child in array {
+            guard let item = rcjNormalized(child) else { return nil }
+            normalized.append(item)
+        }
+        return normalized
+    }
+    if let object = value as? [String: Any] {
+        var normalized: [String: Any] = [:]
+        for (key, child) in object {
+            guard key.unicodeScalars.allSatisfy(\.isASCII),
+                  let item = rcjNormalized(child) else { return nil }
+            let normalizedKey = key.precomposedStringWithCanonicalMapping
+            guard normalized[normalizedKey] == nil else { return nil }
+            normalized[normalizedKey] = item
+        }
+        return normalized
+    }
+    return nil
+}
+
+func atomicObjectDigest(_ value: Any) -> String? {
+    guard let normalized = rcjNormalized(value),
+          JSONSerialization.isValidJSONObject(normalized),
+          let data = try? JSONSerialization.data(
+              withJSONObject: normalized,
+              options: [.sortedKeys, .withoutEscapingSlashes]
+          ) else { return nil }
+    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    return "sha256:\(digest)"
+}
+
 let sourceURL = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent()
     .deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("vllm_mlx/model_recommendations.json")
-let tiers = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: sourceURL)).tiers
+let sourceData = try Data(contentsOf: sourceURL)
+let rawObject = try JSONSerialization.jsonObject(with: sourceData) as! [String: Any]
+let declaredDigest = rawObject["policy_digest"] as! String
+precondition(
+    atomicObjectDigest(rawObject.filter { $0.key != "policy_digest" }) == declaredDigest,
+    "recommendation policy digest mismatch"
+)
+let payload = try JSONDecoder().decode(Payload.self, from: sourceData)
+precondition(payload.schemaVersion == 1)
+precondition(payload.policyID == "rapid/default/text-generation/ram-v1")
+precondition(payload.policyDigest == declaredDigest)
+precondition(payload.taskType == "text_generation")
+precondition(payload.machineDimension == "physical_memory_mib")
+let tiers = payload.tiers
 // Mirror SettingsModelManagementPanel.pickStatsLine / ModelPickerBar
 // tagline: a caveat replaces the capability %, speed leads, caveat trails.
 func pickStatsLine(_ pick: Pick) -> String {

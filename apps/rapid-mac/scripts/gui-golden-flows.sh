@@ -2448,10 +2448,10 @@ flow_settings_persistence() {
     expected_recommendations="$(python3 - "$recommendation_json" "$ram_bytes" <<'PY'
 import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
-ram_gb = int(sys.argv[2]) / (1 << 30)
+ram_mib = int(sys.argv[2]) // (1 << 20)
 tier = payload["tiers"][0]
 for candidate in payload["tiers"]:
-    if ram_gb >= candidate["floor_gb"]:
+    if ram_mib >= candidate["minimum_memory_mib"]:
         tier = candidate
 print("\n".join(pick["alias"] for pick in tier["picks"]))
 PY

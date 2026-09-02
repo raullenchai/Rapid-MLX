@@ -7,6 +7,7 @@ from .legacy import (
     build_legacy_catalog_snapshot,
     build_legacy_recommendation_policy,
     build_shadow_report,
+    load_product_recommendation_policy,
 )
 from .registry import AtomicRegistry
 from .validation import CatalogValidationError, ContractValidator
@@ -21,4 +22,5 @@ __all__ = [
     "build_shadow_report",
     "canonical_json_bytes",
     "rcj_digest",
+    "load_product_recommendation_policy",
 ]

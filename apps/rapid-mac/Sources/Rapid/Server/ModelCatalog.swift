@@ -269,6 +269,12 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// subfolder. Repo-only cache joins are unsafe for multi-checkpoint repos.
     var sourceSubfolder: String? = nil
 
+    /// Content-addressed recommendation policies this sidecar catalog was
+    /// built and validated with. Empty for legacy sidecars and custom rows;
+    /// callers must then fail closed instead of applying bundled policy
+    /// semantics to an unadvertised catalog snapshot.
+    var recommendationPolicyDigests: Set<String> = []
+
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
 
@@ -452,6 +458,8 @@ enum ModelCatalog {
             enriched.speculativeDecodingPreset = speculativeCapabilities[entry.alias]
             enriched.isBuiltinProfile = availableResult.profiles[entry.alias]?.isBuiltin
             enriched.isTextOnly = availableResult.profiles[entry.alias]?.isTextOnly
+            enriched.recommendationPolicyDigests =
+                availableResult.profiles[entry.alias]?.recommendationPolicyDigests ?? []
             return enriched
         }
 
@@ -563,6 +571,7 @@ enum ModelCatalog {
                 operationModes: entry.operationModes,
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
+                recommendationPolicyDigests: entry.recommendationPolicyDigests,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly
@@ -774,6 +783,7 @@ enum ModelCatalog {
     struct CatalogProfileCapability: Equatable, Sendable {
         let isBuiltin: Bool
         let isTextOnly: Bool
+        let recommendationPolicyDigests: Set<String>
     }
 
     /// Parse the machine-readable alias SSOT used for Desktop launch policy.
@@ -799,7 +809,9 @@ enum ModelCatalog {
             if let isBuiltin = row["is_builtin"] as? Bool,
                let isTextOnly = row["is_text_only"] as? Bool {
                 profiles[alias] = CatalogProfileCapability(
-                    isBuiltin: isBuiltin, isTextOnly: isTextOnly
+                    isBuiltin: isBuiltin,
+                    isTextOnly: isTextOnly,
+                    recommendationPolicyDigests: []
                 )
             }
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
@@ -863,7 +875,8 @@ enum ModelCatalog {
                     entry.alias,
                     CatalogProfileCapability(
                         isBuiltin: entry.isBuiltinProfile == true,
-                        isTextOnly: entry.isTextOnly == true
+                        isTextOnly: entry.isTextOnly == true,
+                        recommendationPolicyDigests: entry.recommendationPolicyDigests
                     )
                 )
             }
@@ -905,8 +918,13 @@ enum ModelCatalog {
               shadow["equivalent"] as? Bool == true,
               shadow["catalog_digest"] as? String == declaredDigest,
               let modelRows = snapshot["models"] as? [[String: Any]],
-              let aliasRows = snapshot["aliases"] as? [[String: Any]]
+              let aliasRows = snapshot["aliases"] as? [[String: Any]],
+              let rawPolicyDigests = snapshot["recommendation_policy_digests"]
+                as? [String],
+              Set(rawPolicyDigests).count == rawPolicyDigests.count,
+              rawPolicyDigests.allSatisfy(isSHA256Address)
         else { return nil }
+        let policyDigests = Set(rawPolicyDigests)
 
         var modelsByID: [String: (
             repo: String,
@@ -1109,11 +1127,20 @@ enum ModelCatalog {
                 operationModes: operations,
                 runtimeAdapter: runtimeAdapter,
                 sourceSubfolder: model.subfolder,
+                recommendationPolicyDigests: policyDigests,
                 isBuiltinProfile: origin == "builtin",
                 isTextOnly: isTextOnly
             ))
         }
         return entries
+    }
+
+    private static func isSHA256Address(_ value: String) -> Bool {
+        let bytes = value.utf8
+        guard bytes.count == 71, value.hasPrefix("sha256:") else { return false }
+        return bytes.dropFirst(7).allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
     }
 
     /// Recompute the RCJ-1 catalog address in Swift before accepting a Python
@@ -1131,7 +1158,13 @@ enum ModelCatalog {
             "aliases": aliases,
             "recommendation_policy_digests": policyDigests,
         ]
-        guard let normalized = rcjNormalized(projection),
+        return atomicObjectDigest(projection)
+    }
+
+    /// RCJ-1 digest shared by catalog snapshots and independently addressed
+    /// product policies. Callers provide the exact digest projection.
+    static func atomicObjectDigest(_ value: Any) -> String? {
+        guard let normalized = rcjNormalized(value),
               JSONSerialization.isValidJSONObject(normalized),
               let data = try? JSONSerialization.data(
                 withJSONObject: normalized,
@@ -1311,6 +1344,7 @@ enum ModelCatalog {
                 operationModes: entry.operationModes,
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
+                recommendationPolicyDigests: entry.recommendationPolicyDigests,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly

@@ -182,9 +182,9 @@ components:
     phase: 4
     owner: atlas
     summary: Ordered qualified variants with reason codes, tradeoffs, and limitations.
-    files: [vllm_mlx/model_profile.py, proto/model-catalog/v1/recommendation-policy.schema.json, vllm_mlx/catalog/legacy.py]
-    tests: [tests/test_ram_tier_recommendations_agree.py, tests/test_atomic_model_catalog.py]
-    missing: Desktop atomic-policy cutover, explicit quality gate, and promoted evidence provenance.
+    files: [vllm_mlx/model_recommendations.json, vllm_mlx/recommendations.py, proto/model-catalog/v1/recommendation-policy.schema.json, vllm_mlx/catalog/legacy.py, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift]
+    tests: [tests/test_ram_tier_recommendations_agree.py, tests/test_atomic_model_catalog.py, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift]
+    missing: Explicit qualification gate and promoted evidence provenance.
   ranked_recommendation_set:
     name: RankedRecommendationSet
     lane: product
@@ -264,10 +264,10 @@ components:
     phase: 1
     owner: pixel
     summary: Consumes the atomic catalog for model placement and effective config for runtime behavior.
-    files: [vllm_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
-    tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift]
+    files: [vllm_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
+    tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
-    missing: Atomic recommendation-policy reader plus resolved-config provenance/reason presentation.
+    missing: Resolved-config provenance/reason presentation.
   rapid_server:
     name: Rapid Server / CLI
     lane: runtime

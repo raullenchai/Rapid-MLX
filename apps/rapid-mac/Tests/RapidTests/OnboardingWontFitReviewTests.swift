@@ -117,16 +117,26 @@ struct OnboardingWontFitReviewTests {
         for tier in RAMBucketedDefault.tiers {
             for pick in tier.picks {
                 let hw = Self.hardware(ramGB: tier.floorGB)
+                let entry = ModelEntry(
+                    alias: pick.alias,
+                    hfRepo: nil,
+                    sizeOnDisk: nil,
+                    cached: false,
+                    recommendationPolicyDigests: [RAMBucketedDefault.policyDigest]
+                )
                 // The card presents this as RECOMMENDED, so it is by definition
                 // this Mac's curated pick (the carve-out the card relies on)…
                 #expect(RAMBucketedDefault.isRecommendedPick(
-                    alias: pick.alias, physicalRAMGB: hw.physicalRAMGB),
+                    alias: pick.alias,
+                    physicalRAMGB: hw.physicalRAMGB,
+                    catalogEntry: entry
+                ),
                     "\(pick.alias) should be a \(tier.floorGB) GB tier pick")
                 // …and that same pick must NOT be refused by the Download
                 // Review, or the user hits a dead-end: the card says
                 // "recommended" while Review disables Download & start.
                 #expect(OnboardingModelSelection.isAvailable(
-                    alias: pick.alias, hardware: hw),
+                    alias: pick.alias, hardware: hw, catalogEntry: entry),
                     "\(pick.alias) is curated for the \(tier.floorGB) GB tier but its Review refuses Download")
             }
         }

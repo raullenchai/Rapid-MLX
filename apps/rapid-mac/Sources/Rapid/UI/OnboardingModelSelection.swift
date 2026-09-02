@@ -298,9 +298,15 @@ enum OnboardingModelSelection {
     /// genuinely sits in (RAM ≥ the tier's floor). Below the lowest tier's
     /// floor a Mac sits in no tier, so the curated picks it is shown are NOT
     /// exempt and the `.tooBig` veto still applies to them.
-    static func isAvailable(alias: String, hardware: MacHardware) -> Bool {
+    static func isAvailable(
+        alias: String,
+        hardware: MacHardware,
+        catalogEntry: ModelEntry? = nil
+    ) -> Bool {
         if RAMBucketedDefault.isRecommendedPick(
-            alias: alias, physicalRAMGB: hardware.physicalRAMGB
+            alias: alias,
+            physicalRAMGB: hardware.physicalRAMGB,
+            catalogEntry: catalogEntry
         ) {
             return true
         }
@@ -314,7 +320,9 @@ enum OnboardingModelSelection {
             Row(
                 alias: entry.alias,
                 isCached: entry.cached,
-                isAvailable: isAvailable(alias: entry.alias, hardware: hardware)
+                isAvailable: isAvailable(
+                    alias: entry.alias, hardware: hardware, catalogEntry: entry
+                )
             )
         }
     }

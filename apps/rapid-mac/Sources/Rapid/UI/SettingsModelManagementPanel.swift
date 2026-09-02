@@ -558,8 +558,11 @@ struct SettingsModelManagementPanel: View {
     /// plus an optional faster alternative (only the smallest tier carries
     /// one). One card per pick.
     private var recommendedPicks: [(pick: RAMBucketedDefault.Pick, isPrimary: Bool)] {
-        hardware.recommendedPicks.enumerated().map { index, pick in
-            (pick, index == 0)
+        RAMBucketedDefault.catalogPicks(
+            from: hardware.recommendedPicks,
+            catalog: catalog
+        ).map { resolved in
+            (resolved.pick, resolved.isPrimary)
         }
     }
 
@@ -568,8 +571,11 @@ struct SettingsModelManagementPanel: View {
     /// appears twice.
     private var recommendedBadgeByAlias: [String: String] {
         var map: [String: String] = [:]
-        for (index, pick) in hardware.recommendedPicks.enumerated() where map[pick.alias] == nil {
-            map[pick.alias] = index == 0 ? "RECOMMENDED" : "FASTER"
+        for resolved in RAMBucketedDefault.catalogPicks(
+            from: hardware.recommendedPicks,
+            catalog: catalog
+        ) where map[resolved.pick.alias] == nil {
+            map[resolved.pick.alias] = resolved.isPrimary ? "RECOMMENDED" : "FASTER"
         }
         return map
     }

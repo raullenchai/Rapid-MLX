@@ -102,7 +102,7 @@ benchmark score.
 latency. Rows above the measured 32 GB host retain the existing reviewed
 large-memory picks and must gain host-specific measurements before their next
 release change. In particular, the `qwen3.6-35b-4bit` fast cell in the SSOT
-(20.0 GB / 60.0 tok/s, marked `"provenance": "estimate"`) is a reviewed
+(20.0 GB / 60.0 tok/s, marked `"evidence_status": "legacy_estimate"`) is a reviewed
 estimate, not a measurement: the only measurement row for that alias (Table 1)
 aborted with new swap on the 32 GB host, so those numbers stand until a
 measurement on a ≥ 48 GB host (the alias's tier floor) replaces them.

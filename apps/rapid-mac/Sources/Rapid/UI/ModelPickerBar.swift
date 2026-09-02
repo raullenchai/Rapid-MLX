@@ -279,11 +279,15 @@ struct ModelPickerBar: View {
         // the post-filter index — otherwise a primary missing from the
         // catalog (rapid-mlx version skew) would leave the alt at index 0
         // and mislabel it "Recommended" instead of "Faster".
-        hardware.recommendedPicks.enumerated().compactMap { index, pick in
-            guard let entry = catalog.first(where: { $0.alias == pick.alias }) else {
+        let resolved = RAMBucketedDefault.catalogPicks(
+            from: hardware.recommendedPicks,
+            catalog: catalog
+        )
+        return resolved.compactMap { item in
+            guard let entry = catalog.first(where: { $0.alias == item.pick.alias }) else {
                 return nil
             }
-            return (pick, entry, index == 0)
+            return (item.pick, entry, item.isPrimary)
         }
     }
 
@@ -1604,13 +1608,16 @@ struct ModelPickerBar: View {
         // footprint over ModelSizing's estimate (which over-states
         // low-bit / MoE models), so it skips the .tooBig gate — the
         // table already vetted it fits this Mac's RAM tier.
+        let catalogEntry = catalog.first(where: { $0.alias == trimmed })
         let isRecommended = RAMBucketedDefault.isRecommendedPick(
-            alias: trimmed, physicalRAMGB: hardware.physicalRAMGB)
+            alias: trimmed,
+            physicalRAMGB: hardware.physicalRAMGB,
+            catalogEntry: catalogEntry
+        )
         if fit == .tooBig && !isRecommended {
             pendingTooBigStart = trimmed
             return
         }
-        let catalogEntry = catalog.first(where: { $0.alias == trimmed })
         let hfPath = catalogEntry?.hfRepo
         let catalogEntryHint = catalogEntry.map {
             ServerManager.CatalogEntryHint(
