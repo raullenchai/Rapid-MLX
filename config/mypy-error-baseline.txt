@@ -34,7 +34,7 @@ vllm_mlx/bench/pflash_replication.py 1
 vllm_mlx/bench/tier_runner.py 2
 vllm_mlx/benchmark.py 8
 vllm_mlx/chat_mcp.py 2
-vllm_mlx/cli.py 27
+vllm_mlx/cli.py 26
 vllm_mlx/community_bench/submission.py 1
 vllm_mlx/disk_stream_patch.py 2
 vllm_mlx/doctor/env_health.py 1

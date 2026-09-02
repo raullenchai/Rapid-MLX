@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/model-catalog/v1/recommendation-policy.schema.json",
+  "title": "Rapid-MLX RecommendationPolicy v1",
+  "description": "Machine-scoped ordered model choices layered on catalog aliases. Measurements are scaled integers and retain provenance; policy never changes model identity.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "policy_id", "policy_digest", "task_type", "machine_dimension", "tiers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "policy_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._/-]*$"},
+    "policy_digest": {"$ref": "#/$defs/sha256Digest"},
+    "task_type": {"enum": ["text_generation", "vision_language", "image_generation", "video_generation", "speech_synthesis", "speech_recognition"]},
+    "machine_dimension": {"const": "physical_memory_mib"},
+    "tiers": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["minimum_memory_mib", "picks"],
+        "properties": {
+          "minimum_memory_mib": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "picks": {
+            "type": "array", "minItems": 1, "maxItems": 16,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["role", "alias", "evidence_status", "footprint_mib", "reason_ids"],
+              "properties": {
+                "role": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+                "alias": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+                "execution_preset_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+                "evidence_status": {"enum": ["legacy_estimate", "legacy_measured", "community_candidate", "promoted"]},
+                "evidence_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._/-]*$"},
+                "footprint_mib": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+                "capability_score_x100": {"type": "integer", "minimum": 0, "maximum": 10000},
+                "decode_tokens_per_second_x100": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+                "reason_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"}},
+                "limitation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9][a-z0-9._-]*$"}}
+              },
+              "allOf": [{
+                "if": {"properties": {"evidence_status": {"enum": ["community_candidate", "promoted"]}}, "required": ["evidence_status"]},
+                "then": {"required": ["evidence_id"]}
+              }]
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {"sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

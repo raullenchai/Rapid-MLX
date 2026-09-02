@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/model-runtime/v1/machine-observation.schema.json",
+  "title": "Rapid-MLX MachineObservation v1",
+  "description": "Privacy-safe hardware profile and volatile before/after conditions for a benchmark. It identifies a shared machine configuration, never a unique physical Mac.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_completeness",
+    "profile",
+    "profile_digest",
+    "os",
+    "conditions_before",
+    "conditions_after"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "profile_completeness": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial"
+      ],
+      "description": "Only complete profiles enter formal machine cohorts. Partial profiles remain useful exploratory evidence."
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chip",
+        "memory_gib",
+        "cpu_cores"
+      ],
+      "properties": {
+        "chip": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^Apple M[1-9][0-9]{0,2}( Pro| Max| Ultra)?$"
+        },
+        "memory_gib": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 1024
+        },
+        "cpu_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "performance_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "efficiency_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "gpu_cores": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 256
+        }
+      }
+    },
+    "profile_digest": {
+      "$ref": "#/$defs/sha256Digest",
+      "description": "Rapid Canonical JSON v1 + SHA-256 digest of the profile object. Shared by all Macs with the same declared profile; not a device fingerprint. The server recomputes it."
+    },
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "architecture"
+      ],
+      "properties": {
+        "name": {
+          "const": "macOS"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$"
+        },
+        "architecture": {
+          "const": "arm64"
+        }
+      }
+    },
+    "conditions_before": {
+      "$ref": "#/$defs/runConditions"
+    },
+    "conditions_after": {
+      "$ref": "#/$defs/runConditions"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "profile_completeness": {
+            "const": "complete"
+          }
+        },
+        "required": [
+          "profile_completeness"
+        ]
+      },
+      "then": {
+        "properties": {
+          "profile": {
+            "required": [
+              "chip",
+              "memory_gib",
+              "cpu_cores",
+              "performance_cores",
+              "efficiency_cores",
+              "gpu_cores"
+            ],
+            "properties": {
+              "gpu_cores": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runConditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "power_source",
+        "low_power_mode",
+        "thermal_state",
+        "memory_pressure"
+      ],
+      "properties": {
+        "power_source": {
+          "type": "string",
+          "enum": [
+            "ac",
+            "battery",
+            "unknown"
+          ]
+        },
+        "power_mode": {
+          "type": "string",
+          "enum": [
+            "automatic",
+            "low_power",
+            "high_power",
+            "unknown"
+          ]
+        },
+        "low_power_mode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "thermal_state": {
+          "type": "string",
+          "enum": [
+            "nominal",
+            "fair",
+            "serious",
+            "critical",
+            "unknown"
+          ]
+        },
+        "memory_pressure": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "warning",
+            "critical",
+            "unknown"
+          ]
+        },
+        "available_memory_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

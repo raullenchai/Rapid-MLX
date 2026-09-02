@@ -38,7 +38,7 @@ struct SettingsPerformancePanel: View {
 
     private var modelChoices: [ModelEntry] {
         var byAlias = Dictionary(uniqueKeysWithValues: catalog
-            .filter { $0.kind == .chat }
+            .filter { $0.supports(.chat) }
             .map { ($0.alias.lowercased(), $0) })
         for alias in perf.configuredAliases where byAlias[alias.lowercased()] == nil {
             byAlias[alias.lowercased()] = ModelEntry(

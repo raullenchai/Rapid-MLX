@@ -28,6 +28,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-4b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-4B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -42,6 +43,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-4b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-4B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -55,6 +57,7 @@
     "recommended_prefill_step_size": 1024
   },
   "qwen3.5-9b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -70,6 +73,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-9b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-9B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -90,6 +94,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-9b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-9B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -103,6 +108,7 @@
     "recommended_prefill_step_size": 1024
   },
   "qwen3.5-27b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-27B-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -115,6 +121,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-35b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -125,6 +132,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-35b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -135,6 +143,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-35b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -155,6 +164,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-122b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-122B-A10B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -165,6 +175,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.5-122b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-122B-A10B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -237,6 +248,7 @@
     "pflash_tier": "unknown"
   },
   "qwen3.5-27b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-27B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -254,6 +266,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-27b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.5-27B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "hermes",
@@ -264,6 +277,7 @@
     "supports_spec_decode": false
   },
   "qwen3.6-27b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-27B-4bit",
     "vision_min_memory_gb": 32,
     "vision_min_memory_gb": 32,
@@ -279,6 +293,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-8bit": {
+    "supports_image_input": true,
     "hf_path": "unsloth/Qwen3.6-27B-MLX-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -292,6 +307,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-6bit": {
+    "supports_image_input": true,
     "hf_path": "lmstudio-community/Qwen3.6-27B-MLX-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -304,6 +320,7 @@
     "mtp_speculative_tokens": 2
   },
   "qwen3.6-27b-ud": {
+    "supports_image_input": true,
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -316,6 +333,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-35b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
     "vision_min_memory_gb": 32,
     "vision_min_memory_gb": 32,
@@ -331,6 +349,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.6-35b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -344,6 +363,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.6-35b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-8bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -357,6 +377,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.6-35b-ud": {
+    "supports_image_input": true,
     "hf_path": "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -369,6 +390,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-35b-dwq": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -380,6 +402,7 @@
     "turboquant_tier": "k8v4_verified"
   },
   "qwen3.6-35b-mxfp4": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-mxfp4",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -389,6 +412,7 @@
     "is_moe": true
   },
   "qwen3.8-27b-4bit": {
+    "supports_image_input": true,
     "hf_path": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
     "tool_call_parser": "qwen3_coder_xml",
     "reasoning_parser": "qwen3",
@@ -403,6 +427,7 @@
     "dflash_algorithm": "dflash2"
   },
   "qwen3.8-27b-mixed-3.5bpw": {
+    "supports_image_input": true,
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
     "tool_call_parser": "qwen3_coder_xml",
     "reasoning_parser": "qwen3",
@@ -426,6 +451,7 @@
     "experimental": true
   },
   "qwen3.6-35b-nvfp4": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -435,6 +461,7 @@
     "is_moe": true
   },
   "qwen3.6-27b": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-27B-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -480,6 +507,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-optiq-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -490,6 +518,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-35b-optiq-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -500,6 +529,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-ud-3bit": {
+    "supports_image_input": true,
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-3bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -510,6 +540,7 @@
     "pflash_tier": "verified"
   },
   "qwen3.6-27b-ud-6bit": {
+    "supports_image_input": true,
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-6bit",
     "vision_min_memory_gb": 32,
     "tool_call_parser": "qwen3_coder_xml",
@@ -660,6 +691,7 @@
     }
   },
   "qwen3-vl-4b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3-VL-4B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
@@ -713,6 +745,7 @@
     }
   },
   "gemma-4-e2b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e2b-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -727,6 +760,7 @@
     }
   },
   "gemma-4-e4b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e4b-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -741,6 +775,7 @@
     }
   },
   "gemma-4-12b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -756,6 +791,7 @@
     }
   },
   "gemma-4-12b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -770,6 +806,7 @@
     }
   },
   "gemma-4-26b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26b-a4b-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -790,6 +827,7 @@
     }
   },
   "gemma-4-31b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-31b-it-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -809,6 +847,7 @@
     }
   },
   "gemma-4-31b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-31b-it-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -823,6 +862,7 @@
     }
   },
   "gemma-4-12b-qat-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-qat-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -837,6 +877,7 @@
     }
   },
   "gemma-4-12b-qat-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-qat-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -851,6 +892,7 @@
     }
   },
   "gemma-4-26b-qat-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -865,6 +907,7 @@
     }
   },
   "gemma-4-31b-qat-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-31B-it-qat-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -879,6 +922,7 @@
     }
   },
   "gemma-4-31b-qat-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-31B-it-qat-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -893,6 +937,7 @@
     }
   },
   "gemma-4-e2b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e2b-it-6bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -907,6 +952,7 @@
     }
   },
   "gemma-4-e2b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e2b-it-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -921,6 +967,7 @@
     }
   },
   "gemma-4-e4b-6bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e4b-it-6bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -935,6 +982,7 @@
     }
   },
   "gemma-4-e4b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e4b-it-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -949,6 +997,7 @@
     }
   },
   "gemma-4-26b-8bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26B-A4B-it-8bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -963,6 +1012,7 @@
     }
   },
   "gemma-4-12b-optiq-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-OptiQ-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -977,6 +1027,7 @@
     }
   },
   "gemma-4-e4b-optiq-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -991,6 +1042,7 @@
     }
   },
   "gemma-4-e2b-assistant": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e2b-it-assistant-bf16",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1005,6 +1057,7 @@
     }
   },
   "gemma-4-e4b-assistant": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-e4b-it-assistant-bf16",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1019,6 +1072,7 @@
     }
   },
   "gemma-4-12b-assistant": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-assistant-bf16",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1033,6 +1087,7 @@
     }
   },
   "gemma-4-26b-assistant": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-26B-A4B-it-assistant-bf16",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1047,6 +1102,7 @@
     }
   },
   "gemma-4-31b-assistant": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-31B-it-assistant-bf16",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1061,6 +1117,7 @@
     }
   },
   "gemma-4-12b-qat-assistant-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-4-12B-it-qat-assistant-4bit",
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
@@ -1075,6 +1132,7 @@
     }
   },
   "gemma3-12b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-3-12b-it-qat-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1087,6 +1145,7 @@
     }
   },
   "gemma3-4b-qat-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-3-4b-it-qat-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1392,6 +1451,7 @@
     "min_memory_gb": 8
   },
   "qwen3-vl-8b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
@@ -1405,6 +1465,7 @@
     }
   },
   "qwen3-vl-30b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3-VL-30B-A3B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
@@ -1480,6 +1541,7 @@
     }
   },
   "gemma3-27b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-3-27b-it-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1492,6 +1554,7 @@
     }
   },
   "gemma3-27b-qat-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-3-27b-it-qat-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1661,6 +1724,7 @@
     "supports_spec_decode": true
   },
   "qwen3-vl-2b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
     "tool_call_parser": "hermes",
     "reasoning_parser": null,
@@ -1669,6 +1733,7 @@
     "supports_spec_decode": true
   },
   "gemma-3n-e2b-4bit": {
+    "supports_image_input": true,
     "hf_path": "mlx-community/gemma-3n-E2B-it-4bit",
     "tool_call_parser": null,
     "reasoning_parser": null,
@@ -1682,6 +1747,7 @@
     }
   },
   "gemma-3n-e4b-4bit": {
+    "supports_image_input": true,
     "hf_path": "lmstudio-community/gemma-3n-E4B-it-MLX-4bit",
     "tool_call_parser": null,
     "reasoning_parser": null,

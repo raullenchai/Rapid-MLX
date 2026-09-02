@@ -1,3 +1,5 @@
+import CoreFoundation
+import CryptoKit
 import Foundation
 
 /// What a model is *for*. Drives the capability tabs in Model Management —
@@ -16,6 +18,35 @@ enum ModelKind: String, Sendable, Hashable, CaseIterable, Identifiable {
         case .video: return "Video"
         }
     }
+}
+
+/// Stable product tasks emitted by the atomic catalog. These are shared with
+/// Server and website consumers; UI tabs are projections of tasks, not model
+/// name or repository heuristics.
+enum ModelTask: String, Sendable, Hashable {
+    case textGeneration = "text_generation"
+    case visionLanguage = "vision_language"
+    case imageGeneration = "image_generation"
+    case videoGeneration = "video_generation"
+    case speechSynthesis = "speech_synthesis"
+    case speechRecognition = "speech_recognition"
+}
+
+enum ModelOperation: String, Sendable, Hashable {
+    case chat
+    case imageUnderstanding = "image_understanding"
+    case textToImage = "text_to_image"
+    case imageToImage = "image_to_image"
+    case inpainting
+    case textToVideo = "text_to_video"
+    case imageToVideo = "image_to_video"
+    case videoToVideo = "video_to_video"
+    case presetVoice = "preset_voice"
+    case voiceCloning = "voice_cloning"
+    case voiceDesign = "voice_design"
+    case transcription
+    case translation
+    case forcedAlignment = "forced_alignment"
 }
 
 /// The user-facing operation an audio checkpoint can actually perform.
@@ -76,6 +107,38 @@ enum ModelSelectionPurpose: Sendable, Hashable {
     case imageToVideo
 
     func accepts(_ entry: ModelEntry) -> Bool {
+        if !entry.taskTypes.isEmpty {
+            switch self {
+            case .chat:
+                return (entry.taskTypes.contains(.textGeneration)
+                    || entry.taskTypes.contains(.visionLanguage))
+                    && entry.operationModes.contains(.chat)
+            case .imageGeneration:
+                return entry.taskTypes.contains(.imageGeneration)
+                    && entry.operationModes.contains(.textToImage)
+            case .imageEditing:
+                return entry.taskTypes.contains(.imageGeneration)
+                    && (entry.operationModes.contains(.imageToImage)
+                        || entry.operationModes.contains(.inpainting))
+            case .speechToText:
+                return entry.taskTypes.contains(.speechRecognition)
+                    && entry.operationModes.contains(.transcription)
+            case .textToSpeech:
+                return entry.taskTypes.contains(.speechSynthesis)
+                    && entry.operationModes.contains(.presetVoice)
+                    // Task and operation describe request shape, not whether
+                    // the signed Desktop runtime bundles family-specific
+                    // assets. Keep the current Qwen3-only product contract
+                    // until atomic runtime requirements are representable.
+                    && entry.audioFamily == "qwen3_tts"
+            case .textToVideo:
+                return entry.taskTypes.contains(.videoGeneration)
+                    && entry.operationModes.contains(.textToVideo)
+            case .imageToVideo:
+                return entry.taskTypes.contains(.videoGeneration)
+                    && entry.operationModes.contains(.imageToVideo)
+            }
+        }
         switch self {
         case .chat:
             return entry.kind == .chat
@@ -197,6 +260,15 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var videoCapabilities: Set<VideoModelCapability> = []
     var minimumMemoryGB: Double? = nil
 
+    /// Atomic catalog capabilities. Empty only when talking to an older
+    /// sidecar, in which case the legacy fields above remain the fallback.
+    var taskTypes: Set<ModelTask> = []
+    var operationModes: Set<ModelOperation> = []
+    var runtimeAdapter: String? = nil
+    /// Artifact identity includes the case-sensitive repo and optional
+    /// subfolder. Repo-only cache joins are unsafe for multi-checkpoint repos.
+    var sourceSubfolder: String? = nil
+
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
 
@@ -208,7 +280,38 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var isTextOnly: Bool? = nil
 
     var id: String { alias }
+
+    /// Whether this entry belongs on a product capability surface. Atomic
+    /// aliases may advertise several tasks and therefore appear in several
+    /// tabs/pickers; `kind` remains only the single-value compatibility hint
+    /// for legacy sidecars whose task set is empty.
+    func supports(_ candidate: ModelKind) -> Bool {
+        guard !taskTypes.isEmpty else { return kind == candidate }
+        switch candidate {
+        case .chat:
+            return (taskTypes.contains(.textGeneration)
+                || taskTypes.contains(.visionLanguage))
+                && operationModes.contains(.chat)
+        case .image:
+            return taskTypes.contains(.imageGeneration)
+        case .audio:
+            return taskTypes.contains(.speechSynthesis)
+                || taskTypes.contains(.speechRecognition)
+        case .video:
+            return taskTypes.contains(.videoGeneration)
+        }
+    }
 }
+
+/// Structured cache inventory emitted by `rapid-mlx models --cached --json`.
+/// Subfolder is part of artifact identity; `nil` means the repository root,
+/// never "unknown or any subfolder."
+typealias CachedModelInventoryEntry = (
+    alias: String,
+    hfRepo: String?,
+    subfolder: String?,
+    size: String?
+)
 
 /// Loads the rapid-mlx alias catalog by shelling out to the CLI. The
 /// picker depends on this *before* the server is spawned, so we can't
@@ -310,7 +413,7 @@ enum ModelCatalog {
             profiles: [String: CatalogProfileCapability]
         ) =
             listAvailableWithExclusions(binary: binary)
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -419,36 +522,50 @@ enum ModelCatalog {
         return out
     }
 
-    /// Pure: re-mark uncached entries whose resolved HF repo equals a
-    /// cached entry's repo. The rebuilt entry carries the cached repo +
-    /// size so the picker caption / size column match the sibling that
-    /// is actually on disk. ``resolvedRepos`` maps alias → HF repo.
-    /// Matching is exact on the sanitized repo string — never
-    /// case-folded — so two repos differing only by case are never
-    /// merged.
+    /// Pure: re-mark uncached entries whose resolved artifact identity equals
+    /// a cached entry's exact repo + subfolder. ``resolvedRepos`` maps alias →
+    /// HF repo; the catalog entry supplies the expected subfolder. Matching is
+    /// case-sensitive and never lets a nested checkpoint prove a repo-root
+    /// checkpoint is installed.
     static func remarkCachedByRepo(
         _ entries: [ModelEntry],
         resolvedRepos: [String: String]
     ) -> [ModelEntry] {
-        var cachedByRepo: [String: (repo: String, size: String?)] = [:]
+        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
         for entry in entries where entry.cached {
-            if let repo = sanitizedHuggingFaceRepo(entry.hfRepo) {
-                cachedByRepo[repo] = (repo, entry.sizeOnDisk)
+            if let key = artifactCacheKey(entry),
+               let repo = sanitizedHuggingFaceRepo(entry.hfRepo) {
+                cachedByArtifact[key] = (repo, entry.sizeOnDisk)
             }
         }
-        guard !cachedByRepo.isEmpty else { return entries }
+        guard !cachedByArtifact.isEmpty else { return entries }
 
         return entries.map { entry in
             guard !entry.cached,
                   let raw = resolvedRepos[entry.alias],
                   let repo = sanitizedHuggingFaceRepo(raw),
-                  let hit = cachedByRepo[repo]
+                  let key = artifactCacheKey(
+                    repo: repo, subfolder: entry.sourceSubfolder
+                  ),
+                  let hit = cachedByArtifact[key]
             else { return entry }
             return ModelEntry(
                 alias: entry.alias,
                 hfRepo: hit.repo,
                 sizeOnDisk: hit.size,
-                cached: true
+                cached: true,
+                isExternal: entry.isExternal,
+                kind: entry.kind,
+                audioCapability: entry.audioCapability,
+                audioFamily: entry.audioFamily,
+                imageCapability: entry.imageCapability,
+                taskTypes: entry.taskTypes,
+                operationModes: entry.operationModes,
+                runtimeAdapter: entry.runtimeAdapter,
+                sourceSubfolder: entry.sourceSubfolder,
+                speculativeDecodingPreset: entry.speculativeDecodingPreset,
+                isBuiltinProfile: entry.isBuiltinProfile,
+                isTextOnly: entry.isTextOnly
             )
         }
     }
@@ -506,15 +623,18 @@ enum ModelCatalog {
     /// deliberately withheld from ``models`` must NOT be re-admitted here.
     static func mergeAvailableAndCached(
         available: [(String, String?)],
-        cached: [(String, String?, String?)],
+        cached: [CachedModelInventoryEntry],
         excluded: Set<String>
     ) -> [ModelEntry] {
-        var cachedIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, size) in cached where !alias.isEmpty && !isStatusAlias(alias) {
-            cachedIndex[alias] = (hf, size)
+        var cachedIndex: [String: (
+            hfRepo: String?, subfolder: String?, size: String?
+        )] = [:]
+        for (alias, hf, subfolder, size) in cached
+        where !alias.isEmpty && !isStatusAlias(alias) {
+            cachedIndex[alias] = (hf, subfolder, size)
         }
         var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, size) in cached where alias == "(external)" {
+        for (alias, hf, _, size) in cached where alias == "(external)" {
             guard let identifier = hf else { continue }
             externalIndex[identifier] = (hf, size)
         }
@@ -539,7 +659,8 @@ enum ModelCatalog {
                 sizeOnDisk: cachedHit?.size
                     ?? externalIdentifier.flatMap { externalIndex[$0]?.size },
                 cached: cachedHit != nil || externalIdentifier != nil,
-                isExternal: cachedHit == nil && externalIdentifier != nil
+                isExternal: cachedHit == nil && externalIdentifier != nil,
+                sourceSubfolder: cachedHit?.subfolder
             ))
         }
         // A cached model with no row in ``rapid-mlx models`` is unusual
@@ -551,7 +672,7 @@ enum ModelCatalog {
         // cached audio or video model has no row in ``models`` for
         // exactly the reason it must stay hidden, and would be re-admitted
         // here on that basis (#1603).
-        for (alias, hf, size) in cached
+        for (alias, hf, subfolder, size) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
@@ -560,7 +681,8 @@ enum ModelCatalog {
                 alias: alias,
                 hfRepo: hf,
                 sizeOnDisk: size,
-                cached: true
+                cached: true,
+                sourceSubfolder: subfolder
             ))
         }
 
@@ -574,7 +696,7 @@ enum ModelCatalog {
         // is deletable, which ``isExternal`` conveys to the UI. Dropping them
         // here instead would satisfy "not deletable" by making them invisible
         // — and leave the user re-downloading weights they already have.
-        for (alias, hf, size) in cached
+        for (alias, hf, _, size) in cached
         where alias == "(external)" {
             guard let repo = hf,
                   !consumedExternal.contains(repo),
@@ -590,6 +712,20 @@ enum ModelCatalog {
             ))
         }
         return entries
+    }
+
+    /// Compatibility seam for pure text-parser tests and older callers. Text
+    /// inventory has no subfolder column, so it can prove root artifacts only.
+    static func mergeAvailableAndCached(
+        available: [(String, String?)],
+        cached: [(String, String?, String?)],
+        excluded: Set<String>
+    ) -> [ModelEntry] {
+        mergeAvailableAndCached(
+            available: available,
+            cached: cached.map { ($0.0, $0.1, nil, $0.2) },
+            excluded: excluded
+        )
     }
 
     /// Whether the alias column holds a status marker rather than a name.
@@ -648,8 +784,12 @@ enum ModelCatalog {
         profiles: [String: CatalogProfileCapability]
     )? {
         guard let data = output.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let textRows = root["text"] as? [[String: Any]] else { return nil }
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let atomic = parseAtomicCatalogJSON(root) {
+            return atomic
+        }
+        guard let textRows = root["text"] as? [[String: Any]] else { return nil }
         var entries: [(String, String?)] = []
         var profiles: [String: CatalogProfileCapability] = [:]
         var speculative: [String: SpeculativeDecodingPreset] = [:]
@@ -688,6 +828,548 @@ enum ModelCatalog {
         return (entries, excluded, speculative, profiles)
     }
 
+    /// Prefer the atomic alias + registry-model graph when a new sidecar
+    /// advertises it. Task capabilities decide product placement; Swift no
+    /// longer has to infer a tab from an alias spelling. The legacy bucket
+    /// parser above remains the downgrade path for older installed sidecars.
+    private static func parseAtomicCatalogJSON(_ root: [String: Any]) -> (
+        entries: [(String, String?)],
+        excluded: Set<String>,
+        speculative: [String: SpeculativeDecodingPreset],
+        profiles: [String: CatalogProfileCapability]
+    )? {
+        guard let allEntries = parseAtomicModelEntriesJSON(root) else { return nil }
+        let entries = allEntries.filter { $0.supports(.chat) }.map {
+            ($0.alias, $0.hfRepo)
+        }
+        guard let atomic = root["atomic"] as? [String: Any],
+              let snapshot = atomic["snapshot"] as? [String: Any],
+              let aliasRows = snapshot["aliases"] as? [[String: Any]]
+        else { return nil }
+        let chatAliases = Set(entries.map(\.0))
+        let allAliases = Set(aliasRows.compactMap { row -> String? in
+            guard let alias = row["alias"] as? String, isSafeAlias(alias) else {
+                return nil
+            }
+            return alias
+        })
+        // Include aliases hidden from this Desktop build as well as visible
+        // media aliases. Otherwise `rapid-mlx ls` could re-admit a hidden
+        // audio/video model as an untyped Chat row.
+        let excluded = allAliases.subtracting(chatAliases)
+        let profiles = Dictionary(
+            uniqueKeysWithValues: allEntries.filter { $0.supports(.chat) }.map { entry in
+                (
+                    entry.alias,
+                    CatalogProfileCapability(
+                        isBuiltin: entry.isBuiltinProfile == true,
+                        isTextOnly: entry.isTextOnly == true
+                    )
+                )
+            }
+        )
+
+        // Execution presets remain in the legacy projection during shadow
+        // migration. Preserve their current behavior while identity and task
+        // placement come from the atomic graph.
+        var speculative: [String: SpeculativeDecodingPreset] = [:]
+        for row in root["text"] as? [[String: Any]] ?? [] {
+            guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
+            if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
+               let tokens = row["mtp_speculative_tokens"] as? Int, tokens > 0 {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .mtp,
+                    model: model,
+                    tokens: tokens,
+                    defaultEnabled: row["mtp_continuous_batching_tier"] as? String
+                        == "verified"
+                )
+            } else if row["supports_spec_decode"] as? Bool == true {
+                speculative[alias] = SpeculativeDecodingPreset(
+                    method: .suffix, model: nil, tokens: nil
+                )
+            }
+        }
+        return (entries, excluded, speculative, profiles)
+    }
+
+    /// Decode every model kind from the same atomic graph. Returning nil is
+    /// intentional: callers then fall back to the legacy bucket/table parser.
+    static func parseAtomicModelEntriesJSON(_ root: [String: Any]) -> [ModelEntry]? {
+        guard let atomic = root["atomic"] as? [String: Any],
+              let snapshot = atomic["snapshot"] as? [String: Any],
+              snapshot["schema_version"] as? Int == 2,
+              let declaredDigest = snapshot["catalog_digest"] as? String,
+              atomicCatalogDigest(snapshot) == declaredDigest,
+              let shadow = atomic["shadow_report"] as? [String: Any],
+              shadow["equivalent"] as? Bool == true,
+              shadow["catalog_digest"] as? String == declaredDigest,
+              let modelRows = snapshot["models"] as? [[String: Any]],
+              let aliasRows = snapshot["aliases"] as? [[String: Any]]
+        else { return nil }
+
+        var modelsByID: [String: (
+            repo: String,
+            subfolder: String?,
+            size: String?,
+            resolution: String,
+            identityDigest: String?
+        )] = [:]
+        for model in modelRows {
+            guard model["schema_version"] as? Int == 1,
+                  let modelID = model["registry_model_id"] as? String,
+                  modelsByID[modelID] == nil,
+                  let resolution = model["resolution_status"] as? String,
+                  ["resolved", "unresolved"].contains(resolution),
+                  (resolution == "resolved") == (model["model_identity_digest"] is String),
+                  let source = model["source"] as? [String: Any],
+                  source["provider"] as? String == "huggingface",
+                  let repo = sanitizedHuggingFaceRepo(source["repo_id"] as? String)
+            else { return nil }
+            let size: String?
+            if let bytes = model["estimated_download_size_bytes"] as? NSNumber {
+                guard CFGetTypeID(bytes) != CFBooleanGetTypeID(),
+                      bytes.doubleValue.isFinite,
+                      bytes.doubleValue == Double(bytes.int64Value),
+                      bytes.int64Value > 0,
+                      bytes.int64Value <= 9_007_199_254_740_991
+                else { return nil }
+                size = ByteCountFormatter.string(
+                    fromByteCount: bytes.int64Value,
+                    countStyle: .binary
+                )
+            } else {
+                size = nil
+            }
+            let subfolder: String?
+            if source["subfolder"] is NSNull || source["subfolder"] == nil {
+                subfolder = nil
+            } else if let value = source["subfolder"] as? String,
+                      isSafeSubfolder(value) {
+                subfolder = value
+            } else {
+                return nil
+            }
+            modelsByID[modelID] = (
+                repo,
+                subfolder,
+                size,
+                resolution,
+                model["model_identity_digest"] as? String
+            )
+        }
+
+        var entries: [ModelEntry] = []
+        var seenAliases: Set<String> = []
+        for row in aliasRows {
+            guard row["schema_version"] as? Int == 2,
+                  let alias = row["alias"] as? String, isSafeAlias(alias),
+                  seenAliases.insert(alias).inserted,
+                  let origin = row["origin"] as? String,
+                  ["builtin", "user"].contains(origin),
+                  let target = row["target"] as? [String: Any],
+                  let modelID = target["registry_model_id"] as? String,
+                  let targetResolution = target["resolution_status"] as? String,
+                  ["resolved", "unresolved"].contains(targetResolution),
+                  (targetResolution == "resolved")
+                    == (target["model_identity_digest"] is String),
+                  let capabilities = row["capabilities"] as? [String: Any],
+                  let rawTasks = capabilities["task_types"] as? [String],
+                  let isTextOnly = capabilities["is_text_only"] as? Bool,
+                  let availability = row["availability"] as? [String: Any],
+                  ["cli", "server", "desktop", "website"].allSatisfy({
+                    availability[$0] is Bool
+                  }),
+                  let desktopAvailable = availability["desktop"] as? Bool,
+                  let executionPresets = row["execution_presets"] as? [[String: Any]],
+                  let model = modelsByID[modelID],
+                  targetResolution == model.resolution,
+                  target["model_identity_digest"] as? String == model.identityDigest
+            else { return nil }
+            let presetIDs = executionPresets.compactMap { $0["preset_id"] as? String }
+            guard presetIDs.count == executionPresets.count,
+                  Set(presetIDs).count == presetIDs.count
+            else { return nil }
+            if row["default_execution_preset_id"] is NSNull {
+                guard executionPresets.isEmpty else { return nil }
+            } else if let defaultPreset = row["default_execution_preset_id"] as? String {
+                guard presetIDs.contains(defaultPreset) else { return nil }
+            } else {
+                return nil
+            }
+            if !desktopAvailable {
+                continue
+            }
+            let tasks = Set(rawTasks.compactMap(ModelTask.init(rawValue:)))
+            // A newer sidecar may add task values this Desktop cannot safely
+            // place. Reject the atomic envelope and use the versioned legacy
+            // projection; never turn an unknown task into Chat by default.
+            guard !tasks.isEmpty, tasks.count == rawTasks.count else { return nil }
+            // v2 requires exactly one nonempty operation field. Accept the v1
+            // generation_modes spelling only as a bounded migration fallback;
+            // a self-digested but schema-invalid envelope must downgrade to
+            // the legacy projection instead of silently emptying pickers.
+            let hasOperationModes = capabilities["operation_modes"] != nil
+            let hasGenerationModes = capabilities["generation_modes"] != nil
+            guard hasOperationModes != hasGenerationModes else { return nil }
+            let rawOperations: [String]
+            if hasOperationModes {
+                guard let values = capabilities["operation_modes"] as? [String],
+                      !values.isEmpty
+                else { return nil }
+                rawOperations = values
+            } else {
+                guard let values = capabilities["generation_modes"] as? [String],
+                      !values.isEmpty
+                else { return nil }
+                rawOperations = values
+            }
+            let operations = Set(rawOperations.compactMap(ModelOperation.init(rawValue:)))
+            guard operations.count == rawOperations.count else { return nil }
+            guard tasks.allSatisfy({ task in
+                switch task {
+                case .textGeneration:
+                    return operations.contains(.chat)
+                case .visionLanguage:
+                    // A VLM can advertise multimodal understanding without a
+                    // conversational surface. Preserve that atomic capability;
+                    // picker eligibility is derived from operation modes below.
+                    return !operations.isDisjoint(with: [.chat, .imageUnderstanding])
+                case .imageGeneration:
+                    return !operations.isDisjoint(with: [
+                        .textToImage, .imageToImage, .inpainting,
+                    ])
+                case .videoGeneration:
+                    return !operations.isDisjoint(with: [
+                        .textToVideo, .imageToVideo, .videoToVideo,
+                    ])
+                case .speechSynthesis:
+                    return !operations.isDisjoint(with: [
+                        .presetVoice, .voiceCloning, .voiceDesign,
+                    ])
+                case .speechRecognition:
+                    return !operations.isDisjoint(with: [
+                        .transcription, .translation, .forcedAlignment,
+                    ])
+                }
+            }) else { return nil }
+            let kind: ModelKind
+            if tasks.contains(.imageGeneration) {
+                kind = .image
+            } else if tasks.contains(.videoGeneration) {
+                kind = .video
+            } else if !tasks.isDisjoint(with: [
+                .speechSynthesis, .speechRecognition,
+            ]) {
+                kind = .audio
+            } else {
+                kind = .chat
+            }
+            let runtimeAdapter = capabilities["runtime_adapter"] as? String
+            let audioFamily = runtimeAdapter.flatMap { adapter in
+                adapter.hasPrefix("mlx_audio/")
+                    ? String(adapter.dropFirst("mlx_audio/".count)) : nil
+            }
+            let audioCapability: AudioModelCapability?
+            if operations.contains(.forcedAlignment) {
+                audioCapability = .alignment
+            } else if operations.contains(.transcription) {
+                audioCapability = .transcription
+            } else if operations.contains(.voiceDesign) {
+                audioCapability = .voiceDesign
+            } else if operations.contains(.voiceCloning) {
+                audioCapability = .voiceCloning
+            } else if operations.contains(.presetVoice) {
+                audioCapability = .speech
+            } else {
+                audioCapability = nil
+            }
+            let imageCapability: ImageModelCapability?
+            let supportsImageEditing = operations.contains(.imageToImage)
+                || operations.contains(.inpainting)
+            if operations.contains(.textToImage) && supportsImageEditing {
+                imageCapability = .generationAndEditing
+            } else if supportsImageEditing {
+                imageCapability = .editing
+            } else if operations.contains(.textToImage) {
+                imageCapability = .generation
+            } else {
+                imageCapability = nil
+            }
+            entries.append(ModelEntry(
+                alias: alias,
+                hfRepo: model.repo,
+                sizeOnDisk: model.size,
+                cached: false,
+                kind: kind,
+                audioCapability: audioCapability,
+                audioFamily: audioFamily,
+                imageCapability: imageCapability,
+                taskTypes: tasks,
+                operationModes: operations,
+                runtimeAdapter: runtimeAdapter,
+                sourceSubfolder: model.subfolder,
+                isBuiltinProfile: origin == "builtin",
+                isTextOnly: isTextOnly
+            ))
+        }
+        return entries
+    }
+
+    /// Recompute the RCJ-1 catalog address in Swift before accepting a Python
+    /// sidecar snapshot. This closes partial/corrupt JSON handling without
+    /// requiring the Desktop to duplicate the entire JSON Schema engine.
+    static func atomicCatalogDigest(_ snapshot: [String: Any]) -> String? {
+        guard let schemaVersion = snapshot["schema_version"],
+              let models = snapshot["models"],
+              let aliases = snapshot["aliases"],
+              let policyDigests = snapshot["recommendation_policy_digests"]
+        else { return nil }
+        let projection: [String: Any] = [
+            "schema_version": schemaVersion,
+            "models": models,
+            "aliases": aliases,
+            "recommendation_policy_digests": policyDigests,
+        ]
+        guard let normalized = rcjNormalized(projection),
+              JSONSerialization.isValidJSONObject(normalized),
+              let data = try? JSONSerialization.data(
+                withJSONObject: normalized,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+              )
+        else { return nil }
+        let digest = SHA256.hash(data: data).map {
+            String(format: "%02x", $0)
+        }.joined()
+        return "sha256:\(digest)"
+    }
+
+    private static func rcjNormalized(_ value: Any) -> Any? {
+        if value is NSNull { return NSNull() }
+        if let string = value as? String {
+            return string.precomposedStringWithCanonicalMapping
+        }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue
+            }
+            let double = number.doubleValue
+            guard double.isFinite,
+                  double.rounded(.towardZero) == double,
+                  abs(double) <= 9_007_199_254_740_991
+            else { return nil }
+            return number.int64Value
+        }
+        if let array = value as? [Any] {
+            var normalized: [Any] = []
+            normalized.reserveCapacity(array.count)
+            for child in array {
+                guard let item = rcjNormalized(child) else { return nil }
+                normalized.append(item)
+            }
+            return normalized
+        }
+        if let object = value as? [String: Any] {
+            var normalized: [String: Any] = [:]
+            for (key, child) in object {
+                guard key.unicodeScalars.allSatisfy(\.isASCII),
+                      let item = rcjNormalized(child)
+                else { return nil }
+                let normalizedKey = key.precomposedStringWithCanonicalMapping
+                guard normalized[normalizedKey] == nil else { return nil }
+                normalized[normalizedKey] = item
+            }
+            return normalized
+        }
+        return nil
+    }
+
+    static func parseAtomicModelEntriesJSON(_ output: String) -> [ModelEntry]? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return parseAtomicModelEntriesJSON(root)
+    }
+
+    /// Load the complete product catalog with one sidecar snapshot and one
+    /// cache scan. Settings uses this instead of independently querying every
+    /// tab, so all tabs agree on one catalog digest and model additions do not
+    /// multiply subprocess work by the number of modalities.
+    static func productEntries(
+        binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+    ) async -> [ModelEntry]? {
+        async let modelsJSON = runRapidMlxResult(
+            binary: binary, args: ["models", "--json"]
+        )
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
+            binary: binary,
+            hubCacheOverride: hubCacheOverride
+        )
+        let json = await modelsJSON
+        guard json.succeeded,
+              let atomic = parseAtomicModelEntriesJSON(json.stdout),
+              let projection = parseAvailableJSON(json.stdout)
+        else {
+            return nil
+        }
+        return mergeAtomicAndCached(
+            atomic: atomic,
+            cached: await cachedTask,
+            excluded: projection.excluded,
+            speculative: projection.speculative
+        )
+    }
+
+    /// Preserve the user-owned cache surface while atomic aliases drive
+    /// product placement. Custom aliases remain visible, external repos remain
+    /// non-deletable, and hidden/media aliases cannot re-enter as Chat rows.
+    static func mergeAtomicAndCached(
+        atomic: [ModelEntry],
+        cached: [CachedModelInventoryEntry],
+        excluded: Set<String>,
+        speculative: [String: SpeculativeDecodingPreset] = [:]
+    ) -> [ModelEntry] {
+        var cachedByAlias: [String: (
+            repo: String?, subfolder: String?, size: String?
+        )] = [:]
+        let atomicByAlias = Dictionary(
+            uniqueKeysWithValues: atomic.map { ($0.alias, $0) }
+        )
+        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
+        var unmappedRootByRepo: [String: (size: String?, present: Bool)] = [:]
+        var externalByRepo: [String: (size: String?, present: Bool)] = [:]
+        for (alias, repo, subfolder, size) in cached {
+            if alias == "(external)", let repo {
+                externalByRepo[repo] = (size, true)
+            } else if alias == "(unmapped)", let repo {
+                unmappedRootByRepo[repo] = (size, true)
+            } else if !alias.isEmpty && !isStatusAlias(alias) {
+                cachedByAlias[alias] = (repo, subfolder, size)
+                if let source = atomicByAlias[alias],
+                   let sourceRepo = source.hfRepo,
+                   let key = artifactCacheKey(source),
+                   sanitizedHuggingFaceRepo(repo) == sourceRepo,
+                   subfolder == source.sourceSubfolder,
+                   cachedByArtifact[key] == nil {
+                    cachedByArtifact[key] = (sourceRepo, size)
+                }
+            }
+        }
+
+        let enrichedAtomic = atomic.map { entry -> ModelEntry in
+            var enriched = entry
+            enriched.speculativeDecodingPreset = speculative[entry.alias]
+            return enriched
+        }
+        var consumedExternal: Set<String> = []
+        var seenAliases = Set(enrichedAtomic.map(\.alias))
+        var entries = enrichedAtomic.map { entry -> ModelEntry in
+            // Exact repo + subfolder identity prevents a retargeted alias
+            // from inheriting stale cache state while still recognizing
+            // deliberately nested checkpoints.
+            let cachedHit: (
+                repo: String?, subfolder: String?, size: String?
+            )? = cachedByAlias[entry.alias].flatMap { hit in
+                guard let expectedRepo = entry.hfRepo,
+                      sanitizedHuggingFaceRepo(hit.repo) == expectedRepo,
+                      hit.subfolder == entry.sourceSubfolder
+                else { return nil }
+                return hit
+            }
+            let siblingHit = artifactCacheKey(entry).flatMap { cachedByArtifact[$0] }
+            let unmappedRoot = entry.sourceSubfolder == nil
+                ? entry.hfRepo.flatMap { repo in
+                    unmappedRootByRepo[repo].map { (repo, $0.size) }
+                }
+                : nil
+            let externalRepo = entry.hfRepo.flatMap { repo in
+                entry.sourceSubfolder == nil && externalByRepo[repo] != nil ? repo : nil
+            }
+            if let externalRepo { consumedExternal.insert(externalRepo) }
+            guard cachedHit != nil || siblingHit != nil || unmappedRoot != nil
+                    || externalRepo != nil else {
+                return entry
+            }
+            return ModelEntry(
+                alias: entry.alias,
+                hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? unmappedRoot?.0
+                    ?? entry.hfRepo ?? externalRepo,
+                sizeOnDisk: cachedHit?.size
+                    ?? siblingHit?.size
+                    ?? unmappedRoot?.1
+                    ?? externalRepo.flatMap { externalByRepo[$0]?.size }
+                    ?? entry.sizeOnDisk,
+                cached: true,
+                isExternal: cachedHit == nil && siblingHit == nil
+                    && unmappedRoot == nil && externalRepo != nil,
+                kind: entry.kind,
+                audioCapability: entry.audioCapability,
+                audioFamily: entry.audioFamily,
+                imageCapability: entry.imageCapability,
+                taskTypes: entry.taskTypes,
+                operationModes: entry.operationModes,
+                runtimeAdapter: entry.runtimeAdapter,
+                sourceSubfolder: entry.sourceSubfolder,
+                speculativeDecodingPreset: entry.speculativeDecodingPreset,
+                isBuiltinProfile: entry.isBuiltinProfile,
+                isTextOnly: entry.isTextOnly
+            )
+        }
+
+        for (alias, repo, _, size) in cached
+        where !alias.isEmpty
+            && !isStatusAlias(alias)
+            && !seenAliases.contains(alias)
+            && !excluded.contains(alias) {
+            seenAliases.insert(alias)
+            entries.append(ModelEntry(
+                alias: alias, hfRepo: repo, sizeOnDisk: size, cached: true
+            ))
+        }
+        for (alias, repo, _, size) in cached where alias == "(external)" {
+            guard let repo,
+                  !consumedExternal.contains(repo),
+                  !seenAliases.contains(repo),
+                  !excluded.contains(repo)
+            else { continue }
+            seenAliases.insert(repo)
+            entries.append(ModelEntry(
+                alias: repo,
+                hfRepo: repo,
+                sizeOnDisk: size,
+                cached: true,
+                isExternal: true
+            ))
+        }
+        return entries
+    }
+
+    static func mergeAtomicAndCached(
+        atomic: [ModelEntry],
+        cached: [(String, String?, String?)],
+        excluded: Set<String>,
+        speculative: [String: SpeculativeDecodingPreset] = [:]
+    ) -> [ModelEntry] {
+        mergeAtomicAndCached(
+            atomic: atomic,
+            cached: cached.map { ($0.0, $0.1, nil, $0.2) },
+            excluded: excluded,
+            speculative: speculative
+        )
+    }
+
+    private static func artifactCacheKey(_ entry: ModelEntry) -> String? {
+        artifactCacheKey(repo: entry.hfRepo, subfolder: entry.sourceSubfolder)
+    }
+
+    private static func artifactCacheKey(
+        repo: String?, subfolder: String?
+    ) -> String? {
+        guard let repo = sanitizedHuggingFaceRepo(repo) else { return nil }
+        return repo + "\0" + (subfolder ?? "")
+    }
+
     /// Image aliases with explicit generation/edit capabilities for the Images tab's
     /// model picker. Parsed from the same ``rapid-mlx models`` output the
     /// chat catalog reads, but keeping ONLY the image rows the chat catalog
@@ -698,13 +1380,23 @@ enum ModelCatalog {
         binary: URL,
         hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
     ) async -> [ModelEntry] {
-        async let modelsOut = runRapidMlx(binary: binary, args: ["models"])
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let modelsJSON = runRapidMlxResult(
+            binary: binary, args: ["models", "--json"]
+        )
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
-        let rows = parseImageRows(await modelsOut)
-        let cachedRepos = Set((await cachedTask).compactMap { $0.1 })
+        let cached = await cachedTask
+        let json = await modelsJSON
+        if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
+            return mergeAtomicAndCached(
+                atomic: atomic, cached: cached, excluded: []
+            ).filter { $0.supports(.image) }
+        }
+        let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
+        let rows = parseImageRows(modelsOut)
+        let cachedRepos = Set(cached.compactMap { $0.1 })
         return mergeImageRows(rows, cachedRepos: cachedRepos)
     }
 
@@ -741,21 +1433,31 @@ enum ModelCatalog {
         binary: URL,
         hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
     ) async -> [ModelEntry] {
-        async let modelsOut = runRapidMlx(binary: binary, args: ["models"])
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let modelsJSON = runRapidMlxResult(
+            binary: binary, args: ["models", "--json"]
+        )
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
-        let rows = parseAudioRows(await modelsOut).filter {
-            isDesktopAudioAliasVisible($0.alias)
-        }
+        let cached = await cachedTask
         let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { alias, repo, size -> (String, String?)? in
+            cached.compactMap { _, repo, _, size -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
             uniquingKeysWith: { first, _ in first }
         )
+        let json = await modelsJSON
+        if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
+            return mergeAtomicAndCached(
+                atomic: atomic, cached: cached, excluded: []
+            ).filter { $0.supports(.audio) }
+        }
+        let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
+        let rows = parseAudioRows(modelsOut).filter {
+            isDesktopAudioAliasVisible($0.alias)
+        }
         return rows.map { row in
             ModelEntry(
                 alias: row.alias,
@@ -782,7 +1484,7 @@ enum ModelCatalog {
         hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
     ) async -> [ModelEntry] {
         async let modelsTask = runRapidMlxResult(binary: binary, args: ["models", "--json"])
-        async let cachedTask: [(String, String?, String?)] = listCached(
+        async let cachedTask: [CachedModelInventoryEntry] = listCached(
             binary: binary,
             hubCacheOverride: hubCacheOverride
         )
@@ -792,7 +1494,7 @@ enum ModelCatalog {
             packagedVideoAliases.contains($0.alias)
         }
         let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { _, repo, size -> (String, String?)? in
+            (await cachedTask).compactMap { _, repo, _, size -> (String, String?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1015,21 +1717,29 @@ enum ModelCatalog {
         return excluded
     }
 
-    /// Runs ``rapid-mlx ls`` (cached models). Returns
-    /// ``(alias, hfRepo, sizeOnDisk)`` tuples. ``hubCacheOverride``
+    /// Prefer the structured cached inventory so repo subfolders remain part
+    /// of cache identity. Fall back to the legacy text table for an older
+    /// installed sidecar; those rows can safely prove root artifacts only.
+    /// ``hubCacheOverride``
     /// (issue #503) points the probe at the user's chosen models folder
     /// so the listing reflects what's on the folder the engine reads
     /// from, not the default location.
     private static func listCached(
         binary: URL,
         hubCacheOverride: URL?
-    ) async -> [(String, String?, String?)] {
-        let output = await runRapidMlx(
+    ) async -> [CachedModelInventoryEntry] {
+        let json = await runRapidMlx(
+            binary: binary,
+            args: ["models", "--cached", "--json"],
+            hubCacheOverride: hubCacheOverride
+        )
+        if let structured = parseCachedJSON(json) { return structured }
+        let text = await runRapidMlx(
             binary: binary,
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        return parseCached(output)
+        return parseCached(text).map { ($0.0, $0.1, nil, $0.2) }
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -1177,6 +1887,76 @@ enum ModelCatalog {
             "No models cached yet",
         ]
         return bannerPrefixes.contains { line.hasPrefix($0) }
+    }
+
+    /// Parse the stable `models --cached --json` envelope. A malformed row
+    /// invalidates the envelope and lets the caller downgrade to the text
+    /// parser; it never becomes permissive cache evidence.
+    static func parseCachedJSON(_ output: String) -> [CachedModelInventoryEntry]? {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["cached"] as? [[String: Any]]
+        else { return nil }
+        var entries: [CachedModelInventoryEntry] = []
+        for row in rows {
+            guard let state = row["state"] as? String,
+                  let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
+                  let bytes = row["size_bytes"] as? NSNumber,
+                  CFGetTypeID(bytes) != CFBooleanGetTypeID(),
+                  bytes.doubleValue.isFinite,
+                  bytes.doubleValue == Double(bytes.int64Value),
+                  bytes.int64Value > 0,
+                  let external = row["external"] as? Bool
+            else { return nil }
+            let size = ByteCountFormatter.string(
+                fromByteCount: bytes.int64Value,
+                countStyle: .binary
+            )
+            switch state {
+            case "ok":
+                guard external == false,
+                      let alias = row["alias"] as? String,
+                      isSafeAlias(alias)
+                else { return nil }
+                let subfolder: String?
+                if row["subfolder"] is NSNull || row["subfolder"] == nil {
+                    subfolder = nil
+                } else if let value = row["subfolder"] as? String,
+                          isSafeSubfolder(value) {
+                    subfolder = value
+                } else {
+                    return nil
+                }
+                entries.append((alias, repo, subfolder, size))
+            case "unmapped":
+                guard external == false, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                entries.append(("(unmapped)", repo, nil, size))
+            case "external":
+                guard external == true, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                entries.append(("(external)", repo, nil, size))
+            case "incomplete":
+                guard external == false, row["alias"] is NSNull,
+                      row["subfolder"] is NSNull
+                else { return nil }
+                continue
+            default:
+                return nil
+            }
+        }
+        return entries
+    }
+
+    private static func isSafeSubfolder(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 512,
+              !value.hasPrefix("/"), !value.hasSuffix("/"),
+              !value.contains("\\"), !value.contains("\r"), !value.contains("\n")
+        else { return false }
+        return !value.split(separator: "/", omittingEmptySubsequences: false)
+            .contains("..")
     }
 
     /// Parses ``rapid-mlx ls`` output. Each row has the alias in the

@@ -179,6 +179,9 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             # bundled vision tower; mlx-lm's qwen3_5 serves the text
             # backbone coherently).
             "is_text_only",
+            # Product capability independent from the selected runtime lane.
+            # VLM checkpoints may still use modality="text" for generation.
+            "supports_image_input",
             "tool_call_parser",
             "reasoning_parser",
             "chat_template_id",
@@ -567,6 +570,12 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     # lane (text-diffusion → DiffusionEngine), so combining the two is a
     # contradiction that must fail loud rather than silently pick one.
     is_text_only = _strict_bool("is_text_only", False)
+    supports_image_input = _strict_bool("supports_image_input", False)
+    if is_text_only and supports_image_input:
+        raise ValueError(
+            f"alias {alias!r}: is_text_only and supports_image_input are "
+            "mutually exclusive"
+        )
     # Capability gates that only make sense for the auto-regressive LLM
     # lane. Catching the mismatch here keeps the diffusion / vision /
     # image-gen lanes from silently inheriting a routing decision that
@@ -678,6 +687,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         subfolder=subfolder,
         modality=modality,
         video_modes=video_modes,
+        supports_image_input=supports_image_input,
         is_text_only=is_text_only,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
@@ -1016,8 +1026,17 @@ def list_builtin_aliases() -> dict[str, str]:
 
 
 def user_alias_reserved_names() -> frozenset[str]:
-    """Names user aliases may not shadow, including retired catalog names."""
-    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES)
+    """Names user aliases may not shadow across any product model surface."""
+    try:
+        from .audio.registry import list_audio_aliases
+
+        audio_aliases = frozenset(entry.alias for entry in list_audio_aliases())
+    except Exception:
+        # Audio is an optional product lane. A corrupt/unavailable registry
+        # must not take down legacy text discovery; the combined atomic shadow
+        # is omitted by its caller until that registry is healthy again.
+        audio_aliases = frozenset()
+    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES) | audio_aliases
 
 
 def list_profiles() -> dict[str, AliasProfile]:
