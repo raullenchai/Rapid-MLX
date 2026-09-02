@@ -235,7 +235,9 @@ the service again:
 ```bash
 sudo launchctl bootout system/com.rapidmlx.server 2>/dev/null || true
 sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/python -m pip install \
-  'rapid-mlx==PREVIOUS_VERSION' 'rapid-mlx[vision]==PREVIOUS_VERSION'
+  --force-reinstall -r /Users/serveuser/rapid-mlx-before-upgrade.txt
+sudo cp -p /Library/LaunchDaemons/com.rapidmlx.server.plist.pre-upgrade \
+  /Library/LaunchDaemons/com.rapidmlx.server.plist
 sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/rapid-mlx doctor || true
 sudo launchctl bootstrap system \
   /Library/LaunchDaemons/com.rapidmlx.server.plist
