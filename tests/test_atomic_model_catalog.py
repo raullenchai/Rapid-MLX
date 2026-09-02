@@ -18,6 +18,7 @@ from vllm_mlx.catalog import (
     ContractValidator,
     build_catalog_bundle,
     build_legacy_catalog_snapshot,
+    build_legacy_recommendation_policy,
     canonical_json_bytes,
     load_product_recommendation_policy,
     rcj_digest,
@@ -177,6 +178,7 @@ def test_product_recommendation_policy_is_atomic_ssot_and_validates_tasks() -> N
     snapshot = bundle["snapshot"]
     policy = bundle["recommendation_policies"][0]
     assert policy == load_product_recommendation_policy(snapshot)
+    assert policy == build_legacy_recommendation_policy(snapshot)
     assert all(
         "minimum_memory_mib" in tier and "floor_gb" not in tier
         for tier in policy["tiers"]
