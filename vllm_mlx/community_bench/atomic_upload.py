@@ -164,6 +164,7 @@ def upload_run(
     url: str | None = None,
     approved_install_id: str | None = None,
     approved_payload_digest: str | None = None,
+    approved_target: str | None = None,
 ) -> AtomicUploadAcceptance | None:
     """Upload one validated run, returning its server receipt.
 
@@ -176,6 +177,10 @@ def upload_run(
     candidate = preview["install_id"]
     wire = preview["payload"]
     wire_digest = preview["payload_digest"]
+    if approved_target is not None and approved_target != target:
+        raise SubmitError(
+            "the upload destination changed after preview; review the payload again"
+        )
     if approved_payload_digest is not None and approved_payload_digest != wire_digest:
         raise SubmitError(
             "the archived benchmark changed after preview; review the payload again"

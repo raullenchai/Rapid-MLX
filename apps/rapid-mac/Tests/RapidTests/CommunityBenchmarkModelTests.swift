@@ -174,11 +174,13 @@ struct CommunityBenchmarkModelTests {
             CommunityBenchmarkCommand.benchmarkShareArguments(
                 runID: "00000000-0000-4000-8000-000000000001",
                 installID: "012345abcdef",
-                payloadDigest: "sha256:aaaaaaaa"
+                payloadDigest: "sha256:aaaaaaaa",
+                target: "https://rapidmlx.com/api/benchmarks/atomic"
             ) == [
                 "benchmark", "share", "00000000-0000-4000-8000-000000000001",
                 "--yes", "--install-id", "012345abcdef",
-                "--payload-digest", "sha256:aaaaaaaa", "--json",
+                "--payload-digest", "sha256:aaaaaaaa", "--target",
+                "https://rapidmlx.com/api/benchmarks/atomic", "--json",
             ]
         )
     }

@@ -329,6 +329,7 @@ def test_atomic_preview_is_the_exact_later_payload(
         assume_yes=True,
         approved_install_id=preview["install_id"],
         approved_payload_digest=preview["payload_digest"],
+        approved_target=preview["target"],
     )
 
 
@@ -378,6 +379,37 @@ def test_atomic_upload_aborts_if_approved_install_id_loses_race(
             approved_install_id="a" * 12,
         )
     assert sent == []
+
+
+def test_atomic_upload_aborts_if_destination_changes_after_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCH_BOARD_URL", "https://first.example/api/benchmarks/atomic"
+    )
+    preview = atomic_upload.preview_run(run)
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCH_BOARD_URL", "https://second.example/api/benchmarks/atomic"
+    )
+    sent = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="destination changed"):
+        atomic_upload.upload_run(
+            run,
+            assume_yes=True,
+            approved_install_id=preview["install_id"],
+            approved_payload_digest=preview["payload_digest"],
+            approved_target=preview["target"],
+        )
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
 
 
 def test_share_cli_rejects_archive_changed_after_preview(

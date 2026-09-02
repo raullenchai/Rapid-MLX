@@ -368,11 +368,11 @@ enum CommunityBenchmarkCommand {
     }
 
     static func benchmarkShareArguments(
-        runID: String, installID: String, payloadDigest: String
+        runID: String, installID: String, payloadDigest: String, target: String
     ) -> [String] {
         [
             "benchmark", "share", runID, "--yes", "--install-id", installID,
-            "--payload-digest", payloadDigest, "--json",
+            "--payload-digest", payloadDigest, "--target", target, "--json",
         ]
     }
 
@@ -820,7 +820,8 @@ struct CommunityBenchmarkView: View {
                     arguments: CommunityBenchmarkCommand.benchmarkShareArguments(
                         runID: preview.runID,
                         installID: preview.installID,
-                        payloadDigest: preview.payloadDigest
+                        payloadDigest: preview.payloadDigest,
+                        target: preview.target
                     )
                 )
                 let response = try JSONDecoder().decode(

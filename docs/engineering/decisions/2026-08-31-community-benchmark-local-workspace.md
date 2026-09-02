@@ -33,9 +33,10 @@ records rather than parse legacy submission JSON.
   the complete wire payload and destination, including the candidate random
   resettable install ID used for abuse control, and requires explicit consent.
   Previewing writes nothing. The subsequent upload is pinned to that candidate
-  and the preview payload digest. It aborts if another process established a
-  different install ID or the archived run changed while the consent sheet was
-  open; it never silently sends data different from the approved JSON.
+  and the preview payload digest and destination. It aborts if another process
+  established a different install ID, the archived run changed, or endpoint
+  configuration changed while the consent sheet was open; it never silently
+  sends data or sends to a destination different from what was approved.
   The JSON has no IP-address field. The HTTPS service necessarily observes the
   source IP and uses it for short-lived request limiting, but the application
   does not retain it in the benchmark record.

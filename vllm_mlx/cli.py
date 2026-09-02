@@ -11802,6 +11802,10 @@ Examples:
         "--payload-digest",
         help=argparse.SUPPRESS,
     )
+    community_share.add_argument(
+        "--target",
+        help=argparse.SUPPRESS,
+    )
     community_share.add_argument("--json", action="store_true")
 
     # Models command. ``ls`` is registered as a top-level alias that
