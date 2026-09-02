@@ -83,11 +83,37 @@ final class SparkleUpdateController {
     /// Foreground check used by menu and Settings commands. The standard
     /// Sparkle UI reports current/update/error states and, when an update was
     /// already downloaded in the background, offers the install action.
-    func checkForUpdates() {
-        guard isEnabled else { return }
+    ///
+    /// The observable mirror is presentation state and may trail Sparkle's
+    /// KVO value by one main-actor hop. Re-read the updater synchronously at
+    /// dispatch time so a stale enabled button cannot hide the discovery card
+    /// after Sparkle has already become unable to accept the action.
+    @discardableResult
+    func checkForUpdates() -> Bool {
+        guard isEnabled else { return false }
         if !isStarted { start() }
-        guard canCheckForUpdates else { return }
-        standardController?.checkForUpdates(nil)
+        guard let updater = standardController?.updater else { return false }
+        return Self.dispatchForegroundCheck(
+            authoritativeCanCheck: { updater.canCheckForUpdates },
+            synchronizeMirror: { canCheckForUpdates = $0 },
+            perform: { updater.checkForUpdates() }
+        )
+    }
+
+    /// Keep the authoritative read and foreground dispatch in one synchronous
+    /// main-actor turn. Sparkle requires both operations on the main thread, so
+    /// its state cannot change through a queued KVO delivery between them.
+    @discardableResult
+    static func dispatchForegroundCheck(
+        authoritativeCanCheck: () -> Bool,
+        synchronizeMirror: (Bool) -> Void,
+        perform: () -> Void
+    ) -> Bool {
+        let canCheck = authoritativeCanCheck()
+        synchronizeMirror(canCheck)
+        guard canCheck else { return false }
+        perform()
+        return true
     }
 
     func setAutomaticallyDownloadsUpdates(_ enabled: Bool) {
