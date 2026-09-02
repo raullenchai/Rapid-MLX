@@ -968,6 +968,22 @@ def _pid_gone(pid: int) -> bool:
     return False
 
 
+def _subprocess_env_for_this_checkout() -> dict[str, str]:
+    """Environment forcing child scripts to import this checkout's package.
+
+    For script execution ``sys.path[0]`` is the script's directory, not the
+    working directory, so an editable install from another checkout on the
+    interpreter's path would otherwise win the ``vllm_mlx`` import.
+    """
+
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(REPO_ROOT) if not existing else f"{REPO_ROOT}{os.pathsep}{existing}"
+    )
+    return env
+
+
 def _reap_leftovers(pids: list[int | None]) -> None:
     for pid in pids:
         if pid:
@@ -1036,6 +1052,7 @@ def test_external_group_sigterm_reaps_detached_download_worker(
         [sys.executable, str(script), str(destination), str(connected_marker)],
         start_new_session=True,
         cwd=REPO_ROOT,
+        env=_subprocess_env_for_this_checkout(),
     )
     worker_pid: int | None = None
     try:
@@ -1123,6 +1140,7 @@ def test_external_group_sigterm_reaps_worker_descendants_and_artifact(
         [sys.executable, str(script), str(descendant_pid_path), str(artifact)],
         start_new_session=True,
         cwd=REPO_ROOT,
+        env=_subprocess_env_for_this_checkout(),
     )
     worker_pid: int | None = None
     descendant_pid: int | None = None
