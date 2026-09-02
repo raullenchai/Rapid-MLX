@@ -242,8 +242,9 @@ def test_sharded_loader_applies_pinned_patch_reshape(
         )
     )
     (index.parent / "one.safetensors").write_bytes(b"pinned-shard")
+    patch_weight = np.arange(24, dtype=np.float16).reshape(2, 3, 1, 2, 2)
     source = {
-        "patch_embedding.weight": np.zeros((2, 3, 1, 2, 2), dtype=np.float16),
+        "patch_embedding.weight": patch_weight,
         "patch_embedding.bias": np.zeros((2,), dtype=np.float16),
     }
     mlx = ModuleType("mlx")
@@ -287,6 +288,13 @@ def test_sharded_loader_applies_pinned_patch_reshape(
         "patch_embedding_proj.bias",
     ]
     assert weights[0][1].shape == (2, 12)
+    # WanModel._patchify flattens each input patch in [C, pt, ph, pw]
+    # order, exactly matching PyTorch Conv3d's [O, I, D, H, W] kernel
+    # layout. Keep position-distinct values here so a channels-last
+    # transpose cannot accidentally pass as a shape-only conversion.
+    np.testing.assert_array_equal(
+        weights[0][1], patch_weight.reshape(patch_weight.shape[0], -1)
+    )
     assert all(value.dtype == np.float32 for _, value in weights)
 
 
