@@ -620,8 +620,10 @@ struct CommunityBenchmarkView: View {
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { shareCandidate = nil }
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Cancel")
                     Button("Share") { share(preview) }
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Confirm")
                 }
             }
             .padding(24)
