@@ -76,7 +76,9 @@ struct AtomicModelCatalogTests {
               var atomic = root["atomic"] as? [String: Any],
               var snapshot = atomic["snapshot"] as? [String: Any]
         else { fatalError("invalid atomic test fixture") }
-        snapshot["recommendation_policy_digests"] = []
+        if snapshot["recommendation_policy_digests"] == nil {
+            snapshot["recommendation_policy_digests"] = []
+        }
         guard let digest = ModelCatalog.atomicCatalogDigest(snapshot) else {
             fatalError("test fixture cannot be canonicalized")
         }
@@ -131,6 +133,36 @@ struct AtomicModelCatalogTests {
         #expect(entries.first { $0.alias == "tts" }?.kind == .audio)
         #expect(entries.first { $0.alias == "stt" }?.kind == .audio)
         #expect(entries.first { $0.alias == "hidden" } == nil)
+        #expect(entries.allSatisfy { $0.recommendationPolicyDigests.isEmpty })
+    }
+
+    @Test("atomic catalog preserves authenticated recommendation policy addresses")
+    func preservesRecommendationPolicyDigests() throws {
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        let advertised = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["recommendation_policy_digests"] = [digest]
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(advertised))
+        #expect(entries.allSatisfy { $0.recommendationPolicyDigests == [digest] })
+
+        for invalid in [
+            ["not-a-content-address"],
+            [digest, digest],
+            ["sha256:" + String(repeating: "A", count: 64)],
+        ] {
+            let payload = Self.mutated { root in
+                var atomic = root["atomic"] as! [String: Any]
+                var snapshot = atomic["snapshot"] as! [String: Any]
+                snapshot["recommendation_policy_digests"] = invalid
+                atomic["snapshot"] = snapshot
+                root["atomic"] = atomic
+            }
+            #expect(ModelCatalog.parseAtomicModelEntriesJSON(payload) == nil)
+        }
     }
 
     @Test("multi-task aliases project into every supported product surface")

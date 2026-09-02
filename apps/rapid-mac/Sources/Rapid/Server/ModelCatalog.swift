@@ -269,6 +269,12 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// subfolder. Repo-only cache joins are unsafe for multi-checkpoint repos.
     var sourceSubfolder: String? = nil
 
+    /// Content-addressed recommendation policies this sidecar catalog was
+    /// built and validated with. Empty for legacy sidecars and custom rows;
+    /// callers must then fail closed instead of applying bundled policy
+    /// semantics to an unadvertised catalog snapshot.
+    var recommendationPolicyDigests: Set<String> = []
+
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
 
@@ -905,8 +911,13 @@ enum ModelCatalog {
               shadow["equivalent"] as? Bool == true,
               shadow["catalog_digest"] as? String == declaredDigest,
               let modelRows = snapshot["models"] as? [[String: Any]],
-              let aliasRows = snapshot["aliases"] as? [[String: Any]]
+              let aliasRows = snapshot["aliases"] as? [[String: Any]],
+              let rawPolicyDigests = snapshot["recommendation_policy_digests"]
+                as? [String],
+              Set(rawPolicyDigests).count == rawPolicyDigests.count,
+              rawPolicyDigests.allSatisfy(isSHA256Address)
         else { return nil }
+        let policyDigests = Set(rawPolicyDigests)
 
         var modelsByID: [String: (
             repo: String,
@@ -1109,11 +1120,19 @@ enum ModelCatalog {
                 operationModes: operations,
                 runtimeAdapter: runtimeAdapter,
                 sourceSubfolder: model.subfolder,
+                recommendationPolicyDigests: policyDigests,
                 isBuiltinProfile: origin == "builtin",
                 isTextOnly: isTextOnly
             ))
         }
         return entries
+    }
+
+    private static func isSHA256Address(_ value: String) -> Bool {
+        guard value.count == 71, value.hasPrefix("sha256:") else { return false }
+        return value.dropFirst(7).allSatisfy { character in
+            character.isNumber || ("a"..."f").contains(character)
+        }
     }
 
     /// Recompute the RCJ-1 catalog address in Swift before accepting a Python

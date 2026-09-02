@@ -27,6 +27,16 @@ import Testing
 @Suite("RAMBucketedDefault — RAM tier → recommended pick")
 struct RAMBucketedDefaultTests {
 
+    private func catalogEntry(
+        _ alias: String,
+        policyDigests: Set<String> = [RAMBucketedDefault.policyDigest]
+    ) -> ModelEntry {
+        ModelEntry(
+            alias: alias, hfRepo: nil, sizeOnDisk: nil, cached: false,
+            recommendationPolicyDigests: policyDigests
+        )
+    }
+
     private func policyData() throws -> Data {
         var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         for _ in 0..<8 {
@@ -163,10 +173,14 @@ struct RAMBucketedDefaultTests {
             capabilityPct: 60, tokensPerSec: 15, launchFlags: []
         )
         let resolved = RAMBucketedDefault.catalogPicks(
-            from: [missing, known], catalogAliases: ["known-model"]
+            from: [missing, known], catalog: [catalogEntry("known-model")]
         )
 
         #expect(resolved == [.init(pick: known, isPrimary: false)])
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known],
+            catalog: [catalogEntry("known-model", policyDigests: ["sha256:" + String(repeating: "0", count: 64)])]
+        ).isEmpty)
     }
 
     // MARK: - Launch flags travel with the recommendation, gated by RAM
@@ -186,25 +200,41 @@ struct RAMBucketedDefaultTests {
 
     @Test("isRecommendedPick is true only for this Mac's primary or alt, and is floor-gated")
     func isRecommendedPickContract() {
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 18))
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18, catalogEntry: catalogEntry("qwen3.5-9b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 18, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18, catalogEntry: catalogEntry("bonsai-27b-2bit")))
         #expect(!RAMBucketedDefault.isRecommendedPick(alias: "gemma-4-12b-4bit", physicalRAMGB: 18)) // dropped from picks
         // An 8 GB Mac now SITS IN a tier, so its own pick is exempt from the
         // .tooBig gate — that exemption is the whole point of the tier, since
         // before it every pick offered to an 8 GB Mac was rejected at launch.
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8, catalogEntry: catalogEntry("lfm2.5-2.6b-4bit")))
         // The bigger models are still NOT exempt there: they are not this
         // tier's picks, so the OOM hole stays closed.
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8))
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 8))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8, catalogEntry: catalogEntry("bonsai-27b-2bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 8, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
         // Below the lowest floor there is still no exemption for anything.
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4, catalogEntry: catalogEntry("lfm2.5-2.6b-4bit")))
         // The fast alt is a recommended pick on its own tiers (64/96 GB),
         // so it also skips the .tooBig gate there.
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64, catalogEntry: catalogEntry("qwen3.6-35b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96, catalogEntry: catalogEntry("qwen3.6-35b-4bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(
+            alias: "qwen3.8-27b-4bit",
+            physicalRAMGB: 32,
+            catalogEntry: catalogEntry(
+                "qwen3.8-27b-4bit",
+                policyDigests: ["sha256:" + String(repeating: "0", count: 64)]
+            )
+        ))
+        #expect(!RAMBucketedDefault.isRecommendedPick(
+            alias: "qwen3.8-27b-4bit",
+            physicalRAMGB: 32,
+            catalogEntry: ModelEntry(
+                alias: "qwen3.8-27b-4bit", hfRepo: nil,
+                sizeOnDisk: nil, cached: false
+            )
+        ))
     }
 
     @Test("Laptop recommendations agree with the conservative launch sizing guard")

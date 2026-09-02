@@ -34,7 +34,8 @@ struct Step2ModelSelectionBehaviorTests {
             hfRepo: "mlx-community/\(alias)",
             sizeOnDisk: cached ? (size ?? "2.9 GiB") : nil,
             cached: cached,
-            kind: kind
+            kind: kind,
+            recommendationPolicyDigests: [RAMBucketedDefault.policyDigest]
         )
     }
 
@@ -379,7 +380,20 @@ struct Step2ModelSelectionBehaviorTests {
         // #2505: the 32 GB curated pick is tooBig by estimate but available.
         #expect(ModelSizing.classify(
             ModelSizing.estimate(alias: "qwen3.8-27b-4bit"), on: hw) == .tooBig)
-        #expect(OnboardingModelSelection.isAvailable(alias: "qwen3.8-27b-4bit", hardware: hw))
+        #expect(OnboardingModelSelection.isAvailable(
+            alias: "qwen3.8-27b-4bit",
+            hardware: hw,
+            catalogEntry: Self.entry("qwen3.8-27b-4bit")
+        ))
+        var staleCatalogEntry = Self.entry("qwen3.8-27b-4bit")
+        staleCatalogEntry.recommendationPolicyDigests = [
+            "sha256:" + String(repeating: "0", count: 64)
+        ]
+        #expect(!OnboardingModelSelection.isAvailable(
+            alias: "qwen3.8-27b-4bit",
+            hardware: hw,
+            catalogEntry: staleCatalogEntry
+        ))
         // A too-big NON-pick stays unavailable (no carve-out).
         #expect(!OnboardingModelSelection.isAvailable(alias: "llama3.1-70b-4bit", hardware: hw))
         // A fitting non-pick is available as usual.

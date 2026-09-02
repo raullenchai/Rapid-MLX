@@ -281,7 +281,7 @@ struct ModelPickerBar: View {
         // and mislabel it "Recommended" instead of "Faster".
         let resolved = RAMBucketedDefault.catalogPicks(
             from: hardware.recommendedPicks,
-            catalogAliases: Set(catalog.map(\.alias))
+            catalog: catalog
         )
         return resolved.compactMap { item in
             guard let entry = catalog.first(where: { $0.alias == item.pick.alias }) else {
@@ -1608,13 +1608,16 @@ struct ModelPickerBar: View {
         // footprint over ModelSizing's estimate (which over-states
         // low-bit / MoE models), so it skips the .tooBig gate — the
         // table already vetted it fits this Mac's RAM tier.
+        let catalogEntry = catalog.first(where: { $0.alias == trimmed })
         let isRecommended = RAMBucketedDefault.isRecommendedPick(
-            alias: trimmed, physicalRAMGB: hardware.physicalRAMGB)
+            alias: trimmed,
+            physicalRAMGB: hardware.physicalRAMGB,
+            catalogEntry: catalogEntry
+        )
         if fit == .tooBig && !isRecommended {
             pendingTooBigStart = trimmed
             return
         }
-        let catalogEntry = catalog.first(where: { $0.alias == trimmed })
         let hfPath = catalogEntry?.hfRepo
         let catalogEntryHint = catalogEntry.map {
             ServerManager.CatalogEntryHint(

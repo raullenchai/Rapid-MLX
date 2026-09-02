@@ -560,7 +560,7 @@ struct SettingsModelManagementPanel: View {
     private var recommendedPicks: [(pick: RAMBucketedDefault.Pick, isPrimary: Bool)] {
         RAMBucketedDefault.catalogPicks(
             from: hardware.recommendedPicks,
-            catalogAliases: Set(catalog.map(\.alias))
+            catalog: catalog
         ).map { resolved in
             (resolved.pick, resolved.isPrimary)
         }
@@ -573,7 +573,7 @@ struct SettingsModelManagementPanel: View {
         var map: [String: String] = [:]
         for resolved in RAMBucketedDefault.catalogPicks(
             from: hardware.recommendedPicks,
-            catalogAliases: Set(catalog.map(\.alias))
+            catalog: catalog
         ) where map[resolved.pick.alias] == nil {
             map[resolved.pick.alias] = resolved.isPrimary ? "RECOMMENDED" : "FASTER"
         }

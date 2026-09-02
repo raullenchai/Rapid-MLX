@@ -3344,7 +3344,7 @@ struct QuickstartView: View {
             }
             let resolved = RAMBucketedDefault.catalogPicks(
                 from: RAMBucketedDefault.picks(forPhysicalRAMGB: ram),
-                catalogAliases: Set(catalog.map(\.alias))
+                catalog: catalog
             )
             recommended = Self.recommendedChoices(
                 from: resolved.map(\.pick),

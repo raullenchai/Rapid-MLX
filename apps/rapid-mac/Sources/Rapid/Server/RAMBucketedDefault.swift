@@ -113,11 +113,18 @@ enum RAMBucketedDefault {
         let isPrimary: Bool
     }
 
+    private struct LoadedPolicy {
+        let tiers: [Tier]
+        let digest: String
+    }
+
     /// Decoded from the repository-wide SSOT used by both Rapid Desktop and
     /// ``rapid-mlx recipe``. A missing or malformed table is a packaging error:
     /// silently inventing a fallback would recreate the cross-surface drift this
     /// catalog exists to prevent.
-    static let tiers: [Tier] = loadTiers()
+    private static let loadedPolicy = loadPolicy()
+    static let tiers: [Tier] = loadedPolicy.tiers
+    static let policyDigest: String = loadedPolicy.digest
 
     /// One authoritative working-set footprint per catalogued alias.
     ///
@@ -352,13 +359,16 @@ enum RAMBucketedDefault {
         }
     }
 
-    private static func loadTiers() -> [Tier] {
+    private static func loadPolicy() -> LoadedPolicy {
         guard let url = recommendationResourceURL(),
               let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let digest = object["policy_digest"] as? String,
               let tiers = parseRecommendationPolicy(data) else {
             fatalError("model_recommendations.json is missing or invalid")
         }
-        return tiers
+        return LoadedPolicy(tiers: tiers, digest: digest)
     }
 
     private static func recommendationResourceURL() -> URL? {
@@ -430,9 +440,14 @@ enum RAMBucketedDefault {
     /// alias that it cannot download or launch.
     static func catalogPicks(
         from picks: [Pick],
-        catalogAliases: Set<String>
+        catalog: [ModelEntry]
     ) -> [CatalogPick] {
-        picks.enumerated().compactMap { index, pick in
+        let catalogAliases = Set(catalog.compactMap { entry in
+            entry.recommendationPolicyDigests.contains(policyDigest)
+                ? entry.alias
+                : nil
+        })
+        return picks.enumerated().compactMap { index, pick in
             guard catalogAliases.contains(pick.alias) else { return nil }
             return CatalogPick(pick: pick, isPrimary: index == 0)
         }
@@ -480,7 +495,14 @@ enum RAMBucketedDefault {
     /// its picks stay subject to the ``.tooBig`` gate — bypassing it there
     /// would re-open the OOM hole (bonsai's 7.6 GB exceeds an 8 GB Mac's
     /// usable pool).
-    static func isRecommendedPick(alias: String, physicalRAMGB: Double) -> Bool {
+    static func isRecommendedPick(
+        alias: String,
+        physicalRAMGB: Double,
+        catalogEntry: ModelEntry? = nil
+    ) -> Bool {
+        guard catalogEntry?.alias == alias,
+              catalogEntry?.recommendationPolicyDigests.contains(policyDigest) == true
+        else { return false }
         let t = tier(forPhysicalRAMGB: physicalRAMGB)
         return physicalRAMGB >= t.floorGB && t.picks.contains { $0.alias == alias }
     }
@@ -681,7 +703,10 @@ enum CacheAwareDefault {
         // invariant local and obvious.)
         let bucketedFits = bucketedEntry.map {
             RAMBucketedDefault.isRecommendedPick(
-                alias: bucketedDefault, physicalRAMGB: hardware.physicalRAMGB)
+                alias: bucketedDefault,
+                physicalRAMGB: hardware.physicalRAMGB,
+                catalogEntry: $0
+            )
                 || isSafe($0, on: hardware)
         } ?? false
 
