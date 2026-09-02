@@ -190,6 +190,8 @@ struct SidecarBuildScriptTests {
                 "The private LTX source directory must be cleaned on every exit path.")
         #expect(!script.contains(#"LTX25_TAR="/tmp/rapid-ltx25-"#),
                 "A shared predictable archive path permits local replacement races.")
+        #expect(script.contains("import importlib.metadata\nimport importlib.util\nimport inspect"),
+                "The video smoke's version asserts rely on an explicit importlib.metadata import, not a side effect.")
         #expect(script.contains(#"importlib.metadata.version("ltx-core-mlx") == "0.14.15""#))
         #expect(script.contains(#"importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15""#))
         #expect(script.contains(#"printf '%s\n' "$LTX25_RUNTIME_COMMIT""#),

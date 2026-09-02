@@ -1232,7 +1232,8 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
         PYTHONNOUSERSITE=1 \
         FFMPEG_BINARY="$STAGE/bin/ffmpeg" \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import importlib.util
+        'import importlib.metadata
+import importlib.util
 import inspect
 import tempfile
 from pathlib import Path
