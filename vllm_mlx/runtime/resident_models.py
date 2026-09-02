@@ -160,8 +160,12 @@ def resolve_resident_performance(
 
     lookup_name = model_path or model_name
     hf_config, alias_metadata = _gather_kv_cache_dtype_inputs(lookup_name)
+    # A control-plane dtype is operator-explicit: an unsupported family
+    # raises KVCacheQuantizationUnsupportedError before any weights load
+    # (mapped to 422 by the residency route, #78).
     decision = resolve_kv_cache_dtype(
         performance.kv_cache_dtype,
+        explicit=True,
         model_name=model_name,
         hf_path=model_path or (alias_metadata or {}).get("hf_path"),
         hf_config=hf_config,

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, StrictBool, model_validator
 
 from ..config import get_config
+from ..kv_cache_dtype import KVCacheQuantizationUnsupportedError
 from ..middleware.auth import verify_api_key
 from ..middleware.exception_handlers import (
     register_request_model,
@@ -186,6 +187,10 @@ async def load_resident_model(request: ModelLoadRequest):
         )
     except HTTPException:
         raise
+    except KVCacheQuantizationUnsupportedError as exc:
+        # Explicit quantized-KV request the model can't serve (#78):
+        # reject before load with the actionable reason.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ResidentModelCapacityError as exc:
         projection = exc.replacement_projection
         if projection is None:
