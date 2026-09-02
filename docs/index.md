@@ -32,6 +32,7 @@ GPU acceleration to local AI workloads by integrating:
 
 ### User Guides
 - [OpenAI-Compatible Server](guides/server.md)
+- [Headless macOS service](guides/headless-macos-service.md)
 - [Python API](guides/python-api.md)
 - [Multimodal (Images & Video)](guides/multimodal.md)
 - [Audio (STT/TTS)](guides/audio.md)

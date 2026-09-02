@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rapidmlx.server</string>
+
+    <!-- Replace serveuser in every path and in UserName. launchd does not
+         expand $HOME or ~ in plist values. -->
+    <key>UserName</key>
+    <string>serveuser</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/serveuser/.local/bin/rapid-mlx</string>
+        <string>serve</string>
+        <string>qwen3.5-4b-4bit</string>
+        <string>--served-model-name</string>
+        <string>default</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8000</string>
+        <string>--max-num-seqs</string>
+        <string>4</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/serveuser</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- HOME is mandatory in the system launchd domain. Without it,
+             Hugging Face cannot resolve the service account's model cache. -->
+        <key>HOME</key>
+        <string>/Users/serveuser</string>
+        <key>PATH</key>
+        <string>/Users/serveuser/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Unconditional KeepAlive is the launchd equivalent of a continuously
+         enabled appliance service. Use bootout before a planned upgrade. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>Umask</key>
+    <!-- plist integers are decimal; 23 is octal 027. -->
+    <integer>23</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/serveuser/Library/Logs/Rapid-MLX/server.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/serveuser/Library/Logs/Rapid-MLX/server.stderr.log</string>
+</dict>
+</plist>
