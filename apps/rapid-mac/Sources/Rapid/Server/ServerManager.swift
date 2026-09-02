@@ -5223,8 +5223,30 @@ final class ProcessGroupChild: @unchecked Sendable {
         processGroupID: pid_t,
         onExit: @escaping @Sendable () -> Void
     ) {
+        monitorProcessGroupUntilExit(
+            processGroupID: processGroupID,
+            probe: { kill(-$0, 0) == 0 ? 0 : errno },
+            onExit: onExit
+        )
+    }
+
+    /// `probe` returns 0 when `kill(-pgid, 0)` succeeds and the captured
+    /// errno otherwise. Only an explicit ESRCH — the kernel confirming the
+    /// group is gone — fires `onExit` and thereby releases the benchmark
+    /// quarantine reservation. EINTR re-probes immediately (same idiom as
+    /// the `waitpid` retry in `reapExitedProcess`); 0 and EPERM mean the
+    /// group is alive; any unexpected errno is conservatively treated as
+    /// alive so the reservation is never released early.
+    static func monitorProcessGroupUntilExit(
+        processGroupID: pid_t,
+        probe: @escaping @Sendable (pid_t) -> Int32,
+        onExit: @escaping @Sendable () -> Void
+    ) {
         Task.detached(priority: .utility) {
-            while kill(-processGroupID, 0) == 0 || errno == EPERM {
+            while true {
+                let result = probe(processGroupID)
+                if result == ESRCH { break }
+                if result == EINTR { continue }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             onExit()

@@ -274,8 +274,69 @@ struct CommunityBenchmarkModelTests {
         #expect(signals == [SIGTERM, SIGKILL])
     }
 
+    @Test(
+        "Group monitor retries EINTR and fires only on explicit ESRCH",
+        .timeLimit(.minutes(1))
+    )
+    func monitorRetriesEINTRBeforeExit() async {
+        let script = ProbeScript([EINTR, EINTR, ESRCH])
+        await withCheckedContinuation { (exit: CheckedContinuation<Void, Never>) in
+            ProcessGroupChild.monitorProcessGroupUntilExit(
+                processGroupID: 12345,
+                probe: { _ in script.next() },
+                onExit: { exit.resume() }
+            )
+        }
+        // Exactly three probes happened before onExit: both EINTRs were
+        // re-probed instead of being treated as process-group exit.
+        #expect(script.callCount == 3)
+    }
+
+    @Test(
+        "Alive and unexpected probe errors keep the quarantine reservation",
+        .timeLimit(.minutes(1))
+    )
+    func monitorTreatsUnexpectedProbeErrorsAsAlive() async {
+        let script = ProbeScript([0, EPERM, EINVAL, ESRCH])
+        await withCheckedContinuation { (exit: CheckedContinuation<Void, Never>) in
+            ProcessGroupChild.monitorProcessGroupUntilExit(
+                processGroupID: 12345,
+                probe: { _ in script.next() },
+                onExit: { exit.resume() }
+            )
+        }
+        // onExit fired only after the ESRCH probe; success, EPERM, and the
+        // unexpected EINVAL all kept the group treated as alive.
+        #expect(script.callCount == 4)
+    }
+
     private func processExists(_ pid: pid_t) -> Bool {
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+}
+
+/// Deterministic stand-in for the `kill(-pgid, 0)` liveness probe: replays
+/// a scripted result sequence, then reports ESRCH forever.
+private final class ProbeScript: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Int32]
+    private var calls = 0
+
+    init(_ results: [Int32]) {
+        self.results = results
+    }
+
+    func next() -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        return results.isEmpty ? ESRCH : results.removeFirst()
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
