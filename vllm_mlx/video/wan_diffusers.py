@@ -360,6 +360,64 @@ def _read_index(
     return grouped
 
 
+def _safetensors_tensor_names(path: Path) -> frozenset[str]:
+    """Tensor names from a safetensors container, parsing metadata only.
+
+    ``safe_open`` validates the header without materializing tensor payloads,
+    so the probe stays bounded even for multi-GB shards. A malformed header,
+    an unreadable file, or a non-safetensors byte stream fails closed.
+    """
+    from safetensors import SafetensorError, safe_open
+
+    try:
+        with safe_open(str(path), framework="numpy") as container:
+            return frozenset(container.keys())
+    except (OSError, SafetensorError) as exc:
+        raise WanBackendError(
+            f"the Wan 2.1 checkpoint file {path.name!r} is not a readable "
+            "safetensors container"
+        ) from exc
+
+
+def validate_wan21_checkpoint_artifacts(root: Path) -> bool:
+    """Metadata-only proof that the pinned checkpoint artifacts are loadable.
+
+    The layout probe (:func:`is_diffusers_wan21_layout`) checks component
+    manifests, index cardinality and file presence, but accepts arbitrary
+    source keys and raw non-safetensors shard bytes; the download gate would
+    then skip repair and generation would fail on :func:`_read_index` or
+    ``mx.load``. This validator closes that gap while staying bounded: every
+    index source key must map through the production mappers (duplicate
+    targets rejected inside :func:`_read_index`), every indexed tensor must
+    live in the shard its index points at, every referenced shard and the VAE
+    file must parse as safetensors containers, and the VAE header must carry
+    exactly the pinned uniquely-mapped decoder tensor set. No model is
+    instantiated and no tensor payload is ever read.
+    """
+    try:
+        for relative, expected, mapper in (
+            (_TRANSFORMER_INDEX, _EXPECTED_TRANSFORMER_KEYS, _transformer_key),
+            (_T5_INDEX, _EXPECTED_T5_KEYS, _t5_key),
+        ):
+            directory = (root / relative).parent
+            grouped = _read_index(root, relative, expected, mapper)
+            for filename, names in grouped.items():
+                present = _safetensors_tensor_names(directory / filename)
+                if any(source not in present for source, _ in names):
+                    return False
+        decoder_targets: set[str] = set()
+        for source in _safetensors_tensor_names(root / _VAE_FILE):
+            target = _vae_decoder_key(source)
+            if target is None:
+                continue
+            if target in decoder_targets:
+                return False
+            decoder_targets.add(target)
+        return len(decoder_targets) == _EXPECTED_VAE_DECODER_KEYS
+    except WanBackendError:
+        return False
+
+
 def _validate_target_parameters(
     model, mapped_names: set[str], *, ignored: frozenset[str] = frozenset()
 ) -> None:

@@ -1226,13 +1226,24 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             # references and tokenizer artifacts — enforce the same contract
             # here so a corrupt-but-fully-present cache goes back through
             # repair/download instead of passing the gate and failing forever
-            # at runtime. This supplements the stricter blob-containment
-            # checks above; it does not replace them.
+            # at runtime. The layout probe alone still accepts arbitrary
+            # source keys and raw non-safetensors shard bytes, so the
+            # metadata-only artifact validator additionally proves every
+            # index key maps through the production tensor mappers and every
+            # shard is a safetensors container holding its indexed tensors,
+            # without reading tensor payloads. This supplements the stricter
+            # blob-containment checks above; it does not replace them.
             from pathlib import Path
 
-            from vllm_mlx.video.wan_diffusers import is_diffusers_wan21_layout
+            from vllm_mlx.video.wan_diffusers import (
+                is_diffusers_wan21_layout,
+                validate_wan21_checkpoint_artifacts,
+            )
 
-            return is_diffusers_wan21_layout(Path(snap_dir))
+            snap_root = Path(snap_dir)
+            if not is_diffusers_wan21_layout(snap_root):
+                return False
+            return validate_wan21_checkpoint_artifacts(snap_root)
         transformer_ok = all(_on_repo(n) for n in transformer_names)
         return (
             transformer_ok
