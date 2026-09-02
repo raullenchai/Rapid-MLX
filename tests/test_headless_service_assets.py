@@ -1,0 +1,58 @@
+"""Static contracts for the documented headless launchd deployment."""
+
+from __future__ import annotations
+
+import plistlib
+import subprocess
+from pathlib import Path
+
+
+ROOT = Path(__file__).parents[1]
+PLIST = ROOT / "examples/launchd/com.rapidmlx.server.plist"
+SMOKE = ROOT / "scripts/headless_service_smoke.sh"
+GUIDE = ROOT / "docs/guides/headless-macos-service.md"
+
+
+def test_launchdaemon_template_is_valid_and_safe_by_default() -> None:
+    with PLIST.open("rb") as handle:
+        config = plistlib.load(handle)
+
+    assert config["Label"] == "com.rapidmlx.server"
+    assert config["UserName"] == "serveuser"
+    assert config["EnvironmentVariables"]["HOME"] == "/Users/serveuser"
+    assert config["ProgramArguments"][0].startswith("/Users/serveuser/")
+    host_index = config["ProgramArguments"].index("--host")
+    assert config["ProgramArguments"][host_index + 1] == "127.0.0.1"
+    assert config["KeepAlive"] is True
+    assert config["ThrottleInterval"] >= 10
+    assert "RAPID_MLX_API_KEY" not in config["EnvironmentVariables"]
+    assert config["StandardOutPath"] != config["StandardErrorPath"]
+
+
+def test_smoke_script_is_syntactically_valid_and_does_not_accept_key_argv() -> None:
+    subprocess.run(["bash", "-n", str(SMOKE)], check=True)
+    source = SMOKE.read_text()
+    assert "RAPID_MLX_API_KEY" in source
+    assert "RAPID_MLX_SERVICE_DOMAIN" in source
+    assert "--api-key" not in source
+    assert "unsafe for a curl config" in source
+    assert "launchctl print" in source
+    assert "/livez" in source
+    assert "/readyz" in source
+    assert "/v1/chat/completions" in source
+
+
+def test_guide_pins_operational_and_security_boundaries() -> None:
+    guide = GUIDE.read_text()
+    for required in (
+        "FileVault",
+        "launchctl bootstrap system",
+        "launchctl bootout system/com.rapidmlx.server",
+        "HOME",
+        "KeepAlive",
+        "RAPID_MLX_API_KEY",
+        "rapid-mlx doctor",
+        "headless_service_smoke.sh",
+        "autorestart 1",
+    ):
+        assert required in guide
