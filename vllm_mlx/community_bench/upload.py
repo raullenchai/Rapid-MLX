@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -152,8 +153,10 @@ def commit_install_id(candidate: str) -> str:
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        tmp = Path(tmp_name)
         try:
             os.write(fd, (candidate + "\n").encode())
         finally:

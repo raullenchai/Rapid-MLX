@@ -15,6 +15,7 @@ import textwrap
 import threading
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from vllm_mlx.community_bench import (
 )
 from vllm_mlx.community_bench import cli as community_cli
 from vllm_mlx.community_bench import runner as bench_runner
+from vllm_mlx.community_bench import upload as benchmark_upload
 from vllm_mlx.community_bench import workspace as workspace_module
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
@@ -349,6 +351,29 @@ def test_atomic_upload_aborts_if_approved_install_id_loses_race(
             approved_install_id="a" * 12,
         )
     assert sent == []
+
+
+def test_install_id_commit_is_stable_across_same_process_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_link = benchmark_upload.os.link
+    barrier = threading.Barrier(2)
+
+    def synchronized_link(source, destination):
+        barrier.wait(timeout=2)
+        return real_link(source, destination)
+
+    monkeypatch.setattr(benchmark_upload.os, "link", synchronized_link)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        settled = list(
+            pool.map(benchmark_upload.commit_install_id, ["a" * 12, "b" * 12])
+        )
+
+    assert settled[0] == settled[1]
+    assert settled[0] in {"a" * 12, "b" * 12}
+    assert (tmp_path / "bench-install-id").read_text().strip() == settled[0]
+    assert list(tmp_path.glob(".bench-install-id.*.tmp")) == []
 
 
 def test_local_archive_receipt_marks_only_an_existing_run_shared(
