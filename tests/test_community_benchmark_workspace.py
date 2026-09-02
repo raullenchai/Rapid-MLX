@@ -150,6 +150,7 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     assert plan["model"]["comparable"] is False
     assert plan["privacy"] == {
         "storage": "local",
+        "uploads": False,
         "upload": "explicit_consent_only",
     }
     assert registered_workload("text_generation")["protocol_version"] == 2
@@ -251,17 +252,20 @@ def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
         "post_submission",
         lambda *args, **kwargs: called.append(1),
     )
+    output = io.StringIO()
 
     result = atomic_upload.upload_run(
         run,
         stdin=io.StringIO("n\n"),
-        stdout=io.StringIO(),
+        stdout=output,
         url="https://rapidmlx.com/api/benchmarks/atomic",
     )
 
     assert result is None
     assert called == []
     assert not (tmp_path / "bench-install-id").exists()
+    assert "observes the source IP" in output.getvalue()
+    assert "does not put it in the benchmark record" in output.getvalue()
 
 
 def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
@@ -430,6 +434,33 @@ def test_install_id_commit_is_stable_across_same_process_threads(
     assert settled[0] in candidates
     assert (tmp_path / "bench-install-id").read_text().strip() == settled[0]
     assert list(tmp_path.glob(".bench-install-id.*.tmp")) == []
+
+
+def test_install_id_cleanup_errors_do_not_reverse_a_committed_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_flock = benchmark_upload.fcntl.flock
+    real_close = benchmark_upload.os.close
+    lock_fd = None
+
+    def flaky_flock(descriptor, operation):
+        nonlocal lock_fd
+        if operation == benchmark_upload.fcntl.LOCK_EX:
+            lock_fd = descriptor
+            return real_flock(descriptor, operation)
+        raise OSError("unlock failed")
+
+    def flaky_close(descriptor):
+        real_close(descriptor)
+        if descriptor == lock_fd:
+            raise OSError("close reported failure")
+
+    monkeypatch.setattr(benchmark_upload.fcntl, "flock", flaky_flock)
+    monkeypatch.setattr(benchmark_upload.os, "close", flaky_close)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert (tmp_path / "bench-install-id").read_text().strip() == "a" * 12
 
 
 def test_local_archive_receipt_marks_only_an_existing_run_shared(

@@ -128,6 +128,7 @@ def plan_for_alias(alias_name: str) -> dict[str, Any]:
                 "workload": registered_workload(entry["task_type"]),
                 "privacy": {
                     "storage": "local",
+                    "uploads": False,
                     "upload": "explicit_consent_only",
                 },
             }

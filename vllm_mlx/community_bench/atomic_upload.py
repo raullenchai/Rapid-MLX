@@ -43,7 +43,10 @@ def _ask_consent(
         "Mac configuration, OS/runtime versions, execution settings, timings, "
         "and a random resettable install id. It does not include your name, "
         "hostname, serial number, hardware UUID, IP address, prompts, outputs, "
-        "or file paths.",
+        "or file paths. The JSON payload has no IP-address field. Like any "
+        "HTTPS service, the destination observes the source IP; this endpoint "
+        "uses it for short-lived request rate limiting and does not put it in "
+        "the benchmark record.",
         file=stdout,
     )
     print("Upload this result? [y/N] ", end="", flush=True, file=stdout)

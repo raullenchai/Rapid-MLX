@@ -611,7 +611,9 @@ struct CommunityBenchmarkView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 Text(
                     "No name, hostname, serial number, hardware UUID, prompts, "
-                        + "outputs, or file paths are included."
+                        + "outputs, file paths, or IP-address field are included in the JSON. "
+                        + "The service observes the source IP for short-lived rate limiting "
+                        + "but does not put it in the benchmark record."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

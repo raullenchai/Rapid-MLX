@@ -180,8 +180,12 @@ def commit_install_id(candidate: str) -> str:
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            finally:
+            except OSError:
+                pass
+            try:
                 os.close(lock_fd)
+            except OSError:
+                pass
 
 
 def _valid_id(value: str) -> bool:

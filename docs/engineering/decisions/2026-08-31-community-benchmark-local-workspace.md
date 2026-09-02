@@ -36,6 +36,9 @@ records rather than parse legacy submission JSON.
   and the preview payload digest. It aborts if another process established a
   different install ID or the archived run changed while the consent sheet was
   open; it never silently sends data different from the approved JSON.
+  The JSON has no IP-address field. The HTTPS service necessarily observes the
+  source IP and uses it for short-lived request limiting, but the application
+  does not retain it in the benchmark record.
 - Desktop stops its active inference server before benchmarking so two large
   model processes cannot compete for unified memory. An owner-scoped lifecycle
   reservation remains active until cancellation has terminated and reaped the
