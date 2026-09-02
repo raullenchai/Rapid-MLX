@@ -276,7 +276,9 @@ def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
         sent.update(payload)
         return {
             "ok": True,
-            "receipt": _receipt(run["run_id"], run_digest=rcj_digest(payload)),
+            "receipt": _receipt(
+                run["run_id"], run_digest=atomic_upload.atomic_run_digest(payload)
+            ),
         }
 
     monkeypatch.setattr(atomic_upload, "post_submission", post)
@@ -288,7 +290,9 @@ def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
 
     receipt = atomic_upload.upload_run(run, assume_yes=True)
 
-    assert receipt == _receipt(run["run_id"], run_digest=rcj_digest(sent))
+    assert receipt == _receipt(
+        run["run_id"], run_digest=atomic_upload.atomic_run_digest(sent)
+    )
     assert len(sent["install_id"]) == 12
     assert "install_id" not in run
     assert sent
@@ -299,6 +303,7 @@ def test_atomic_preview_is_the_exact_later_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = _text_run()
+    run["measurements"][0]["total_duration_ms"] = 100.25
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     preview = atomic_upload.preview_run(run)
     assert not (tmp_path / "bench-install-id").exists()
@@ -306,7 +311,11 @@ def test_atomic_preview_is_the_exact_later_payload(
     def post(payload, **kwargs):
         assert payload == preview["payload"]
         assert kwargs["url"] == preview["target"]
-        return {"receipt": _receipt(run["run_id"], run_digest=rcj_digest(payload))}
+        return {
+            "receipt": _receipt(
+                run["run_id"], run_digest=atomic_upload.atomic_run_digest(payload)
+            )
+        }
 
     monkeypatch.setattr(atomic_upload, "post_submission", post)
     atomic_upload.upload_run(
@@ -314,6 +323,17 @@ def test_atomic_preview_is_the_exact_later_payload(
         assume_yes=True,
         approved_install_id=preview["install_id"],
     )
+
+
+def test_atomic_run_digest_uses_ingestion_service_number_format() -> None:
+    render = atomic_upload._ecmascript_number
+    assert render(100.0) == "100"
+    assert render(-0.0) == "0"
+    assert render(0.00123) == "0.00123"
+    assert render(1e-6) == "0.000001"
+    assert render(1e-7) == "1e-7"
+    assert render(1e20) == "100000000000000000000"
+    assert render(1e21) == "1e+21"
 
 
 def test_atomic_upload_rejects_receipt_for_different_payload(
@@ -357,21 +377,13 @@ def test_install_id_commit_is_stable_across_same_process_threads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
-    real_link = benchmark_upload.os.link
-    barrier = threading.Barrier(2)
+    (tmp_path / "bench-install-id").write_text("malformed\n")
+    candidates = [f"{index:012x}" for index in range(16)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        settled = list(pool.map(benchmark_upload.commit_install_id, candidates))
 
-    def synchronized_link(source, destination):
-        barrier.wait(timeout=2)
-        return real_link(source, destination)
-
-    monkeypatch.setattr(benchmark_upload.os, "link", synchronized_link)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        settled = list(
-            pool.map(benchmark_upload.commit_install_id, ["a" * 12, "b" * 12])
-        )
-
-    assert settled[0] == settled[1]
-    assert settled[0] in {"a" * 12, "b" * 12}
+    assert len(set(settled)) == 1
+    assert settled[0] in candidates
     assert (tmp_path / "bench-install-id").read_text().strip() == settled[0]
     assert list(tmp_path.glob(".bench-install-id.*.tmp")) == []
 

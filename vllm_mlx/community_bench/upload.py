@@ -37,6 +37,7 @@ anyone correlate a public board entry with a private telemetry stream.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import secrets
@@ -132,27 +133,30 @@ def commit_install_id(candidate: str) -> str:
     Returns the id that is now on disk — which may be another process's if it
     won the race. Callers must use the return value, not their candidate.
 
-    The write is a fully-written temp file plus ``os.link``, not ``O_EXCL`` on
-    the destination: link is atomic and the file only ever becomes visible
-    already containing an id, so a concurrent reader can never observe an
-    empty file and mistake it for corruption.
+    A per-install advisory lock serializes both first creation and repair of a
+    malformed file across processes and threads. The value is fully written to
+    a unique mode-0600 tempfile before an atomic replace, so readers never see
+    a partial value.
 
     Never raises. An unwritable home costs a stable identity, not a
     submission; the only consequence is that the server counts this run
     against a fresh per-install bucket.
     """
     path = _install_id_path()
-    try:
-        existing = path.read_text().strip()
-        if _valid_id(existing):
-            return existing
-        malformed = True
-    except (OSError, UnicodeError):
-        malformed = path.exists()
-
     tmp = None
+    lock_fd = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f".{path.name}.lock")
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            existing = path.read_text().strip()
+            if _valid_id(existing):
+                return existing
+        except (OSError, UnicodeError):
+            pass
+
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
         )
@@ -162,20 +166,9 @@ def commit_install_id(candidate: str) -> str:
         finally:
             os.close(fd)
 
-        if malformed:
-            # Garbage on disk: replace it. Two processes both repairing will
-            # disagree on the id for this one run and agree from the next one
-            # onwards. Rarer and less harmful than the alternative, which is
-            # never repairing and re-minting on every single submission.
-            os.replace(tmp, path)
-            tmp = None
-            return candidate
-        try:
-            os.link(tmp, path)
-            return candidate
-        except FileExistsError:
-            winner = path.read_text().strip()
-            return winner if _valid_id(winner) else candidate
+        os.replace(tmp, path)
+        tmp = None
+        return candidate
     except (OSError, UnicodeError):
         return candidate
     finally:
@@ -184,6 +177,11 @@ def commit_install_id(candidate: str) -> str:
                 os.unlink(tmp)
             except OSError:
                 pass
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
 
 def _valid_id(value: str) -> bool:

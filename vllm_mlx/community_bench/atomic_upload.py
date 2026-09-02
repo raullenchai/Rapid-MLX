@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import math
 import sys
 from typing import Any, TextIO
-
-from vllm_mlx.catalog import rcj_digest
 
 from .benchmark_contracts import BenchmarkRunValidator, SubmissionReceiptValidator
 from .upload import (
@@ -62,6 +62,68 @@ def _validated_receipt(
     return copy.deepcopy(receipt)
 
 
+def _ecmascript_number(value: float) -> str:
+    """Render one finite float like JSON.stringify / ECMAScript Number::toString."""
+
+    if not math.isfinite(value):
+        raise ValueError("benchmark payload contains a non-finite number")
+    if value == 0:
+        return "0"
+    sign = "-" if value < 0 else ""
+    raw = repr(abs(value)).lower()
+    mantissa, _, exponent_text = raw.partition("e")
+    exponent = int(exponent_text or "0")
+    whole, dot, fraction = mantissa.partition(".")
+    combined = whole + (fraction if dot else "")
+    leading_zeroes = len(combined) - len(combined.lstrip("0"))
+    digits = combined.lstrip("0").rstrip("0")
+    decimal_position = len(whole) + exponent - leading_zeroes
+    if -6 < decimal_position <= 21:
+        if decimal_position <= 0:
+            return sign + "0." + "0" * (-decimal_position) + digits
+        if decimal_position >= len(digits):
+            return sign + digits + "0" * (decimal_position - len(digits))
+        return sign + digits[:decimal_position] + "." + digits[decimal_position:]
+    coefficient = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+    scientific_exponent = decimal_position - 1
+    exponent_sign = "+" if scientific_exponent >= 0 else ""
+    return f"{sign}{coefficient}e{exponent_sign}{scientific_exponent}"
+
+
+def _atomic_canonical(value: Any) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _ecmascript_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, list):
+        return "[" + ",".join(_atomic_canonical(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ",".join(
+                f"{_atomic_canonical(key)}:{_atomic_canonical(value[key])}"
+                for key in sorted(value)
+            )
+            + "}"
+        )
+    raise TypeError(f"unsupported benchmark payload value: {type(value).__name__}")
+
+
+def atomic_run_digest(run: dict[str, Any]) -> str:
+    """Digest a run with the ingestion service's sorted JSON canonical form."""
+
+    canonical = _atomic_canonical(run).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
 def preview_run(
     run: dict[str, Any], *, install_id: str | None = None, url: str | None = None
 ) -> dict[str, Any]:
@@ -108,7 +170,7 @@ def upload_run(
             "the install id changed before upload; review the payload and try again"
         )
     response = post_submission(wire, url=target)
-    return _validated_receipt(response, run["run_id"], rcj_digest(wire))
+    return _validated_receipt(response, run["run_id"], atomic_run_digest(wire))
 
 
-__all__ = ["preview_run", "upload_run"]
+__all__ = ["atomic_run_digest", "preview_run", "upload_run"]
