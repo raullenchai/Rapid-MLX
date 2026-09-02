@@ -6390,18 +6390,72 @@ def _recipe_free_disk_gb() -> float | None:
         return None
 
 
+def _cached_subfolder_size(repo_id: str, subfolder: str) -> int | None:
+    """Logical bytes for one complete checkpoint subfolder in the pinned cache.
+
+    A Hub repo can retain several independently runnable quantizations. The
+    repo-level cache probe intentionally follows the currently selected
+    variant, so inventory needs this exact-artifact probe instead.
+    """
+    import os
+
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    from vllm_mlx._download_gate import (
+        _resolved_snapshot_sha,
+        _snapshot_is_complete,
+        _valid_variant_subfolder,
+    )
+    from vllm_mlx.model_metadata import resolve_unreferenced_cached_subfolder
+
+    if not _valid_variant_subfolder(subfolder):
+        return None
+    repo_root = os.path.join(
+        HF_HUB_CACHE,
+        f"models--{repo_id.replace('/', '--')}",
+    )
+    sha = _resolved_snapshot_sha(repo_root)
+    if sha is not None:
+        snapshot = os.path.join(repo_root, "snapshots", sha)
+        checkpoint = os.path.join(snapshot, *subfolder.split("/"))
+        snapshot_real = os.path.realpath(snapshot)
+        checkpoint_real = os.path.realpath(checkpoint)
+        if not checkpoint_real.startswith(snapshot_real + os.sep):
+            return None
+        if not _snapshot_is_complete(checkpoint):
+            return None
+    else:
+        unreferenced = resolve_unreferenced_cached_subfolder(repo_id, subfolder)
+        if unreferenced is None:
+            return None
+        checkpoint = str(unreferenced)
+
+    total = 0
+    try:
+        for directory, _, filenames in os.walk(checkpoint, followlinks=False):
+            for filename in filenames:
+                path = os.path.join(directory, filename)
+                if os.path.isfile(path):
+                    total += os.path.getsize(path)
+    except OSError:
+        return None
+    return total if total > 0 else None
+
+
 def _cached_models_json_payload() -> dict:
     """Structured form of the ``models --cached`` view — the same rows the
     text table renders, with stable keys instead of fixed-width columns.
 
-    Sizes are raw bytes; ``state`` is one of ``ok`` / ``unmapped`` /
+    Sizes are raw bytes; ``subfolder`` is the exact catalog checkpoint folder
+    for mapped aliases (``None`` means repository root); ``state`` is one of
+    ``ok`` / ``unmapped`` /
     ``incomplete`` / ``external`` mirroring the alias column's parenthesized
     tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
     launchable by alias). Sorted biggest-first, like the table.
     """
     import time as _time
 
-    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_aliases import list_profiles, resolve_subfolder
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
@@ -6409,9 +6463,11 @@ def _cached_models_json_payload() -> dict:
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
 
     profiles = list_profiles()
-    hf_to_alias: dict[str, str] = {}
+    repo_artifacts: dict[str, list[tuple[str, str | None]]] = {}
     for alias, p in profiles.items():
-        hf_to_alias.setdefault(p.hf_path, alias)
+        artifact = (alias, p.subfolder)
+        if artifact not in repo_artifacts.setdefault(p.hf_path, []):
+            repo_artifacts[p.hf_path].append(artifact)
 
     now = _time.time()
     tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
@@ -6420,25 +6476,50 @@ def _cached_models_json_payload() -> dict:
     for repo, size, mtime, is_external in tagged:
         total_bytes += size
         if is_external:
-            alias, state = None, "external"
-        elif not _cache_entry_is_runnable(repo):
-            alias, state = None, "incomplete"
+            artifacts: list[tuple[str | None, str | None, int, str]] = [
+                (None, None, size, "external")
+            ]
         else:
-            mapped = hf_to_alias.get(repo)
-            alias, state = (mapped, "ok") if mapped is not None else (None, "unmapped")
-        models.append(
-            {
-                "alias": alias,
-                "repo": repo,
-                "size_bytes": int(size),
-                "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
-                "age_seconds": int(max(0, now - mtime))
-                if mtime and mtime > 0
-                else None,
-                "state": state,
-                "external": is_external,
-            }
-        )
+            artifacts = []
+            seen_artifacts: set[tuple[str, str | None]] = set()
+            for alias, subfolder in repo_artifacts.get(repo, []):
+                key = (repo, subfolder)
+                if key in seen_artifacts:
+                    continue
+                if subfolder is None:
+                    # A root alias is runnable only when repo-level resolution
+                    # also means root. A multi-variant repo's current/default
+                    # subfolder must not masquerade as its root artifact.
+                    artifact_size = (
+                        size
+                        if resolve_subfolder(repo) is None
+                        and _cache_entry_is_runnable(repo)
+                        else None
+                    )
+                else:
+                    artifact_size = _cached_subfolder_size(repo, subfolder)
+                if artifact_size is not None:
+                    artifacts.append((alias, subfolder, artifact_size, "ok"))
+                    seen_artifacts.add(key)
+            if not artifacts:
+                state = "unmapped" if _cache_entry_is_runnable(repo) else "incomplete"
+                artifacts = [(None, None, size, state)]
+
+        for alias, subfolder, artifact_size, state in artifacts:
+            models.append(
+                {
+                    "alias": alias,
+                    "repo": repo,
+                    "subfolder": subfolder,
+                    "size_bytes": int(artifact_size),
+                    "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
+                    "age_seconds": int(max(0, now - mtime))
+                    if mtime and mtime > 0
+                    else None,
+                    "state": state,
+                    "external": is_external,
+                }
+            )
     models.sort(key=lambda m: -m["size_bytes"])
     return {"cached": models, "count": len(models), "total_bytes": int(total_bytes)}
 
@@ -6487,6 +6568,7 @@ def _available_models_json_payload() -> dict:
             # explicit text-only pin always wins over name inference.
             "is_builtin": alias in builtin_aliases,
             "is_text_only": bool(getattr(p, "is_text_only", False)),
+            "supports_image_input": bool(getattr(p, "supports_image_input", False)),
         }
 
     text, video, image = {}, {}, {}
@@ -6515,6 +6597,19 @@ def _available_models_json_payload() -> dict:
         ]
     except Exception:
         payload["audio"] = []
+    # Atomic catalog shadow. Existing bucket keys remain byte-compatible for
+    # older Desktop builds; new consumers read this joined model/alias graph.
+    # It is deliberately read-only: legacy registries still resolve launches
+    # until the migration report stays clean through a release window.
+    try:
+        from vllm_mlx.catalog import build_catalog_bundle
+
+        payload["atomic"] = build_catalog_bundle()
+    except Exception:
+        # Shadow data must never take the legacy discovery surface down. CI
+        # validates every checked-in registry; an installed optional/corrupt
+        # audio registry still degrades exactly as it did before atomic mode.
+        pass
     return payload
 
 

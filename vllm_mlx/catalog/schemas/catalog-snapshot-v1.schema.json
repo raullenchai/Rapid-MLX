@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/raullenchai/Rapid-MLX/proto/model-catalog/v1/catalog-snapshot.schema.json",
+  "title": "Rapid-MLX CatalogSnapshot v1",
+  "description": "Deterministic product catalog assembled from registry records, second-layer aliases, and recommendation policy references.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "catalog_digest", "models", "aliases", "recommendation_policy_digests"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "catalog_digest": {"$ref": "#/$defs/sha256Digest"},
+    "models": {"type": "array", "items": {"$ref": "model-registry-record.schema.json"}},
+    "aliases": {"type": "array", "items": {"$ref": "model-alias.schema.json"}},
+    "recommendation_policy_digests": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/sha256Digest"}}
+  },
+  "$defs": {"sha256Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

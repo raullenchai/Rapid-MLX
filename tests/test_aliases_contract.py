@@ -59,6 +59,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         # server.load_model. Used by Ternary-Bonsai-27B (mlx-vlm can't
         # drive its bundled vision tower).
         "is_text_only",
+        "supports_image_input",
         "tool_call_parser",
         "reasoning_parser",
         "chat_template_id",
@@ -2027,6 +2028,40 @@ def test_is_text_only_requires_text_modality(alias: str) -> None:
             f"{alias}: is_text_only=True requires modality='text' (it serves "
             f"the checkpoint through the AR text mlx-lm lane); got "
             f"modality={profile.modality!r}."
+        )
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_image_input_capability_never_conflicts_with_text_only(alias: str) -> None:
+    """Product capability must be explicit and internally coherent."""
+    profile = list_profiles()[alias]
+    if profile.supports_image_input:
+        assert not profile.is_text_only, (
+            f"{alias}: supports_image_input=True conflicts with is_text_only=True"
+        )
+
+
+def test_image_input_capability_is_strict_and_explicit() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    profiles = list_profiles()
+    assert profiles["qwen3.8-27b-4bit"].supports_image_input is True
+    assert profiles["qwen3-vl-4b-4bit"].supports_image_input is True
+    assert profiles["qwen3.5-122b-mxfp4"].supports_image_input is False
+
+    with pytest.raises(ValueError, match="supports_image_input must be a JSON boolean"):
+        _coerce(
+            "bad-image-capability",
+            {"hf_path": "publisher/model", "supports_image_input": "true"},
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _coerce(
+            "conflicting-image-capability",
+            {
+                "hf_path": "publisher/model",
+                "supports_image_input": True,
+                "is_text_only": True,
+            },
         )
 
 

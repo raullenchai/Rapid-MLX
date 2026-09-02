@@ -314,6 +314,14 @@ class ModelProfile:
     # UI-TARS, …) never set it and keep routing to mlx-vlm exactly as
     # before.
     #
+    # Product-level input capability, intentionally independent from
+    # ``modality``. Many VLM checkpoints use the ordinary ``text`` runtime
+    # lane for generation but also accept image input. Keeping that fact
+    # explicit prevents product surfaces from guessing from alias names or
+    # incorrectly treating a runtime lane as the model's complete capability.
+    # ``False`` is the fail-closed default for old/user-authored profiles.
+    supports_image_input: bool = False
+
     # Placed LAST in the field list deliberately: although the frozen
     # dataclass is ``kw_only=True`` (positional construction is a loud
     # TypeError, not a silent misbind — see the class docstring), keeping

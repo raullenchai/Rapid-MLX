@@ -108,6 +108,10 @@ dependencies = [
     "uvicorn>=0.23.0",
     "mcp>=1.9.3",  # ClientSessionGroup: official multi-server lifecycle for chat
     "jsonschema>=4.18.0",
+    # Direct import used by the packaged atomic contract registry. jsonschema
+    # also depends on it today, but keeping the direct dependency explicit
+    # prevents a resolver change from breaking `rapid-mlx models --json`.
+    "referencing>=0.28.4",
     # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
     # pure-Python package (~50 KB) wired into argparse via the magic
     # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
@@ -548,6 +552,7 @@ vllm_mlx = [
     "aliases.json",
     "model_recommendations.json",
     "audio/aliases.json",
+    "catalog/schemas/*.json",
     # Download-size manifest (hf_path -> footprint bytes) powering the Size
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.
     # Regenerate with scripts/gen_model_sizes.py when aliases change.

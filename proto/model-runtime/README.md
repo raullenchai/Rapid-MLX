@@ -5,12 +5,16 @@ CLI, server, Desktop, website, recommendations, telemetry, and benchmarks.
 They are not owned by the community benchmark feature.
 
 - `ModelIdentity` identifies the complete loaded pipeline as an ordered set of
-  immutable components. It covers LLM, VLM, image, and video pipelines plus
-  optional adapters and auxiliary encoders.
+  immutable components. It covers LLM, VLM, image, video, speech synthesis,
+  and speech recognition pipelines plus optional adapters, vocoders, and
+  auxiliary encoders/decoders.
 - `MachineObservation` separates stable machine-class identity from the OS and
   volatile run conditions. It never contains a device identifier.
 - `ExecutionConfig` records the effective post-resolution configuration. Its
-  task-discriminated union covers text, VLM, image, and video execution.
+  task-discriminated union covers text, VLM, image, video, speech synthesis,
+  and speech recognition execution. Forced alignment uses the speech
+  recognition task with an alias operation mode; it does not fork runtime
+  identity.
 
 Atomic means each object can be stored, validated, hashed, and reused without a
 benchmark run. A consumer composes these objects rather than creating a local

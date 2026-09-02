@@ -12,8 +12,52 @@ import Testing
 /// is pinned here without standing up a SwiftUI host.
 @Suite("Models surface redesign — pure logic (#507)")
 struct ModelSurfaceRedesignTests {
+    @MainActor
+    private final class ControlledAtomicCatalogLoader {
+        private var continuations: [CheckedContinuation<[ModelEntry]?, Never>] = []
+        var requestCount: Int { continuations.count }
+
+        func load() async -> [ModelEntry]? {
+            await withCheckedContinuation { continuations.append($0) }
+        }
+
+        func finish(_ index: Int, with entries: [ModelEntry]?) {
+            continuations[index].resume(returning: entries)
+        }
+    }
 
     // MARK: - ModelBrandStyle.brand
+
+    @Test("Atomic model refresh retries when the cache generation advances")
+    @MainActor
+    func atomicRefreshRejectsAnOlderCacheGeneration() async {
+        let loader = ControlledAtomicCatalogLoader()
+        var generation: UInt = 7
+        let stale = ModelEntry(
+            alias: "nested-4bit", hfRepo: "org/model", sizeOnDisk: nil,
+            cached: false
+        )
+        let fresh = ModelEntry(
+            alias: "nested-4bit", hfRepo: "org/model", sizeOnDisk: "1 GiB",
+            cached: true
+        )
+
+        let refresh = Task { @MainActor in
+            await SettingsModelManagementPanel.stableAtomicCatalogSnapshot(
+                currentGeneration: { generation },
+                loader: loader.load
+            )
+        }
+        while loader.requestCount < 1 { await Task.yield() }
+        generation = 8
+        loader.finish(0, with: [stale])
+        while loader.requestCount < 2 { await Task.yield() }
+        loader.finish(1, with: [fresh])
+
+        let result = await refresh.value
+        #expect(result == [fresh])
+        #expect(loader.requestCount == 2)
+    }
 
     @Test("brand: each recognised family maps to its case")
     func brandFamilies() {

@@ -116,6 +116,22 @@ struct RepoAwareCachedAliasTests {
         #expect(out.first { $0.alias == "qwen3-0.6b" }?.cached == false)
     }
 
+    @Test("structured subfolder cache never proves the repository root")
+    func remarkRequiresExactSubfolderIdentity() {
+        let merged = ModelCatalog.mergeAvailableAndCached(
+            available: [("foo", "org/foo"), ("foo-4bit", "org/foo")],
+            cached: [("foo-4bit", "org/foo", "4bit", "1 GiB")],
+            excluded: []
+        )
+        #expect(merged.first { $0.alias == "foo-4bit" }?.sourceSubfolder == "4bit")
+
+        let out = ModelCatalog.remarkCachedByRepo(
+            merged, resolvedRepos: ["foo": "org/foo"]
+        )
+        #expect(out.first { $0.alias == "foo" }?.cached == false)
+        #expect(out.first { $0.alias == "foo-4bit" }?.cached == true)
+    }
+
     @Test("remarkCachedByRepo never merges repos that differ only by case")
     func remarkExactCaseMatch() {
         let entries = [

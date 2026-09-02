@@ -1375,7 +1375,7 @@ enum DevSnapshot {
         // parser bug is fixed upstream (#1920) and is deliberately not worked
         // around here.
         let emptyCache = catalog
-            .filter { $0.kind == .chat }
+            .filter { $0.supports(.chat) }
             .map {
                 ModelEntry(alias: $0.alias, hfRepo: $0.hfRepo, sizeOnDisk: nil,
                            cached: false, kind: .chat)
