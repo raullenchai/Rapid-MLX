@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import io
 import json
+import multiprocessing
 import os
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
+import types
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,8 +23,10 @@ import pytest
 
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
+from vllm_mlx.community_bench import benchmark_contracts, local_runner, run_builder
 from vllm_mlx.community_bench import cli as community_cli
-from vllm_mlx.community_bench import local_runner, run_builder
+from vllm_mlx.community_bench import runner as bench_runner
+from vllm_mlx.community_bench import workspace as workspace_module
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
     registered_workload,
@@ -1695,3 +1701,1327 @@ def test_bench_server_can_inherit_supervisor_process_group(
         "preexec_fn": None,
         "isolated_process_group": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Packaged-contract and validator failure branches
+# ---------------------------------------------------------------------------
+
+
+def test_packaged_contract_must_be_a_json_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Root:
+        def joinpath(self, name: str):
+            return SimpleNamespace(read_text=lambda encoding: "[]")
+
+    monkeypatch.setattr(benchmark_contracts.resources, "files", lambda package: Root())
+
+    with pytest.raises(ValueError, match="not a JSON object"):
+        benchmark_contracts._read_json("benchmark-run.schema.json")
+
+
+def test_unregistered_task_types_and_prompts_are_rejected() -> None:
+    with pytest.raises(ValueError, match="no registered community benchmark"):
+        registered_workload("audio_generation")
+    with pytest.raises(ValueError, match="no registered community benchmark"):
+        registered_workload_history("audio_generation")
+    with pytest.raises(ValueError, match="no registered prompt"):
+        benchmark_contracts.public_prompt("case-that-does-not-exist")
+
+
+def test_execution_digest_mismatch_is_rejected() -> None:
+    run = _image_run()
+    run["execution"]["config_digest"] = rcj_digest({"tampered": True})
+    with pytest.raises(ValueError, match="does not match effective task"):
+        BenchmarkRunValidator().validate(run)
+
+
+def test_duplicate_measured_rounds_are_rejected() -> None:
+    run = _text_run()
+    run["measurements"][1]["round_index"] = 1  # duplicates (pp512-tg128, 1)
+    with pytest.raises(ValueError, match="unique"):
+        BenchmarkRunValidator().validate(run)
+
+
+def test_measured_rounds_must_match_the_declared_set_exactly() -> None:
+    run = _text_run()
+    run["measurements"][0]["round_index"] = 9  # unique, but outside 1..5
+    with pytest.raises(ValueError, match="declared measured rounds"):
+        BenchmarkRunValidator().validate(run)
+
+
+def test_measurement_shape_must_match_the_registered_case() -> None:
+    run = _image_run()
+    run["measurements"][0]["width"] = 512
+    with pytest.raises(ValueError, match="does not match the registered case"):
+        BenchmarkRunValidator().validate(run)
+
+
+def test_measured_phases_cannot_exceed_total_duration() -> None:
+    run = _text_run()
+    run["measurements"][0]["ttft_ms"] = 1_000_000.0
+    with pytest.raises(ValueError, match="shorter than its measured phases"):
+        BenchmarkRunValidator().validate(run)
+
+
+# ---------------------------------------------------------------------------
+# CLI human-readable output and failure reporting
+# ---------------------------------------------------------------------------
+
+
+def _cli_archive(monkeypatch: pytest.MonkeyPatch, archive: object) -> None:
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive, "default", classmethod(lambda cls: archive)
+    )
+
+
+def test_cli_catalog_prints_focus_marker_and_run_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(
+        community_cli,
+        "benchmark_catalog",
+        lambda **kwargs: {
+            "models": [
+                {
+                    "alias": "focus-model",
+                    "task_type": "text_generation",
+                    "memory_fit": "does_not_fit",
+                    "focus": True,
+                },
+                {
+                    "alias": "other-model",
+                    "task_type": "image_generation",
+                    "memory_fit": "fits",
+                    "focus": False,
+                },
+            ]
+        },
+    )
+    args = SimpleNamespace(benchmark_action="catalog", memory_gib=8, json=False)
+
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Community Benchmark models (local by default)" in out
+    assert "★ focus-model" in out
+    assert "does not fit" in out
+    assert "Run: rapid-mlx benchmark run <model>" in out
+
+
+def test_cli_plan_prints_protocol_and_local_storage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(
+        community_cli,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {
+                "alias": alias,
+                "task_type": "text_generation",
+                "protocol_id": "rapid-community-speed",
+            },
+            "workload": {"protocol_version": 2},
+        },
+    )
+    args = SimpleNamespace(
+        benchmark_action="plan", benchmark_model="example-text", json=False
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Model:    example-text" in out
+    assert "Protocol: rapid-community-speed v2" in out
+    assert "Storage:  local only (no upload)" in out
+
+
+def test_cli_results_prints_empty_hint_then_rows(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows: list[dict] = []
+
+    class Archive:
+        def list(self, *, limit=None):
+            return list(rows)
+
+    _cli_archive(monkeypatch, Archive())
+    args = SimpleNamespace(benchmark_action="results", limit=None, json=False)
+
+    assert community_cli.benchmark_command(args) == 0
+    assert "No local benchmark results yet." in capsys.readouterr().out
+
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000001",
+            "workload": {"task_type": "text_generation"},
+            "outcome": {"status": "completed"},
+            "completed_at": "2026-09-01T00:00:00Z",
+        }
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "00000000-0000-4000-8000-000000000001" in out
+    assert "text_generation" in out
+    assert "completed" in out
+
+
+def test_cli_inspect_prints_full_json_without_flag(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Archive:
+        def get(self, run_id: str):
+            assert run_id == "00000000-0000-4000-8000-000000000001"
+            return {"run_id": run_id}
+
+    _cli_archive(monkeypatch, Archive())
+    args = SimpleNamespace(
+        benchmark_action="inspect",
+        run_id="00000000-0000-4000-8000-000000000001",
+        json=False,
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "run_id": "00000000-0000-4000-8000-000000000001"
+    }
+
+
+def test_cli_run_prints_local_only_confirmation(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(
+        community_cli, "run_local", lambda alias, **kwargs: {"run_id": "abc-123"}
+    )
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="example-text",
+        inherit_process_group=False,
+        json=False,
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Saved local result abc-123" in out
+    assert "Nothing was uploaded." in out
+
+
+def test_cli_failure_json_includes_saved_run_payload(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    failed_run = {"run_id": "failed-run", "outcome": {"status": "failed"}}
+    monkeypatch.setattr(
+        community_cli,
+        "run_local",
+        lambda alias, **kwargs: (_ for _ in ()).throw(
+            local_runner.LocalBenchmarkError("engine broke", failed_run, saved=True)
+        ),
+    )
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="example-text",
+        inherit_process_group=False,
+        json=True,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    assert json.loads(capsys.readouterr().err) == {
+        "error": "engine broke",
+        "saved": True,
+        "run": failed_run,
+    }
+
+
+@pytest.mark.parametrize(
+    ("saved", "run", "expected"),
+    [
+        (True, {"run_id": "failed-run"}, "local outcome saved as failed-run"),
+        (False, {"run_id": "failed-run"}, "local outcome could not be saved"),
+        (False, None, "Benchmark command failed"),
+    ],
+)
+def test_cli_failure_text_reports_archive_state(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    saved: bool,
+    run: dict | None,
+    expected: str,
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(
+        community_cli,
+        "run_local",
+        lambda alias, **kwargs: (_ for _ in ()).throw(
+            local_runner.LocalBenchmarkError("engine broke", run, saved=saved)
+            if run is not None or saved
+            else RuntimeError("engine broke")
+        ),
+    )
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="example-text",
+        inherit_process_group=False,
+        json=False,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    err = capsys.readouterr().err
+    assert expected in err
+    assert "engine broke" in err
+
+
+def test_top_level_cli_dispatches_community_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`rapid-mlx benchmark …` must route to the community CLI and exit with
+    its return code — the SystemExit is the CLI's only success/failure
+    signal for supervisors."""
+
+    import vllm_mlx.cli as top_cli
+    from vllm_mlx.community_bench import cli as community_module
+
+    observed: dict[str, str] = {}
+
+    def fake_benchmark_command(args) -> int:
+        observed["action"] = args.benchmark_action
+        return 3
+
+    monkeypatch.setattr(community_module, "benchmark_command", fake_benchmark_command)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "benchmark", "results"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        top_cli.main()
+
+    assert excinfo.value.code == 3
+    assert observed == {"action": "results"}
+
+
+# ---------------------------------------------------------------------------
+# Bench server teardown escalation
+# ---------------------------------------------------------------------------
+
+
+def test_bench_server_terminate_escalates_group_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIGTERM the isolated group first; SIGKILL it when it will not die."""
+
+    signals: list[tuple[int, int]] = []
+
+    class Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            if signals == [(4242, signal.SIGTERM)]:
+                raise subprocess.TimeoutExpired(cmd="serve", timeout=timeout)
+            return 0
+
+    monkeypatch.setattr(_server.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        _server.os, "killpg", lambda pgid, sig: signals.append((pgid, sig))
+    )
+
+    _server._terminate(Proc(), isolated_process_group=True)
+
+    assert signals == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
+# ---------------------------------------------------------------------------
+# Run-builder provenance probes
+# ---------------------------------------------------------------------------
+
+
+def test_source_revision_is_none_outside_any_git_checkout(tmp_path: Path) -> None:
+    module = tmp_path / "module.py"
+    module.write_text("")
+    assert run_builder._source_checkout_revision(module) is None
+
+
+def test_source_revision_is_none_for_untracked_module_inside_a_repo(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    module = tmp_path / "module.py"
+    module.write_text("")
+    assert run_builder._source_checkout_revision(module) is None
+
+
+def test_source_revision_probe_failure_is_a_hard_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_run(*args, **kwargs):
+        raise OSError("git binary unavailable")
+
+    monkeypatch.setattr(run_builder.subprocess, "run", broken_run)
+
+    with pytest.raises(RuntimeError, match="could not resolve"):
+        run_builder._source_checkout_revision()
+
+
+def test_source_revision_rejects_malformed_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="not-a-sha\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(
+        run_builder.subprocess, "run", lambda *args, **kwargs: next(responses)
+    )
+
+    with pytest.raises(RuntimeError, match="could not resolve"):
+        run_builder._source_checkout_revision()
+
+
+def test_execution_config_records_installed_optional_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions = {"mlx": "0.32.1", "mlx-lm": "0.28.4"}
+    monkeypatch.setattr(
+        run_builder,
+        "_installed",
+        lambda name, fallback=None: versions.get(name, fallback),
+    )
+
+    runtime = execution_config("text_generation")["runtime"]
+
+    assert runtime["mlx"] == "0.32.1"
+    assert runtime["mlx_lm"] == "0.28.4"
+    assert "mlx_vlm" not in runtime
+    assert "mflux" not in runtime
+
+
+def test_execution_config_rejects_unregistered_task_type() -> None:
+    with pytest.raises(ValueError, match="unsupported task type"):
+        execution_config("audio_generation")
+
+
+# ---------------------------------------------------------------------------
+# Catalog projection and archive edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_catalog_excludes_image_alias_without_text_to_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rapid-image-speed is a text_to_image protocol; an edit-only alias has
+    no comparable registered workload and must not be offered."""
+
+    snapshot = {
+        "catalog_digest": "sha256:" + "0" * 64,
+        "models": [
+            {
+                "registry_model_id": "model-1",
+                "source": {"repo_id": "mlx-community/edit-only"},
+                "estimated_download_size_bytes": 1 << 30,
+            }
+        ],
+        "aliases": [
+            {
+                "alias": "img-edit-only",
+                "capabilities": {
+                    "task_types": ["image_generation"],
+                    "operation_modes": ["image_to_image"],
+                },
+                "target": {
+                    "registry_model_id": "model-1",
+                    "resolution_status": "unresolved",
+                },
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        workspace_module, "build_legacy_catalog_snapshot", lambda: snapshot
+    )
+    monkeypatch.setattr("vllm_mlx.model_aliases.list_profiles", lambda: {})
+
+    assert benchmark_catalog()["models"] == []
+
+
+def test_plan_for_unknown_alias_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown or unsupported benchmark model"):
+        plan_for_alias("alias-that-does-not-exist")
+
+
+def test_archive_get_rejects_non_hex_run_ids(tmp_path: Path) -> None:
+    archive = LocalRunArchive(tmp_path)
+    for run_id in ("", "../escape", "UPPER"):
+        with pytest.raises(ValueError, match="invalid run id"):
+            archive.get(run_id)
+
+
+def test_archive_list_rejects_non_positive_limit(tmp_path: Path) -> None:
+    archive = LocalRunArchive(tmp_path)
+    with pytest.raises(ValueError, match="positive"):
+        archive.list(limit=0)
+
+
+def test_archive_limit_keeps_latest_regardless_of_scan_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The heap must replace older entries even when the directory scan
+    yields the oldest files first — glob order is filesystem-dependent."""
+
+    archive = LocalRunArchive(tmp_path)
+    for index in range(3):
+        run = _text_run()
+        run["run_id"] = f"00000000-0000-4000-8000-{index:012d}"
+        run["started_at"] = f"2026-08-{index + 1:02d}T00:00:00Z"
+        run["completed_at"] = f"2026-08-{index + 1:02d}T00:01:00Z"
+        archive.save(run)
+    real_dir = archive.runs_dir
+
+    class OrderedDir:
+        def exists(self) -> bool:
+            return True
+
+        def glob(self, pattern: str):
+            return sorted(
+                real_dir.glob(pattern),
+                key=lambda path: json.loads(path.read_text(encoding="utf-8"))[
+                    "started_at"
+                ],
+            )
+
+        def __truediv__(self, name: str) -> Path:
+            return real_dir / name
+
+    monkeypatch.setattr(
+        LocalRunArchive, "runs_dir", property(lambda self: OrderedDir())
+    )
+
+    assert [run["run_id"] for run in archive.list(limit=2)] == [
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000001",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Local-runner failure taxonomy and artifact validation branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (local_runner.BenchmarkCancelledError("stop requested"), "user_cancelled"),
+        (MemoryError("exhausted"), "runtime_oom"),
+        (RuntimeError("Metal buffer alloc failed"), "runtime_oom"),
+        (RuntimeError("unsupported benchmark task"), "unsupported_task"),
+        (TimeoutError("probe timed out"), "timeout"),
+        (RuntimeError("model repo not found"), "invalid_model"),
+        (RuntimeError("something else"), "runtime_error"),
+    ],
+)
+def test_failure_codes_classify_without_leaking_text(
+    error: Exception, code: str
+) -> None:
+    assert local_runner._failure_code(error) == code
+
+
+def test_image_artifact_response_shape_is_validated() -> None:
+    with pytest.raises(RuntimeError, match="no artifact list"):
+        local_runner._validated_image_count({"data": "oops"}, width=8, height=8)
+    with pytest.raises(RuntimeError, match="no base64 artifact"):
+        local_runner._validated_image_count({"data": [{}]}, width=8, height=8)
+    with pytest.raises(RuntimeError, match="invalid artifact"):
+        local_runner._validated_image_count(
+            {"data": [{"b64_json": base64.b64encode(b"not-a-png").decode("ascii")}]},
+            width=8,
+            height=8,
+        )
+
+
+def test_run_local_rejects_incomplete_image_batch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    artifact = {"b64_json": _png_base64(1024, 1024)}
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"data": [artifact, artifact]}),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="incomplete batch"
+    ) as error:
+        local_runner.run_local("example-image", archive=archive)
+
+    assert error.value.run["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
+
+
+def _install_fake_imageio(monkeypatch: pytest.MonkeyPatch, reader: object) -> None:
+    imageio_pkg = types.ModuleType("imageio")
+    v2 = types.ModuleType("imageio.v2")
+    v2.get_reader = lambda path, format: reader  # type: ignore[attr-defined]
+    imageio_pkg.v2 = v2  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "imageio", imageio_pkg)
+    monkeypatch.setitem(sys.modules, "imageio.v2", v2)
+
+
+class _FakeVideoReader:
+    def __init__(self, metadata: dict, frames: int) -> None:
+        self._metadata = metadata
+        self._frames = frames
+        self.closed = False
+
+    def get_meta_data(self) -> dict:
+        return self._metadata
+
+    def count_frames(self) -> int:
+        return self._frames
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_video_probe_reads_shape_and_closes_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _FakeVideoReader({"size": (832, 480), "fps": 24.0}, frames=81)
+    _install_fake_imageio(monkeypatch, reader)
+
+    assert local_runner._probe_video_artifact_unbounded("clip.mp4") == (
+        832,
+        480,
+        81,
+        24.0,
+    )
+    assert reader.closed is True
+
+
+def test_video_probe_requires_dimension_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _FakeVideoReader({"size": None, "fps": 24.0}, frames=81)
+    _install_fake_imageio(monkeypatch, reader)
+
+    with pytest.raises(RuntimeError, match="no dimensions"):
+        local_runner._probe_video_artifact_unbounded("clip.mp4")
+    assert reader.closed is True
+
+
+def test_video_probe_translates_decoder_crashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imageio_pkg = types.ModuleType("imageio")
+    v2 = types.ModuleType("imageio.v2")
+
+    def get_reader(path: str, format: str):
+        raise ValueError("moov atom not found")
+
+    v2.get_reader = get_reader  # type: ignore[attr-defined]
+    imageio_pkg.v2 = v2  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "imageio", imageio_pkg)
+    monkeypatch.setitem(sys.modules, "imageio.v2", v2)
+
+    with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
+        local_runner._probe_video_artifact_unbounded("clip.mp4")
+
+
+def test_probe_video_artifact_returns_worker_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_run_detached_worker",
+        lambda target, args, *, timeout_s, phase: [832, 480, 81, 24.0],
+    )
+    assert local_runner._probe_video_artifact("clip.mp4") == (832, 480, 81, 24.0)
+
+
+class _HeaderResponse(_Response):
+    def __init__(self, headers: dict, chunks: list[bytes]) -> None:
+        super().__init__({})
+        self.headers = headers
+        self._chunks = chunks
+
+    def iter_content(self, *, chunk_size: int):
+        yield from self._chunks
+
+
+@pytest.mark.parametrize(
+    ("content_length", "message"),
+    [
+        ("not-a-number", "invalid Content-Length"),
+        ("-5", "invalid Content-Length"),
+        (str(2 * 1024 * 1024 * 1024), "safety limit"),
+    ],
+)
+def test_video_download_rejects_bad_declared_sizes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    content_length: str,
+    message: str,
+) -> None:
+    response = _HeaderResponse({"content-length": content_length}, [b"data"])
+    monkeypatch.setattr(local_runner.requests, "get", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match=message):
+        local_runner._download_video_artifact_unbounded(
+            "http://local/v1", "job-1", str(tmp_path / "artifact.mp4")
+        )
+    assert response.closed is True
+
+
+def test_video_download_skips_keepalive_chunks_and_rejects_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ok = _HeaderResponse({"content-length": "4"}, [b"", b"data"])
+    monkeypatch.setattr(local_runner.requests, "get", lambda *args, **kwargs: ok)
+    artifact = tmp_path / "artifact.mp4"
+    local_runner._download_video_artifact_unbounded(
+        "http://local/v1", "job-1", str(artifact)
+    )
+    assert artifact.read_bytes() == b"data"
+
+    empty = _HeaderResponse({}, [])
+    monkeypatch.setattr(local_runner.requests, "get", lambda *args, **kwargs: empty)
+    with pytest.raises(RuntimeError, match="empty MP4 artifact"):
+        local_runner._download_video_artifact_unbounded(
+            "http://local/v1", "job-1", str(artifact)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Detached worker lifetime, in-process
+# ---------------------------------------------------------------------------
+
+
+def test_parent_lifeline_watchdog_cleans_up_and_kills_owned_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    sender.close()  # the parent is already gone: poll() reports EOF instantly
+    artifact = tmp_path / "artifact.mp4"
+    artifact.write_bytes(b"partial")
+    events: list[tuple] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: os.getpid())
+    monkeypatch.setattr(
+        local_runner.os, "killpg", lambda pid, sig: events.append(("killpg", pid, sig))
+    )
+    monkeypatch.setattr(
+        local_runner.os, "_exit", lambda code: events.append(("exit", code))
+    )
+
+    local_runner._watch_parent_lifeline(receiver, str(artifact))
+
+    assert not artifact.exists()
+    assert events == [("killpg", os.getpid(), signal.SIGKILL), ("exit", 1)]
+
+
+def test_parent_lifeline_watchdog_never_signals_a_foreign_group(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    sender.close()
+    events: list[tuple] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: os.getpid() + 1)
+    monkeypatch.setattr(
+        local_runner.os, "killpg", lambda pid, sig: events.append(("killpg", pid, sig))
+    )
+    monkeypatch.setattr(
+        local_runner.os, "_exit", lambda code: events.append(("exit", code))
+    )
+
+    # The cleanup path may already be gone; that must not stop the exit.
+    local_runner._watch_parent_lifeline(receiver, str(tmp_path / "missing.mp4"))
+
+    assert events == [("exit", 1)]
+
+
+def test_enter_worker_lifetime_detaches_and_arms_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    armed = threading.Event()
+    observed: dict[str, object] = {}
+
+    def fake_watch(lifeline, cleanup_path) -> None:
+        observed["lifeline"] = lifeline
+        observed["cleanup_path"] = cleanup_path
+        armed.set()
+
+    monkeypatch.setattr(
+        local_runner.os, "setsid", lambda: events.append("setsid"), raising=False
+    )
+    monkeypatch.setattr(local_runner, "_watch_parent_lifeline", fake_watch)
+    lifeline = object()
+
+    local_runner._enter_worker_lifetime(lifeline, cleanup_path="/tmp/artifact.mp4")
+
+    assert armed.wait(timeout=10), "watchdog thread never started"
+    assert events == ["setsid"]
+    assert observed == {"lifeline": lifeline, "cleanup_path": "/tmp/artifact.mp4"}
+
+
+def test_video_probe_worker_reports_result_and_closes_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered: dict[str, object] = {}
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: entered.update(
+            {"lifeline": lifeline, "cleanup_path": cleanup_path}
+        ),
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_probe_video_artifact_unbounded",
+        lambda path: (832, 480, 81, 24.0),
+    )
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    lifeline = object()
+
+    local_runner._video_probe_worker("clip.mp4", sender, lifeline)
+
+    assert receiver.recv() == ("ok", (832, 480, 81, 24.0))
+    assert sender.closed is True
+    assert entered == {"lifeline": lifeline, "cleanup_path": "clip.mp4"}
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (RuntimeError("video artifact has no dimensions"), "no dimensions"),
+        (ValueError("decoder blew up"), "invalid MP4 artifact"),
+    ],
+)
+def test_video_probe_worker_reports_errors_without_leaking_internals(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, message: str
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: None,
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_probe_video_artifact_unbounded",
+        lambda path: (_ for _ in ()).throw(error),
+    )
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+
+    local_runner._video_probe_worker("clip.mp4", sender, object())
+
+    status, payload = receiver.recv()
+    assert status == "error"
+    assert message in payload
+
+
+def test_video_probe_worker_survives_a_torn_result_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: None,
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_probe_video_artifact_unbounded",
+        lambda path: (_ for _ in ()).throw(RuntimeError("bad artifact")),
+    )
+
+    class TornSender:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def send(self, payload) -> None:
+            raise BrokenPipeError("parent already reaped the pipe")
+
+        def close(self) -> None:
+            self.closed = True
+
+    sender = TornSender()
+    local_runner._video_probe_worker("clip.mp4", sender, object())
+    assert sender.closed is True
+
+
+@pytest.mark.parametrize("outcome", ["ok", "runtime", "unexpected"])
+def test_video_download_worker_reports_each_outcome(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: None,
+    )
+
+    def download(base_url: str, job_id: str, destination_path: str) -> None:
+        if outcome == "runtime":
+            raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
+        if outcome == "unexpected":
+            raise OSError("disk pulled")
+
+    monkeypatch.setattr(local_runner, "_download_video_artifact_unbounded", download)
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+
+    local_runner._video_download_worker(
+        "http://local/v1", "job-1", "artifact.mp4", sender, object()
+    )
+
+    status, payload = receiver.recv()
+    assert sender.closed is True
+    if outcome == "ok":
+        assert (status, payload) == ("ok", None)
+    elif outcome == "runtime":
+        assert (status, payload) == (
+            "error",
+            "video artifact exceeds the 1 GiB safety limit",
+        )
+    else:
+        assert (status, payload) == ("error", "video artifact download failed")
+
+
+def test_video_download_worker_survives_a_torn_result_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner,
+        "_enter_worker_lifetime",
+        lambda lifeline, *, cleanup_path=None: None,
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_download_video_artifact_unbounded",
+        lambda base_url, job_id, destination_path: (_ for _ in ()).throw(
+            RuntimeError("connection reset mid-stream")
+        ),
+    )
+
+    class TornSender:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def send(self, payload) -> None:
+            raise BrokenPipeError("parent already reaped the pipe")
+
+        def close(self) -> None:
+            self.closed = True
+
+    sender = TornSender()
+    local_runner._video_download_worker(
+        "http://local/v1", "job-1", "artifact.mp4", sender, object()
+    )
+    assert sender.closed is True
+
+
+class _FakeWorkerConnection:
+    def __init__(self, recv=None, poll_result: bool = True) -> None:
+        self._recv = recv
+        self._poll_result = poll_result
+        self.closed = False
+
+    def poll(self, timeout) -> bool:
+        return self._poll_result
+
+    def recv(self):
+        return self._recv()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeWorkerProcess:
+    def __init__(self, alive_after_join: bool = False) -> None:
+        self.pid = 99999
+        self._alive_after_join = alive_after_join
+        self.started = False
+        self.joins: list[float | None] = []
+
+    def start(self) -> None:
+        self.started = True
+
+    def join(self, timeout=None) -> None:
+        self.joins.append(timeout)
+
+    def is_alive(self) -> bool:
+        return self._alive_after_join
+
+
+def _fake_spawn_context(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    recv,
+    alive_after_join: bool = False,
+):
+    receiver = _FakeWorkerConnection(recv=recv)
+    result_sender = _FakeWorkerConnection()
+    lifeline_receiver = _FakeWorkerConnection()
+    lifeline_sender = _FakeWorkerConnection()
+    process = _FakeWorkerProcess(alive_after_join=alive_after_join)
+    pipes = [(receiver, result_sender), (lifeline_receiver, lifeline_sender)]
+
+    class Context:
+        def Pipe(self, duplex):  # noqa: N802 — multiprocessing context API
+            return pipes.pop(0)
+
+        def Process(self, target, args):  # noqa: N802 — multiprocessing context API
+            process.target = target
+            process.args = args
+            return process
+
+    monkeypatch.setattr(
+        local_runner.multiprocessing, "get_context", lambda method: Context()
+    )
+    return receiver, result_sender, lifeline_sender, process
+
+
+def test_detached_worker_returns_payload_and_keeps_lifeline_until_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receiver, result_sender, lifeline_sender, process = _fake_spawn_context(
+        monkeypatch, recv=lambda: ("ok", (1, 2))
+    )
+
+    payload = local_runner._run_detached_worker(
+        lambda *args: None, ("clip.mp4",), timeout_s=5, phase="probe"
+    )
+
+    assert payload == (1, 2)
+    assert process.started is True
+    assert receiver.closed is True
+    assert result_sender.closed is True  # parent's copy of the child's end
+    assert lifeline_sender.closed is True  # closed only after the reap
+
+
+def test_detached_worker_translates_a_silent_worker_death(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def recv():
+        raise EOFError
+
+    _fake_spawn_context(monkeypatch, recv=recv)
+
+    with pytest.raises(RuntimeError, match="probe exited without a result"):
+        local_runner._run_detached_worker(
+            lambda *args: None, ("clip.mp4",), timeout_s=5, phase="probe"
+        )
+
+
+def test_detached_worker_surfaces_worker_error_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_spawn_context(monkeypatch, recv=lambda: ("error", "bad artifact"))
+
+    with pytest.raises(RuntimeError, match="bad artifact"):
+        local_runner._run_detached_worker(
+            lambda *args: None, ("clip.mp4",), timeout_s=5, phase="download"
+        )
+
+
+def test_detached_worker_reaps_a_survivor_after_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reaped: list[object] = []
+    _, _, _, process = _fake_spawn_context(
+        monkeypatch, recv=lambda: ("ok", None), alive_after_join=True
+    )
+    monkeypatch.setattr(
+        local_runner, "_terminate_worker_process", lambda proc: reaped.append(proc)
+    )
+
+    assert (
+        local_runner._run_detached_worker(
+            lambda *args: None, ("clip.mp4",), timeout_s=5, phase="download"
+        )
+        is None
+    )
+    assert reaped == [process]
+
+
+class _FakeSupervisedProcess:
+    def __init__(self, pid, alive_sequence: list[bool]) -> None:
+        self.pid = pid
+        self._alive = iter(alive_sequence)
+        self.calls: list[str] = []
+
+    def is_alive(self) -> bool:
+        return next(self._alive)
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    def join(self, timeout=None) -> None:
+        self.calls.append("join")
+
+
+def test_terminate_worker_skips_a_process_that_never_started() -> None:
+    process = _FakeSupervisedProcess(None, alive_sequence=[])
+    local_runner._terminate_worker_process(process)
+    assert process.calls == []
+
+
+def test_terminate_worker_escalates_group_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        local_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
+
+    local_runner._terminate_worker_process(process)
+
+    assert signals == [(777, signal.SIGTERM), (777, signal.SIGKILL)]
+    assert process.calls == ["join", "join"]
+
+
+def test_terminate_worker_tolerates_group_races(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
+
+    def killpg(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(local_runner.os, "killpg", killpg)
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
+
+    local_runner._terminate_worker_process(process)
+
+    assert process.calls == ["join", "join"]
+
+
+def test_terminate_worker_falls_back_to_direct_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def getpgid(pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(local_runner.os, "getpgid", getpgid)
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
+
+    local_runner._terminate_worker_process(process)
+
+    assert process.calls == ["terminate", "join", "kill", "join"]
+
+
+def test_terminate_worker_stops_after_a_clean_death(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        local_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig))
+    )
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, False])
+
+    local_runner._terminate_worker_process(process)
+
+    assert signals == [(777, signal.SIGTERM)]
+    assert process.calls == ["join"]
+
+
+def test_dedicated_group_leader_probe_reads_real_topology(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = os.getpid() == os.getpgrp()
+    assert local_runner._is_dedicated_process_group_leader() is expected
+
+    monkeypatch.delattr(local_runner.os, "getpgrp")
+    assert local_runner._is_dedicated_process_group_leader() is False
+
+
+def test_run_local_surfaces_a_task_type_outside_every_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plan can only carry the three registered task types; anything else
+    is a programming error and must not silently pick an executor. The
+    failure-run builder rejects the same unregistered task, so the raw
+    ValueError is the surfaced contract here."""
+
+    _mock_local_context(monkeypatch, "audio_generation", "mlx-community/example")
+
+    with pytest.raises(ValueError, match="unsupported task type"):
+        local_runner.run_local("example-audio", archive=SimpleNamespace())
+
+
+# ---------------------------------------------------------------------------
+# Standardized-bench runner on the no-MLX lane
+# ---------------------------------------------------------------------------
+
+
+class _RegisteredTokenizer:
+    vocab_size = 1000
+    all_special_ids = [368, 522, 834, 999]
+
+
+def test_registered_token_workload_matches_golden_vector_without_mlx() -> None:
+    ids = bench_runner._build_registered_token_ids(
+        _RegisteredTokenizer(), 8, seed=12_648_430
+    )
+    assert ids == [469, 845, 945, 415, 950, 718, 771, 464]
+
+
+def test_registered_token_workload_requires_vocab_and_special_evidence() -> None:
+    class TinyVocab:
+        vocab_size = 200
+        all_special_ids: list[int] = []
+
+    with pytest.raises(RuntimeError, match="vocab too small"):
+        bench_runner._build_registered_token_ids(TinyVocab(), 8, seed=1)
+
+    class NoSpecialEvidence:
+        vocab_size = 1000
+
+    with pytest.raises(RuntimeError, match="all_special_ids"):
+        bench_runner._build_registered_token_ids(NoSpecialEvidence(), 8, seed=1)
+
+    class EverythingSpecial:
+        vocab_size = 258
+        all_special_ids = [256, 257]
+
+    with pytest.raises(RuntimeError, match="no eligible"):
+        bench_runner._build_registered_token_ids(EverythingSpecial(), 8, seed=1)
+
+
+class _StreamingEngine:
+    def __init__(self, outputs: list[SimpleNamespace]) -> None:
+        self.outputs = outputs
+        self.requests: list[object] = []
+
+    async def add_request(self, prompt, sampling_params) -> str:
+        self.requests.append(prompt)
+        return "request-1"
+
+    async def stream_outputs(self, request_id: str, timeout: int):
+        for output in self.outputs:
+            yield output
+
+
+def test_run_one_round_reports_engine_observed_counters() -> None:
+    outputs = [
+        SimpleNamespace(
+            new_token_ids=[7],
+            prompt_tokens=8,
+            completion_tokens=4,
+            output_token_ids=[7, 8, 9, 10],
+        )
+    ]
+    engine = _StreamingEngine(outputs)
+
+    result = asyncio.run(
+        bench_runner._run_one_round(
+            engine, [1] * 8, object(), 8, 4, require_observed_counts=True
+        )
+    )
+
+    assert engine.requests == [[1] * 8]
+    assert result.prompt_tokens == 8
+    assert result.output_tokens == 4
+    assert result.prefill_tps > 0
+    assert result.decode_tps > 0
+    assert result.ttft_ms >= 0
+
+
+def test_run_one_round_rejects_an_empty_stream() -> None:
+    engine = _StreamingEngine([])
+    with pytest.raises(RuntimeError, match="no tokens"):
+        asyncio.run(bench_runner._run_one_round(engine, [1] * 8, object(), 8, 4))
+
+
+def test_run_one_round_rejects_early_stopped_rounds() -> None:
+    outputs = [
+        SimpleNamespace(
+            new_token_ids=[7],
+            prompt_tokens=8,
+            completion_tokens=2,
+            output_token_ids=[7, 8],
+        )
+    ]
+    with pytest.raises(RuntimeError, match="requires exactly 4"):
+        asyncio.run(
+            bench_runner._run_one_round(
+                _StreamingEngine(outputs), [1] * 8, object(), 8, 4
+            )
+        )
+
+
+def test_run_bucket_selects_registered_or_synthetic_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[object] = []
+
+    async def run_one(
+        engine,
+        prompt,
+        sampling,
+        target_prompt_tokens,
+        max_tokens,
+        *,
+        require_observed_counts=False,
+    ):
+        observed.append((prompt, require_observed_counts))
+        return bench_runner.RoundResult(
+            decode_tps=1,
+            prefill_tps=1,
+            ttft_ms=1,
+            prompt_tokens=target_prompt_tokens,
+            output_tokens=max_tokens,
+        )
+
+    monkeypatch.setattr(bench_runner, "_run_one_round", run_one)
+    monkeypatch.setattr(bench_runner, "_reset_peak_ram", lambda: None)
+
+    result, registered_ids = asyncio.run(
+        bench_runner._run_bucket(
+            object(),
+            _RegisteredTokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=True,
+        )
+    )
+    assert registered_ids == [469, 845, 945, 415, 950, 718, 771, 464]
+    assert observed == [(registered_ids, True)] * 6
+    assert len(result.rounds_raw) == 5
+
+    class SyntheticTokenizer:
+        vocab_size = 2000
+
+        def decode(self, ids) -> str:
+            return "synthetic prompt text"
+
+    observed.clear()
+    result, synthetic_ids = asyncio.run(
+        bench_runner._run_bucket(
+            object(),
+            SyntheticTokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=False,
+        )
+    )
+    assert len(synthetic_ids) == 8
+    assert observed == [("synthetic prompt text", False)] * 6
+    assert len(result.rounds_raw) == 5
