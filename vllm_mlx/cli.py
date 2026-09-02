@@ -11803,6 +11803,10 @@ Examples:
         help=argparse.SUPPRESS,
     )
     community_share.add_argument(
+        "--body-digest",
+        help=argparse.SUPPRESS,
+    )
+    community_share.add_argument(
         "--target",
         help=argparse.SUPPRESS,
     )

@@ -140,6 +140,7 @@ struct CommunityBenchmarkUploadPreview: Identifiable {
     let target: String
     let installID: String
     let payloadDigest: String
+    let bodyDigest: String
     let payloadJSON: String
 
     var id: String { runID }
@@ -368,11 +369,13 @@ enum CommunityBenchmarkCommand {
     }
 
     static func benchmarkShareArguments(
-        runID: String, installID: String, payloadDigest: String, target: String
+        runID: String, installID: String, payloadDigest: String,
+        bodyDigest: String, target: String
     ) -> [String] {
         [
             "benchmark", "share", runID, "--yes", "--install-id", installID,
-            "--payload-digest", payloadDigest, "--target", target, "--json",
+            "--payload-digest", payloadDigest, "--body-digest", bodyDigest,
+            "--target", target, "--json",
         ]
     }
 
@@ -383,22 +386,17 @@ enum CommunityBenchmarkCommand {
               let target = root["target"] as? String,
               let installID = root["install_id"] as? String,
               let payloadDigest = root["payload_digest"] as? String,
-              let payload = root["payload"] as? [String: Any]
+              let bodyDigest = root["body_digest"] as? String,
+              let payloadJSON = root["payload_json"] as? String
         else {
             throw Failure(message: "The benchmark preview was incomplete.")
-        }
-        let payloadData = try JSONSerialization.data(
-            withJSONObject: payload,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        )
-        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
-            throw Failure(message: "The benchmark preview could not be displayed.")
         }
         return CommunityBenchmarkUploadPreview(
             runID: runID,
             target: target,
             installID: installID,
             payloadDigest: payloadDigest,
+            bodyDigest: bodyDigest,
             payloadJSON: payloadJSON
         )
     }
@@ -823,6 +821,7 @@ struct CommunityBenchmarkView: View {
                         runID: preview.runID,
                         installID: preview.installID,
                         payloadDigest: preview.payloadDigest,
+                        bodyDigest: preview.bodyDigest,
                         target: preview.target
                     )
                 )

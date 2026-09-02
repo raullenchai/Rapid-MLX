@@ -83,6 +83,7 @@ def benchmark_command(args) -> int:
                     assume_yes=args.yes,
                     approved_install_id=getattr(args, "install_id", None),
                     approved_payload_digest=getattr(args, "payload_digest", None),
+                    approved_body_digest=getattr(args, "body_digest", None),
                     approved_target=getattr(args, "target", None),
                 )
                 if acceptance is None:

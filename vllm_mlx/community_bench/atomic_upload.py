@@ -18,6 +18,7 @@ from .upload import (
     commit_install_id,
     peek_install_id,
     post_submission,
+    submission_body,
 )
 
 
@@ -147,10 +148,13 @@ def preview_run(
     wire = copy.deepcopy(run)
     wire["install_id"] = candidate
     BenchmarkRunValidator().validate(wire)
+    body = submission_body(wire)
     return {
         "target": target,
         "install_id": candidate,
         "payload_digest": atomic_run_digest(wire),
+        "body_digest": f"sha256:{hashlib.sha256(body).hexdigest()}",
+        "payload_json": body.decode("utf-8"),
         "payload": wire,
     }
 
@@ -164,6 +168,7 @@ def upload_run(
     url: str | None = None,
     approved_install_id: str | None = None,
     approved_payload_digest: str | None = None,
+    approved_body_digest: str | None = None,
     approved_target: str | None = None,
 ) -> AtomicUploadAcceptance | None:
     """Upload one validated run, returning its server receipt.
@@ -177,6 +182,7 @@ def upload_run(
     candidate = preview["install_id"]
     wire = preview["payload"]
     wire_digest = preview["payload_digest"]
+    body_digest = preview["body_digest"]
     if approved_target is not None and approved_target != target:
         raise SubmitError(
             "the upload destination changed after preview; review the payload again"
@@ -184,6 +190,10 @@ def upload_run(
     if approved_payload_digest is not None and approved_payload_digest != wire_digest:
         raise SubmitError(
             "the archived benchmark changed after preview; review the payload again"
+        )
+    if approved_body_digest is not None and approved_body_digest != body_digest:
+        raise SubmitError(
+            "the serialized benchmark changed after preview; review the payload again"
         )
 
     out = stdout or sys.stdout

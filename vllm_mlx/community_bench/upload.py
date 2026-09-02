@@ -228,7 +228,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
     the opposite of what the response is asking for.
     """
     target = url or board_url()
-    body = json.dumps(payload).encode("utf-8")
+    body = submission_body(payload)
     last: Exception | None = None
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -298,6 +298,12 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
     raise SubmitError(str(last))
 
 
+def submission_body(payload: dict) -> bytes:
+    """Serialize the exact HTTP request body used by preview and upload."""
+
+    return json.dumps(payload).encode("utf-8")
+
+
 __all__ = [
     "DEFAULT_BOARD_URL",
     "BOARD_URL_ENV",
@@ -308,4 +314,5 @@ __all__ = [
     "peek_install_id",
     "new_run_group",
     "post_submission",
+    "submission_body",
 ]

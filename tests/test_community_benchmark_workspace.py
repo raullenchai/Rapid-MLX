@@ -313,6 +313,9 @@ def test_atomic_preview_is_the_exact_later_payload(
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     preview = atomic_upload.preview_run(run)
     assert not (tmp_path / "bench-install-id").exists()
+    assert preview["payload_json"].encode() == benchmark_upload.submission_body(
+        preview["payload"]
+    )
 
     def post(payload, **kwargs):
         assert payload == preview["payload"]
@@ -329,6 +332,7 @@ def test_atomic_preview_is_the_exact_later_payload(
         assume_yes=True,
         approved_install_id=preview["install_id"],
         approved_payload_digest=preview["payload_digest"],
+        approved_body_digest=preview["body_digest"],
         approved_target=preview["target"],
     )
 
@@ -406,6 +410,34 @@ def test_atomic_upload_aborts_if_destination_changes_after_preview(
             assume_yes=True,
             approved_install_id=preview["install_id"],
             approved_payload_digest=preview["payload_digest"],
+            approved_body_digest=preview["body_digest"],
+            approved_target=preview["target"],
+        )
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_atomic_upload_binds_exact_serialized_body_not_only_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+    reordered = {key: run[key] for key in reversed(run)}
+    sent = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="serialized benchmark changed"):
+        atomic_upload.upload_run(
+            reordered,
+            assume_yes=True,
+            approved_install_id=preview["install_id"],
+            approved_payload_digest=preview["payload_digest"],
+            approved_body_digest=preview["body_digest"],
             approved_target=preview["target"],
         )
     assert sent == []
@@ -445,6 +477,8 @@ def test_share_cli_rejects_archive_changed_after_preview(
         preview=False,
         install_id=preview["install_id"],
         payload_digest=preview["payload_digest"],
+        body_digest=preview["body_digest"],
+        target=preview["target"],
     )
 
     assert community_cli.benchmark_command(args) == 1
