@@ -2437,6 +2437,10 @@ flow_settings_persistence() {
     baseline settings-persistence.performance-saved "$OUT/performance-saved.json"
     press "$OUT/performance-saved.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
+    # The toggle mounts before the asynchronous multi-modality catalog has
+    # finished populating. Wait for the fixture's capability tabs so a slower
+    # app bundle cannot snapshot the valid one-kind intermediate state.
+    wait_identifier Settings.ModelManagement.CapabilityTabs "$OUT/models-before.json"
     # GoldenFlow coverage for the recommendation SSOT: the running GUI must
     # render exactly the smart + fast aliases selected from the same JSON the
     # CLI consumes. This catches a missing app resource, a decoder drift, and a
