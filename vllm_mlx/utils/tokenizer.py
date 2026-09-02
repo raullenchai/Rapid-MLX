@@ -874,6 +874,35 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("qwen4_exp")
         else:
             _VENDORED_MODEL_TYPES.add("qwen4_exp")
+    # mlx-lm <=0.31.x has ``nemotron_h`` but assumes uniform MoE widths.
+    # Puzzle's ``block_configs`` needs the small compatibility vendor above.
+    # Once #1536 (or equivalent native support) is installed, leave native
+    # Nemotron-H untouched and let its own remapping handle Puzzle configs.
+    _native_nemotron_h = sys.modules.get("mlx_lm.models.nemotron_h")
+    if _native_nemotron_h is None:
+        try:
+            import importlib
+
+            _native_nemotron_h = importlib.import_module("mlx_lm.models.nemotron_h")
+        except ImportError:
+            _native_nemotron_h = None
+    _native_args = getattr(_native_nemotron_h, "ModelArgs", None)
+    _native_fields = getattr(_native_args, "__dataclass_fields__", {})
+    if "block_configs" not in _native_fields:
+        try:
+            from ..models import nemotron_h as _puzzle_nemotron_h
+
+            # The community 6-bit conversion identifies as ``nemotron_h``;
+            # NVIDIA's original config identifies as ``nemotron_h_puzzle``.
+            # Register both names without changing mlx-lm's general loader.
+            sys.modules["mlx_lm.models.nemotron_h"] = _puzzle_nemotron_h
+            sys.modules.setdefault(
+                "mlx_lm.models.nemotron_h_puzzle", _puzzle_nemotron_h
+            )
+        except Exception as e:
+            logger.warning("Nemotron Puzzle vendor failed to register: %s", e)
+        else:
+            _VENDORED_MODEL_TYPES.update({"nemotron_h", "nemotron_h_puzzle"})
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:

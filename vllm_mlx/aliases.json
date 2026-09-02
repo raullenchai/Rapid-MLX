@@ -1587,6 +1587,15 @@
     "supports_spec_decode": true,
     "is_hybrid": false
   },
+  "nemotron-puzzle-75b-a9b-6bit": {
+    "hf_path": "georgeis55/Nemotron-Labs-3-Puzzle-75B-A9B-MLX-6bit",
+    "tool_call_parser": "nemotron",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
   "bonsai-1.7b-2bit": {
     "hf_path": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
     "tool_call_parser": "hermes",
