@@ -288,11 +288,13 @@ def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
         lambda: "https://rapidmlx.com/api/benchmarks",
     )
 
-    receipt = atomic_upload.upload_run(run, assume_yes=True)
+    acceptance = atomic_upload.upload_run(run, assume_yes=True)
 
-    assert receipt == _receipt(
+    assert acceptance is not None
+    assert acceptance.receipt == _receipt(
         run["run_id"], run_digest=atomic_upload.atomic_run_digest(sent)
     )
+    assert acceptance.install_id == sent["install_id"]
     assert len(sent["install_id"]) == 12
     assert "install_id" not in run
     assert sent
@@ -436,19 +438,26 @@ def test_local_archive_receipt_marks_only_an_existing_run_shared(
     archive = LocalRunArchive(tmp_path)
     run = _text_run()
     archive.save(run)
-    receipt = _receipt(run["run_id"])
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
 
-    path = archive.save_receipt(receipt)
+    path = archive.save_receipt(receipt, install_id=install_id)
 
     assert path.stat().st_mode & 0o777 == 0o600
     assert archive.receipt(run["run_id"]) == receipt
     unknown = dict(receipt, submission_id="00000000-0000-4000-8000-000000000099")
     with pytest.raises(FileNotFoundError):
-        archive.save_receipt(unknown)
+        archive.save_receipt(unknown, install_id=install_id)
 
     malformed = dict(receipt, status="maybe")
     with pytest.raises(ValueError, match="submission_receipt"):
-        archive.save_receipt(malformed)
+        archive.save_receipt(malformed, install_id=install_id)
+
+    changed = json.loads(json.dumps(run))
+    changed["measurements"][0]["total_duration_ms"] += 0.5
+    archive.save(changed)
+    assert archive.receipt(run["run_id"]) is None
 
 
 @pytest.mark.parametrize("contents", [b'{"schema_version":', b"\xff\xfe"])
@@ -473,7 +482,14 @@ def test_share_cli_saves_server_receipt(
     archive = LocalRunArchive(tmp_path)
     run = _text_run()
     archive.save(run)
-    receipt = _receipt(run["run_id"])
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+    acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=receipt,
+        install_id=install_id,
+        payload_digest=receipt["run_digest"],
+    )
     monkeypatch.setattr(
         community_cli.LocalRunArchive,
         "default",
@@ -482,7 +498,7 @@ def test_share_cli_saves_server_receipt(
     monkeypatch.setattr(
         community_cli,
         "upload_run",
-        lambda local_run, **kwargs: receipt,
+        lambda local_run, **kwargs: acceptance,
     )
     args = SimpleNamespace(
         benchmark_action="share", run_id=run["run_id"], yes=True, json=True
@@ -493,6 +509,48 @@ def test_share_cli_saves_server_receipt(
     assert payload["uploaded"] is True
     assert payload["receipt"] == receipt
     assert archive.receipt(run["run_id"]) == receipt
+
+
+def test_share_cli_reports_acceptance_when_receipt_persistence_loses_archive_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    install_id = "012345abcdef"
+    receipt = _receipt(
+        run["run_id"],
+        run_digest=atomic_upload.atomic_run_digest({**run, "install_id": install_id}),
+    )
+    acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=receipt,
+        install_id=install_id,
+        payload_digest=receipt["run_digest"],
+    )
+
+    def accepted_then_archive_changes(local_run, **kwargs):
+        changed = json.loads(json.dumps(local_run))
+        changed["measurements"][0]["total_duration_ms"] += 0.5
+        archive.save(changed)
+        return acceptance
+
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(community_cli, "upload_run", accepted_then_archive_changes)
+    args = SimpleNamespace(
+        benchmark_action="share", run_id=run["run_id"], yes=True, json=True
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uploaded"] is True
+    assert payload["receipt_saved"] is False
+    assert archive.receipt(run["run_id"]) is None
 
 
 def test_unknown_run_model_returns_structured_unsaved_cli_error(

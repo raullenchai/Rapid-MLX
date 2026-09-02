@@ -78,19 +78,20 @@ def benchmark_command(args) -> int:
                 preview = preview_run(run)
                 value = {"schema_version": 1, **preview}
             else:
-                receipt = upload_run(
+                acceptance = upload_run(
                     run,
                     assume_yes=args.yes,
                     approved_install_id=getattr(args, "install_id", None),
                     approved_payload_digest=getattr(args, "payload_digest", None),
                 )
-                if receipt is None:
+                if acceptance is None:
                     value = {"schema_version": 1, "uploaded": False, "cancelled": True}
                 else:
+                    receipt = acceptance.receipt
                     receipt_saved = True
                     try:
-                        archive.save_receipt(receipt)
-                    except OSError:
+                        archive.save_receipt(receipt, install_id=acceptance.install_id)
+                    except (OSError, UnicodeError, ValueError):
                         receipt_saved = False
                     value = {
                         "schema_version": 1,

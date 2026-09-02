@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import heapq
 import json
 import os
@@ -184,29 +185,54 @@ class LocalRunArchive:
         BenchmarkRunValidator().validate(run)
         return self._atomic_save(self.runs_dir, run["run_id"], run)
 
-    def save_receipt(self, receipt: dict[str, Any]) -> Path:
+    def save_receipt(self, receipt: dict[str, Any], *, install_id: str) -> Path:
         SubmissionReceiptValidator().validate(receipt)
         run_id = receipt.get("submission_id")
         if not isinstance(run_id, str):
             raise ValueError("receipt is missing a submission id")
         # A receipt may only exist for a locally archived run. This prevents a
         # forged receipt file from making an unrelated row look shared.
-        self.get(run_id)
-        return self._atomic_save(self.receipts_dir, run_id, receipt)
+        run = self.get(run_id)
+        from .atomic_upload import atomic_run_digest
+
+        wire = copy.deepcopy(run)
+        wire["install_id"] = install_id
+        if atomic_run_digest(wire) != receipt["run_digest"]:
+            raise ValueError("receipt does not identify the current archived run")
+        envelope = {
+            "schema_version": 1,
+            "install_id": install_id,
+            "receipt": receipt,
+        }
+        return self._atomic_save(self.receipts_dir, run_id, envelope)
 
     def receipt(self, run_id: str) -> dict[str, Any] | None:
         # Reuse the run-id validation and require that the result still exists.
         self.get(run_id)
         path = self.receipts_dir / f"{run_id}.json"
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            envelope = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
-        if not isinstance(value, dict) or value.get("submission_id") != run_id:
+        if not isinstance(envelope, dict) or envelope.get("schema_version") != 1:
+            return None
+        install_id = envelope.get("install_id")
+        value = envelope.get("receipt")
+        if (
+            not isinstance(install_id, str)
+            or not isinstance(value, dict)
+            or value.get("submission_id") != run_id
+        ):
             return None
         try:
             SubmissionReceiptValidator().validate(value)
         except ValueError:
+            return None
+        from .atomic_upload import atomic_run_digest
+
+        wire = copy.deepcopy(self.get(run_id))
+        wire["install_id"] = install_id
+        if atomic_run_digest(wire) != value["run_digest"]:
             return None
         return value
 

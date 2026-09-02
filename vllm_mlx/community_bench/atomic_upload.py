@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import sys
+from dataclasses import dataclass
 from typing import Any, TextIO
 
 from .benchmark_contracts import BenchmarkRunValidator, SubmissionReceiptValidator
@@ -18,6 +19,13 @@ from .upload import (
     peek_install_id,
     post_submission,
 )
+
+
+@dataclass(frozen=True)
+class AtomicUploadAcceptance:
+    receipt: dict[str, Any]
+    install_id: str
+    payload_digest: str
 
 
 def _ask_consent(
@@ -153,7 +161,7 @@ def upload_run(
     url: str | None = None,
     approved_install_id: str | None = None,
     approved_payload_digest: str | None = None,
-) -> dict[str, Any] | None:
+) -> AtomicUploadAcceptance | None:
     """Upload one validated run, returning its server receipt.
 
     ``None`` means an interactive user declined. ``assume_yes`` exists for a
@@ -181,7 +189,13 @@ def upload_run(
             "the install id changed before upload; review the payload and try again"
         )
     response = post_submission(wire, url=target)
-    return _validated_receipt(response, run["run_id"], wire_digest)
+    receipt = _validated_receipt(response, run["run_id"], wire_digest)
+    return AtomicUploadAcceptance(receipt, candidate, wire_digest)
 
 
-__all__ = ["atomic_run_digest", "preview_run", "upload_run"]
+__all__ = [
+    "AtomicUploadAcceptance",
+    "atomic_run_digest",
+    "preview_run",
+    "upload_run",
+]
