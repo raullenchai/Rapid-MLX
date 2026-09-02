@@ -42,6 +42,7 @@ def test_smoke_script_is_syntactically_valid_and_does_not_accept_key_argv() -> N
     assert "launchctl print" in source
     assert "/livez" in source
     assert "/readyz" in source
+    assert "did not become ready within 120 seconds" in source
     assert "/v1/chat/completions" in source
 
 

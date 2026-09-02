@@ -159,13 +159,13 @@ Test KeepAlive without rebooting:
 
 ```bash
 sudo launchctl kill SIGTERM system/com.rapidmlx.server
-sleep 12
 ./scripts/headless_service_smoke.sh
 ```
 
-The smoke test must pass again with a new process. To test the actual
-requirement, disable automatic login, reboot while physical recovery is
-available, leave the Mac at the login window, and run the same smoke remotely.
+The smoke test waits up to 120 seconds for readiness and must pass again with a
+new process. To test the actual requirement, disable automatic login, reboot
+while physical recovery is available, leave the Mac at the login window, and
+run the same smoke remotely.
 
 For desktop Macs that must restart when power returns, review the current
 settings and then enable Apple's power-loss restart option:
@@ -222,6 +222,7 @@ restore the previous application version plus the same extras before loading
 the service again:
 
 ```bash
+sudo launchctl bootout system/com.rapidmlx.server 2>/dev/null || true
 ~/.rapid-mlx/bin/python -m pip install \
   'rapid-mlx==PREVIOUS_VERSION' 'rapid-mlx[vision]==PREVIOUS_VERSION'
 ~/.rapid-mlx/bin/rapid-mlx doctor || true

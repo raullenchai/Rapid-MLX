@@ -78,10 +78,19 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE
 }
 
 echo "[3/4] readiness and model inventory"
-curl -q --config "$CURL_CONFIG" "$BASE_URL/readyz" > "$RESPONSE"
-grep -Eq '"ready"[[:space:]]*:[[:space:]]*true|"status"[[:space:]]*:[[:space:]]*"(ok|ready|healthy)"|^OK$' "$RESPONSE" || {
-    echo "unexpected /readyz response" >&2; exit 1;
-}
+READY=false
+for _ in {1..60}; do
+    if curl -q --config "$CURL_CONFIG" "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
+       grep -Eq '"ready"[[:space:]]*:[[:space:]]*true|"status"[[:space:]]*:[[:space:]]*"(ok|ready|healthy)"|^OK$' "$RESPONSE"; then
+        READY=true
+        break
+    fi
+    sleep 2
+done
+if [ "$READY" != true ]; then
+    echo "service did not become ready within 120 seconds" >&2
+    exit 1
+fi
 curl -q --config "$CURL_CONFIG" "$BASE_URL/v1/models" > "$RESPONSE"
 grep -q '"data"' "$RESPONSE" || { echo "unexpected /v1/models response" >&2; exit 1; }
 
