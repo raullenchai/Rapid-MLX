@@ -7,6 +7,7 @@ enum SidebarSection: Hashable {
     case chat
     case images
     case audio
+    case video
     case launch
 }
 
@@ -31,6 +32,9 @@ struct SidebarView: View {
     static let columnMaxWidth: CGFloat = 260
 
     @Binding var selection: SidebarSection
+    /// Video is intentionally opt-in because its models require substantially
+    /// more unified memory than the app's everyday chat and media workflows.
+    var videoGenerationEnabled: Bool = false
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -174,6 +178,15 @@ struct SidebarView: View {
                 action: { selection = .audio }
             )
             .accessibilityIdentifier("Sidebar.Audio")
+            if videoGenerationEnabled {
+                row(
+                    title: "Video",
+                    systemImage: "film",
+                    isSelected: selection == .video,
+                    action: { selection = .video }
+                )
+                .accessibilityIdentifier("Sidebar.Video")
+            }
             row(
                 title: "Launch",
                 systemImage: "paperplane",

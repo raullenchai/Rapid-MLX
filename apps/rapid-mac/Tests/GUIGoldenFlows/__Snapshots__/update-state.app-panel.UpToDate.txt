@@ -64,6 +64,9 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.performance" desc="Performance" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
+              AXButton id="Settings.Category.experimentalFeatures" desc="Experimental Features" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
               AXButton id="Settings.Category.appearance" desc="Appearance" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true

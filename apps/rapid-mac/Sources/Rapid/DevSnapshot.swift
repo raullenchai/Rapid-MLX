@@ -48,6 +48,7 @@ enum DevSnapshot {
         // throwaway instance so the view can be evaluated without trapping.
         let imageGen = ImageGenViewModel(server: server)
         let audio = AudioViewModel(server: server)
+        let video = VideoGenViewModel(server: server)
         let dictation = DictationController(server: server, testingEnabled: false)
         // Same rule again, for the connectors stack (issue #1716).
         // ``ContentView`` reads ``MCPCatalog`` and ``MCPToolApprovalStore``
@@ -89,6 +90,151 @@ enum DevSnapshot {
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
         let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
+        // Focused gate regression: render only the shipping sidebar and quit.
+        // The full snapshot matrix is intentionally broad and takes minutes;
+        // this lane gives feature-gate work a fast, deterministic visual proof
+        // without weakening the comprehensive run.
+        if ProcessInfo.processInfo.environment["RAPID_DEV_SIDEBAR_ONLY"] == "1" {
+            let videoEnabled = ProcessInfo.processInfo.environment["RAPID_DEV_VIDEO_ENABLED"] == "1"
+                || VideoFeatureConfig.isEnabled()
+            func sidebar() -> AnyView {
+                AnyView(
+                    SidebarView(
+                        selection: .constant(.video),
+                        videoGenerationEnabled: videoEnabled,
+                        chat: chat,
+                        onNewChat: {},
+                        onSelectConversation: { _ in }
+                    )
+                    .frame(width: SidebarView.columnIdealWidth, height: 640)
+                    .background(RapidTheme.surfaceSidebar)
+                    .tint(RapidTheme.brandAmber)
+                )
+            }
+            let size = CGSize(width: SidebarView.columnIdealWidth, height: 640)
+            renderHosted(
+                sidebar(), size: size, appearance: .aqua,
+                to: "\(dir)/video-gate-sidebar-light.png"
+            )
+            renderHosted(
+                sidebar(), size: size, appearance: .darkAqua,
+                to: "\(dir)/video-gate-sidebar-dark.png"
+            )
+            NSApp.terminate(nil)
+            return
+        }
+
+        if ProcessInfo.processInfo.environment["RAPID_DEV_VIDEO_ONLY"] == "1" {
+            let previewServer = ServerManager(
+                testingState: .idle,
+                binaryPath: URL(fileURLWithPath: "/usr/bin/true")
+            )
+            let previewModel = ModelEntry(
+                alias: "ltx-2.3-mlx-q4",
+                hfRepo: "notapalindrome/ltx23-mlx-av-q4",
+                sizeOnDisk: "9.4 GB",
+                cached: true,
+                kind: .video,
+                videoCapabilities: [.textToVideo, .imageToVideo],
+                minimumMemoryGB: 24
+            )
+            func makePreviewViewModel() -> VideoGenViewModel {
+                VideoGenViewModel(
+                    server: previewServer,
+                    physicalRAMGB: 32,
+                    catalogLoader: { _ in [previewModel] }
+                )
+            }
+            let lightViewModel = makePreviewViewModel()
+            let darkViewModel = makePreviewViewModel()
+            let compactLightViewModel = makePreviewViewModel()
+            let compactDarkViewModel = makePreviewViewModel()
+            await lightViewModel.refreshCatalog()
+            await darkViewModel.refreshCatalog()
+            await compactLightViewModel.refreshCatalog()
+            await compactDarkViewModel.refreshCatalog()
+            let readyServer = ServerManager(
+                testingState: .ready(alias: previewModel.alias),
+                binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+                activeBearer: "snapshot-bearer"
+            )
+            let readyViewModel = VideoGenViewModel(
+                server: readyServer,
+                physicalRAMGB: 32,
+                catalogLoader: { _ in [previewModel] }
+            )
+            await readyViewModel.refreshCatalog()
+            readyViewModel.capabilities = VideoCapabilities(
+                model: previewModel.alias,
+                family: "ltx-2.3",
+                modes: [.textToVideo, .imageToVideo],
+                limits: .init(
+                    size: .init(
+                        type: "range",
+                        values: nil,
+                        width: .init(minimum: 256, maximum: 1920, multipleOf: 64),
+                        height: .init(minimum: 256, maximum: 1920, multipleOf: 64),
+                        maximumArea: nil,
+                        alsoSupported: nil
+                    ),
+                    seconds: .init(minimum: 1, maximum: 20, default: 4),
+                    fps: .init(minimum: 1, maximum: 60, default: 24, fixed: false),
+                    frames: .init(minimum: 9, maximum: 1201, step: 8, offset: 1),
+                    workload: .init(
+                        metric: "pixel_frames",
+                        maximum: 38_141_952,
+                        dimensionRounding: "multiple_of_64"
+                    )
+                )
+            )
+            readyViewModel.size = "512x512"
+            readyViewModel.seconds = 1
+            func videoSurface(
+                _ viewModel: VideoGenViewModel,
+                server: ServerManager = previewServer,
+                width: CGFloat = 1000,
+                height: CGFloat = 700
+            ) -> AnyView {
+                AnyView(
+                    VideoView(viewModel: viewModel, server: server)
+                        .environment(downloads)
+                        .environment(settingsRouter)
+                        .frame(width: width, height: height)
+                        .tint(RapidTheme.brandAmber)
+                )
+            }
+            let size = CGSize(width: 1000, height: 700)
+            renderHosted(
+                videoSurface(lightViewModel), size: size, appearance: .aqua,
+                to: "\(dir)/video-surface-light.png"
+            )
+            renderHosted(
+                videoSurface(darkViewModel), size: size, appearance: .darkAqua,
+                to: "\(dir)/video-surface-dark.png"
+            )
+            let compactSize = CGSize(width: 520, height: 560)
+            renderHosted(
+                videoSurface(compactLightViewModel, width: 520, height: 560),
+                size: compactSize,
+                appearance: .aqua,
+                to: "\(dir)/video-surface-compact-light.png"
+            )
+            renderHosted(
+                videoSurface(compactDarkViewModel, width: 520, height: 560),
+                size: compactSize,
+                appearance: .darkAqua,
+                to: "\(dir)/video-surface-compact-dark.png"
+            )
+            renderHosted(
+                videoSurface(readyViewModel, server: readyServer, width: 520, height: 560),
+                size: compactSize,
+                appearance: .darkAqua,
+                to: "\(dir)/video-surface-ready-compact-dark.png"
+            )
+            NSApp.terminate(nil)
+            return
+        }
+
         // Erase to AnyView so the long environment chain stays cheap to
         // type-check and the render call is monomorphic.
         func contentView(width: CGFloat, height: CGFloat) -> AnyView {
@@ -116,6 +262,7 @@ enum DevSnapshot {
                     .environment(browseApproval)
                     .environment(imageGen)
                     .environment(audio)
+                    .environment(video)
                     .environment(dictation)
                     .environment(snapshotMCPCatalog)
                     .environment(snapshotMCPApproval)
@@ -207,6 +354,7 @@ enum DevSnapshot {
                 HStack(spacing: 0) {
                     SidebarView(
                         selection: .constant(.launch),
+                        videoGenerationEnabled: VideoFeatureConfig.isEnabled(),
                         chat: chat,
                         onNewChat: {},
                         onSelectConversation: { _ in }
@@ -423,6 +571,7 @@ enum DevSnapshot {
             AnyView(
                 SidebarView(
                     selection: .constant(.launch),
+                    videoGenerationEnabled: VideoFeatureConfig.isEnabled(),
                     chat: chat,
                     onNewChat: {},
                     onSelectConversation: { _ in }
@@ -590,6 +739,7 @@ enum DevSnapshot {
             AnyView(
                 SidebarView(
                     selection: .constant(.images),
+                    videoGenerationEnabled: VideoFeatureConfig.isEnabled(),
                     chat: chat,
                     onNewChat: {},
                     onSelectConversation: { _ in }

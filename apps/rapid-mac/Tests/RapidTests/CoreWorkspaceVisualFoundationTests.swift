@@ -504,6 +504,7 @@ struct CoreWorkspaceVisualFoundationTests {
                 "Sidebar.NewChat",
                 "Sidebar.Images",
                 "Sidebar.Audio",
+                "Sidebar.Video",
                 "Sidebar.Launch",
                 "Sidebar.Residency",
                 "Toolbar.SearchChats",
