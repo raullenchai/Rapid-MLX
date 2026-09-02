@@ -269,11 +269,6 @@ class SchedulerConfig:
     kv_cache_quantization_bits: int = 8
     kv_cache_quantization_group_size: int = 64
     kv_cache_min_quantize_tokens: int = 256
-    # True when quantization was an operator-explicit request (CLI flag /
-    # control-plane) rather than an auto/profile default (#78). Lane
-    # capability gates hard-fail explicit requests they cannot honor
-    # (before the server reports ready) instead of silently serving bf16.
-    kv_cache_dtype_explicit: bool = False
 
     # TurboQuant KV cache compression (R15 Phase 4).
     #
@@ -535,6 +530,16 @@ class SchedulerConfig:
     # this independent flag permits membership mutation only when the loaded
     # model descriptor and runtime also attest it.
     mtp_allow_dynamic_membership: bool = False
+
+    # True when quantization was an operator-explicit request (CLI flag /
+    # control-plane) rather than an auto/profile default (#78). Lane
+    # capability gates hard-fail explicit requests they cannot honor
+    # (before the server reports ready) instead of silently serving bf16.
+    # APPEND-ONLY: kept at the tail so the historical positional prefix
+    # (``model_name`` / ``vision_min_pixels`` / ``vision_max_pixels``) is
+    # not shifted — see ``test_scheduler_config_preserves_the_historical_
+    # positional_prefix``.
+    kv_cache_dtype_explicit: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.mtp_continuous_batching, bool):
