@@ -41,6 +41,12 @@ The harness records actual completion tokens and finish reason for every run.
 The table below preserves those fields rather than assuming every 256-token
 request reached the cap:
 
+The committed [run-level CSV](results/2026-09-02-large-model-runs.csv) contains
+all 60 timed rows, and its [metadata/status record](results/2026-09-02-large-model-metadata.json)
+pins the Rapid/model revisions, source-artifact hashes, MLX allocator readings,
+and MTP counters used below. Reviewers can recompute every median directly from
+those two files.
+
 | Result artifact | 128 | 2K | 8K | 32K |
 | --- | --- | --- | --- | --- |
 | Qwen3.8-27B 0.13.3 | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
