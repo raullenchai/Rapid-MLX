@@ -58,6 +58,23 @@ struct MemoryConfirmationRetryPolicy {
 
 enum FileDropRetryPolicy {
     static let minimumRetryBudget: TimeInterval = 3
+    // XCUI's blocking synthetic drag takes about 3.5 seconds on both Studio
+    // and hosted runners before the retried drop can begin settling.
+    static let retryGestureBudget: TimeInterval = 4
+    // `waitUntil` polls at 100 ms and its final poll can cross the requested
+    // timeout. Keep several polling intervals outside the observation window
+    // so a genuinely missed first gesture still owns the full retry budget.
+    static let observationSchedulingSlack: TimeInterval = 0.5
+
+    static func observationTimeout(remainingTime: TimeInterval) -> TimeInterval {
+        max(
+            0,
+            remainingTime
+                - retryGestureBudget
+                - minimumRetryBudget
+                - observationSchedulingSlack
+        )
+    }
 
     static func shouldRetry(
         completedDrop: Bool,
@@ -67,7 +84,7 @@ enum FileDropRetryPolicy {
     ) -> Bool {
         !completedDrop
             && attempt < maximumAttempts
-            && remainingTime >= minimumRetryBudget
+            && remainingTime >= retryGestureBudget + minimumRetryBudget
     }
 }
 
@@ -333,9 +350,10 @@ final class RapidUITestHarness {
     func dragFile(
         _ url: URL,
         expectedChip chip: XCUIElement? = nil,
-        dropSettleTimeout: TimeInterval = 10,
+        dropSettleTimeout: TimeInterval = 12,
         simulateMissedFirstGesture: Bool = false,
-        simulateChipVisibilityDelay: TimeInterval = 0
+        simulateChipVisibilityDelay: TimeInterval = 0,
+        simulateCompletionVisibilityDelay: TimeInterval = 0
     ) -> Int {
         let dragSource = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid-uitest-host")
         dragSource.launchEnvironment = [
@@ -363,11 +381,7 @@ final class RapidUITestHarness {
             source.click(forDuration: 1, thenDragTo: dropTarget)
             return 1
         }
-        let settleDeadline = Date().addingTimeInterval(dropSettleTimeout)
-        let chipObservationStart = Date().addingTimeInterval(simulateChipVisibilityDelay)
-        let chipIsSettled = {
-            Date() >= chipObservationStart && chip.exists && chip.isHittable
-        }
+        var settleDeadline: Date?
         let maximumAttempts = 2
         for attempt in 1...maximumAttempts {
             do {
@@ -377,20 +391,54 @@ final class RapidUITestHarness {
                 return attempt
             }
             source.click(forDuration: 1, thenDragTo: dropTarget)
+            if settleDeadline == nil {
+                // `dropSettleTimeout` describes post-gesture observation and
+                // retry time; do not spend it while XCUI is blocking inside
+                // the first synthetic drag.
+                settleDeadline = Date().addingTimeInterval(dropSettleTimeout)
+            }
+            guard let settleDeadline else {
+                XCTFail("drop settle deadline was not initialized")
+                return attempt
+            }
+            // Simulation delays model post-gesture observation latency. Anchor
+            // them after the blocking drag returns so its duration cannot
+            // accidentally satisfy the delay before the probe begins.
+            let chipObservationStart = Date().addingTimeInterval(
+                simulateChipVisibilityDelay
+            )
+            let completionObservationStart = Date().addingTimeInterval(
+                simulateCompletionVisibilityDelay
+            )
+            let chipIsSettled = {
+                Date() >= chipObservationStart && chip.exists && chip.isHittable
+            }
+            let completionIsVisible = {
+                Date() >= completionObservationStart
+                    && FileManager.default.fileExists(atPath: self.dropEventFile.path)
+            }
 
             // The drop-completion marker and the product render arrive
             // independently. First wait briefly for either authoritative
             // signal, then spend the rest of the original budget on an
             // observed drop's chip.
-            _ = waitUntil(timeout: min(2, max(0, settleDeadline.timeIntervalSinceNow))) {
+            // Observe until only the bounded retry budget remains. A fixed,
+            // shorter probe can mistake a scheduler-delayed completion marker
+            // for a missed gesture and duplicate an already-consumed drop.
+            let observationTimeout = FileDropRetryPolicy.observationTimeout(
+                remainingTime: settleDeadline.timeIntervalSinceNow
+            )
+            _ = waitUntil(timeout: observationTimeout) {
                 chipIsSettled()
-                    || FileManager.default.fileExists(atPath: self.dropEventFile.path)
+                    || completionIsVisible()
             }
             if chipIsSettled() { return attempt }
 
             let observedPhase: String?
             do {
-                observedPhase = try DropEventFile.completedPhase(at: dropEventFile)
+                observedPhase = completionIsVisible()
+                    ? try DropEventFile.completedPhase(at: dropEventFile)
+                    : nil
             } catch {
                 XCTFail("could not read valid UI-test drop marker after gesture: \(error)")
                 return attempt

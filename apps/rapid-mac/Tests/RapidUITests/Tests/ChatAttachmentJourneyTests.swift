@@ -14,7 +14,28 @@ final class ChatAttachmentJourneyTests: XCTestCase {
     }
 
     func testFileDropRetryPolicyIsBoundedAndCompletionAware() {
+        XCTAssertEqual(
+            FileDropRetryPolicy.observationTimeout(remainingTime: 10),
+            2.5
+        )
+        XCTAssertEqual(
+            FileDropRetryPolicy.observationTimeout(remainingTime: 12),
+            4.5
+        )
+        XCTAssertEqual(
+            FileDropRetryPolicy.observationTimeout(remainingTime: 2),
+            0
+        )
         XCTAssertTrue(
+            FileDropRetryPolicy.shouldRetry(
+                completedDrop: false,
+                attempt: 1,
+                maximumAttempts: 2,
+                remainingTime: FileDropRetryPolicy.retryGestureBudget
+                    + FileDropRetryPolicy.minimumRetryBudget
+            )
+        )
+        XCTAssertFalse(
             FileDropRetryPolicy.shouldRetry(
                 completedDrop: false,
                 attempt: 1,
@@ -176,7 +197,8 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         let delayedChipAttempts = harness.dragFile(
             document,
             expectedChip: documentChip,
-            simulateChipVisibilityDelay: 3
+            simulateChipVisibilityDelay: 4,
+            simulateCompletionVisibilityDelay: 3
         )
         XCTAssertEqual(delayedChipAttempts, 1)
         harness.send("Dragged document", expectedRequestCount: 2)
