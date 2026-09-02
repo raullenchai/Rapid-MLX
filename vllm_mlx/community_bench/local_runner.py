@@ -630,6 +630,29 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
     return measurements, context_length
 
 
+def _is_dedicated_process_group_leader() -> bool:
+    """True when this process leads its own dedicated POSIX process group.
+
+    ``inherit_process_group`` is an internal topology contract, not a
+    privilege: the Desktop supervisor (``ProcessGroupChild.spawn``) launches
+    the benchmark CLI via ``POSIX_SPAWN_SETPGROUP`` with pgroup 0, so the
+    CLI's pid *is* its pgid and the supervisor owns exactly that group. A CLI
+    that instead inherited a shell script's or another supervisor's group
+    must not put the server into it: group teardown would then signal
+    unrelated sibling jobs, or be impossible without doing so. ``os.getpgrp``
+    does not exist on Windows; when the topology cannot be verified this
+    fails closed.
+    """
+
+    getpgrp = getattr(os, "getpgrp", None)
+    if getpgrp is None:
+        return False
+    try:
+        return bool(os.getpid() == getpgrp())
+    except OSError:  # pragma: no cover - kernel refused to report the group
+        return False
+
+
 def run_local(
     alias: str,
     *,
@@ -638,6 +661,16 @@ def run_local(
 ) -> dict[str, Any]:
     """Run a registered protocol, validate it, and save it locally only."""
 
+    if inherit_process_group and not _is_dedicated_process_group_leader():
+        raise LocalBenchmarkError(
+            "--inherit-process-group requires the benchmark CLI to be the "
+            "leader of its own dedicated process group (the supervisor spawn "
+            "topology); this process shares its parent's group, so the server "
+            "tree could not be torn down safely. Re-run without the flag to "
+            "keep the benchmark server in an isolated process group.",
+            None,
+            saved=False,
+        )
     try:
         plan = plan_for_alias(alias)
     except Exception as exc:

@@ -628,6 +628,12 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
     timings = iter((0.0, 1.0, 2.0, 4.5))
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
+    # ``inherit_process_group`` is only honored for a verified dedicated
+    # group leader; the pytest process shares the runner's group, so stand in
+    # for the supervisor spawn topology here.
+    monkeypatch.setattr(
+        local_runner, "_is_dedicated_process_group_leader", lambda: True
+    )
 
     run = local_runner.run_local(
         "example-image", archive=archive, inherit_process_group=True
@@ -658,6 +664,155 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
         }
     ]
     assert archive.get(run["run_id"]) == run
+
+
+def test_run_local_rejects_inherited_group_without_dedicated_leader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unverified topology must fail closed before any model/server work."""
+
+    archive = LocalRunArchive(tmp_path)
+    planned: list[str] = []
+    monkeypatch.setattr(
+        local_runner, "_is_dedicated_process_group_leader", lambda: False
+    )
+    monkeypatch.setattr(
+        local_runner, "plan_for_alias", lambda alias: planned.append(alias)
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "collect",
+        lambda: pytest.fail("machine probe ran despite unsafe topology"),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="dedicated process group"
+    ) as error:
+        local_runner.run_local(
+            "example-image", archive=archive, inherit_process_group=True
+        )
+
+    assert error.value.run is None
+    assert error.value.saved is False
+    assert planned == []
+    assert archive.list() == []
+
+
+def test_cli_run_reports_unsafe_inherit_process_group_topology(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        local_runner, "_is_dedicated_process_group_leader", lambda: False
+    )
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="example-image",
+        inherit_process_group=True,
+        json=True,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["saved"] is False
+    assert "dedicated process group" in payload["error"]
+
+
+def test_run_local_without_flag_never_consults_group_topology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The normal CLI path keeps its isolated server group unconditionally."""
+
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "_is_dedicated_process_group_leader",
+        lambda: pytest.fail("topology was consulted without the flag"),
+    )
+    observed: dict[str, bool] = {}
+
+    def run_image(alias: str, *, isolate_process_group: bool) -> list[dict]:
+        observed["isolate_process_group"] = isolate_process_group
+        return [
+            {
+                "case_id": "t2i-1024-square",
+                "round_index": 1,
+                "total_duration_ms": 2500.0,
+                "peak_active_memory_mib": 7629,
+                "completed": True,
+                "image_count": 1,
+                "width": 1024,
+                "height": 1024,
+            }
+        ]
+
+    monkeypatch.setattr(local_runner, "_run_image", run_image)
+
+    local_runner.run_local("example-image", archive=archive)
+
+    assert observed == {"isolate_process_group": True}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group contract")
+def test_inherit_process_group_verification_matches_real_topology(
+    tmp_path: Path,
+) -> None:
+    """Drive the real leader check from both spawn topologies.
+
+    A child sharing this process's group models direct shell-script
+    invocation and must be rejected before planning; a child spawned as a
+    session (and therefore group) leader models ``ProcessGroupChild.spawn``
+    and must clear the gate — its failure is the ordinary planning error for
+    a made-up alias, proving the gate itself passed.
+    """
+
+    script = tmp_path / "leader_probe.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            from vllm_mlx.community_bench.local_runner import (
+                LocalBenchmarkError,
+                _is_dedicated_process_group_leader,
+                run_local,
+            )
+
+            print(f"leader={_is_dedicated_process_group_leader()}")
+            try:
+                run_local("model-that-does-not-exist", inherit_process_group=True)
+            except LocalBenchmarkError as exc:
+                print(f"error={exc}")
+            """
+        )
+    )
+
+    def probe(*, start_new_session: bool) -> str:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            start_new_session=start_new_session,
+            cwd=REPO_ROOT,
+            env=_subprocess_env_for_this_checkout(),
+        )
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout
+
+    inherited = probe(start_new_session=False)
+    assert "leader=False" in inherited
+    assert "dedicated process group" in inherited
+
+    dedicated = probe(start_new_session=True)
+    assert "leader=True" in dedicated
+    assert "dedicated process group" not in dedicated
+    assert "model-that-does-not-exist" in dedicated
 
 
 def test_run_local_stops_when_image_warmup_is_cancelled(
@@ -1374,6 +1529,7 @@ def test_run_local_video_deadline_archives_timeout(
     assert archive.list() == [error.value.run]
 
 
+@pytest.mark.requires_mlx
 def test_run_local_converts_text_engine_result_to_atomic_measurements(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
