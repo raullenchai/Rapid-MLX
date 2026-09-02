@@ -25,7 +25,8 @@ struct QuickstartStarterPolicyTests {
             hfRepo: "fixture/\(alias)",
             sizeOnDisk: nil,
             cached: cached,
-            kind: kind
+            kind: kind,
+            recommendationPolicyDigests: [RAMBucketedDefault.policyDigest]
         )
     }
 
