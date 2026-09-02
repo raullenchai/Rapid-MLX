@@ -6,6 +6,11 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
@@ -925,6 +930,241 @@ def test_video_artifact_download_has_process_hard_deadline(tmp_path: Path) -> No
         local_runner._download_video_artifact(
             "http://local/v1", "job-1", str(artifact), timeout_s=0
         )
+
+
+def _detached_child_of(parent_pid: int) -> int | None:
+    """Find a child of ``parent_pid`` that moved into its own process group."""
+
+    listing = subprocess.run(
+        ["pgrep", "-P", str(parent_pid)], capture_output=True, text=True
+    )
+    for token in listing.stdout.split():
+        child = int(token)
+        try:
+            if os.getpgid(child) == child:
+                return child
+        except (ProcessLookupError, PermissionError):
+            continue
+    return None
+
+
+def _wait_until(predicate, *, timeout_s: float, message: str):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    pytest.fail(message)
+
+
+def _pid_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _reap_leftovers(pids: list[int | None]) -> None:
+    for pid in pids:
+        if pid:
+            with contextlib.suppress(OSError):
+                os.killpg(pid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group contract")
+def test_external_group_sigterm_reaps_detached_download_worker(
+    tmp_path: Path,
+) -> None:
+    """Supervisor Stop must reach a setsid download worker mid-transfer.
+
+    The Desktop cancels a benchmark by signalling the CLI's process group.
+    The download worker deliberately detaches from that group, so this drives
+    the real ``_download_video_artifact`` path against a server that accepts
+    and then never responds, SIGTERMs the externally supervised group like the
+    Desktop does, and requires the detached worker to die and the orphaned
+    temporary artifact to disappear.
+    """
+
+    destination = tmp_path / "artifact.mp4"
+    connected_marker = tmp_path / "connected"
+    script = tmp_path / "benchmark_parent.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import socket
+            import sys
+            import threading
+
+            from vllm_mlx.community_bench import local_runner
+
+
+            def main() -> None:
+                destination, connected_marker = sys.argv[1], sys.argv[2]
+                listener = socket.socket()
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                port = listener.getsockname()[1]
+
+                def hold_connection() -> None:
+                    # Keep the accepted socket referenced: dropping it would
+                    # reset the worker's connection instead of blocking it.
+                    connection, _ = listener.accept()
+                    with open(connected_marker, "w") as marker:
+                        marker.write("connected")
+                    threading.Event().wait()
+                    connection.close()
+
+                threading.Thread(target=hold_connection, daemon=True).start()
+                # The production flow pre-creates the temporary artifact file.
+                with open(destination, "wb") as file:
+                    file.write(b"placeholder")
+                local_runner._download_video_artifact(
+                    f"http://127.0.0.1:{port}", "job-1", destination, timeout_s=60
+                )
+
+
+            if __name__ == "__main__":
+                main()
+            """
+        )
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(script), str(destination), str(connected_marker)],
+        start_new_session=True,
+        cwd=REPO_ROOT,
+    )
+    worker_pid: int | None = None
+    try:
+        worker_pid = _wait_until(
+            lambda: _detached_child_of(process.pid),
+            timeout_s=30,
+            message="download worker never detached into its own group",
+        )
+        _wait_until(
+            connected_marker.exists,
+            timeout_s=30,
+            message="worker never entered the blocked download phase",
+        )
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=10)
+        _wait_until(
+            lambda: _pid_gone(worker_pid),
+            timeout_s=15,
+            message="detached download worker survived group cancellation",
+        )
+        assert not destination.exists(), "orphaned temp artifact was not removed"
+    finally:
+        _reap_leftovers([process.pid, worker_pid])
+        process.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group contract")
+def test_external_group_sigterm_reaps_worker_descendants_and_artifact(
+    tmp_path: Path,
+) -> None:
+    """Parent death must take down the whole detached group, ffmpeg included.
+
+    The probe worker's blocking work spawns ffmpeg descendants inside its
+    detached group. This exercises the real worker supervision and lifetime
+    entry with a worker that blocks after spawning a descendant (standing in
+    for ffmpeg), SIGTERMs the externally supervised benchmark group, and
+    requires worker, descendant, and orphaned artifact to all go away.
+    """
+
+    descendant_pid_path = tmp_path / "descendant.pid"
+    artifact = tmp_path / "artifact.mp4"
+    script = tmp_path / "benchmark_parent.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import os
+            import subprocess
+            import sys
+            import time
+
+            from vllm_mlx.community_bench import local_runner
+
+
+            def blocked_probe_worker(
+                descendant_pid_path, artifact_path, sender, lifeline
+            ):
+                local_runner._enter_worker_lifetime(
+                    lifeline, cleanup_path=artifact_path
+                )
+                descendant = subprocess.Popen(["sleep", "300"])
+                with open(descendant_pid_path + ".tmp", "w") as file:
+                    file.write(str(descendant.pid))
+                os.replace(descendant_pid_path + ".tmp", descendant_pid_path)
+                time.sleep(300)
+
+
+            def main() -> None:
+                descendant_pid_path, artifact_path = sys.argv[1], sys.argv[2]
+                with open(artifact_path, "wb") as file:
+                    file.write(b"artifact")
+                local_runner._run_detached_worker(
+                    blocked_probe_worker,
+                    (descendant_pid_path, artifact_path),
+                    timeout_s=60,
+                    phase="probe",
+                )
+
+
+            if __name__ == "__main__":
+                main()
+            """
+        )
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(script), str(descendant_pid_path), str(artifact)],
+        start_new_session=True,
+        cwd=REPO_ROOT,
+    )
+    worker_pid: int | None = None
+    descendant_pid: int | None = None
+    try:
+        worker_pid = _wait_until(
+            lambda: _detached_child_of(process.pid),
+            timeout_s=30,
+            message="worker never detached into its own group",
+        )
+        descendant_pid = int(
+            _wait_until(
+                lambda: (
+                    descendant_pid_path.read_text()
+                    if descendant_pid_path.exists()
+                    else None
+                ),
+                timeout_s=30,
+                message="worker never spawned its descendant",
+            )
+        )
+        assert os.getpgid(descendant_pid) == worker_pid, (
+            "descendant must live inside the worker's detached group"
+        )
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=10)
+        _wait_until(
+            lambda: _pid_gone(worker_pid),
+            timeout_s=15,
+            message="detached worker survived group cancellation",
+        )
+        _wait_until(
+            lambda: _pid_gone(descendant_pid),
+            timeout_s=15,
+            message="worker descendant survived group cancellation",
+        )
+        assert not artifact.exists(), "orphaned temp artifact was not removed"
+    finally:
+        _reap_leftovers([process.pid, worker_pid])
+        if descendant_pid:
+            with contextlib.suppress(OSError):
+                os.kill(descendant_pid, signal.SIGKILL)
+        process.wait(timeout=10)
 
 
 @pytest.mark.parametrize(

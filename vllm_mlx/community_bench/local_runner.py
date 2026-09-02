@@ -14,7 +14,10 @@ import multiprocessing.process
 import os
 import signal
 import tempfile
+import threading
 import time
+from collections.abc import Callable
+from multiprocessing.connection import Connection
 from typing import Any
 
 import requests
@@ -135,11 +138,64 @@ def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
     return int(size[0]), int(size[1]), int(frames), fps
 
 
-def _video_probe_worker(path: str, sender) -> None:
-    """Probe in its own process group so ffmpeg descendants are terminable."""
+def _watch_parent_lifeline(lifeline: Connection, cleanup_path: str | None) -> None:
+    """SIGKILL our detached group the instant the parent's lifeline drops.
+
+    The lifeline write end lives only in the parent process, so the kernel
+    closes it atomically when the parent exits for any reason — SIGTERM from
+    the Desktop supervisor, SIGKILL, or a crash — and the blocking ``poll``
+    wakes with EOF. Waking therefore proves the parent is gone: its local
+    hard-deadline cleanup and its temporary-file teardown can no longer run,
+    so this thread finishes both. Only our own process group is ever
+    signalled, and only when we are its leader, so a reused pid or an
+    unrelated group can never be hit.
+    """
 
     try:
-        os.setsid()
+        lifeline.poll(None)
+    except OSError:  # pragma: no cover - a torn lifeline still means gone
+        pass
+    if cleanup_path is not None:
+        try:
+            os.unlink(cleanup_path)
+        except OSError:
+            pass
+    pid = os.getpid()
+    try:
+        if os.getpgid(0) == pid:
+            os.killpg(pid, signal.SIGKILL)
+    except OSError:  # pragma: no cover - never signal a group we do not own
+        pass
+    os._exit(1)
+
+
+def _enter_worker_lifetime(
+    lifeline: Connection, *, cleanup_path: str | None = None
+) -> None:
+    """Detach into an own process group whose lifetime is bound to the parent.
+
+    ``setsid`` keeps the local hard-deadline contract: the parent can reap the
+    blocked worker and its descendants (ffmpeg) with ``killpg`` without
+    signalling itself. Detaching also escapes the externally supervised
+    benchmark process group, so the inherited lifeline restores cancellation
+    ownership: a daemon thread waits on it independently of the blocking
+    probe/download work and destroys this group the moment the parent dies.
+    """
+
+    os.setsid()
+    threading.Thread(
+        target=_watch_parent_lifeline,
+        args=(lifeline, cleanup_path),
+        name="parent-lifeline-watchdog",
+        daemon=True,
+    ).start()
+
+
+def _video_probe_worker(path: str, sender: Connection, lifeline: Connection) -> None:
+    """Probe in its own parent-bound group so ffmpeg descendants are terminable."""
+
+    try:
+        _enter_worker_lifetime(lifeline, cleanup_path=path)
         sender.send(("ok", _probe_video_artifact_unbounded(path)))
     except BaseException as exc:
         message = (
@@ -185,31 +241,61 @@ def _terminate_worker_process(process: multiprocessing.process.BaseProcess) -> N
         process.join(timeout=1)
 
 
-def _probe_video_artifact(
-    path: str, *, timeout_s: float = _VIDEO_ARTIFACT_PROBE_TIMEOUT_S
-) -> tuple[int, int, int, float]:
-    """Probe an MP4 behind a hard deadline and reap the whole probe group."""
+def _run_detached_worker(
+    target: Callable[..., None],
+    args: tuple[Any, ...],
+    *,
+    timeout_s: float,
+    phase: str,
+) -> Any:
+    """Supervise a detached worker behind a hard deadline and a lifeline.
+
+    The worker receives a result pipe plus the read end of a dedicated
+    lifeline whose write end stays open here for the worker's whole life, so
+    the worker can deterministically observe this process dying even though
+    ``setsid`` moved it out of the externally supervised benchmark group.
+    """
 
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
-    process = context.Process(target=_video_probe_worker, args=(path, sender))
+    lifeline_receiver, lifeline_sender = context.Pipe(duplex=False)
+    process = context.Process(target=target, args=(*args, sender, lifeline_receiver))
     process.start()
     sender.close()
+    lifeline_receiver.close()
     try:
         if not receiver.poll(timeout_s):
             _terminate_worker_process(process)
-            raise TimeoutError("video artifact probe exceeded its hard deadline")
+            raise TimeoutError(f"video artifact {phase} exceeded its hard deadline")
         try:
             status, payload = receiver.recv()
         except EOFError as exc:
-            raise RuntimeError("video artifact probe exited without a result") from exc
+            raise RuntimeError(
+                f"video artifact {phase} exited without a result"
+            ) from exc
     finally:
         receiver.close()
         process.join(timeout=1)
         if process.is_alive():
             _terminate_worker_process(process)
+        # Deliberately outlives the worker: closing earlier would fire the
+        # worker's parent-death watchdog during a normal shutdown. Once the
+        # worker is reaped no watchdog exists, so closing is inert and never
+        # signals a reused pid or group.
+        lifeline_sender.close()
     if status != "ok":
         raise RuntimeError(str(payload))
+    return payload
+
+
+def _probe_video_artifact(
+    path: str, *, timeout_s: float = _VIDEO_ARTIFACT_PROBE_TIMEOUT_S
+) -> tuple[int, int, int, float]:
+    """Probe an MP4 behind a hard deadline and reap the whole probe group."""
+
+    payload = _run_detached_worker(
+        _video_probe_worker, (path,), timeout_s=timeout_s, phase="probe"
+    )
     return tuple(payload)
 
 
@@ -251,10 +337,14 @@ def _download_video_artifact_unbounded(
 
 
 def _video_download_worker(
-    base_url: str, job_id: str, destination_path: str, sender
+    base_url: str,
+    job_id: str,
+    destination_path: str,
+    sender: Connection,
+    lifeline: Connection,
 ) -> None:
     try:
-        os.setsid()
+        _enter_worker_lifetime(lifeline, cleanup_path=destination_path)
         _download_video_artifact_unbounded(base_url, job_id, destination_path)
         sender.send(("ok", None))
     except BaseException as exc:
@@ -280,31 +370,12 @@ def _download_video_artifact(
 ) -> None:
     """Download behind a wall-clock deadline immune to socket trickle."""
 
-    context = multiprocessing.get_context("spawn")
-    receiver, sender = context.Pipe(duplex=False)
-    process = context.Process(
-        target=_video_download_worker,
-        args=(base_url, job_id, destination_path, sender),
+    _run_detached_worker(
+        _video_download_worker,
+        (base_url, job_id, destination_path),
+        timeout_s=timeout_s,
+        phase="download",
     )
-    process.start()
-    sender.close()
-    try:
-        if not receiver.poll(timeout_s):
-            _terminate_worker_process(process)
-            raise TimeoutError("video artifact download exceeded its hard deadline")
-        try:
-            status, payload = receiver.recv()
-        except EOFError as exc:
-            raise RuntimeError(
-                "video artifact download exited without a result"
-            ) from exc
-    finally:
-        receiver.close()
-        process.join(timeout=1)
-        if process.is_alive():
-            _terminate_worker_process(process)
-    if status != "ok":
-        raise RuntimeError(str(payload))
 
 
 def _validated_video_artifact(
