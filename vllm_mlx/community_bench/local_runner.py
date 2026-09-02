@@ -10,6 +10,7 @@ import concurrent.futures
 import io
 import math
 import multiprocessing
+import multiprocessing.process
 import os
 import signal
 import tempfile
@@ -154,7 +155,9 @@ def _video_probe_worker(path: str, sender) -> None:
         sender.close()
 
 
-def _terminate_worker_process(process: multiprocessing.Process) -> None:
+def _terminate_worker_process(process: multiprocessing.process.BaseProcess) -> None:
+    # ``BaseProcess`` is the shared supertype of every start-method Process
+    # (spawn/fork/forkserver), so callers are not coupled to one context.
     pid = process.pid
     if pid is None:
         return

@@ -387,7 +387,10 @@ def test_archive_skips_corrupt_rows_and_never_uploads(tmp_path: Path) -> None:
     archive = LocalRunArchive(tmp_path)
     archive.runs_dir.mkdir(parents=True)
     (archive.runs_dir / "bad.json").write_text("not-json", encoding="utf-8")
+    (archive.runs_dir / "0000.json").write_text("[]", encoding="utf-8")
     assert archive.list() == []
+    with pytest.raises(ValueError, match="not a JSON object"):
+        archive.get("0000")
 
 
 def test_registered_workload_cannot_be_relabeled_after_measurement() -> None:

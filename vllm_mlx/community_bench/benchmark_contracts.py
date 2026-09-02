@@ -34,7 +34,10 @@ def _read_json(name: str) -> dict[str, Any]:
     # resource bundle. Top-level ``proto/`` remains the cross-product SSOT;
     # tests pin every projection byte-for-byte to that source.
     root = resources.files("vllm_mlx.catalog.schemas")
-    return json.loads(root.joinpath(name).read_text(encoding="utf-8"))
+    loaded = json.loads(root.joinpath(name).read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"packaged contract {name!r} is not a JSON object")
+    return loaded
 
 
 def registered_workload(task_type: str) -> dict[str, Any]:

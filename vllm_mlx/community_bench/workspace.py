@@ -175,6 +175,8 @@ class LocalRunArchive:
         ):
             raise ValueError("invalid run id")
         run = json.loads((self.runs_dir / f"{run_id}.json").read_text(encoding="utf-8"))
+        if not isinstance(run, dict):
+            raise ValueError("benchmark run archive entry is not a JSON object")
         BenchmarkRunValidator().validate(run)
         return run
 
