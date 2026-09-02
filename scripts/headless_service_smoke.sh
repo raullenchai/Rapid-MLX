@@ -79,8 +79,8 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE
 
 echo "[3/4] readiness and model inventory"
 READY=false
-for _ in {1..60}; do
-    if curl -q --config "$CURL_CONFIG" "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
+for _ in {1..40}; do
+    if curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
        grep -Eq '"ready"[[:space:]]*:[[:space:]]*true|"status"[[:space:]]*:[[:space:]]*"(ok|ready|healthy)"|^OK$' "$RESPONSE"; then
         READY=true
         break

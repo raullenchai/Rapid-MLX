@@ -119,22 +119,16 @@ proxy or an SSH tunnel:
 ssh -L 8000:127.0.0.1:8000 serveuser@your-mac
 ```
 
-If clients must connect directly, change `--host` to a specific private
-interface address or `0.0.0.0` and require authentication. Do not put an API
-key in `ProgramArguments`: command-line arguments are visible to other local
-processes. Add `RAPID_MLX_API_KEY` under `EnvironmentVariables` instead, then
-restrict the installed plist because it now contains a secret:
+Do not put an API key in `ProgramArguments` or the plist's
+`EnvironmentVariables`. Arguments are visible to other local processes, and
+launchd can display configured environment values through `launchctl print`
+even when the plist itself is mode 0600.
 
-```bash
-sudo chmod 600 /Library/LaunchDaemons/com.rapidmlx.server.plist
-sudo launchctl bootout system/com.rapidmlx.server
-sudo launchctl bootstrap system \
-  /Library/LaunchDaemons/com.rapidmlx.server.plist
-```
-
-Also configure the macOS firewall or an external firewall, use a trusted-host
-allowlist where appropriate, and avoid exposing the unauthenticated endpoint to
-the public internet.
+For direct LAN or internet access, keep Rapid-MLX on loopback and put a
+separately managed TLS-terminating, authenticating reverse proxy in front of
+it. Restrict the proxy with the host or network firewall and a trusted-host
+allowlist. This template deliberately does not provide a public-listener
+recipe.
 
 ## 4. Verify the running appliance
 
@@ -158,7 +152,16 @@ export RAPID_MLX_API_KEY='your-key'
 Test KeepAlive without rebooting:
 
 ```bash
+old_pid=$(launchctl print system/com.rapidmlx.server | \
+  awk -F'= ' '/^[[:space:]]*pid =/{print $2; exit}')
 sudo launchctl kill SIGTERM system/com.rapidmlx.server
+for _ in {1..30}; do
+  new_pid=$(launchctl print system/com.rapidmlx.server 2>/dev/null | \
+    awk -F'= ' '/^[[:space:]]*pid =/{print $2; exit}')
+  [ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] && break
+  sleep 1
+done
+[ -n "${new_pid:-}" ] && [ "$new_pid" != "$old_pid" ] || exit 1
 ./scripts/headless_service_smoke.sh
 ```
 
