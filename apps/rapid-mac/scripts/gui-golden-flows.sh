@@ -2404,7 +2404,13 @@ flow_download_progress() {
 
 flow_settings_persistence() {
     log "2/6 settings and persistence"
-    start_persona settings-persistence
+    # This flow asserts both cards selected by the recommendation SSOT, so its
+    # fake catalog and hardware must expose the same deterministic lowest tier
+    # instead of depending on the hosted runner's RAM or an unrelated one-row
+    # catalog fixture.
+    start_persona settings-persistence FAKE_INCLUDE_STARTER=1 \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
     dismiss_first_run
     open_settings
     wait_settings_stable "$OUT/settings-root.json"
@@ -2446,16 +2452,15 @@ flow_settings_persistence() {
     # CLI consumes. This catches a missing app resource, a decoder drift, and a
     # third recommendation accidentally creeping back into a tier.
     local recommendation_json="$ROOT/../../vllm_mlx/model_recommendations.json"
-    local ram_bytes
-    ram_bytes="$(sysctl -n hw.memsize)"
+    local ram_mib=$((GOLDEN_RAM_GB * 1024))
     local expected_recommendations
-    expected_recommendations="$(python3 - "$recommendation_json" "$ram_bytes" <<'PY'
+    expected_recommendations="$(python3 - "$recommendation_json" "$ram_mib" <<'PY'
 import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
-ram_gb = int(sys.argv[2]) / (1 << 30)
+ram_mib = int(sys.argv[2])
 tier = payload["tiers"][0]
 for candidate in payload["tiers"]:
-    if ram_gb >= candidate["floor_gb"]:
+    if ram_mib >= candidate["minimum_memory_mib"]:
         tier = candidate
 print("\n".join(pick["alias"] for pick in tier["picks"]))
 PY

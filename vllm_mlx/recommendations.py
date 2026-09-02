@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from dataclasses import asdict, dataclass
-from importlib.resources import files
+from functools import lru_cache
 from typing import Any
+
+from .catalog.legacy import load_product_recommendation_policy
 
 
 @dataclass(frozen=True)
@@ -26,37 +27,79 @@ class RecommendationTier:
     picks: tuple[Recommendation, Recommendation]
 
 
+@lru_cache(maxsize=1)
 def load_recommendation_tiers() -> tuple[RecommendationTier, ...]:
-    resource = files("vllm_mlx").joinpath("model_recommendations.json")
-    payload = json.loads(resource.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != 1:
-        raise ValueError("unsupported model recommendation schema")
+    """Decode the validated atomic policy into the stable public API."""
+
+    payload = load_product_recommendation_policy()
+    if payload.get("task_type") != "text_generation":
+        raise ValueError("default recommendation policy must target text_generation")
+    if payload.get("machine_dimension") != "physical_memory_mib":
+        raise ValueError("unsupported recommendation machine dimension")
+
+    limitation_copy = {
+        "not_for_coding": "Not for coding",
+        "basic_chat": "Basic chat",
+    }
 
     tiers: list[RecommendationTier] = []
     for raw_tier in payload["tiers"]:
-        picks = tuple(
-            Recommendation(
-                role=raw["role"],
-                alias=raw["alias"],
-                footprint_gb=float(raw["footprint_gb"]),
-                capability_pct=int(raw["capability_pct"]),
-                tokens_per_sec=(
-                    None
-                    if raw.get("tokens_per_sec") is None
-                    else float(raw["tokens_per_sec"])
-                ),
-                launch_flags=tuple(raw.get("launch_flags", ())),
-                caveat=raw.get("caveat"),
+        picks_list: list[Recommendation] = []
+        for raw in raw_tier["picks"]:
+            if raw.get("execution_preset_id") is not None:
+                raise ValueError(
+                    "recommendation execution presets are not supported by the "
+                    "legacy serve-flag API"
+                )
+            limitations = raw.get("limitation_ids", [])
+            unknown = set(limitations) - limitation_copy.keys()
+            if unknown:
+                raise ValueError(
+                    f"unknown recommendation limitation IDs: {sorted(unknown)}"
+                )
+            if len(limitations) > 1:
+                raise ValueError(
+                    "recommendation display supports at most one limitation ID"
+                )
+            score_value = raw.get("capability_score_x100")
+            if score_value is None:
+                raise ValueError(
+                    "recommendation display requires capability_score_x100"
+                )
+            score = int(score_value)
+            if score % 100:
+                raise ValueError(
+                    "capability score cannot be represented as a whole percent"
+                )
+            picks_list.append(
+                Recommendation(
+                    role=raw["role"],
+                    alias=raw["alias"],
+                    footprint_gb=round(int(raw["footprint_mib"]) / 1024, 1),
+                    capability_pct=score // 100,
+                    tokens_per_sec=(
+                        None
+                        if raw.get("decode_tokens_per_second_x100") is None
+                        else int(raw["decode_tokens_per_second_x100"]) / 100
+                    ),
+                    launch_flags=(),
+                    caveat=(limitation_copy[limitations[0]] if limitations else None),
+                )
             )
-            for raw in raw_tier["picks"]
-        )
+        picks = tuple(picks_list)
         if len(picks) != 2 or [pick.role for pick in picks] != ["smart", "fast"]:
             raise ValueError(
-                f"RAM tier {raw_tier['floor_gb']} must contain smart + fast picks"
+                f"RAM tier {raw_tier['minimum_memory_mib']} must contain smart + fast picks"
             )
-        tiers.append(RecommendationTier(int(raw_tier["floor_gb"]), picks))
-    if not tiers or list(tiers) != sorted(tiers, key=lambda tier: tier.floor_gb):
-        raise ValueError("recommendation tiers must be sorted by floor_gb")
+        floor_mib = int(raw_tier["minimum_memory_mib"])
+        if floor_mib % 1024:
+            raise ValueError("Desktop RAM tier floors must be whole GiB values")
+        tiers.append(RecommendationTier(floor_mib // 1024, picks))
+    if not tiers or any(
+        current.floor_gb <= previous.floor_gb
+        for previous, current in zip(tiers, tiers[1:])
+    ):
+        raise ValueError("recommendation tiers must have strictly increasing floors")
     return tuple(tiers)
 
 

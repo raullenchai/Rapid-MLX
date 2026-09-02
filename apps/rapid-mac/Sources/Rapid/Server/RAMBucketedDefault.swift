@@ -105,11 +105,26 @@ enum RAMBucketedDefault {
         var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
     }
 
+    /// A policy pick that resolves in the catalog currently advertised by
+    /// the installed sidecar. The source position is retained so a surviving
+    /// fast alternative is never relabelled as the primary recommendation.
+    struct CatalogPick: Sendable, Equatable {
+        let pick: Pick
+        let isPrimary: Bool
+    }
+
+    private struct LoadedPolicy {
+        let tiers: [Tier]
+        let digest: String
+    }
+
     /// Decoded from the repository-wide SSOT used by both Rapid Desktop and
     /// ``rapid-mlx recipe``. A missing or malformed table is a packaging error:
     /// silently inventing a fallback would recreate the cross-surface drift this
     /// catalog exists to prevent.
-    static let tiers: [Tier] = loadTiers()
+    private static let loadedPolicy = loadPolicy()
+    static let tiers: [Tier] = loadedPolicy.tiers
+    static let policyDigest: String = loadedPolicy.digest
 
     /// One authoritative working-set footprint per catalogued alias.
     ///
@@ -134,20 +149,28 @@ enum RAMBucketedDefault {
 
     private struct Payload: Decodable {
         let schemaVersion: Int
+        let policyID: String
+        let policyDigest: String
+        let taskType: String
+        let machineDimension: String
         let tiers: [RawTier]
 
         enum CodingKeys: String, CodingKey {
             case schemaVersion = "schema_version"
+            case policyID = "policy_id"
+            case policyDigest = "policy_digest"
+            case taskType = "task_type"
+            case machineDimension = "machine_dimension"
             case tiers
         }
     }
 
     private struct RawTier: Decodable {
-        let floorGB: Double
+        let minimumMemoryMiB: Int
         let picks: [RawPick]
 
         enum CodingKeys: String, CodingKey {
-            case floorGB = "floor_gb"
+            case minimumMemoryMiB = "minimum_memory_mib"
             case picks
         }
     }
@@ -155,45 +178,197 @@ enum RAMBucketedDefault {
     private struct RawPick: Decodable {
         let role: String
         let alias: String
-        let footprintGB: Double
-        let capabilityPct: Int
-        let tokensPerSec: Double?
-        let launchFlags: [String]
-        let caveat: String?
+        let evidenceStatus: String
+        let evidenceID: String?
+        let footprintMiB: Int
+        let capabilityScoreX100: Int
+        let decodeTokensPerSecondX100: Int?
+        let reasonIDs: [String]
+        let limitationIDs: [String]
+        let executionPresetID: String?
 
         enum CodingKeys: String, CodingKey {
-            case role, alias, caveat
-            case footprintGB = "footprint_gb"
-            case capabilityPct = "capability_pct"
-            case tokensPerSec = "tokens_per_sec"
-            case launchFlags = "launch_flags"
+            case role, alias
+            case evidenceStatus = "evidence_status"
+            case evidenceID = "evidence_id"
+            case footprintMiB = "footprint_mib"
+            case capabilityScoreX100 = "capability_score_x100"
+            case decodeTokensPerSecondX100 = "decode_tokens_per_second_x100"
+            case reasonIDs = "reason_ids"
+            case limitationIDs = "limitation_ids"
+            case executionPresetID = "execution_preset_id"
         }
 
-        var pick: Pick {
-            Pick(alias: alias, footprintGB: footprintGB,
-                 capabilityPct: capabilityPct, tokensPerSec: tokensPerSec,
-                 launchFlags: launchFlags, caveat: caveat)
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            role = try values.decode(String.self, forKey: .role)
+            alias = try values.decode(String.self, forKey: .alias)
+            evidenceStatus = try values.decode(String.self, forKey: .evidenceStatus)
+            evidenceID = try values.decodeIfPresent(String.self, forKey: .evidenceID)
+            footprintMiB = try values.decode(Int.self, forKey: .footprintMiB)
+            capabilityScoreX100 = try values.decode(
+                Int.self, forKey: .capabilityScoreX100
+            )
+            decodeTokensPerSecondX100 = try values.decodeIfPresent(
+                Int.self, forKey: .decodeTokensPerSecondX100
+            )
+            reasonIDs = try values.decode([String].self, forKey: .reasonIDs)
+            limitationIDs = try values.decodeIfPresent(
+                [String].self, forKey: .limitationIDs
+            ) ?? []
+            executionPresetID = try values.decodeIfPresent(
+                String.self, forKey: .executionPresetID
+            )
+        }
+
+        private static func isSchemaIdentifier(
+            _ value: String,
+            maxBytes: Int,
+            allowsSlash: Bool = false
+        ) -> Bool {
+            guard !value.isEmpty,
+                  value.utf8.count <= maxBytes,
+                  let first = value.utf8.first,
+                  (first >= 97 && first <= 122) || (first >= 48 && first <= 57)
+            else { return false }
+            return value.utf8.allSatisfy { byte in
+                (byte >= 97 && byte <= 122)
+                    || (byte >= 48 && byte <= 57)
+                    || byte == 45 || byte == 46 || byte == 95
+                    || (allowsSlash && byte == 47)
+            }
+        }
+
+        func resolvedPick() -> Pick? {
+            let limitationCopy = [
+                "not_for_coding": "Not for coding",
+                "basic_chat": "Basic chat",
+            ]
+            guard Self.isSchemaIdentifier(alias, maxBytes: 128),
+                  footprintMiB > 0,
+                  capabilityScoreX100 >= 0,
+                  capabilityScoreX100 <= 10_000,
+                  capabilityScoreX100 % 100 == 0,
+                  decodeTokensPerSecondX100.map({ $0 > 0 }) ?? true,
+                  !reasonIDs.isEmpty,
+                  Set(reasonIDs).count == reasonIDs.count,
+                  reasonIDs.allSatisfy({
+                      Self.isSchemaIdentifier($0, maxBytes: 128)
+                  }),
+                  ["legacy_estimate", "legacy_measured", "community_candidate", "promoted"]
+                      .contains(evidenceStatus),
+                  !["community_candidate", "promoted"].contains(evidenceStatus)
+                    || evidenceID?.isEmpty == false,
+                  evidenceID.map({
+                      Self.isSchemaIdentifier(
+                          $0, maxBytes: 160, allowsSlash: true
+                      )
+                  }) ?? true,
+                  executionPresetID == nil,
+                  Set(limitationIDs).count == limitationIDs.count,
+                  limitationIDs.count <= 1
+                    && limitationIDs.allSatisfy({ limitationCopy[$0] != nil }) else {
+                return nil
+            }
+            return Pick(
+                alias: alias,
+                // Match Python's round-half-to-even so the shared atomic
+                // policy renders the same footprint on every surface.
+                footprintGB: (Double(footprintMiB) / 1024 * 10)
+                    .rounded(.toNearestOrEven) / 10,
+                capabilityPct: capabilityScoreX100 / 100,
+                tokensPerSec: decodeTokensPerSecondX100.map { Double($0) / 100 },
+                launchFlags: [],
+                caveat: limitationIDs.first.flatMap { limitationCopy[$0] }
+            )
         }
     }
 
-    private static func loadTiers() -> [Tier] {
+    /// Decode the atomic recommendation policy without mutating app state.
+    /// Kept internal so tests can prove tampered or unsupported policies fail
+    /// closed before a release packages them.
+    static func parseRecommendationPolicy(_ data: Data) -> [Tier]? {
+        guard
+              let rawObject = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              hasOnlyRecommendationPolicyKeys(rawObject),
+              let declaredDigest = rawObject["policy_digest"] as? String,
+              ModelCatalog.atomicObjectDigest(
+                rawObject.filter { $0.key != "policy_digest" }
+              ) == declaredDigest,
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.schemaVersion == 1,
+              payload.policyID == "rapid/default/text-generation/ram-v1",
+              payload.policyDigest == declaredDigest,
+              payload.taskType == "text_generation",
+              payload.machineDimension == "physical_memory_mib",
+              !payload.tiers.isEmpty else {
+            return nil
+        }
+        var previousFloor = -Double.infinity
+        var footprints: [String: Int] = [:]
+        var tiers: [Tier] = []
+        for raw in payload.tiers {
+            guard raw.minimumMemoryMiB > 0,
+                  raw.minimumMemoryMiB % 1024 == 0 else { return nil }
+            let floorGB = Double(raw.minimumMemoryMiB / 1024)
+            guard floorGB > previousFloor,
+                  raw.picks.count == 2,
+                  raw.picks.map(\.role) == ["smart", "fast"],
+                  let primary = raw.picks[0].resolvedPick(),
+                  let alt = raw.picks[1].resolvedPick() else { return nil }
+            previousFloor = floorGB
+            for pick in raw.picks {
+                let key = pick.alias.lowercased()
+                if let existing = footprints[key], existing != pick.footprintMiB {
+                    return nil
+                }
+                footprints[key] = pick.footprintMiB
+            }
+            tiers.append(Tier(floorGB: floorGB, primary: primary, alt: alt))
+        }
+        return tiers
+    }
+
+    /// JSONDecoder intentionally ignores unknown keys. Check the schema's
+    /// additionalProperties=false boundary before decoding so Desktop and the
+    /// Python contract validator accept exactly the same addressed shape.
+    private static func hasOnlyRecommendationPolicyKeys(
+        _ object: [String: Any]
+    ) -> Bool {
+        let policyKeys: Set<String> = [
+            "schema_version", "policy_id", "policy_digest", "task_type",
+            "machine_dimension", "tiers",
+        ]
+        let tierKeys: Set<String> = ["minimum_memory_mib", "picks"]
+        let pickKeys: Set<String> = [
+            "role", "alias", "execution_preset_id", "evidence_status",
+            "evidence_id", "footprint_mib", "capability_score_x100",
+            "decode_tokens_per_second_x100", "reason_ids", "limitation_ids",
+        ]
+        guard Set(object.keys).isSubset(of: policyKeys),
+              let rawTiers = object["tiers"] as? [[String: Any]] else {
+            return false
+        }
+        return rawTiers.allSatisfy { tier in
+            guard Set(tier.keys).isSubset(of: tierKeys),
+                  let picks = tier["picks"] as? [[String: Any]] else {
+                return false
+            }
+            return picks.allSatisfy { Set($0.keys).isSubset(of: pickKeys) }
+        }
+    }
+
+    private static func loadPolicy() -> LoadedPolicy {
         guard let url = recommendationResourceURL(),
               let data = try? Data(contentsOf: url),
-              let payload = try? JSONDecoder().decode(Payload.self, from: data),
-              payload.schemaVersion == 1 else {
+              let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              let digest = object["policy_digest"] as? String,
+              let tiers = parseRecommendationPolicy(data) else {
             fatalError("model_recommendations.json is missing or invalid")
         }
-        precondition(!payload.tiers.isEmpty, "recommendation catalog must contain tiers")
-        var previousFloor = -Double.infinity
-        return payload.tiers.map { raw in
-            precondition(raw.floorGB > previousFloor,
-                         "recommendation tiers must be sorted by RAM floor")
-            previousFloor = raw.floorGB
-            precondition(raw.picks.count == 2 && raw.picks.map(\.role) == ["smart", "fast"],
-                         "every RAM tier must contain smart + fast picks")
-            return Tier(floorGB: raw.floorGB, primary: raw.picks[0].pick,
-                        alt: raw.picks[1].pick)
-        }
+        return LoadedPolicy(tiers: tiers, digest: digest)
     }
 
     private static func recommendationResourceURL() -> URL? {
@@ -259,6 +434,34 @@ enum RAMBucketedDefault {
         footprintsByAlias[alias.lowercased()]
     }
 
+    /// Resolve an immutable policy snapshot against the live model catalog.
+    /// Packaging validates the two artifacts together, while this boundary
+    /// handles an older externally installed sidecar without presenting an
+    /// alias that it cannot download or launch.
+    static func catalogPicks(
+        from picks: [Pick],
+        catalog: [ModelEntry]
+    ) -> [CatalogPick] {
+        let catalogAliases = Set(catalog.compactMap { entry in
+            recommendationPolicyIsUsable(for: entry)
+                ? entry.alias
+                : nil
+        })
+        return picks.enumerated().compactMap { index, pick in
+            guard catalogAliases.contains(pick.alias) else { return nil }
+            return CatalogPick(pick: pick, isPrimary: index == 0)
+        }
+    }
+
+    /// Atomic catalogs authenticate the exact policy address. A pre-atomic
+    /// sidecar preserves the established recommendation UX only for rows it
+    /// explicitly marks as built-in; custom and plain-text fallback rows stay
+    /// ineligible. Atomic catalogs never receive the compatibility marker.
+    private static func recommendationPolicyIsUsable(for entry: ModelEntry) -> Bool {
+        entry.recommendationPolicyDigests.contains(policyDigest)
+            || entry.allowsLegacyRecommendationPolicy
+    }
+
     /// Quality-aware order for choosing among models that are already on
     /// disk. Begin with the closest tier this Mac qualifies for and walk
     /// downward, preserving smart-before-fast within each tier and removing
@@ -301,7 +504,14 @@ enum RAMBucketedDefault {
     /// its picks stay subject to the ``.tooBig`` gate — bypassing it there
     /// would re-open the OOM hole (bonsai's 7.6 GB exceeds an 8 GB Mac's
     /// usable pool).
-    static func isRecommendedPick(alias: String, physicalRAMGB: Double) -> Bool {
+    static func isRecommendedPick(
+        alias: String,
+        physicalRAMGB: Double,
+        catalogEntry: ModelEntry? = nil
+    ) -> Bool {
+        guard catalogEntry?.alias == alias,
+              catalogEntry.map(recommendationPolicyIsUsable(for:)) == true
+        else { return false }
         let t = tier(forPhysicalRAMGB: physicalRAMGB)
         return physicalRAMGB >= t.floorGB && t.picks.contains { $0.alias == alias }
     }
@@ -502,7 +712,10 @@ enum CacheAwareDefault {
         // invariant local and obvious.)
         let bucketedFits = bucketedEntry.map {
             RAMBucketedDefault.isRecommendedPick(
-                alias: bucketedDefault, physicalRAMGB: hardware.physicalRAMGB)
+                alias: bucketedDefault,
+                physicalRAMGB: hardware.physicalRAMGB,
+                catalogEntry: $0
+            )
                 || isSafe($0, on: hardware)
         } ?? false
 

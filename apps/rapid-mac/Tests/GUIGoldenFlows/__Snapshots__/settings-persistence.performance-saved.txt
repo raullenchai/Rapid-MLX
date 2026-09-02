@@ -12,11 +12,12 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
           AXButton id="GitHub.Star.EmptyState" desc="Star on GitHub" help="Opens the Rapid-MLX repository in your browser" enabled=true
-          AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
+          AXGroup desc="lfm2.5-1b-4bit isn't downloaded yet, It downloads once (~<size>), then starts in seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Readiness.Action" desc="Start" enabled=true
+            AXButton id="Readiness.Action" desc="Download" enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
@@ -24,7 +25,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Download lfm2.5-1b-4bit before sending." enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

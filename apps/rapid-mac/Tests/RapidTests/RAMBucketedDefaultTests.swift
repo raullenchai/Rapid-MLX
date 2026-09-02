@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Rapid
 
@@ -25,6 +26,41 @@ import Testing
 /// agree on its working-set number.
 @Suite("RAMBucketedDefault — RAM tier → recommended pick")
 struct RAMBucketedDefaultTests {
+
+    private func catalogEntry(
+        _ alias: String,
+        policyDigests: Set<String> = [RAMBucketedDefault.policyDigest]
+    ) -> ModelEntry {
+        ModelEntry(
+            alias: alias, hfRepo: nil, sizeOnDisk: nil, cached: false,
+            recommendationPolicyDigests: policyDigests
+        )
+    }
+
+    private func policyData() throws -> Data {
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 {
+            let candidate = directory.appendingPathComponent(
+                "vllm_mlx/model_recommendations.json"
+            )
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return try Data(contentsOf: candidate)
+            }
+            directory.deleteLastPathComponent()
+        }
+        throw CocoaError(.fileNoSuchFile)
+    }
+
+    private func addressedPolicyData(_ object: [String: Any]) throws -> Data {
+        var addressed = object
+        guard let digest = ModelCatalog.atomicObjectDigest(
+            addressed.filter { $0.key != "policy_digest" }
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        addressed["policy_digest"] = digest
+        return try JSONSerialization.data(withJSONObject: addressed)
+    }
 
     // MARK: - Primary alias per RAM (rounds DOWN to nearest floor)
 
@@ -126,6 +162,44 @@ struct RAMBucketedDefaultTests {
         #expect(RAMBucketedDefault.footprintGB(forAlias: "private-model") == nil)
     }
 
+    @Test("Recommendations resolve against the installed sidecar catalog")
+    func recommendationsResolveAgainstLiveCatalog() {
+        let known = RAMBucketedDefault.Pick(
+            alias: "known-model", footprintGB: 2, capabilityPct: 50,
+            tokensPerSec: 20, launchFlags: []
+        )
+        let missing = RAMBucketedDefault.Pick(
+            alias: "syntactically-valid-but-missing", footprintGB: 3,
+            capabilityPct: 60, tokensPerSec: 15, launchFlags: []
+        )
+        let resolved = RAMBucketedDefault.catalogPicks(
+            from: [missing, known], catalog: [catalogEntry("known-model")]
+        )
+
+        #expect(resolved == [.init(pick: known, isPrimary: false)])
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known],
+            catalog: [catalogEntry("known-model", policyDigests: ["sha256:" + String(repeating: "0", count: 64)])]
+        ).isEmpty)
+
+        let legacy = ModelEntry(
+            alias: "known-model", hfRepo: "org/known", sizeOnDisk: nil,
+            cached: false, allowsLegacyRecommendationPolicy: true,
+            isBuiltinProfile: true
+        )
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known], catalog: [legacy]
+        ) == [.init(pick: known, isPrimary: true)])
+
+        let unsignedAtomic = ModelEntry(
+            alias: "known-model", hfRepo: "org/known", sizeOnDisk: nil,
+            cached: false, isBuiltinProfile: true
+        )
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known], catalog: [unsignedAtomic]
+        ).isEmpty)
+    }
+
     // MARK: - Launch flags travel with the recommendation, gated by RAM
 
     @Test("Flags apply only when the alias IS the pick for that Mac's RAM")
@@ -143,25 +217,41 @@ struct RAMBucketedDefaultTests {
 
     @Test("isRecommendedPick is true only for this Mac's primary or alt, and is floor-gated")
     func isRecommendedPickContract() {
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 18))
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18, catalogEntry: catalogEntry("qwen3.5-9b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 18, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18, catalogEntry: catalogEntry("bonsai-27b-2bit")))
         #expect(!RAMBucketedDefault.isRecommendedPick(alias: "gemma-4-12b-4bit", physicalRAMGB: 18)) // dropped from picks
         // An 8 GB Mac now SITS IN a tier, so its own pick is exempt from the
         // .tooBig gate — that exemption is the whole point of the tier, since
         // before it every pick offered to an 8 GB Mac was rejected at launch.
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8, catalogEntry: catalogEntry("lfm2.5-2.6b-4bit")))
         // The bigger models are still NOT exempt there: they are not this
         // tier's picks, so the OOM hole stays closed.
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8))
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 8))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8, catalogEntry: catalogEntry("bonsai-27b-2bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 8, catalogEntry: catalogEntry("qwen3.5-4b-4bit")))
         // Below the lowest floor there is still no exemption for anything.
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4, catalogEntry: catalogEntry("lfm2.5-2.6b-4bit")))
         // The fast alt is a recommended pick on its own tiers (64/96 GB),
         // so it also skips the .tooBig gate there.
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64, catalogEntry: catalogEntry("qwen3.6-35b-4bit")))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96, catalogEntry: catalogEntry("qwen3.6-35b-4bit")))
+        #expect(!RAMBucketedDefault.isRecommendedPick(
+            alias: "qwen3.8-27b-4bit",
+            physicalRAMGB: 32,
+            catalogEntry: catalogEntry(
+                "qwen3.8-27b-4bit",
+                policyDigests: ["sha256:" + String(repeating: "0", count: 64)]
+            )
+        ))
+        #expect(!RAMBucketedDefault.isRecommendedPick(
+            alias: "qwen3.8-27b-4bit",
+            physicalRAMGB: 32,
+            catalogEntry: ModelEntry(
+                alias: "qwen3.8-27b-4bit", hfRepo: nil,
+                sizeOnDisk: nil, cached: false
+            )
+        ))
     }
 
     @Test("Laptop recommendations agree with the conservative launch sizing guard")
@@ -206,6 +296,182 @@ struct RAMBucketedDefaultTests {
         for tier in RAMBucketedDefault.tiers {
             #expect(tier.picks.count == 2, "Tier \(tier.floorGB) GB must have exactly two picks")
         }
+    }
+
+    @Test("Atomic policy digest and unsupported execution semantics fail closed")
+    func atomicPolicyFailsClosed() throws {
+        let data = try policyData()
+        #expect(RAMBucketedDefault.parseRecommendationPolicy(data) != nil)
+
+        let original = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        var tampered = original
+        tampered["machine_dimension"] = "available_memory_mib"
+        let staleDigestData = try JSONSerialization.data(withJSONObject: tampered)
+        #expect(RAMBucketedDefault.parseRecommendationPolicy(staleDigestData) == nil)
+
+        tampered = original
+        var tiers = try #require(tampered["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0]["execution_preset_id"] = "preset/unsupported"
+        tiers[0]["picks"] = picks
+        tampered["tiers"] = tiers
+        let unsupportedData = try addressedPolicyData(tampered)
+        #expect(RAMBucketedDefault.parseRecommendationPolicy(unsupportedData) == nil)
+    }
+
+    @Test("Footprint rounding matches the policy producer at half-even ties")
+    func footprintRoundingMatchesPolicyProducer() throws {
+        var policy = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+        var tiers = try #require(policy["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0]["footprint_mib"] = 1_280 // 1.25 GiB -> 1.2 (ties to even)
+        tiers[0]["picks"] = picks
+        policy["tiers"] = tiers
+
+        let parsed = try #require(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(policy)
+            )
+        )
+        #expect(parsed[0].primary.footprintGB == 1.2)
+    }
+
+    @Test("Atomic policy rejects unknown fields at every schema boundary")
+    func atomicPolicyRejectsUnknownFields() throws {
+        let original = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+
+        var unknownTop = original
+        unknownTop["unexpected"] = true
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(unknownTop)
+            ) == nil
+        )
+
+        var unknownTier = original
+        var tiers = try #require(unknownTier["tiers"] as? [[String: Any]])
+        tiers[0]["unexpected"] = true
+        unknownTier["tiers"] = tiers
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(unknownTier)
+            ) == nil
+        )
+
+        var unknownPick = original
+        tiers = try #require(unknownPick["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0]["unexpected"] = true
+        tiers[0]["picks"] = picks
+        unknownPick["tiers"] = tiers
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(unknownPick)
+            ) == nil
+        )
+    }
+
+    @Test("Atomic policy rejects limitations the current display cannot represent")
+    func atomicPolicyRejectsMultipleLimitations() throws {
+        var policy = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+        var tiers = try #require(policy["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0]["limitation_ids"] = ["not_for_coding", "basic_chat"]
+        tiers[0]["picks"] = picks
+        policy["tiers"] = tiers
+
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(policy)
+            ) == nil
+        )
+    }
+
+    @Test("Atomic policy enforces schema identifiers across Desktop")
+    func atomicPolicyRejectsMalformedIdentifiers() throws {
+        let original = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+
+        func policyDataWithPickMutation(
+            _ mutate: (inout [String: Any]) -> Void
+        ) throws -> Data {
+            var policy = original
+            var tiers = try #require(policy["tiers"] as? [[String: Any]])
+            var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+            mutate(&picks[0])
+            tiers[0]["picks"] = picks
+            policy["tiers"] = tiers
+            return try addressedPolicyData(policy)
+        }
+
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try policyDataWithPickMutation { $0["alias"] = "Qwen3" }
+            ) == nil
+        )
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try policyDataWithPickMutation {
+                    $0["reason_ids"] = ["Fits_Memory"]
+                }
+            ) == nil
+        )
+        for evidenceID in ["invalid evidence", String(repeating: "a", count: 161)] {
+            #expect(
+                RAMBucketedDefault.parseRecommendationPolicy(
+                    try policyDataWithPickMutation {
+                        $0["evidence_status"] = "promoted"
+                        $0["evidence_id"] = evidenceID
+                    }
+                ) == nil
+            )
+        }
+    }
+
+    @Test("Atomic policy accepts the schema's zero capability boundary")
+    func atomicPolicyAcceptsZeroCapability() throws {
+        var policy = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+        var tiers = try #require(policy["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0]["capability_score_x100"] = 0
+        tiers[0]["picks"] = picks
+        policy["tiers"] = tiers
+
+        let decoded = try #require(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(policy)
+            )
+        )
+        #expect(decoded[0].primary.capabilityPct == 0)
+    }
+
+    @Test("Atomic policy rejects a score the current display requires but omits")
+    func atomicPolicyRequiresDisplayCapability() throws {
+        var policy = try #require(
+            JSONSerialization.jsonObject(with: policyData()) as? [String: Any]
+        )
+        var tiers = try #require(policy["tiers"] as? [[String: Any]])
+        var picks = try #require(tiers[0]["picks"] as? [[String: Any]])
+        picks[0].removeValue(forKey: "capability_score_x100")
+        tiers[0]["picks"] = picks
+        policy["tiers"] = tiers
+
+        #expect(
+            RAMBucketedDefault.parseRecommendationPolicy(
+                try addressedPolicyData(policy)
+            ) == nil
+        )
     }
 }
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .canonical import rcj_digest
 from .validation import ContractValidator
@@ -198,58 +197,25 @@ def build_legacy_catalog_snapshot() -> dict[str, Any]:
     return snapshot
 
 
-def _scaled(value: Any, multiplier: str) -> int:
-    return int(
-        (Decimal(str(value)) * Decimal(multiplier)).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )
-    )
+def load_product_recommendation_policy(
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Load the atomic RAM policy and validate it against the current catalog."""
+
+    snapshot = snapshot or build_legacy_catalog_snapshot()
+    path = Path(__file__).resolve().parents[1] / "model_recommendations.json"
+    policy = cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    aliases = {item["alias"]: item for item in snapshot["aliases"]}
+    ContractValidator().validate_recommendation_policy(policy, aliases=aliases)
+    return policy
 
 
 def build_legacy_recommendation_policy(
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Normalize the current RAM table without granting it promoted status."""
+    """Compatibility name for callers introduced during the shadow phase."""
 
-    snapshot = snapshot or build_legacy_catalog_snapshot()
-    path = Path(__file__).resolve().parents[1] / "model_recommendations.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    tiers = []
-    limitation_ids = {"Not for coding": "not_for_coding", "Basic chat": "basic_chat"}
-    for tier in raw["tiers"]:
-        picks = []
-        for pick in tier["picks"]:
-            normalized: dict[str, Any] = {
-                "role": pick["role"],
-                "alias": pick["alias"],
-                "evidence_status": "legacy_estimate"
-                if pick.get("provenance") == "estimate"
-                else "legacy_measured",
-                "footprint_mib": _scaled(pick["footprint_gb"], "1024"),
-                "capability_score_x100": int(pick["capability_pct"]) * 100,
-                "reason_ids": ["curated_general_purpose", "fits_memory_tier"],
-            }
-            if pick.get("tokens_per_sec") is not None:
-                normalized["decode_tokens_per_second_x100"] = _scaled(
-                    pick["tokens_per_sec"], "100"
-                )
-            if limitation := limitation_ids.get(pick.get("caveat")):
-                normalized["limitation_ids"] = [limitation]
-            picks.append(normalized)
-        tiers.append(
-            {"minimum_memory_mib": int(tier["floor_gb"]) * 1024, "picks": picks}
-        )
-    policy: dict[str, Any] = {
-        "schema_version": 1,
-        "policy_id": "rapid/default/text-generation/ram-v1",
-        "task_type": "text_generation",
-        "machine_dimension": "physical_memory_mib",
-        "tiers": tiers,
-    }
-    policy["policy_digest"] = rcj_digest(policy)
-    aliases = {item["alias"]: item for item in snapshot["aliases"]}
-    ContractValidator().validate_recommendation_policy(policy, aliases=aliases)
-    return policy
+    return load_product_recommendation_policy(snapshot)
 
 
 def build_shadow_report(
@@ -262,7 +228,7 @@ def build_shadow_report(
     from vllm_mlx.model_aliases import list_profiles
 
     snapshot = snapshot or build_legacy_catalog_snapshot()
-    policy = policy or build_legacy_recommendation_policy(snapshot)
+    policy = policy or load_product_recommendation_policy(snapshot)
     legacy_aliases = set(list_profiles()) | {
         entry.alias for entry in list_audio_aliases()
     }
@@ -297,7 +263,7 @@ def build_catalog_bundle() -> dict[str, Any]:
     """Build the complete shadow bundle exposed to Server and Desktop."""
 
     snapshot = build_legacy_catalog_snapshot()
-    policy = build_legacy_recommendation_policy(snapshot)
+    policy = load_product_recommendation_policy(snapshot)
     snapshot["recommendation_policy_digests"] = [policy["policy_digest"]]
     snapshot["catalog_digest"] = rcj_digest(
         {

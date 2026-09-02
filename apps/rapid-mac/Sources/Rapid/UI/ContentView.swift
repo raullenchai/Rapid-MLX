@@ -1689,7 +1689,10 @@ struct ContentView: View {
         let rejectsAlias: (String) -> Bool = { candidate in
             ModelSizing.classify(ModelSizing.estimate(alias: candidate), on: hardware) == .tooBig
                 && !RAMBucketedDefault.isRecommendedPick(
-                    alias: candidate, physicalRAMGB: hardware.physicalRAMGB)
+                    alias: candidate,
+                    physicalRAMGB: hardware.physicalRAMGB,
+                    catalogEntry: catalogEntries.first { $0.alias == candidate }
+                )
         }
         let decision = AutoStartDecision.decide(
             lastServedAlias: launchPlan.models.chatAlias,

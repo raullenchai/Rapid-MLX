@@ -76,7 +76,9 @@ struct AtomicModelCatalogTests {
               var atomic = root["atomic"] as? [String: Any],
               var snapshot = atomic["snapshot"] as? [String: Any]
         else { fatalError("invalid atomic test fixture") }
-        snapshot["recommendation_policy_digests"] = []
+        if snapshot["recommendation_policy_digests"] == nil {
+            snapshot["recommendation_policy_digests"] = []
+        }
         guard let digest = ModelCatalog.atomicCatalogDigest(snapshot) else {
             fatalError("test fixture cannot be canonicalized")
         }
@@ -131,6 +133,65 @@ struct AtomicModelCatalogTests {
         #expect(entries.first { $0.alias == "tts" }?.kind == .audio)
         #expect(entries.first { $0.alias == "stt" }?.kind == .audio)
         #expect(entries.first { $0.alias == "hidden" } == nil)
+        #expect(entries.allSatisfy { $0.recommendationPolicyDigests.isEmpty })
+        #expect(entries.allSatisfy { !$0.allowsLegacyRecommendationPolicy })
+    }
+
+    @Test("legacy built-in rows preserve recommendation compatibility without weakening atomic catalogs")
+    func legacyRecommendationCompatibilityIsFormatScoped() throws {
+        let legacy = #"{"text":[{"alias":"chat","hf_path":"org/chat","is_builtin":true,"is_text_only":true},{"alias":"custom","hf_path":"org/custom","is_builtin":false,"is_text_only":true}]}"#
+        let projection = try #require(ModelCatalog.parseAvailableJSON(legacy))
+        #expect(projection.profiles["chat"]?.allowsLegacyRecommendationPolicy == true)
+        #expect(projection.profiles["custom"]?.allowsLegacyRecommendationPolicy == false)
+
+        let atomic = try #require(ModelCatalog.parseAvailableJSON(Self.payload))
+        #expect(atomic.profiles["chat"]?.allowsLegacyRecommendationPolicy == false)
+
+        let corruptAtomic = Self.mutated({ root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["catalog_digest"] = "sha256:" + String(repeating: "0", count: 64)
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+            root["text"] = [[
+                "alias": "chat", "hf_path": "org/chat",
+                "is_builtin": true, "is_text_only": true,
+            ]]
+        }, resign: false)
+        let downgraded = try #require(ModelCatalog.parseAvailableJSON(corruptAtomic))
+        #expect(downgraded.profiles["chat"]?.allowsLegacyRecommendationPolicy == false)
+    }
+
+    @Test("atomic catalog preserves authenticated recommendation policy addresses")
+    func preservesRecommendationPolicyDigests() throws {
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        let advertised = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["recommendation_policy_digests"] = [digest]
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(advertised))
+        #expect(entries.allSatisfy { $0.recommendationPolicyDigests == [digest] })
+        let projection = try #require(ModelCatalog.parseAvailableJSON(advertised))
+        #expect(projection.profiles["chat"]?.recommendationPolicyDigests == [digest])
+
+        for invalid in [
+            ["not-a-content-address"],
+            [digest, digest],
+            ["sha256:" + String(repeating: "A", count: 64)],
+            ["sha256:" + String(repeating: "١", count: 64)],
+        ] {
+            let payload = Self.mutated { root in
+                var atomic = root["atomic"] as! [String: Any]
+                var snapshot = atomic["snapshot"] as! [String: Any]
+                snapshot["recommendation_policy_digests"] = invalid
+                atomic["snapshot"] = snapshot
+                root["atomic"] = atomic
+            }
+            #expect(ModelCatalog.parseAtomicModelEntriesJSON(payload) == nil)
+        }
     }
 
     @Test("multi-task aliases project into every supported product surface")
@@ -468,7 +529,15 @@ struct AtomicModelCatalogTests {
 
     @Test("atomic Settings merge preserves custom and external cached models")
     func cacheMergePreservesUserModels() throws {
-        let atomic = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))
+        let digest = "sha256:" + String(repeating: "b", count: 64)
+        let advertised = Self.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["recommendation_policy_digests"] = [digest]
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let atomic = try #require(ModelCatalog.parseAtomicModelEntriesJSON(advertised))
         let cached: [(String, String?, String?)] = [
             ("chat", "org/chat", "1 GiB"),
             ("custom", "org/custom", "2 GiB"),
@@ -481,9 +550,29 @@ struct AtomicModelCatalogTests {
             excluded: ["image", "video", "tts", "stt", "hidden"]
         )
         #expect(merged.first { $0.alias == "chat" }?.cached == true)
+        #expect(merged.first {
+            $0.alias == "chat"
+        }?.recommendationPolicyDigests == [digest])
         #expect(merged.first { $0.alias == "custom" }?.kind == .chat)
         #expect(merged.first { $0.alias == "hidden" } == nil)
         #expect(merged.first { $0.alias == "org/external" }?.isExternal == true)
+
+        let remarked = ModelCatalog.remarkCachedByRepo(
+            [
+                ModelEntry(
+                    alias: "chat", hfRepo: "org/chat", sizeOnDisk: nil,
+                    cached: false, recommendationPolicyDigests: [digest]
+                ),
+                ModelEntry(
+                    alias: "chat-4bit", hfRepo: "org/chat", sizeOnDisk: "1 GiB",
+                    cached: true
+                ),
+            ],
+            resolvedRepos: ["chat": "org/chat"]
+        )
+        #expect(remarked.first {
+            $0.alias == "chat"
+        }?.recommendationPolicyDigests == [digest])
     }
 
     @Test("alias origin and repository siblings preserve legacy safety semantics")

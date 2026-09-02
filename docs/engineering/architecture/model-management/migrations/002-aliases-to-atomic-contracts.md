@@ -145,16 +145,22 @@ audio capability inference in the adapter; image-input support is already an
 explicit alias-profile fact and must not be inferred from names or the runtime
 lane. Phase 2 must replace the remaining bridge rules with generated explicit
 alias capabilities before authoritative cutover.
-Likewise, Desktop's RAM recommendation reader remains on the legacy file while
-the atomic policy is shadow-validated. No automatic model choice changes in
-Phase 1.
+The RAM recommendation lane has completed its narrower atomic-policy cutover:
+`model_recommendations.json` now contains a schema-valid, content-addressed
+`RecommendationPolicy`, and Server/CLI plus Desktop decode that same policy.
+The compatibility filename remains stable for wheel/app packaging, but it is
+not a second legacy representation. Digest or contract failures stop the read;
+parity tests pin all existing RAM tiers, aliases, footprints, scores, speed,
+limitations, and user-visible choices, so this migration changes no automatic
+model choice.
 
 ### Phase 2 — generated catalog, dual read
 
 Check in or deterministically generate model identities, aliases, and candidate
 execution presets. Add equivalence tests for every current alias. Consumers may
 read the new catalog but fall back to legacy data on missing records. The old
-file remains authoritative and release-compatible.
+alias files remain authoritative and release-compatible. Recommendation policy
+is already atomic and is deliberately not part of that per-record fallback.
 
 `model_catalog_mode` has four closed values: `legacy`, `shadow`, `dual_read`,
 and `authoritative`. In dual-read, only an absent record falls back; digest
