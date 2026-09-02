@@ -504,6 +504,7 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
         dynamic_membership = True
         lane_uids = (1, 2)
         pending_join_uids = ()
+        last_attached_uids = ()
         has_work = True
         closed = False
         has_pending_responses = False
@@ -511,9 +512,13 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
         def __init__(self):
             self.calls = []
             self.fail_discard = False
+            self.fail_join = False
+            self.fail_next = False
 
         def next(self):
             self.calls.append("next")
+            if self.fail_next:
+                raise RuntimeError("driver step failed")
             return [SimpleNamespace(uid=1, token=31)]
 
         def take_terminal_detaches(self):
@@ -526,6 +531,8 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
 
         def queue_lanes(self, specs, *, stop_tokens):
             self.calls.append(("join", tuple(spec.uid for spec in specs), stop_tokens))
+            if self.fail_join:
+                raise RuntimeError("join preparation rejected")
             return tuple(spec.uid for spec in specs)
 
         def discard_all(self):
@@ -641,11 +648,24 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
 
     driver.lane_uids = (1, 2, 4, 5)
     batch_gen.next()
+    driver.lane_uids = (1, 2)
+    driver.last_attached_uids = (4, 5)
+    driver.fail_join = True
+    queued_before_failed_join = list(batch_gen._unprocessed_sequences)
+    batch_gen.next()
+    assert list(batch_gen._unprocessed_sequences) == queued_before_failed_join
+    driver.fail_join = False
+    driver.last_attached_uids = ()
     driver.dynamic_membership = False
     batch_gen.next()
     driver.closed = True
     batch_gen.next()
     assert "resume" in driver.calls
+
+    driver.fail_next = True
+    with pytest.raises(RuntimeError, match="driver step failed"):
+        batch_gen.next()
+    driver.fail_next = False
 
     removed = batch_gen.remove([1], return_prompt_caches=True)
     assert removed[1] == ("target-cache", [10, 11])
@@ -657,6 +677,160 @@ def test_live_installer_drives_join_detach_remove_and_compat_response(monkeypatc
     assert batch_gen.close() == "closed"
     driver.fail_discard = True
     assert batch_gen.close() == "closed"
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_retains_base_queue_when_initial_prepare_fails(monkeypatch):
+    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from vllm_mlx.spec_decode.mtp import continuous_runtime
+    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    runtime = SimpleNamespace(
+        capabilities=ContinuousSelfMTPCapabilities(
+            target_return_hidden=True,
+            mtp_return_hidden=True,
+            confirmed_target_forward=True,
+            ragged_rollback=True,
+            atomic_cache_commit=True,
+            dynamic_membership=True,
+        )
+    )
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+
+    def fail_create(_cls, *_args, **_kwargs):
+        raise RuntimeError("simulated prepare failure")
+
+    monkeypatch.setattr(ContinuousMTPDriver, "create", classmethod(fail_create))
+    batch_gen = _SchedulerBatchGenerator(raw_next=([], [SimpleNamespace(uid=99)]))
+    sequences = [_scheduler_sequence(1), _scheduler_sequence(2)]
+    batch_gen._unprocessed_sequences.extend(sequences)
+    config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        max_num_seqs=4,
+        completion_batch_size=4,
+    )
+    assert _install_continuous_mtp_router(
+        batch_gen,
+        _Model(),
+        config,
+        requests={"req-1": _scheduler_request(), "req-2": _scheduler_request()},
+        uid_to_request_id={1: "req-1", 2: "req-2"},
+        free_bytes_getter=lambda: 16 * 1024**3,
+    )
+
+    assert batch_gen.next()[1][0].uid == 99
+    assert list(batch_gen._unprocessed_sequences) == sequences
+    assert batch_gen._continuous_mtp_driver is None
+
+
+@pytest.mark.requires_mlx
+def test_live_installer_restores_base_queue_when_deferred_join_fails(monkeypatch):
+    from vllm_mlx.scheduler import SchedulerConfig, _install_continuous_mtp_router
+    from vllm_mlx.spec_decode.mtp import continuous_runtime
+    from vllm_mlx.spec_decode.mtp.continuous_driver import ContinuousMTPDriver
+    from vllm_mlx.spec_decode.mtp.continuous_engine import (
+        ContinuousSelfMTPCapabilities,
+    )
+
+    capabilities = ContinuousSelfMTPCapabilities(
+        target_return_hidden=True,
+        mtp_return_hidden=True,
+        confirmed_target_forward=True,
+        ragged_rollback=True,
+        atomic_cache_commit=True,
+        dynamic_membership=True,
+    )
+    runtime = SimpleNamespace(capabilities=capabilities)
+    monkeypatch.setattr(
+        continuous_runtime,
+        "assemble_continuous_self_mtp_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+
+    class _Driver:
+        dynamic_membership = True
+        lane_uids = (1, 2)
+        has_work = True
+        closed = False
+        has_pending_responses = False
+
+        def __init__(self):
+            self.pending = ()
+            self.removed = []
+
+        @property
+        def pending_join_uids(self):
+            return self.pending
+
+        @property
+        def last_attached_uids(self):
+            return ()
+
+        def next(self):
+            if self.pending:
+                raise RuntimeError("simulated deferred prepare failure")
+            return []
+
+        def take_terminal_detaches(self):
+            return ()
+
+        def queue_lanes(self, specs, **_kwargs):
+            self.pending = tuple(spec.uid for spec in specs)
+            return self.pending
+
+        def remove_uids(self, uids):
+            self.removed.append(tuple(uids))
+            self.pending = tuple(uid for uid in self.pending if uid not in uids)
+            return ()
+
+    driver = _Driver()
+    monkeypatch.setattr(
+        ContinuousMTPDriver,
+        "create",
+        classmethod(lambda _cls, *_args, **_kwargs: driver),
+    )
+    batch_gen = _SchedulerBatchGenerator()
+    batch_gen._unprocessed_sequences.extend(
+        [_scheduler_sequence(1), _scheduler_sequence(2)]
+    )
+    requests = {
+        "req-1": _scheduler_request(),
+        "req-2": _scheduler_request(),
+        "req-3": _scheduler_request(),
+    }
+    config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_continuous_batching=True,
+        mtp_allow_dynamic_membership=True,
+        max_num_seqs=4,
+        completion_batch_size=4,
+    )
+    assert _install_continuous_mtp_router(
+        batch_gen,
+        _Model(),
+        config,
+        requests=requests,
+        uid_to_request_id={1: "req-1", 2: "req-2", 3: "req-3"},
+        free_bytes_getter=lambda: 16 * 1024**3,
+    )
+    batch_gen.next()
+    joining = _scheduler_sequence(3)
+    batch_gen._unprocessed_sequences.append(joining)
+
+    batch_gen.next()
+    assert list(batch_gen._unprocessed_sequences) == []
+    batch_gen.next()
+
+    assert list(batch_gen._unprocessed_sequences) == [joining]
+    assert driver.removed == [(3,)]
 
 
 @pytest.mark.requires_mlx
