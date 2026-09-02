@@ -216,6 +216,157 @@ struct ServerRuntimeCapabilitiesTests {
         #expect(await witness.wasCancelled)
     }
 
+    @Test("Community Benchmark cancels pre-spawn work and reserves lifecycle")
+    @MainActor
+    func benchmarkReservationCancelsStartRace() async throws {
+        let witness = RuntimeProbeCancellationWitness()
+        let binary = URL(fileURLWithPath: "/usr/bin/true")
+        let manager = ServerManager(testingState: .idle, binaryPath: binary)
+        manager.runtimeCapabilitiesProvider = { _ in
+            await witness.run()
+        }
+        let probe = Task { @MainActor in
+            await manager._testProbeRuntimeCapabilitiesForStart(binary: binary)
+        }
+
+        await witness.waitUntilEntered()
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        var secondAcquired = false
+        let secondOwner = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            secondAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(await probe.value == nil)
+        #expect(await witness.wasCancelled)
+        #expect(!secondAcquired)
+        #expect(await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == nil)
+        #expect(await manager.ensureServing(alias: "qwen3.5-4b") == false)
+
+        secondOwner.cancel()
+        do {
+            _ = try await secondOwner.value
+            Issue.record("cancelled queued benchmark unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: cancellation removes and resumes the queued waiter.
+        }
+        #expect(!secondAcquired)
+
+        manager.finishCommunityBenchmark(firstReservation)
+        manager.runtimeCapabilitiesProvider = { _ in .allKnown }
+        #expect(
+            await manager._testProbeRuntimeCapabilitiesForStart(binary: binary) == .allKnown
+        )
+    }
+
+    @Test("Community Benchmark rejects a waiter cancelled before registration")
+    @MainActor
+    func benchmarkPreCancelledWaiterDoesNotHang() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let firstReservation = try await manager.prepareForCommunityBenchmark()
+        let gate = RuntimeProbeGate()
+        let cancelledOwner = Task { @MainActor in
+            await gate.wait()
+            return try await manager.prepareForCommunityBenchmark()
+        }
+
+        await gate.waitUntilEntered()
+        cancelledOwner.cancel()
+        await gate.release()
+        do {
+            _ = try await cancelledOwner.value
+            Issue.record("pre-cancelled benchmark unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: registration observes cancellation and never queues.
+        }
+
+        manager.finishCommunityBenchmark(firstReservation)
+        let replacement = try await manager.prepareForCommunityBenchmark()
+        manager.finishCommunityBenchmark(replacement)
+    }
+
+    @Test("Deferred reap quarantine blocks the next benchmark owner")
+    @MainActor
+    func benchmarkDeferredReapTransfersReservation() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let foreground = try await manager.prepareForCommunityBenchmark()
+        let monitor = DeferredReapCompletionBox()
+        manager._testRetainCommunityBenchmarkDuringDeferredReap {
+            monitor.install($0)
+        }
+        manager.finishCommunityBenchmark(foreground)
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        monitor.finish()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        manager.finishCommunityBenchmark(replacementReservation)
+    }
+
+    @Test("Lingering embedded server aborts benchmark and transfers quarantine")
+    @MainActor
+    func benchmarkRejectsLingeringEmbeddedServer() async throws {
+        let manager = ServerManager(testingState: .idle)
+        let foreground = try await manager.prepareForCommunityBenchmark()
+        let monitor = DeferredReapCompletionBox()
+
+        do {
+            try manager._testRejectCommunityBenchmarkForLingeringServer(
+                reservation: foreground,
+                startMonitoring: { monitor.install($0) }
+            )
+        } catch {
+            #expect(error.localizedDescription.contains("previous model is still stopping"))
+        }
+
+        var replacementAcquired = false
+        let replacement = Task { @MainActor in
+            let reservation = try await manager.prepareForCommunityBenchmark()
+            replacementAcquired = true
+            return reservation
+        }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!replacementAcquired)
+
+        monitor.finish()
+        let replacementReservation = try await replacement.value
+        #expect(replacementAcquired)
+        manager.finishCommunityBenchmark(replacementReservation)
+    }
+
+    @Test("Community Benchmark cancellation releases an operating wait")
+    @MainActor
+    func benchmarkCancellationReleasesOperatingWait() async throws {
+        let manager = ServerManager(testingState: .idle)
+        manager._testSetOperating(true)
+        let owner = Task { @MainActor in
+            try await manager.prepareForCommunityBenchmark()
+        }
+        for _ in 0..<10 { await Task.yield() }
+
+        owner.cancel()
+        do {
+            _ = try await owner.value
+            Issue.record("cancelled operating wait unexpectedly acquired its lease")
+        } catch is CancellationError {
+            // Expected: cancellation releases the reservation before throwing.
+        }
+
+        manager._testSetOperating(false)
+        let replacement = try await manager.prepareForCommunityBenchmark()
+        manager.finishCommunityBenchmark(replacement)
+    }
+
     @Test("probe bounds a descendant that retains the output pipe")
     func probeBoundsRetainedOutputPipe() async throws {
         let runtime = try makeRuntimeScript(retainedOutputPipe: true)
@@ -317,6 +468,25 @@ private actor RuntimeProbeGate {
         released = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private final class DeferredReapCompletionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: (@Sendable () -> Void)?
+
+    func install(_ completion: @escaping @Sendable () -> Void) {
+        lock.lock()
+        self.completion = completion
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        let completion = completion
+        self.completion = nil
+        lock.unlock()
+        completion?()
     }
 }
 

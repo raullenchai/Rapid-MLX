@@ -8,6 +8,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXButton id="Sidebar.CommunityBenchmark" desc="Community Benchmark" enabled=true
           AXScrollArea
             AXHeading desc="<relative-day>" enabled=true
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true

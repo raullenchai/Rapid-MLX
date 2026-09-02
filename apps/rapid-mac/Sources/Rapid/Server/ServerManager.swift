@@ -691,6 +691,24 @@ final class ServerManager {
     /// first into spawning a duplicate child.
     private(set) var isOperating: Bool = false
 
+    /// Prevents any model launch while Community Benchmark owns unified
+    /// memory. The reservation begins before the current child is stopped and
+    /// remains active until the benchmark subprocess exits, closing the gap
+    /// where an auto-start or model selection could otherwise race a second
+    /// model into memory.
+    private var communityBenchmarkReservations: Set<UUID> = []
+    private var communityBenchmarkWaiters: [
+        (
+            id: UUID,
+            reservation: UUID,
+            continuation: CheckedContinuation<UUID, any Error>
+        )
+    ] = []
+
+    private var communityBenchmarkReserved: Bool {
+        !communityBenchmarkReservations.isEmpty
+    }
+
     /// Owns the cancellable `serve --help` capability probe between catalog
     /// resolution and the atomic spawn section. `start()` is MainActor-
     /// reentrant across the probe await, so this token prevents a second
@@ -1315,6 +1333,10 @@ final class ServerManager {
         self.state = newState
     }
 
+    internal func _testSetOperating(_ value: Bool) {
+        isOperating = value
+    }
+
     /// Publish the selection consequence of a successful health transition.
     /// Kept as one lifecycle boundary so tests exercise the same call that the
     /// real `/healthz` success path uses instead of calling persistence policy
@@ -1654,6 +1676,7 @@ final class ServerManager {
         catalogEntryHint: CatalogEntryHint? = nil,
         videoOutputDirectory: String? = nil
     ) async -> Bool {
+        guard !communityBenchmarkReserved else { return false }
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         var catalogGeneration = downloads?.cacheGeneration ?? 0
@@ -1973,7 +1996,7 @@ final class ServerManager {
                     plan: .releaseResidentModels
                 )
             }
-            await stop(preservingLastServedAlias: true)
+            _ = await stop(preservingLastServedAlias: true)
         }
         let memoryRequestID = UUID()
         await start(
@@ -2365,7 +2388,7 @@ final class ServerManager {
         ) else { return }
         memoryConfirmRunning.insert(seq)
         if child != nil {
-            await stop(
+            _ = await stop(
                 preservingLastServedAlias: Self.memoryConfirmationPreservesResumeAlias(
                     currentWarning
                 )
@@ -2418,6 +2441,7 @@ final class ServerManager {
         videoOutputDirectory: String? = nil,
         estimatedMemoryGB: Double? = nil
     ) async {
+        guard !communityBenchmarkReserved else { return }
         // Issue #278: a manual restart is the user taking over the
         // lifecycle — reset the budget at entry so a previously
         // exhausted counter doesn't make a quick post-restart crash
@@ -2573,7 +2597,7 @@ final class ServerManager {
             // and ``start`` would happily spawn a NEW child the user
             // just clicked Stop on. Bail before doing any further
             // work — every later check is gated on the same Task.
-            if Task.isCancelled { return }
+            if Task.isCancelled || communityBenchmarkReserved { return }
             if didSignalShutdown { return }
             // codex r1 BLOCKING: the await above is a MainActor
             // suspension point and ``start(alias:)`` is reentrant. A
@@ -2622,7 +2646,7 @@ final class ServerManager {
             probed: probedCatalogEntry,
             hint: catalogProvenStartEntries[trimmedAlias.lowercased()]?.entry
         )
-        if Task.isCancelled || didSignalShutdown { return }
+        if Task.isCancelled || didSignalShutdown || communityBenchmarkReserved { return }
         guard !isOperating, child == nil else { return }
         let catalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
             forAlias: trimmedAlias,
@@ -2633,7 +2657,7 @@ final class ServerManager {
             return
         }
         guard !Task.isCancelled, !didSignalShutdown,
-              !isOperating, child == nil else {
+              !communityBenchmarkReserved, !isOperating, child == nil else {
             releaseRuntimeProbe(runtimeProbe.id)
             return
         }
@@ -3142,7 +3166,7 @@ final class ServerManager {
         // stall rather than a wall-clock timeout so the user
         // understands the failure mode (not "you ran out of time"
         // but "we stopped seeing any signs of life from rapid-mlx").
-        await terminateChild(
+        _ = await terminateChild(
             reason: "The model stopped responding for \(Int(healthStallWindow / 60)) minutes."
         )
     }
@@ -3166,13 +3190,155 @@ final class ServerManager {
     /// SIGKILL if still alive. State transitions to `.stopped` on
     /// success.
     func stop() async {
-        await stop(preservingLastServedAlias: false)
+        _ = await stop(preservingLastServedAlias: false)
+    }
+
+    /// Reserve the server lifecycle for a local Community Benchmark and
+    /// return only after no embedded model process can contend for unified
+    /// memory. A start already inside its short spawn critical section is
+    /// allowed to finish atomically, then is stopped here; starts suspended in
+    /// pre-spawn work observe ``communityBenchmarkReserved`` before launch.
+    func prepareForCommunityBenchmark() async throws -> UUID {
+        // A second view instance can appear while the first is still reaping
+        // its cancelled subprocess. Serialize benchmark ownership so two
+        // heavyweight local runners never overlap in unified memory.
+        let reservation = UUID()
+        if communityBenchmarkReserved {
+            let waiterID = UUID()
+            _ = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<UUID, any Error>) in
+                    // Cancellation handlers may fire before their operation
+                    // registers this waiter. Since both registration and the
+                    // cancellation callback are MainActor-isolated, checking
+                    // here closes that ordering gap without a lock.
+                    guard !Task.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    communityBenchmarkWaiters.append(
+                        (waiterID, reservation, continuation)
+                    )
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.cancelCommunityBenchmarkWaiter(waiterID)
+                }
+            }
+        } else {
+            communityBenchmarkReservations.insert(reservation)
+        }
+        try throwIfCommunityBenchmarkCancelled(reservation)
+        cancelAutoRespawn()
+        cancelRuntimeProbe()
+        while isOperating {
+            try throwIfCommunityBenchmarkCancelled(reservation)
+            await Task.yield()
+        }
+        try throwIfCommunityBenchmarkCancelled(reservation)
+        if let lingeringProcessGroupID = await stop(preservingLastServedAlias: false) {
+            // Transfer exclusion before releasing this foreground owner. A
+            // benchmark must never start while the embedded server's SIGKILL
+            // is still pending in unified memory.
+            try rejectCommunityBenchmarkForLingeringServer(
+                reservation: reservation
+            ) { onExit in
+                ProcessGroupChild.monitorProcessGroupUntilExit(
+                    processGroupID: lingeringProcessGroupID,
+                    onExit: onExit
+                )
+            }
+        }
+        return reservation
+    }
+
+    private func throwIfCommunityBenchmarkCancelled(_ reservation: UUID) throws {
+        guard Task.isCancelled else { return }
+        finishCommunityBenchmark(reservation)
+        throw CancellationError()
+    }
+
+    private func cancelCommunityBenchmarkWaiter(_ id: UUID) {
+        guard let index = communityBenchmarkWaiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = communityBenchmarkWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    /// Release the lifecycle reservation after the benchmark subprocess has
+    /// exited. The prior model is intentionally not auto-restored in the
+    /// internal beta; the user can start it again explicitly.
+    func finishCommunityBenchmark(_ reservation: UUID) {
+        guard communityBenchmarkReservations.remove(reservation) != nil else { return }
+        if !communityBenchmarkReserved, !communityBenchmarkWaiters.isEmpty {
+            let next = communityBenchmarkWaiters.removeFirst()
+            communityBenchmarkReservations.insert(next.reservation)
+            next.continuation.resume(returning: next.reservation)
+        }
+    }
+
+    /// Atomically replace a foreground benchmark lease with a quarantine
+    /// lease before the former is released. A SIGKILL-pending process group
+    /// may outlive bounded UI teardown, but it must continue excluding model
+    /// launches until the kernel confirms that the group is gone.
+    func retainCommunityBenchmarkDuringDeferredReap(_ processGroupID: pid_t) {
+        retainCommunityBenchmarkDuringDeferredReap { onExit in
+            ProcessGroupChild.monitorProcessGroupUntilExit(
+                processGroupID: processGroupID,
+                onExit: onExit
+            )
+        }
+    }
+
+    private func retainCommunityBenchmarkDuringDeferredReap(
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) {
+        let quarantine = UUID()
+        communityBenchmarkReservations.insert(quarantine)
+        startMonitoring { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finishCommunityBenchmark(quarantine)
+            }
+        }
+    }
+
+    internal func _testRetainCommunityBenchmarkDuringDeferredReap(
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) {
+        retainCommunityBenchmarkDuringDeferredReap(
+            startMonitoring: startMonitoring
+        )
+    }
+
+    private func rejectCommunityBenchmarkForLingeringServer(
+        reservation: UUID,
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) throws -> Never {
+        retainCommunityBenchmarkDuringDeferredReap(
+            startMonitoring: startMonitoring
+        )
+        finishCommunityBenchmark(reservation)
+        if Task.isCancelled { throw CancellationError() }
+        throw CommunityBenchmarkPreparationError(
+            message: "The previous model is still stopping. Wait a moment, then run the benchmark again."
+        )
+    }
+
+    internal func _testRejectCommunityBenchmarkForLingeringServer(
+        reservation: UUID,
+        startMonitoring: (@escaping @Sendable () -> Void) -> Void
+    ) throws -> Never {
+        try rejectCommunityBenchmarkForLingeringServer(
+            reservation: reservation,
+            startMonitoring: startMonitoring
+        )
     }
 
     /// Shared expected-stop path. Model replacement keeps the previous
     /// known-good alias until the replacement reaches ``.ready`` and writes
     /// its own alias; a user-facing Stop continues to clear it immediately.
-    private func stop(preservingLastServedAlias: Bool) async {
+    private func stop(preservingLastServedAlias: Bool) async -> pid_t? {
         // Issue #270: the user clicked Stop. A pending auto-respawn
         // racing them would defeat the click — cancel it AND reset
         // the retry budget so a subsequent user-driven Start gets a
@@ -3181,12 +3347,12 @@ final class ServerManager {
         // a queued respawn would still race a subsequent state change).
         cancelAutoRespawn()
         cancelRuntimeProbe()
-        guard !isOperating else { return }
-        guard child != nil else { return }
+        guard !isOperating else { return nil }
+        guard child != nil else { return nil }
         isOperating = true
         defer { isOperating = false }
         preservingLastServedAliasDuringStop = preservingLastServedAlias
-        await terminateChild(reason: nil)
+        return await terminateChild(reason: nil)
     }
 
     /// Synchronous, fire-and-forget teardown used by app shutdown
@@ -3289,7 +3455,8 @@ final class ServerManager {
     private func claimRuntimeCapabilitiesForStart(
         binary: URL
     ) async -> (id: UUID, capabilities: ServerRuntimeCapabilities)? {
-        guard runtimeProbeOperation == nil, !isOperating, child == nil,
+        guard !communityBenchmarkReserved, runtimeProbeOperation == nil,
+              !isOperating, child == nil,
               !didSignalShutdown else { return nil }
         let id = UUID()
         let provider = runtimeCapabilitiesProvider
@@ -3335,8 +3502,10 @@ final class ServerManager {
     /// the loop's natural ``return`` after the call clears the
     /// ``runtimeHealthTask`` handle via ``handleChildExit``'s
     /// cancel-on-exit branch.
-    private func terminateChild(reason: String?, cancelMonitor: Bool = true) async {
-        guard let process = child else { return }
+    private func terminateChild(
+        reason: String?, cancelMonitor: Bool = true
+    ) async -> pid_t? {
+        guard let process = child else { return nil }
         let alias: String
         switch state {
         case .starting(let a), .ready(let a), .crashed(let a, _):
@@ -3382,7 +3551,8 @@ final class ServerManager {
         // `.crashed`. But if for some reason the handler doesn't run
         // promptly (we've never seen this, but defensive), nil it out
         // here so a subsequent start() can proceed.
-        if !process.isProcessGroupAlive {
+        let groupStillAlive = process.isProcessGroupAlive
+        if !groupStillAlive {
             teardownPipes()
             child = nil
             launchedImageInputLane = nil
@@ -3410,6 +3580,7 @@ final class ServerManager {
                 state = .stopped
             }
         }
+        return groupStillAlive ? process.processGroupID : nil
     }
 
     /// Runs on the main actor when the child terminates. Decides whether
@@ -3956,7 +4127,9 @@ final class ServerManager {
                 // ``terminateChild``'s own ``Task.sleep`` grace
                 // windows (5 s SIGTERM, 1 s SIGKILL) aren't
                 // collapsed to zero by us-cancelling-ourselves.
-                await terminateChild(reason: "The model stopped responding.", cancelMonitor: false)
+                _ = await terminateChild(
+                    reason: "The model stopped responding.", cancelMonitor: false
+                )
                 return
             }
         }
@@ -5046,6 +5219,40 @@ final class ProcessGroupChild: @unchecked Sendable {
         }
     }
 
+    static func monitorProcessGroupUntilExit(
+        processGroupID: pid_t,
+        onExit: @escaping @Sendable () -> Void
+    ) {
+        monitorProcessGroupUntilExit(
+            processGroupID: processGroupID,
+            probe: { kill(-$0, 0) == 0 ? 0 : errno },
+            onExit: onExit
+        )
+    }
+
+    /// `probe` returns 0 when `kill(-pgid, 0)` succeeds and the captured
+    /// errno otherwise. Only an explicit ESRCH — the kernel confirming the
+    /// group is gone — fires `onExit` and thereby releases the benchmark
+    /// quarantine reservation. EINTR re-probes immediately (same idiom as
+    /// the `waitpid` retry in `reapExitedProcess`); 0 and EPERM mean the
+    /// group is alive; any unexpected errno is conservatively treated as
+    /// alive so the reservation is never released early.
+    static func monitorProcessGroupUntilExit(
+        processGroupID: pid_t,
+        probe: @escaping @Sendable (pid_t) -> Int32,
+        onExit: @escaping @Sendable () -> Void
+    ) {
+        Task.detached(priority: .utility) {
+            while true {
+                let result = probe(processGroupID)
+                if result == ESRCH { break }
+                if result == EINTR { continue }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            onExit()
+        }
+    }
+
     func startMonitor() {
         lock.lock()
         guard !monitorStarted else {
@@ -5159,6 +5366,11 @@ final class ProcessGroupChild: @unchecked Sendable {
             throw ProcessGroupSpawnError(operation: operation, code: result)
         }
     }
+}
+
+private struct CommunityBenchmarkPreparationError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 private struct ProcessGroupSpawnError: LocalizedError {
