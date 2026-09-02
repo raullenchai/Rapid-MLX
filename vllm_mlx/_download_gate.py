@@ -1145,11 +1145,36 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             # Not a registered pinned Wan checkpoint — not our lane.
             return False
 
+        # The official 1.3B Desktop checkpoint uses a sharded Diffusers layout.
+        # Its exact runtime closure is distinct from the preconverted 2.2
+        # checkpoints below and must be checked directory-by-directory.
+        if repo_id == "Wan-AI/Wan2.1-T2V-1.3B-Diffusers":
+            required_names = (
+                "transformer/diffusion_pytorch_model.safetensors.index.json",
+                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+                "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+                "text_encoder/model.safetensors.index.json",
+                "text_encoder/model-00001-of-00005.safetensors",
+                "text_encoder/model-00002-of-00005.safetensors",
+                "text_encoder/model-00003-of-00005.safetensors",
+                "text_encoder/model-00004-of-00005.safetensors",
+                "text_encoder/model-00005-of-00005.safetensors",
+                "vae/diffusion_pytorch_model.safetensors",
+                "tokenizer/special_tokens_map.json",
+                "tokenizer/spiece.model",
+                "tokenizer/tokenizer.json",
+                "tokenizer/tokenizer_config.json",
+            )
+        else:
+            required_names = ()
+
         # Family-exact transformer layout, keyed off the repo id (matches the
         # four pinned checkpoints: 5B -> single, A14B -> dual). Fail closed on
         # an unclassifiable repo rather than inferring from file presence.
         repo_lower = repo_id.casefold()
-        if "a14b" in repo_lower:
+        if required_names:
+            transformer_names = ()
+        elif "a14b" in repo_lower:
             transformer_names: tuple[str, ...] = (
                 "high_noise_model.safetensors",
                 "low_noise_model.safetensors",
@@ -1186,6 +1211,8 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
             # the same repo root but not under ``blobs``.
             return real.startswith(blobs_prefix)
 
+        if required_names:
+            return all(_on_repo(name) for name in required_names)
         transformer_ok = all(_on_repo(n) for n in transformer_names)
         return (
             transformer_ok

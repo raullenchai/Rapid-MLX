@@ -181,6 +181,17 @@ struct SidecarBuildScriptTests {
         #expect(constraints.contains("mlx-arsenal==0.12.1"))
         #expect(script.contains("'mlx-video-with-audio'"))
         #expect(script.contains("'mlx-arsenal'"))
+        #expect(script.contains("LTX25_RUNTIME_VERSION=\"0.14.15\""))
+        #expect(script.contains("57952288076766abe27dda3a774b2c24f7346977"))
+        #expect(script.contains("fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"))
+        #expect(script.contains(#"importlib.metadata.version("ltx-core-mlx") == "0.14.15""#))
+        #expect(script.contains(#"importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15""#))
+        #expect(script.contains("from videox_fun_mlx.models.cogvideox_transformer3d import"))
+        #expect(script.contains("from videox_fun_mlx.models.t5_encoder import T5Encoder"))
+        #expect(script.contains("from videox_fun_mlx.models.tokenizer import T5Tokenizer"))
+        #expect(script.contains("from videox_fun_mlx.pipeline.scheduler import DDIMScheduler"))
+        #expect(script.contains(#"cp "$LTX25_TAR" \"#),
+                "The complete corresponding LTX source must travel with the runtime.")
         #expect(!script.contains(#"${RAPID_MLX_INSTALL_TARGET}[video]"#),
                 "The broad video extra would pull OpenCV and a conflicting vision stack.")
         #expect(script.contains("re-audit the OpenCV-free encoder patch"),

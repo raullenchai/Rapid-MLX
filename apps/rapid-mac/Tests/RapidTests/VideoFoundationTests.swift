@@ -36,7 +36,7 @@ struct VideoFoundationTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "models" ]; then
-          printf '%s' '{"text":[],"audio":[],"image":[],"video":[{"alias":"ltx-2.3-mlx-q4","hf_path":"org/ltx","video_modes":["text-to-video","image-to-video"],"min_memory_gb":24},{"alias":"cogvideox-fun-5b-q4","hf_path":"org/cog","video_modes":["text-to-video"],"min_memory_gb":24},{"alias":"ltx-2.5-mlx-q8","hf_path":"org/ltx25","video_modes":["text-to-video","image-to-video"],"min_memory_gb":24}]}'
+          printf '%s' '{"text":[],"audio":[],"image":[],"video":[{"alias":"ltx-2.3-mlx-q4","hf_path":"org/ltx","video_modes":["text-to-video","image-to-video"],"min_memory_gb":24},{"alias":"cogvideox-fun-5b-q4","hf_path":"org/cog","video_modes":["text-to-video"],"min_memory_gb":24},{"alias":"ltx-2.5-mlx-q8","hf_path":"org/ltx25","video_modes":["text-to-video","image-to-video"],"min_memory_gb":24},{"alias":"wan2.1-t2v-1.3b-bf16","hf_path":"org/wan21","video_modes":["text-to-video"],"min_memory_gb":40}]}'
         else
           cat <<'EOF'
         Cached models (1 on disk)
@@ -49,14 +49,17 @@ struct VideoFoundationTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
 
         let entries = await ModelCatalog.videoEntries(binary: binary, hubCacheOverride: nil)
-        let entry = try #require(entries.first)
-        #expect(entries.count == 1)
+        let entry = try #require(entries.first { $0.alias == "ltx-2.3-mlx-q4" })
+        #expect(entries.count == 4)
         #expect(entry.alias == "ltx-2.3-mlx-q4")
         #expect(entry.kind == .video)
         #expect(entry.cached)
         #expect(entry.sizeOnDisk == "9.5 GiB")
         #expect(entry.videoCapabilities == [.textToVideo, .imageToVideo])
         #expect(entry.minimumMemoryGB == 24)
+        #expect(entries.first { $0.alias == "cogvideox-fun-5b-q4" }?.videoCapabilities == [.textToVideo])
+        #expect(entries.first { $0.alias == "ltx-2.5-mlx-q8" }?.videoCapabilities == [.textToVideo, .imageToVideo])
+        #expect(entries.first { $0.alias == "wan2.1-t2v-1.3b-bf16" }?.minimumMemoryGB == 40)
     }
 
     @Test("Video artifacts honor HOME isolation")

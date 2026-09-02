@@ -1,0 +1,384 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Read the official Wan 2.1 Diffusers layout directly with MLX.
+
+The Desktop catalog downloads one pinned repository.  This adapter maps its
+sharded safetensors into the existing ``mlx-video-with-audio`` model classes
+without PyTorch and without materializing a second converted checkpoint.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+from .wan import WanBackendError
+
+_TRANSFORMER_INDEX = "transformer/diffusion_pytorch_model.safetensors.index.json"
+_T5_INDEX = "text_encoder/model.safetensors.index.json"
+_VAE_FILE = "vae/diffusion_pytorch_model.safetensors"
+_EXPECTED_TRANSFORMER_KEYS = 825
+_EXPECTED_T5_KEYS = 242
+_EXPECTED_VAE_DECODER_KEYS = 108
+_PATCH_LOCK = threading.RLock()
+
+
+def is_diffusers_wan21_layout(root: Path) -> bool:
+    return (
+        all(
+            (root / relative).is_file()
+            for relative in (_TRANSFORMER_INDEX, _T5_INDEX, _VAE_FILE)
+        )
+        and (root / "tokenizer").is_dir()
+    )
+
+
+def desktop_wan21_config() -> dict[str, object]:
+    """Config fields consumed by both Rapid's guards and the MLX runtime."""
+    return {
+        "model_type": "t2v",
+        "model_version": "2.1",
+        "dim": 1536,
+        "ffn_dim": 8960,
+        "num_heads": 12,
+        "num_layers": 30,
+        "dual_model": False,
+        "boundary": 0.0,
+        "sample_shift": 5.0,
+        "sample_steps": 50,
+        "sample_guide_scale": 5.0,
+        "sample_fps": 16,
+        "max_area": 704 * 1280,
+    }
+
+
+def _transformer_key(key: str) -> str:
+    exact = {
+        "patch_embedding.weight": "patch_embedding_proj.weight",
+        "patch_embedding.bias": "patch_embedding_proj.bias",
+        "condition_embedder.time_embedder.linear_1.weight": "time_embedding_0.weight",
+        "condition_embedder.time_embedder.linear_1.bias": "time_embedding_0.bias",
+        "condition_embedder.time_embedder.linear_2.weight": "time_embedding_1.weight",
+        "condition_embedder.time_embedder.linear_2.bias": "time_embedding_1.bias",
+        "condition_embedder.text_embedder.linear_1.weight": "text_embedding_0.weight",
+        "condition_embedder.text_embedder.linear_1.bias": "text_embedding_0.bias",
+        "condition_embedder.text_embedder.linear_2.weight": "text_embedding_1.weight",
+        "condition_embedder.text_embedder.linear_2.bias": "text_embedding_1.bias",
+        "condition_embedder.time_proj.weight": "time_projection.weight",
+        "condition_embedder.time_proj.bias": "time_projection.bias",
+        "scale_shift_table": "head.modulation",
+        "proj_out.weight": "head.head.weight",
+        "proj_out.bias": "head.head.bias",
+    }
+    if key in exact:
+        return exact[key]
+    match = re.fullmatch(r"blocks\.(\d+)\.(.+)", key)
+    if match is None:
+        raise WanBackendError(f"unsupported Wan 2.1 transformer tensor {key!r}")
+    block, tail = match.groups()
+    replacements = (
+        ("attn1.to_out.0.", "self_attn.o."),
+        ("attn1.to_q.", "self_attn.q."),
+        ("attn1.to_k.", "self_attn.k."),
+        ("attn1.to_v.", "self_attn.v."),
+        ("attn1.norm_q.", "self_attn.norm_q."),
+        ("attn1.norm_k.", "self_attn.norm_k."),
+        ("attn2.to_out.0.", "cross_attn.o."),
+        ("attn2.to_q.", "cross_attn.q."),
+        ("attn2.to_k.", "cross_attn.k."),
+        ("attn2.to_v.", "cross_attn.v."),
+        ("attn2.norm_q.", "cross_attn.norm_q."),
+        ("attn2.norm_k.", "cross_attn.norm_k."),
+        ("ffn.net.0.proj.", "ffn.fc1."),
+        ("ffn.net.2.", "ffn.fc2."),
+        ("norm2.", "norm3."),
+    )
+    if tail == "scale_shift_table":
+        tail = "modulation"
+    else:
+        for source, target in replacements:
+            if tail.startswith(source):
+                tail = target + tail[len(source) :]
+                break
+        else:
+            raise WanBackendError(f"unsupported Wan 2.1 transformer tensor {key!r}")
+    return f"blocks.{block}.{tail}"
+
+
+def _t5_key(key: str) -> str:
+    if key == "shared.weight":
+        return "token_embedding.weight"
+    if key == "encoder.final_layer_norm.weight":
+        return "norm.weight"
+    match = re.fullmatch(r"encoder\.block\.(\d+)\.layer\.([01])\.(.+)", key)
+    if match is None:
+        raise WanBackendError(f"unsupported Wan 2.1 text encoder tensor {key!r}")
+    block, layer, tail = match.groups()
+    mapping = {
+        ("0", "layer_norm.weight"): "norm1.weight",
+        ("0", "SelfAttention.q.weight"): "attn.q.weight",
+        ("0", "SelfAttention.k.weight"): "attn.k.weight",
+        ("0", "SelfAttention.v.weight"): "attn.v.weight",
+        ("0", "SelfAttention.o.weight"): "attn.o.weight",
+        (
+            "0",
+            "SelfAttention.relative_attention_bias.weight",
+        ): "pos_embedding.embedding.weight",
+        ("1", "layer_norm.weight"): "norm2.weight",
+        ("1", "DenseReluDense.wi_0.weight"): "ffn.gate_proj.weight",
+        ("1", "DenseReluDense.wi_1.weight"): "ffn.fc1.weight",
+        ("1", "DenseReluDense.wo.weight"): "ffn.fc2.weight",
+    }
+    mapped = mapping.get((layer, tail))
+    if mapped is None:
+        raise WanBackendError(f"unsupported Wan 2.1 text encoder tensor {key!r}")
+    return f"blocks.{block}.{mapped}"
+
+
+def _vae_decoder_key(key: str) -> str | None:
+    exact = {
+        "post_quant_conv.weight": "conv2.weight",
+        "post_quant_conv.bias": "conv2.bias",
+        "decoder.conv_in.weight": "decoder.conv1.weight",
+        "decoder.conv_in.bias": "decoder.conv1.bias",
+        "decoder.norm_out.gamma": "decoder.head.0.gamma",
+        "decoder.conv_out.weight": "decoder.head.2.weight",
+        "decoder.conv_out.bias": "decoder.head.2.bias",
+    }
+    if key in exact:
+        return exact[key]
+    if not key.startswith("decoder."):
+        return None
+    match = re.fullmatch(r"decoder\.mid_block\.resnets\.(\d+)\.(.+)", key)
+    if match:
+        block, tail = match.groups()
+        residual = {
+            "norm1.gamma": "residual.0.gamma",
+            "conv1.weight": "residual.2.weight",
+            "conv1.bias": "residual.2.bias",
+            "norm2.gamma": "residual.3.gamma",
+            "conv2.weight": "residual.6.weight",
+            "conv2.bias": "residual.6.bias",
+        }.get(tail)
+        if residual:
+            return f"decoder.middle.{int(block) * 2}.{residual}"
+    match = re.fullmatch(r"decoder\.mid_block\.attentions\.0\.(.+)", key)
+    if match:
+        return "decoder.middle.1." + match.group(1)
+    match = re.fullmatch(r"decoder\.up_blocks\.(\d+)\.resnets\.(\d+)\.(.+)", key)
+    if match:
+        block, resnet, tail = match.groups()
+        old_block = int(block) * 4 + int(resnet)
+        residual = {
+            "norm1.gamma": "residual.0.gamma",
+            "conv1.weight": "residual.2.weight",
+            "conv1.bias": "residual.2.bias",
+            "norm2.gamma": "residual.3.gamma",
+            "conv2.weight": "residual.6.weight",
+            "conv2.bias": "residual.6.bias",
+            "conv_shortcut.weight": "shortcut.weight",
+            "conv_shortcut.bias": "shortcut.bias",
+        }.get(tail)
+        if residual:
+            return f"decoder.upsamples.{old_block}.{residual}"
+    match = re.fullmatch(r"decoder\.up_blocks\.(\d+)\.upsamplers\.0\.(.+)", key)
+    if match and int(match.group(1)) < 3:
+        return f"decoder.upsamples.{int(match.group(1)) * 4 + 3}.{match.group(2)}"
+    raise WanBackendError(f"unsupported Wan 2.1 VAE decoder tensor {key!r}")
+
+
+def _read_index(
+    root: Path, relative: str, expected: int, mapper: Callable[[str], str]
+) -> dict[str, list[tuple[str, str]]]:
+    try:
+        payload = json.loads((root / relative).read_text())
+        weight_map = payload["weight_map"]
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise WanBackendError("the Wan 2.1 safetensors index is unreadable") from exc
+    if not isinstance(weight_map, dict) or len(weight_map) != expected:
+        raise WanBackendError(
+            "the Wan 2.1 safetensors index has an unexpected tensor set"
+        )
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    mapped_names: set[str] = set()
+    for source, filename in weight_map.items():
+        if (
+            not isinstance(source, str)
+            or not isinstance(filename, str)
+            or Path(filename).name != filename
+        ):
+            raise WanBackendError(
+                "the Wan 2.1 safetensors index contains an unsafe entry"
+            )
+        target = mapper(source)
+        if target in mapped_names:
+            raise WanBackendError(
+                "the Wan 2.1 safetensors index maps duplicate tensors"
+            )
+        mapped_names.add(target)
+        grouped.setdefault(filename, []).append((source, target))
+    return grouped
+
+
+def _load_sharded(
+    model,
+    root: Path,
+    relative: str,
+    expected: int,
+    mapper: Callable[[str], str],
+    *,
+    dtype=None,
+    reshape_patch: bool = False,
+) -> None:
+    import mlx.core as mx
+
+    directory = (root / relative).parent
+    for filename, names in _read_index(root, relative, expected, mapper).items():
+        path = directory / filename
+        if not path.is_file():
+            raise WanBackendError(f"the Wan 2.1 checkpoint is missing {filename!r}")
+        source_weights = mx.load(str(path), return_metadata=False)
+        weights = []
+        for source, target in names:
+            if source not in source_weights:
+                raise WanBackendError(f"the Wan 2.1 shard is missing tensor {source!r}")
+            value = source_weights[source]
+            if reshape_patch and source == "patch_embedding.weight":
+                value = value.reshape(value.shape[0], -1)
+            if dtype is not None:
+                value = value.astype(dtype)
+            weights.append((target, value))
+        model.load_weights(weights, strict=False)
+        del source_weights, weights
+
+
+def _load_transformer(root: Path, config, quantization=None, loras=None):
+    if quantization or loras:
+        raise WanBackendError(
+            "Wan 2.1 Desktop weights do not support quantization or LoRA overlays"
+        )
+    import mlx.core as mx
+    from mlx_video.models.wan.model import WanModel
+
+    model = WanModel(config)
+    _load_sharded(
+        model,
+        root,
+        _TRANSFORMER_INDEX,
+        _EXPECTED_TRANSFORMER_KEYS,
+        _transformer_key,
+        reshape_patch=True,
+    )
+    mx.eval(model.parameters())
+    return model
+
+
+def _load_t5(root: Path, config):
+    import mlx.core as mx
+    from mlx_video.models.wan.text_encoder import T5Encoder
+
+    encoder = T5Encoder(
+        vocab_size=config.t5_vocab_size,
+        dim=config.t5_dim,
+        dim_attn=config.t5_dim_attn,
+        dim_ffn=config.t5_dim_ffn,
+        num_heads=config.t5_num_heads,
+        num_layers=config.t5_num_layers,
+        num_buckets=config.t5_num_buckets,
+        shared_pos=False,
+    )
+    _load_sharded(
+        encoder, root, _T5_INDEX, _EXPECTED_T5_KEYS, _t5_key, dtype=mx.float32
+    )
+    mx.eval(encoder.parameters())
+    return encoder
+
+
+def _load_vae(root: Path, config=None):
+    import mlx.core as mx
+    from mlx_video.models.wan.vae import WanVAE
+
+    source = mx.load(str(root / _VAE_FILE), return_metadata=False)
+    weights = []
+    for key, value in source.items():
+        target = _vae_decoder_key(key)
+        if target is None:
+            continue
+        if "weight" in key and value.ndim == 5:
+            value = mx.transpose(value, (0, 2, 3, 4, 1))
+        elif "weight" in key and value.ndim == 4:
+            value = mx.transpose(value, (0, 2, 3, 1))
+        weights.append((target, value.astype(mx.float32)))
+    if len(weights) != _EXPECTED_VAE_DECODER_KEYS or len(
+        {key for key, _ in weights}
+    ) != len(weights):
+        raise WanBackendError("the Wan 2.1 VAE has an unexpected decoder tensor set")
+    vae = WanVAE(z_dim=16)
+    vae.load_weights(weights, strict=False)
+    mx.eval(vae.parameters())
+    return vae
+
+
+@contextmanager
+def patched_diffusers_runtime(root: Path) -> Iterator[Path]:
+    """Patch the pinned generator's loader seams for one model-dedicated job."""
+    import mlx_video.generate_wan as generator
+    import transformers
+
+    if not is_diffusers_wan21_layout(root):
+        raise WanBackendError("the Wan 2.1 checkpoint layout is incomplete")
+    temporary = tempfile.TemporaryDirectory(prefix="rapidmlx-wan21-view-")
+    view = Path(temporary.name)
+    (view / "config.json").write_text(json.dumps(desktop_wan21_config()))
+    original = (
+        generator.load_wan_model,
+        generator.load_t5_encoder,
+        generator.load_vae_decoder,
+        transformers.AutoTokenizer,
+    )
+    tokenizer_class = transformers.AutoTokenizer
+
+    class LocalTokenizer:
+        @classmethod
+        def from_pretrained(cls, _model_name, *args, **kwargs):
+            kwargs["local_files_only"] = True
+            return tokenizer_class.from_pretrained(root / "tokenizer", *args, **kwargs)
+
+    with _PATCH_LOCK:
+        generator.load_wan_model = lambda _path, config, quantization=None, loras=None: (
+            _load_transformer(root, config, quantization, loras)
+        )
+        generator.load_t5_encoder = lambda _path, config: _load_t5(root, config)
+        generator.load_vae_decoder = lambda _path, config=None: _load_vae(root, config)
+        transformers.AutoTokenizer = LocalTokenizer
+        try:
+            yield view
+        finally:
+            (
+                generator.load_wan_model,
+                generator.load_t5_encoder,
+                generator.load_vae_decoder,
+                transformers.AutoTokenizer,
+            ) = original
+            temporary.cleanup()
+
+
+def generate_with_runtime(root: Path, generator, generation_kwargs: dict) -> None:
+    """Generate while preventing another Wan engine from seeing patched globals."""
+    with _PATCH_LOCK:
+        if is_diffusers_wan21_layout(root):
+            with patched_diffusers_runtime(root) as model_view:
+                generation_kwargs["model_dir"] = str(model_view)
+                generator.generate_video(**generation_kwargs)
+        else:
+            generator.generate_video(**generation_kwargs)

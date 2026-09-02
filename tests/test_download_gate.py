@@ -735,10 +735,58 @@ def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> N
     blobs.mkdir(parents=True)
     snap = repo_root / "snapshots" / pinned_sha
     snap.mkdir(parents=True)
-    for name, payload in files.items():
-        blob = blobs / f"blob-{len(payload)}-{name}"
+    for index, (name, payload) in enumerate(files.items()):
+        blob = blobs / f"blob-{index}-{len(payload)}"
         blob.write_bytes(payload)
-        (snap / name).symlink_to(blob)
+        link = snap / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(blob)
+
+
+def _wan21_diffusers_files() -> dict[str, bytes]:
+    names = (
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+        "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+        "text_encoder/model.safetensors.index.json",
+        "text_encoder/model-00001-of-00005.safetensors",
+        "text_encoder/model-00002-of-00005.safetensors",
+        "text_encoder/model-00003-of-00005.safetensors",
+        "text_encoder/model-00004-of-00005.safetensors",
+        "text_encoder/model-00005-of-00005.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+        "tokenizer/special_tokens_map.json",
+        "tokenizer/spiece.model",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+    )
+    return {name: b"complete" for name in names}
+
+
+def test_wan_cache_accepts_complete_21_diffusers_layout(tmp_path, monkeypatch):
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], _wan21_diffusers_files())
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is True
+
+
+def test_wan_cache_rejects_incomplete_21_diffusers_layout(tmp_path, monkeypatch):
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    files.pop("tokenizer/spiece.model")
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
 
 
 def test_wan_cache_accepts_5b_single_transformer_layout(tmp_path, monkeypatch):
