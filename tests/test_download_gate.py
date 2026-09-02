@@ -745,15 +745,19 @@ def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> N
 
 def _wan21_diffusers_files() -> dict[str, bytes]:
     names = (
+        "model_index.json",
+        "transformer/config.json",
         "transformer/diffusion_pytorch_model.safetensors.index.json",
         "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
         "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+        "text_encoder/config.json",
         "text_encoder/model.safetensors.index.json",
         "text_encoder/model-00001-of-00005.safetensors",
         "text_encoder/model-00002-of-00005.safetensors",
         "text_encoder/model-00003-of-00005.safetensors",
         "text_encoder/model-00004-of-00005.safetensors",
         "text_encoder/model-00005-of-00005.safetensors",
+        "vae/config.json",
         "vae/diffusion_pytorch_model.safetensors",
         "tokenizer/special_tokens_map.json",
         "tokenizer/spiece.model",

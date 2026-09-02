@@ -22,6 +22,43 @@ from vllm_mlx.video.wan_diffusers import (
     is_diffusers_wan21_layout,
 )
 
+_WAN21_COMPONENT_CONFIGS = {
+    "model_index.json": {
+        "_class_name": "WanPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "text_encoder": ["transformers", "UMT5EncoderModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    },
+    "transformer/config.json": {
+        "_class_name": "WanTransformer3DModel",
+        "patch_size": [1, 2, 2],
+        "in_channels": 16,
+        "out_channels": 16,
+        "num_attention_heads": 12,
+        "attention_head_dim": 128,
+        "num_layers": 30,
+        "ffn_dim": 8960,
+        "text_dim": 4096,
+    },
+    "text_encoder/config.json": {
+        "model_type": "umt5",
+        "vocab_size": 256384,
+        "d_model": 4096,
+        "d_ff": 10240,
+        "num_heads": 64,
+        "num_layers": 24,
+        "relative_attention_num_buckets": 32,
+    },
+    "vae/config.json": {
+        "_class_name": "AutoencoderKLWan",
+        "base_dim": 96,
+        "z_dim": 16,
+        "dim_mult": [1, 2, 4, 4],
+        "num_res_blocks": 2,
+        "temperal_downsample": [False, True, True],
+    },
+}
+
 
 def _layout(root: Path) -> Path:
     for relative in (
@@ -33,6 +70,10 @@ def _layout(root: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"{}")
     (root / "tokenizer").mkdir()
+    for relative, payload in _WAN21_COMPONENT_CONFIGS.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
     return root
 
 
@@ -44,6 +85,16 @@ def test_official_layout_synthesizes_bounded_wan21_config(tmp_path: Path) -> Non
     assert engine.model_type == "t2v"
     assert engine.native_fps == 16
     assert engine.max_area == 704 * 1280
+
+
+def test_official_layout_rejects_mismatched_architecture(tmp_path: Path) -> None:
+    root = _layout(tmp_path)
+    config = root / "transformer/config.json"
+    payload = json.loads(config.read_text())
+    payload["num_layers"] = 40
+    config.write_text(json.dumps(payload))
+
+    assert not is_diffusers_wan21_layout(root)
 
 
 @pytest.mark.parametrize(
@@ -89,6 +140,26 @@ def test_t5_mapping(source: str, target: str) -> None:
         (
             "decoder.up_blocks.2.upsamplers.0.time_conv.weight",
             "decoder.upsamples.11.time_conv.weight",
+        ),
+        (
+            "decoder.mid_block.attentions.0.norm.gamma",
+            "decoder.middle.1.norm.gamma",
+        ),
+        (
+            "decoder.mid_block.attentions.0.to_qkv.weight",
+            "decoder.middle.1.to_qkv.weight",
+        ),
+        (
+            "decoder.mid_block.attentions.0.to_qkv.bias",
+            "decoder.middle.1.to_qkv.bias",
+        ),
+        (
+            "decoder.mid_block.attentions.0.proj.weight",
+            "decoder.middle.1.proj.weight",
+        ),
+        (
+            "decoder.mid_block.attentions.0.proj.bias",
+            "decoder.middle.1.proj.bias",
         ),
     ],
 )
@@ -161,7 +232,26 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     assert not view.exists()
 
 
-def test_loader_target_validation_rejects_missing_and_unknown_parameters() -> None:
+def test_loader_target_validation_rejects_missing_and_unknown_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mlx = ModuleType("mlx")
+    mlx_utils = ModuleType("mlx.utils")
+
+    def tree_flatten(parameters, prefix=""):
+        flattened = []
+        for name, value in parameters.items():
+            path = f"{prefix}.{name}" if prefix else name
+            if isinstance(value, dict):
+                flattened.extend(tree_flatten(value, path))
+            else:
+                flattened.append((path, value))
+        return flattened
+
+    mlx_utils.tree_flatten = tree_flatten
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.utils", mlx_utils)
+
     class FakeModel:
         def parameters(self):
             return {"layer": {"weight": object(), "bias": object()}}

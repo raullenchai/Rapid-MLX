@@ -1148,17 +1148,22 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
         # The official 1.3B Desktop checkpoint uses a sharded Diffusers layout.
         # Its exact runtime closure is distinct from the preconverted 2.2
         # checkpoints below and must be checked directory-by-directory.
+        required_names: tuple[str, ...]
         if repo_id == "Wan-AI/Wan2.1-T2V-1.3B-Diffusers":
             required_names = (
+                "model_index.json",
+                "transformer/config.json",
                 "transformer/diffusion_pytorch_model.safetensors.index.json",
                 "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
                 "transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+                "text_encoder/config.json",
                 "text_encoder/model.safetensors.index.json",
                 "text_encoder/model-00001-of-00005.safetensors",
                 "text_encoder/model-00002-of-00005.safetensors",
                 "text_encoder/model-00003-of-00005.safetensors",
                 "text_encoder/model-00004-of-00005.safetensors",
                 "text_encoder/model-00005-of-00005.safetensors",
+                "vae/config.json",
                 "vae/diffusion_pytorch_model.safetensors",
                 "tokenizer/special_tokens_map.json",
                 "tokenizer/spiece.model",
@@ -1172,10 +1177,11 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
         # four pinned checkpoints: 5B -> single, A14B -> dual). Fail closed on
         # an unclassifiable repo rather than inferring from file presence.
         repo_lower = repo_id.casefold()
+        transformer_names: tuple[str, ...]
         if required_names:
             transformer_names = ()
         elif "a14b" in repo_lower:
-            transformer_names: tuple[str, ...] = (
+            transformer_names = (
                 "high_noise_model.safetensors",
                 "low_noise_model.safetensors",
             )

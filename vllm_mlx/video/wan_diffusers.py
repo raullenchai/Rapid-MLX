@@ -25,15 +25,63 @@ _EXPECTED_TRANSFORMER_KEYS = 825
 _EXPECTED_T5_KEYS = 242
 _EXPECTED_VAE_DECODER_KEYS = 108
 
+_WAN21_COMPONENT_CONTRACTS: dict[str, dict[str, object]] = {
+    "model_index.json": {
+        "_class_name": "WanPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "text_encoder": ["transformers", "UMT5EncoderModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    },
+    "transformer/config.json": {
+        "_class_name": "WanTransformer3DModel",
+        "patch_size": [1, 2, 2],
+        "in_channels": 16,
+        "out_channels": 16,
+        "num_attention_heads": 12,
+        "attention_head_dim": 128,
+        "num_layers": 30,
+        "ffn_dim": 8960,
+        "text_dim": 4096,
+    },
+    "text_encoder/config.json": {
+        "model_type": "umt5",
+        "vocab_size": 256384,
+        "d_model": 4096,
+        "d_ff": 10240,
+        "num_heads": 64,
+        "num_layers": 24,
+        "relative_attention_num_buckets": 32,
+    },
+    "vae/config.json": {
+        "_class_name": "AutoencoderKLWan",
+        "base_dim": 96,
+        "z_dim": 16,
+        "dim_mult": [1, 2, 4, 4],
+        "num_res_blocks": 2,
+        "temperal_downsample": [False, True, True],
+    },
+}
+
 
 def is_diffusers_wan21_layout(root: Path) -> bool:
-    return (
+    if not (
         all(
             (root / relative).is_file()
             for relative in (_TRANSFORMER_INDEX, _T5_INDEX, _VAE_FILE)
         )
         and (root / "tokenizer").is_dir()
-    )
+    ):
+        return False
+    try:
+        for relative, expected in _WAN21_COMPONENT_CONTRACTS.items():
+            payload = json.loads((root / relative).read_text())
+            if not isinstance(payload, dict) or any(
+                payload.get(key) != value for key, value in expected.items()
+            ):
+                return False
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return True
 
 
 def desktop_wan21_config() -> dict[str, object]:
