@@ -161,6 +161,9 @@ class Request:
     num_computed_tokens: int = 0
     output_token_ids: list[int] = field(default_factory=list)
     output_text: str = ""
+    # Terminal metrics idempotency belongs to this request lifetime, not a
+    # bounded global ID cache that can forget delayed duplicate delivery.
+    _performance_recorded: bool = field(default=False, init=False, repr=False)
 
     # For BatchGenerator integration
     batch_uid: int | None = None  # UID assigned by BatchGenerator

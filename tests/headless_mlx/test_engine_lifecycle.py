@@ -957,6 +957,8 @@ def test_mllm_lifecycle_abort_records_reason_until_terminal_delivery():
 
 
 def test_mllm_abort_remains_queued_until_terminal_delivery():
+    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.waiting = []
     scheduler.running = {}
@@ -967,6 +969,7 @@ def test_mllm_abort_remains_queued_until_terminal_delivery():
     scheduler.total_completion_tokens = 0
     scheduler.num_requests_cancelled = 0
     scheduler.num_requests_cancelled_via_disconnect = 0
+    scheduler.performance = ModelPerformanceLedger(None)
     scheduler.batch_generator = None
     scheduler.vision_cache = None
 
@@ -974,6 +977,8 @@ def test_mllm_abort_remains_queued_until_terminal_delivery():
 
 
 def test_mllm_terminal_delivery_is_counted_by_engine_lifecycle():
+    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+
     engine, _ = _engine()
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.waiting = []
@@ -985,6 +990,7 @@ def test_mllm_terminal_delivery_is_counted_by_engine_lifecycle():
     scheduler.total_completion_tokens = 0
     scheduler.num_requests_cancelled = 0
     scheduler.num_requests_cancelled_via_disconnect = 0
+    scheduler.performance = ModelPerformanceLedger(None)
     scheduler.batch_generator = None
     scheduler.vision_cache = None
     engine._is_mllm = True
