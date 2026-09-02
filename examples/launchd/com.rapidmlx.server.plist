@@ -49,7 +49,8 @@
     <key>ProcessType</key>
     <string>Background</string>
     <key>Umask</key>
-    <string>027</string>
+    <!-- plist integers are decimal; 23 is octal 027. -->
+    <integer>23</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/serveuser/Library/Logs/Rapid-MLX/server.stdout.log</string>

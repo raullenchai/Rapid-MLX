@@ -142,8 +142,8 @@ Run the repository smoke test on the Mac. It checks the system-domain job,
 process owner, liveness, readiness, model inventory, and one real completion:
 
 ```bash
-RAPID_MLX_SERVICE_USER=serveuser \
-RAPID_MLX_SMOKE_MODEL=default \
+export RAPID_MLX_SERVICE_USER=serveuser
+export RAPID_MLX_SMOKE_MODEL=default
 ./scripts/headless_service_smoke.sh
 ```
 
@@ -151,8 +151,7 @@ For an authenticated service, provide the key through the environment. The
 script puts it in a mode-600 temporary curl configuration, not argv or output:
 
 ```bash
-RAPID_MLX_API_KEY='your-key' \
-RAPID_MLX_SERVICE_USER=serveuser \
+export RAPID_MLX_API_KEY='your-key'
 ./scripts/headless_service_smoke.sh
 ```
 
@@ -186,8 +185,8 @@ Record the working state first. Include every optional extra the service uses;
 ```bash
 rapid-mlx --version
 ~/.rapid-mlx/bin/python -m pip freeze > "$HOME/rapid-mlx-before-upgrade.txt"
-cp /Library/LaunchDaemons/com.rapidmlx.server.plist \
-   "$HOME/com.rapidmlx.server.plist.backup"
+sudo cp -p /Library/LaunchDaemons/com.rapidmlx.server.plist \
+  /Library/LaunchDaemons/com.rapidmlx.server.plist.pre-upgrade
 ```
 
 Then use this order:
@@ -199,16 +198,18 @@ curl -fsSL https://rapidmlx.com/install.sh | bash
 # Re-assert the extras required by this appliance. Examples:
 ~/.rapid-mlx/bin/python -m pip install --upgrade 'rapid-mlx[vision]'
 
-~/.rapid-mlx/bin/rapid-mlx doctor
+~/.rapid-mlx/bin/rapid-mlx doctor || \
+  echo 'Doctor reported issues; keep the daemon stopped and continue validation.'
 plutil -lint /Library/LaunchDaemons/com.rapidmlx.server.plist
 sudo launchctl bootstrap system \
   /Library/LaunchDaemons/com.rapidmlx.server.plist
 ./scripts/headless_service_smoke.sh
 ```
 
-Doctor should pass, but do not use it as the only acceptance test: the API
-smoke test proves that the daemon can load the configured model and serve a
-request in its real launchd environment.
+Investigate every Doctor issue, but do not use Doctor alone to accept or reject
+the update. Some 0.13.3 runtime layouts can produce false import failures. The
+API smoke test is the actionable gate: it proves that the daemon can load the
+configured model and serve a request in its real launchd environment.
 
 The installer upgrades a compatible `~/.rapid-mlx` environment in place, so
 unrelated installed packages normally remain. It deliberately rebuilds the
@@ -223,7 +224,7 @@ the service again:
 ```bash
 ~/.rapid-mlx/bin/python -m pip install \
   'rapid-mlx==PREVIOUS_VERSION' 'rapid-mlx[vision]==PREVIOUS_VERSION'
-~/.rapid-mlx/bin/rapid-mlx doctor
+~/.rapid-mlx/bin/rapid-mlx doctor || true
 sudo launchctl bootstrap system \
   /Library/LaunchDaemons/com.rapidmlx.server.plist
 ./scripts/headless_service_smoke.sh

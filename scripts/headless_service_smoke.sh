@@ -21,16 +21,14 @@ esac
 case "$MODEL" in
     *[!A-Za-z0-9._/-]*|'') echo "invalid model name: $MODEL" >&2; exit 2 ;;
 esac
-case "$BASE_URL" in
-    http://127.0.0.1:*|http://localhost:*|https://*) ;;
-    *)
-        echo "refusing cleartext smoke test to a non-loopback host: $BASE_URL" >&2
-        echo "use HTTPS, or run this script on the server over SSH" >&2
-        exit 2
-        ;;
-esac
+if [[ ! "$BASE_URL" =~ ^http://(127\.0\.0\.1|localhost):[0-9]{1,5}$ ]] &&
+   [[ ! "$BASE_URL" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+    echo "invalid or unsafe base URL: $BASE_URL" >&2
+    echo "use an exact loopback HTTP origin or an HTTPS origin without userinfo or a path" >&2
+    exit 2
+fi
 case "${RAPID_MLX_API_KEY:-}" in
-    *$'\n'*|*$'\r'*|*'"'*|*'\\'*)
+    *$'\n'*|*$'\r'*|*\"*|*\\*)
         echo "RAPID_MLX_API_KEY contains characters unsafe for a curl config" >&2
         exit 2
         ;;
@@ -56,12 +54,16 @@ SERVICE_PRINT="$(launchctl print "$DOMAIN/$LABEL" 2>&1)" || {
     exit 1
 }
 PID="$(printf '%s\n' "$SERVICE_PRINT" | awk -F'= ' '/^[[:space:]]*pid = [0-9]+/ {gsub(/[^0-9]/, "", $2); print $2; exit}')"
-if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+if [ -z "$PID" ]; then
     echo "service is registered but has no live process" >&2
     exit 1
 fi
+ACTUAL_USER="$(ps -o user= -p "$PID" | awk '{$1=$1; print}')"
+if [ -z "$ACTUAL_USER" ]; then
+    echo "service reports pid $PID, but that process is not visible" >&2
+    exit 1
+fi
 if [ -n "$EXPECTED_USER" ]; then
-    ACTUAL_USER="$(ps -o user= -p "$PID" | awk '{$1=$1; print}')"
     [ "$ACTUAL_USER" = "$EXPECTED_USER" ] || {
         echo "service runs as $ACTUAL_USER, expected $EXPECTED_USER" >&2
         exit 1
@@ -70,22 +72,22 @@ fi
 echo "  running (pid $PID${EXPECTED_USER:+, user $EXPECTED_USER})"
 
 echo "[2/4] liveness"
-curl --config "$CURL_CONFIG" "$BASE_URL/livez" > "$RESPONSE"
+curl -q --config "$CURL_CONFIG" "$BASE_URL/livez" > "$RESPONSE"
 grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE" || {
     echo "unexpected /livez response" >&2; exit 1;
 }
 
 echo "[3/4] readiness and model inventory"
-curl --config "$CURL_CONFIG" "$BASE_URL/readyz" > "$RESPONSE"
+curl -q --config "$CURL_CONFIG" "$BASE_URL/readyz" > "$RESPONSE"
 grep -Eq '"ready"[[:space:]]*:[[:space:]]*true|"status"[[:space:]]*:[[:space:]]*"(ok|ready|healthy)"|^OK$' "$RESPONSE" || {
     echo "unexpected /readyz response" >&2; exit 1;
 }
-curl --config "$CURL_CONFIG" "$BASE_URL/v1/models" > "$RESPONSE"
+curl -q --config "$CURL_CONFIG" "$BASE_URL/v1/models" > "$RESPONSE"
 grep -q '"data"' "$RESPONSE" || { echo "unexpected /v1/models response" >&2; exit 1; }
 
 echo "[4/4] one-token completion"
 printf '{"model":"%s","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":1,"temperature":0}' "$MODEL" > "$RESPONSE"
-curl --config "$CURL_CONFIG" \
+curl -q --config "$CURL_CONFIG" \
     -H 'Content-Type: application/json' \
     --data-binary "@$RESPONSE" \
     "$BASE_URL/v1/chat/completions" > "$RESPONSE_NEXT"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 import subprocess
 from pathlib import Path
@@ -24,6 +25,7 @@ def test_launchdaemon_template_is_valid_and_safe_by_default() -> None:
     assert config["ProgramArguments"][host_index + 1] == "127.0.0.1"
     assert config["KeepAlive"] is True
     assert config["ThrottleInterval"] >= 10
+    assert config["Umask"] == 0o27
     assert "RAPID_MLX_API_KEY" not in config["EnvironmentVariables"]
     assert config["StandardOutPath"] != config["StandardErrorPath"]
 
@@ -35,10 +37,23 @@ def test_smoke_script_is_syntactically_valid_and_does_not_accept_key_argv() -> N
     assert "RAPID_MLX_SERVICE_DOMAIN" in source
     assert "--api-key" not in source
     assert "unsafe for a curl config" in source
+    assert 'curl -q --config "$CURL_CONFIG"' in source
+    assert "kill -0" not in source
     assert "launchctl print" in source
     assert "/livez" in source
     assert "/readyz" in source
     assert "/v1/chat/completions" in source
+
+
+def test_smoke_script_rejects_loopback_userinfo_url() -> None:
+    env = {
+        **os.environ,
+        "RAPID_MLX_BASE_URL": "http://127.0.0.1:8000@attacker.example",
+        "RAPID_MLX_API_KEY": "secret",
+    }
+    result = subprocess.run([str(SMOKE)], env=env, text=True, capture_output=True)
+    assert result.returncode == 2
+    assert "invalid or unsafe base URL" in result.stderr
 
 
 def test_guide_pins_operational_and_security_boundaries() -> None:
