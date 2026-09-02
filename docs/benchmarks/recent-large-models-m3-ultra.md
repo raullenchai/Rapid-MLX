@@ -40,7 +40,7 @@ the server reports 92, 2,012, 8,156, and 32,732 tokens.
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | `qwen3.8-27b-4bit` | 27B dense | 8,156 → 256 | 25.058s | 325.5 tok/s | 38.97 tok/s | 22.1 GB active / 23.4 GB peak |
 | `qwen3.8-flash-next-4bit` | 180B total / 6B active | 8,156 → 256 | 9.397s | 867.9 tok/s | 23.12 tok/s | 102.8 GB active / 148.1 GB peak |
-| `glm5.3-flash-4bit` | 320B total / 18B active | 8,156 → 256 | 22.779s | 359.6 tok/s | 27.86 tok/s | 180.6 GB active / 195.6 GB peak |
+| `glm5.3-flash-4bit` | 320B total / 18B active | 8,192 → 256 | 22.779s | 359.6 tok/s | 27.86 tok/s | 180.6 GB active / 195.6 GB peak |
 
 The Flash-Next parameter total is 125B language-model parameters plus a 51B
 n-gram embedding and 4B MTP head; 6B language-model parameters are active per
@@ -175,12 +175,20 @@ python .orca/flash-next-eval/benchmark.py \
   --rapid-sha EXACT_RAPID_SHA \
   --artifact-revision EXACT_ARTIFACT_REVISION \
   --output OUTPUT.json
+
+# Capture MLX allocator telemetry immediately after the completed sweep,
+# before stopping the server. This is separate from benchmark.py's RSS sampler.
+curl --silent http://127.0.0.1:8465/v1/status \
+  | tee OUTPUT.status.json \
+  | jq '{model, metal}'
 ```
 
 The harness builds deterministic prompts at the four target lengths, requests
 256 output tokens three times per length, parses the streamed final usage
-event, and samples the complete process tree. `/v1/status` supplies the MLX
-allocator readings used here. Do not run another model server concurrently.
+event, and samples the complete process-tree RSS. The separate status command
+captures the MLX allocator readings used here; for the GLM sweep it returned
+`active_memory_gb: 180.6` and `peak_memory_gb: 195.58`. Do not run another
+model server concurrently.
 
 The checkpoint contains a native MTP head, but the qualification experiment
 did not produce a speedup: 32.00 tok/s ordinary decode versus 31.65 tok/s with
