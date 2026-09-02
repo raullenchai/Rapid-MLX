@@ -186,8 +186,13 @@ final class MarkdownCodeBlockView: NSView {
         // an in-flight render for the previous theme is rejected by
         // `requestMermaidRender` before it can repaint this view.
         if MermaidSource.looksLikeMermaid(code: code, language: language) {
+            let wasShowingPreview = isShowingPreview
             previewImage = nil
             updatePreviewAvailability()
+            // A missing bitmap is transient during a theme refresh, not a
+            // new reader choice. Preserve an explicit Preview selection so
+            // the matching themed image replaces the old one in place.
+            if hasToggledPreview { isShowingPreview = wasShowingPreview }
             invalidateLayoutChain()
         }
         needsDisplay = true

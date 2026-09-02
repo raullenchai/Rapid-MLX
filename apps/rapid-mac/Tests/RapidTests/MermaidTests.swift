@@ -1089,6 +1089,40 @@ struct PreviewAutoRevealTests {
         #expect(light !== dark)
     }
 
+    @Test("Changing appearance preserves an explicit Preview selection")
+    func appearanceChangePreservesExplicitPreviewSelection() async throws {
+        let source = "graph TD\n  Selected --> Preview"
+        let view = MarkdownCodeBlockView(
+            options: MarkdownOptions(),
+            mermaidImageProvider: { _, theme in
+                NSImage(size: theme == .light
+                    ? NSSize(width: 320, height: 180)
+                    : NSSize(width: 320, height: 200))
+            }
+        )
+        view.appearance = NSAppearance(named: .aqua)
+        view.configure(
+            code: source, language: "mermaid", options: MarkdownOptions(), isFinal: true
+        )
+        for _ in 0..<50 where previewButton(view)?.isHidden != false {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let button = try #require(previewButton(view))
+        #expect(button.title == "Code")
+        _ = button.target?.perform(button.action, with: button)
+        #expect(button.title == "Preview")
+        _ = button.target?.perform(button.action, with: button)
+        #expect(button.title == "Code")
+
+        view.appearance = NSAppearance(named: .darkAqua)
+        view.viewDidChangeEffectiveAppearance()
+        for _ in 0..<50 where button.isHidden {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(button.title == "Code")
+    }
+
     @Test("Reusing a row reclassifies identical source")
     func reusedRowReclassifiesIdenticalSource() async throws {
         let source = "graph TD\n  Same --> Source"
