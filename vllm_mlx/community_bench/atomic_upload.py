@@ -19,6 +19,7 @@ from .upload import (
     peek_install_id,
     post_submission,
     submission_body,
+    validate_board_url,
 )
 
 
@@ -140,7 +141,7 @@ def preview_run(
     """Build the exact wire payload without writing or sending anything."""
 
     BenchmarkRunValidator().validate(run)
-    base = (url or board_url()).rstrip("/")
+    base = (validate_board_url(url) if url is not None else board_url()).rstrip("/")
     target = base if url or base.endswith("/atomic") else f"{base}/atomic"
     candidate = install_id or peek_install_id()
     wire = copy.deepcopy(run)

@@ -76,27 +76,33 @@ def board_url() -> str:
     override = os.environ.get(BOARD_URL_ENV, "").strip()
     if not override:
         return DEFAULT_BOARD_URL
-    parsed = urllib.parse.urlparse(override)
+    return validate_board_url(override, source=BOARD_URL_ENV)
+
+
+def validate_board_url(value: str, *, source: str = "benchmark upload URL") -> str:
+    """Apply the HTTPS/loopback policy to configured and explicit targets."""
+
+    parsed = urllib.parse.urlparse(value)
     # The resolved target is printed on the consent screen and repeated in
     # error messages, so embedded credentials would land in terminals and CI
     # logs. Refuse rather than redact: a URL needing userinfo to reach the
     # board is not a configuration we want to support silently.
     if parsed.username or parsed.password:
         raise SubmitError(
-            f"{BOARD_URL_ENV} must not embed credentials in the URL — the "
+            f"{source} must not embed credentials in the URL — the "
             f"destination is displayed and logged."
         )
     if parsed.scheme == "https":
-        return override
+        return value
     if parsed.scheme == "http" and (parsed.hostname or "") in {
         "localhost",
         "127.0.0.1",
         "::1",
     }:
-        return override
+        return value
     raise SubmitError(
-        f"{BOARD_URL_ENV} must be an https:// URL (or http:// on loopback for "
-        f"local development); got {override!r}. Refusing to send your "
+        f"{source} must be an https:// URL (or http:// on loopback for "
+        f"local development); got {value!r}. Refusing to send your "
         f"submission in clear text."
     )
 
@@ -331,4 +337,5 @@ __all__ = [
     "new_run_group",
     "post_submission",
     "submission_body",
+    "validate_board_url",
 ]
