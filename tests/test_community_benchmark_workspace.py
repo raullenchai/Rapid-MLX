@@ -552,6 +552,25 @@ def test_install_id_commit_syncs_file_and_parent_directory(
     assert synced == [False, True]
 
 
+def test_install_id_commit_completes_a_partial_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_write = benchmark_upload.os.write
+    calls = 0
+
+    def partial_first_write(descriptor, data):
+        nonlocal calls
+        calls += 1
+        return real_write(descriptor, data[:3] if calls == 1 else data)
+
+    monkeypatch.setattr(benchmark_upload.os, "write", partial_first_write)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert calls == 2
+    assert (tmp_path / "bench-install-id").read_text() == "a" * 12 + "\n"
+
+
 def test_local_archive_receipt_marks_only_an_existing_run_shared(
     tmp_path: Path,
 ) -> None:

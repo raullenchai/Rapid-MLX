@@ -163,7 +163,13 @@ def commit_install_id(candidate: str) -> str:
         )
         tmp = Path(tmp_name)
         try:
-            os.write(fd, (candidate + "\n").encode())
+            encoded = (candidate + "\n").encode()
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("install identity write made no progress")
+                offset += written
             os.fsync(fd)
         finally:
             os.close(fd)
