@@ -1639,6 +1639,7 @@ class BatchedEngine(BaseEngine):
             processor=self._processor,
             config=mllm_config,
             step_executor=self._model_load_executor,
+            model_name=self._model_name,
         )
         await self._mllm_scheduler.start()
 
@@ -3815,6 +3816,7 @@ class BatchedEngine(BaseEngine):
                 "vision_embedding_cache",
                 "vision_cache",
                 "prefix_cache",
+                "model_performance",
             ):
                 if key in mllm_stats:
                     stats[key] = mllm_stats[key]

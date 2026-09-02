@@ -54,6 +54,7 @@ from .request import (  # noqa: E402
     RequestStatus,
     SamplingParams,
 )
+from .runtime.model_performance import get_model_performance_ledger  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,8 @@ class MLLMRequest:
     video_fps: float | None = None
     video_max_frames: int | None = None
     arrival_time: float = field(default_factory=time.time)
+    first_token_time: float | None = None
+    _performance_recorded: bool = field(default=False, init=False, repr=False)
 
     # Batch generator UID (assigned when scheduled)
     batch_uid: int | None = None
@@ -246,6 +249,7 @@ class MLLMScheduler:
         processor: Any,
         config: MLLMSchedulerConfig | None = None,
         step_executor: Any | None = None,
+        model_name: str | None = None,
     ):
         """
         Initialize MLLM scheduler.
@@ -385,6 +389,37 @@ class MLLMScheduler:
         # rationale. Observability only — abort semantics unchanged.
         self.num_requests_cancelled = 0
         self.num_requests_cancelled_via_disconnect = 0
+        self.performance = get_model_performance_ledger(model_name)
+
+    def _request_timings(
+        self, request: MLLMRequest
+    ) -> tuple[float | None, float | None]:
+        """Return TTFT and inverse-TPOT decode speed for a terminal request."""
+        if request.first_token_time is None or request.num_output_tokens == 0:
+            return None, None
+        ttft = max(0.0, request.first_token_time - request.arrival_time)
+        decode_rate = None
+        if request.num_output_tokens >= 2:
+            elapsed = time.time() - request.first_token_time
+            if elapsed > 0:
+                decode_rate = (request.num_output_tokens - 1) / elapsed
+        return ttft, decode_rate
+
+    def _record_terminal_performance(self, request: MLLMRequest, outcome: str) -> None:
+        """Record one MLLM request lifetime without changing its lifecycle."""
+        try:
+            ttft, decode_rate = self._request_timings(request)
+            self.performance.record_request_performance(
+                request,
+                outcome,
+                ttft_seconds=ttft,
+                decode_tokens_per_second=decode_rate,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to record MLLM performance for %s",
+                getattr(request, "request_id", "<unknown>"),
+            )
 
     def _match_user_stop(
         self, text: str, new_text_start_len: int, stop_params: list[str]
@@ -836,6 +871,7 @@ class MLLMScheduler:
             self.total_prompt_tokens += request.num_prompt_tokens
             if request.num_output_tokens > 0:
                 self.total_completion_tokens += request.num_output_tokens
+            self._record_terminal_performance(request, "cancelled")
 
         # Mark as aborted
         if request is not None:
@@ -947,6 +983,7 @@ class MLLMScheduler:
         """
         outputs = []
         finished_ids = set()
+        terminal_performance_requests: list[MLLMRequest] = []
 
         tokenizer = (
             self.processor.tokenizer
@@ -998,6 +1035,8 @@ class MLLMScheduler:
             if not token_is_control_stop_token:
                 request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
+            if request.num_output_tokens and request.first_token_time is None:
+                request.first_token_time = time.time()
 
             finish_reason = response.finish_reason
 
@@ -1209,6 +1248,7 @@ class MLLMScheduler:
                 self.total_prompt_tokens += request.num_prompt_tokens
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
+                terminal_performance_requests.append(request)
 
                 logger.debug(
                     f"Request {request_id} finished: {finish_reason}, "
@@ -1246,6 +1286,11 @@ class MLLMScheduler:
                 )
             )
 
+        # Commit outcomes only after the entire response batch has processed.
+        # A later response can still fail decoding/finalization, in which case
+        # the process loop converts every pending request to a failure.
+        for request in terminal_performance_requests:
+            self._record_terminal_performance(request, "succeeded")
         return outputs, finished_ids
 
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
@@ -1302,6 +1347,7 @@ class MLLMScheduler:
                 err_msg = str(e)
                 logger.error(f"Batch generation failed: {err_msg}")
                 error_ids = set(self.running.keys())
+                failed_requests = [self.running[rid] for rid in error_ids]
 
                 # Remove from batch generator BEFORE scheduler cleanup so
                 # stale requests don't poison subsequent batches.
@@ -1351,6 +1397,8 @@ class MLLMScheduler:
                         )
                     )
                 output.finished_request_ids = error_ids
+                for request in failed_requests:
+                    self._record_terminal_performance(request, "failed")
                 self._cleanup_finished(error_ids)
                 return output
 
@@ -1501,8 +1549,13 @@ class MLLMScheduler:
         )
 
         for request_id in request_ids:
-            request = self.requests.get(request_id)
+            request = self.requests.get(request_id) or self.running.get(request_id)
             if request is not None:
+                # Account while the pre-terminal status still distinguishes
+                # queued requests (zero model work) from requests that reached
+                # prefill.  Marking every request aborted first would charge a
+                # waiting request's entire tokenized prompt to the model.
+                self._record_terminal_performance(request, "failed")
                 request.status = RequestStatus.FINISHED_ABORTED
         if self.batch_generator is not None:
             try:
@@ -2103,6 +2156,7 @@ class MLLMScheduler:
             "num_requests_cancelled_via_disconnect": (
                 self.num_requests_cancelled_via_disconnect
             ),
+            "model_performance": self.performance.snapshot().__dict__,
         }
 
         if self.batch_generator is not None:
@@ -2162,6 +2216,16 @@ class MLLMScheduler:
 
     def reset(self) -> None:
         """Reset the scheduler state."""
+        # ``abort_request`` may only enqueue work when the step loop owns the
+        # scheduler. Account every visible lifetime before any queue/map is
+        # cleared; request-owned idempotency prevents a synchronous abort from
+        # double-counting the same object.
+        reset_requests = dict(self.requests)
+        reset_requests.update(self.running)
+        reset_requests.update({request.request_id: request for request in self.waiting})
+        for request in reset_requests.values():
+            self._record_terminal_performance(request, "cancelled")
+
         # Abort all requests
         for request_id in list(self.requests.keys()):
             self.abort_request(request_id)
