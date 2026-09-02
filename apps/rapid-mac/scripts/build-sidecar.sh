@@ -603,51 +603,39 @@ echo "==> bundling minimal LTX/Wan video runtime (no OpenCV)"
 # repository or provision an uv workspace after launch, so build its two
 # packages from the exact audited source snapshot and embed them.
 LTX25_URL="https://github.com/MrMoferFRAN/ltx-2-mlx/archive/${LTX25_RUNTIME_COMMIT}.tar.gz"
-LTX25_TAR="/tmp/rapid-ltx25-${LTX25_RUNTIME_COMMIT}.tar.gz"
-LTX25_TAR_TMP="${LTX25_TAR}.tmp"
-if [ -f "$LTX25_TAR" ]; then
-    LTX25_ACTUAL_SHA="$(shasum -a 256 "$LTX25_TAR" | awk '{print $1}')"
-    if [ "$LTX25_ACTUAL_SHA" != "$LTX25_RUNTIME_SHA256" ] || \
-       ! tar -tzf "$LTX25_TAR" > /dev/null 2>&1; then
-        echo "warning: discarding invalid LTX-2.5 source cache" >&2
-        rm -f "$LTX25_TAR"
-    fi
-fi
-if [ ! -f "$LTX25_TAR" ]; then
+(
+    set -e
+    LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)"
+    trap 'rm -rf "$LTX25_SOURCE_DIR"' EXIT INT TERM
+    LTX25_TAR="$LTX25_SOURCE_DIR/ltx-2-mlx.tar.gz"
     echo "==> downloading audited LTX-2.5 runtime source"
-    rm -f "$LTX25_TAR_TMP"
     if ! curl --http1.1 -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
-        -o "$LTX25_TAR_TMP" "$LTX25_URL"; then
-        rm -f "$LTX25_TAR_TMP"
+        -o "$LTX25_TAR" "$LTX25_URL"; then
         echo "ERR: failed to download LTX-2.5 runtime source" >&2
         exit 1
     fi
-    LTX25_ACTUAL_SHA="$(shasum -a 256 "$LTX25_TAR_TMP" | awk '{print $1}')"
+    LTX25_ACTUAL_SHA="$(shasum -a 256 "$LTX25_TAR" | awk '{print $1}')"
     if [ "$LTX25_ACTUAL_SHA" != "$LTX25_RUNTIME_SHA256" ] || \
-       ! tar -tzf "$LTX25_TAR_TMP" > /dev/null 2>&1; then
-        rm -f "$LTX25_TAR_TMP"
+       ! tar -tzf "$LTX25_TAR" > /dev/null 2>&1; then
         echo "ERR: LTX-2.5 runtime source failed integrity verification" >&2
         exit 1
     fi
-    mv "$LTX25_TAR_TMP" "$LTX25_TAR"
-fi
-LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)"
-tar -xzf "$LTX25_TAR" -C "$LTX25_SOURCE_DIR"
-LTX25_ROOT="$LTX25_SOURCE_DIR/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}"
-for LTX25_PACKAGE in ltx-core-mlx ltx-pipelines-mlx; do
-    "$STAGE/python/bin/python3.12" -m pip install \
-        --target "$STAGE/site-packages" \
-        --no-warn-script-location \
-        --no-compile \
-        --no-deps \
-        --constraint "$SIDECAR_CONSTRAINTS" \
-        "$LTX25_ROOT/packages/$LTX25_PACKAGE"
-done
-mkdir -p "$STAGE/licenses/sources"
-cp "$LTX25_ROOT/LICENSE" "$STAGE/licenses/LTX-2.5-MLX-MIT.txt"
-cp "$LTX25_TAR" \
-    "$STAGE/licenses/sources/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}.tar.gz"
-rm -rf "$LTX25_SOURCE_DIR"
+    tar -xzf "$LTX25_TAR" -C "$LTX25_SOURCE_DIR"
+    LTX25_ROOT="$LTX25_SOURCE_DIR/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}"
+    for LTX25_PACKAGE in ltx-core-mlx ltx-pipelines-mlx; do
+        "$STAGE/python/bin/python3.12" -m pip install \
+            --target "$STAGE/site-packages" \
+            --no-warn-script-location \
+            --no-compile \
+            --no-deps \
+            --constraint "$SIDECAR_CONSTRAINTS" \
+            "$LTX25_ROOT/packages/$LTX25_PACKAGE"
+    done
+    mkdir -p "$STAGE/licenses/sources"
+    cp "$LTX25_ROOT/LICENSE" "$STAGE/licenses/LTX-2.5-MLX-MIT.txt"
+    cp "$LTX25_TAR" \
+        "$STAGE/licenses/sources/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}.tar.gz"
+)
 
 # Upstream 0.1.36 writes MP4 through optional OpenCV/imageio. Replace only
 # the two pinned encoder seams with Rapid's atomic VideoToolbox bridge. Hashes
@@ -1232,12 +1220,15 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
         FFMPEG_BINARY="$STAGE/bin/ffmpeg" \
         "$STAGE/python/bin/python3.12" -s -c \
         'import importlib.util
+import inspect
 import tempfile
 from pathlib import Path
 import numpy as np
 import mlx_video
+import mlx_video.generate_wan as wan_generator
 from mlx_video import generate_video_with_audio
 from mlx_video.generate_wan import generate_video
+from mlx_video.models.wan.config import WanModelConfig
 from ltx_pipelines_mlx.cli import main as ltx25_main
 from videox_fun_mlx.models.cogvideox_transformer3d import CogVideoXTransformer3DModel
 from videox_fun_mlx.models.cogvideox_vae import AutoencoderKLCogVideoX
@@ -1251,6 +1242,10 @@ assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("imageio") is None
 assert importlib.metadata.version("ltx-core-mlx") == "0.14.15"
 assert importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15"
+assert {"model_dir", "prompt"} <= set(inspect.signature(generate_video).parameters)
+assert {"load_wan_model", "load_t5_encoder", "load_vae_decoder"} <= set(generate_video.__globals__)
+wan21 = WanModelConfig.wan21_t2v_1_3b()
+assert (wan21.dim, wan21.ffn_dim, wan21.num_heads, wan21.num_layers) == (1536, 8960, 12, 30)
 with tempfile.TemporaryDirectory() as directory:
     output = Path(directory) / "smoke.mp4"
     encode_rgb_video(np.zeros((2, 32, 16, 3), dtype=np.uint8), output, 2)

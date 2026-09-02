@@ -8,10 +8,13 @@ import sys
 from pathlib import Path
 from types import FunctionType, ModuleType
 
+import numpy as np
 import pytest
 
+import vllm_mlx.video.wan_diffusers as wan_diffusers
 from vllm_mlx.video.wan import WanBackendError, WanVideoEngine
 from vllm_mlx.video.wan_diffusers import (
+    _load_sharded,
     _read_index,
     _t5_key,
     _transformer_key,
@@ -19,6 +22,7 @@ from vllm_mlx.video.wan_diffusers import (
     _validate_target_parameters,
     desktop_wan21_config,
     diffusers_runtime,
+    generate_with_runtime,
     is_diffusers_wan21_layout,
 )
 
@@ -185,6 +189,70 @@ def test_indexes_fail_closed_on_drift_duplicates_and_unsafe_shards(
         _transformer_key("new_component.weight")
 
 
+def test_sharded_loader_applies_pinned_patch_reshape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = tmp_path / "transformer" / "weights.index.json"
+    index.parent.mkdir()
+    index.write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "patch_embedding.weight": "one.safetensors",
+                    "patch_embedding.bias": "one.safetensors",
+                }
+            }
+        )
+    )
+    (index.parent / "one.safetensors").write_bytes(b"pinned-shard")
+    source = {
+        "patch_embedding.weight": np.zeros((2, 3, 1, 2, 2), dtype=np.float16),
+        "patch_embedding.bias": np.zeros((2,), dtype=np.float16),
+    }
+    mlx = ModuleType("mlx")
+    mlx_core = ModuleType("mlx.core")
+    mlx_utils = ModuleType("mlx.utils")
+    mlx_core.load = lambda *_args, **_kwargs: source
+    mlx_utils.tree_flatten = lambda parameters: list(parameters.items())
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setitem(sys.modules, "mlx.utils", mlx_utils)
+
+    class FakeModel:
+        loaded = None
+
+        def parameters(self):
+            return {
+                "patch_embedding_proj.weight": object(),
+                "patch_embedding_proj.bias": object(),
+            }
+
+        def load_weights(self, weights, *, strict):
+            self.loaded = (weights, strict)
+
+    model = FakeModel()
+    _load_sharded(
+        model,
+        tmp_path,
+        "transformer/weights.index.json",
+        2,
+        _transformer_key,
+        dtype=np.float32,
+        reshape_patch=True,
+    )
+
+    assert model.loaded is not None
+    weights, strict = model.loaded
+    assert strict is False
+    assert [name for name, _ in weights] == [
+        "patch_embedding_proj.weight",
+        "patch_embedding_proj.bias",
+    ]
+    assert weights[0][1].shape == (2, 12)
+    assert all(value.dtype == np.float32 for _, value in weights)
+
+
 def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -230,6 +298,43 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     ) == originals
     assert transformers.AutoTokenizer is OriginalTokenizer
     assert not view.exists()
+
+
+def test_generate_runtime_routes_all_pinned_loader_seams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _layout(tmp_path)
+    generator = ModuleType("mlx_video.generate_wan")
+    calls = []
+
+    def generate_template(model_dir, marker):
+        config = object()
+        calls.append(("model", globals()["load_wan_model"](Path(model_dir), config)))
+        calls.append(("t5", globals()["load_t5_encoder"](Path(model_dir), config)))
+        calls.append(("vae", globals()["load_vae_decoder"](Path(model_dir), config)))
+        calls.append(("marker", marker))
+
+    generator.generate_video = FunctionType(
+        generate_template.__code__,
+        generate_template.__globals__,
+        "generate_video",
+        generate_template.__defaults__,
+        generate_template.__closure__,
+    )
+    monkeypatch.setattr(
+        wan_diffusers, "_load_transformer", lambda path, *_args: ("model", path)
+    )
+    monkeypatch.setattr(wan_diffusers, "_load_t5", lambda path, *_args: ("t5", path))
+    monkeypatch.setattr(wan_diffusers, "_load_vae", lambda path, *_args: ("vae", path))
+
+    generation_kwargs = {"model_dir": "ignored", "marker": "request"}
+    generate_with_runtime(root, generator, generation_kwargs)
+
+    assert [kind for kind, _ in calls] == ["model", "t5", "vae", "marker"]
+    assert calls[-1] == ("marker", "request")
+    assert all(value[1] == root for _, value in calls[:3])
+    assert generation_kwargs["model_dir"] != "ignored"
+    assert not Path(generation_kwargs["model_dir"]).exists()
 
 
 def test_loader_target_validation_rejects_missing_and_unknown_parameters(
