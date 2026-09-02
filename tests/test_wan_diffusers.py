@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from types import FunctionType, ModuleType
+from types import FunctionType, ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,7 +15,11 @@ import vllm_mlx.video.wan_diffusers as wan_diffusers
 from vllm_mlx.video.wan import WanBackendError, WanVideoEngine
 from vllm_mlx.video.wan_diffusers import (
     _load_sharded,
+    _load_t5,
+    _load_transformer,
+    _load_vae,
     _read_index,
+    _scoped_generate_function,
     _t5_key,
     _transformer_key,
     _vae_decoder_key,
@@ -97,6 +101,13 @@ def test_official_layout_rejects_mismatched_architecture(tmp_path: Path) -> None
     payload = json.loads(config.read_text())
     payload["num_layers"] = 40
     config.write_text(json.dumps(payload))
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+def test_official_layout_rejects_unreadable_component_config(tmp_path: Path) -> None:
+    root = _layout(tmp_path)
+    (root / "vae/config.json").write_text("{")
 
     assert not is_diffusers_wan21_layout(root)
 
@@ -187,6 +198,32 @@ def test_indexes_fail_closed_on_drift_duplicates_and_unsafe_shards(
 
     with pytest.raises(WanBackendError, match="unsupported"):
         _transformer_key("new_component.weight")
+    with pytest.raises(WanBackendError, match="unsupported"):
+        _transformer_key("blocks.0.new_component.weight")
+    with pytest.raises(WanBackendError, match="unsupported"):
+        _t5_key("new_component.weight")
+    with pytest.raises(WanBackendError, match="unsupported"):
+        _t5_key("encoder.block.0.layer.0.new_component.weight")
+    assert _vae_decoder_key("encoder.conv_in.weight") is None
+    with pytest.raises(WanBackendError, match="unsupported"):
+        _vae_decoder_key("decoder.new_component.weight")
+
+    index.write_text("{")
+    with pytest.raises(WanBackendError, match="unreadable"):
+        _read_index(tmp_path, index.name, 1, _t5_key)
+
+    index.write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "shared.weight": "one.safetensors",
+                    "encoder.final_layer_norm.weight": "one.safetensors",
+                }
+            }
+        )
+    )
+    with pytest.raises(WanBackendError, match="duplicate"):
+        _read_index(tmp_path, index.name, 2, lambda _key: "same.target")
 
 
 def test_sharded_loader_applies_pinned_patch_reshape(
@@ -253,6 +290,189 @@ def test_sharded_loader_applies_pinned_patch_reshape(
     assert all(value.dtype == np.float32 for _, value in weights)
 
 
+def test_sharded_loader_rejects_missing_file_and_tensor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = tmp_path / "transformer" / "weights.index.json"
+    index.parent.mkdir()
+    index.write_text(
+        json.dumps({"weight_map": {"patch_embedding.bias": "missing.safetensors"}})
+    )
+    mlx = ModuleType("mlx")
+    mlx_core = ModuleType("mlx.core")
+    mlx_utils = ModuleType("mlx.utils")
+    mlx_core.load = lambda *_args, **_kwargs: {}
+    mlx_utils.tree_flatten = lambda parameters: list(parameters.items())
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setitem(sys.modules, "mlx.utils", mlx_utils)
+
+    class FakeModel:
+        def parameters(self):
+            return {"patch_embedding_proj.bias": object()}
+
+    with pytest.raises(WanBackendError, match="missing 'missing.safetensors'"):
+        _load_sharded(
+            FakeModel(),
+            index.parent.parent,
+            "transformer/weights.index.json",
+            1,
+            _transformer_key,
+        )
+
+    (index.parent / "missing.safetensors").write_bytes(b"shard")
+    with pytest.raises(WanBackendError, match="missing tensor 'patch_embedding.bias'"):
+        _load_sharded(
+            FakeModel(),
+            index.parent.parent,
+            "transformer/weights.index.json",
+            1,
+            _transformer_key,
+        )
+
+
+@pytest.mark.parametrize(
+    "options", [{"quantization": {"bits": 4}}, {"loras": ["adapter"]}]
+)
+def test_transformer_loader_rejects_unsupported_overlays(
+    tmp_path: Path, options: dict
+) -> None:
+    with pytest.raises(WanBackendError, match="do not support"):
+        _load_transformer(tmp_path, object(), **options)
+
+
+def test_pinned_runtime_loaders_bind_exact_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluated = []
+    source = {
+        "encoder.ignored": np.zeros((1,), dtype=np.float16),
+        "post_quant_conv.weight": np.zeros((2, 3, 1, 2, 2), dtype=np.float16),
+        "decoder.mid_block.attentions.0.proj.weight": np.zeros(
+            (2, 3, 1, 1), dtype=np.float16
+        ),
+        "post_quant_conv.bias": np.zeros((2,), dtype=np.float16),
+    }
+    mlx = ModuleType("mlx")
+    mlx_core = ModuleType("mlx.core")
+    mlx_utils = ModuleType("mlx.utils")
+    mlx_core.float32 = np.float32
+    mlx_core.load = lambda *_args, **_kwargs: source
+    mlx_core.transpose = np.transpose
+    mlx_core.eval = lambda parameters: evaluated.append(parameters)
+    mlx_utils.tree_flatten = lambda parameters: list(parameters.items())
+    mlx.core = mlx_core
+
+    mlx_video = ModuleType("mlx_video")
+    models = ModuleType("mlx_video.models")
+    wan = ModuleType("mlx_video.models.wan")
+    model_module = ModuleType("mlx_video.models.wan.model")
+    text_module = ModuleType("mlx_video.models.wan.text_encoder")
+    vae_module = ModuleType("mlx_video.models.wan.vae")
+
+    class FakeModel:
+        def __init__(self, config):
+            self.config = config
+
+        def parameters(self):
+            return {"model": object()}
+
+    class FakeT5:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def parameters(self):
+            return {"t5": object()}
+
+    class FakeVAE:
+        def __init__(self, *, z_dim):
+            self.z_dim = z_dim
+            self.loaded = None
+
+        def parameters(self):
+            return {
+                "conv2.weight": object(),
+                "decoder.middle.1.proj.weight": object(),
+                "conv2.bias": object(),
+                "mean": object(),
+                "std": object(),
+                "inv_std": object(),
+            }
+
+        def load_weights(self, weights, *, strict):
+            self.loaded = (weights, strict)
+
+    model_module.WanModel = FakeModel
+    text_module.T5Encoder = FakeT5
+    vae_module.WanVAE = FakeVAE
+    for name, module in {
+        "mlx": mlx,
+        "mlx.core": mlx_core,
+        "mlx.utils": mlx_utils,
+        "mlx_video": mlx_video,
+        "mlx_video.models": models,
+        "mlx_video.models.wan": wan,
+        "mlx_video.models.wan.model": model_module,
+        "mlx_video.models.wan.text_encoder": text_module,
+        "mlx_video.models.wan.vae": vae_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    sharded_calls = []
+    monkeypatch.setattr(
+        wan_diffusers,
+        "_load_sharded",
+        lambda *args, **kwargs: sharded_calls.append((args, kwargs)),
+    )
+    config = SimpleNamespace(
+        t5_vocab_size=1,
+        t5_dim=2,
+        t5_dim_attn=3,
+        t5_dim_ffn=4,
+        t5_num_heads=5,
+        t5_num_layers=6,
+        t5_num_buckets=7,
+    )
+    transformer = _load_transformer(tmp_path, config)
+    encoder = _load_t5(tmp_path, config)
+
+    assert transformer.config is config
+    assert encoder.kwargs == {
+        "vocab_size": 1,
+        "dim": 2,
+        "dim_attn": 3,
+        "dim_ffn": 4,
+        "num_heads": 5,
+        "num_layers": 6,
+        "num_buckets": 7,
+        "shared_pos": False,
+    }
+    assert len(sharded_calls) == 2
+    assert sharded_calls[0][1] == {
+        "reshape_patch": True,
+        "ignored_model_parameters": frozenset({"freqs"}),
+    }
+    assert sharded_calls[1][1] == {"dtype": np.float32}
+
+    monkeypatch.setattr(wan_diffusers, "_EXPECTED_VAE_DECODER_KEYS", 4)
+    with pytest.raises(WanBackendError, match="unexpected decoder tensor set"):
+        _load_vae(tmp_path)
+
+    monkeypatch.setattr(wan_diffusers, "_EXPECTED_VAE_DECODER_KEYS", 3)
+    vae = _load_vae(tmp_path)
+    assert vae.z_dim == 16
+    assert vae.loaded is not None
+    weights, strict = vae.loaded
+    assert strict is False
+    assert [value.shape for _, value in weights] == [
+        (2, 1, 2, 2, 3),
+        (2, 1, 1, 3),
+        (2,),
+    ]
+    assert len(evaluated) == 3
+
+
 def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -277,8 +497,11 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     monkeypatch.setitem(sys.modules, "transformers", transformers)
 
     def generate_template():
+        import json
+
         from transformers import AutoTokenizer
 
+        assert json.loads("null") is None
         return AutoTokenizer.from_pretrained("ignored")
 
     generator.generate_video = FunctionType(
@@ -298,6 +521,20 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     ) == originals
     assert transformers.AutoTokenizer is OriginalTokenizer
     assert not view.exists()
+
+
+def test_scoped_runtime_rejects_incomplete_layout(tmp_path: Path) -> None:
+    with pytest.raises(WanBackendError, match="layout is incomplete"):
+        _scoped_generate_function(tmp_path, ModuleType("mlx_video.generate_wan"))
+
+
+def test_generate_runtime_preserves_preconverted_fallback(tmp_path: Path) -> None:
+    calls = []
+    generator = SimpleNamespace(generate_video=lambda **kwargs: calls.append(kwargs))
+
+    generate_with_runtime(tmp_path, generator, {"model_dir": "converted"})
+
+    assert calls == [{"model_dir": "converted"}]
 
 
 def test_generate_runtime_routes_all_pinned_loader_seams(
