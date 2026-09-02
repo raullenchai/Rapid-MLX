@@ -3781,12 +3781,18 @@ class Scheduler:
                 # instead of coming up healthy with zero reuse (#2955). This
                 # is a structural probe of the loaded model's prompt-cache
                 # factory — no model/architecture names involved.
+                # Any EXPLICIT KV-cache transform request (ordinary live
+                # quantization or TurboQuant) is rejected outright — the
+                # paged store implements neither, so the pair fails closed
+                # even when the transform's own probes would fall back and
+                # disable it at runtime. Honoring the flags with silently
+                # untransformed plain blocks is the same silent-option
+                # failure this gate exists to prevent.
                 validate_paged_cache_capability(
                     model,
-                    kv_cache_quantized=bool(
+                    kv_cache_transform_requested=bool(
                         self.config.kv_cache_quantization
-                        and not getattr(self.config, "kv_cache_turboquant", None)
-                        and not self._kv_quant_live_disabled
+                        or getattr(self.config, "kv_cache_turboquant", None)
                     ),
                 )
                 # Use paged cache for memory efficiency
@@ -6447,10 +6453,12 @@ class Scheduler:
             # admission gate then rejects ALL new requests while active
             # stays pinned above cap — a permanent 503 wedge (the
             # D-METAL-CAP symptom) with no in-process recovery. Fix:
-            # evict the LRU prefix-index entry and drop its resident
-            # block tensors so active memory falls back under cap and
-            # admission resumes. Stale index entries are guarded by the
-            # fetch-side live check (blk.cache_data is None => miss).
+            # evict the LRU stored entry — clear its private blocks'
+            # resident tensors and release the entry — so active memory
+            # falls back under cap and admission resumes. Index entries
+            # that outlive their blocks are guarded by the fetch-side
+            # live checks (increment_ref fails on absent slots;
+            # blk.cache_data is None => miss).
             index = getattr(self.block_aware_cache, "_prefix_index", None)
             paged = self.block_aware_cache.paged_cache
             # 1) Evict the LRU request-table entry FIRST. Since #2955 the
@@ -6526,84 +6534,37 @@ class Scheduler:
                         len(rt),
                     )
                     return True
-            # 2) Then evict the LRU prefix-index entry and drop its
-            # resident block tensors, so stale index entries stop
-            # pinning block slices. Stale entries are guarded by the
-            # fetch-side live check (blk.cache_data is None => miss).
+            # 2) Index-only cleanup. The prefix index owns METADATA, never
+            # a physical block reference: every live reference belongs to a
+            # stored request-table entry (drained above via release_cache)
+            # or an active fetch-held table. So this path must not clear or
+            # free ANY allocated block — a ref_count of 1 here can be an
+            # active fetch's sole reference, and clearing/freeing it would
+            # corrupt live KV or hand the slot back to the free queue while
+            # a table still points at it. We only prune entries whose
+            # recorded cumulative ownership no longer verifies (slot
+            # reallocated / identity mismatch); every other entry stays so
+            # its prefix remains reachable (pinned prefixes keep their
+            # identities and therefore always verify). Resident KV on
+            # unreferenced (ref_count == 0) free-queue slabs is reclaimed
+            # exclusively by release_paged_cache_blocks_under_pressure.
             if index:
-                # dict preserves insertion order: first key = LRU. Walk in
-                # LRU order and skip any entry whose blocks are ALL pinned
-                # or absent: popping such an entry would make the prefix
-                # unreachable while freeing nothing, and returning False on
-                # it would halt the caller's eviction loop prematurely.
+                # dict preserves insertion order: first key = LRU.
                 for oldest_hash in list(index.keys()):
                     cached_tokens, block_ids = index[oldest_hash]
                     # An index entry can outlive its physical blocks. If one
                     # of those slots was subsequently reallocated, ref_count
                     # alone cannot distinguish the new owner's live KV from
-                    # the old prefix. Prune the stale index entry without
-                    # touching any block unless every verifiable slot still
-                    # owns the CUMULATIVE token prefix recorded by this
-                    # entry — block identities cover the whole preceding
-                    # history, not per-chunk content, so the check must
-                    # recompute the same chained hashes store_cache records.
+                    # the old prefix — block identities cover the whole
+                    # preceding history, not per-chunk content, so the check
+                    # recomputes the same chained hashes store_cache records
+                    # and prunes only metadata that no longer owns its
+                    # recorded prefix.
                     if self.block_aware_cache.index_entry_is_stale(
                         cached_tokens, block_ids
                     ):
                         index.pop(oldest_hash)
                         return True
-                    # Skip an entry only when NONE of its blocks are
-                    # clearable — absent, pinned, or still shared with a
-                    # live request (ref_count > 1). Popping such an entry
-                    # would make the prefix unreachable while freeing
-                    # nothing and would halt the caller's eviction loop.
-                    if all(
-                        (blk := paged.allocated_blocks.get(bid)) is None
-                        or blk.is_pinned
-                        or blk.ref_count > 1
-                        for bid in block_ids
-                    ):
-                        continue
-                    index.pop(oldest_hash)
-                    evicted = 0
-                    for bid in block_ids:
-                        blk = paged.allocated_blocks.get(bid)
-                        # Never clear a pinned or still-shared block: its KV
-                        # is live for another request.
-                        if blk is None or blk.is_pinned or blk.ref_count > 1:
-                            continue
-                        # Release the block's resident KV tensor regardless
-                        # of hash registration variant. store_cache
-                        # registers blocks in the legacy identity map
-                        # (hash_value only, block_hash stays None), so the
-                        # chain-hash gated _maybe_evict_cached_block would
-                        # short-circuit and leak the tensor. Mirror its
-                        # cleanup directly: drop any hash mapping, clear
-                        # the tensor.
-                        if (
-                            blk.hash_value is not None
-                            and paged.hash_to_block.get(blk.hash_value) == blk.block_id
-                        ):
-                            del paged.hash_to_block[blk.hash_value]
-                        if blk.block_hash is not None:
-                            paged.cached_block_hash_to_block.pop(
-                                blk.block_hash, blk.block_id
-                            )
-                        if blk.cache_data is not None:
-                            blk.reset_hash()
-                            blk.cache_data = None  # Free tensor memory
-                            blk.cache_class_name = None
-                            paged.stats.evictions += 1
-                            evicted += 1
-                        # Return the block slot to the free queue. Unlike the
-                        # request-table path (which frees via release_cache ->
-                        # delete_block_table), the index path holds its own
-                        # ref, so clearing the tensor alone would leak the
-                        # block from the pool and eventually exhaust
-                        # max_cache_blocks. free_block decrements ref and
-                        # enqueues the (now-empty) block when it reaches 0.
-                        paged.free_block(bid)
-                    return evicted > 0
                 return False
             return False
         return False

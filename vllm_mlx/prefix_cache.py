@@ -463,7 +463,7 @@ def find_paged_incompatible_layers(caches: list[Any]) -> list[str]:
 
 
 def validate_paged_cache_capability(
-    model: Any, *, kv_cache_quantized: bool = False
+    model: Any, *, kv_cache_transform_requested: bool = False
 ) -> None:
     """Fail closed when the paged prefix cache cannot serve ``model``.
 
@@ -474,17 +474,27 @@ def validate_paged_cache_capability(
     or architecture names — so an architecture whose sliding mode is inactive
     and whose factory returns plain KV layers is accepted.
 
+    ``kv_cache_transform_requested`` covers every EXPLICIT KV-cache
+    transform request (ordinary live quantization or TurboQuant): the paged
+    block store implements neither, so the combination is rejected even
+    when the transform itself would later fall back or disable at runtime —
+    honoring the flag pair by silently serving untransformed plain blocks
+    would be exactly the #2955 failure mode.
+
     This necessarily runs after the model is loaded (the cache factory does
     not exist earlier); callers must invoke it before serving any request so
     an explicit ``--use-paged-cache`` aborts pre-ready instead of silently
     providing zero reuse.
     """
     action = "Remove --use-paged-cache to use the default prefix cache for this model."
-    if kv_cache_quantized:
+    if kv_cache_transform_requested:
         raise PagedCacheUnsupportedLayoutError(
-            "--use-paged-cache is incompatible with KV cache quantization: "
-            "quantized KV state is stored as weight/scale/bias tuples the "
-            f"paged block serializer cannot slice. {action}"
+            "--use-paged-cache is incompatible with KV cache "
+            "quantization/TurboQuant: the paged block store keeps plain "
+            "untransformed KV tensors and implements neither transform, so "
+            "an explicit request for both cannot be honored (this fails "
+            "closed even when the transform would fall back at runtime). "
+            f"Remove the KV quantization/TurboQuant flags, or: {action}"
         )
     try:
         from mlx_lm.models.cache import make_prompt_cache
@@ -794,10 +804,14 @@ class BlockAwarePrefixCache:
             if block_slices and HAS_MLX:
                 mx.eval([t for layers in block_slices for kv in layers for t in kv])
         except Exception as exc:
+            # Report failure, never the fetch-held table as a "successful"
+            # store: a non-None return tells the scheduler an entry owns the
+            # blocks, so it would skip the release path and the fetch-held
+            # refs/pending state would leak with no owning entry.
             logger.warning(
                 f"Failed to materialize block tensors for {request_id}: {exc}"
             )
-            return existing_table
+            return None
 
         # All tensor data is ready; now mutate table/block state.
         block_table = existing_table or self.paged_cache.create_block_table(request_id)

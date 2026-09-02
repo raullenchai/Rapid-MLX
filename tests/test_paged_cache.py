@@ -1065,18 +1065,22 @@ class TestStructuralCapabilityMatrix:
         with pytest.raises(PagedCacheUnsupportedLayoutError):
             validate_paged_cache_capability(_FactoryModel(lambda: object()))
 
-    def test_quantized_kv_config_rejected(self):
-        """Active KV quantization stores weight/scale/bias tuples the
-        serializer cannot slice — rejected even on a plain-KV factory."""
+    def test_kv_transform_request_rejected(self):
+        """An explicit KV-cache transform request (quantization or
+        TurboQuant) is rejected even on a plain-KV factory: the paged store
+        implements neither, so it must not silently serve plain blocks."""
         from mlx_lm.models.cache import KVCache
 
         from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
         from vllm_mlx.prefix_cache import validate_paged_cache_capability
 
-        with pytest.raises(PagedCacheUnsupportedLayoutError):
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
             validate_paged_cache_capability(
-                _FactoryModel(lambda: [KVCache()]), kv_cache_quantized=True
+                _FactoryModel(lambda: [KVCache()]),
+                kv_cache_transform_requested=True,
             )
+        assert "--use-paged-cache" in str(excinfo.value)
+        assert "TurboQuant" in str(excinfo.value)
 
 
 class TestSchedulerStartupGate:
@@ -1127,6 +1131,181 @@ class TestSchedulerStartupGate:
 
         sched = Scheduler(model=model, tokenizer=tokenizer, config=self._config())
         assert sched.block_aware_cache is not None
+
+    @pytest.mark.parametrize(
+        "config_overrides",
+        [
+            # Ordinary live KV quantization toggles — rejected even though
+            # the runtime head-dim probe might later fall back and disable
+            # the transform: an explicit flag pair that cannot be honored
+            # must fail closed, not silently serve plain BF16 blocks.
+            {"kv_cache_quantization": True, "kv_cache_quantization_bits": 4},
+            {"kv_cache_quantization": True, "kv_cache_quantization_bits": 8},
+            # TurboQuant request — equally unimplemented by the paged store.
+            {"kv_cache_turboquant": True},
+        ],
+    )
+    def test_explicit_kv_transform_plus_paged_fails_before_ready(
+        self, config_overrides
+    ):
+        """Real Scheduler configuration: --use-paged-cache combined with an
+        explicit KV quantization/TurboQuant request fails at construction
+        even on a plain full-attention KV layout."""
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.scheduler import Scheduler
+
+        config = self._config()
+        for key, value in config_overrides.items():
+            setattr(config, key, value)
+
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), KVCache()]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            Scheduler(model=model, tokenizer=tokenizer, config=config)
+        message = str(excinfo.value)
+        assert "--use-paged-cache" in message
+        assert "TurboQuant" in message
+
+
+class TestStoreMaterializationFailure:
+    """A store whose block materialization fails must report failure (None),
+    never the fetch-held table as success — and the scheduler's cleanup
+    branch must then release the fetch-held refs/table/stash."""
+
+    def test_extension_store_failure_returns_none_and_release_restores(self):
+        from unittest.mock import patch
+
+        cache, manager = _make_cache(block_size=4)
+        tokens4 = list(range(4))
+        tokens8 = list(range(8))
+
+        seed_table = cache.store_cache("seed", tokens4, _kv_layer_states(4))
+        assert seed_table is not None and len(seed_table.block_ids) == 1
+        bid = seed_table.block_ids[0]
+
+        # Successful fetch: one shared ref held by req-x's table.
+        table, remaining = cache.fetch_cache("req-x", tokens8)
+        assert table is not None
+        assert remaining == tokens8[4:]
+        assert manager.allocated_blocks[bid].ref_count == 2
+
+        allocated_before = manager.stats.allocated_blocks
+        with patch("mlx.core.eval", side_effect=RuntimeError("injected")):
+            stored = cache.store_cache("req-x", tokens8, _kv_layer_states(8))
+
+        # Failure is reported as failure — not the fetch-held table.
+        assert stored is None
+        # Materialization fails before any table/block mutation: nothing
+        # new allocated, no entry claims ownership of the fetched blocks.
+        assert manager.stats.allocated_blocks == allocated_before
+        assert "req-x" not in cache._request_tables
+
+        # The scheduler acts on None by releasing; mirror that here and
+        # prove it restores every counter and leaves no ownerless state.
+        cache.release_cache("req-x")
+        assert manager.get_block_table("req-x") is None
+        assert "req-x" not in cache._pending_reconstructed
+        assert manager.allocated_blocks[bid].ref_count == 1
+        assert manager.allocated_blocks[bid].cache_data is not None
+
+        # The seed entry is unharmed and still serves hits.
+        table2, remaining2 = cache.fetch_cache("req-y", tokens4)
+        assert table2 is not None and remaining2 == []
+
+    def test_scheduler_cleanup_releases_after_store_failure(self):
+        """Production path: ``_cleanup_finished`` sees ``stored_table is
+        None`` from the failed store and releases the fetch-held
+        table/refs/stash — counters stay coherent, no ownerless table."""
+        from unittest.mock import MagicMock, patch
+
+        import mlx.core as mx
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+        config = SchedulerConfig(
+            max_num_seqs=4,
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=True,
+            paged_cache_block_size=4,
+            max_cache_blocks=32,
+        )
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), KVCache()]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+        sched = Scheduler(model=model, tokenizer=tokenizer, config=config)
+        cache = sched.block_aware_cache
+        assert cache is not None
+        manager = cache.paged_cache
+
+        tokens4 = list(range(4))
+        tokens8 = list(range(8))
+        assert cache.store_cache("seed", tokens4, _kv_layer_states(4)) is not None
+        bid = cache._request_tables["seed"].block_table.block_ids[0]
+        allocated_after_seed = manager.stats.allocated_blocks
+
+        table, _ = cache.fetch_cache("req-x", tokens8)
+        assert table is not None
+        assert manager.allocated_blocks[bid].ref_count == 2
+
+        request = MagicMock()
+        request.prompt_token_ids = tokens8
+        request.output_token_ids = []
+        request.pflash_metadata = None
+        request._extracted_cache = _kv_layer_states(8)
+        sched.running["req-x"] = request
+
+        # Spy on the store's return value; fail ONLY its materialization
+        # eval (first mx.eval inside _cleanup_finished), then pass through
+        # so the later incremental per-layer eval loop runs for real.
+        store_returns = []
+        real_store = cache.store_cache
+
+        def spying_store(*args, **kwargs):
+            result = real_store(*args, **kwargs)
+            store_returns.append(result)
+            return result
+
+        real_eval = mx.eval
+        eval_calls = {"n": 0}
+
+        def flaky_eval(*args, **kwargs):
+            eval_calls["n"] += 1
+            if eval_calls["n"] == 1:
+                raise RuntimeError("injected materialization failure")
+            return real_eval(*args, **kwargs)
+
+        with (
+            patch.object(cache, "store_cache", side_effect=spying_store),
+            patch("mlx.core.eval", side_effect=flaky_eval),
+        ):
+            sched._cleanup_finished({"req-x"})
+
+        assert eval_calls["n"] >= 1  # the injection actually fired
+        assert store_returns == [None]  # store reported failure
+
+        # Production cleanup released everything the fetch held: no
+        # ownerless table, no stash, no entry — and the shared ref is back
+        # to the seed entry's single ref with its KV intact.
+        assert manager.get_block_table("req-x") is None
+        assert "req-x" not in cache._request_tables
+        assert "req-x" not in cache._pending_reconstructed
+        assert manager.allocated_blocks[bid].ref_count == 1
+        assert manager.allocated_blocks[bid].cache_data is not None
+        assert "seed" in cache._request_tables
+        # Counters coherent: no allocation survived beyond the seed store.
+        assert manager.stats.allocated_blocks == allocated_after_seed
+        assert "req-x" not in sched.running
+        assert "req-x" in sched.finished_req_ids
 
 
 class TestTransactionalFetch:
