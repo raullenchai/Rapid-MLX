@@ -1,4 +1,4 @@
-label,target,run,prompt,completion,finish,ttft_ms,prefill_tps,decode_tps
+label,target,run,prompt,completion,finish,ttft_ms,prefill_tps,harness_decode_tps
 qwen27-0133,128,1,92,256,length,1060.13,86.782,30.784
 qwen27-0133,128,2,92,256,length,540.60,170.181,30.829
 qwen27-0133,128,3,92,256,length,538.10,170.972,30.841

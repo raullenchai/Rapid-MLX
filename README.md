@@ -287,19 +287,19 @@ and the GLM prompt contains 8,192.
 
 | Model | Shape | Median TTFT | Prefill | Decode | MLX memory observed through 32K |
 |---|---|---:|---:|---:|---:|
-| `qwen3.8-27b-4bit` | 27B dense | 24.66s | 330.8 tok/s | **43.6 tok/s** | 26.7 GB active / 27.1 GB peak |
-| `qwen3.8-flash-next-4bit` | 180B total / 6B active¹ | **9.40s** | **867.9 tok/s** | 23.1 tok/s | 102.8 GB active / 148.1 GB peak |
-| `glm5.3-flash-4bit` | 320B total / 18B active | 22.78s | 359.6 tok/s | **27.9 tok/s** | 180.6 GB active / 195.6 GB peak |
+| `qwen3.8-27b-4bit` | 27B dense | 24.66s | 330.8 tok/s | **43.4 tok/s** | 26.7 GB active / 27.1 GB peak |
+| `qwen3.8-flash-next-4bit` | 180B total / 6B active¹ | **9.40s** | **867.9 tok/s** | 23.0 tok/s | 102.8 GB active / 148.1 GB peak |
+| `glm5.3-flash-4bit` | 320B total / 18B active | 22.78s | 359.6 tok/s | **27.8 tok/s** | 180.6 GB active / 195.6 GB peak |
 
 The biggest 0.13.4 gain is Qwen3.8-27B's verified MTP path. On the same model,
 Mac, dependency versions, prompts, and cache-clear procedure:
 
 | Prompt | 0.13.3 decode | 0.13.4 decode | Speedup | TTFT (0.13.3 → 0.13.4) |
 |---:|---:|---:|---:|---:|
-| 128 | 30.83 tok/s | 44.11 tok/s | **1.43×** | 0.54s → 0.51s |
-| 2K | 28.99 tok/s | 44.86 tok/s | **1.55×** | 6.18s → 6.07s |
-| 8K | 24.67 tok/s | 43.56 tok/s | **1.77×** | 25.04s → 24.66s |
-| 32K | 16.58 tok/s | 38.81 tok/s | **2.34×** | 110.25s → 109.12s |
+| 128 | 30.71 tok/s | 43.93 tok/s | **1.43×** | 0.54s → 0.51s |
+| 2K | 28.88 tok/s | 44.69 tok/s | **1.55×** | 6.18s → 6.07s |
+| 8K | 24.58 tok/s | 43.38 tok/s | **1.77×** | 25.04s → 24.66s |
+| 32K | 16.52 tok/s | 38.66 tok/s | **2.34×** | 110.25s → 109.12s |
 
 ¹ Flash-Next comprises a 125B language model, 51B n-gram embedding, and 4B
 MTP head. Its default autoregressive path was effectively flat between the two
@@ -309,7 +309,7 @@ workload-dependent.
 Flash-Next prefill reaches 262 / 875 / 868 / 716 tok/s at 128 / 2K / 8K / 32K;
 median TTFT is 0.35 / 2.30 / 9.40 / 45.73s. Its 99 GB quantized weights make
 **192 GB the practical recommended tier**; 128 GB is tight and was not
-physically tested. GLM-5.3-Flash reached 27.3 tok/s decode at 32K, but its TTFT
+physically tested. GLM-5.3-Flash reached 27.2 tok/s decode at 32K, but its TTFT
 was 118.34s and its 195.6 GB allocator peak leaves no safe system headroom on
 a 192 GB Mac. Use a 256 GB Mac for this measured 32K workload; 192 GB remains
 the catalog floor for shorter contexts. Qwen3.8-27B remains the 32 GB
@@ -343,7 +343,7 @@ GPT-5.6-class, the highest of any open-weights model we serve, ahead of the
 much larger 122B (33) and 35B (32) it replaces (the index scores the
 full-precision release; our 4-bit build's deltas are unmeasured — the
 standing caveat for every quantized pick here). On the measured 8K workload it
-prefills at 330.8 tok/s and decodes at 43.6 tok/s, with zero new swap. The
+prefills at 330.8 tok/s and decodes at 43.4 tok/s, with zero new swap. The
 verified 4-bit artifact automatically enables its MTP path when the selected
 cache and serving lane are compatible; `--no-spec-decode` remains the explicit
 opt-out. The 32 GB recommendation is based on the approximately 8K

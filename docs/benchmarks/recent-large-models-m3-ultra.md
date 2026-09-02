@@ -25,8 +25,10 @@ GLM-5.3-Flash.
 All rates are medians of three measured requests after the server reported
 ready. TTFT is measured to the first visible streamed content, reasoning, or
 tool delta. Prefill is server-reported prompt tokens divided by TTFT. Decode
-excludes TTFT. The prefix cache is cleared before every timed request. MLX
-active memory is allocator-active unified memory, not process RSS; RSS
+excludes TTFT and the first token already delivered at the TTFT boundary: the
+reported rate is `(completion_tokens - 1) / (total_time - TTFT)`. The prefix
+cache is cleared before every timed request. MLX active memory is
+allocator-active unified memory, not process RSS; RSS
 materially undercounts Metal allocations. The three-run median also prevents
 one first-request Metal compilation outlier from becoming the headline.
 
@@ -71,9 +73,9 @@ are:
 
 | Model | Model shape | Measured workload | Median TTFT | Median prefill | Median decode | MLX memory observed through 32K |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `qwen3.8-27b-4bit` | 27B dense | 8,156 → 256 | 24.656s | 330.8 tok/s | 43.56 tok/s | 26.7 GB active / 27.1 GB peak |
-| `qwen3.8-flash-next-4bit` | 180B total / 6B active | 8,156 → 256 | 9.397s | 867.9 tok/s | 23.12 tok/s | 102.8 GB active / 148.1 GB peak |
-| `glm5.3-flash-4bit` | 320B total / 18B active | 8,192 → 256 | 22.779s | 359.6 tok/s | 27.86 tok/s | 180.6 GB active / 195.6 GB peak |
+| `qwen3.8-27b-4bit` | 27B dense | 8,156 → 256 | 24.656s | 330.8 tok/s | 43.38 tok/s | 26.7 GB active / 27.1 GB peak |
+| `qwen3.8-flash-next-4bit` | 180B total / 6B active | 8,156 → 256 | 9.397s | 867.9 tok/s | 23.03 tok/s | 102.8 GB active / 148.1 GB peak |
+| `glm5.3-flash-4bit` | 320B total / 18B active | 8,192 → 256 | 22.779s | 359.6 tok/s | 27.75 tok/s | 180.6 GB active / 195.6 GB peak |
 
 The Flash-Next parameter total is 125B language-model parameters plus a 51B
 n-gram embedding and 4B MTP head; 6B language-model parameters are active per
@@ -100,10 +102,10 @@ MTP path; 0.13.3 served the ordinary path.
 
 | Target (reported) prompt tokens | 0.13.3 TTFT | 0.13.4 TTFT | 0.13.3 decode | 0.13.4 decode | Decode speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 (92) | 0.541s | 0.511s | 30.83 tok/s | 44.11 tok/s | 1.43× |
-| 2,048 (2,012) | 6.185s | 6.074s | 28.99 tok/s | 44.86 tok/s | 1.55× |
-| 8,192 (8,156) | 25.037s | 24.656s | 24.67 tok/s | 43.56 tok/s | 1.77× |
-| 32,768 (32,732) | 110.251s | 109.120s | 16.58 tok/s | 38.81 tok/s | 2.34× |
+| 128 (92) | 0.541s | 0.511s | 30.71 tok/s | 43.93 tok/s | 1.43× |
+| 2,048 (2,012) | 6.185s | 6.074s | 28.88 tok/s | 44.69 tok/s | 1.55× |
+| 8,192 (8,156) | 25.037s | 24.656s | 24.58 tok/s | 43.38 tok/s | 1.77× |
+| 32,768 (32,732) | 110.251s | 109.120s | 16.52 tok/s | 38.66 tok/s | 2.34× |
 
 The 0.13.4 prefill medians were 180.0, 331.3, 330.8, and 300.0 tok/s at
 128, 2K, 8K, and 32K. Across the complete run, MTP recorded 1,296 accepted
@@ -161,20 +163,20 @@ autoregressive public-alias path on the 0.13.4 candidate.
 
 | Target (reported) prompt tokens | Median TTFT | Median prefill | Median decode |
 | ---: | ---: | ---: | ---: |
-| 128 (92) | 0.351s | 262.0 tok/s | 25.46 tok/s |
-| 2,048 (2,012) | 2.299s | 875.1 tok/s | 24.07 tok/s |
-| 8,192 (8,156) | 9.397s | 867.9 tok/s | 23.12 tok/s |
-| 32,768 (32,732) | 45.731s | 715.8 tok/s | 21.46 tok/s |
+| 128 (92) | 0.351s | 262.0 tok/s | 25.35 tok/s |
+| 2,048 (2,012) | 2.299s | 875.1 tok/s | 23.98 tok/s |
+| 8,192 (8,156) | 9.397s | 867.9 tok/s | 23.03 tok/s |
+| 32,768 (32,732) | 45.731s | 715.8 tok/s | 21.37 tok/s |
 
 MLX active memory was 102.8 GB after the sweep. The process also reported a
 148.1 GB allocator peak inherited from model loading; it is not the steady
-active footprint. The corresponding 0.13.3 medians were 25.40, 24.07, 23.15,
-and 21.45 tok/s: the default path is effectively unchanged, so no 0.13.4
+active footprint. The corresponding 0.13.3 medians were 25.29, 23.98, 23.06,
+and 21.37 tok/s: the default path is effectively unchanged, so no 0.13.4
 speedup is claimed for this row. The 128 row measures the 232 tokens emitted
 before the model's consistent EOS; the other rows each emitted 256 tokens.
 
-The separate fixed-K=1 MTP qualification measured decode at 34.85, 33.53,
-32.20, and 28.82 tok/s at the same four prompt lengths: a 36–42% improvement
+The separate fixed-K=1 MTP qualification measured decode at 34.71, 33.40,
+32.07, and 28.71 tok/s at the same four prompt lengths: a 36–42% improvement
 over its exact-run ordinary-decode baseline. All 45 functional outcomes
 matched ordinary decode, with a 76.41% aggregate proposal acceptance ratio.
 MTP added as much as 6.6 GB of active memory and increased 2K–32K TTFT by
@@ -198,10 +200,10 @@ alias because its separate qualification did not beat ordinary decoding.
 
 | Target (reported) prompt tokens | Median TTFT | Median prefill | Median decode |
 | ---: | ---: | ---: | ---: |
-| 128 (128) | 0.819s | 156.3 tok/s | 32.51 tok/s |
-| 2,048 (2,048) | 5.493s | 372.8 tok/s | 28.47 tok/s |
-| 8,192 (8,192) | 22.779s | 359.6 tok/s | 27.86 tok/s |
-| 32,768 (32,768) | 118.341s | 276.9 tok/s | 27.31 tok/s |
+| 128 (128) | 0.819s | 156.3 tok/s | 32.38 tok/s |
+| 2,048 (2,048) | 5.493s | 372.8 tok/s | 28.36 tok/s |
+| 8,192 (8,192) | 22.779s | 359.6 tok/s | 27.75 tok/s |
+| 32,768 (32,768) | 118.341s | 276.9 tok/s | 27.20 tok/s |
 
 The first 128-token request paid a one-time Metal compilation cost; the
 three-run median shown above reflects the other two consistent requests. After
@@ -261,7 +263,7 @@ captures the MLX allocator readings used here; for the GLM sweep it returned
 model server concurrently.
 
 The checkpoint contains a native MTP head, but the qualification experiment
-did not produce a speedup: 32.00 tok/s ordinary decode versus 31.65 tok/s with
+did not produce a speedup: 31.94 tok/s ordinary decode versus 31.59 tok/s with
 MTP for the sustained 512-token comparison, despite 72.97% acceptance and
 5.71 GB additional active memory. GLM MTP is therefore disabled for this
 alias; neither that no-go result nor an unqualified acceleration mode is used

@@ -8,6 +8,12 @@
     "mlx_vlm": "0.6.17"
   },
   "runs_csv": "2026-09-02-large-model-runs.csv",
+  "decode_rate": {
+    "raw_csv_field": "harness_decode_tps",
+    "raw_formula": "completion_tokens / (total_time - TTFT)",
+    "published_formula": "(completion_tokens - 1) / (total_time - TTFT)",
+    "published_from_raw": "harness_decode_tps * (completion_tokens - 1) / completion_tokens"
+  },
   "artifacts": {
     "qwen27-0133": {
       "rapid_sha": "6f3f65b92eed6906421b5761686c0a2cd0923aa3",
