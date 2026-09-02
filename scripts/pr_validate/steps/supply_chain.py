@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .._test_env import is_dep_declaration_file
 from ..base import Step, StepResult
@@ -60,6 +60,14 @@ HOOK_PATHS = (
     "Formula/",  # Homebrew tap
     "homebrew-rapid-mlx/",
 )
+
+WORKFLOW_PREFIX = ".github/workflows/"
+
+# A CI roster entry is deliberately narrower than general YAML.  The
+# exception below only applies to a plain Python test path followed by a
+# shell continuation, for example ``tests/test_server.py \\``.  Parsing
+# and path-normalization checks live in ``_is_ci_roster_entry`` below.
+_CI_ROSTER_PATH = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py$")
 
 
 def _is_hook_file(path: str) -> bool:
@@ -152,11 +160,28 @@ class SupplyChainStep(Step):
         if hook_files:
             # Even an "innocent-looking" hook change is worth surfacing.
             # External-author + hook change = strong reason to read.
-            severity = "BLOCKING" if ctx.is_external_author else "warning"
-            findings.append(
-                f"[{severity}] modifies install/CI hook(s): {hook_files}. "
-                "These run unattended; review every line."
+            # The sole external-author exception is a workflow diff made
+            # entirely of added, inert test-roster paths.  It remains a
+            # warning, with the exact hunk embedded for human inspection.
+            roster_only = (
+                _workflow_roster_only_hunks(diff, hook_files)
+                if ctx.is_external_author
+                else {}
             )
+            blocking_hooks = [f for f in hook_files if f not in roster_only]
+            if blocking_hooks:
+                severity = "BLOCKING" if ctx.is_external_author else "warning"
+                findings.append(
+                    f"[{severity}] modifies install/CI hook(s): {blocking_hooks}. "
+                    "These run unattended; review every line."
+                )
+            for path, hunks in roster_only.items():
+                rendered_hunks = "\n".join(hunks)
+                findings.append(
+                    "[warning] external PR only adds inert test path(s) to the "
+                    f"explicit CI roster in `{path}`; review this diff hunk:\n"
+                    f"```diff\n{rendered_hunks}\n```"
+                )
 
         # 2. Suspicious patterns in ADDED lines (not removed — removed
         # lines were dangerous before this PR, that's a different
@@ -226,6 +251,153 @@ class SupplyChainStep(Step):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _workflow_roster_only_hunks(
+    diff: str, hook_files: list[str]
+) -> dict[str, list[str]]:
+    """Return workflow files whose *entire* diff only adds roster entries.
+
+    This is intentionally a fail-closed parser.  A workflow qualifies only
+    when it has at least one added line, every added line is a plain
+    ``tests/...`` shell argument, and there are no removed lines.  File-mode
+    only changes, renames, malformed diffs, comments, flags, YAML keys, shell
+    operators, and mixed edits therefore remain BLOCKING.
+
+    Values contain the exact unified-diff hunks so the warning can show the
+    reviewer precisely what was exempted.
+    """
+    workflow_files = [f for f in hook_files if f.startswith(WORKFLOW_PREFIX)]
+    if not workflow_files:
+        return {}
+
+    edits: dict[str, list[str]] = {path: [] for path in workflow_files}
+    hunks: dict[str, list[list[str]]] = {path: [] for path in workflow_files}
+    unsafe_metadata: set[str] = set()
+    current_path = ""
+    current_hunk: list[str] | None = None
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            match = re.match(r"diff --git a/(.+) b/(.+)$", line)
+            current_path = match.group(2) if match else ""
+            if (
+                match
+                and current_path in workflow_files
+                and match.group(1) != match.group(2)
+            ):
+                unsafe_metadata.add(current_path)
+            current_hunk = None
+            continue
+        if current_hunk is None and line.startswith("+++ b/"):
+            current_path = line[6:]
+            current_hunk = None
+            continue
+        if current_path not in workflow_files:
+            continue
+        if line.startswith("@@"):
+            current_hunk = [line]
+            hunks[current_path].append(current_hunk)
+            continue
+        if current_hunk is None:
+            if line.startswith(
+                (
+                    "old mode ",
+                    "new mode ",
+                    "new file mode ",
+                    "deleted file mode ",
+                    "rename from ",
+                    "rename to ",
+                    "similarity index ",
+                )
+            ):
+                unsafe_metadata.add(current_path)
+            continue
+        current_hunk.append(line)
+        if line.startswith(("+", "-")):
+            edits[current_path].append(line)
+
+    qualified: dict[str, list[str]] = {}
+    for path in workflow_files:
+        changed_lines = edits[path]
+        if not changed_lines or path in unsafe_metadata:
+            continue
+        if any(line.startswith("-") for line in changed_lines):
+            continue
+        if not all(_is_ci_roster_entry(line[1:]) for line in changed_lines):
+            continue
+        if not all(
+            _hunk_adds_only_adjacent_roster_entries(hunk) for hunk in hunks[path]
+        ):
+            continue
+        qualified[path] = ["\n".join(hunk) for hunk in hunks[path]]
+    return qualified
+
+
+def _is_ci_roster_entry(line: str) -> bool:
+    """True for a safe ``tests/...py \\`` shell continuation argument."""
+    stripped = line.strip()
+    if not stripped.endswith("\\"):
+        return False
+    path_text = stripped[:-1].rstrip()
+    if not _CI_ROSTER_PATH.fullmatch(path_text):
+        return False
+
+    raw_parts = path_text.split("/")
+    if any(part in ("", ".", "..") for part in raw_parts):
+        return False
+    path = PurePosixPath(path_text)
+    return not path.is_absolute() and path.parts[0] == "tests" and path.suffix == ".py"
+
+
+def _hunk_adds_only_adjacent_roster_entries(hunk: list[str]) -> bool:
+    """Prove every added group is adjacent to an existing pytest roster.
+
+    A path-shaped shell command elsewhere in a workflow is not enough.  Each
+    contiguous addition group must touch an unchanged roster entry or the
+    unchanged ``pytest \\`` command that begins the roster.
+    """
+    added_indexes = [
+        index
+        for index, line in enumerate(hunk)
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+    if not added_indexes:
+        return False
+
+    groups: list[tuple[int, int]] = []
+    start = end = added_indexes[0]
+    for index in added_indexes[1:]:
+        if index == end + 1:
+            end = index
+        else:
+            groups.append((start, end))
+            start = end = index
+    groups.append((start, end))
+
+    for start, end in groups:
+        neighbours = []
+        if start > 0:
+            neighbours.append(hunk[start - 1])
+        if end + 1 < len(hunk):
+            neighbours.append(hunk[end + 1])
+        if not any(_is_unchanged_roster_anchor(line) for line in neighbours):
+            return False
+    return True
+
+
+def _is_unchanged_roster_anchor(diff_line: str) -> bool:
+    if not diff_line.startswith(" "):
+        return False
+    body = diff_line[1:]
+    if _is_ci_roster_entry(body):
+        return True
+    stripped = body.strip()
+    return stripped.endswith("\\") and (
+        stripped.startswith("pytest ")
+        or stripped.startswith("python -m pytest ")
+        or stripped.startswith("python3 -m pytest ")
+    )
 
 
 def _added_lines(diff: str) -> list[tuple[str, int, str]]:
