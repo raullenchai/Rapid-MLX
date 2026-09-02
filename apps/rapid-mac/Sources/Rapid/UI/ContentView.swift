@@ -1138,6 +1138,16 @@ struct ContentView: View {
                 readiness: readiness,
                 onReadinessAction: performReadinessAction
             )
+        case .benchmark:
+            CommunityBenchmarkView(
+                catalog: catalogEntries,
+                binary: server.binaryPath,
+                prepareServer: { try await server.prepareForCommunityBenchmark() },
+                releaseServer: { server.finishCommunityBenchmark($0) },
+                retainServerDuringDeferredReap: {
+                    server.retainCommunityBenchmarkDuringDeferredReap($0)
+                }
+            )
         }
     }
 

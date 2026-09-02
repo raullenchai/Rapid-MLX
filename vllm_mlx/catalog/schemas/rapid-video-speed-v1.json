@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "protocol_digest": "sha256:a163611473ac73cf3f1de00f56433425ae971cb015550568e392f6050e948d1e",
+  "workload": {
+    "protocol_id": "rapid-video-speed", "protocol_version": 1, "protocol_strength": "registered",
+    "protocol_digest": "sha256:a163611473ac73cf3f1de00f56433425ae971cb015550568e392f6050e948d1e", "task_type": "video_generation",
+    "dataset": {"id": "rapid-public-prompts", "version": 1, "digest": "sha256:1364a3627ef40d98e2920fe188f0941fe6f4a78ea306e4c81964e3b6b705c44c"},
+    "concurrency": 1,
+    "cases": [{"case_id": "t2v-480p-81f", "warmup_rounds": 0, "measured_rounds": 1, "mode": "text_to_video", "width": 832, "height": 480, "frames": 81, "fps_milli": 24000, "steps": 20, "guidance_millionths": 5000000, "seed": 12648430}]
+  }
+}

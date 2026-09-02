@@ -250,7 +250,7 @@ Also: word-level timestamps on transcription, and local text-to-music at
 | **Chat in the terminal** | `rapid-mlx chat qwen3.5-9b-4bit` | Streaming REPL, `/help` for slash commands, `--think` / `--no-think` to control CoT. |
 | **OpenAI server for your apps** | `rapid-mlx serve qwen3.5-9b-4bit` | Point Aider, LibreChat, Open WebUI, or LangChain at `http://localhost:8000/v1`. |
 | **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 10 agents auto-configure via `agents <name> --setup` once the server is up (12 wire-verified total, 5 Tier-1) — see [Agent support](#agent-support). |
-| **Benchmark your Mac** | `rapid-mlx bench qwen3.5-9b-4bit --submit` | Standardized B=1 bench, opens a PR to publish your row on [rapidmlx.com](https://rapidmlx.com). |
+| **Benchmark your Mac** | `rapid-mlx benchmark run qwen3.5-9b-4bit` | Reproducible model-first benchmark; saves a private local result and uploads nothing. |
 
 → [One-shot IDE setup](https://rapidmlx.com/docs/cli.html#launch) with `rapid-mlx launch <claude-code|cline|continue-dev>`
 
@@ -443,7 +443,7 @@ Top three things that go wrong:
 - **Questions & builds:** Ask or share in [GitHub Discussions](https://github.com/raullenchai/Rapid-MLX/discussions).
 - **Feedback & ideas:** [Report a bug, request a model, or propose a feature](https://github.com/raullenchai/Rapid-MLX/issues/new/choose).
 - **Security:** Send sensitive reports through a [private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new); see [SECURITY.md](SECURITY.md).
-- **Contributing:** Start with [CONTRIBUTING.md](CONTRIBUTING.md), or publish your Mac's benchmark with `rapid-mlx bench <alias> --submit`.
+- **Contributing:** Start with [CONTRIBUTING.md](CONTRIBUTING.md). Explore compatible benchmark models with `rapid-mlx benchmark catalog`; runs are local-only in the internal beta.
 - **Show support:** [Star this repository](https://github.com/raullenchai/Rapid-MLX) to follow releases and help others discover the project.
 
 **Privacy:** Anonymous telemetry is off by default and requires an explicit

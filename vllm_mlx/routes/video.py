@@ -53,6 +53,8 @@ class _VideoJob:
     prompt: str
     seconds: str
     size: str
+    frames: int | None = None
+    fps: int | None = None
     status: str = "queued"
     progress: int = 0
     created_at: int = 0
@@ -65,6 +67,10 @@ class _VideoJob:
         value = asdict(self)
         value.pop("output_path")
         value.pop("generation_finished")
+        if value["frames"] is None:
+            value.pop("frames")
+        if value["fps"] is None:
+            value.pop("fps")
         value["object"] = "video"
         return value
 
@@ -413,6 +419,8 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
     size = value.get("size")
     created_at = value.get("created_at")
     completed_at = value.get("completed_at")
+    frames = value.get("frames")
+    fps = value.get("fps")
     if (
         not isinstance(model, str)
         or not model
@@ -430,6 +438,8 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
         or type(completed_at) is not int
         or created_at < 0
         or completed_at < created_at
+        or (frames is not None and (type(frames) is not int or frames < 1))
+        or (fps is not None and (type(fps) is not int or fps < 1))
     ):
         return None
 
@@ -439,6 +449,8 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
         prompt=prompt,
         seconds=seconds,
         size=size,
+        frames=frames,
+        fps=fps,
         status="completed",
         progress=100,
         created_at=created_at,
@@ -1189,6 +1201,8 @@ async def create_video(
             prompt=prompt,
             seconds=str(seconds_int),
             size=f"{width}x{height}",
+            frames=request_frames,
+            fps=request_fps,
             created_at=int(time.time()),
         )
         with _jobs_lock:

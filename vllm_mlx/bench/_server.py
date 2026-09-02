@@ -33,6 +33,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
 from ..doctor.runner import REPO_ROOT, python_executable
@@ -63,6 +64,8 @@ def serve(
     extra_args: list[str] | None = None,
     boot_timeout_s: int = 180,
     model_path: str | Path | None = None,
+    extra_env: Mapping[str, str] | None = None,
+    isolate_process_group: bool = True,
 ):
     """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
 
@@ -74,6 +77,11 @@ def serve(
     - ``boot_time_ms`` — wall-clock from process spawn to the first 200
       from ``/health``. Populated for the community-bench smoke probe
       (schema v2 ``smoke_result.boot_time_ms``).
+
+    ``isolate_process_group=False`` is reserved for a supervisor that already
+    launched the benchmark CLI as a dedicated process-group leader. In that
+    topology the server must inherit the group so supervisor cancellation owns
+    the complete tree; ordinary CLI callers retain the isolated default.
 
     On exit, SIGTERM the whole process group; escalate to SIGKILL after
     10s. ``log_path`` if provided receives the server's combined
@@ -135,6 +143,8 @@ def serve(
         # the watchdog at the wrong PID.
         spawn_env = os.environ.copy()
         spawn_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+        if extra_env:
+            spawn_env.update(extra_env)
         proc = subprocess.Popen(  # noqa: S603 — args constructed by us
             cmd,
             cwd=REPO_ROOT,
@@ -145,7 +155,9 @@ def serve(
             # New process group so we can signal the whole tree on
             # teardown (uvicorn + worker children). POSIX-only; we
             # don't run on win.
-            preexec_fn=os.setsid if sys.platform != "win32" else None,
+            preexec_fn=(
+                os.setsid if isolate_process_group and sys.platform != "win32" else None
+            ),
         )
     except BaseException:
         log_fh.close()
@@ -172,7 +184,7 @@ def serve(
             "boot_time_ms": boot_time_ms,
         }
     finally:
-        _terminate(proc)
+        _terminate(proc, isolated_process_group=isolate_process_group)
         log_fh.close()
         if tmp_log is not None:
             tmp_log.unlink(missing_ok=True)
@@ -216,19 +228,19 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
     )
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+def _terminate(proc: subprocess.Popen, *, isolated_process_group: bool = True) -> None:
     """Best-effort clean teardown of a server process group."""
     if proc.poll() is not None:
         return
     try:
-        if sys.platform != "win32":
+        if isolated_process_group and sys.platform != "win32":
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         else:
             proc.terminate()
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         try:
-            if sys.platform != "win32":
+            if isolated_process_group and sys.platform != "win32":
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             else:
                 proc.kill()

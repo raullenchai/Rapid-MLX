@@ -11491,6 +11491,7 @@ Examples:
     bench_parser.add_argument(
         "model", type=str, help="Model to benchmark"
     ).completer = alias_completer
+
     bench_parser.add_argument(
         "--force-disk-check",
         action="store_true",
@@ -11736,6 +11737,49 @@ Examples:
         "long-prompt TTFT replication (#287).",
     )
     _add_pflash_args(bench_parser)
+
+    # Local-first, model-first Community Benchmark workspace. Keep the legacy
+    # freeform `bench` command intact while this replacement matures. Register
+    # this only after every `bench_parser` argument so AST-based docs contract
+    # checks continue to attribute the legacy defaults to `bench`.
+    community_parser = subparsers.add_parser(
+        "benchmark", help="Run or inspect reproducible local benchmarks"
+    )
+    community_subparsers = community_parser.add_subparsers(
+        dest="benchmark_action", required=True
+    )
+    community_catalog = community_subparsers.add_parser(
+        "catalog", help="List models with a registered benchmark protocol"
+    )
+    community_catalog.add_argument("--memory-gib", type=positive_int, default=None)
+    community_catalog.add_argument("--json", action="store_true")
+    community_plan = community_subparsers.add_parser(
+        "plan", help="Preview the exact local workload for a model"
+    )
+    community_plan.add_argument("benchmark_model")
+    community_plan.add_argument("--json", action="store_true")
+    community_run = community_subparsers.add_parser(
+        "run", help="Run the registered protocol and save the result locally"
+    )
+    community_run.add_argument("benchmark_model")
+    community_run.add_argument("--json", action="store_true")
+    community_run.add_argument(
+        "--inherit-process-group",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    community_results = community_subparsers.add_parser(
+        "results", help="List locally saved benchmark results"
+    )
+    community_results.add_argument(
+        "--limit", type=positive_int, default=None, help="Return only the latest N runs"
+    )
+    community_results.add_argument("--json", action="store_true")
+    community_inspect = community_subparsers.add_parser(
+        "inspect", help="Print one locally saved benchmark result"
+    )
+    community_inspect.add_argument("run_id")
+    community_inspect.add_argument("--json", action="store_true")
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two
@@ -12730,6 +12774,12 @@ def main():
         serve_command(args)
     elif args.command == "bench":
         bench_command(args)
+    elif args.command == "benchmark":
+        from vllm_mlx.community_bench.cli import (
+            benchmark_command as community_benchmark_command,
+        )
+
+        raise SystemExit(community_benchmark_command(args))
     elif args.command == "models":
         models_command(args)
     elif args.command == "recipe":

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "rapid-synthetic-token-corpus",
+  "version": 2,
+  "digest": "sha256:dcda5aef5ec99200db1ef5d1bdedd6db38acea9e159a483357e94c872f72e5ad",
+  "generator": {
+    "algorithm": "xorshift32-non-special-token-id-v2",
+    "seed": 12648430,
+    "state_transition": [
+      "x=uint32(x xor uint32(x<<13))",
+      "x=uint32(x xor (x>>17))",
+      "x=uint32(x xor uint32(x<<5))"
+    ],
+    "minimum_token_id": 256,
+    "precondition": "tokenizer_vocab_size>256 and tokenizer exposes all_special_ids",
+    "upper_exclusive_rule": "min(tokenizer_vocab_size,100000)",
+    "eligible_token_ids_rule": "ascending IDs in [256,upper_exclusive) excluding tokenizer.all_special_ids",
+    "token_mapping": "eligible_token_ids[x mod len(eligible_token_ids)]",
+    "input_representation": "token_ids",
+    "special_tokens": false
+  },
+  "golden_vector": {
+    "tokenizer_vocab_size": 1000,
+    "special_token_ids": [368, 522, 834, 999],
+    "first_token_ids": [469, 845, 945, 415, 950, 718, 771, 464]
+  }
+}
