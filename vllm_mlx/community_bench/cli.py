@@ -82,6 +82,7 @@ def benchmark_command(args) -> int:
                     run,
                     assume_yes=args.yes,
                     approved_install_id=getattr(args, "install_id", None),
+                    approved_payload_digest=getattr(args, "payload_digest", None),
                 )
                 if receipt is None:
                     value = {"schema_version": 1, "uploaded": False, "cancelled": True}

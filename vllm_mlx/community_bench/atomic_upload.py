@@ -136,7 +136,12 @@ def preview_run(
     wire = copy.deepcopy(run)
     wire["install_id"] = candidate
     BenchmarkRunValidator().validate(wire)
-    return {"target": target, "install_id": candidate, "payload": wire}
+    return {
+        "target": target,
+        "install_id": candidate,
+        "payload_digest": atomic_run_digest(wire),
+        "payload": wire,
+    }
 
 
 def upload_run(
@@ -147,6 +152,7 @@ def upload_run(
     stdout: TextIO | None = None,
     url: str | None = None,
     approved_install_id: str | None = None,
+    approved_payload_digest: str | None = None,
 ) -> dict[str, Any] | None:
     """Upload one validated run, returning its server receipt.
 
@@ -158,6 +164,11 @@ def upload_run(
     target = preview["target"]
     candidate = preview["install_id"]
     wire = preview["payload"]
+    wire_digest = preview["payload_digest"]
+    if approved_payload_digest is not None and approved_payload_digest != wire_digest:
+        raise SubmitError(
+            "the archived benchmark changed after preview; review the payload again"
+        )
 
     out = stdout or sys.stdout
     inp = stdin or sys.stdin
@@ -170,7 +181,7 @@ def upload_run(
             "the install id changed before upload; review the payload and try again"
         )
     response = post_submission(wire, url=target)
-    return _validated_receipt(response, run["run_id"], atomic_run_digest(wire))
+    return _validated_receipt(response, run["run_id"], wire_digest)
 
 
 __all__ = ["atomic_run_digest", "preview_run", "upload_run"]

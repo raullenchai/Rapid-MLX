@@ -322,6 +322,7 @@ def test_atomic_preview_is_the_exact_later_payload(
         run,
         assume_yes=True,
         approved_install_id=preview["install_id"],
+        approved_payload_digest=preview["payload_digest"],
     )
 
 
@@ -371,6 +372,47 @@ def test_atomic_upload_aborts_if_approved_install_id_loses_race(
             approved_install_id="a" * 12,
         )
     assert sent == []
+
+
+def test_share_cli_rejects_archive_changed_after_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+
+    changed = json.loads(json.dumps(run))
+    changed["measurements"][0]["total_duration_ms"] += 0.5
+    archive.save(changed)
+    sent = []
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+    args = SimpleNamespace(
+        benchmark_action="share",
+        run_id=run["run_id"],
+        yes=True,
+        json=True,
+        preview=False,
+        install_id=preview["install_id"],
+        payload_digest=preview["payload_digest"],
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    assert "changed after preview" in capsys.readouterr().err
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
 
 
 def test_install_id_commit_is_stable_across_same_process_threads(

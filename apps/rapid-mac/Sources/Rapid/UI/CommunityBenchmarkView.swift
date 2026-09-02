@@ -139,6 +139,7 @@ struct CommunityBenchmarkUploadPreview: Identifiable {
     let runID: String
     let target: String
     let installID: String
+    let payloadDigest: String
     let payloadJSON: String
 
     var id: String { runID }
@@ -366,10 +367,12 @@ enum CommunityBenchmarkCommand {
         ["benchmark", "share", runID, "--preview", "--json"]
     }
 
-    static func benchmarkShareArguments(runID: String, installID: String) -> [String] {
+    static func benchmarkShareArguments(
+        runID: String, installID: String, payloadDigest: String
+    ) -> [String] {
         [
             "benchmark", "share", runID, "--yes", "--install-id", installID,
-            "--json",
+            "--payload-digest", payloadDigest, "--json",
         ]
     }
 
@@ -379,6 +382,7 @@ enum CommunityBenchmarkCommand {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let target = root["target"] as? String,
               let installID = root["install_id"] as? String,
+              let payloadDigest = root["payload_digest"] as? String,
               let payload = root["payload"] as? [String: Any]
         else {
             throw Failure(message: "The benchmark preview was incomplete.")
@@ -394,6 +398,7 @@ enum CommunityBenchmarkCommand {
             runID: runID,
             target: target,
             installID: installID,
+            payloadDigest: payloadDigest,
             payloadJSON: payloadJSON
         )
     }
@@ -812,7 +817,8 @@ struct CommunityBenchmarkView: View {
                     binary: binary,
                     arguments: CommunityBenchmarkCommand.benchmarkShareArguments(
                         runID: preview.runID,
-                        installID: preview.installID
+                        installID: preview.installID,
+                        payloadDigest: preview.payloadDigest
                     )
                 )
                 let response = try JSONDecoder().decode(
