@@ -271,9 +271,16 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
 
     /// Content-addressed recommendation policies this sidecar catalog was
     /// built and validated with. Empty for legacy sidecars and custom rows;
-    /// callers must then fail closed instead of applying bundled policy
-    /// semantics to an unadvertised catalog snapshot.
+    /// atomic callers must then fail closed. The separately marked legacy
+    /// built-in compatibility path preserves pre-cutover upgrade behavior.
     var recommendationPolicyDigests: Set<String> = []
+
+    /// Compatibility marker for the pre-atomic machine-readable catalog.
+    /// Those sidecars cannot advertise a policy digest, but their built-in
+    /// alias rows were the catalog against which Desktop historically applied
+    /// its bundled recommendation table. Atomic catalogs never set this bit:
+    /// they must authenticate the exact policy address above.
+    var allowsLegacyRecommendationPolicy: Bool = false
 
     /// Chat-only speculative preset parsed from the engine's alias SSOT.
     var speculativeDecodingPreset: SpeculativeDecodingPreset? = nil
@@ -460,6 +467,8 @@ enum ModelCatalog {
             enriched.isTextOnly = availableResult.profiles[entry.alias]?.isTextOnly
             enriched.recommendationPolicyDigests =
                 availableResult.profiles[entry.alias]?.recommendationPolicyDigests ?? []
+            enriched.allowsLegacyRecommendationPolicy =
+                availableResult.profiles[entry.alias]?.allowsLegacyRecommendationPolicy ?? false
             return enriched
         }
 
@@ -572,6 +581,7 @@ enum ModelCatalog {
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
                 recommendationPolicyDigests: entry.recommendationPolicyDigests,
+                allowsLegacyRecommendationPolicy: entry.allowsLegacyRecommendationPolicy,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly
@@ -784,6 +794,7 @@ enum ModelCatalog {
         let isBuiltin: Bool
         let isTextOnly: Bool
         let recommendationPolicyDigests: Set<String>
+        let allowsLegacyRecommendationPolicy: Bool
     }
 
     /// Parse the machine-readable alias SSOT used for Desktop launch policy.
@@ -811,7 +822,8 @@ enum ModelCatalog {
                 profiles[alias] = CatalogProfileCapability(
                     isBuiltin: isBuiltin,
                     isTextOnly: isTextOnly,
-                    recommendationPolicyDigests: []
+                    recommendationPolicyDigests: [],
+                    allowsLegacyRecommendationPolicy: isBuiltin
                 )
             }
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),
@@ -876,7 +888,8 @@ enum ModelCatalog {
                     CatalogProfileCapability(
                         isBuiltin: entry.isBuiltinProfile == true,
                         isTextOnly: entry.isTextOnly == true,
-                        recommendationPolicyDigests: entry.recommendationPolicyDigests
+                        recommendationPolicyDigests: entry.recommendationPolicyDigests,
+                        allowsLegacyRecommendationPolicy: false
                     )
                 )
             }
@@ -1345,6 +1358,7 @@ enum ModelCatalog {
                 runtimeAdapter: entry.runtimeAdapter,
                 sourceSubfolder: entry.sourceSubfolder,
                 recommendationPolicyDigests: entry.recommendationPolicyDigests,
+                allowsLegacyRecommendationPolicy: entry.allowsLegacyRecommendationPolicy,
                 speculativeDecodingPreset: entry.speculativeDecodingPreset,
                 isBuiltinProfile: entry.isBuiltinProfile,
                 isTextOnly: entry.isTextOnly

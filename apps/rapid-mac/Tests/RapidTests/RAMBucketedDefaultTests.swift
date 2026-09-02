@@ -181,6 +181,23 @@ struct RAMBucketedDefaultTests {
             from: [known],
             catalog: [catalogEntry("known-model", policyDigests: ["sha256:" + String(repeating: "0", count: 64)])]
         ).isEmpty)
+
+        let legacy = ModelEntry(
+            alias: "known-model", hfRepo: "org/known", sizeOnDisk: nil,
+            cached: false, allowsLegacyRecommendationPolicy: true,
+            isBuiltinProfile: true
+        )
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known], catalog: [legacy]
+        ) == [.init(pick: known, isPrimary: true)])
+
+        let unsignedAtomic = ModelEntry(
+            alias: "known-model", hfRepo: "org/known", sizeOnDisk: nil,
+            cached: false, isBuiltinProfile: true
+        )
+        #expect(RAMBucketedDefault.catalogPicks(
+            from: [known], catalog: [unsignedAtomic]
+        ).isEmpty)
     }
 
     // MARK: - Launch flags travel with the recommendation, gated by RAM

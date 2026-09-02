@@ -134,6 +134,18 @@ struct AtomicModelCatalogTests {
         #expect(entries.first { $0.alias == "stt" }?.kind == .audio)
         #expect(entries.first { $0.alias == "hidden" } == nil)
         #expect(entries.allSatisfy { $0.recommendationPolicyDigests.isEmpty })
+        #expect(entries.allSatisfy { !$0.allowsLegacyRecommendationPolicy })
+    }
+
+    @Test("legacy built-in rows preserve recommendation compatibility without weakening atomic catalogs")
+    func legacyRecommendationCompatibilityIsFormatScoped() throws {
+        let legacy = #"{"text":[{"alias":"chat","hf_path":"org/chat","is_builtin":true,"is_text_only":true},{"alias":"custom","hf_path":"org/custom","is_builtin":false,"is_text_only":true}]}"#
+        let projection = try #require(ModelCatalog.parseAvailableJSON(legacy))
+        #expect(projection.profiles["chat"]?.allowsLegacyRecommendationPolicy == true)
+        #expect(projection.profiles["custom"]?.allowsLegacyRecommendationPolicy == false)
+
+        let atomic = try #require(ModelCatalog.parseAvailableJSON(Self.payload))
+        #expect(atomic.profiles["chat"]?.allowsLegacyRecommendationPolicy == false)
     }
 
     @Test("atomic catalog preserves authenticated recommendation policy addresses")

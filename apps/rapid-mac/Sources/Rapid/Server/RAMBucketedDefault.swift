@@ -443,7 +443,7 @@ enum RAMBucketedDefault {
         catalog: [ModelEntry]
     ) -> [CatalogPick] {
         let catalogAliases = Set(catalog.compactMap { entry in
-            entry.recommendationPolicyDigests.contains(policyDigest)
+            recommendationPolicyIsUsable(for: entry)
                 ? entry.alias
                 : nil
         })
@@ -451,6 +451,15 @@ enum RAMBucketedDefault {
             guard catalogAliases.contains(pick.alias) else { return nil }
             return CatalogPick(pick: pick, isPrimary: index == 0)
         }
+    }
+
+    /// Atomic catalogs authenticate the exact policy address. A pre-atomic
+    /// sidecar preserves the established recommendation UX only for rows it
+    /// explicitly marks as built-in; custom and plain-text fallback rows stay
+    /// ineligible. Atomic catalogs never receive the compatibility marker.
+    private static func recommendationPolicyIsUsable(for entry: ModelEntry) -> Bool {
+        entry.recommendationPolicyDigests.contains(policyDigest)
+            || entry.allowsLegacyRecommendationPolicy
     }
 
     /// Quality-aware order for choosing among models that are already on
@@ -501,7 +510,7 @@ enum RAMBucketedDefault {
         catalogEntry: ModelEntry? = nil
     ) -> Bool {
         guard catalogEntry?.alias == alias,
-              catalogEntry?.recommendationPolicyDigests.contains(policyDigest) == true
+              catalogEntry.map(recommendationPolicyIsUsable(for:)) == true
         else { return false }
         let t = tier(forPhysicalRAMGB: physicalRAMGB)
         return physicalRAMGB >= t.floorGB && t.picks.contains { $0.alias == alias }
