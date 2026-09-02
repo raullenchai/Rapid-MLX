@@ -24,6 +24,7 @@ import plistlib
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -702,6 +703,33 @@ def test_agent_integrations_report_config_and_server_reachability(tmp_path):
         "Claude Code server is reachable",
         "Continue.dev server is not reachable",
     ]
+
+
+def test_agent_reachability_bounds_blocked_dns_in_subprocess(monkeypatch):
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", time.monotonic() + 0.25)
+    seen_timeout = None
+
+    def blocked_resolver(*_args, **kwargs):
+        nonlocal seen_timeout
+        seen_timeout = kwargs["timeout"]
+        raise subprocess.TimeoutExpired(cmd="tcp-probe", timeout=seen_timeout)
+
+    assert not eh._server_reachable(
+        "http://resolver-stall.invalid:8000", run=blocked_resolver
+    )
+    assert seen_timeout is not None and 0 < seen_timeout <= 0.25
+
+
+@pytest.mark.parametrize(("stdout", "expected"), [("1\n", True), ("0\n", False)])
+def test_agent_reachability_maps_child_result(stdout, expected):
+    result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
+
+    assert (
+        eh._server_reachable(
+            "http://127.0.0.1:8000", run=lambda *_args, **_kwargs: result
+        )
+        is expected
+    )
 
 
 @pytest.mark.parametrize("claude_config", ["not json", "null", "[]"])
@@ -2791,6 +2819,7 @@ def test_incompatible_mlx_vlm_does_not_mark_dflash_ok():
 
 def test_run_all_bounds_remote_probe_budget_and_clears_deadline(monkeypatch):
     seen_deadlines = []
+    started_at = time.monotonic()
 
     def inspect_deadline():
         seen_deadlines.append(eh._DOCTOR_DEADLINE)
@@ -2803,7 +2832,121 @@ def test_run_all_bounds_remote_probe_budget_and_clears_deadline(monkeypatch):
     assert report.sections[0].title == "Test"
     assert len(seen_deadlines) == 1
     assert seen_deadlines[0] is not None
+    assert seen_deadlines[0] - started_at <= (
+        eh._DOCTOR_BUDGET_S - eh._DOCTOR_COMPLETION_HEADROOM_S + 0.01
+    )
     assert eh._DOCTOR_DEADLINE is None
+
+
+def test_run_all_skips_remaining_sections_after_shared_deadline(monkeypatch):
+    clock = [100.0]
+
+    def consume_budget():
+        clock[0] = 105.0
+        return eh.Section("First")
+
+    def must_not_run():
+        raise AssertionError("section started after doctor deadline")
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_selected_runtime", lambda: Path(sys.executable))
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (consume_budget, must_not_run))
+
+    report = eh.run_all()
+
+    assert [section.title for section in report.sections] == ["First", "Must_Not_Run"]
+    assert report.sections[1].checks[0].status is eh.CheckStatus.WARN
+    assert "budget exhausted" in report.sections[1].checks[0].label
+    assert eh._DOCTOR_DEADLINE is None
+
+
+def test_expired_caller_does_not_start_runtime_discovery(monkeypatch):
+    monkeypatch.setattr(eh.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        eh,
+        "_selected_runtime",
+        mock.Mock(side_effect=AssertionError("runtime discovery must not start")),
+    )
+
+    report = eh._run_all_serialized(99.0)
+
+    assert report.sections
+    assert all(
+        "budget exhausted" in section.checks[0].label for section in report.sections
+    )
+    eh._selected_runtime.assert_not_called()
+    assert eh._DOCTOR_DEADLINE is None
+
+
+def test_bounded_timeout_uses_only_one_millisecond_after_deadline(monkeypatch):
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 10.0)
+    monkeypatch.setattr(eh.time, "monotonic", lambda: 10.5)
+
+    assert eh._bounded_timeout(2.0) == 0.001
+
+
+def test_run_all_serializes_process_global_probe_state(monkeypatch):
+    active = 0
+    peak_active = 0
+    state_lock = threading.Lock()
+    results = []
+    errors = []
+
+    def fake_run(_deadline):
+        nonlocal active, peak_active
+        with state_lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        time.sleep(0.02)
+        with state_lock:
+            active -= 1
+        return eh.Report()
+
+    monkeypatch.setattr(eh, "_run_all_serialized", fake_run)
+
+    def invoke_run_all():
+        try:
+            results.append(eh.run_all())
+        except Exception as exc:  # pragma: no cover - assertion captures it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=invoke_run_all) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert peak_active == 1
+
+
+def test_run_all_bounds_lock_contention_inside_caller_budget(monkeypatch):
+    entered = threading.Event()
+
+    def slow_first_run(_deadline):
+        entered.set()
+        time.sleep(0.08)
+        return eh.Report()
+
+    monkeypatch.setattr(eh, "_DOCTOR_BUDGET_S", 0.05)
+    monkeypatch.setattr(eh, "_DOCTOR_COMPLETION_HEADROOM_S", 0.01)
+    monkeypatch.setattr(eh, "_run_all_serialized", slow_first_run)
+    first = threading.Thread(target=eh.run_all)
+    first.start()
+    assert entered.wait(timeout=1)
+
+    started_at = time.monotonic()
+    second_report = eh.run_all()
+    elapsed = time.monotonic() - started_at
+    first.join()
+
+    assert elapsed < 0.07
+    assert second_report.sections
+    assert all(
+        "budget exhausted" in section.checks[0].label
+        for section in second_report.sections
+    )
 
 
 def test_runtime_process_scan_stops_when_doctor_budget_expires(tmp_path, monkeypatch):
@@ -3348,6 +3491,26 @@ def test_dir_size_walk_aborts_inside_flat_directory(tmp_path: Path):
     )
 
 
+def test_dir_size_walk_cannot_outlive_shared_doctor_deadline(tmp_path, monkeypatch):
+    (tmp_path / "first.bin").write_bytes(b"x")
+    (tmp_path / "second.bin").write_bytes(b"x")
+    clock = [100.0]
+    stat_calls = 0
+
+    def fake_getsize(_path):
+        nonlocal stat_calls
+        stat_calls += 1
+        clock[0] += 0.02
+        return 1
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 100.01)
+    monkeypatch.setattr(eh.os.path, "getsize", fake_getsize)
+
+    assert eh._dir_size_gb(tmp_path, budget_s=1.5) is None
+    assert stat_calls == 1
+
+
 def test_hf_cache_non_directory_marks_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -3420,6 +3583,49 @@ def test_network_probe_ok():
     section = eh.section_network(probe=fake_probe)
     hf_row = next(c for c in section.checks if "huggingface.co" in c.label)
     assert hf_row.status is eh.CheckStatus.OK
+
+
+def test_network_probe_bounds_blocked_dns_in_subprocess(monkeypatch):
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", time.monotonic() + 0.25)
+    seen_timeout = None
+
+    def blocked_resolver(*_args, **kwargs):
+        nonlocal seen_timeout
+        seen_timeout = kwargs["timeout"]
+        raise subprocess.TimeoutExpired(cmd="dns-probe", timeout=seen_timeout)
+
+    status, detail = eh._probe_hf(run=blocked_resolver)
+
+    assert status is eh.CheckStatus.WARN
+    assert "timed out" in detail
+    assert seen_timeout is not None and 0 < seen_timeout <= 0.25
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected_detail"),
+    [
+        ('{"code": 429}\n', "HTTP 429"),
+        ('{"error": "URLError"}\n', "unreachable (URLError)"),
+        ("[]\n", "network probe failed"),
+    ],
+)
+def test_network_probe_maps_child_results(stdout, expected_detail):
+    result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
+
+    status, detail = eh._probe_hf(run=lambda *_args, **_kwargs: result)
+
+    assert status is eh.CheckStatus.WARN
+    assert expected_detail in detail
+
+
+def test_network_probe_maps_child_process_failure():
+    def failed_child(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(returncode=1, cmd="hf-probe")
+
+    status, detail = eh._probe_hf(run=failed_child)
+
+    assert status is eh.CheckStatus.WARN
+    assert "network probe failed" in detail
 
 
 # ---------------------------------------------------------------------------

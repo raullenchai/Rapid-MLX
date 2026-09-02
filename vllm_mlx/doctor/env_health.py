@@ -29,13 +29,11 @@ import plistlib
 import re
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
+import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -240,7 +238,14 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
     "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
 )
 _DOCTOR_BUDGET_S = 5.0
+# Leave enough wall-clock headroom for subprocess timeout cleanup, report
+# assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
+# terminating the child at its timeout and can return a few milliseconds
+# later; consuming the full user-facing budget inside probes therefore makes
+# the end-to-end command exceed its own contract.
+_DOCTOR_COMPLETION_HEADROOM_S = 0.1
 _DOCTOR_DEADLINE: float | None = None
+_DOCTOR_RUN_LOCK = threading.Lock()
 _RUNTIME_CONTEXTS: dict[Path, tuple[Path, dict[str, str]]] = {}
 _RUNTIME_DISTRIBUTION_CACHE: dict[Path, bool] = {}
 _TRUSTED_SYS_PATH_ROOTS: tuple[Path, ...] = ()
@@ -880,10 +885,10 @@ _RUNTIME_IMPORT_TIMEOUTS: set[tuple[Path, str, str, bool, bool, tuple[str, ...]]
 
 
 def _bounded_timeout(default_s: float) -> float:
-    """Return the remaining doctor budget without yielding a zero timeout."""
+    """Return a positive timeout that never meaningfully exceeds the budget."""
     if _DOCTOR_DEADLINE is None:
         return default_s
-    return max(0.05, min(default_s, _DOCTOR_DEADLINE - time.monotonic()))
+    return max(0.001, min(default_s, _DOCTOR_DEADLINE - time.monotonic()))
 
 
 def _import_probe_cache_key(
@@ -1224,14 +1229,14 @@ def _detect_apple_silicon() -> tuple[str | None, int | None]:
             ["sysctl", "-n", "machdep.cpu.brand_string"],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_bounded_timeout(2),
             check=False,
         )
         memsize = subprocess.run(
             ["sysctl", "-n", "hw.memsize"],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_bounded_timeout(2),
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1308,6 +1313,8 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
     if not path.exists():
         return None
     deadline = _time.monotonic() + budget_s
+    if _DOCTOR_DEADLINE is not None:
+        deadline = min(deadline, _DOCTOR_DEADLINE)
     total = 0
     try:
         for root, _dirs, files in os.walk(path, followlinks=False):
@@ -2368,32 +2375,62 @@ def section_hf_cache() -> Section:
 # doctor runtime under the 5 s contract even when the resolver hangs.
 _HF_PROBE_URL = "https://huggingface.co"
 _HF_PROBE_TIMEOUT_S = 2.0
+_HF_PROBE_SCRIPT = r"""
+import json
+import sys
+import urllib.error
+import urllib.request
+
+url = sys.argv[1]
+timeout = float(sys.argv[2])
+request = urllib.request.Request(url, method="HEAD")
+try:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        print(json.dumps({"code": response.status}))
+except urllib.error.HTTPError as exc:
+    print(json.dumps({"code": exc.code}))
+except (urllib.error.URLError, TimeoutError) as exc:
+    print(json.dumps({"error": type(exc).__name__}))
+"""
 
 
-def _probe_hf(timeout: float = _HF_PROBE_TIMEOUT_S) -> tuple[CheckStatus, str]:
-    """Return (status, detail) for the huggingface.co HEAD probe."""
-    req = urllib.request.Request(_HF_PROBE_URL, method="HEAD")  # noqa: S310 — https only
+def _probe_hf(
+    timeout: float = _HF_PROBE_TIMEOUT_S,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[CheckStatus, str]:
+    """Return HEAD reachability while bounding DNS resolution in a child."""
+    parent_timeout = _bounded_timeout(timeout)
+    child_timeout = max(0.001, parent_timeout - min(0.1, parent_timeout / 2))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            return (
-                CheckStatus.OK,
-                f"HEAD {_HF_PROBE_URL} → HTTP {resp.status}",
-            )
-    except urllib.error.HTTPError as e:
-        # HF returns 405 to HEAD on some routes — still "reachable".
-        if e.code in (200, 301, 302, 405):
-            return CheckStatus.OK, f"HEAD {_HF_PROBE_URL} → HTTP {e.code}"
-        return CheckStatus.WARN, f"HTTP {e.code} (rate-limited?)"
-    except (urllib.error.URLError, TimeoutError) as e:
-        # Spec rule: network timeout is a WARNING, never a FAIL — we don't
-        # want CI runners in air-gapped environments to fail a doctor run
-        # just because they can't talk to the public internet.
-        return (
-            CheckStatus.WARN,
-            f"unreachable ({type(e).__name__}: {e})",
+        result = run(  # noqa: S603 — fixed interpreter and script
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _HF_PROBE_SCRIPT,
+                _HF_PROBE_URL,
+                str(child_timeout),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=parent_timeout,
+            check=True,
         )
-    except OSError as e:
-        return CheckStatus.WARN, f"OSError: {e}"
+        payload = json.loads(result.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("network probe returned a non-object")
+        code = payload.get("code")
+        if code in (200, 301, 302, 405):
+            return CheckStatus.OK, f"HEAD {_HF_PROBE_URL} → HTTP {code}"
+        if isinstance(code, int):
+            return CheckStatus.WARN, f"HTTP {code} (rate-limited?)"
+        error = payload.get("error")
+        return CheckStatus.WARN, f"unreachable ({error or 'network error'})"
+    except subprocess.TimeoutExpired:
+        return CheckStatus.WARN, "unreachable (network probe timed out)"
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, ValueError):
+        return CheckStatus.WARN, "unreachable (network probe failed)"
 
 
 def section_network(
@@ -2689,30 +2726,66 @@ def _agent_integrations(home: Path) -> list[tuple[str, Path, str | None]]:
     return integrations
 
 
+_TCP_PROBE_SCRIPT = r"""
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+timeout = float(sys.argv[3])
+try:
+    connection = socket.create_connection((host, port), timeout=timeout)
+    connection.close()
+    print("1")
+except OSError:
+    print("0")
+"""
+
+
 def _server_reachable(
     url: str,
     *,
-    connect: Callable[..., object] = socket.create_connection,
+    connect: Callable[..., object] | None = None,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> bool:
-    """Perform a short TCP reachability check; do not interpret engine APIs."""
+    """Perform a deadline-bounded TCP check without interpreting engine APIs."""
     try:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        connection = connect((parsed.hostname, port), timeout=0.25)
-        close = getattr(connection, "close", None)
-        if close:
-            close()
-        return True
-    except (OSError, TypeError, ValueError):
+        timeout = _bounded_timeout(0.25)
+        if connect is not None:
+            connection = connect((parsed.hostname, port), timeout=timeout)
+            close = getattr(connection, "close", None)
+            if close:
+                close()
+            return True
+        child_timeout = max(0.001, timeout - min(0.05, timeout / 2))
+        result = run(  # noqa: S603 — fixed interpreter and script
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _TCP_PROBE_SCRIPT,
+                parsed.hostname,
+                str(port),
+                str(child_timeout),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "1"
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired):
         return False
 
 
 def section_agent_integrations(
     *,
     home: Path | None = None,
-    connect: Callable[..., object] = socket.create_connection,
+    connect: Callable[..., object] | None = None,
 ) -> Section:
     """Report whether installed agent configs point to a reachable server."""
     section = Section("Agent Integrations")
@@ -2766,8 +2839,38 @@ _SECTION_BUILDERS = (
     section_agent_integrations,
 )
 
+_SECTION_TITLES = {
+    section_system: "System",
+    section_python: "Python",
+    section_required_packages: "Required Packages",
+    section_updates: "Updates",
+    section_optional_packages: "Optional Packages",
+    section_hf_cache: "HuggingFace Cache",
+    section_network: "Network",
+    section_shell_integration: "Shell Integration",
+    section_optional_tools: "Optional Tools",
+    section_agent_integrations: "Agent Integrations",
+}
 
-def run_all() -> Report:
+
+def _budget_exhausted_report() -> Report:
+    report = Report()
+    for builder in _SECTION_BUILDERS:
+        skipped = Section(
+            _SECTION_TITLES.get(
+                builder, builder.__name__.replace("section_", "").title()
+            )
+        )
+        skipped.add(
+            "Skipped: doctor time budget exhausted",
+            CheckStatus.WARN,
+            detail="probe did not start before the shared deadline",
+        )
+        report.sections.append(skipped)
+    return report
+
+
+def _run_all_serialized(caller_deadline: float) -> Report:
     """Run every section and return the aggregate report.
 
     Each section builder is wrapped in a try/except so a single buggy probe
@@ -2778,15 +2881,32 @@ def run_all() -> Report:
     global _DOCTOR_DEADLINE, _RUNTIME_SELECTION_DONE
     report = Report()
     try:
-        _DOCTOR_DEADLINE = time.monotonic() + _DOCTOR_BUDGET_S
+        _DOCTOR_DEADLINE = caller_deadline
         _RUNTIME_SELECTION_DONE = False
         _RUNTIME_PROBE_CACHE.clear()
         _RUNTIME_IMPORT_CACHE.clear()
         _RUNTIME_IMPORT_TIMEOUTS.clear()
         _RUNTIME_DISTRIBUTION_CACHE.clear()
         _RUNTIME_CONTEXTS.clear()
+        if time.monotonic() >= _DOCTOR_DEADLINE:
+            return _budget_exhausted_report()
         _selected_runtime()
-        for builder in _SECTION_BUILDERS:
+        for index, builder in enumerate(_SECTION_BUILDERS):
+            if time.monotonic() >= _DOCTOR_DEADLINE:
+                for skipped_builder in _SECTION_BUILDERS[index:]:
+                    skipped = Section(
+                        _SECTION_TITLES.get(
+                            skipped_builder,
+                            skipped_builder.__name__.replace("section_", "").title(),
+                        )
+                    )
+                    skipped.add(
+                        "Skipped: doctor time budget exhausted",
+                        CheckStatus.WARN,
+                        detail="probe did not start before the shared deadline",
+                    )
+                    report.sections.append(skipped)
+                break
             try:
                 report.sections.append(builder())
             except Exception as e:  # noqa: BLE001 — see docstring above
@@ -2800,3 +2920,17 @@ def run_all() -> Report:
     finally:
         _DOCTOR_DEADLINE = None
     return report
+
+
+def run_all() -> Report:
+    """Run one coherent probe set; serialize access to process-global caches."""
+    caller_deadline = time.monotonic() + (
+        _DOCTOR_BUDGET_S - _DOCTOR_COMPLETION_HEADROOM_S
+    )
+    remaining = max(0.0, caller_deadline - time.monotonic())
+    if not _DOCTOR_RUN_LOCK.acquire(timeout=remaining):
+        return _budget_exhausted_report()
+    try:
+        return _run_all_serialized(caller_deadline)
+    finally:
+        _DOCTOR_RUN_LOCK.release()
