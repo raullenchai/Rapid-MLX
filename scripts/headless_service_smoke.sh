@@ -72,20 +72,17 @@ fi
 echo "  running (pid $PID${EXPECTED_USER:+, user $EXPECTED_USER})"
 
 echo "[2/4] liveness"
-curl -q --config "$CURL_CONFIG" "$BASE_URL/livez" > "$RESPONSE"
-grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE" || {
-    echo "unexpected /livez response" >&2; exit 1;
-}
-
 echo "[3/4] readiness and model inventory"
 READY=false
 for _ in {1..40}; do
-    if curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
+    if curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/livez" > "$RESPONSE" 2>/dev/null &&
+       grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE" &&
+       curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
        grep -Eq '"ready"[[:space:]]*:[[:space:]]*true|"status"[[:space:]]*:[[:space:]]*"(ok|ready|healthy)"|^OK$' "$RESPONSE"; then
         READY=true
         break
     fi
-    sleep 2
+    sleep 1
 done
 if [ "$READY" != true ]; then
     echo "service did not become ready within 120 seconds" >&2

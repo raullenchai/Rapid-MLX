@@ -26,6 +26,7 @@ def test_launchdaemon_template_is_valid_and_safe_by_default() -> None:
     assert config["KeepAlive"] is True
     assert config["ThrottleInterval"] >= 10
     assert config["Umask"] == 0o27
+    assert "ProcessType" not in config
     assert "RAPID_MLX_API_KEY" not in config["EnvironmentVariables"]
     assert config["StandardOutPath"] != config["StandardErrorPath"]
 
@@ -39,6 +40,7 @@ def test_smoke_script_is_syntactically_valid_and_does_not_accept_key_argv() -> N
     assert "unsafe for a curl config" in source
     assert 'curl -q --config "$CURL_CONFIG"' in source
     assert '--max-time 1 "$BASE_URL/readyz"' in source
+    assert '--max-time 1 "$BASE_URL/livez"' in source
     assert "kill -0" not in source
     assert "launchctl print" in source
     assert "/livez" in source
