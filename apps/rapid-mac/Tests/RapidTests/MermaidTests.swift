@@ -555,6 +555,34 @@ struct MermaidRenderingTests {
         #expect(recovered != nil)
     }
 
+    @Test("A timed-out readiness probe releases setup for a retry")
+    func timedOutReadinessProbeReleasesSetup() async {
+        var readinessAttempts = 0
+        let renderer = MermaidRenderer(
+            renderTimeout: .milliseconds(500),
+            readinessEvaluator: { _, completion in
+                readinessAttempts += 1
+                guard readinessAttempts > 1 else { return }
+                completion(.success(true))
+            },
+            javaScriptEvaluator: { _, _, _, completion in
+                completion(.success(["ok": true, "width": 320, "height": 180]))
+            },
+            snapshotter: { _, configuration, completion in
+                completion(NSImage(size: configuration.rect.size), nil)
+            }
+        )
+
+        let source = "graph TD\n  Ready --> Retry"
+        let started = ContinuousClock.now
+        #expect(await renderer.image(source: source, theme: .light) == nil)
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(!renderer.isKnownBad(source: source, theme: .light))
+
+        #expect(await renderer.image(source: source, theme: .light) != nil)
+        #expect(readinessAttempts == 2)
+    }
+
     @Test("A timed-out snapshot releases the serial queue")
     func timedOutSnapshotReleasesQueue() async {
         var attempts = 0

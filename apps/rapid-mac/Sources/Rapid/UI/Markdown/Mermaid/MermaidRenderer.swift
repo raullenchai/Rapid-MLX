@@ -64,6 +64,10 @@ final class MermaidRenderer {
         _ configuration: WKSnapshotConfiguration,
         _ completion: @escaping @MainActor @Sendable (NSImage?, Error?) -> Void
     ) -> Void
+    typealias ReadinessEvaluator = @MainActor (
+        _ webView: WKWebView,
+        _ completion: @escaping @MainActor @Sendable (Result<Any, Error>) -> Void
+    ) -> Void
 
     /// A preview is drawn at 2×. Bounding both axes and point area keeps a
     /// model-authored diagram from turning into an unbounded bitmap request.
@@ -71,6 +75,7 @@ final class MermaidRenderer {
     nonisolated static let maximumPointArea = 4_000_000
 
     private let renderTimeout: Duration
+    private let readinessEvaluator: ReadinessEvaluator?
     private let javaScriptEvaluator: JavaScriptEvaluator?
     private let snapshotter: Snapshotter?
     private var abortActiveOperation: (@MainActor () -> Void)?
@@ -151,6 +156,7 @@ final class MermaidRenderer {
     /// when run alongside its neighbours.
     init(
         renderTimeout: Duration = .seconds(8),
+        readinessEvaluator: ReadinessEvaluator? = nil,
         javaScriptEvaluator: JavaScriptEvaluator? = nil,
         snapshotter: Snapshotter? = nil,
         // Keep this a literal. Swift 6.1 can crash in SILGen when a default
@@ -158,6 +164,7 @@ final class MermaidRenderer {
         cacheByteLimit: Int = 268_435_456
     ) {
         self.renderTimeout = renderTimeout
+        self.readinessEvaluator = readinessEvaluator
         self.javaScriptEvaluator = javaScriptEvaluator
         self.snapshotter = snapshotter
         self.cacheByteLimit = max(0, cacheByteLimit)
@@ -528,8 +535,7 @@ final class MermaidRenderer {
 
         // The check on the thing that actually fails: a truncated library
         // resolves by name and then dies inside `render`.
-        let ready = try? await view.evaluateJavaScript("window.__rapidReady === true")
-        guard ready as? Bool == true else {
+        guard (try? await evaluateReadiness(in: view)) == true else {
             failures += 1
             teardown()
             return nil
@@ -537,6 +543,51 @@ final class MermaidRenderer {
 
         loaded = true
         return view
+    }
+
+    /// Probe the host page behind the same hard deadline as rendering. The
+    /// async WebKit convenience API can wait forever when the content process
+    /// wedges after navigation; a late callback must not retain ``setup`` and
+    /// permanently block every later diagram.
+    private func evaluateReadiness(in webView: WKWebView) async throws -> Bool {
+        let gate = MermaidEvaluationGate()
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Bool, Error>) in
+            let completion: @MainActor @Sendable (Result<Any, Error>) -> Void = { result in
+                guard gate.claim() else { return }
+                self.abortActiveOperation = nil
+                switch result {
+                case .success(let value):
+                    continuation.resume(returning: value as? Bool == true)
+                case .failure:
+                    continuation.resume(throwing: MermaidRenderError.evaluationFailed)
+                }
+            }
+
+            abortActiveOperation = {
+                guard gate.claim() else { return }
+                continuation.resume(throwing: MermaidRenderError.contentProcessTerminated)
+            }
+
+            if let readinessEvaluator {
+                readinessEvaluator(webView, completion)
+            } else {
+                webView.evaluateJavaScript("window.__rapidReady === true") { value, error in
+                    if let error {
+                        completion(.failure(error))
+                    } else {
+                        completion(.success(value ?? NSNull()))
+                    }
+                }
+            }
+
+            Task { [renderTimeout] in
+                try? await Task.sleep(for: renderTimeout)
+                guard gate.claim() else { return }
+                self.abortActiveOperation = nil
+                continuation.resume(throwing: MermaidRenderError.timedOut)
+            }
+        }
     }
 
     private var navigationPolicy: MermaidNavigationPolicy?
