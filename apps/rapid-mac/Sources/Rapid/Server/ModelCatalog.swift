@@ -810,6 +810,11 @@ enum ModelCatalog {
         if let atomic = parseAtomicCatalogJSON(root) {
             return atomic
         }
+        // An advertised-but-invalid atomic envelope is not an old sidecar.
+        // Keep its legacy rows available for basic catalog compatibility, but
+        // never let that downgrade acquire the trust granted to a genuinely
+        // pre-atomic built-in catalog.
+        let isPreAtomicCatalog = root["atomic"] == nil
         guard let textRows = root["text"] as? [[String: Any]] else { return nil }
         var entries: [(String, String?)] = []
         var profiles: [String: CatalogProfileCapability] = [:]
@@ -823,7 +828,7 @@ enum ModelCatalog {
                     isBuiltin: isBuiltin,
                     isTextOnly: isTextOnly,
                     recommendationPolicyDigests: [],
-                    allowsLegacyRecommendationPolicy: isBuiltin
+                    allowsLegacyRecommendationPolicy: isPreAtomicCatalog && isBuiltin
                 )
             }
             if let model = sanitizedHuggingFaceRepo(row["mtp_draft_model"] as? String),

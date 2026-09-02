@@ -146,6 +146,20 @@ struct AtomicModelCatalogTests {
 
         let atomic = try #require(ModelCatalog.parseAvailableJSON(Self.payload))
         #expect(atomic.profiles["chat"]?.allowsLegacyRecommendationPolicy == false)
+
+        let corruptAtomic = Self.mutated({ root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            snapshot["catalog_digest"] = "sha256:" + String(repeating: "0", count: 64)
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+            root["text"] = [[
+                "alias": "chat", "hf_path": "org/chat",
+                "is_builtin": true, "is_text_only": true,
+            ]]
+        }, resign: false)
+        let downgraded = try #require(ModelCatalog.parseAvailableJSON(corruptAtomic))
+        #expect(downgraded.profiles["chat"]?.allowsLegacyRecommendationPolicy == false)
     }
 
     @Test("atomic catalog preserves authenticated recommendation policy addresses")
