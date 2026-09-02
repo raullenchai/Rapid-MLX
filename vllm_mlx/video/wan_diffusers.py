@@ -96,38 +96,75 @@ _TOKENIZER_FILES = (
 )
 
 
+def _is_regular_nonempty_file(path: Path) -> bool:
+    """True only for an existing regular file holding at least one byte."""
+    return path.is_file() and path.stat().st_size > 0
+
+
 def is_diffusers_wan21_layout(root: Path) -> bool:
     """Decide routing for the pinned Desktop layout, rejecting malformed trees.
 
     Routing must fail closed: a missing or empty tokenizer artifact, a
     malformed or wrong-cardinality safetensors index, an unsafe shard name, or
-    a missing referenced shard all mean this is not the audited layout. The
-    tokenizer artifacts mirror the download gate's pin for
-    Wan-AI/Wan2.1-T2V-1.3B-Diffusers.
+    a missing, irregular, or zero-byte weight file (the VAE or any referenced
+    shard) all mean this is not the audited layout. The tokenizer artifacts
+    mirror the download gate's pin for Wan-AI/Wan2.1-T2V-1.3B-Diffusers.
     """
     try:
-        if not (root / _VAE_FILE).is_file():
+        if not _is_regular_nonempty_file(root / _VAE_FILE):
             return False
         for relative in _TOKENIZER_FILES:
-            artifact = root / relative
-            if not artifact.is_file() or artifact.stat().st_size == 0:
+            if not _is_regular_nonempty_file(root / relative):
                 return False
         for relative, expected in (
             (_TRANSFORMER_INDEX, _EXPECTED_TRANSFORMER_KEYS),
             (_T5_INDEX, _EXPECTED_T5_KEYS),
         ):
             shards = _index_shards(root, relative, expected)
-            if shards is None or not all(shard.is_file() for shard in shards):
+            if shards is None or not all(
+                _is_regular_nonempty_file(shard) for shard in shards
+            ):
                 return False
-        for relative, expected in _WAN21_COMPONENT_CONTRACTS.items():
+        for relative, expected_contract in _WAN21_COMPONENT_CONTRACTS.items():
             payload = json.loads((root / relative).read_text())
             if not isinstance(payload, dict) or any(
-                payload.get(key) != value for key, value in expected.items()
+                payload.get(key) != value for key, value in expected_contract.items()
             ):
                 return False
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     return True
+
+
+# Wan-specific pipeline/component classes pinned by the download gate; the
+# generic UMT5 text encoder is deliberately excluded so a plain T5 checkpoint
+# is never mistaken for the Wan 2.1 layout.
+_WAN21_IDENTITY_MARKERS: tuple[tuple[str, object], ...] = tuple(
+    (relative, contract["_class_name"])
+    for relative, contract in _WAN21_COMPONENT_CONTRACTS.items()
+    if "_class_name" in contract
+)
+
+
+def _identifies_as_diffusers_wan21(root: Path) -> bool:
+    """Recognize a tree that claims to be the pinned Wan 2.1 Diffusers layout.
+
+    Deliberately independent of ``is_diffusers_wan21_layout``: a damaged copy
+    of the audited checkpoint must be recognized so generation raises instead
+    of reaching the incompatible preconverted-generator path. Identity requires
+    a positively readable pinned component class; a marker that is missing,
+    malformed, or lost to a concurrent delete simply does not match, so
+    arbitrary directories and true preconverted checkpoints keep their
+    existing routing.
+    """
+    for relative, class_name in _WAN21_IDENTITY_MARKERS:
+        try:
+            payload = json.loads((root / relative).read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("_class_name") == class_name:
+            return True
+    return False
 
 
 def desktop_wan21_config() -> dict[str, object]:
@@ -470,7 +507,9 @@ def _scoped_generate_function(root: Path, generator) -> Callable:
         imported = original_import(name, globals, locals, fromlist, level)
         if name == "transformers" and "AutoTokenizer" in fromlist:
             proxy = ModuleType("transformers")
-            proxy.AutoTokenizer = LocalTokenizer
+            # Module attributes live in __dict__; mypy's lvalue lookup does
+            # not consult ModuleType.__getattr__, so write there directly.
+            proxy.__dict__["AutoTokenizer"] = LocalTokenizer
             return proxy
         return imported
 
@@ -518,5 +557,7 @@ def generate_with_runtime(root: Path, generator, generation_kwargs: dict) -> Non
             # The temporary view must not leak into the caller's mapping:
             # replace model_dir on a copy only.
             scoped_generate(**{**generation_kwargs, "model_dir": str(model_view)})
-    else:
-        generator.generate_video(**generation_kwargs)
+        return
+    if _identifies_as_diffusers_wan21(root):
+        raise WanBackendError("the Wan 2.1 checkpoint layout is incomplete")
+    generator.generate_video(**generation_kwargs)

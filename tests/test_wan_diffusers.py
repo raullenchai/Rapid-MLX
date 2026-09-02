@@ -221,6 +221,27 @@ def test_official_layout_rejects_missing_referenced_shard(tmp_path: Path) -> Non
     assert not is_diffusers_wan21_layout(root)
 
 
+def test_official_layout_rejects_zero_byte_vae(tmp_path: Path) -> None:
+    root = _layout(tmp_path)
+    (root / "vae/diffusion_pytorch_model.safetensors").write_bytes(b"")
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+@pytest.mark.parametrize(
+    "shard",
+    [f"transformer/{_TRANSFORMER_SHARD}", f"text_encoder/{_T5_SHARD}"],
+    ids=["transformer", "t5"],
+)
+def test_official_layout_rejects_zero_byte_referenced_shard(
+    tmp_path: Path, shard: str
+) -> None:
+    root = _layout(tmp_path)
+    (root / shard).write_bytes(b"")
+
+    assert not is_diffusers_wan21_layout(root)
+
+
 @pytest.mark.parametrize(
     ("source", "target"),
     [
@@ -652,6 +673,65 @@ def test_generate_runtime_preserves_preconverted_fallback(tmp_path: Path) -> Non
     generate_with_runtime(tmp_path, generator, {"model_dir": "converted"})
 
     assert calls == [{"model_dir": "converted"}]
+
+
+def test_generate_runtime_preserves_preconverted_wan22_fallback(
+    tmp_path: Path,
+) -> None:
+    # A true preconverted checkpoint (flat converted config plus root-level
+    # weights, no Diffusers component tree) must keep the legacy path.
+    calls = []
+    generator = SimpleNamespace(generate_video=lambda **kwargs: calls.append(kwargs))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "ti2v", "model_version": "2.2"})
+    )
+    (tmp_path / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+
+    generate_with_runtime(tmp_path, generator, {"model_dir": "converted"})
+
+    assert calls == [{"model_dir": "converted"}]
+
+
+def test_generate_runtime_does_not_classify_foreign_diffusers_layout(
+    tmp_path: Path,
+) -> None:
+    calls = []
+    generator = SimpleNamespace(generate_video=lambda **kwargs: calls.append(kwargs))
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionPipeline"})
+    )
+
+    generate_with_runtime(tmp_path, generator, {"model_dir": "converted"})
+
+    assert calls == [{"model_dir": "converted"}]
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["missing-shard", "zero-byte-vae", "no-model-index", "malformed-model-index"],
+)
+def test_generate_runtime_rejects_incomplete_identified_wan21(
+    tmp_path: Path, defect: str
+) -> None:
+    calls = []
+    generator = SimpleNamespace(generate_video=lambda **kwargs: calls.append(kwargs))
+    root = _layout(tmp_path)
+    if defect == "missing-shard":
+        (root / "transformer" / _TRANSFORMER_SHARD).unlink()
+    elif defect == "zero-byte-vae":
+        (root / "vae/diffusion_pytorch_model.safetensors").write_bytes(b"")
+    elif defect == "no-model-index":
+        # Identity must survive losing one marker: the pinned transformer and
+        # VAE component classes still recognize the tree.
+        (root / "model_index.json").unlink()
+        (root / "transformer" / _TRANSFORMER_SHARD).unlink()
+    else:
+        (root / "model_index.json").write_text("{")
+
+    with pytest.raises(WanBackendError, match="layout is incomplete"):
+        generate_with_runtime(root, generator, {"model_dir": "converted"})
+
+    assert calls == []
 
 
 def test_generate_runtime_routes_all_pinned_loader_seams(
