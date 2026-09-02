@@ -163,13 +163,38 @@ struct CommunityBenchmarkModelTests {
             ]
         )
         #expect(
-            CommunityBenchmarkCommand.benchmarkShareArguments(
+            CommunityBenchmarkCommand.benchmarkSharePreviewArguments(
                 runID: "00000000-0000-4000-8000-000000000001"
             ) == [
                 "benchmark", "share", "00000000-0000-4000-8000-000000000001",
-                "--yes", "--json",
+                "--preview", "--json",
             ]
         )
+        #expect(
+            CommunityBenchmarkCommand.benchmarkShareArguments(
+                runID: "00000000-0000-4000-8000-000000000001",
+                installID: "012345abcdef"
+            ) == [
+                "benchmark", "share", "00000000-0000-4000-8000-000000000001",
+                "--yes", "--install-id", "012345abcdef", "--json",
+            ]
+        )
+    }
+
+    @Test("Desktop consent preview displays the exact upload payload")
+    func exactSharePreview() throws {
+        let data = Data(
+            #"{"schema_version":1,"target":"https://rapidmlx.com/api/benchmarks/atomic","install_id":"012345abcdef","payload":{"run_id":"00000000-0000-4000-8000-000000000001","install_id":"012345abcdef","measurements":[{"round_index":1,"total_duration_ms":123.5}],"execution":{"task":{"max_tokens":128}}}}"#.utf8
+        )
+        let preview = try CommunityBenchmarkCommand.decodeSharePreview(
+            data, runID: "00000000-0000-4000-8000-000000000001"
+        )
+
+        #expect(preview.installID == "012345abcdef")
+        #expect(preview.payloadJSON.contains("\"measurements\""))
+        #expect(preview.payloadJSON.contains("\"total_duration_ms\" : 123.5"))
+        #expect(preview.payloadJSON.contains("\"max_tokens\" : 128"))
+        #expect(preview.payloadJSON.contains("\"install_id\" : \"012345abcdef\""))
     }
 
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")

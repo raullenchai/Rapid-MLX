@@ -40,6 +40,7 @@ from vllm_mlx.community_bench.benchmark_contracts import (
 from vllm_mlx.community_bench.hardware import Hardware, Software
 from vllm_mlx.community_bench.run_builder import build_run, execution_config, utc_now
 from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
+from vllm_mlx.community_bench.upload import SubmitError
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
@@ -223,14 +224,16 @@ def test_results_cli_forwards_latest_limit(
     }
 
 
-def _receipt(run_id: str, *, already: bool = False) -> dict:
+def _receipt(
+    run_id: str, *, already: bool = False, run_digest: str | None = None
+) -> dict:
     return {
         "schema_version": 1,
         "submission_id": run_id,
         "status": "accepted",
         "already_exists": already,
         "accepted_at": "2026-09-01T20:00:00Z",
-        "run_digest": "sha256:" + "a" * 64,
+        "run_digest": run_digest or "sha256:" + "a" * 64,
         "contributor": {"name": "rapid-silver-otter", "tag": "abc"},
     }
 
@@ -269,7 +272,10 @@ def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
     def post(payload, **kwargs):
         assert kwargs["url"] == "https://rapidmlx.com/api/benchmarks/atomic"
         sent.update(payload)
-        return {"ok": True, "receipt": _receipt(run["run_id"])}
+        return {
+            "ok": True,
+            "receipt": _receipt(run["run_id"], run_digest=rcj_digest(payload)),
+        }
 
     monkeypatch.setattr(atomic_upload, "post_submission", post)
     monkeypatch.setattr(
@@ -280,11 +286,69 @@ def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
 
     receipt = atomic_upload.upload_run(run, assume_yes=True)
 
-    assert receipt == _receipt(run["run_id"])
+    assert receipt == _receipt(run["run_id"], run_digest=rcj_digest(sent))
     assert len(sent["install_id"]) == 12
     assert "install_id" not in run
     assert sent
     BenchmarkRunValidator().validate(sent)
+
+
+def test_atomic_preview_is_the_exact_later_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+    assert not (tmp_path / "bench-install-id").exists()
+
+    def post(payload, **kwargs):
+        assert payload == preview["payload"]
+        assert kwargs["url"] == preview["target"]
+        return {"receipt": _receipt(run["run_id"], run_digest=rcj_digest(payload))}
+
+    monkeypatch.setattr(atomic_upload, "post_submission", post)
+    atomic_upload.upload_run(
+        run,
+        assume_yes=True,
+        approved_install_id=preview["install_id"],
+    )
+
+
+def test_atomic_upload_rejects_receipt_for_different_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda payload, **kwargs: {"receipt": _receipt(run["run_id"])},
+    )
+
+    with pytest.raises(SubmitError, match="uploaded payload"):
+        atomic_upload.upload_run(run, assume_yes=True)
+
+
+def test_atomic_upload_aborts_if_approved_install_id_loses_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = []
+    monkeypatch.setattr(atomic_upload, "commit_install_id", lambda candidate: "b" * 12)
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="install id changed"):
+        atomic_upload.upload_run(
+            run,
+            assume_yes=True,
+            approved_install_id="a" * 12,
+        )
+    assert sent == []
 
 
 def test_local_archive_receipt_marks_only_an_existing_run_shared(

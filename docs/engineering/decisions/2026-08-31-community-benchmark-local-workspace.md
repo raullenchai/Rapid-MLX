@@ -30,8 +30,11 @@ records rather than parse legacy submission JSON.
 - A run is private by default. The client writes a schema-valid JSON record to
   `~/.rapid-mlx/benchmarks/runs/` with directory mode `0700` and file mode
   `0600`. Running a benchmark never uploads it. A separate share action shows
-  the complete wire payload and destination, requires explicit consent, then
-  adds only a random resettable install ID for abuse control.
+  the complete wire payload and destination, including the candidate random
+  resettable install ID used for abuse control, and requires explicit consent.
+  Previewing writes nothing. The subsequent upload is pinned to that candidate
+  and aborts if another process established a different install ID meanwhile;
+  it never silently sends data different from the approved JSON.
 - Desktop stops its active inference server before benchmarking so two large
   model processes cannot compete for unified memory. An owner-scoped lifecycle
   reservation remains active until cancellation has terminated and reaped the
@@ -115,7 +118,9 @@ Wan alias, matching the CLI planner rather than advertising LTX/CogVideoX.
 The internal-beta share action revalidates a run, POSTs it to the separate
 atomic ingestion endpoint, and saves a schema-valid acceptance receipt under
 `~/.rapid-mlx/benchmarks/receipts/`. Retries are idempotent by run ID and exact
-run digest. Atomic rows remain outside the legacy public aggregation path.
+run digest. The client verifies that the returned receipt digest identifies the
+exact uploaded payload before marking a result shared. Atomic rows remain
+outside the legacy public aggregation path.
 
 Model-identity resolution, public aggregation, campaign prompts, rewards, and
 leaderboard growth mechanics remain later work. The ingestion boundary accepts

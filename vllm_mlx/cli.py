@@ -11789,6 +11789,15 @@ Examples:
         action="store_true",
         help="Confirm upload (for callers that already presented a consent dialog)",
     )
+    community_share.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print the exact upload payload without writing or sending it",
+    )
+    community_share.add_argument(
+        "--install-id",
+        help=argparse.SUPPRESS,
+    )
     community_share.add_argument("--json", action="store_true")
 
     # Models command. ``ls`` is registered as a top-level alias that
