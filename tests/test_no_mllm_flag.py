@@ -3130,3 +3130,114 @@ async def test_start_mllm_does_not_degrade_on_unrelated_load_error(monkeypatch):
         "the mllm-step ThreadPoolExecutor must be shut down and cleared even "
         "when the load failure is not a degrade signal, or its worker thread leaks"
     )
+
+
+# ---------------------------------------------------------------------------
+# #2955 — lane-capability admission at the BatchedEngine text/MLLM split.
+# ---------------------------------------------------------------------------
+
+
+class TestPagedCacheLaneAdmission:
+    """``--use-paged-cache`` is a text-Scheduler capability. The MLLM lane
+    must fail closed at the ``BatchedEngine`` split — before any model
+    weights load or a scheduler is constructed — instead of printing Ready
+    and serving with the flag silently ineffective (the #2955 failure
+    mode, one lane over). The text lane keeps its structural layout gate
+    at Scheduler construction."""
+
+    def _paged_scheduler_config(self):
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        return SchedulerConfig(
+            max_num_seqs=4,
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=True,
+            paged_cache_block_size=16,
+            max_cache_blocks=32,
+        )
+
+    def test_mllm_lane_rejects_paged_cache_before_model_load(self, monkeypatch):
+        import asyncio
+
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+
+        engine = BatchedEngine(
+            "unit-test/mllm-model",
+            force_mllm=True,
+            scheduler_config=self._paged_scheduler_config(),
+        )
+        entered = []
+
+        async def _spy_start_mllm():  # pragma: no cover - must never run
+            entered.append("mllm")
+
+        monkeypatch.setattr(engine, "_start_mllm", _spy_start_mllm)
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            asyncio.run(engine.start())
+
+        # The admission fired at the lane split: _start_mllm was never
+        # entered, so no loader executor, no MLLMScheduler, nothing loaded.
+        assert entered == []
+        assert engine._mllm_scheduler is None
+        assert engine._model_load_executor is None
+        assert engine._loaded is False
+        # Actionable: names the flag and both ways out, no model families.
+        message = str(excinfo.value)
+        assert "--use-paged-cache" in message
+        assert "Remove --use-paged-cache" in message
+        assert "--no-mllm" in message
+
+    def test_text_lane_still_reaches_structural_gate(self, monkeypatch):
+        """force_text + paged on a rotating-layout model must PASS the lane
+        admission, run the real text startup path, and abort at the
+        Scheduler's structural gate during engine construction."""
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+        import vllm_mlx.gdn_in_proj_fusion as gdn_fusion
+        import vllm_mlx.moe_fusion as moe_fusion
+        import vllm_mlx.runtime.cache as runtime_cache
+        import vllm_mlx.utils.tokenizer as tok_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), RotatingKVCache(max_size=512)]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        monkeypatch.setattr(
+            tok_mod,
+            "load_model_with_fallback",
+            lambda name, return_source=True, **kw: (model, tokenizer, "unit-test"),
+        )
+        # Neutralize the weight-touching side steps of the real _start_llm
+        # path; they are irrelevant to the gate under test and would trip
+        # over the mock model.
+        monkeypatch.setattr(moe_fusion, "fuse_gate_up", lambda m: None)
+        monkeypatch.setattr(gdn_fusion, "fuse_gdn_in_proj", lambda m: None)
+        monkeypatch.setattr(
+            runtime_cache, "pin_prefix_cache_identity", lambda *a, **kw: None
+        )
+
+        engine = BatchedEngine(
+            "unit-test/text-model",
+            force_text=True,
+            scheduler_config=self._paged_scheduler_config(),
+        )
+        monkeypatch.setattr(engine, "_install_resolved_metal_budget", lambda: None)
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            asyncio.run(engine.start())
+
+        assert "RotatingKVCache" in str(excinfo.value)
+        assert engine._loaded is False
+        # The aborted startup leaves the mlx-step worker behind; reap it so
+        # the test does not leak a thread.
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=False)

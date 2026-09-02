@@ -76,6 +76,29 @@ def compute_block_hash(
     return BlockHash(hasher.digest())
 
 
+class PrefixHasher:
+    """Incremental cumulative-prefix hasher for block identity.
+
+    After feeding tokens ``t0..tn`` via ``update``, ``hexdigest()`` equals
+    ``PagedCacheManager.compute_block_hash([t0, ..., tn])``. The prefix-cache
+    paths use this so a block's identity covers ALL tokens that precede it,
+    not just its own chunk: KV state for a block depends on the entire
+    prefix, so two sequences that share a later chunk but diverge earlier
+    must never deduplicate onto (or fetch) the same block.
+    """
+
+    def __init__(self, tokens: list[int] | None = None):
+        self._hasher = hashlib.sha256()
+        if tokens:
+            self.update(tokens)
+
+    def update(self, tokens: list[int]) -> None:
+        self._hasher.update(b"".join(t.to_bytes(4, "big") for t in tokens))
+
+    def hexdigest(self) -> str:
+        return self._hasher.hexdigest()[:16]
+
+
 # =============================================================================
 # KVCacheBlock - Following vLLM's design
 # =============================================================================
@@ -698,6 +721,18 @@ class PagedCacheManager:
             return False
 
         if block.block_hash is None:
+            # Legacy-only registration (``register_block_hash`` sets
+            # ``hash_value`` but leaves the chain ``block_hash`` as None)
+            # must be cleaned on reallocation too: a surviving
+            # ``hash_to_block`` entry would resurrect this slot as a false
+            # hit for the OLD tokens after it is refilled with new KV.
+            if block.hash_value is not None:
+                if self.hash_to_block.get(block.hash_value) == block.block_id:
+                    del self.hash_to_block[block.hash_value]
+                block.hash_value = None
+                block.cache_data = None
+                block.cache_class_name = None
+                return True
             return False
 
         evicted = self.cached_block_hash_to_block.pop(block.block_hash, block.block_id)
@@ -933,28 +968,65 @@ class PagedCacheManager:
         token_bytes = b"".join(t.to_bytes(4, "big") for t in tokens)
         return hashlib.sha256(token_bytes).hexdigest()[:16]
 
-    def find_cached_block(self, tokens: list[int]) -> CacheBlock | None:
+    def find_cached_block(
+        self, tokens: list[int], *, record_stats: bool = True
+    ) -> CacheBlock | None:
         """
-        Find a cached block matching the given tokens (legacy method).
+        Find a cached block whose identity hash matches ``tokens``.
+
+        ``tokens`` must be the FULL token prefix ending at the block — the
+        block's own chunk preceded by every earlier token of the sequence.
+        Block KV state depends on its entire history, so the identity/dedup
+        key must cover the whole prefix; matching a chunk alone would let
+        sequences with divergent histories share KV silently.
+
+        ``record_stats=False`` makes this a pure lookup: transactional
+        callers (fetch/store in ``BlockAwarePrefixCache``) probe candidates
+        here and commit hit/miss counters only once the outcome is known,
+        so a candidate that later fails reconstruction is never exposed as
+        a successful cache hit.
+        """
+        return self.find_cached_block_by_hash(
+            self.compute_block_hash(tokens), record_stats=record_stats
+        )
+
+    def find_cached_block_by_hash(
+        self, hash_value: str, *, record_stats: bool = True
+    ) -> CacheBlock | None:
+        """Find a cached block by a precomputed identity hash.
+
+        Verifies the block still OWNS that identity: a block freed and
+        reallocated for other tokens re-registers under a different hash,
+        so a mapping whose target no longer carries ``hash_value`` is stale
+        — it is pruned and reported as a miss, never served as a false hit.
         """
         with self._lock:
-            hash_value = self.compute_block_hash(tokens)
-
-            if hash_value in self.hash_to_block:
-                block_id = self.hash_to_block[hash_value]
-                if block_id in self.allocated_blocks:
-                    block = self.allocated_blocks[block_id]
+            block_id = self.hash_to_block.get(hash_value)
+            if block_id is not None and block_id in self.allocated_blocks:
+                block = self.allocated_blocks[block_id]
+                if block.hash_value == hash_value:
                     block.touch()
-                    self.stats.cache_hits += 1
+                    if record_stats:
+                        self.stats.cache_hits += 1
                     return block
+                # Stale mapping left behind by a reallocated block — prune.
+                del self.hash_to_block[hash_value]
 
-            self.stats.cache_misses += 1
+            if record_stats:
+                self.stats.cache_misses += 1
             return None
 
     def register_block_hash(self, block: CacheBlock, tokens: list[int]) -> None:
-        """Register a block's hash for deduplication (legacy method)."""
+        """Register a block's identity hash for deduplication.
+
+        ``tokens`` must be the full token prefix ending at this block (see
+        ``find_cached_block``).
+        """
+        self.register_block_hash_value(block, self.compute_block_hash(tokens))
+
+    def register_block_hash_value(self, block: CacheBlock, hash_value: str) -> None:
+        """Register a block under a precomputed identity hash."""
         with self._lock:
-            hash_value = self.compute_block_hash(tokens)
             block.hash_value = hash_value
             self.hash_to_block[hash_value] = block.block_id
 
@@ -963,8 +1035,15 @@ class PagedCacheManager:
     # =========================================================================
 
     def create_block_table(self, request_id: str) -> BlockTable:
-        """Create a new block table for a request."""
+        """Create a new block table for a request.
+
+        Any existing table under ``request_id`` (a reused id) is released
+        first — silently overwriting it would leak the block references the
+        old table holds.
+        """
         with self._lock:
+            if request_id in self.request_tables:
+                self.delete_block_table(request_id)
             table = BlockTable(request_id=request_id)
             self.request_tables[request_id] = table
             return table
@@ -1009,25 +1088,43 @@ class PagedCacheManager:
     def find_shared_prefix(
         self,
         tokens: list[int],
+        *,
+        record_stats: bool = True,
     ) -> tuple[list[int], list[int]]:
         """
         Find shared prefix blocks for a token sequence.
+
+        Blocks match by cumulative identity: block ``i`` is shared only when
+        a cached block is registered under the hash of ``tokens`` through
+        the END of block ``i`` — its chunk plus every preceding token. A
+        block whose chunk matches but whose history diverges is a miss: its
+        KV was computed under different context and must never be reused.
+
+        ``record_stats=False`` keeps the lookup counter-neutral for
+        transactional callers (see ``find_cached_block``).
         """
         with self._lock:
             shared_blocks = []
-            remaining_tokens = tokens.copy()
+            consumed = 0
+            hasher = PrefixHasher()
 
-            while len(remaining_tokens) >= self.block_size:
-                chunk = remaining_tokens[: self.block_size]
-                cached_block = self.find_cached_block(chunk)
+            while len(tokens) - consumed >= self.block_size:
+                hasher.update(tokens[consumed : consumed + self.block_size])
+                cached_block = self.find_cached_block_by_hash(
+                    hasher.hexdigest(), record_stats=record_stats
+                )
 
-                if cached_block:
+                # Shared blocks must span exactly one block_size chunk —
+                # the cumulative walk advances in block_size steps, so a
+                # block claiming a different span would desynchronize the
+                # token accounting of every later block.
+                if cached_block and cached_block.token_count == self.block_size:
                     shared_blocks.append(cached_block.block_id)
-                    remaining_tokens = remaining_tokens[self.block_size :]
+                    consumed += self.block_size
                 else:
                     break
 
-            return shared_blocks, remaining_tokens
+            return shared_blocks, tokens[consumed:]
 
     def fork_block_table(
         self,
@@ -1036,8 +1133,22 @@ class PagedCacheManager:
     ) -> BlockTable:
         """
         Fork a block table for a new request (COW).
+
+        Forking a table onto the id it is already registered under
+        (self-fork) is a no-op returning the table itself: copying would
+        bump every block's refcount and then overwrite the only owning
+        registration, leaking one reference per block forever.
         """
         with self._lock:
+            existing = self.request_tables.get(new_request_id)
+            if existing is source_table:
+                # Self-fork: the id already owns exactly this table.
+                return source_table
+            if existing is not None:
+                # A reused target id must not silently leak its old
+                # table's block references.
+                self.delete_block_table(new_request_id)
+
             new_table = source_table.copy(new_request_id)
 
             for block_id in new_table.block_ids:

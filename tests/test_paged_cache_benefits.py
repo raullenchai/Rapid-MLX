@@ -57,6 +57,28 @@ def print_table(
     print(f"+{separator}+")
 
 
+def _kv(num_tokens, base=0.0):
+    """Real extracted KVCache layer states — ``store_cache`` refuses
+    anything the block serializer cannot losslessly reconstruct (#2955)."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    cache = KVCache()
+    keys = (
+        mx.arange(num_tokens * 2 * 4, dtype=mx.float32).reshape(1, 2, num_tokens, 4)
+        + base
+    )
+    cache.update_and_fetch(keys, keys + 0.5)
+    return [
+        {
+            "state": cache.state,
+            "meta_state": cache.meta_state,
+            "class_name": "KVCache",
+            "class_ref": KVCache,
+        }
+    ]
+
+
 def test_benefit_1_shared_system_prompts():
     """
     Benefit 1: Multiple users sharing the same system prompt.
@@ -92,7 +114,7 @@ def test_benefit_1_shared_system_prompts():
 
     # Simulate storing cache for first request (establishes the prefix)
     first_request_tokens = system_prompt_tokens + user_queries[0]
-    cache.store_cache("req-0", first_request_tokens, ["kv_cache_data"])
+    cache.store_cache("req-0", first_request_tokens, _kv(len(first_request_tokens)))
 
     initial_blocks = paged_manager.stats.allocated_blocks
     print(f"After 1st request: {initial_blocks} blocks allocated")
@@ -111,7 +133,7 @@ def test_benefit_1_shared_system_prompts():
         total_shared_tokens += shared_tokens
 
         # Store the new request
-        cache.store_cache(f"req-{i}", full_tokens, [f"kv_cache_data_{i}"])
+        cache.store_cache(f"req-{i}", full_tokens, _kv(len(full_tokens), base=float(i)))
 
         results.append(
             [
@@ -201,15 +223,15 @@ def test_benefit_2_memory_efficiency():
     for i in range(20):
         # Each request: 128 shared + 128 unique = 256 total
         tokens = common_prefix_1 + list(range(5000 + i * 200, 5128 + i * 200))
-        cache.store_cache(f"group1-req-{i}", tokens, [f"cache_{i}"])
+        cache.store_cache(f"group1-req-{i}", tokens, _kv(len(tokens), base=float(i)))
 
     for i in range(15):
         tokens = common_prefix_2 + list(range(10000 + i * 200, 10128 + i * 200))
-        cache.store_cache(f"group2-req-{i}", tokens, [f"cache_{i}"])
+        cache.store_cache(f"group2-req-{i}", tokens, _kv(len(tokens), base=100.0 + i))
 
     for i in range(15):
         tokens = common_prefix_3 + list(range(15000 + i * 200, 15128 + i * 200))
-        cache.store_cache(f"group3-req-{i}", tokens, [f"cache_{i}"])
+        cache.store_cache(f"group3-req-{i}", tokens, _kv(len(tokens), base=200.0 + i))
 
     paged_total = paged_manager.stats.allocated_blocks
     shared_blocks = paged_manager.stats.shared_blocks
@@ -291,7 +313,7 @@ def test_benefit_3_prefix_sharing():
 
     # First conversation: Python discussion
     python_intro = root_tokens + list(range(100, 140))  # "Tell me about Python"
-    cache.store_cache("conv-python", python_intro, ["python_cache"])
+    cache.store_cache("conv-python", python_intro, _kv(len(python_intro)))
 
     # Follow-ups share the python_intro prefix
     python_followups = [
@@ -309,7 +331,9 @@ def test_benefit_3_prefix_sharing():
         print(
             f"    Follow-up {i + 1}: {len(tokens)} tokens, {shared} shared ({shared * 100 // len(tokens)}%)"
         )
-        cache.store_cache(f"python-followup-{i}", tokens, [f"followup_{i}"])
+        cache.store_cache(
+            f"python-followup-{i}", tokens, _kv(len(tokens), base=10.0 + i)
+        )
 
     # Second conversation: Rust discussion
     rust_intro = root_tokens + list(range(500, 540))  # "Tell me about Rust"
@@ -321,7 +345,7 @@ def test_benefit_3_prefix_sharing():
     print("\nRust conversation:")
     print(f"  Shares root with Python: {root_shared} tokens (system prompt)")
 
-    cache.store_cache("conv-rust", rust_intro, ["rust_cache"])
+    cache.store_cache("conv-rust", rust_intro, _kv(len(rust_intro), base=50.0))
 
     rust_followups = [
         rust_intro + list(range(600, 650)),  # "Ownership model?"
@@ -334,7 +358,7 @@ def test_benefit_3_prefix_sharing():
         print(
             f"    Follow-up {i + 1}: {len(tokens)} tokens, {shared} shared ({shared * 100 // len(tokens)}%)"
         )
-        cache.store_cache(f"rust-followup-{i}", tokens, [f"rust_followup_{i}"])
+        cache.store_cache(f"rust-followup-{i}", tokens, _kv(len(tokens), base=60.0 + i))
 
     # Summary
     stats = cache.get_stats()
@@ -393,7 +417,7 @@ def test_copy_on_write_demo():
 
     # Original conversation
     original_tokens = list(range(128))  # 2 blocks
-    cache.store_cache("original", original_tokens, ["original_kv_cache"])
+    cache.store_cache("original", original_tokens, _kv(len(original_tokens)))
 
     initial_blocks = paged_manager.stats.allocated_blocks
     print(f"Original conversation: 128 tokens, {initial_blocks} blocks")
@@ -408,8 +432,9 @@ def test_copy_on_write_demo():
     print(f"  Blocks allocated: {blocks_after_fork} (same as before)")
     print(f"  Shared blocks: {shared_after_fork} (both point to same data)")
 
-    # Get cache for generation - triggers COW if shared
-    cache_data, was_copied = cache.get_cache_for_generation("forked")
+    # Prepare the forked table for generation - triggers COW if shared
+    forked_entry = cache._request_tables["forked"]
+    _, was_copied = paged_manager.get_blocks_for_generation(forked_entry.block_table)
 
     blocks_after_cow = paged_manager.stats.allocated_blocks
     cow_copies = paged_manager.stats.cow_copies

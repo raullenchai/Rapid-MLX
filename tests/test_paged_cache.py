@@ -14,6 +14,38 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _kv_layer_states(num_tokens, layers=1, heads=2, head_dim=4, base=0.0):
+    """Build extracted layer-state dicts backed by real mlx-lm KVCache state.
+
+    ``store_cache`` only accepts the extracted-tensor-state layout (list of
+    dicts with 'state' + 'class_name' where every layer is a plain 4D
+    KVCache); tests that exercise the supported path build inputs here.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    states = []
+    for layer in range(layers):
+        cache = KVCache()
+        n = num_tokens * heads * head_dim
+        keys = (
+            mx.arange(n, dtype=mx.float32).reshape(1, heads, num_tokens, head_dim)
+            + base
+            + layer
+        )
+        values = keys + 0.5
+        cache.update_and_fetch(keys, values)
+        states.append(
+            {
+                "state": cache.state,
+                "meta_state": cache.meta_state,
+                "class_name": "KVCache",
+                "class_ref": KVCache,
+            }
+        )
+    return states
+
+
 class TestCacheBlock:
     """Test CacheBlock dataclass."""
 
@@ -605,17 +637,21 @@ class TestBlockAwarePrefixCache:
 
         # Store cache for first request
         tokens1 = list(range(128))  # 2 blocks worth
-        cache_data1 = ["cache_data_1"]
+        cache_data1 = _kv_layer_states(128)
         block_table = cache.store_cache("req-1", tokens1, cache_data1)
 
         assert block_table is not None
         assert block_table.num_tokens == 128
         assert len(block_table.block_ids) == 2
+        # Every stored block must carry reconstructable tensor data.
+        for bid in block_table.block_ids:
+            assert paged_manager.allocated_blocks[bid].cache_data is not None
 
         # Fetch cache for second request with same prefix
         block_table2, remaining = cache.fetch_cache("req-2", tokens1 + [999, 1000])
 
         # Should hit the prefix
+        assert block_table2 is not None
         assert remaining == [999, 1000]
 
     def test_release_cache(self):
@@ -627,7 +663,7 @@ class TestBlockAwarePrefixCache:
         cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
 
         tokens = list(range(64))
-        cache.store_cache("req-1", tokens, ["data"])
+        cache.store_cache("req-1", tokens, _kv_layer_states(64))
 
         assert len(cache) == 1
 
@@ -644,7 +680,7 @@ class TestBlockAwarePrefixCache:
         cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
 
         tokens = list(range(128))
-        cache.store_cache("req-1", tokens, ["shared_data"])
+        cache.store_cache("req-1", tokens, _kv_layer_states(128))
 
         # Fork to new request
         forked_table = cache.fork_cache("req-1", "req-2")
@@ -656,40 +692,11 @@ class TestBlockAwarePrefixCache:
         stats = cache.get_stats()
         assert stats["shared_blocks"] > 0
 
-    def test_get_cache_for_generation(self):
-        """Test getting cache for generation with COW."""
-        from vllm_mlx.paged_cache import PagedCacheManager
-        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
-
-        paged_manager = PagedCacheManager(block_size=64, max_blocks=100)
-        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
-
-        tokens = list(range(64))
-        cache.store_cache("req-1", tokens, ["data"])
-
-        # Get cache for generation (no COW needed)
-        cache_data, was_copied = cache.get_cache_for_generation("req-1")
-
-        assert cache_data == ["data"]
-        assert was_copied is False
-
-    def test_get_cache_for_generation_with_cow(self):
-        """Test COW is triggered for shared blocks."""
-        from vllm_mlx.paged_cache import PagedCacheManager
-        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
-
-        paged_manager = PagedCacheManager(block_size=64, max_blocks=100)
-        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
-
-        tokens = list(range(64))
-        cache.store_cache("req-1", tokens, ["shared_data"])
-        cache.fork_cache("req-1", "req-2")
-
-        # Get cache for forked request - should trigger COW
-        cache_data, was_copied = cache.get_cache_for_generation("req-2")
-
-        assert cache_data is not None
-        assert was_copied is True
+        # Blocks are the source of truth: the forked table reconstructs the
+        # same KV state the source stored.
+        reconstructed = cache.reconstruct_cache(forked_table)
+        assert reconstructed is not None
+        assert reconstructed[0].offset == 128
 
     def test_stats(self):
         """Test statistics."""
@@ -715,8 +722,8 @@ class TestBlockAwarePrefixCache:
         cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
 
         tokens = list(range(128))
-        cache.store_cache("req-1", tokens, ["data"])
-        cache.store_cache("req-2", tokens, ["data2"])
+        cache.store_cache("req-1", tokens, _kv_layer_states(128))
+        cache.store_cache("req-2", tokens, _kv_layer_states(128, base=100.0))
 
         assert len(cache) == 2
 
@@ -727,15 +734,15 @@ class TestBlockAwarePrefixCache:
         # After clear, null block is still allocated (vLLM style)
         assert stats["allocated_blocks"] == 1  # only null block
 
-    def test_slices_3d_kv_along_seq_axis(self):
-        """3D KV state (Qwen3.5-style ``(n_kv_heads, seq, head_dim)``) must
-        be sliced along seq (axis 1), not axis 2 (which is ``head_dim``).
-        Regression for upstream waybarrios#286 — pre-fix, the 4D-hardcoded
-        slice ``keys[:, :, start:end, :]`` crashed on 3D state and dropped
-        the whole entry, masking the issue. ``reconstruct_cache`` still
-        refuses 3D state because mlx_lm's ``KVCache`` accessors hard-code
-        ``shape[2]`` for seq; hosting 3D state there would silently corrupt
-        downstream generation."""
+    def test_rejects_3d_kv_state_everywhere(self):
+        """3D KV state (``(n_kv_heads, seq, head_dim)``) is refused at
+        store AND reconstruct. Historically (upstream waybarrios#286) the
+        store side sliced 3D state along axis 1 while ``reconstruct_cache``
+        refused it — mlx_lm's ``KVCache`` accessors hard-code ``shape[2]``
+        for seq — so 3D blocks were stored but never reusable: dead weight
+        that read as a healthy cache with zero reuse (#2955). Store and
+        reconstruct must agree, so both now fail closed on anything but
+        4D."""
         import mlx.core as mx
         from mlx_lm.models.cache import KVCache
 
@@ -754,12 +761,12 @@ class TestBlockAwarePrefixCache:
             "class_name": "KVCache",
         }
 
-        sliced = cache._extract_block_tensor_slice([layer_state], 0, 4)
-        assert sliced is not None and len(sliced) == 1
-        sliced_keys, sliced_values = sliced[0]
-        assert sliced_keys.tolist() == kv_keys[:, :4, :].tolist()
-        assert sliced_values.tolist() == kv_values[:, :4, :].tolist()
-        assert cache._cache_state_seq_axis((kv_keys, kv_values)) == 1
+        # 3D state is not blockizable: no slice, no store, no blocks.
+        assert cache._extract_block_tensor_slice([layer_state], 0, 4) is None
+        assert cache.store_cache("req-3d", list(range(8)), [layer_state]) is None
+        assert paged_manager.stats.allocated_blocks == 1  # null block only
+        assert cache._cache_state_seq_axis((kv_keys, kv_values)) is None
+
         four_d = mx.zeros((1, 2, 8, 3))
         assert cache._cache_state_seq_axis((four_d, four_d)) == 2
         assert cache._cache_state_seq_axis((four_d,)) is None
@@ -771,11 +778,11 @@ class TestBlockAwarePrefixCache:
         assert cache._cache_state_seq_axis((None, four_d)) is None
         assert cache._cache_state_seq_axis((None, None)) is None
         # Class-name gate: a Mamba/DeltaNet ``ArraysCache`` may happen to
-        # hold two same-shape 3D tensors, but its tensors are NOT seq-
+        # hold two same-shape tensors, but its tensors are NOT seq-
         # indexed. The gate must reject any class outside the allowlist.
         # Regression for codex round-3 finding on PR #392.
         assert (
-            cache._cache_state_seq_axis((kv_keys, kv_values), class_name="ArraysCache")
+            cache._cache_state_seq_axis((four_d, four_d), class_name="ArraysCache")
             is None
         )
         assert (
@@ -783,12 +790,12 @@ class TestBlockAwarePrefixCache:
             is None
         )
         assert cache._cache_state_seq_axis((four_d, four_d), class_name="KVCache") == 2
-        # When class_name is omitted, fall back to the shape-only heuristic.
+        # When class_name is omitted, fall back to the shape-only check.
         assert cache._cache_state_seq_axis((four_d, four_d)) == 2
         # Extract path itself rejects layers whose class_name is not KVCache,
         # even when their tensors look slicable.
         non_kv_layer = {
-            "state": (kv_keys, kv_values),
+            "state": (four_d, four_d),
             "meta_state": "",
             "class_ref": None,
             "class_name": "ArraysCache",
@@ -918,3 +925,608 @@ class TestBlockAwarePrefixCache:
         assert dst is not None
         assert dst.cache_data == src.cache_data
         assert dst.cache_class_name == "KVCache"
+
+
+# =============================================================================
+# #2955 — capability validation, transactional fetch, snapshot-free stores.
+# Folded into this (CI-enrolled) module so the Apple lane runs them.
+#
+# Two invariants of ``--use-paged-cache``:
+#
+# 1. Capability is structural and fails closed pre-ready: the loaded model's
+#    prompt-cache factory must produce a layout the block serializer can
+#    losslessly slice and reconstruct (plain full-attention ``KVCache`` on
+#    every layer). Rotating/sliding, Arrays/hybrid, recurrent, quantized and
+#    unknown layouts abort startup with a typed, actionable error — never a
+#    healthy server with silent zero reuse. No model/architecture names are
+#    consulted.
+#
+# 2. Cache hit acquisition is a transaction: candidate lookup tentatively
+#    holds block refs, reconstruction validates the result, and only then do
+#    hit/tokens-saved counters commit. Any failure aborts — refs and table
+#    state released, exactly one miss counted — and release is idempotent
+#    after both commit and abort.
+# =============================================================================
+
+
+def _make_cache(block_size=64, max_blocks=100):
+    from vllm_mlx.paged_cache import PagedCacheManager
+    from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+    manager = PagedCacheManager(block_size=block_size, max_blocks=max_blocks)
+    return BlockAwarePrefixCache(model=None, paged_cache_manager=manager), manager
+
+
+class _FactoryModel:
+    """Model stub whose prompt-cache factory returns the given layers."""
+
+    def __init__(self, factory):
+        self._factory = factory
+
+    def make_cache(self):
+        return self._factory()
+
+
+class TestStructuralCapabilityMatrix:
+    """Layout family matrix for ``validate_paged_cache_capability``."""
+
+    def test_plain_kv_accepted(self):
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        validate_paged_cache_capability(_FactoryModel(lambda: [KVCache(), KVCache()]))
+
+    def test_default_factory_plain_kv_accepted(self):
+        """A model without ``make_cache`` gets mlx-lm's default plain-KV
+        factory — accepted."""
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        class NoFactory:
+            layers = [object(), object()]
+
+        validate_paged_cache_capability(NoFactory())
+
+    def test_sliding_capable_arch_with_inactive_sliding_accepted(self):
+        """The gate is structural: an architecture that CAN slide but whose
+        factory returns plain KV (sliding disabled in its config) is
+        accepted — no architecture-name allowlist involved."""
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        class SlidingCapable(_FactoryModel):
+            sliding_window = None  # inactive
+
+        validate_paged_cache_capability(SlidingCapable(lambda: [KVCache(), KVCache()]))
+
+    @pytest.mark.parametrize(
+        "layer_factory, expected",
+        [
+            # Rotating/sliding-window layout.
+            (
+                lambda cachemod: [
+                    cachemod.KVCache(),
+                    cachemod.RotatingKVCache(max_size=512),
+                ],
+                "RotatingKVCache",
+            ),
+            # Recurrent/Mamba-style hybrid (ArraysCache holds conv/recurrent
+            # state; not seq-indexed).
+            (
+                lambda cachemod: [cachemod.KVCache(), cachemod.ArraysCache(2)],
+                "ArraysCache",
+            ),
+            # Quantized tuple layout.
+            (
+                lambda cachemod: [cachemod.QuantizedKVCache()],
+                "QuantizedKVCache",
+            ),
+        ],
+    )
+    def test_unsupported_families_rejected(self, layer_factory, expected):
+        from mlx_lm.models import cache as cachemod
+
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            validate_paged_cache_capability(
+                _FactoryModel(lambda: layer_factory(cachemod))
+            )
+        assert expected in excinfo.value.incompatible_layers
+        # Actionable: names the flag and the way out.
+        assert "--use-paged-cache" in str(excinfo.value)
+        assert "Remove --use-paged-cache" in str(excinfo.value)
+
+    def test_unknown_layout_rejected(self):
+        """Fail closed on classes the serializer has never seen — including
+        a same-named class that is not mlx-lm's ``KVCache``."""
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        class KVCache:  # same name, unknown type — must NOT pass
+            pass
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            validate_paged_cache_capability(_FactoryModel(lambda: [KVCache()]))
+        assert "KVCache" in excinfo.value.incompatible_layers
+
+    def test_unverifiable_probe_rejected(self):
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        def boom():
+            raise RuntimeError("no cache for you")
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError):
+            validate_paged_cache_capability(_FactoryModel(boom))
+        # Non-list factory output is just as unverifiable.
+        with pytest.raises(PagedCacheUnsupportedLayoutError):
+            validate_paged_cache_capability(_FactoryModel(lambda: object()))
+
+    def test_quantized_kv_config_rejected(self):
+        """Active KV quantization stores weight/scale/bias tuples the
+        serializer cannot slice — rejected even on a plain-KV factory."""
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.prefix_cache import validate_paged_cache_capability
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError):
+            validate_paged_cache_capability(
+                _FactoryModel(lambda: [KVCache()]), kv_cache_quantized=True
+            )
+
+
+class TestSchedulerStartupGate:
+    """Explicit --use-paged-cache on an unsupported layout must fail at
+    scheduler construction — before readiness or any request service."""
+
+    def _config(self):
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        return SchedulerConfig(
+            max_num_seqs=4,
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=True,
+            paged_cache_block_size=16,
+            max_cache_blocks=32,
+        )
+
+    def test_rotating_layout_fails_before_ready(self):
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.scheduler import Scheduler
+
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), RotatingKVCache(max_size=512)]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            Scheduler(model=model, tokenizer=tokenizer, config=self._config())
+        assert "RotatingKVCache" in str(excinfo.value)
+        assert "--use-paged-cache" in str(excinfo.value)
+
+    def test_plain_layout_boots_with_paged_cache(self):
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.scheduler import Scheduler
+
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), KVCache()]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        sched = Scheduler(model=model, tokenizer=tokenizer, config=self._config())
+        assert sched.block_aware_cache is not None
+
+
+class TestTransactionalFetch:
+    """Fetch commits counters only after successful reconstruction; every
+    failure aborts cleanly."""
+
+    def _seed(self, cache, tokens):
+        table = cache.store_cache("seed", tokens, _kv_layer_states(len(tokens)))
+        assert table is not None and len(table.block_ids) == 2
+        return table
+
+    def _assert_aborted(self, cache, manager, seed_table, request_id):
+        assert cache._hits == 0
+        assert cache._tokens_saved == 0
+        assert cache._misses == 1
+        # Tentative refs released: back to the store entry's single ref.
+        for bid in seed_table.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 1
+        # No table or stash retained for the failed request.
+        assert manager.get_block_table(request_id) is None
+        assert request_id not in cache._request_tables
+        assert request_id not in cache._pending_reconstructed
+
+    def test_commit_on_success(self):
+        cache, manager = _make_cache()
+        tokens = list(range(128))
+        seed = self._seed(cache, tokens)
+
+        table, remaining = cache.fetch_cache("req-a", tokens + [7, 8])
+        assert table is not None
+        assert remaining == [7, 8]
+        assert cache._hits == 1
+        assert cache._misses == 0
+        assert cache._tokens_saved == 128
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+
+        reconstructed = cache.reconstruct_cache(table)
+        assert reconstructed is not None and len(reconstructed) == 1
+        assert reconstructed[0].offset == 128
+
+    def test_missing_tensor_data_aborts(self):
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        manager.allocated_blocks[seed.block_ids[1]].cache_data = None
+
+        table, remaining = cache.fetch_cache("req-b", list(range(128)))
+        assert table is None and remaining == list(range(128))
+        self._assert_aborted(cache, manager, seed, "req-b")
+
+    def test_wrong_cache_class_aborts(self):
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        manager.allocated_blocks[seed.block_ids[0]].cache_class_name = "RotatingKVCache"
+
+        table, _ = cache.fetch_cache("req-c", list(range(128)))
+        assert table is None
+        self._assert_aborted(cache, manager, seed, "req-c")
+
+    def test_wrong_shape_aborts(self):
+        import mlx.core as mx
+
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        bad = mx.zeros((2, 64, 4))  # 3D — not hostable by mlx-lm KVCache
+        manager.allocated_blocks[seed.block_ids[0]].cache_data = [(bad, bad)]
+
+        table, _ = cache.fetch_cache("req-d", list(range(128)))
+        assert table is None
+        self._assert_aborted(cache, manager, seed, "req-d")
+
+    def test_reconstruction_exception_aborts(self):
+        import mlx.core as mx
+
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        # Head-count mismatch between blocks: mx.concatenate raises.
+        bad = mx.zeros((1, 3, 64, 4))
+        manager.allocated_blocks[seed.block_ids[1]].cache_data = [(bad, bad)]
+
+        table, _ = cache.fetch_cache("req-e", list(range(128)))
+        assert table is None
+        self._assert_aborted(cache, manager, seed, "req-e")
+
+    def test_release_idempotent_after_commit(self):
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        table, _ = cache.fetch_cache("req-f", list(range(128)))
+        assert table is not None
+        for _ in range(3):
+            cache.release_cache("req-f")
+            for bid in seed.block_ids:
+                assert manager.allocated_blocks[bid].ref_count == 1
+        assert manager.get_block_table("req-f") is None
+
+    def test_release_idempotent_after_abort(self):
+        cache, manager = _make_cache()
+        seed = self._seed(cache, list(range(128)))
+        manager.allocated_blocks[seed.block_ids[1]].cache_data = None
+        table, _ = cache.fetch_cache("req-g", list(range(128)))
+        assert table is None
+        for _ in range(3):
+            cache.release_cache("req-g")
+            for bid in seed.block_ids:
+                assert manager.allocated_blocks[bid].ref_count == 1
+
+    def test_repeated_prefix_reuse_returns_identical_kv(self):
+        """Supported full-attention store/fetch/reconstruct over a repeated
+        prefix keeps working and returns the exact stored KV state."""
+        import mlx.core as mx
+
+        cache, _ = _make_cache()
+        tokens = list(range(128))
+        states = _kv_layer_states(128)
+        cache.store_cache("seed", tokens, states)
+
+        for i, request_id in enumerate(("req-h", "req-i")):
+            table, remaining = cache.fetch_cache(request_id, tokens + [500 + i])
+            assert table is not None
+            assert remaining == [500 + i]
+            reconstructed = cache.reconstruct_cache(table)
+            assert reconstructed is not None
+            assert reconstructed[0].offset == 128
+            orig_keys, orig_values = states[0]["state"]
+            assert mx.array_equal(reconstructed[0].keys, orig_keys).item()
+            assert mx.array_equal(reconstructed[0].values, orig_values).item()
+            cache.release_cache(request_id)
+
+        assert cache._hits == 2
+        assert cache._tokens_saved == 256
+
+
+class TestStoreRetention:
+    """Blocks are the source of truth; stores never retain snapshots."""
+
+    def test_unsupported_store_retains_nothing(self):
+        """A rotating-layout store must allocate zero blocks and retain
+        zero snapshots — the exact baseline failure of #2955 (2 stored
+        blocks, 0 with tensor data, full snapshot retained)."""
+        import mlx.core as mx
+        from mlx_lm.models.cache import RotatingKVCache
+
+        cache, manager = _make_cache(block_size=64, max_blocks=16)
+        rot = RotatingKVCache(max_size=256)
+        rot.update_and_fetch(mx.zeros((1, 2, 128, 8)), mx.zeros((1, 2, 128, 8)))
+        cache_data = [
+            {
+                "state": rot.state,
+                "meta_state": rot.meta_state,
+                "class_name": "RotatingKVCache",
+                "class_ref": RotatingKVCache,
+            }
+        ]
+
+        assert cache.store_cache("req-rot", list(range(128)), cache_data) is None
+        assert manager.stats.allocated_blocks == 1  # null block only
+        assert len(cache._request_tables) == 0
+        assert len(cache._prefix_index) == 0
+        assert manager.get_block_table("req-rot") is None
+
+    def test_supported_store_does_not_retain_original_by_identity(self):
+        """The stored entry and blocks must not hold the caller's cache
+        objects: no snapshot on the entry, and block tensors are
+        materialized copies, not the caller's arrays."""
+        cache, manager = _make_cache()
+        tokens = list(range(128))
+        states = _kv_layer_states(128)
+        table = cache.store_cache("req-1", tokens, states)
+        assert table is not None
+
+        entry = cache._request_tables["req-1"]
+        assert not hasattr(entry, "cache_data")
+
+        original_tensors = {id(t) for layer in states for t in layer["state"]}
+        original_tensors.add(id(states))
+        for bid in table.block_ids:
+            block = manager.allocated_blocks[bid]
+            assert block.cache_data is not None
+            for keys, values in block.cache_data:
+                assert id(keys) not in original_tensors
+                assert id(values) not in original_tensors
+
+
+class TestContextualBlockIdentity:
+    """Block identity must cover the whole preceding history (#2955).
+
+    KV for block N depends on blocks 0..N-1, so equal token chunks with
+    divergent histories must never share storage — while truly identical
+    prefixes must still deduplicate.
+    """
+
+    def test_divergent_histories_do_not_share_equal_chunks(self):
+        import mlx.core as mx
+
+        cache, _ = _make_cache(block_size=4, max_blocks=16)
+        a_tokens = [1, 1, 1, 1, 7, 7, 7, 7]
+        b_tokens = [2, 2, 2, 2, 7, 7, 7, 7]
+        a_states = _kv_layer_states(8, base=10.0)
+        b_states = _kv_layer_states(8, base=20.0)
+        table_a = cache.store_cache("req-a", a_tokens, a_states)
+        table_b = cache.store_cache("req-b", b_tokens, b_states)
+        assert table_a is not None and len(table_a.block_ids) == 2
+        assert table_b is not None and len(table_b.block_ids) == 2
+        # The equal trailing chunk must NOT dedup across divergent
+        # histories: its KV was computed under different context.
+        assert set(table_a.block_ids).isdisjoint(table_b.block_ids)
+
+        # Each fetch must reconstruct its OWN stored KV, bit for bit.
+        for request_id, tokens, states in (
+            ("read-a", a_tokens, a_states),
+            ("read-b", b_tokens, b_states),
+        ):
+            table, remaining = cache.fetch_cache(request_id, tokens)
+            assert table is not None and remaining == []
+            reconstructed = cache.reconstruct_cache(table)
+            keys, values = states[0]["state"]
+            assert mx.array_equal(reconstructed[0].keys, keys).item()
+            assert mx.array_equal(reconstructed[0].values, values).item()
+            cache.release_cache(request_id)
+
+    def test_identical_prefixes_still_dedup(self):
+        cache, manager = _make_cache(block_size=4, max_blocks=16)
+        tokens = [1, 1, 1, 1, 7, 7, 7, 7]
+        table_1 = cache.store_cache("req-1", tokens, _kv_layer_states(8, base=1.0))
+        table_2 = cache.store_cache("req-2", tokens, _kv_layer_states(8, base=1.0))
+        assert table_1.block_ids == table_2.block_ids
+        for bid in table_1.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+
+    def test_suffix_chunk_never_matches_as_prefix(self):
+        """A stored SECOND block's chunk offered at position 0 must miss:
+        under chunk-local hashing it would fetch mid-sequence KV as if it
+        were a sequence head."""
+        cache, _ = _make_cache(block_size=4, max_blocks=16)
+        cache.store_cache("req-a", [1, 1, 1, 1, 7, 7, 7, 7], _kv_layer_states(8))
+
+        table, remaining = cache.fetch_cache("read-c", [7, 7, 7, 7, 9, 9])
+        assert table is None
+        assert remaining == [7, 7, 7, 7, 9, 9]
+
+
+class TestEngineStartupBoundary:
+    """The typed capability error must surface through the real engine
+    startup boundary: ``EngineCore`` constructs the ``Scheduler`` during
+    ``__init__`` — before readiness or any request service — and must not
+    swallow or downgrade the exception."""
+
+    def test_engine_core_surfaces_unsupported_layout(self):
+        from unittest.mock import MagicMock
+
+        from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+        from vllm_mlx.engine_core import EngineConfig, EngineCore
+        from vllm_mlx.errors import PagedCacheUnsupportedLayoutError
+        from vllm_mlx.scheduler import SchedulerConfig
+
+        model = MagicMock()
+        model.make_cache = lambda: [KVCache(), RotatingKVCache(max_size=512)]
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+
+        scheduler_config = SchedulerConfig(
+            max_num_seqs=4,
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=True,
+            paged_cache_block_size=16,
+            max_cache_blocks=32,
+        )
+        with pytest.raises(PagedCacheUnsupportedLayoutError) as excinfo:
+            EngineCore(
+                model=model,
+                tokenizer=tokenizer,
+                config=EngineConfig(scheduler_config=scheduler_config),
+            )
+        assert "RotatingKVCache" in str(excinfo.value)
+        assert "--use-paged-cache" in str(excinfo.value)
+
+
+class TestReusedRequestIdInvariants:
+    """Reusing a request id must release prior state instead of leaking
+    block references."""
+
+    def test_fetch_with_reused_id_releases_prior_state(self):
+        cache, manager = _make_cache(block_size=4, max_blocks=16)
+        tokens = list(range(8))
+        table = cache.store_cache("req-1", tokens, _kv_layer_states(8))
+        old_ids = list(table.block_ids)
+        free_before = manager.free_blocks
+
+        result_table, remaining = cache.fetch_cache("req-1", tokens)
+
+        # The stored entry held the only reference: releasing it frees the
+        # blocks, so the fetch under the reused id is a clean miss with no
+        # leaked table and the slots back in the pool.
+        assert result_table is None and remaining == tokens
+        assert manager.get_block_table("req-1") is None
+        assert "req-1" not in cache._request_tables
+        for bid in old_ids:
+            assert bid not in manager.allocated_blocks
+        assert manager.free_blocks == free_before + len(old_ids)
+
+    def test_create_block_table_releases_overwritten_table(self):
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=8)
+        table = manager.create_block_table("req-1")
+        block = manager.allocate_block()
+        manager.add_block_to_table(table, block, 4)
+        assert manager.allocated_blocks[block.block_id].ref_count == 1
+
+        manager.create_block_table("req-1")  # reused id
+
+        # The old table's reference was released, not leaked.
+        assert block.block_id not in manager.allocated_blocks
+        assert manager.get_block_table("req-1").block_ids == []
+
+    def test_fork_onto_existing_id_does_not_leak(self):
+        cache, manager = _make_cache(block_size=4, max_blocks=16)
+        table_a = cache.store_cache("req-a", [1, 1, 1, 1], _kv_layer_states(4))
+        table_b = cache.store_cache("req-b", [2, 2, 2, 2], _kv_layer_states(4))
+        old_b_ids = list(table_b.block_ids)
+
+        forked = cache.fork_cache("req-a", "req-b")
+
+        assert forked is not None
+        # req-b's old blocks were released (their only ref was its entry).
+        for bid in old_b_ids:
+            assert bid not in manager.allocated_blocks
+        # req-a's blocks are now shared by its entry and the fork.
+        for bid in table_a.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+
+    def test_self_fork_is_noop_and_does_not_leak(self):
+        """fork_cache(id, id) must not bump refs and then overwrite the
+        only owning entry — release afterwards must free everything."""
+        cache, manager = _make_cache(block_size=4, max_blocks=16)
+        table = cache.store_cache("same", [1, 2, 3, 4], _kv_layer_states(4))
+        assert table is not None
+        bid = table.block_ids[0]
+
+        forked = cache.fork_cache("same", "same")
+
+        # No-op: the existing table IS the fork; no reference was added.
+        assert forked is table
+        assert manager.allocated_blocks[bid].ref_count == 1
+
+        cache.release_cache("same")
+        assert bid not in manager.allocated_blocks
+        assert manager.get_block_table("same") is None
+
+    def test_paged_self_fork_block_table_is_noop(self):
+        """fork_block_table onto the id the table is registered under must
+        be a no-op at the paged layer too."""
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=8)
+        table = manager.create_block_table("same")
+        block = manager.allocate_block()
+        manager.add_block_to_table(table, block, 4)
+
+        forked = manager.fork_block_table(table, "same")
+
+        assert forked is table
+        assert manager.request_tables["same"] is table
+        assert manager.allocated_blocks[block.block_id].ref_count == 1
+
+        manager.delete_block_table("same")
+        assert block.block_id not in manager.allocated_blocks
+
+
+class TestStoredBlockBufferIndependence:
+    """Stored blocks must own their KV memory: dropping the caller's
+    extracted state must actually free its buffers. Guards against MLX
+    slice aliasing — a seq-axis slice with a single KV head is already
+    row-contiguous, so a no-copy materialization shortcut would silently
+    retain the caller's entire KV buffer for every block."""
+
+    def test_store_releases_caller_buffers_single_kv_head(self):
+        import gc
+
+        import mlx.core as mx
+
+        cache, _ = _make_cache(block_size=64, max_blocks=80)
+        num_tokens = 4096
+        states = _kv_layer_states(num_tokens, heads=1, head_dim=64)
+        keys, values = states[0]["state"]
+        state_bytes = keys.nbytes + values.nbytes
+
+        table = cache.store_cache("req-mem", list(range(num_tokens)), states)
+        assert table is not None
+        assert len(table.block_ids) == num_tokens // 64
+
+        del keys, values
+        gc.collect()
+        before = mx.get_active_memory()
+        del states
+        gc.collect()
+        after = mx.get_active_memory()
+
+        # If any stored block aliased the caller's tensors, their full
+        # backing buffers would stay resident past this point.
+        assert before - after >= int(0.9 * state_bytes)

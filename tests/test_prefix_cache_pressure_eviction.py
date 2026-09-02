@@ -666,6 +666,11 @@ class TestBlockAwareCacheEviction:
         tokenizer = MagicMock()
         tokenizer.encode = lambda s: list(range(len(s)))
         model = MagicMock()
+        # use_paged_cache triggers the structural capability probe at
+        # Scheduler init (#2955); a plain full-attention factory passes it.
+        from mlx_lm.models.cache import KVCache
+
+        model.make_cache = lambda: [KVCache(), KVCache()]
         return Scheduler(model=model, tokenizer=tokenizer, config=config)
 
     def test_pressure_evicts_block_aware_entries(self):
@@ -802,12 +807,10 @@ class TestBlockAwareCacheEviction:
         bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks[:2]]),
-            cache_data=[MagicMock()],  # full KV tensor
             last_access=1.0,
         )
         bac._request_tables["req-2"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks[2:]]),
-            cache_data=[MagicMock()],
             last_access=2.0,
         )
 
@@ -857,7 +860,6 @@ class TestBlockAwareCacheEviction:
         blocks[0].is_pinned = True  # system-prompt block, referenced by req-1
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks]),
-            cache_data=[MagicMock()],
             last_access=1.0,
         )
 
@@ -891,7 +893,6 @@ class TestBlockAwareCacheEviction:
         private.ref_count = 1
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[shared.block_id, private.block_id]),
-            cache_data=[MagicMock()],
             last_access=1.0,
         )
 
@@ -945,8 +946,11 @@ class TestBlockAwareCacheEviction:
 
         blk = paged.allocate_block()
         blk.cache_data = [MagicMock()]
-        # store_cache registers a full block as hash_value = hash(its tokens);
-        # index is keyed by the prefix hash the fetch path recomputes.
+        # store_cache records every block's span and its cumulative identity
+        # hash (the hash of the whole prefix through the block — for the
+        # first block that equals hash(its own tokens)); the index is keyed
+        # by the same cumulative hash the fetch path recomputes.
+        blk.token_count = bs
         blk.hash_value = paged.compute_block_hash(tokens)
         bac._prefix_index[paged.compute_block_hash(tokens)] = (tokens, [blk.block_id])
 

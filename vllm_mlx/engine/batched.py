@@ -1406,6 +1406,12 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
+        # Lane-capability admission at the text/MLLM split — BEFORE any
+        # weights are loaded or a scheduler is constructed, so an
+        # unsupported explicit configuration can never come up "Ready"
+        # while silently inactive (#2955).
+        self._validate_lane_capabilities()
+
         if self._is_mllm:
             await self._start_mllm()
         else:
@@ -1414,6 +1420,30 @@ class BatchedEngine(BaseEngine):
         self._loaded = True
         self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
+
+    def _validate_lane_capabilities(self) -> None:
+        """Fail closed on capabilities the selected serving lane cannot honor.
+
+        The paged prefix cache is a text-Scheduler capability: the MLLM
+        lane runs ``MLLMScheduler``, which never constructs it, so an
+        explicit ``use_paged_cache`` there would previously load weights,
+        print Ready, and serve with the flag silently ineffective — the
+        exact #2955 failure mode, one lane over. The text lane's own
+        structural layout gate still runs later, at Scheduler construction
+        inside ``_start_llm``.
+        """
+        from ..errors import PagedCacheUnsupportedLayoutError
+
+        if self._is_mllm and getattr(self._scheduler_config, "use_paged_cache", False):
+            raise PagedCacheUnsupportedLayoutError(
+                "--use-paged-cache is not supported on the multimodal "
+                "serving lane: the paged prefix cache is a text-lane "
+                "capability and would be silently inactive here. Remove "
+                "--use-paged-cache to use the multimodal lane's default "
+                "prefix cache, or force the text-only lane (--no-mllm) if "
+                "this model should be served as text and its cache layout "
+                "passes the text lane's structural check."
+            )
 
     async def _start_mllm(self) -> None:
         """Start the MLLM engine with MLLMScheduler (continuous batching)."""
