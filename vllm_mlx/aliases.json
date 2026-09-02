@@ -13,6 +13,14 @@
     "is_moe": true,
     "supports_spec_decode": false
   },
+  "apertus-v1.5-8b-text": {
+    "hf_path": "swiss-ai/Apertus-v1.5-8B",
+    "is_text_only": true,
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
   "qwen3.5-4b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
     "vision_min_memory_gb": 32,

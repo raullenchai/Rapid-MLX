@@ -874,6 +874,33 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("qwen4_exp")
         else:
             _VENDORED_MODEL_TYPES.add("qwen4_exp")
+    # Apertus 1.5 is a text decoder nested in a multimodal wrapper. The
+    # official checkpoint's outer config declares ``apertus1p5``, so both the
+    # wrapper name and the nested text name must resolve to the vendor (the
+    # vendored ``ModelArgs.from_dict`` flattens the wrapper config). Once
+    # mlx-lm ships #1615 (or equivalent), defer to native support per name.
+    for _apertus_name in ("apertus1p5", "apertus1p5_text"):
+        _apertus_module = f"mlx_lm.models.{_apertus_name}"
+        if _apertus_module in sys.modules:
+            continue
+        import importlib.util as _importlib_util
+
+        try:
+            _native_spec = _importlib_util.find_spec(_apertus_module)
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import apertus1p5_text as _apertus1p5_text
+
+                sys.modules.setdefault(_apertus_module, _apertus1p5_text)
+            except Exception as e:
+                logger.warning("Apertus 1.5 vendor failed to register: %s", e)
+            else:
+                _VENDORED_MODEL_TYPES.add(_apertus_name)
+        else:
+            _VENDORED_MODEL_TYPES.add(_apertus_name)
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:
