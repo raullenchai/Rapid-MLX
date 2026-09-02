@@ -136,6 +136,7 @@ def test_explicit_bf16_never_rejects():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.requires_mlx  # boots `serve`, which imports mlx at CLI load
 @pytest.mark.parametrize("dtype", ["int8", "int4"])
 def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     """``serve <local-gemma4-dir> --kv-cache-dtype int8/int4`` must exit
@@ -253,6 +254,7 @@ def _scheduler_stub(explicit: bool):
     return sched
 
 
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
 def test_live_cache_probe_flags_rotating_cache():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
@@ -268,6 +270,7 @@ def test_live_cache_probe_flags_rotating_cache():
     )
 
 
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
 def test_live_cache_probe_accepts_plain_kvcache():
     from mlx_lm.models.cache import KVCache
 
@@ -280,6 +283,7 @@ def test_live_cache_probe_accepts_plain_kvcache():
     assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
 
 
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
 def test_explicit_request_fails_closed_on_incompatible_cache():
     """Rotating cache + explicit request: engine start raises pre-ready."""
     from mlx_lm.models.cache import RotatingKVCache
@@ -292,6 +296,7 @@ def test_explicit_request_fails_closed_on_incompatible_cache():
         _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
 
 
+@pytest.mark.requires_mlx  # _scheduler_stub imports vllm_mlx.scheduler (mlx)
 def test_explicit_request_fails_closed_on_unprobeable_cache():
     """A cache layout that cannot be verified must not report ready and
     gamble on the first request (fail closed for explicit requests)."""
@@ -304,6 +309,7 @@ def test_explicit_request_fails_closed_on_unprobeable_cache():
         _scheduler_stub(explicit=True)._init_kv_quantization(_Broken())
 
 
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
 def test_auto_request_disables_quantization_on_incompatible_cache(caplog):
     from mlx_lm.models.cache import RotatingKVCache
 
@@ -369,6 +375,7 @@ def test_resident_performance_supported_family_passes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.requires_mlx  # boots `serve`, which imports mlx at CLI load
 @pytest.mark.parametrize("bits", [4, 8])
 def test_serve_exits_before_load_for_explicit_gemma4_legacy_flag(tmp_path, bits):
     """The deprecated ``--kv-cache-quantization [--kv-cache-quantization-bits
