@@ -107,8 +107,8 @@ Inspect the service and logs:
 
 ```bash
 sudo launchctl print system/com.rapidmlx.server
-tail -F "$HOME/Library/Logs/Rapid-MLX/server.stdout.log" \
-        "$HOME/Library/Logs/Rapid-MLX/server.stderr.log"
+tail -F /Users/serveuser/Library/Logs/Rapid-MLX/server.stdout.log \
+        /Users/serveuser/Library/Logs/Rapid-MLX/server.stderr.log
 ```
 
 `launchctl print` is diagnostic output, not a stable machine-readable API.
