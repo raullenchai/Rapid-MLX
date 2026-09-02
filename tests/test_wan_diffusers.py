@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import FunctionType, ModuleType
 
 import pytest
 
@@ -16,9 +16,10 @@ from vllm_mlx.video.wan_diffusers import (
     _t5_key,
     _transformer_key,
     _vae_decoder_key,
+    _validate_target_parameters,
     desktop_wan21_config,
+    diffusers_runtime,
     is_diffusers_wan21_layout,
-    patched_diffusers_runtime,
 )
 
 
@@ -117,8 +118,6 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _layout(tmp_path)
-    parent = ModuleType("mlx_video")
-    parent.__path__ = []
     generator = ModuleType("mlx_video.generate_wan")
     originals = (object(), object(), object())
     (
@@ -126,7 +125,6 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
         generator.load_t5_encoder,
         generator.load_vae_decoder,
     ) = originals
-    parent.generate_wan = generator
     tokenizer_calls = []
 
     class OriginalTokenizer:
@@ -137,14 +135,21 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
 
     transformers = ModuleType("transformers")
     transformers.AutoTokenizer = OriginalTokenizer
-    monkeypatch.setitem(sys.modules, "mlx_video", parent)
-    monkeypatch.setitem(sys.modules, "mlx_video.generate_wan", generator)
     monkeypatch.setitem(sys.modules, "transformers", transformers)
 
-    with patched_diffusers_runtime(root) as view:
+    def generate_template():
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained("ignored")
+
+    generator.generate_video = FunctionType(
+        generate_template.__code__, generator.__dict__, "generate_video"
+    )
+
+    with diffusers_runtime(root, generator) as (view, scoped_generate):
         assert json.loads((view / "config.json").read_text()) == desktop_wan21_config()
-        assert generator.load_wan_model is not originals[0]
-        assert transformers.AutoTokenizer.from_pretrained("ignored") == "tokenizer"
+        assert scoped_generate.__globals__["load_wan_model"] is not originals[0]
+        assert scoped_generate() == "tokenizer"
         assert tokenizer_calls == [(root / "tokenizer", (), {"local_files_only": True})]
 
     assert (
@@ -154,3 +159,17 @@ def test_runtime_patch_is_scoped_and_tokenizer_is_local(
     ) == originals
     assert transformers.AutoTokenizer is OriginalTokenizer
     assert not view.exists()
+
+
+def test_loader_target_validation_rejects_missing_and_unknown_parameters() -> None:
+    class FakeModel:
+        def parameters(self):
+            return {"layer": {"weight": object(), "bias": object()}}
+
+    _validate_target_parameters(FakeModel(), {"layer.weight", "layer.bias"})
+    with pytest.raises(WanBackendError, match="missing=.*layer.bias"):
+        _validate_target_parameters(FakeModel(), {"layer.weight"})
+    with pytest.raises(WanBackendError, match="unexpected=.*other.weight"):
+        _validate_target_parameters(
+            FakeModel(), {"layer.weight", "layer.bias", "other.weight"}
+        )

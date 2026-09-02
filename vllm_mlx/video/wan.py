@@ -12,9 +12,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 WAN_REVISIONS: dict[str, str] = {
-    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": (
-        "0fad780a534b6463e45facd96134c9f345acfa5b"
-    ),
+    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": ("0fad780a534b6463e45facd96134c9f345acfa5b"),
     "Anes1032/Wan2.2-TI2V-5B-mlx-q8": ("9624723c94ddf509832555c45e223a035baa7d1c"),
     "rickylin20260522/Wan2.2-TI2V-5B-mlx": ("592b2473f27cd6f466cdd9f2c0f5750a77b37b59"),
     "Anes1032/Wan2.2-I2V-A14B-mlx-q8": ("633f50fc3e16e7faf76713dcf07b0bea730f02c9"),

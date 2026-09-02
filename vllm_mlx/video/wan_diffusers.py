@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 import re
 import tempfile
-import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import FunctionType, ModuleType
 
 from .wan import WanBackendError
 
@@ -24,7 +24,6 @@ _VAE_FILE = "vae/diffusion_pytorch_model.safetensors"
 _EXPECTED_TRANSFORMER_KEYS = 825
 _EXPECTED_T5_KEYS = 242
 _EXPECTED_VAE_DECODER_KEYS = 108
-_PATCH_LOCK = threading.RLock()
 
 
 def is_diffusers_wan21_layout(root: Path) -> bool:
@@ -230,6 +229,22 @@ def _read_index(
     return grouped
 
 
+def _validate_target_parameters(
+    model, mapped_names: set[str], *, ignored: frozenset[str] = frozenset()
+) -> None:
+    """Fail before loading if the pinned mapping and runtime model diverge."""
+    from mlx.utils import tree_flatten
+
+    model_names = {name for name, _ in tree_flatten(model.parameters())} - ignored
+    if mapped_names != model_names:
+        missing = sorted(model_names - mapped_names)
+        unexpected = sorted(mapped_names - model_names)
+        raise WanBackendError(
+            "the Wan 2.1 tensor mapping does not match the bundled MLX model "
+            f"(missing={missing[:3]!r}, unexpected={unexpected[:3]!r})"
+        )
+
+
 def _load_sharded(
     model,
     root: Path,
@@ -239,11 +254,18 @@ def _load_sharded(
     *,
     dtype=None,
     reshape_patch: bool = False,
+    ignored_model_parameters: frozenset[str] = frozenset(),
 ) -> None:
     import mlx.core as mx
 
     directory = (root / relative).parent
-    for filename, names in _read_index(root, relative, expected, mapper).items():
+    grouped = _read_index(root, relative, expected, mapper)
+    _validate_target_parameters(
+        model,
+        {target for names in grouped.values() for _, target in names},
+        ignored=ignored_model_parameters,
+    )
+    for filename, names in grouped.items():
         path = directory / filename
         if not path.is_file():
             raise WanBackendError(f"the Wan 2.1 checkpoint is missing {filename!r}")
@@ -278,6 +300,7 @@ def _load_transformer(root: Path, config, quantization=None, loras=None):
         _EXPECTED_TRANSFORMER_KEYS,
         _transformer_key,
         reshape_patch=True,
+        ignored_model_parameters=frozenset({"freqs"}),
     )
     mx.eval(model.parameters())
     return model
@@ -324,61 +347,81 @@ def _load_vae(root: Path, config=None):
     ) != len(weights):
         raise WanBackendError("the Wan 2.1 VAE has an unexpected decoder tensor set")
     vae = WanVAE(z_dim=16)
+    _validate_target_parameters(
+        vae,
+        {key for key, _ in weights},
+        ignored=frozenset({"mean", "std", "inv_std"}),
+    )
     vae.load_weights(weights, strict=False)
     mx.eval(vae.parameters())
     return vae
 
 
-@contextmanager
-def patched_diffusers_runtime(root: Path) -> Iterator[Path]:
-    """Patch the pinned generator's loader seams for one model-dedicated job."""
-    import mlx_video.generate_wan as generator
-    import transformers
-
+def _scoped_generate_function(root: Path, generator) -> Callable:
+    """Clone the generator with request-local loaders and tokenizer imports."""
     if not is_diffusers_wan21_layout(root):
         raise WanBackendError("the Wan 2.1 checkpoint layout is incomplete")
-    temporary = tempfile.TemporaryDirectory(prefix="rapidmlx-wan21-view-")
-    view = Path(temporary.name)
-    (view / "config.json").write_text(json.dumps(desktop_wan21_config()))
-    original = (
-        generator.load_wan_model,
-        generator.load_t5_encoder,
-        generator.load_vae_decoder,
-        transformers.AutoTokenizer,
-    )
-    tokenizer_class = transformers.AutoTokenizer
+    original = generator.generate_video
+    original_import = original.__builtins__["__import__"]
 
     class LocalTokenizer:
         @classmethod
         def from_pretrained(cls, _model_name, *args, **kwargs):
-            kwargs["local_files_only"] = True
-            return tokenizer_class.from_pretrained(root / "tokenizer", *args, **kwargs)
+            from transformers import AutoTokenizer
 
-    with _PATCH_LOCK:
-        generator.load_wan_model = lambda _path, config, quantization=None, loras=None: (
-            _load_transformer(root, config, quantization, loras)
-        )
-        generator.load_t5_encoder = lambda _path, config: _load_t5(root, config)
-        generator.load_vae_decoder = lambda _path, config=None: _load_vae(root, config)
-        transformers.AutoTokenizer = LocalTokenizer
-        try:
-            yield view
-        finally:
-            (
-                generator.load_wan_model,
-                generator.load_t5_encoder,
-                generator.load_vae_decoder,
-                transformers.AutoTokenizer,
-            ) = original
-            temporary.cleanup()
+            kwargs["local_files_only"] = True
+            return AutoTokenizer.from_pretrained(root / "tokenizer", *args, **kwargs)
+
+    def scoped_import(name, globals=None, locals=None, fromlist=(), level=0):
+        imported = original_import(name, globals, locals, fromlist, level)
+        if name == "transformers" and "AutoTokenizer" in fromlist:
+            proxy = ModuleType("transformers")
+            proxy.AutoTokenizer = LocalTokenizer
+            return proxy
+        return imported
+
+    builtins = dict(original.__builtins__)
+    builtins["__import__"] = scoped_import
+    namespace = dict(original.__globals__)
+    namespace.update(
+        {
+            "__builtins__": builtins,
+            "load_wan_model": lambda _path, config, quantization=None, loras=None: (
+                _load_transformer(root, config, quantization, loras)
+            ),
+            "load_t5_encoder": lambda _path, config: _load_t5(root, config),
+            "load_vae_decoder": lambda _path, config=None: _load_vae(root, config),
+        }
+    )
+    scoped = FunctionType(
+        original.__code__,
+        namespace,
+        original.__name__,
+        original.__defaults__,
+        original.__closure__,
+    )
+    scoped.__kwdefaults__ = original.__kwdefaults__
+    return scoped
+
+
+@contextmanager
+def diffusers_runtime(root: Path, generator) -> Iterator[tuple[Path, Callable]]:
+    """Create a temporary converted-layout view and isolated generator."""
+    scoped_generate = _scoped_generate_function(root, generator)
+    temporary = tempfile.TemporaryDirectory(prefix="rapidmlx-wan21-view-")
+    view = Path(temporary.name)
+    (view / "config.json").write_text(json.dumps(desktop_wan21_config()))
+    try:
+        yield view, scoped_generate
+    finally:
+        temporary.cleanup()
 
 
 def generate_with_runtime(root: Path, generator, generation_kwargs: dict) -> None:
-    """Generate while preventing another Wan engine from seeing patched globals."""
-    with _PATCH_LOCK:
-        if is_diffusers_wan21_layout(root):
-            with patched_diffusers_runtime(root) as model_view:
-                generation_kwargs["model_dir"] = str(model_view)
-                generator.generate_video(**generation_kwargs)
-        else:
-            generator.generate_video(**generation_kwargs)
+    """Generate through request-local loaders for the official layout."""
+    if is_diffusers_wan21_layout(root):
+        with diffusers_runtime(root, generator) as (model_view, scoped_generate):
+            generation_kwargs["model_dir"] = str(model_view)
+            scoped_generate(**generation_kwargs)
+    else:
+        generator.generate_video(**generation_kwargs)
