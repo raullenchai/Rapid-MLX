@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "hardware": "Mac15,14; Apple M3 Ultra; 256 GB",
+  "software": {
+    "python": "3.12.13",
+    "mlx": "0.32.2",
+    "mlx_lm": "0.31.3",
+    "mlx_vlm": "0.6.17"
+  },
+  "runs_csv": "2026-09-02-large-model-runs.csv",
+  "decode_rate": {
+    "raw_csv_field": "harness_decode_tps",
+    "raw_formula": "completion_tokens / (total_time - TTFT)",
+    "published_formula": "(completion_tokens - 1) / (total_time - TTFT)",
+    "published_from_raw": "harness_decode_tps * (completion_tokens - 1) / completion_tokens"
+  },
+  "artifacts": {
+    "qwen27-0133": {
+      "rapid_sha": "6f3f65b92eed6906421b5761686c0a2cd0923aa3",
+      "model_revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
+      "source_json_sha256": "b29d4f75d275e7a714af3255e072e6f78a5046cb309eff85cf7a14e53bc052d5",
+      "mlx_status": {"active_memory_gb": 16.06, "peak_memory_gb": 24.03, "cache_memory_gb": 2.33}
+    },
+    "qwen27-0134": {
+      "rapid_sha": "ede7158cc59b0b7002f05d8b34e985d9c4ae5206",
+      "model_revision": "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456",
+      "source_json_sha256": "89b70e9746a9aaa4d7a1ba7b1d8bf80f19c72edc7e5c38cb8deb07be3ac010aa",
+      "mlx_status_after_sweep": {"active_memory_gb": 19.98, "peak_memory_gb": 27.13, "cache_memory_gb": 6.46},
+      "mlx_active_memory_gb_during_32k": 26.7,
+      "mtp": {"attempts": 2033, "accepts": 1296, "accept_ratio": 0.6375}
+    },
+    "flashnext-0133": {
+      "rapid_sha": "6f3f65b92eed6906421b5761686c0a2cd0923aa3",
+      "model_revision": "dcf657e4acda2aae72da99cde65b6c491cd96998",
+      "source_json_sha256": "2de53fe3e8236b1fe4135f22811040d0e4a14edc4772bfaf46662d6ef332e925",
+      "mlx_status": {"active_memory_gb": 102.78, "peak_memory_gb": 148.08}
+    },
+    "flashnext-0134": {
+      "rapid_sha": "615a8c5cd17b40db8d49e17d93c96f9094f23221",
+      "model_revision": "dcf657e4acda2aae72da99cde65b6c491cd96998",
+      "source_json_sha256": "0b2245c6159a8b24714ff4637bc31f40c521422149ba2b496fa5fc10523368d6",
+      "mlx_status": {"active_memory_gb": 102.78, "peak_memory_gb": 148.08}
+    },
+    "glm53-0134": {
+      "rapid_sha": "615a8c5cd17b40db8d49e17d93c96f9094f23221",
+      "model_revision": "06d6c7530e8290e20fabdc37a825ce07bdfc490c",
+      "source_json_sha256": "95cced14b5f73ffb23729e7bb89a4ea9c6354c9d19212333d32601963cf57718",
+      "mlx_status": {"active_memory_gb": 180.6, "peak_memory_gb": 195.58, "cache_memory_gb": 1.08}
+    }
+  }
+}
