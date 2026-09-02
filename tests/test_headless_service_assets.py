@@ -41,6 +41,7 @@ def test_smoke_script_is_syntactically_valid_and_does_not_accept_key_argv() -> N
     assert 'curl -q --config "$CURL_CONFIG"' in source
     assert '--max-time 1 "$BASE_URL/readyz"' in source
     assert '--max-time 1 "$BASE_URL/livez"' in source
+    assert "READY_DEADLINE=$((SECONDS + 120))" in source
     assert "kill -0" not in source
     assert "launchctl print" in source
     assert "/livez" in source

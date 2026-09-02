@@ -35,7 +35,8 @@ boot behavior of your own machine.
 
 ## 1. Prepare the service account
 
-Log in as the service account while the machine still has a display, then:
+Log in as the service account while the machine still has a display. Run every
+command in this section as that account, without `sudo`:
 
 ```bash
 curl -fsSL https://rapidmlx.com/install.sh | bash
@@ -85,7 +86,9 @@ is required: a process in the system launchd domain does not inherit the GUI
 session's shell environment, and Hugging Face otherwise cannot reliably find
 the service account's cache.
 
-Install the validated file:
+Switch to a separate administrator session for the remaining system setup.
+Keep `serveuser` in every absolute path; do not substitute the administrator's
+home directory. Install the validated file:
 
 ```bash
 sudo install -o root -g wheel -m 644 \
@@ -182,12 +185,16 @@ This setting cannot bypass FileVault's preboot unlock.
 
 ## 5. Update without fighting KeepAlive
 
-Record the working state first. Include every optional extra the service uses;
-`pip freeze` records versions but cannot reconstruct which extras you intended:
+Run this section from the administrator session. Commands that modify the
+application runtime explicitly switch back to `serveuser`; this prevents an
+update from accidentally installing into the administrator's home. Record the
+working state first. Include every optional extra the service uses; `pip freeze`
+records versions but cannot reconstruct which extras you intended:
 
 ```bash
-rapid-mlx --version
-~/.rapid-mlx/bin/python -m pip freeze > "$HOME/rapid-mlx-before-upgrade.txt"
+sudo -u serveuser -H /Users/serveuser/.local/bin/rapid-mlx --version
+sudo -u serveuser -H /bin/bash -c \
+  '/Users/serveuser/.rapid-mlx/bin/python -m pip freeze > "$HOME/rapid-mlx-before-upgrade.txt"'
 sudo cp -p /Library/LaunchDaemons/com.rapidmlx.server.plist \
   /Library/LaunchDaemons/com.rapidmlx.server.plist.pre-upgrade
 ```
@@ -196,12 +203,13 @@ Then use this order:
 
 ```bash
 sudo launchctl bootout system/com.rapidmlx.server
-curl -fsSL https://rapidmlx.com/install.sh | bash
+curl -fsSL https://rapidmlx.com/install.sh | sudo -u serveuser -H /bin/bash
 
 # Re-assert the extras required by this appliance. Examples:
-~/.rapid-mlx/bin/python -m pip install --upgrade 'rapid-mlx[vision]'
+sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/python \
+  -m pip install --upgrade 'rapid-mlx[vision]'
 
-~/.rapid-mlx/bin/rapid-mlx doctor || \
+sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/rapid-mlx doctor || \
   echo 'Doctor reported issues; keep the daemon stopped and continue validation.'
 plutil -lint /Library/LaunchDaemons/com.rapidmlx.server.plist
 sudo launchctl bootstrap system \
@@ -226,9 +234,9 @@ the service again:
 
 ```bash
 sudo launchctl bootout system/com.rapidmlx.server 2>/dev/null || true
-~/.rapid-mlx/bin/python -m pip install \
+sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/python -m pip install \
   'rapid-mlx==PREVIOUS_VERSION' 'rapid-mlx[vision]==PREVIOUS_VERSION'
-~/.rapid-mlx/bin/rapid-mlx doctor || true
+sudo -u serveuser -H /Users/serveuser/.rapid-mlx/bin/rapid-mlx doctor || true
 sudo launchctl bootstrap system \
   /Library/LaunchDaemons/com.rapidmlx.server.plist
 ./scripts/headless_service_smoke.sh

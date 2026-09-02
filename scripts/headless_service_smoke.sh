@@ -74,7 +74,8 @@ echo "  running (pid $PID${EXPECTED_USER:+, user $EXPECTED_USER})"
 echo "[2/4] liveness"
 echo "[3/4] readiness and model inventory"
 READY=false
-for _ in {1..40}; do
+READY_DEADLINE=$((SECONDS + 120))
+while ((SECONDS < READY_DEADLINE)); do
     if curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/livez" > "$RESPONSE" 2>/dev/null &&
        grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|alive|healthy)"|^OK$' "$RESPONSE" &&
        curl -q --config "$CURL_CONFIG" --max-time 1 "$BASE_URL/readyz" > "$RESPONSE" 2>/dev/null &&
