@@ -4200,6 +4200,12 @@ def serve_command(args):
     _kv_quant_explicit = bool(args.kv_cache_quantization) or (
         args.kv_cache_dtype != "bf16"
     )
+    # The typed rejection must be importable at the point the
+    # scheduler/MLLM-lane backstop raises it during load_model, regardless
+    # of which KV branch ran above (#78). Imported into this function scope
+    # so the ``except`` clause below always resolves the name.
+    from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
+
     kv_cache_decision = None
     if not args.kv_cache_turboquant and not args.kv_cache_quantization:
         from .kv_cache_dtype import (
@@ -4765,6 +4771,15 @@ def serve_command(args):
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
+    except KVCacheQuantizationUnsupportedError as e:
+        # The scheduler/MLLM-lane backstop (#78) rejects an explicit
+        # quantized-KV request that the CLI-time resolver could not see (a
+        # freshly-downloaded model whose config wasn't readable yet surfaces
+        # only once weights load). Surface the SAME actionable error and exit
+        # code (2) as the CLI resolver so every serving lane reports the dtype
+        # contract identically instead of a generic model-load failure.
+        print(f"\n  Error: {e}\n")
+        sys.exit(2)
     except Exception as e:
         # Opt-in telemetry (Phase 2.2 error wiring): record that a model
         # failed to load on the ``serve`` path. The payload carries only a
@@ -10694,8 +10709,8 @@ Examples:
             "-27%% (int4) / -36%% (int8) at 16k context (#1853). "
             "An explicit int8/int4 on a sliding-window (Gemma 3/4, "
             "GPT-OSS) or MLA (DeepSeek V3+, Kimi K2.5) model is rejected "
-            "before the server reports ready (#78); only auto/profile-"
-            "selected quantization downgrades to bf16. Use --reasoning "
+            "before the server reports ready; only auto/profile-selected "
+            "quantization downgrades to bf16. Use --reasoning "
             "for AIME / hard math."
         ),
     )

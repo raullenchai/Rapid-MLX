@@ -361,3 +361,43 @@ def test_resident_performance_supported_family_passes(monkeypatch):
     )
     assert performance is not None
     assert performance.kv_cache_dtype == "int8"
+
+
+# ---------------------------------------------------------------------------
+# Legacy --kv-cache-quantization shape shares the same reject-before-ready
+# contract (both bit widths), not just the new --kv-cache-dtype flag.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_serve_exits_before_load_for_explicit_gemma4_legacy_flag(tmp_path, bits):
+    """The deprecated ``--kv-cache-quantization [--kv-cache-quantization-bits
+    N]`` shape is equally operator-explicit and must reject an unsupported
+    family BEFORE the server reports ready, with the same exit code (2) and
+    actionable message as ``--kv-cache-dtype`` (#78). A config-only local
+    directory keeps the run fast and cache/network-independent so the gate is
+    reachable without downloading Gemma-4 weights."""
+    model_dir = tmp_path / "gemma4-config-only"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "vllm_mlx.cli",
+            "serve",
+            str(model_dir),
+            "--kv-cache-quantization",
+            "--kv-cache-quantization-bits",
+            str(bits),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    assert proc.returncode == 2, combined
+    dtype = "int8" if bits == 8 else "int4"
+    assert f"--kv-cache-dtype {dtype}" in combined
+    assert "cannot be honored" in combined
+    assert "bf16" in combined
