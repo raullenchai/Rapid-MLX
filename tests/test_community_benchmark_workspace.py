@@ -252,6 +252,7 @@ def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
         "post_submission",
         lambda *args, **kwargs: called.append(1),
     )
+    monkeypatch.setattr(atomic_upload, "peek_install_id", lambda: "a" * 12)
     output = io.StringIO()
 
     result = atomic_upload.upload_run(
@@ -266,6 +267,10 @@ def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
     assert not (tmp_path / "bench-install-id").exists()
     assert "observes the source IP" in output.getvalue()
     assert "does not put it in the benchmark record" in output.getvalue()
+    exact_body = benchmark_upload.submission_body(
+        {**run, "install_id": "a" * 12}
+    ).decode()
+    assert exact_body in output.getvalue()
 
 
 def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(

@@ -35,9 +35,7 @@ def _ask_consent(
     print("", file=stdout)
     print(f"About to upload this benchmark to {target}:", file=stdout)
     print("=" * 72, file=stdout)
-    print(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), file=stdout
-    )
+    print(submission_body(payload).decode("utf-8"), file=stdout)
     print("=" * 72, file=stdout)
     print(
         "Everything shown above leaves this Mac. It includes model source, "

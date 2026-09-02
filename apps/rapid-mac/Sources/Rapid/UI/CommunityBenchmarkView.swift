@@ -833,8 +833,10 @@ struct CommunityBenchmarkView: View {
                         message: "The benchmark was not uploaded."
                     )
                 }
-                receipts[preview.runID] = response.receipt
-                if !response.receiptSaved {
+                if response.receiptSaved {
+                    receipts[preview.runID] = response.receipt
+                } else {
+                    await refreshResults()
                     errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
                 }
             } catch is CancellationError {
