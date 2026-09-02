@@ -44,15 +44,69 @@ def test_ltx25_capabilities_match_distilled_controls() -> None:
     }
 
 
+def _fake_embedded_distributions(
+    monkeypatch: pytest.MonkeyPatch, distributions: dict[str, tuple[str, str | None]]
+) -> None:
+    """Fake installed (version, provenance-stamp) pairs for the embedded check."""
+
+    def distribution(name: str) -> SimpleNamespace:
+        if name not in distributions:
+            raise ltx25.importlib.metadata.PackageNotFoundError(name)
+        version, provenance = distributions[name]
+        return SimpleNamespace(
+            version=version,
+            read_text=lambda filename: (
+                provenance if filename == ltx25.LTX25_PROVENANCE_FILE else None
+            ),
+        )
+
+    monkeypatch.setattr(ltx25.importlib.metadata, "distribution", distribution)
+    monkeypatch.setattr(ltx25.importlib.util, "find_spec", lambda _: object())
+
+
 def test_ltx25_embedded_runtime_requires_both_exact_distributions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    versions = {"ltx-core-mlx": "0.14.15", "ltx-pipelines-mlx": "0.14.15"}
-    monkeypatch.setattr(ltx25.importlib.metadata, "version", versions.__getitem__)
-    monkeypatch.setattr(ltx25.importlib.util, "find_spec", lambda _: object())
+    stamp = ltx25.LTX25_RUNTIME_COMMIT + "\n"
+    distributions = {
+        "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+        "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+    }
+    _fake_embedded_distributions(monkeypatch, distributions)
     assert ltx25.embedded_ltx25_interpreter() == ltx25.sys.executable
 
-    versions["ltx-pipelines-mlx"] = "0.14.16"
+    distributions["ltx-pipelines-mlx"] = ("0.14.16", stamp)
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+    del distributions["ltx-pipelines-mlx"]
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_embedded_runtime_rejects_same_version_without_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-version install from a package index carries no build stamp."""
+    stamp = ltx25.LTX25_RUNTIME_COMMIT
+    _fake_embedded_distributions(
+        monkeypatch,
+        {
+            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, None),
+        },
+    )
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_embedded_runtime_rejects_mismatched_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_embedded_distributions(
+        monkeypatch,
+        {
+            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
+            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
+        },
+    )
     assert ltx25.embedded_ltx25_interpreter() is None
 
 

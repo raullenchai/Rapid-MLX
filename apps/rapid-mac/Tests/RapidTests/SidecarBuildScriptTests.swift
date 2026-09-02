@@ -192,6 +192,12 @@ struct SidecarBuildScriptTests {
                 "A shared predictable archive path permits local replacement races.")
         #expect(script.contains(#"importlib.metadata.version("ltx-core-mlx") == "0.14.15""#))
         #expect(script.contains(#"importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15""#))
+        #expect(script.contains(#"printf '%s\n' "$LTX25_RUNTIME_COMMIT""#),
+                "Each embedded LTX distribution must be stamped with the audited source commit.")
+        #expect(script.contains("RAPID_LTX25_PROVENANCE"),
+                "A version match alone must never qualify the embedded LTX runtime.")
+        #expect(script.contains("assert embedded_ltx25_interpreter() is not None"),
+                "The build smoke must prove the runtime accepts the stamped provenance.")
         #expect(script.contains("from videox_fun_mlx.models.cogvideox_transformer3d import"))
         #expect(script.contains("from videox_fun_mlx.models.t5_encoder import T5Encoder"))
         #expect(script.contains("from videox_fun_mlx.models.tokenizer import T5Tokenizer"))

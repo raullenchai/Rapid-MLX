@@ -20,6 +20,9 @@ from pathlib import Path
 LTX25_RUNTIME_COMMIT = "57952288076766abe27dda3a774b2c24f7346977"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/MrMoferFRAN/ltx-2-mlx.git"
 LTX25_RUNTIME_VERSION = "0.14.15"
+# Stamped into each embedded distribution's .dist-info by build-sidecar.sh;
+# its content is the audited source commit the packages were built from.
+LTX25_PROVENANCE_FILE = "RAPID_LTX25_PROVENANCE"
 _DEFAULT_TIMEOUT_SECONDS = 7200
 _TERMINATE_GRACE_SECONDS = 10
 _RUNTIME_CACHE_LOCK = threading.Lock()
@@ -104,18 +107,28 @@ def embedded_ltx25_interpreter() -> str | None:
     """Return this interpreter when the audited LTX packages are embedded.
 
     Desktop cannot provision a Git checkout or an ``uv`` environment after
-    signing.  Both distributions therefore have to be present at the exact
-    version built into the sidecar before this path is considered runnable.
+    signing.  A version number alone is not proof of provenance — any
+    same-version distribution from an index would satisfy it — so the sidecar
+    build stamps each embedded distribution with the audited source commit,
+    and both stamps must match ``LTX25_RUNTIME_COMMIT`` exactly.
     """
     try:
-        versions_match = all(
-            importlib.metadata.version(distribution) == LTX25_RUNTIME_VERSION
-            for distribution in ("ltx-core-mlx", "ltx-pipelines-mlx")
-        )
+        for name in ("ltx-core-mlx", "ltx-pipelines-mlx"):
+            distribution = importlib.metadata.distribution(name)
+            if distribution.version != LTX25_RUNTIME_VERSION:
+                return None
+            provenance = distribution.read_text(LTX25_PROVENANCE_FILE)
+            if provenance is None or provenance.strip() != LTX25_RUNTIME_COMMIT:
+                return None
         cli_present = importlib.util.find_spec("ltx_pipelines_mlx.cli") is not None
-    except (ImportError, ModuleNotFoundError, importlib.metadata.PackageNotFoundError):
+    except (
+        OSError,
+        ImportError,
+        ModuleNotFoundError,
+        importlib.metadata.PackageNotFoundError,
+    ):
         return None
-    return sys.executable if versions_match and cli_present else None
+    return sys.executable if cli_present else None
 
 
 def _runtime_revision(executable: str) -> str | None:

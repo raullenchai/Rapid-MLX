@@ -68,16 +68,39 @@ _WAN21_COMPONENT_CONFIGS = {
 }
 
 
+_TRANSFORMER_SHARD = "diffusion_pytorch_model-00001-of-00001.safetensors"
+_T5_SHARD = "model-00001-of-00001.safetensors"
+
+
+def _index_payload(count: int, shard: str) -> dict:
+    return {"weight_map": {f"tensor.{i}": shard for i in range(count)}}
+
+
+def _write_index(path: Path, count: int, shard: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_index_payload(count, shard)))
+    (path.parent / shard).write_bytes(b"shard")
+
+
 def _layout(root: Path) -> Path:
-    for relative in (
-        "transformer/diffusion_pytorch_model.safetensors.index.json",
-        "text_encoder/model.safetensors.index.json",
-        "vae/diffusion_pytorch_model.safetensors",
-    ):
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"{}")
+    _write_index(
+        root / "transformer/diffusion_pytorch_model.safetensors.index.json",
+        wan_diffusers._EXPECTED_TRANSFORMER_KEYS,
+        _TRANSFORMER_SHARD,
+    )
+    _write_index(
+        root / "text_encoder/model.safetensors.index.json",
+        wan_diffusers._EXPECTED_T5_KEYS,
+        _T5_SHARD,
+    )
+    vae = root / "vae/diffusion_pytorch_model.safetensors"
+    vae.parent.mkdir(parents=True, exist_ok=True)
+    vae.write_bytes(b"vae")
     (root / "tokenizer").mkdir()
+    (root / "tokenizer/special_tokens_map.json").write_text("{}")
+    (root / "tokenizer/spiece.model").write_bytes(b"spiece")
+    (root / "tokenizer/tokenizer.json").write_text("{}")
+    (root / "tokenizer/tokenizer_config.json").write_text("{}")
     for relative, payload in _WAN21_COMPONENT_CONFIGS.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +131,92 @@ def test_official_layout_rejects_mismatched_architecture(tmp_path: Path) -> None
 def test_official_layout_rejects_unreadable_component_config(tmp_path: Path) -> None:
     root = _layout(tmp_path)
     (root / "vae/config.json").write_text("{")
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "tokenizer/special_tokens_map.json",
+        "tokenizer/spiece.model",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+    ],
+)
+@pytest.mark.parametrize("defect", ["missing", "zero-byte"])
+def test_official_layout_rejects_bad_tokenizer_artifact(
+    tmp_path: Path, artifact: str, defect: str
+) -> None:
+    root = _layout(tmp_path)
+    path = root / artifact
+    if defect == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"")
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+@pytest.mark.parametrize(
+    "index_body",
+    [
+        "{",
+        "",
+        json.dumps([]),
+        json.dumps({}),
+        json.dumps({"weight_map": []}),
+        json.dumps({"weight_map": {}}),
+        json.dumps({"weight_map": {"tensor.0": _T5_SHARD}}),
+    ],
+    ids=[
+        "truncated-json",
+        "empty-file",
+        "non-object",
+        "no-weight-map",
+        "weight-map-not-object",
+        "empty-weight-map",
+        "wrong-tensor-count",
+    ],
+)
+def test_official_layout_rejects_malformed_indexes(
+    tmp_path: Path, index_body: str
+) -> None:
+    root = _layout(tmp_path)
+    (root / "text_encoder/model.safetensors.index.json").write_text(index_body)
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+def test_official_layout_rejects_extra_tensors_in_index(tmp_path: Path) -> None:
+    root = _layout(tmp_path)
+    _write_index(
+        root / "transformer/diffusion_pytorch_model.safetensors.index.json",
+        wan_diffusers._EXPECTED_TRANSFORMER_KEYS + 1,
+        _TRANSFORMER_SHARD,
+    )
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+@pytest.mark.parametrize(
+    "shard",
+    ["../escape.safetensors", "sub/shard.safetensors", "/abs.safetensors", "", 5],
+    ids=["parent-escape", "subdirectory", "absolute", "empty-name", "non-string"],
+)
+def test_official_layout_rejects_unsafe_shard_names(tmp_path: Path, shard) -> None:
+    root = _layout(tmp_path)
+    payload = _index_payload(wan_diffusers._EXPECTED_T5_KEYS, _T5_SHARD)
+    payload["weight_map"]["tensor.0"] = shard
+    index = root / "text_encoder/model.safetensors.index.json"
+    index.write_text(json.dumps(payload))
+
+    assert not is_diffusers_wan21_layout(root)
+
+
+def test_official_layout_rejects_missing_referenced_shard(tmp_path: Path) -> None:
+    root = _layout(tmp_path)
+    (root / "transformer" / _TRANSFORMER_SHARD).unlink()
 
     assert not is_diffusers_wan21_layout(root)
 
@@ -558,6 +667,7 @@ def test_generate_runtime_routes_all_pinned_loader_seams(
         calls.append(("t5", globals()["load_t5_encoder"](Path(model_dir), config)))
         calls.append(("vae", globals()["load_vae_decoder"](Path(model_dir), config)))
         calls.append(("marker", marker))
+        calls.append(("model_dir", model_dir))
 
     generator.generate_video = FunctionType(
         generate_template.__code__,
@@ -575,11 +685,14 @@ def test_generate_runtime_routes_all_pinned_loader_seams(
     generation_kwargs = {"model_dir": "ignored", "marker": "request"}
     generate_with_runtime(root, generator, generation_kwargs)
 
-    assert [kind for kind, _ in calls] == ["model", "t5", "vae", "marker"]
-    assert calls[-1] == ("marker", "request")
+    assert [kind for kind, _ in calls] == ["model", "t5", "vae", "marker", "model_dir"]
+    assert calls[3] == ("marker", "request")
     assert all(value[1] == root for _, value in calls[:3])
-    assert generation_kwargs["model_dir"] != "ignored"
-    assert not Path(generation_kwargs["model_dir"]).exists()
+    passed_model_dir = calls[4][1]
+    assert passed_model_dir != "ignored"
+    assert not Path(passed_model_dir).exists()
+    # The temporary model view must never leak into the caller's mapping.
+    assert generation_kwargs == {"model_dir": "ignored", "marker": "request"}
 
 
 def test_loader_target_validation_rejects_missing_and_unknown_parameters(

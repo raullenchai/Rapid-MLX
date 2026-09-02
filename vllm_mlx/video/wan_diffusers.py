@@ -63,16 +63,62 @@ _WAN21_COMPONENT_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 
-def is_diffusers_wan21_layout(root: Path) -> bool:
-    if not (
-        all(
-            (root / relative).is_file()
-            for relative in (_TRANSFORMER_INDEX, _T5_INDEX, _VAE_FILE)
-        )
-        and (root / "tokenizer").is_dir()
-    ):
-        return False
+def _index_shards(root: Path, relative: str, expected: int) -> set[Path] | None:
+    """Return the shard paths an index references, or None when malformed."""
     try:
+        payload = json.loads((root / relative).read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    weight_map = payload.get("weight_map")
+    if not isinstance(weight_map, dict) or len(weight_map) != expected:
+        return None
+    directory = (root / relative).parent
+    shards: set[Path] = set()
+    for source, filename in weight_map.items():
+        if (
+            not isinstance(source, str)
+            or not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+        ):
+            return None
+        shards.add(directory / filename)
+    return shards
+
+
+_TOKENIZER_FILES = (
+    "tokenizer/special_tokens_map.json",
+    "tokenizer/spiece.model",
+    "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json",
+)
+
+
+def is_diffusers_wan21_layout(root: Path) -> bool:
+    """Decide routing for the pinned Desktop layout, rejecting malformed trees.
+
+    Routing must fail closed: a missing or empty tokenizer artifact, a
+    malformed or wrong-cardinality safetensors index, an unsafe shard name, or
+    a missing referenced shard all mean this is not the audited layout. The
+    tokenizer artifacts mirror the download gate's pin for
+    Wan-AI/Wan2.1-T2V-1.3B-Diffusers.
+    """
+    try:
+        if not (root / _VAE_FILE).is_file():
+            return False
+        for relative in _TOKENIZER_FILES:
+            artifact = root / relative
+            if not artifact.is_file() or artifact.stat().st_size == 0:
+                return False
+        for relative, expected in (
+            (_TRANSFORMER_INDEX, _EXPECTED_TRANSFORMER_KEYS),
+            (_T5_INDEX, _EXPECTED_T5_KEYS),
+        ):
+            shards = _index_shards(root, relative, expected)
+            if shards is None or not all(shard.is_file() for shard in shards):
+                return False
         for relative, expected in _WAN21_COMPONENT_CONTRACTS.items():
             payload = json.loads((root / relative).read_text())
             if not isinstance(payload, dict) or any(
@@ -469,7 +515,8 @@ def generate_with_runtime(root: Path, generator, generation_kwargs: dict) -> Non
     """Generate through request-local loaders for the official layout."""
     if is_diffusers_wan21_layout(root):
         with diffusers_runtime(root, generator) as (model_view, scoped_generate):
-            generation_kwargs["model_dir"] = str(model_view)
-            scoped_generate(**generation_kwargs)
+            # The temporary view must not leak into the caller's mapping:
+            # replace model_dir on a copy only.
+            scoped_generate(**{**generation_kwargs, "model_dir": str(model_view)})
     else:
         generator.generate_video(**generation_kwargs)

@@ -631,6 +631,19 @@ LTX25_URL="https://github.com/MrMoferFRAN/ltx-2-mlx/archive/${LTX25_RUNTIME_COMM
             --constraint "$SIDECAR_CONSTRAINTS" \
             "$LTX25_ROOT/packages/$LTX25_PACKAGE"
     done
+    # A version match alone is not provenance: any same-version distribution
+    # from an index would satisfy it. Stamp each embedded distribution with
+    # the audited source commit; the runtime accepts the embedded path only
+    # when both stamps equal its pinned LTX25_RUNTIME_COMMIT.
+    for LTX25_DIST in ltx_core_mlx ltx_pipelines_mlx; do
+        LTX25_DIST_INFO="$STAGE/site-packages/${LTX25_DIST}-${LTX25_RUNTIME_VERSION}.dist-info"
+        if [ ! -d "$LTX25_DIST_INFO" ]; then
+            echo "ERR: missing $LTX25_DIST_INFO; cannot stamp LTX-2.5 provenance" >&2
+            exit 1
+        fi
+        printf '%s\n' "$LTX25_RUNTIME_COMMIT" \
+            > "$LTX25_DIST_INFO/RAPID_LTX25_PROVENANCE"
+    done
     mkdir -p "$STAGE/licenses/sources"
     cp "$LTX25_ROOT/LICENSE" "$STAGE/licenses/LTX-2.5-MLX-MIT.txt"
     cp "$LTX25_TAR" \
@@ -1242,6 +1255,8 @@ assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("imageio") is None
 assert importlib.metadata.version("ltx-core-mlx") == "0.14.15"
 assert importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15"
+from vllm_mlx.video.ltx25 import embedded_ltx25_interpreter
+assert embedded_ltx25_interpreter() is not None, "LTX-2.5 provenance stamp rejected"
 assert {"model_dir", "prompt"} <= set(inspect.signature(generate_video).parameters)
 assert {"load_wan_model", "load_t5_encoder", "load_vae_decoder"} <= set(generate_video.__globals__)
 wan21 = WanModelConfig.wan21_t2v_1_3b()
