@@ -51,6 +51,7 @@ def _reset_video_job_lifecycle():
 
 def test_wan_aliases_route_to_video_lane() -> None:
     expected = {
+        "wan2.1-t2v-1.3b-bf16": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
         "wan2.2-ti2v-5b-q8": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",
         "wan2.2-ti2v-5b-bf16": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
         "wan2.2-i2v-a14b-q8": "Anes1032/Wan2.2-I2V-A14B-mlx-q8",

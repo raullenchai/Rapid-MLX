@@ -110,12 +110,14 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             LTX25_RUNTIME_COMMIT,
             LTX25_RUNTIME_REPOSITORY,
             LTX25BackendError,
+            embedded_ltx25_interpreter,
             prepare_ltx25_runtime,
             resolve_ltx25_runtime,
         )
 
-        runtime = resolve_ltx25_runtime()
-        if runtime is None:
+        embedded_runtime = embedded_ltx25_interpreter()
+        runtime = None if embedded_runtime is not None else resolve_ltx25_runtime()
+        if embedded_runtime is None and runtime is None:
             missing.append(
                 "the pinned LTX-2.5 runtime "
                 f"(commit {LTX25_RUNTIME_COMMIT}; see the video generation guide)"
@@ -137,9 +139,9 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
                 '    RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" '
                 "rapid-mlx serve ltx-2.5-mlx-q8\n"
             )
-        if shutil.which("uv") is None:
+        if embedded_runtime is None and shutil.which("uv") is None:
             missing.append("uv (`brew install uv`)")
-        elif runtime is not None:
+        elif embedded_runtime is None and runtime is not None:
             try:
                 prepare_ltx25_runtime(runtime)
             except LTX25BackendError as exc:

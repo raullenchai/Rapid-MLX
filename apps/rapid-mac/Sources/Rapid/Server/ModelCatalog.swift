@@ -343,7 +343,10 @@ enum ModelCatalog {
     /// the signed Desktop sidecar. Exact names make a new engine alias fail
     /// closed until its runtime has been bundled and smoke-tested here.
     static let packagedVideoAliases: Set<String> = [
+        "cogvideox-fun-5b-q4",
         "ltx-2.3-mlx-q4",
+        "ltx-2.5-mlx-q8",
+        "wan2.1-t2v-1.3b-bf16",
         "wan2.2-i2v-a14b-q8",
         "wan2.2-t2v-a14b-bf16",
         "wan2.2-ti2v-5b-bf16",

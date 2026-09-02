@@ -97,6 +97,7 @@ def test_video_entries_expose_pre_serve_modes_and_memory_floor() -> None:
         "cogvideox-fun-5b-q4": ["text-to-video"],
         "cogvideox-fun-5b-q8": ["text-to-video"],
         "cogvideox-fun-5b-bf16": ["text-to-video"],
+        "wan2.1-t2v-1.3b-bf16": ["text-to-video"],
         "wan2.2-ti2v-5b-q8": ["text-to-video", "image-to-video"],
         "wan2.2-ti2v-5b-bf16": ["text-to-video", "image-to-video"],
         "wan2.2-i2v-a14b-q8": ["image-to-video"],

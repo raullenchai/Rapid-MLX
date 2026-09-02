@@ -181,6 +181,35 @@ struct SidecarBuildScriptTests {
         #expect(constraints.contains("mlx-arsenal==0.12.1"))
         #expect(script.contains("'mlx-video-with-audio'"))
         #expect(script.contains("'mlx-arsenal'"))
+        #expect(script.contains("LTX25_RUNTIME_VERSION=\"0.14.15\""))
+        #expect(script.contains("57952288076766abe27dda3a774b2c24f7346977"))
+        #expect(script.contains("fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"))
+        #expect(script.contains(#"LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)""#),
+                "The audited archive must be downloaded and extracted in a private directory.")
+        #expect(script.contains(#"trap 'rm -rf "$LTX25_SOURCE_DIR"' EXIT INT TERM"#),
+                "The private LTX source directory must be cleaned on every exit path.")
+        #expect(!script.contains(#"LTX25_TAR="/tmp/rapid-ltx25-"#),
+                "A shared predictable archive path permits local replacement races.")
+        #expect(script.contains("import importlib.metadata\nimport importlib.util\nimport inspect"),
+                "The video smoke's version asserts rely on an explicit importlib.metadata import, not a side effect.")
+        #expect(script.contains(#"importlib.metadata.version("ltx-core-mlx") == "0.14.15""#))
+        #expect(script.contains(#"importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15""#))
+        #expect(script.contains(#"printf '%s\n' "$LTX25_RUNTIME_COMMIT""#),
+                "Each embedded LTX distribution must be stamped with the audited source commit.")
+        #expect(script.contains("RAPID_LTX25_PROVENANCE"),
+                "A version match alone must never qualify the embedded LTX runtime.")
+        #expect(script.contains("assert embedded_ltx25_interpreter() is not None"),
+                "The build smoke must prove the runtime accepts the stamped provenance.")
+        #expect(script.contains("from videox_fun_mlx.models.cogvideox_transformer3d import"))
+        #expect(script.contains("from videox_fun_mlx.models.t5_encoder import T5Encoder"))
+        #expect(script.contains("from videox_fun_mlx.models.tokenizer import T5Tokenizer"))
+        #expect(script.contains("from videox_fun_mlx.pipeline.scheduler import DDIMScheduler"))
+        #expect(script.contains(#"{"load_wan_model", "load_t5_encoder", "load_vae_decoder"}"#),
+                "The signed runtime smoke must verify every Wan loader seam used by the adapter.")
+        #expect(script.contains("WanModelConfig.wan21_t2v_1_3b()"),
+                "The signed runtime smoke must verify its pinned Wan 2.1 architecture preset.")
+        #expect(script.contains(#"cp "$LTX25_TAR" \"#),
+                "The complete corresponding LTX source must travel with the runtime.")
         #expect(!script.contains(#"${RAPID_MLX_INSTALL_TARGET}[video]"#),
                 "The broad video extra would pull OpenCV and a conflicting vision stack.")
         #expect(script.contains("re-audit the OpenCV-free encoder patch"),

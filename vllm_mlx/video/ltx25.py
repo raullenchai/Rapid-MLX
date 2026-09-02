@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
 import io
 import os
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -16,6 +19,10 @@ from pathlib import Path
 
 LTX25_RUNTIME_COMMIT = "57952288076766abe27dda3a774b2c24f7346977"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/MrMoferFRAN/ltx-2-mlx.git"
+LTX25_RUNTIME_VERSION = "0.14.15"
+# Stamped into each embedded distribution's .dist-info by build-sidecar.sh;
+# its content is the audited source commit the packages were built from.
+LTX25_PROVENANCE_FILE = "RAPID_LTX25_PROVENANCE"
 _DEFAULT_TIMEOUT_SECONDS = 7200
 _TERMINATE_GRACE_SECONDS = 10
 _RUNTIME_CACHE_LOCK = threading.Lock()
@@ -94,6 +101,34 @@ def resolve_ltx25_runtime() -> str | None:
         return None
     absolute = str(Path(executable).absolute())
     return absolute if _runtime_revision(absolute) == LTX25_RUNTIME_COMMIT else None
+
+
+def embedded_ltx25_interpreter() -> str | None:
+    """Return this interpreter when the audited LTX packages are embedded.
+
+    Desktop cannot provision a Git checkout or an ``uv`` environment after
+    signing.  A version number alone is not proof of provenance — any
+    same-version distribution from an index would satisfy it — so the sidecar
+    build stamps each embedded distribution with the audited source commit,
+    and both stamps must match ``LTX25_RUNTIME_COMMIT`` exactly.
+    """
+    try:
+        for name in ("ltx-core-mlx", "ltx-pipelines-mlx"):
+            distribution = importlib.metadata.distribution(name)
+            if distribution.version != LTX25_RUNTIME_VERSION:
+                return None
+            provenance = distribution.read_text(LTX25_PROVENANCE_FILE)
+            if provenance is None or provenance.strip() != LTX25_RUNTIME_COMMIT:
+                return None
+        cli_present = importlib.util.find_spec("ltx_pipelines_mlx.cli") is not None
+    except (
+        OSError,
+        ImportError,
+        ModuleNotFoundError,
+        importlib.metadata.PackageNotFoundError,
+    ):
+        return None
+    return sys.executable if cli_present else None
 
 
 def _runtime_revision(executable: str) -> str | None:
@@ -391,8 +426,12 @@ class LTX25VideoEngine:
         conditioning_strength: float | None = None,
     ) -> None:
         timeout = _generation_timeout_seconds()
-        workspace = _prepared_ltx25_runtime()
-        if workspace is None:
+        interpreter = embedded_ltx25_interpreter()
+        environment = os.environ.copy()
+        workspace = None
+        if interpreter is None:
+            workspace = _prepared_ltx25_runtime()
+        if interpreter is None and workspace is None:
             executable = resolve_ltx25_runtime()
             if executable is None:
                 raise LTX25BackendError(
@@ -400,6 +439,10 @@ class LTX25VideoEngine:
                     "See the LTX-2.5 setup in the video generation guide."
                 )
             workspace = prepare_ltx25_runtime(executable)
+        if interpreter is None:
+            assert workspace is not None
+            interpreter = str(workspace / ".venv" / "bin" / "python")
+            environment = _isolated_python_environment()
         try:
             staging = tempfile.TemporaryDirectory(
                 prefix=f".{output_path.name}.",
@@ -412,7 +455,7 @@ class LTX25VideoEngine:
             ) from exc
 
         command = [
-            str(workspace / ".venv" / "bin" / "python"),
+            interpreter,
             "-c",
             _STDIN_PROMPT_RUNNER,
             "generate",
@@ -461,7 +504,7 @@ class LTX25VideoEngine:
                     stderr=subprocess.DEVNULL,
                     text=True,
                     start_new_session=True,
-                    env=_isolated_python_environment(),
+                    env=environment,
                 )
                 self._process = process
             process.communicate(input=prompt, timeout=timeout)

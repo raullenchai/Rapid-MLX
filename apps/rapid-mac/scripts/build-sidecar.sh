@@ -63,6 +63,9 @@ COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
 FFMPEG_VERSION="7.1.5"
 FFMPEG_SHA256="de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
 FFMPEG_BUILD_JOBS="${FFMPEG_BUILD_JOBS:-4}"
+LTX25_RUNTIME_COMMIT="57952288076766abe27dda3a774b2c24f7346977"
+LTX25_RUNTIME_VERSION="0.14.15"
+LTX25_RUNTIME_SHA256="fa9a66a0c78721c3dce51d0f1dadcabad060682410303be748e529a846a9d5c9"
 
 # How many Mach-Os we expect to sign. A drift here means a new wheel
 # added a .so OR a dependency moved a binary, both of which need
@@ -595,6 +598,57 @@ echo "==> bundling minimal LTX/Wan video runtime (no OpenCV)"
     --constraint "$SIDECAR_CONSTRAINTS" \
     'mlx-video-with-audio' \
     'mlx-arsenal'
+
+# LTX-2.5 is a separate pure-Python runtime. A signed app cannot clone a
+# repository or provision an uv workspace after launch, so build its two
+# packages from the exact audited source snapshot and embed them.
+LTX25_URL="https://github.com/MrMoferFRAN/ltx-2-mlx/archive/${LTX25_RUNTIME_COMMIT}.tar.gz"
+(
+    set -e
+    LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)"
+    trap 'rm -rf "$LTX25_SOURCE_DIR"' EXIT INT TERM
+    LTX25_TAR="$LTX25_SOURCE_DIR/ltx-2-mlx.tar.gz"
+    echo "==> downloading audited LTX-2.5 runtime source"
+    if ! curl --http1.1 -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+        -o "$LTX25_TAR" "$LTX25_URL"; then
+        echo "ERR: failed to download LTX-2.5 runtime source" >&2
+        exit 1
+    fi
+    LTX25_ACTUAL_SHA="$(shasum -a 256 "$LTX25_TAR" | awk '{print $1}')"
+    if [ "$LTX25_ACTUAL_SHA" != "$LTX25_RUNTIME_SHA256" ] || \
+       ! tar -tzf "$LTX25_TAR" > /dev/null 2>&1; then
+        echo "ERR: LTX-2.5 runtime source failed integrity verification" >&2
+        exit 1
+    fi
+    tar -xzf "$LTX25_TAR" -C "$LTX25_SOURCE_DIR"
+    LTX25_ROOT="$LTX25_SOURCE_DIR/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}"
+    for LTX25_PACKAGE in ltx-core-mlx ltx-pipelines-mlx; do
+        "$STAGE/python/bin/python3.12" -m pip install \
+            --target "$STAGE/site-packages" \
+            --no-warn-script-location \
+            --no-compile \
+            --no-deps \
+            --constraint "$SIDECAR_CONSTRAINTS" \
+            "$LTX25_ROOT/packages/$LTX25_PACKAGE"
+    done
+    # A version match alone is not provenance: any same-version distribution
+    # from an index would satisfy it. Stamp each embedded distribution with
+    # the audited source commit; the runtime accepts the embedded path only
+    # when both stamps equal its pinned LTX25_RUNTIME_COMMIT.
+    for LTX25_DIST in ltx_core_mlx ltx_pipelines_mlx; do
+        LTX25_DIST_INFO="$STAGE/site-packages/${LTX25_DIST}-${LTX25_RUNTIME_VERSION}.dist-info"
+        if [ ! -d "$LTX25_DIST_INFO" ]; then
+            echo "ERR: missing $LTX25_DIST_INFO; cannot stamp LTX-2.5 provenance" >&2
+            exit 1
+        fi
+        printf '%s\n' "$LTX25_RUNTIME_COMMIT" \
+            > "$LTX25_DIST_INFO/RAPID_LTX25_PROVENANCE"
+    done
+    mkdir -p "$STAGE/licenses/sources"
+    cp "$LTX25_ROOT/LICENSE" "$STAGE/licenses/LTX-2.5-MLX-MIT.txt"
+    cp "$LTX25_TAR" \
+        "$STAGE/licenses/sources/ltx-2-mlx-${LTX25_RUNTIME_COMMIT}.tar.gz"
+)
 
 # Upstream 0.1.36 writes MP4 through optional OpenCV/imageio. Replace only
 # the two pinned encoder seams with Rapid's atomic VideoToolbox bridge. Hashes
@@ -1134,7 +1188,8 @@ else
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import importlib.util
+        'import importlib.metadata
+import importlib.util
 import mlx_vlm
 from mlx_vlm.models import (
     diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
@@ -1177,17 +1232,36 @@ print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma architectures OK")' 2>
         PYTHONNOUSERSITE=1 \
         FFMPEG_BINARY="$STAGE/bin/ffmpeg" \
         "$STAGE/python/bin/python3.12" -s -c \
-        'import importlib.util
+        'import importlib.metadata
+import importlib.util
+import inspect
 import tempfile
 from pathlib import Path
 import numpy as np
 import mlx_video
+import mlx_video.generate_wan as wan_generator
 from mlx_video import generate_video_with_audio
 from mlx_video.generate_wan import generate_video
+from mlx_video.models.wan.config import WanModelConfig
+from ltx_pipelines_mlx.cli import main as ltx25_main
+from videox_fun_mlx.models.cogvideox_transformer3d import CogVideoXTransformer3DModel
+from videox_fun_mlx.models.cogvideox_vae import AutoencoderKLCogVideoX
+from videox_fun_mlx.models.t5_encoder import T5Encoder
+from videox_fun_mlx.models.tokenizer import T5Tokenizer
+from videox_fun_mlx.pipeline.pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline
+from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
 from vllm_mlx.runtime.video_lane import VideoEngine
 from vllm_mlx.video.encoding import encode_rgb_video
 assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("imageio") is None
+assert importlib.metadata.version("ltx-core-mlx") == "0.14.15"
+assert importlib.metadata.version("ltx-pipelines-mlx") == "0.14.15"
+from vllm_mlx.video.ltx25 import embedded_ltx25_interpreter
+assert embedded_ltx25_interpreter() is not None, "LTX-2.5 provenance stamp rejected"
+assert {"model_dir", "prompt"} <= set(inspect.signature(generate_video).parameters)
+assert {"load_wan_model", "load_t5_encoder", "load_vae_decoder"} <= set(generate_video.__globals__)
+wan21 = WanModelConfig.wan21_t2v_1_3b()
+assert (wan21.dim, wan21.ffn_dim, wan21.num_heads, wan21.num_layers) == (1536, 8960, 12, 30)
 with tempfile.TemporaryDirectory() as directory:
     output = Path(directory) / "smoke.mp4"
     encode_rgb_video(np.zeros((2, 32, 16, 3), dtype=np.uint8), output, 2)

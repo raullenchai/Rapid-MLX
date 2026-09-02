@@ -20,6 +20,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from vllm_mlx import _download_gate as gate
@@ -735,10 +736,472 @@ def _seed_wan_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> N
     blobs.mkdir(parents=True)
     snap = repo_root / "snapshots" / pinned_sha
     snap.mkdir(parents=True)
-    for name, payload in files.items():
-        blob = blobs / f"blob-{len(payload)}-{name}"
+    for index, (name, payload) in enumerate(files.items()):
+        blob = blobs / f"blob-{index}-{len(payload)}"
         blob.write_bytes(payload)
-        (snap / name).symlink_to(blob)
+        link = snap / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(blob)
+
+
+_WAN21_TRANSFORMER_SHARDS = tuple(
+    f"diffusion_pytorch_model-{i:05d}-of-00002.safetensors" for i in (1, 2)
+)
+_WAN21_T5_SHARDS = tuple(f"model-{i:05d}-of-00005.safetensors" for i in range(1, 6))
+
+
+def _wan21_transformer_source_keys() -> list[str]:
+    """The exact 825 transformer source keys ``_transformer_key`` supports.
+
+    Deterministically mirrors the pinned 30-layer grammar: 15 top-level
+    tensors plus 27 per-block tensors (dual qk-normed attentions, GEGLU ffn,
+    affine norm2, per-block scale_shift_table) instead of a literal dump.
+    """
+    keys = [
+        "patch_embedding.weight",
+        "patch_embedding.bias",
+        "condition_embedder.time_embedder.linear_1.weight",
+        "condition_embedder.time_embedder.linear_1.bias",
+        "condition_embedder.time_embedder.linear_2.weight",
+        "condition_embedder.time_embedder.linear_2.bias",
+        "condition_embedder.text_embedder.linear_1.weight",
+        "condition_embedder.text_embedder.linear_1.bias",
+        "condition_embedder.text_embedder.linear_2.weight",
+        "condition_embedder.text_embedder.linear_2.bias",
+        "condition_embedder.time_proj.weight",
+        "condition_embedder.time_proj.bias",
+        "scale_shift_table",
+        "proj_out.weight",
+        "proj_out.bias",
+    ]
+    per_block = [
+        f"{attn}.{leaf}"
+        for attn in ("attn1", "attn2")
+        for leaf in (
+            "norm_q.weight",
+            "norm_k.weight",
+            "to_q.weight",
+            "to_q.bias",
+            "to_k.weight",
+            "to_k.bias",
+            "to_v.weight",
+            "to_v.bias",
+            "to_out.0.weight",
+            "to_out.0.bias",
+        )
+    ] + [
+        "ffn.net.0.proj.weight",
+        "ffn.net.0.proj.bias",
+        "ffn.net.2.weight",
+        "ffn.net.2.bias",
+        "norm2.weight",
+        "norm2.bias",
+        "scale_shift_table",
+    ]
+    for block in range(30):
+        keys.extend(f"blocks.{block}.{tail}" for tail in per_block)
+    assert len(keys) == 825
+    return keys
+
+
+def _wan21_t5_source_keys() -> list[str]:
+    """The exact 242 UMT5 source keys ``_t5_key`` supports (24 layers)."""
+    keys = ["shared.weight", "encoder.final_layer_norm.weight"]
+    per_block = (
+        "layer.0.layer_norm.weight",
+        "layer.0.SelfAttention.q.weight",
+        "layer.0.SelfAttention.k.weight",
+        "layer.0.SelfAttention.v.weight",
+        "layer.0.SelfAttention.o.weight",
+        "layer.0.SelfAttention.relative_attention_bias.weight",
+        "layer.1.layer_norm.weight",
+        "layer.1.DenseReluDense.wi_0.weight",
+        "layer.1.DenseReluDense.wi_1.weight",
+        "layer.1.DenseReluDense.wo.weight",
+    )
+    for block in range(24):
+        keys.extend(f"encoder.block.{block}.{tail}" for tail in per_block)
+    assert len(keys) == 242
+    return keys
+
+
+def _wan21_vae_source_keys() -> list[str]:
+    """The decoder-mappable VAE source keys (exactly 108 unique targets).
+
+    Mirrors the pinned AutoencoderKLWan decoder grammar (dim_mult [1,2,4,4],
+    num_res_blocks 2): three residual blocks per up_block, a single channel
+    shortcut at up_block 1 / resnet 0, temporal upsamplers on the first two
+    up_blocks only, plus two encoder tensors the decoder mapper deliberately
+    skips — as in the real checkpoint.
+    """
+    residual = (
+        "norm1.gamma",
+        "conv1.weight",
+        "conv1.bias",
+        "norm2.gamma",
+        "conv2.weight",
+        "conv2.bias",
+    )
+    keys = [
+        "post_quant_conv.weight",
+        "post_quant_conv.bias",
+        "decoder.conv_in.weight",
+        "decoder.conv_in.bias",
+        "decoder.norm_out.gamma",
+        "decoder.conv_out.weight",
+        "decoder.conv_out.bias",
+    ]
+    for resnet in range(2):
+        keys.extend(f"decoder.mid_block.resnets.{resnet}.{tail}" for tail in residual)
+    keys.extend(
+        f"decoder.mid_block.attentions.0.{tail}"
+        for tail in (
+            "norm.gamma",
+            "to_qkv.weight",
+            "to_qkv.bias",
+            "proj.weight",
+            "proj.bias",
+        )
+    )
+    for block in range(4):
+        for resnet in range(3):
+            keys.extend(
+                f"decoder.up_blocks.{block}.resnets.{resnet}.{tail}"
+                for tail in residual
+            )
+            if (block, resnet) == (1, 0):
+                keys.extend(
+                    f"decoder.up_blocks.1.resnets.0.conv_shortcut.{leaf}"
+                    for leaf in ("weight", "bias")
+                )
+        if block < 3:
+            tails = ["resample.1.weight", "resample.1.bias"]
+            if block < 2:
+                tails += ["time_conv.weight", "time_conv.bias"]
+            keys.extend(f"decoder.up_blocks.{block}.upsamplers.0.{t}" for t in tails)
+    assert len(keys) == 108
+    return keys + ["encoder.conv_in.weight", "encoder.conv_in.bias"]
+
+
+def _tiny_safetensors(names: list[str]) -> bytes:
+    """A valid safetensors container holding one distinct scalar per tensor."""
+    from safetensors.numpy import save
+
+    return save(
+        {name: np.array(float(i), dtype=np.float32) for i, name in enumerate(names)}
+    )
+
+
+def _sharded_safetensors(
+    sources: list[str], shards: tuple[str, ...]
+) -> tuple[dict[str, str], dict[str, bytes]]:
+    """Distribute sources across shards; the index maps each to its real shard."""
+    placed: dict[str, list[str]] = {shard: [] for shard in shards}
+    weight_map: dict[str, str] = {}
+    for i, source in enumerate(sources):
+        shard = shards[i % len(shards)]
+        weight_map[source] = shard
+        placed[shard].append(source)
+    return weight_map, {
+        shard: _tiny_safetensors(names) for shard, names in placed.items()
+    }
+
+
+def _wan21_diffusers_files() -> dict[str, bytes]:
+    """A cache image the RUNTIME contract accepts, not just the filename pin.
+
+    The gate re-validates the pinned 1.3B Diffusers snapshot with the runtime
+    router's layout probe AND the metadata-only artifact validator, so the
+    fixture must carry actually-valid component manifests, exact-cardinality
+    weight maps whose every source key passes the production tensor mappers
+    (transformer 825 keys over 2 shards, T5 242 keys over 5 shards, VAE 108
+    uniquely-mapped decoder tensors), and real tiny safetensors containers
+    holding exactly the tensors each index points at — not placeholder bytes.
+    """
+    transformer_map, transformer_blobs = _sharded_safetensors(
+        _wan21_transformer_source_keys(), _WAN21_TRANSFORMER_SHARDS
+    )
+    t5_map, t5_blobs = _sharded_safetensors(_wan21_t5_source_keys(), _WAN21_T5_SHARDS)
+    transformer_index = {"weight_map": transformer_map}
+    t5_index = {"weight_map": t5_map}
+    model_index = {
+        "_class_name": "WanPipeline",
+        "_diffusers_version": "0.33.0",
+        "scheduler": ["diffusers", "UniPCMultistepScheduler"],
+        "text_encoder": ["transformers", "UMT5EncoderModel"],
+        "tokenizer": ["transformers", "T5TokenizerFast"],
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    transformer_config = {
+        "_class_name": "WanTransformer3DModel",
+        "patch_size": [1, 2, 2],
+        "in_channels": 16,
+        "out_channels": 16,
+        "num_attention_heads": 12,
+        "attention_head_dim": 128,
+        "num_layers": 30,
+        "ffn_dim": 8960,
+        "text_dim": 4096,
+    }
+    text_encoder_config = {
+        "model_type": "umt5",
+        "vocab_size": 256384,
+        "d_model": 4096,
+        "d_ff": 10240,
+        "num_heads": 64,
+        "num_layers": 24,
+        "relative_attention_num_buckets": 32,
+    }
+    vae_config = {
+        "_class_name": "AutoencoderKLWan",
+        "base_dim": 96,
+        "z_dim": 16,
+        "dim_mult": [1, 2, 4, 4],
+        "num_res_blocks": 2,
+        "temperal_downsample": [False, True, True],
+    }
+    files: dict[str, bytes] = {
+        "model_index.json": json.dumps(model_index).encode(),
+        "transformer/config.json": json.dumps(transformer_config).encode(),
+        "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+            transformer_index
+        ).encode(),
+        "text_encoder/config.json": json.dumps(text_encoder_config).encode(),
+        "text_encoder/model.safetensors.index.json": json.dumps(t5_index).encode(),
+        "vae/config.json": json.dumps(vae_config).encode(),
+        "vae/diffusion_pytorch_model.safetensors": _tiny_safetensors(
+            _wan21_vae_source_keys()
+        ),
+        "tokenizer/special_tokens_map.json": b"{}",
+        "tokenizer/spiece.model": b"spiece-model-bytes",
+        "tokenizer/tokenizer.json": b"{}",
+        "tokenizer/tokenizer_config.json": b"{}",
+    }
+    for shard, payload in transformer_blobs.items():
+        files[f"transformer/{shard}"] = payload
+    for shard, payload in t5_blobs.items():
+        files[f"text_encoder/{shard}"] = payload
+    return files
+
+
+def test_wan_cache_accepts_complete_21_diffusers_layout(tmp_path, monkeypatch):
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], _wan21_diffusers_files())
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is True
+
+
+def test_wan_cache_rejects_incomplete_21_diffusers_layout(tmp_path, monkeypatch):
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    files.pop("tokenizer/spiece.model")
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    "index_name",
+    [
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        "text_encoder/model.safetensors.index.json",
+    ],
+)
+def test_wan_cache_rejects_21_diffusers_malformed_index(
+    tmp_path, monkeypatch, index_name
+):
+    """Every pinned filename present and non-empty, but an index is not JSON.
+
+    Runtime routing (``is_diffusers_wan21_layout``) refuses such a tree, so the
+    gate must send it back through repair/download instead of reporting cached
+    — otherwise the cache skips the gate and fails forever at runtime.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    files[index_name] = b"complete"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_21_diffusers_wrong_index_cardinality(tmp_path, monkeypatch):
+    """A parseable transformer index with 824 keys instead of the pinned 825
+    fails the runtime cardinality contract, so the gate must reject it too."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    index_name = "transformer/diffusion_pytorch_model.safetensors.index.json"
+    index = json.loads(files[index_name])
+    index["weight_map"].pop(next(iter(index["weight_map"])))
+    files[index_name] = json.dumps(index).encode()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    ("config_name", "mutation"),
+    [
+        ("model_index.json", {"_class_name": "StableDiffusionPipeline"}),
+        ("transformer/config.json", {"num_layers": 29}),
+        ("text_encoder/config.json", {"d_model": 2048}),
+        ("vae/config.json", {"z_dim": 4}),
+    ],
+)
+def test_wan_cache_rejects_21_diffusers_mismatched_component_config(
+    tmp_path, monkeypatch, config_name, mutation
+):
+    """A component config that contradicts the pinned architecture contract
+    (wrong pipeline class, layer count, width, ...) is not the audited
+    checkpoint and must not count as cached."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    payload = json.loads(files[config_name])
+    payload.update(mutation)
+    files[config_name] = json.dumps(payload).encode()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_21_diffusers_unmappable_index_keys(tmp_path, monkeypatch):
+    """825 arbitrary source keys backed by real shards must not pass the gate.
+
+    Regression for the false positive this suite used to encode: correct
+    cardinality plus present shard files said nothing about loadability. The
+    production mapper rejects every one of these keys, so generation would
+    fail inside ``_read_index`` after the gate had skipped repair.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    bogus = [f"blocks.{i}.weight" for i in range(825)]
+    weight_map, blobs = _sharded_safetensors(bogus, _WAN21_TRANSFORMER_SHARDS)
+    files["transformer/diffusion_pytorch_model.safetensors.index.json"] = json.dumps(
+        {"weight_map": weight_map}
+    ).encode()
+    for shard, payload in blobs.items():
+        files[f"transformer/{shard}"] = payload
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+        "text_encoder/model-00003-of-00005.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    ],
+    ids=["transformer-shard", "t5-shard", "vae"],
+)
+def test_wan_cache_rejects_21_diffusers_malformed_safetensors(
+    tmp_path, monkeypatch, artifact
+):
+    """Raw non-safetensors bytes behind a pinned weight filename must not pass.
+
+    ``mx.load`` would fail on such a file at generation time, so the gate has
+    to detect it from the header alone and send the snapshot back through
+    repair/download.
+    """
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    files[artifact] = b"w" * 1024
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+def test_wan_cache_rejects_21_diffusers_index_shard_mismatch(tmp_path, monkeypatch):
+    """An index that points a tensor at the wrong (valid) shard must not pass."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    index_name = "transformer/diffusion_pytorch_model.safetensors.index.json"
+    index = json.loads(files[index_name])
+    weight_map = index["weight_map"]
+    # Redirect one tensor to the other present, well-formed shard — which
+    # does not contain it.
+    source = "patch_embedding.weight"
+    other = next(
+        shard for shard in _WAN21_TRANSFORMER_SHARDS if shard != weight_map[source]
+    )
+    weight_map[source] = other
+    files[index_name] = json.dumps(index).encode()
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
+
+
+@pytest.mark.parametrize(
+    ("dropped", "replacement"),
+    [
+        # One decoder tensor short of the pinned 108 (encoder keys are skipped).
+        ("decoder.conv_out.bias", "encoder.conv_out.bias"),
+        # A decoder-prefixed key the production mapper rejects outright.
+        ("decoder.conv_out.bias", "decoder.new_component.weight"),
+        # Two sources aliasing one MLX target (up 0 / resnet 4 collides with
+        # the still-present up 1 / resnet 0 at ``decoder.upsamples.4``).
+        ("decoder.conv_out.bias", "decoder.up_blocks.0.resnets.4.norm1.gamma"),
+    ],
+    ids=["missing-decoder-tensor", "unmappable-decoder-key", "duplicate-target"],
+)
+def test_wan_cache_rejects_21_diffusers_wrong_vae_tensor_set(
+    tmp_path, monkeypatch, dropped, replacement
+):
+    """A valid VAE container without the exact decoder tensor set must not pass."""
+    from vllm_mlx.video.wan import WAN_REVISIONS
+
+    repo_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+    files = _wan21_diffusers_files()
+    keys = [key for key in _wan21_vae_source_keys() if key != dropped]
+    keys.append(replacement)
+    files["vae/diffusion_pytorch_model.safetensors"] = _tiny_safetensors(keys)
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{repo_id.replace('/', '--')}"
+    _seed_wan_snapshot(repo_root, WAN_REVISIONS[repo_id], files)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_wan_model(repo_id) is False
 
 
 def test_wan_cache_accepts_5b_single_transformer_layout(tmp_path, monkeypatch):

@@ -44,6 +44,127 @@ def test_ltx25_capabilities_match_distilled_controls() -> None:
     }
 
 
+def _fake_embedded_distributions(
+    monkeypatch: pytest.MonkeyPatch, distributions: dict[str, tuple[str, str | None]]
+) -> None:
+    """Fake installed (version, provenance-stamp) pairs for the embedded check."""
+
+    def distribution(name: str) -> SimpleNamespace:
+        if name not in distributions:
+            raise ltx25.importlib.metadata.PackageNotFoundError(name)
+        version, provenance = distributions[name]
+        return SimpleNamespace(
+            version=version,
+            read_text=lambda filename: (
+                provenance if filename == ltx25.LTX25_PROVENANCE_FILE else None
+            ),
+        )
+
+    monkeypatch.setattr(ltx25.importlib.metadata, "distribution", distribution)
+    monkeypatch.setattr(ltx25.importlib.util, "find_spec", lambda _: object())
+
+
+def test_ltx25_embedded_runtime_requires_both_exact_distributions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = ltx25.LTX25_RUNTIME_COMMIT + "\n"
+    distributions = {
+        "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+        "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+    }
+    _fake_embedded_distributions(monkeypatch, distributions)
+    assert ltx25.embedded_ltx25_interpreter() == ltx25.sys.executable
+
+    distributions["ltx-pipelines-mlx"] = ("0.14.16", stamp)
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+    del distributions["ltx-pipelines-mlx"]
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_embedded_runtime_rejects_same_version_without_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-version install from a package index carries no build stamp."""
+    stamp = ltx25.LTX25_RUNTIME_COMMIT
+    _fake_embedded_distributions(
+        monkeypatch,
+        {
+            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, stamp),
+            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, None),
+        },
+    )
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_embedded_runtime_rejects_mismatched_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_embedded_distributions(
+        monkeypatch,
+        {
+            "ltx-core-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
+            "ltx-pipelines-mlx": (ltx25.LTX25_RUNTIME_VERSION, "0" * 40),
+        },
+    )
+    assert ltx25.embedded_ltx25_interpreter() is None
+
+
+def test_ltx25_embedded_runtime_preflight_needs_no_checkout_or_uv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
+    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setattr(
+        ltx25,
+        "resolve_ltx25_runtime",
+        lambda: pytest.fail("embedded runtime must not inspect a checkout"),
+    )
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/sidecar/ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda _: None)
+    video_lane.require_video_runtime_or_exit("ltx-2.5-mlx-q8")
+
+
+def test_ltx25_embedded_generation_preserves_sidecar_python_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+    monkeypatch.setenv("PYTHONHOME", "/signed-sidecar/python")
+    monkeypatch.setenv("PYTHONPATH", "/signed-sidecar/site-packages")
+    captured: dict = {}
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs) -> None:
+            self.command = command
+            captured.update(command=command, kwargs=kwargs)
+
+        def communicate(self, *, input: str, timeout: int) -> None:
+            captured.update(prompt=input, timeout=timeout)
+            Path(self.command[self.command.index("--output") + 1]).write_bytes(b"mp4")
+
+    monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
+    output = tmp_path / "result.mp4"
+    ltx25.LTX25VideoEngine("ltx-2.5-mlx-q8").generate(
+        prompt="private prompt",
+        output_path=output,
+        width=704,
+        height=480,
+        num_frames=97,
+        fps=24,
+        seed=7,
+        image=None,
+    )
+
+    assert captured["command"][0] == "/embedded/python"
+    assert "private prompt" not in captured["command"]
+    assert captured["prompt"] == "private prompt"
+    assert captured["kwargs"]["env"]["PYTHONHOME"] == "/signed-sidecar/python"
+    assert captured["kwargs"]["env"]["PYTHONPATH"] == "/signed-sidecar/site-packages"
+    assert output.read_bytes() == b"mp4"
+
+
 def test_ltx25_direct_engine_rejects_conditioning_without_image() -> None:
     engine = VideoEngine.__new__(VideoEngine)
     engine._ltx25_engine = object()
