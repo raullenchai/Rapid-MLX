@@ -409,6 +409,20 @@ def test_local_archive_receipt_marks_only_an_existing_run_shared(
         archive.save_receipt(malformed)
 
 
+@pytest.mark.parametrize("contents", [b'{"schema_version":', b"\xff\xfe"])
+def test_corrupt_optional_receipt_does_not_hide_local_runs(
+    tmp_path: Path, contents: bytes
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    archive.receipts_dir.mkdir(parents=True, exist_ok=True)
+    (archive.receipts_dir / f"{run['run_id']}.json").write_bytes(contents)
+
+    assert archive.receipt(run["run_id"]) is None
+    assert archive.list() == [run]
+
+
 def test_share_cli_saves_server_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

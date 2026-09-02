@@ -200,7 +200,7 @@ class LocalRunArchive:
         path = self.receipts_dir / f"{run_id}.json"
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         if not isinstance(value, dict) or value.get("submission_id") != run_id:
             return None
