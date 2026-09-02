@@ -19,7 +19,8 @@ GLM-5.3-Flash.
 | Python | 3.12.13 |
 | MLX / MLX-LM / MLX-VLM | 0.32.2 / 0.31.3 / 0.6.17 |
 | 0.13.3 reference | `6f3f65b92eed6906421b5761686c0a2cd0923aa3` |
-| 0.13.4 candidate measured | `615a8c5cd17b40db8d49e17d93c96f9094f23221` |
+| 0.13.4 Qwen3.8-27B candidate measured | `ede7158cc59b0b7002f05d8b34e985d9c4ae5206` |
+| 0.13.4 Flash-Next / GLM candidate measured | `615a8c5cd17b40db8d49e17d93c96f9094f23221` |
 
 All rates are medians of three measured requests after the server reported
 ready. TTFT is measured to the first visible streamed content, reasoning, or
@@ -38,7 +39,7 @@ the server reports 92, 2,012, 8,156, and 32,732 tokens.
 
 | Model | Model shape | Measured workload | Median TTFT | Median prefill | Median decode | MLX memory observed through 32K |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `qwen3.8-27b-4bit` | 27B dense | 8,156 → 256 | 25.058s | 325.5 tok/s | 38.97 tok/s | 22.1 GB active / 23.4 GB peak |
+| `qwen3.8-27b-4bit` | 27B dense | 8,156 → 256 | 24.656s | 330.8 tok/s | 43.56 tok/s | 26.7 GB active / 27.1 GB peak |
 | `qwen3.8-flash-next-4bit` | 180B total / 6B active | 8,156 → 256 | 9.397s | 867.9 tok/s | 23.12 tok/s | 102.8 GB active / 148.1 GB peak |
 | `glm5.3-flash-4bit` | 320B total / 18B active | 8,192 → 256 | 22.779s | 359.6 tok/s | 27.86 tok/s | 180.6 GB active / 195.6 GB peak |
 
@@ -67,27 +68,43 @@ MTP path; 0.13.3 served the ordinary path.
 
 | Target (reported) prompt tokens | 0.13.3 TTFT | 0.13.4 TTFT | 0.13.3 decode | 0.13.4 decode | Decode speedup |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 (92) | 0.541s | 0.396s | 30.83 tok/s | 34.54 tok/s | 1.12× |
-| 2,048 (2,012) | 6.185s | 5.937s | 28.99 tok/s | 44.44 tok/s | 1.53× |
-| 8,192 (8,156) | 25.037s | 25.058s | 24.67 tok/s | 38.97 tok/s | 1.58× |
-| 32,768 (32,732) | 110.251s | 108.432s | 16.58 tok/s | 39.12 tok/s | 2.36× |
+| 128 (92) | 0.541s | 0.511s | 30.83 tok/s | 44.11 tok/s | 1.43× |
+| 2,048 (2,012) | 6.185s | 6.074s | 28.99 tok/s | 44.86 tok/s | 1.55× |
+| 8,192 (8,156) | 25.037s | 24.656s | 24.67 tok/s | 43.56 tok/s | 1.77× |
+| 32,768 (32,732) | 110.251s | 109.120s | 16.58 tok/s | 38.81 tok/s | 2.34× |
 
-The 0.13.4 prefill medians were 232.2, 338.9, 325.5, and 301.9 tok/s at
-128, 2K, 8K, and 32K. Across the complete run, MTP recorded 983 accepted
-drafts from 1,496 proposals (65.71%). Every draft is verified by the target;
+The 0.13.4 prefill medians were 180.0, 331.3, 330.8, and 300.0 tok/s at
+128, 2K, 8K, and 32K. Across the complete run, MTP recorded 1,296 accepted
+drafts from 2,033 proposals (63.75%). Every draft is verified by the target;
 the ratio is an efficiency signal, not a substitute for correctness testing.
-The process reached about 22.1 GB MLX active memory during 32K decode and
-reported a 23.4 GB allocator peak; after the request cache was released it
-returned to 15.4 GB active.
+The process reached about 26.7 GB MLX active memory during 32K decode and
+reported a 27.1 GB allocator peak. Immediately after the sweep, `/v1/status`
+reported 20.0 GB active plus 6.5 GB allocator cache.
 
 The model-recommendation qualification uses a separate complete-process-tree
 memory boundary. Do not compare its RSS number directly with the MLX allocator
 figures above.
 
 The version comparison used the same no-flag user command from fresh source
-trees at the two exact Rapid-MLX commits in the environment table:
+trees at the two exact Rapid-MLX commits in the environment table. Before
+serving, the benchmark resolved the pinned revision and proved that the
+offline alias selected that exact snapshot:
 
 ```bash
+QWEN_SNAPSHOT="$(
+  "$VENV/bin/python" - <<'PY'
+from huggingface_hub import snapshot_download
+
+repo = "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"
+revision = "aa985c29ff5b334cbfdcbbc787d47e66e9d9e456"
+pinned = snapshot_download(repo_id=repo, revision=revision, local_files_only=True)
+default = snapshot_download(repo_id=repo, local_files_only=True)
+if pinned != default:
+    raise SystemExit(f"offline alias is not pinned: {default} != {pinned}")
+print(pinned)
+PY
+)"
+
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$SOURCE_TREE" \
   "$VENV/bin/python" -m vllm_mlx.cli serve qwen3.8-27b-4bit \
   --host 127.0.0.1 --port 8465 --no-thinking
