@@ -84,6 +84,22 @@ The model-recommendation qualification uses a separate complete-process-tree
 memory boundary. Do not compare its RSS number directly with the MLX allocator
 figures above.
 
+The version comparison used the same no-flag user command from fresh source
+trees at the two exact Rapid-MLX commits in the environment table:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$SOURCE_TREE" \
+  "$VENV/bin/python" -m vllm_mlx.cli serve qwen3.8-27b-4bit \
+  --host 127.0.0.1 --port 8465 --no-thinking
+```
+
+On the 0.13.4 candidate, the alias's `mtp_draft_model` plus its `verified`
+continuous-MTP qualification make that command select adaptive MTP. The
+profile's `supports_spec_decode: false` disables the generic hybrid-model
+suffix/draft verifier; it does not disable the separately admitted native-MTP
+path. The same command on 0.13.3 selected ordinary decode. No speculative
+flag was added to either benchmark process.
+
 ## Qwen3.8-Flash-Next context curve
 
 Artifact: `rapid-mlx/Qwen3.8-Flash-Next-4bit` at
