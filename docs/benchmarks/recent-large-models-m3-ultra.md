@@ -35,6 +35,32 @@ cache for every request, and 256 requested decode tokens. The harness targets
 128, 2,048, 8,192, and 32,768 prompt tokens; after applying the chat template,
 the server reports 92, 2,012, 8,156, and 32,732 tokens.
 
+### Completion-length evidence
+
+The harness records actual completion tokens and finish reason for every run.
+The table below preserves those fields rather than assuming every 256-token
+request reached the cap:
+
+| Result artifact | 128 | 2K | 8K | 32K |
+| --- | --- | --- | --- | --- |
+| Qwen3.8-27B 0.13.3 | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
+| Qwen3.8-27B 0.13.4 | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
+| Flash-Next 0.13.3 | 232/232/232, `stop` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
+| Flash-Next 0.13.4 | 232/232/232, `stop` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
+| GLM-5.3-Flash 0.13.4 | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` | 256/256/256, `length` |
+
+Flash-Next therefore has a 232-token decode denominator in its 128-target row;
+the model emitted EOS consistently in both versions. Every version-comparison
+row for Qwen3.8-27B and every 8K headline row completed the requested 256
+tokens. SHA-256 fingerprints of the five source JSON artifacts, in table order,
+are:
+
+- `b29d4f75d275e7a714af3255e072e6f78a5046cb309eff85cf7a14e53bc052d5`
+- `89b70e9746a9aaa4d7a1ba7b1d8bf80f19c72edc7e5c38cb8deb07be3ac010aa`
+- `2de53fe3e8236b1fe4135f22811040d0e4a14edc4772bfaf46662d6ef332e925`
+- `0b2245c6159a8b24714ff4637bc31f40c521422149ba2b496fa5fc10523368d6`
+- `95cced14b5f73ffb23729e7bb89a4ea9c6354c9d19212333d32601963cf57718`
+
 ## At a glance
 
 | Model | Model shape | Measured workload | Median TTFT | Median prefill | Median decode | MLX memory observed through 32K |
@@ -134,7 +160,8 @@ MLX active memory was 102.8 GB after the sweep. The process also reported a
 148.1 GB allocator peak inherited from model loading; it is not the steady
 active footprint. The corresponding 0.13.3 medians were 25.40, 24.07, 23.15,
 and 21.45 tok/s: the default path is effectively unchanged, so no 0.13.4
-speedup is claimed for this row.
+speedup is claimed for this row. The 128 row measures the 232 tokens emitted
+before the model's consistent EOS; the other rows each emitted 256 tokens.
 
 The separate fixed-K=1 MTP qualification measured decode at 34.85, 33.53,
 32.20, and 28.82 tok/s at the same four prompt lengths: a 36–42% improvement
