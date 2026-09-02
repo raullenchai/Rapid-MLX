@@ -1867,6 +1867,7 @@ class TestPrefillErrorCleanup:
 
         from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
         from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+        from vllm_mlx.request import RequestStatus
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -1884,7 +1885,14 @@ class TestPrefillErrorCleanup:
 
         # Manually insert a request as if it was scheduled
         req_id = "bad-req"
-        scheduler.requests[req_id] = MagicMock()
+        from vllm_mlx.mllm_scheduler import MLLMRequest
+
+        scheduler.requests[req_id] = MLLMRequest(
+            request_id=req_id,
+            prompt="oversized prompt",
+            num_prompt_tokens=7,
+        )
+        scheduler.requests[req_id].status = RequestStatus.RUNNING
         scheduler.running[req_id] = scheduler.requests[req_id]
         scheduler.output_queues[req_id] = asyncio.Queue()
 
@@ -1914,6 +1922,9 @@ class TestPrefillErrorCleanup:
         queued = scheduler.output_queues[req_id].get_nowait()
         assert queued.finished is True
         assert queued.finish_reason == "length"
+        performance = scheduler.performance.snapshot()
+        assert performance.requests_failed == 1
+        assert performance.prompt_tokens == 7
 
     def test_subsequent_request_not_poisoned(self):
         """A good request after a failed one should not be affected."""

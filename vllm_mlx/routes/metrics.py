@@ -11,9 +11,9 @@ Design choices
   well-specified (https://prometheus.io/docs/instrumenting/exposition_formats/).
   Hand-rolling ~40 LOC avoids pulling in ``prometheus_client`` (and its
   global default registry, which would fight with multi-engine tests).
-- **No new instrumentation sites.** Every metric maps onto a field that
-  ``engine.get_stats()`` already returns — no per-request hot-path cost,
-  no new counters scattered across the engine.
+- **No new runtime dependency.** Request outcome/token/timing series are
+  produced by the scheduler's small in-memory performance ledger and are
+  still exposed through ``engine.get_stats()``.
 - **Unauthenticated**, on ``probe_router`` rather than the auth-gated
   router, to match the standard Prometheus scrape model. Mirrors
   ``/healthz`` exactly.
@@ -51,6 +51,7 @@ from fastapi.responses import PlainTextResponse
 
 from .. import __version__
 from ..config import get_config
+from ..runtime.model_performance import get_model_performance_snapshots
 
 router = APIRouter()
 
@@ -154,6 +155,42 @@ def _fmt_metric(
     return out
 
 
+def _fmt_metric_family(
+    name: str,
+    metric_type: str,
+    help_text: str,
+    samples: list[tuple[float | int, dict[str, str]]],
+    sample_name: str | None = None,
+) -> list[str]:
+    """Render one metric family with zero or more samples."""
+    out = [
+        f"# HELP {name} {help_text}",
+        f"# TYPE {name} {metric_type}",
+    ]
+    for value, labels in samples:
+        label_str = ",".join(
+            f'{key}="{_escape_label_value(str(value_))}"'
+            for key, value_ in labels.items()
+        )
+        out.append(f"{sample_name or name}{{{label_str}}} {value}")
+    return out
+
+
+def _fmt_metric_samples(
+    name: str,
+    samples: list[tuple[float | int, dict[str, str]]],
+) -> list[str]:
+    """Render additional samples for an already-declared metric family."""
+    out: list[str] = []
+    for value, labels in samples:
+        label_str = ",".join(
+            f'{key}="{_escape_label_value(str(value_))}"'
+            for key, value_ in labels.items()
+        )
+        out.append(f"{name}{{{label_str}}} {value}")
+    return out
+
+
 def _coerce_number(value: Any, default: float = 0.0) -> float:
     """Best-effort numeric coercion — Prometheus samples must be numbers.
 
@@ -169,6 +206,185 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _render_model_performance(stats: dict[str, Any]) -> list[str]:
+    """Render model-labelled request outcomes and latency distributions."""
+    performance = stats.get("model_performance")
+    if not isinstance(performance, dict):
+        return []
+
+    model_name = str(performance.get("model_name") or "")
+    labels = {"model": model_name}
+    lines: list[str] = []
+
+    lines.extend(
+        _fmt_metric_family(
+            "rapid_mlx_model_requests_total",
+            "counter",
+            "Text-engine requests by terminal outcome and model.",
+            [
+                *[
+                    (
+                        int(
+                            _coerce_number(performance.get(f"requests_{outcome}"), 0.0)
+                        ),
+                        {**labels, "outcome": outcome},
+                    )
+                    for outcome in ("succeeded", "cancelled", "failed")
+                ],
+            ],
+        )
+    )
+
+    for token_kind in ("prompt", "completion"):
+        lines.extend(
+            _fmt_metric(
+                f"rapid_mlx_model_{token_kind}_tokens_total",
+                "counter",
+                f"Cumulative {token_kind} tokens processed by the model.",
+                int(_coerce_number(performance.get(f"{token_kind}_tokens"), 0.0)),
+                labels=labels,
+            )
+        )
+
+    ttft_buckets = performance.get("ttft_bucket_counts")
+    if isinstance(ttft_buckets, dict):
+        lines.extend(
+            _fmt_metric_family(
+                "rapid_mlx_model_ttft_seconds",
+                "histogram",
+                "Time to first token, in seconds, by model.",
+                [
+                    (
+                        int(_coerce_number(count, 0.0)),
+                        {**labels, "le": str(bucket)},
+                    )
+                    for bucket, count in ttft_buckets.items()
+                ],
+                sample_name="rapid_mlx_model_ttft_seconds_bucket",
+            )
+        )
+        lines.extend(
+            _fmt_metric_samples(
+                "rapid_mlx_model_ttft_seconds_count",
+                [
+                    (
+                        int(_coerce_number(performance.get("ttft_seconds_count"), 0.0)),
+                        labels,
+                    )
+                ],
+            )
+        )
+        lines.extend(
+            _fmt_metric_samples(
+                "rapid_mlx_model_ttft_seconds_sum",
+                [
+                    (
+                        round(
+                            _coerce_number(performance.get("ttft_seconds_sum"), 0.0),
+                            6,
+                        ),
+                        labels,
+                    )
+                ],
+            )
+        )
+
+    decode_buckets = performance.get("decode_bucket_counts")
+    if isinstance(decode_buckets, dict):
+        lines.extend(
+            _fmt_metric_family(
+                "rapid_mlx_model_decode_tokens_per_second",
+                "histogram",
+                "Post-first-token decode speed in tokens per second by model.",
+                [
+                    (
+                        int(_coerce_number(count, 0.0)),
+                        {**labels, "le": str(bucket)},
+                    )
+                    for bucket, count in decode_buckets.items()
+                ],
+                sample_name="rapid_mlx_model_decode_tokens_per_second_bucket",
+            )
+        )
+        lines.extend(
+            _fmt_metric_samples(
+                "rapid_mlx_model_decode_tokens_per_second_count",
+                [
+                    (
+                        int(
+                            _coerce_number(performance.get("decode_observations"), 0.0)
+                        ),
+                        labels,
+                    )
+                ],
+            )
+        )
+        lines.extend(
+            _fmt_metric_samples(
+                "rapid_mlx_model_decode_tokens_per_second_sum",
+                [
+                    (
+                        round(
+                            _coerce_number(
+                                performance.get("decode_tokens_per_second_sum"), 0.0
+                            ),
+                            6,
+                        ),
+                        labels,
+                    )
+                ],
+            )
+        )
+
+    for metric_name, value_key, help_text in (
+        (
+            "rapid_mlx_model_ttft_seconds_max",
+            "ttft_seconds_max",
+            "Largest observed time to first token, in seconds, since start.",
+        ),
+        (
+            "rapid_mlx_model_decode_tokens_per_second_max",
+            "decode_tokens_per_second_max",
+            "Largest observed post-first-token decode speed since start.",
+        ),
+        (
+            "rapid_mlx_model_decode_tokens_per_second_last",
+            "last_decode_tokens_per_second",
+            "Most recent terminal request's post-first-token decode speed.",
+        ),
+    ):
+        value = performance.get(value_key)
+        if value is not None:
+            lines.extend(
+                _fmt_metric(
+                    metric_name,
+                    "gauge",
+                    help_text,
+                    round(_coerce_number(value), 6),
+                    labels=labels,
+                )
+            )
+
+    return lines
+
+
+def _render_retained_model_performance() -> list[str]:
+    """Render every process-owned model ledger as shared metric families."""
+    lines: list[str] = []
+    declarations: set[tuple[str, str]] = set()
+    for snapshot in get_model_performance_snapshots():
+        rendered = _render_model_performance({"model_performance": snapshot.__dict__})
+        for line in rendered:
+            if line.startswith(("# HELP ", "# TYPE ")):
+                kind, metric_name = line.split(maxsplit=3)[1:3]
+                declaration = (kind, metric_name)
+                if declaration in declarations:
+                    continue
+                declarations.add(declaration)
+            lines.append(line)
+    return lines
 
 
 def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
@@ -1140,6 +1356,11 @@ def _render_prometheus(cfg: Any) -> str:
     # BEFORE the engine-None / get_stats-failure early returns so
     # dashboards see the active mode + skip rate even between restarts.
     lines.extend(_render_turboquant_metrics(cfg))
+
+    # Per-model ledgers are process-owned rather than engine-owned. Render all
+    # retained models before engine early returns so unload windows and model
+    # switches do not make historical labelled series disappear.
+    lines.extend(_render_retained_model_performance())
 
     if cfg.engine is None:
         # No engine yet — return build info + response_format counters

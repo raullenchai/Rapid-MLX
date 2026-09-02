@@ -2077,6 +2077,7 @@ def test_bare_generator_without_prefix_cache_keeps_legacy_cold_path():
 
 def _make_cache_scheduler(*, batch_generator):
     from vllm_mlx.mllm_scheduler import MLLMScheduler
+    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler._step_executor = None
@@ -2090,6 +2091,7 @@ def _make_cache_scheduler(*, batch_generator):
     scheduler.total_completion_tokens = 4
     scheduler.num_requests_cancelled = 0
     scheduler.num_requests_cancelled_via_disconnect = 0
+    scheduler.performance = ModelPerformanceLedger(None)
     scheduler.batch_generator = batch_generator
     scheduler.vision_cache = None
     return scheduler

@@ -131,6 +131,7 @@ from .repetition_guard import (
     detect_repeated_token_suffix,
 )
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
+from .runtime.model_performance import get_model_performance_ledger
 from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
 
@@ -3544,6 +3545,9 @@ class Scheduler:
         self.config = config or SchedulerConfig()
         self._tool_logits_processor_factory = tool_logits_processor_factory
         self.model_config = model_config
+        self.performance = get_model_performance_ledger(
+            model_name=getattr(self.config, "model_name", None)
+        )
         if os.environ.get("RAPID_DUMP_SCHED_CONFIG"):
             import dataclasses as _dc
 
@@ -7276,9 +7280,17 @@ class Scheduler:
                 and request_id not in self.requests
             ):
                 return False
-            return self._do_abort_request_impl(request_id)
+            return self._do_abort_request_impl(
+                request_id,
+                orphan_request=expected_orphan,
+            )
 
-    def _do_abort_request_impl(self, request_id: str) -> bool:
+    def _do_abort_request_impl(
+        self,
+        request_id: str,
+        *,
+        orphan_request: Request | None = None,
+    ) -> bool:
         """
         Actually abort a request. Must be called from the executor thread.
 
@@ -7292,7 +7304,10 @@ class Scheduler:
         Returns:
             True if any cleanup was performed, False otherwise
         """
-        request = self.requests.get(request_id)
+        # Engine cleanup deliberately removes the canonical request before the
+        # orphan reconciler reaps its still-running batch slot. Preserve that
+        # exact, identity-validated lifetime for cancellation accounting.
+        request = orphan_request or self.requests.get(request_id)
         was_waiting = False
         was_running = False
         removed_from_batch = False
@@ -7344,6 +7359,7 @@ class Scheduler:
             self.total_prompt_tokens += request.num_prompt_tokens
 
         if request is not None:
+            self.performance.record_cancelled_performance(request)
             request.set_finished(RequestStatus.FINISHED_CANCELLED)
             # Release cache references so Metal buffers can be freed
             request.prompt_cache = None
@@ -7930,6 +7946,7 @@ class Scheduler:
         """
         outputs = []
         finished_ids = set()
+        terminal_performance_requests: list[Request] = []
         prompt_tps_this_batch = 0.0
 
         for response in responses:
@@ -8274,6 +8291,7 @@ class Scheduler:
 
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
+                terminal_performance_requests.append(request)
 
                 logger.debug(
                     f"Request {request_id} finished: {response.finish_reason}, "
@@ -8284,6 +8302,12 @@ class Scheduler:
 
         if prompt_tps_this_batch > 0:
             self._last_prompt_tps = prompt_tps_this_batch
+        # Commit observability outcomes only after every response in the step
+        # has processed successfully. If a later response raises, EngineCore
+        # converts all pending clients to failures; recording an earlier
+        # success here would make lifetime deduplication reject that outcome.
+        for request in terminal_performance_requests:
+            self.performance.record_finished_performance(request)
         return outputs, finished_ids
 
     def _safe_disk_checkpoint(self, request: Request, response: Any) -> None:
@@ -8661,6 +8685,7 @@ class Scheduler:
         for request_id in list(self.running):
             request = self.running.get(request_id)
             if request is not None:
+                self.performance.record_failed_performance(request)
                 request.set_finished(RequestStatus.FINISHED_ABORTED)
             aborted_ids.add(request_id)
             self.finished_req_ids.add(request_id)
@@ -9212,6 +9237,7 @@ class Scheduler:
             "num_requests_cancelled_via_disconnect": (
                 self.num_requests_cancelled_via_disconnect
             ),
+            "model_performance": self.performance.snapshot().__dict__,
             # D-METAL-CAP / D-METAL-PFX observability — pre-fix, both
             # were silent: the cap was violated with no warning and the
             # prefix cache pinned slabs through one 32k prefill that
