@@ -9,6 +9,7 @@ import json
 import multiprocessing
 import os
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
@@ -532,6 +533,23 @@ def test_install_id_cleanup_errors_do_not_reverse_a_committed_identity(
 
     assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
     assert (tmp_path / "bench-install-id").read_text().strip() == "a" * 12
+
+
+def test_install_id_commit_syncs_file_and_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_fsync = benchmark_upload.os.fsync
+    synced = []
+
+    def observed_fsync(descriptor):
+        synced.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(benchmark_upload.os, "fsync", observed_fsync)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert synced == [False, True]
 
 
 def test_local_archive_receipt_marks_only_an_existing_run_shared(

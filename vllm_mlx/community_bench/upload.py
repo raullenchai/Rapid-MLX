@@ -145,6 +145,7 @@ def commit_install_id(candidate: str) -> str:
     path = _install_id_path()
     tmp = None
     lock_fd = None
+    directory_fd = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = path.with_name(f".{path.name}.lock")
@@ -163,11 +164,14 @@ def commit_install_id(candidate: str) -> str:
         tmp = Path(tmp_name)
         try:
             os.write(fd, (candidate + "\n").encode())
+            os.fsync(fd)
         finally:
             os.close(fd)
 
         os.replace(tmp, path)
         tmp = None
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        os.fsync(directory_fd)
         return candidate
     except (OSError, UnicodeError):
         return candidate
@@ -182,6 +186,12 @@ def commit_install_id(candidate: str) -> str:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
                 pass
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+        if lock_fd is not None:
             try:
                 os.close(lock_fd)
             except OSError:
