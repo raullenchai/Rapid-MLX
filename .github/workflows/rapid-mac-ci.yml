@@ -268,8 +268,9 @@ jobs:
       # The suite used to require --no-parallel because synchronous Process
       # waits could starve Swift's cooperative pool on small runners. Those
       # waits now go through bounded TestSubprocess native threads, and a source
-      # guard rejects regressions. Exercise the parallel path on Manzanita;
-      # the existing per-suite and whole-run watchdogs remain active.
+      # guard rejects regressions. Exercise a deliberately bounded two-worker
+      # path on Manzanita so timer- and WebKit-heavy suites do not compete with
+      # thousands of ready tests; both existing watchdog layers remain active.
       #
       # #2488: wrapped by scripts/desktop-test-timeout.sh so a hung suite
       # (per-suite .timeLimit(.minutes(2)) on the hang-prone suites) or a hung
@@ -277,7 +278,7 @@ jobs:
       # fails fast with a readable reason instead of burning the job timeout.
       - name: swift test
         env:
-          RAPID_DESKTOP_TEST_PARALLEL: "1"
+          RAPID_DESKTOP_TEST_WORKERS: "2"
         run: ./scripts/desktop-test-timeout.sh
 
       - name: Record SwiftPM cache state

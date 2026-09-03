@@ -47,10 +47,15 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 # --- Launch `swift test` in the background, remember its PID ---------------
-# Serial remains the safe default for local callers. CI can opt into the
-# parallel runner after validating that the async subprocess guard is present.
-if [[ "${RAPID_DESKTOP_TEST_PARALLEL:-0}" == "1" ]]; then
-    swift test &
+# Serial remains the safe default for local callers. CI can opt into a bounded
+# worker count after validating that the async subprocess guard is present.
+TEST_WORKERS="${RAPID_DESKTOP_TEST_WORKERS:-}"
+if [[ -n "$TEST_WORKERS" ]]; then
+    if [[ ! "$TEST_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: RAPID_DESKTOP_TEST_WORKERS must be a positive integer" >&2
+        exit 2
+    fi
+    swift test --parallel --num-workers "$TEST_WORKERS" &
 else
     swift test --no-parallel &
 fi
