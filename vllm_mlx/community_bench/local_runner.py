@@ -12,7 +12,10 @@ import math
 import multiprocessing
 import multiprocessing.process
 import os
+import re
+import shutil
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -32,6 +35,27 @@ _VIDEO_POLL_INTERVAL_S = 1.0
 _VIDEO_ARTIFACT_DOWNLOAD_TIMEOUT_S = 300.0
 _VIDEO_ARTIFACT_PROBE_TIMEOUT_S = 120.0
 _MAX_VIDEO_ARTIFACT_BYTES = 1024 * 1024 * 1024
+
+
+def _raise_for_status(response: requests.Response, *, phase: str) -> None:
+    """Preserve a bounded localhost API error instead of only its status line."""
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail: Any = None
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("detail") or body.get("error")
+        except (requests.exceptions.JSONDecodeError, ValueError):
+            detail = None
+        if not isinstance(detail, str) or not detail.strip():
+            detail = "local server rejected the request"
+        detail = detail.strip()[:500]
+        raise RuntimeError(
+            f"{phase} failed with HTTP {response.status_code}: {detail}"
+        ) from exc
 
 
 class LocalBenchmarkError(RuntimeError):
@@ -112,13 +136,58 @@ def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -
     return len(data)
 
 
+def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, float]:
+    """Probe an MP4 with the small FFmpeg binary shipped by Desktop.
+
+    Desktop deliberately omits imageio/OpenCV. A stream copy makes FFmpeg walk
+    every video packet without decoding or retaining a second media stack.
+    """
+
+    with tempfile.NamedTemporaryFile(prefix="rapid-probe-", suffix=".mp4") as copy:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-i",
+                path,
+                "-map",
+                "0:v:0",
+                "-c",
+                "copy",
+                "-f",
+                "mp4",
+                "-y",
+                copy.name,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "LC_ALL": "C"},
+            check=False,
+        )
+    output = result.stderr
+    stream = re.search(
+        r"Stream #\S+.*Video:.*?\b(\d{2,5})x(\d{2,5})\b.*?\b([0-9.]+) fps\b",
+        output,
+    )
+    frame_matches = re.findall(r"\bframe=\s*(\d+)\b", output)
+    if result.returncode or stream is None or not frame_matches:
+        raise RuntimeError("video benchmark returned an invalid MP4 artifact")
+    return (
+        int(stream.group(1)),
+        int(stream.group(2)),
+        int(frame_matches[-1]),
+        float(stream.group(3)),
+    )
+
+
 def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
     try:
         import imageio.v2 as imageio
-    except ImportError as exc:  # pragma: no cover - video extra owns this dependency
-        raise RuntimeError(
-            "video artifact validation requires rapid-mlx[video]"
-        ) from exc
+    except ImportError:
+        ffmpeg = os.environ.get("FFMPEG_BINARY") or shutil.which("ffmpeg")
+        if ffmpeg:
+            return _probe_video_with_ffmpeg(path, ffmpeg)
+        raise RuntimeError("video artifact validation requires rapid-mlx[video]")
 
     try:
         reader = imageio.get_reader(path, format="ffmpeg")
@@ -436,7 +505,7 @@ def _run_image(
         for index in range(total):
             started = time.perf_counter()
             response = requests.post(endpoint, json=payload, timeout=3600)
-            response.raise_for_status()
+            _raise_for_status(response, phase="image benchmark request")
             result = response.json()
             duration_ms = (time.perf_counter() - started) * 1000
             if result.get("cancelled", False):
@@ -490,7 +559,7 @@ def _run_video(
         response = requests.post(
             f"{server['base_url']}/videos", data=payload, timeout=30
         )
-        response.raise_for_status()
+        _raise_for_status(response, phase="video benchmark request")
         job = response.json()
         deadline = time.monotonic() + _VIDEO_JOB_TIMEOUT_S
         active_statuses = {"queued", "running", "in_progress", "processing"}
@@ -506,7 +575,7 @@ def _run_video(
                 f"{server['base_url']}/videos/{job['id']}",
                 timeout=min(10, max(0.001, deadline - time.monotonic())),
             )
-            response.raise_for_status()
+            _raise_for_status(response, phase="video benchmark status poll")
             job = response.json()
             status = str(job.get("status", "")).lower()
         if status in {"cancelled", "canceled"}:
