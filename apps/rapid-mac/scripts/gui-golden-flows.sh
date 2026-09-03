@@ -3655,7 +3655,8 @@ flow_catalog_integrity() {
     local management_ready=0
     for _ in {1..40}; do
         see_main "$OUT/catalog-model-management.json"
-        if jq -e 'any(.data.ui_elements[]?;
+        if jq -e '.data.walk.complete == true
+                  and any(.data.ui_elements[]?;
                           .identifier == "Settings.ModelManagement.LargestModel"
                           and ([.title // "", .value // "", .description // ""]
                                | join(" ") | contains("fake-image-alias")))' \
@@ -3667,8 +3668,6 @@ flow_catalog_integrity() {
     done
     [[ "$management_ready" == 1 ]] \
         || die "complete cross-modality Model Management inventory was not observed"
-    jq -e '.data.walk.complete == true' "$OUT/catalog-model-management.json" >/dev/null \
-        || die "could not completely observe Model Management"
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-alias")' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "Model Management inventory was not observed"
