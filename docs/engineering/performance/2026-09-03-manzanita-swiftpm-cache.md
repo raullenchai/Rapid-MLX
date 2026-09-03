@@ -54,6 +54,18 @@ only five seconds faster than the cold archive and 26 seconds slower than the
 existing uncached MZR baseline. Run-to-run load variation is larger than the net
 benefit.
 
+### Swift compiler CAS probe
+
+Apple Swift 6.1.2 exposes `-cache-compile-job`, `-cas-path`, and cache remarks.
+This looked more promising than moving the path-sensitive scratch tree, but the
+compiler rejects caching unless SwiftPM uses its experimental explicit-module
+build. Rapid cannot currently build in that mode: SwiftPM reports an unknown
+dependency target for the Sparkle binary module and fails to resolve the
+`RapidDesktopTestWatchdog` test dependency, ending in an internal error. The
+compiler CAS path is therefore not production-compatible with this package
+graph today. Revisit it after explicit-module builds support this graph; do not
+silently make an experimental driver mode part of the required CI check.
+
 ## Why caching alone cannot produce 5x
 
 The GitHub-hosted reference is 555 seconds, so a 5x target is 111 seconds. The
