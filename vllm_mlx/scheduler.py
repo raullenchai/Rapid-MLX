@@ -160,6 +160,12 @@ _RECURRENT_CACHE_MATERIALIZE_INTERVAL = 8
 # ~150× below the 499000-handle ceiling — only UNBOUNDED chains exhaust Metal.
 _RECURRENT_MATERIALIZE_HANDLE_BUDGET = 64
 _RECURRENT_MATERIALIZE_MAX_INTERVAL = 64
+# Consecutive realize-failures of the per-step output chain (issue #2834) that
+# must be tolerated as a transient/missing-surface before the lane escalates.
+# A persistent failure means the very chain this barrier exists to bound is
+# not being detached — continuing to log-and-return would silently concede to
+# the Metal-handle exhaustion the fix targets.
+_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT = 8
 
 
 def _pflash_compressed(request: Request) -> bool:
@@ -3638,6 +3644,11 @@ class Scheduler:
     # a deep low-batch chain materializes immediately when concurrency rises
     # instead of waiting for the next global-step multiple.
     _recurrent_chain_depth = 0
+    # Consecutive realize-failures of the per-step decode output chain (issue
+    # #2834). Reset on success; when it reaches
+    # ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` the lane escalates rather than
+    # silently conceding to an unbounded output graph.
+    _recurrent_output_chain_failures = 0
     # Running-sequence count at the previous barrier check. An idle->active
     # edge (this was 0, now >0) arms the barrier so a sequence admitted to a
     # fresh OR long-idle scheduler materializes its prefill-inherited graph
@@ -9219,7 +9230,6 @@ class Scheduler:
                     states.append(state)
         if not states:
             return 0
-        mx.eval(states)
         # Issue #2834/#2836: realizing ``layer.state`` bounds the *cache-state*
         # lazy graph, but the per-step decode OUTPUT chain is a separate graph
         # surface. ``mlx_lm generate._step`` schedules ``self._next_tokens``,
@@ -9233,55 +9243,80 @@ class Scheduler:
         # interval below (same barrier cadence, same host sync) so it cannot
         # grow. Dense lanes already returned at ``if not states`` above, so
         # this dense no-sync guarantee is untouched.
-        self._materialize_recurrent_output_chain(generation_batch)
+        #
+        # Collect the output chain and realize it in the same ``mx.eval`` as
+        # the cache states: two separate ``mx.eval`` calls would double the
+        # barrier's host-synchronization cost on the decode hot path (codex
+        # r1 BLOCKING). ``_collect_recurrent_outputs`` never evaluates and
+        # never throws on a transient shape mismatch; if a *persistent*
+        # incompatibility prevents realizing the chain at all, the escalated
+        # EngineError propagates instead of silently conceding to the unbounded
+        # graph this barrier exists to prevent (codex r1 BLOCKING).
+        outputs = self._collect_recurrent_outputs(generation_batch)
+        try:
+            mx.eval([*states, *outputs])
+        except Exception:
+            self._recurrent_output_chain_failures += 1
+            if (
+                self._recurrent_output_chain_failures
+                >= _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
+            ):
+                logger.error(
+                    "[recurrent-output-chain] %d consecutive realize-failures; "
+                    "a persistent incompatibility is leaving the per-step "
+                    "decode output chain unbounded. Failing the lane rather "
+                    "than drifting toward Metal handle exhaustion.",
+                    self._recurrent_output_chain_failures,
+                )
+                raise
+            logger.warning(
+                "[recurrent-output-chain] realize failed (attempt %d/%d); the "
+                "cache-state barrier already realized this step's state so the "
+                "graph stays bounded this interval, but a recurring failure "
+                "will escalate.",
+                self._recurrent_output_chain_failures,
+                _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT,
+            )
+            return len(states)
+        self._recurrent_output_chain_failures = 0
         return len(states)
 
-    def _materialize_recurrent_output_chain(self, generation_batch) -> int:
-        """Realize the per-step decode output chain on a recurrent lane.
+    def _collect_recurrent_outputs(self, generation_batch) -> list:
+        """Return the per-step decode output chain tensors of a batch.
 
         Mirrors the cache-state barrier for the OTHER half of the lazy graph
         that #1834 did not cover: the tensors ``mlx_lm generate._step`` hands
         to ``mx.async_eval(self._next_tokens, self._next_logprobs,
         token_context)``. On dense batches every layer is trimmable, so the
-        caller never reaches here — this realizes no per-token host sync on a
+        caller returns before ever reaching this — no per-token host sync on a
         dense lane.
 
-        Everything below is guarded: the attribute surface varies across mlx-lm
-        patch levels and this runs on the engine hot path, so any shape the
-        batch exposes must be tolerated. Failures here are isolated (the caller
-        already computed the cache state) so a passthrough defect cannot
-        silently disable the cache-state barrier.
+        Collection only (no evaluation): the caller realizes the gathered
+        tensors together with the cache states in a single ``mx.eval``. The
+        attribute surface varies across mlx-lm patch levels, so any shape the
+        batch exposes is tolerated without raising; a batch with no exposed
+        output tensors simply contributes nothing, and the cache-state barrier
+        still fires.
         """
-        try:
-            # ``_next_tokens`` is a single batch array (or None pre-sampling).
-            next_tokens = getattr(generation_batch, "_next_tokens", None)
-            outputs: list = []
-            if next_tokens is not None:
-                outputs.append(next_tokens)
-            # ``_next_logprobs`` is a list of per-row arrays.
-            next_logprobs = getattr(generation_batch, "_next_logprobs", None)
-            if isinstance(next_logprobs, (list, tuple)):
-                outputs.extend(lp for lp in next_logprobs if lp is not None)
-            elif next_logprobs is not None:
-                outputs.append(next_logprobs)
-            # ``_token_context`` is a list of TokenBuffer objects whose lazily
-            # grown buffer is the per-step ``token_context`` async_eval lives
-            # on. Realize each buffer slice so the concat chain detaches.
-            for tc in getattr(generation_batch, "_token_context", None) or []:
-                tok = getattr(tc, "tokens", None)
-                if tok is not None:
-                    outputs.append(tok)
-            if not outputs:
-                return 0
-            mx.eval(outputs)
-            return len(outputs)
-        except Exception:
-            logger.exception(
-                "[recurrent-output-chain] passthrough failed; the cache-state "
-                "barrier already realized this step's state so the graph "
-                "remains bounded this interval"
-            )
-            return 0
+        # ``_next_tokens`` is a single batch array (or None pre-sampling).
+        next_tokens = getattr(generation_batch, "_next_tokens", None)
+        outputs: list = []
+        if next_tokens is not None:
+            outputs.append(next_tokens)
+        # ``_next_logprobs`` is a list of per-row arrays.
+        next_logprobs = getattr(generation_batch, "_next_logprobs", None)
+        if isinstance(next_logprobs, (list, tuple)):
+            outputs.extend(lp for lp in next_logprobs if lp is not None)
+        elif next_logprobs is not None:
+            outputs.append(next_logprobs)
+        # ``_token_context`` is a list of TokenBuffer objects whose lazily
+        # grown buffer is the per-step ``token_context`` async_eval lives on.
+        # Realize each buffer slice so the concat chain detaches.
+        for tc in getattr(generation_batch, "_token_context", None) or []:
+            tok = getattr(tc, "tokens", None)
+            if tok is not None:
+                outputs.append(tok)
+        return outputs
 
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by ID."""

@@ -507,3 +507,49 @@ class _NoOutputBatch:
 class _GeneratorNoOut:
     def __init__(self, batch):
         self._generation_batch = batch
+
+
+def test_output_chain_failure_escalates_after_limit(monkeypatch):
+    """#2834 (codex r1 BLOCKING): a persistent output-chain realize failure
+    must escalate, not silently concede to an unbounded output graph.
+
+    If evaluating the per-step output chain keeps failing while the cache-state
+    barrier keeps succeeding, logging-and-returning forever would recreate
+    exactly the Metal-handle exhaustion this fix targets. After
+    ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` consecutive failures the lane must
+    raise so the incompatibility surfaces instead of drifting toward 499000.
+    """
+    recurrent = _OutputRecurrentLayer()
+    batch = _OutputBatch([recurrent])
+    generator = _OutputGenerator(batch)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = generator
+    scheduler._recurrent_output_chain_failures = 0
+
+    calls = []
+    limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
+
+    def always_fail(value):
+        calls.append(value)
+        raise RuntimeError("simulated persistent output-chain eval failure")
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", always_fail)
+
+    # The first |limit-1| failures are tolerated (transient/missing surface).
+    for _ in range(limit - 1):
+        assert scheduler._materialize_active_recurrent_cache() is not None
+    assert scheduler._recurrent_output_chain_failures == limit - 1
+
+    # The |limit|-th consecutive failure escalates (raises) instead of
+    # continuing to accumulate the unbounded graph.
+    with pytest.raises(RuntimeError, match="simulated persistent"):
+        scheduler._materialize_active_recurrent_cache()
+    assert scheduler._recurrent_output_chain_failures == limit
+
+    # A later successful realization resets the counter so the lane can
+    # recover if the transient condition clears.
+    monkeypatch.setattr(
+        scheduler_module.mx, "eval", lambda value: _detaching_eval(value)
+    )
+    scheduler._materialize_active_recurrent_cache()
+    assert scheduler._recurrent_output_chain_failures == 0
