@@ -9239,23 +9239,50 @@ class Scheduler:
         # nodes each step, so the output chain can grow unboundedly and hit
         # Metal's 499000-handle ceiling even though ``layer.state`` stays
         # bounded (the #1834 math caps cache-state alone at ~71 units, ~150x
-        # below the ceiling). Realize the output chain on the SAME depth
-        # interval below (same barrier cadence, same host sync) so it cannot
-        # grow. Dense lanes already returned at ``if not states`` above, so
-        # this dense no-sync guarantee is untouched.
+        # below the ceiling). Dense lanes already returned at ``if not states``
+        # above, so this dense no-sync guarantee is untouched.
         #
-        # Collect the output chain and realize it in the same ``mx.eval`` as
-        # the cache states: two separate ``mx.eval`` calls would double the
-        # barrier's host-synchronization cost on the decode hot path (codex
-        # r1 BLOCKING). ``_collect_recurrent_outputs`` never evaluates and
-        # never throws on a transient shape mismatch; if a *persistent*
-        # incompatibility prevents realizing the chain at all, the escalated
-        # EngineError propagates instead of silently conceding to the unbounded
-        # graph this barrier exists to prevent (codex r1 BLOCKING).
+        # Ordering + single-barrier (codex r1, r2, r3 converge): collection is
+        # host-only, then cache-state AND output chain are realized together in
+        # ONE ``mx.eval`` — a single device barrier on the happy path for both
+        # graphs (r3 wanted no doubled sync). But a combined eval cannot tell
+        # WHICH tensor failed, and the cache-state realize is the
+        # proven-necessary barrier that MUST NOT be suppressible (r2). So on
+        # exception we re-eval ``states`` alone to classify: if that ALSO fails
+        # the lane is genuinely broken and the cache-state failure propagates
+        # immediately; if only the output chain failed it is the NEW #2834
+        # surface and goes through guarded retry/escalation. Dense lanes never
+        # reach here, so no per-token eval is added to a dense batch.
         outputs = self._collect_recurrent_outputs(generation_batch)
-        try:
-            mx.eval([*states, *outputs])
-        except Exception:
+        self._retry_materialize_output_chain(states, outputs)
+        return len(states)
+
+    def _retry_materialize_output_chain(self, states, outputs) -> int:
+        """Realize the per-step decode output chain (guarded retry/escalation).
+
+        The caller has already collected ``outputs`` (host-side) and hands us
+        both ``states`` and ``outputs`` so we realize them in ONE ``mx.eval`` —
+        a single device barrier covering both halves of the lazy graph on the
+        happy path (codex r3). Because a combined eval cannot say WHICH tensor
+        failed, the ``except`` re-evaluates ``states`` alone to classify:
+
+          * states re-eval also fails  -> hard cache-state failure; the
+            proven-necessary #1834 barrier must not be suppressed, so it
+            propagates immediately (codex r2).
+          * states re-eval succeeds     -> the failure was the NEW #2834
+            output-chain surface; it is version-sensitive (``mlx_lm``
+            ``TokenBuffer`` / ``_next_*`` shapes), so it retries and escalates
+            after ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` consecutive misses
+            rather than hard-crashing or silently conceding to an unbounded
+            output graph (codex r1, r3).
+
+        On success the dereference counter resets so a cleared transient
+        recovers. Realizing with an empty/outputs-only list (a batch currently
+        exposing no output tensors) is fine: the cache-state half already
+        realized, and the combined eval is just ``mx.eval(states)``.
+        """
+
+        def _escalate() -> int:
             self._recurrent_output_chain_failures += 1
             if (
                 self._recurrent_output_chain_failures
@@ -9277,12 +9304,36 @@ class Scheduler:
                 self._recurrent_output_chain_failures,
                 _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT,
             )
-            return len(states)
+            return 0
+
+        if not outputs:
+            # No output tensors exposed: still realize the cache state. This is
+            # the same barrier #1834 already issued — not a doubled sync.
+            try:
+                mx.eval(states)
+            except Exception:
+                # No output surface to absorb the blame; a cache-state failure
+                # must propagate (r2).
+                raise
+            self._recurrent_output_chain_failures = 0
+            return 0
+
+        try:
+            mx.eval([*states, *outputs])  # single device barrier (r3)
+        except Exception:
+            # Classify the failure: if the cache-state half is broken too, that
+            # is the proven-necessary barrier and must propagate, not count as a
+            # retryable output-chain miss (r2).
+            try:
+                mx.eval(states)
+            except Exception:
+                raise
+            return _escalate()
         self._recurrent_output_chain_failures = 0
-        return len(states)
+        return len(outputs)
 
     def _collect_recurrent_outputs(self, generation_batch) -> list:
-        """Return the per-step decode output chain tensors of a batch.
+        """Best-effort collect the per-step decode output chain tensors.
 
         Mirrors the cache-state barrier for the OTHER half of the lazy graph
         that #1834 did not cover: the tensors ``mlx_lm generate._step`` hands
@@ -9291,31 +9342,51 @@ class Scheduler:
         caller returns before ever reaching this — no per-token host sync on a
         dense lane.
 
-        Collection only (no evaluation): the caller realizes the gathered
-        tensors together with the cache states in a single ``mx.eval``. The
-        attribute surface varies across mlx-lm patch levels, so any shape the
-        batch exposes is tolerated without raising; a batch with no exposed
-        output tensors simply contributes nothing, and the cache-state barrier
-        still fires.
+        Collection only (the caller realizes). The attribute surface varies
+        across mlx-lm patch levels, so each optional surface is individually
+        guarded: a single version-mismatched ``TokenBuffer.tokens`` property
+        raising is skipped for that item rather than failing the whole batch.
+        A batch that exposes nothing simply contributes nothing, and the
+        cache-state barrier still fires.
         """
-        # ``_next_tokens`` is a single batch array (or None pre-sampling).
-        next_tokens = getattr(generation_batch, "_next_tokens", None)
         outputs: list = []
-        if next_tokens is not None:
-            outputs.append(next_tokens)
-        # ``_next_logprobs`` is a list of per-row arrays.
-        next_logprobs = getattr(generation_batch, "_next_logprobs", None)
-        if isinstance(next_logprobs, (list, tuple)):
-            outputs.extend(lp for lp in next_logprobs if lp is not None)
-        elif next_logprobs is not None:
-            outputs.append(next_logprobs)
-        # ``_token_context`` is a list of TokenBuffer objects whose lazily
-        # grown buffer is the per-step ``token_context`` async_eval lives on.
-        # Realize each buffer slice so the concat chain detaches.
-        for tc in getattr(generation_batch, "_token_context", None) or []:
-            tok = getattr(tc, "tokens", None)
-            if tok is not None:
-                outputs.append(tok)
+
+        def _safe(attr) -> object:
+            try:
+                return getattr(generation_batch, attr, None)
+            except Exception:
+                return None
+
+        try:
+            next_tokens = _safe("_next_tokens")
+            if next_tokens is not None:
+                outputs.append(next_tokens)
+        except Exception:
+            pass
+
+        try:
+            next_logprobs = _safe("_next_logprobs")
+            if isinstance(next_logprobs, (list, tuple)):
+                for lp in next_logprobs:
+                    if lp is not None:
+                        outputs.append(lp)
+            elif next_logprobs is not None:
+                outputs.append(next_logprobs)
+        except Exception:
+            pass
+
+        try:
+            token_context = _safe("_token_context") or None
+            if isinstance(token_context, (list, tuple)):
+                for tc in token_context:
+                    try:
+                        tok = getattr(tc, "tokens", None)
+                    except Exception:
+                        tok = None
+                    if tok is not None:
+                        outputs.append(tok)
+        except Exception:
+            pass
         return outputs
 
     def get_request(self, request_id: str) -> Request | None:

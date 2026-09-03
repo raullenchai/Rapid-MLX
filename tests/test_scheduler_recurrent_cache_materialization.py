@@ -510,14 +510,16 @@ class _GeneratorNoOut:
 
 
 def test_output_chain_failure_escalates_after_limit(monkeypatch):
-    """#2834 (codex r1 BLOCKING): a persistent output-chain realize failure
-    must escalate, not silently concede to an unbounded output graph.
+    """#2834 (codex r1+r2 converge): a persistent OUTPUT-chain realize failure
+    must escalate, not silently concede to an unbounded output graph — while a
+    cache-state failure must propagate IMMEDIATELY (never suppressed).
 
-    If evaluating the per-step output chain keeps failing while the cache-state
-    barrier keeps succeeding, logging-and-returning forever would recreate
-    exactly the Metal-handle exhaustion this fix targets. After
-    ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` consecutive failures the lane must
-    raise so the incompatibility surfaces instead of drifting toward 499000.
+    The barrier realizes cache state first, unguarded, then the output chain in
+    a guarded block. So: (a) a failing output chain while cache state succeeds
+    retries and escalates after ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT``; (b) a
+    failing cache state propagates on the very first barrier. Modelling the two
+    independently is what round-2 codex demanded — under the earlier combined
+    single-eval design this test could not express either correctly.
     """
     recurrent = _OutputRecurrentLayer()
     batch = _OutputBatch([recurrent])
@@ -525,31 +527,43 @@ def test_output_chain_failure_escalates_after_limit(monkeypatch):
     scheduler = Scheduler.__new__(Scheduler)
     scheduler.batch_generator = generator
     scheduler._recurrent_output_chain_failures = 0
-
-    calls = []
     limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
 
-    def always_fail(value):
-        calls.append(value)
+    cache_head = recurrent.head
+
+    # --- (a) cache-state succeeds, output-chain fails persistently ---
+    def fail_only_outputs(value):
+        # The cache-state eval realizes ``states`` = [[recurrent.head]]
+        # (layer.state returns a one-element list). Every other realizable
+        # tensor is part of the per-step output chain. Succeed (and detach)
+        # the cache-head eval; fail any output-chain realize.
+        values = value if isinstance(value, list) else [value]
+        if values == [[cache_head]]:
+            _detaching_eval(value)
+            return
         raise RuntimeError("simulated persistent output-chain eval failure")
 
-    monkeypatch.setattr(scheduler_module.mx, "eval", always_fail)
+    monkeypatch.setattr(scheduler_module.mx, "eval", fail_only_outputs)
 
-    # The first |limit-1| failures are tolerated (transient/missing surface).
     for _ in range(limit - 1):
         assert scheduler._materialize_active_recurrent_cache() is not None
     assert scheduler._recurrent_output_chain_failures == limit - 1
 
-    # The |limit|-th consecutive failure escalates (raises) instead of
-    # continuing to accumulate the unbounded graph.
-    with pytest.raises(RuntimeError, match="simulated persistent"):
+    with pytest.raises(RuntimeError, match="simulated persistent output-chain"):
         scheduler._materialize_active_recurrent_cache()
     assert scheduler._recurrent_output_chain_failures == limit
 
-    # A later successful realization resets the counter so the lane can
-    # recover if the transient condition clears.
+    # Recover: a later successful realize resets the counter.
     monkeypatch.setattr(
         scheduler_module.mx, "eval", lambda value: _detaching_eval(value)
     )
     scheduler._materialize_active_recurrent_cache()
     assert scheduler._recurrent_output_chain_failures == 0
+
+    # --- (b) cache-state failure propagates immediately (unguarded) ---
+    def fail_cache(value):
+        raise RuntimeError("simulated cache-state eval failure")
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", fail_cache)
+    with pytest.raises(RuntimeError, match="simulated cache-state"):
+        scheduler._materialize_active_recurrent_cache()
