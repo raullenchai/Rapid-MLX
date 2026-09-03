@@ -59,7 +59,7 @@ struct VideoClientTests {
     func unsupportedRoundingFailsClosed() async {
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
-            of: #""dimension_rounding":"multiple_of_64""#,
+            of: #""dimension_rounding":"ceil_to_64""#,
             with: #""dimension_rounding":"floor""#
         )
         VideoStubProtocol.response = (200, Data(json.utf8))
@@ -67,6 +67,20 @@ struct VideoClientTests {
         await #expect(throws: VideoClientError.invalidResponse) {
             _ = try await client.capabilities(port: 8123, bearer: nil)
         }
+    }
+
+    @Test("Shipped workload rounding contracts are accepted", arguments: [
+        "none", "ceil_to_32", "ceil_to_64",
+    ])
+    func shippedRoundingContractsAreAccepted(_ rounding: String) async throws {
+        let client = makeClient()
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""dimension_rounding":"ceil_to_64""#,
+            with: #""dimension_rounding":"\#(rounding)""#
+        )
+        VideoStubProtocol.response = (200, Data(json.utf8))
+
+        _ = try await client.capabilities(port: 8123, bearer: nil)
     }
 
     @Test("Workload uses 64-pixel rounding independently of size alignment")
@@ -92,7 +106,10 @@ struct VideoClientTests {
         #expect(value.supportsImageInput)
         #expect(value.acceptedReferenceMIMETypes == ["image/jpeg"])
 
-        let rejected = jpegOnly.replacingOccurrences(of: #""accepted":true"#, with: #""accepted":false"#)
+        let rejected = jpegOnly.replacingOccurrences(
+            of: #""maximum_bytes":20971520"#,
+            with: #""accepted":false,"maximum_bytes":20971520"#
+        )
         let rejectedValue = try JSONDecoder().decode(
             VideoCapabilities.self, from: Data(rejected.utf8)
         )
@@ -323,8 +340,8 @@ struct VideoClientTests {
         "seconds":{"minimum":1,"maximum":20,"default":4},
         "fps":{"minimum":1,"maximum":60,"default":24,"fixed":false},
         "frames":{"minimum":9,"maximum":1201,"step":8,"offset":1},
-        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"multiple_of_64"},
-        "input_reference":{"accepted":true,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}
+        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"ceil_to_64"},
+        "input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}
       },
       "controls":{}
     }

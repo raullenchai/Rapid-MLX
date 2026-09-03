@@ -92,7 +92,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         }
 
         struct InputReferenceLimit: Decodable, Sendable, Hashable {
-            let accepted: Bool
+            /// Older servers advertised an explicit acceptance flag. Current
+            /// servers advertise support by including this limits object, so
+            /// a missing flag means accepted while an explicit false remains
+            /// authoritative for backwards compatibility.
+            let accepted: Bool?
             let maximumBytes: Int
             let formats: [String]
 
@@ -100,6 +104,8 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
                 case accepted, formats
                 case maximumBytes = "maximum_bytes"
             }
+
+            var isAccepted: Bool { accepted ?? true }
         }
 
         let size: SizeLimit
@@ -137,7 +143,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     let limits: Limits
 
     var acceptedReferenceMIMETypes: Set<String> {
-        guard let input = limits.inputReference, input.accepted else { return [] }
+        guard let input = limits.inputReference, input.isAccepted else { return [] }
         return Set(input.formats.compactMap { format in
             switch format.lowercased() {
             case "jpeg", "jpg", "image/jpeg": "image/jpeg"
@@ -212,7 +218,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
 
     var referenceMaximumBytes: Int {
         guard let inputReference = limits.inputReference,
-              inputReference.accepted,
+              inputReference.isAccepted,
               inputReference.maximumBytes > 0 else { return 0 }
         return min(inputReference.maximumBytes, VideoClient.maxReferenceBytes)
     }
@@ -240,7 +246,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let workload = limits.workload
         let validInput = limits.inputReference.map {
             $0.maximumBytes >= 0
-                && (!$0.accepted || ($0.maximumBytes > 0 && !acceptedReferenceMIMETypes.isEmpty))
+                && (!$0.isAccepted || ($0.maximumBytes > 0 && !acceptedReferenceMIMETypes.isEmpty))
         } ?? true
         guard !model.isEmpty,
               !family.isEmpty,
@@ -259,7 +265,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               frames.offset <= frames.maximum,
               workload.metric == "pixel_frames",
               workload.maximum > 0,
-              workload.dimensionRounding == "multiple_of_64",
+              workloadDimensionMultiple != nil,
               validInput else {
             throw VideoClientError.invalidResponse
         }
@@ -272,9 +278,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               seconds > 0,
               limits.fps.default > 0 else { return false }
         // Workload normalization is a separate server contract from the
-        // request-size alignment. This client validates only multiple_of_64.
-        guard let width = Self.roundUp(dimensions.width, to: 64),
-              let height = Self.roundUp(dimensions.height, to: 64) else { return false }
+        // request-size alignment. Apply the live server's workload rounding
+        // contract independently of the model's accepted request dimensions.
+        guard let multiple = workloadDimensionMultiple,
+              let width = Self.roundUp(dimensions.width, to: multiple),
+              let height = Self.roundUp(dimensions.height, to: multiple) else { return false }
         let frameStep = max(1, limits.frames.step)
         let frameOffset = limits.frames.offset
         guard frameOffset >= 0 else { return false }
@@ -295,6 +303,15 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let (pixelCount, pixelOverflow) = width.multipliedReportingOverflow(by: height)
         let (workload, workloadOverflow) = pixelCount.multipliedReportingOverflow(by: frames)
         return !pixelOverflow && !workloadOverflow && workload <= limits.workload.maximum
+    }
+
+    private var workloadDimensionMultiple: Int? {
+        switch limits.workload.dimensionRounding {
+        case "none": 1
+        case "ceil_to_32": 32
+        case "ceil_to_64", "multiple_of_64": 64
+        default: nil
+        }
     }
 
     private static func parseSize(_ value: String) -> (width: Int, height: Int)? {
