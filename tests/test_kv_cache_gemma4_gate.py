@@ -233,7 +233,7 @@ def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     ],
 )
 def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
-    tmp_path, flags, capsys
+    tmp_path, flags, capsys, monkeypatch
 ):
     """Exercise the in-process CLI exception mapping as well as subprocess E2E."""
     from vllm_mlx import cli
@@ -242,6 +242,18 @@ def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
     args = cli.build_parser().parse_args(["serve", str(model_dir), "--no-mllm", *flags])
+
+    # ``serve_command`` installs middleware before loading the model. Keep this
+    # in-process exception-mapping test independent of the process-global
+    # Starlette app, which may already have served requests in the full suite.
+    from vllm_mlx import server
+    from vllm_mlx.middleware import request_logging
+
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
+    monkeypatch.setattr(
+        request_logging, "install_request_logging_middleware", lambda *_: None
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         cli.serve_command(args)
@@ -408,6 +420,72 @@ def test_live_cache_probe_rejects_attention_sinks_before_ready():
 
 
 @pytest.mark.requires_mlx
+def test_attention_probe_supports_alternate_attention_attribute_and_empty_layers():
+    from vllm_mlx.scheduler import Scheduler
+
+    class _AttentionLayer:
+        attention = SimpleNamespace(attn_sink=object())
+
+    class _NoAttentionLayer:
+        pass
+
+    model = SimpleNamespace(model=SimpleNamespace(layers=[_NoAttentionLayer()]))
+    assert Scheduler._quantized_attention_incompatibility(model) is None
+
+    model.model.layers = [_AttentionLayer()]
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_unknown_cache_type():
+    from vllm_mlx.scheduler import Scheduler
+
+    class _UnknownCache:
+        pass
+
+    class _FakeModel:
+        def make_cache(self):
+            return [_UnknownCache()]
+
+    assert (
+        Scheduler._quantized_live_cache_incompatibility(_FakeModel()) == "_UnknownCache"
+    )
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_layout_negative_paths():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _Broken:
+        def make_cache(self):
+            raise ValueError("stub")
+
+    class _Shared:
+        args = SimpleNamespace(num_kv_shared_layers=1)
+
+        def make_cache(self):
+            return [KVCache()]
+
+    class _UnknownCache:
+        pass
+
+    class _Unknown:
+        def make_cache(self):
+            return [_UnknownCache()]
+
+    class _RotatingOnly:
+        def make_cache(self):
+            return [RotatingKVCache(max_size=8, keep=0)]
+
+    assert Scheduler._quantized_live_cache_layout(_Broken()) is None
+    assert Scheduler._quantized_live_cache_layout(_Shared()) is None
+    assert Scheduler._quantized_live_cache_layout(_Unknown()) is None
+    assert Scheduler._quantized_live_cache_layout(_RotatingOnly()) is None
+
+
+@pytest.mark.requires_mlx
 @pytest.mark.parametrize("bits", [4, 8])
 def test_init_quantization_reports_hybrid_component_policy(caplog, bits):
     from mlx_lm.models.cache import KVCache, RotatingKVCache
@@ -553,6 +631,13 @@ def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         server, "configure_model_residency", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
+    from vllm_mlx.middleware import request_logging
+
+    monkeypatch.setattr(
+        request_logging, "install_request_logging_middleware", lambda *_: None
     )
     monkeypatch.setattr(
         server, "load_model", lambda *args, **kwargs: (_ for _ in ()).throw(error)

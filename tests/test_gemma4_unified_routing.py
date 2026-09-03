@@ -120,6 +120,31 @@ def test_load_plan_keeps_dense_gemma_on_native_path(tmp_path):
     assert gemma4_text.gemma4_load_plan(d) == ("nonunified", False)
 
 
+@pytest.mark.parametrize("payload", ["[]", "null", '"gemma4"', "42"])
+def test_load_plan_rejects_non_object_config(tmp_path, payload):
+    """Valid JSON primitives are not valid Hugging Face model configs."""
+    d = tmp_path / "non-object-config"
+    d.mkdir()
+    (d / "config.json").write_text(payload)
+
+    assert gemma4_text.gemma4_load_plan(d) == (None, False)
+    assert gemma4_text.gemma4_family_kind(d) is None
+
+
+def test_load_plan_rejects_unknown_object_config(tmp_path):
+    d = _write_config(tmp_path, "not_gemma4")
+    assert gemma4_text.gemma4_load_plan(d) == (None, False)
+
+
+def test_unified_shared_kv_resolver_forces_metadata_preserving_classes():
+    from vllm_mlx.models.gemma4_vendored.config import TextConfig
+    from vllm_mlx.models.gemma4_vendored.language import LanguageModel
+
+    assert gemma4_text._resolve_gemma4_unified_text_classes(
+        {"num_kv_shared_layers": 1}
+    ) == (TextConfig, LanguageModel)
+
+
 def test_is_gemma4_model_is_family_wide_alias(tmp_path):
     """``is_gemma4_model`` is the back-compat family-wide predicate: it
     tracks ``is_gemma4_family_model`` for every model_type (True for

@@ -15,6 +15,8 @@ so two invariants are checked:
    comparison is bit-exact (max-abs-diff == 0), not merely "close".
 """
 
+import sys
+
 import pytest
 
 pytest.importorskip("mlx")
@@ -56,6 +58,19 @@ def _max_abs(a, b):
 def _deq(cache, triple):
     """Dequantize an update_and_fetch return (quantized triples, #1751)."""
     return _dequantize(list(triple), cache._q_group_size, cache._q_bits)
+
+
+def test_supported_cache_types_without_optional_vision_runtime(monkeypatch):
+    """The base install keeps mlx-lm cache support without mlx-vlm."""
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.quantized_batch_cache import supported_kv_cache_types
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
+    plain, rotating = supported_kv_cache_types()
+
+    assert plain == (KVCache,)
+    assert rotating == (RotatingKVCache,)
 
 
 def _ref_attention_fp32(queries, k, v, mask):

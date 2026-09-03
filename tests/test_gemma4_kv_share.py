@@ -498,7 +498,12 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
     lm = LanguageModel(tc)
     caches = lm.make_cache()
 
-    first = lm(mx.array([[1, 2, 3, 4, 5, 6]]), cache=caches).logits
+    first_out = lm(
+        mx.array([[1, 2, 3, 4, 5, 6]]),
+        cache=caches,
+        return_shared_kv=True,
+    )
+    first = first_out.logits
     caches = [
         cache.to_quantized(group_size=32, bits=bits)
         if type(cache) is KVCache
@@ -511,6 +516,7 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
     assert first.shape == (1, 6, 64)
     assert second.shape == (1, 1, 64)
     assert bool(mx.all(mx.isfinite(second)).item())
+    assert first_out.shared_kv_states
     quantized_full = [cache for cache in caches if hasattr(cache, "bits")]
     assert quantized_full
     assert all(cache.bits == bits for cache in quantized_full)

@@ -162,7 +162,7 @@ def _read_model_config(model_path: str | Path) -> dict | None:
         return None
     try:
         config = json.loads(config_path.read_text())
-        return config
+        return config if isinstance(config, dict) else None
     except Exception:
         return None
 
