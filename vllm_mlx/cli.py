@@ -11958,8 +11958,8 @@ Examples:
         "--search",
         metavar="TERM",
         default=None,
-        help="Case-insensitive substring match against alias name and HF "
-        "repo. Narrows the 200+-line catalog to rows containing TERM "
+        help="Case-insensitive substring match against the alias name. "
+        "Narrows the 200+-line catalog to rows containing TERM "
         "(e.g. --search qwen picks only qwen aliases).",
     )
     models_parser.add_argument(
