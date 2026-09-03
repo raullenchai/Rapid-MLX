@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from vllm_mlx.cli import models_command
 from vllm_mlx.model_aliases import list_profiles
 
@@ -144,3 +146,218 @@ def test_longest_real_alias_does_not_overflow(capsys):
     assert after_alias.startswith(" "), (
         f"No padding between alias and Tools column for {longest_alias!r}"
     )
+
+
+def test_search_narrows_to_matching_aliases(capsys):
+    """#2355: ``--search`` is a case-insensitive alias substring match that
+    narrows the 200+-line catalog to the requested slice and retitles the
+    section with the term."""
+    out = _capture(capsys, search="qwen3-0.6b")
+    # The section title reflects the active search.
+    assert "matching 'qwen3-0.6b'" in out
+    # The filter narrows to the matching slice: the qwen3-0.6b rows survive,
+    # and a KNOWN UNRELATED alias that exists in the real catalog must NOT
+    # leak through. Scoring presence/absence of concrete aliases (rather than
+    # parsing every table row) catches a filter that keeps the matches but
+    # also lets non-matching rows through (codex r4).
+    lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("qwen3-0.6b")]
+    ids = {ln.split()[0] for ln in lines}
+    assert len(ids) >= 3  # 0.6b + 0.6b-4bit + 0.6b-8bit
+    # ``deepseek`` / ``gemma3`` aliases exist in the full catalog but must be
+    # filtered out by a ``qwen3-0.6b`` search.
+    for leaked in ("deepseek", "gemma3"):
+        assert not any(ln.lstrip().startswith(leaked) for ln in out.splitlines()), (
+            f"search 'qwen3-0.6b' leaked a {leaked} row"
+        )
+
+
+def test_search_ignores_case(capsys):
+    """#2355: the substring match is case-insensitive."""
+    out = _capture(capsys, search="Qwen3")
+    assert "matching 'Qwen3'" in out
+    # Some qwen rows survive (the filter is casefolded).
+    assert any(ln.lstrip().startswith("qwen3") for ln in out.splitlines())
+
+
+def test_search_title_shows_stripped_term(capsys):
+    """#2355 (codex r6 NIT): the title shows the stripped search term, not the
+    raw ``--search`` value — ``--search " qwen "`` matches ``qwen`` and the
+    title must claim ``'qwen'`` (not the literal ``' qwen '``)."""
+    out = _capture(capsys, search="  qwen3-0.6b  ")
+    assert "matching 'qwen3-0.6b'" in out
+    assert "matching '  qwen3-0.6b  '" not in out
+
+
+def test_modality_audio_shows_only_audio_section(capsys):
+    """#2355: ``--modality audio`` blanks the text chat table and shows
+    only the audio section — the terminal settles on the requested slice."""
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio]" in out
+    # The audio section header is present.
+    assert "[audio:" in out or "Audio models" in out
+    # Text chat aliases (e.g. qwen3-0.6b) must NOT appear.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+    # The other tagged sections must be blanked too — audio-only really is
+    # audio-only (codex r5 BLOCKING).
+    assert "Video models" not in out
+    assert "Image models" not in out
+
+
+def test_modality_video_gen_shows_video_section(capsys):
+    """#2355: ``--modality video-gen`` shows the video section and hides
+    the text chat table + image section."""
+    out = _capture(capsys, modality="video-gen")
+    assert "Models [video-gen]" in out
+    assert "Video models" in out
+    # Image section must not be present (only the requested modality).
+    assert "Image models" not in out
+    # A text chat alias must not leak in.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+
+
+def test_modality_image_gen_shows_image_section(capsys):
+    """#2355: ``--modality image-gen`` shows the image section and hides
+    the text chat table + video section."""
+    out = _capture(capsys, modality="image-gen")
+    assert "Models [image-gen]" in out
+    assert "Image models" in out
+    # Video section must not be present (only the requested modality).
+    assert "Video models" not in out
+    # A text chat alias must not leak in.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+
+
+def test_modality_text_restricts_to_text_chat(capsys):
+    """#2355 (codex review #1): ``--modality text`` must show ONLY the text
+    chat table — the video / image / audio sections are blanked so the view
+    really is text-only (unlike the default full catalog)."""
+    out = _capture(capsys, modality="text")
+    assert "Models [text]" in out
+    # A text chat alias appears.
+    assert any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+    # Tagged sections are suppressed.
+    assert "Video models" not in out
+    assert "Image models" not in out
+    assert "Audio models" not in out
+
+
+def test_modality_audio_count_does_not_crash(capsys):
+    """#2355 (codex review #3): the modality title count must reflect the
+    section actually shown without crashing on the audio registry."""
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio]" in out
+
+
+def test_broken_audio_registry_propagates_a_genuine_bug(capsys, monkeypatch):
+    """#2355 (codex r5 NIT): a REAL bug in the audio registry must surface
+    loudly, not be silently swallowed into a misleading empty catalog. Only
+    the expectable 'registry unavailable / malformed' failures (absent module,
+    missing file, bad JSON) degrade — anything else propagates."""
+    import json
+
+    import pytest
+
+    from vllm_mlx import model_aliases as ma
+    from vllm_mlx.audio import registry as audio_registry
+
+    # Patch list_profiles so the text table is minimal and deterministic.
+    monkeypatch.setattr(
+        ma, "list_profiles", lambda: {"qwen3-0.6b": ma.AliasProfile(hf_path="x/q")}
+    )
+
+    # list_audio_aliases raises a GENUINE bug (RuntimeError) — not a
+    # registry-format failure — so it must propagate, not degrade to [].
+    monkeypatch.setattr(
+        audio_registry,
+        "list_audio_aliases",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        _capture(capsys)
+
+    # A malformed aliases.json (JSONDecodeError, a ValueError subclass) is an
+    # expectable format failure and still degrades: the text table renders.
+    monkeypatch.setattr(
+        audio_registry,
+        "list_audio_aliases",
+        lambda: (_ for _ in ()).throw(json.JSONDecodeError("bad", "doc", 0)),
+    )
+    out = _capture(capsys)
+    assert "qwen3-0.6b" in out  # text table intact despite broken audio registry
+
+
+def test_modality_audio_count_tolerates_a_broken_audio_registry(capsys, monkeypatch):
+    """#2355 (coverage): a broken/missing audio registry must not crash the
+    modality count — the guarded fallback yields 0 aliases and the title
+    still renders."""
+    import sys
+    import types
+
+    broken = types.ModuleType("vllm_mlx.audio.registry")
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.registry", broken)
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio] (0 aliases)" in out
+
+
+def test_whole_catalog_search_counts_tagged_matches(capsys, monkeypatch):
+    """#2355 (codex r3 BLOCKING): a ``--search`` with no ``--modality`` greps
+    the whole catalog, so the title count must include matches in the tagged
+    (video / image / audio) sections too. Before the fix, a search matching
+    only a tagged model printed its rows under a misleading ``(0 aliases)``."""
+    import sys
+    import types
+
+    from vllm_mlx import model_aliases
+    from vllm_mlx.model_aliases import AliasProfile
+
+    # A tiny controlled registry with one chat + one video-gen + one
+    # image-gen alias. ``voodoo`` is deliberately unique to the video lane.
+    monkeypatch.setattr(
+        model_aliases,
+        "list_profiles",
+        lambda: {
+            "qwen3-0.6b": AliasProfile(hf_path="x/qwen"),
+            "voodoo-video": AliasProfile(hf_path="x/voodoo", modality="video-gen"),
+            "photon-img": AliasProfile(hf_path="x/photon", modality="image-gen"),
+        },
+    )
+    # Blank the audio registry so the aggregate count is exactly the three
+    # aliases above (guarded import degrades to 0 aliases, not a crash).
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.audio.registry",
+        types.ModuleType("vllm_mlx.audio.registry"),
+    )
+
+    out = _capture(capsys, search="voodoo")
+    # The single video-lane match must render as an actual ALIAS TABLE ROW
+    # (first column == ``voodoo-video``) in the video section — checking any
+    # line containing "voodoo" would also be satisfied by the title line
+    # "matching 'voodoo'" (codex r4).
+    video_rows = [
+        ln for ln in out.splitlines() if ln.lstrip().startswith("voodoo-video")
+    ]
+    assert video_rows, "voodoo-video table row must render under the search"
+    # The title counts the single video-lane match, not ``(0 aliases)``.
+    assert "matching 'voodoo' (1 aliases)" in out
+
+
+def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
+    """#2355 regression: no filters keeps the full catalog AND points the
+    user to the recipe command for RAM-fit recommendations."""
+    out = _capture(capsys)
+    assert "Available models" in out
+    assert "recipe" in out  # discoverability pointer to recommendations
+
+
+@pytest.mark.parametrize("other_flag", ("json", "cached"))
+@pytest.mark.parametrize("filter_flag", ("search", "modality"))
+def test_filters_do_not_silently_noop_on_other_views(capsys, other_flag, filter_flag):
+    """Accepted filter syntax must never return an unfiltered alternate view."""
+    args = {"cached": False, "json": False, "search": None, "modality": None}
+    args[other_flag] = True
+    args[filter_flag] = "qwen" if filter_flag == "search" else "text"
+    with pytest.raises(SystemExit) as exc:
+        models_command(SimpleNamespace(**args))
+    assert exc.value.code == 2
+    assert "cannot be combined" in capsys.readouterr().err
