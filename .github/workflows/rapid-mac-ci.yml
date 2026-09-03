@@ -331,7 +331,7 @@ jobs:
           codesign --verify --deep --strict "$app"
           mkdir -p "$ARTIFACT_DIR"
           ditto -c -k --keepParent "$app" "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip"
-          python ../../scripts/gui_app_artifact.py create \
+          python3 ../../scripts/gui_app_artifact.py create \
             --archive "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip" \
             --source-sha "$GITHUB_SHA" \
             --output "$ARTIFACT_DIR/manifest.json"
@@ -431,7 +431,7 @@ jobs:
           ARTIFACT_DIR: ${{ runner.temp }}/gui-app-artifact
         run: |
           set -euo pipefail
-          python ../../scripts/gui_app_artifact.py verify \
+          python3 ../../scripts/gui_app_artifact.py verify \
             --archive "$ARTIFACT_DIR/Rapid-MLX-Desktop.zip" \
             --manifest "$ARTIFACT_DIR/manifest.json" \
             --expected-source-sha "$GITHUB_SHA"
