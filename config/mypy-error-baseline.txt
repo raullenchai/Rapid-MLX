@@ -62,7 +62,7 @@ vllm_mlx/models/bailing_hybrid.py 1
 vllm_mlx/models/cohere2_moe.py 5
 vllm_mlx/models/deepseek_v4.py 13
 vllm_mlx/models/deepseek_v4_cache.py 24
-vllm_mlx/models/gemma4_text.py 4
+vllm_mlx/models/gemma4_text.py 3
 vllm_mlx/models/gemma4_vendored/language.py 6
 vllm_mlx/models/gpt_oss_puzzle.py 3
 vllm_mlx/models/hy_v3.py 1

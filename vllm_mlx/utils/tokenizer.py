@@ -1579,12 +1579,31 @@ def _load_model_with_fallback_impl(
     # classification through the native-load fallback so a remote repo's
     # config isn't fetched twice and a transient second lookup can't
     # flip the loader choice (see #509).
-    from ..models.gemma4_text import (
-        gemma4_family_kind,
-    )
+    from ..models.gemma4_text import gemma4_load_plan
 
-    gemma4_kind = gemma4_family_kind(model_name)  # "unified" | "nonunified" | None
+    gemma4_kind, gemma4_shared_kv = gemma4_load_plan(model_name)
     if gemma4_kind is not None:
+        # Cross-layer shared KV must retain the producer cache object so
+        # quantized-attention metadata reaches borrower layers.  The native
+        # loader currently passes only the raw K/V payload, so route this
+        # structural variant through our capable text loader.  Dense Gemma 4
+        # remains on the native path.
+        if gemma4_shared_kv:
+            if gemma4_kind == "unified":
+                from ..models.gemma4_text import load_gemma4_unified_text
+
+                logger.info(
+                    "Gemma 4 cross-layer shared KV uses the metadata-preserving "
+                    "unified text loader"
+                )
+                return load_gemma4_unified_text(model_name, tokenizer_config)
+
+            from ..models.gemma4_text import load_gemma4_text
+
+            logger.info(
+                "Gemma 4 cross-layer shared KV uses the metadata-preserving text loader"
+            )
+            return load_gemma4_text(model_name, tokenizer_config)
         try:
             # Try native mlx-lm load first (0.31+)
             model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)

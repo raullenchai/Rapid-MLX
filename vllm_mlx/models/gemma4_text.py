@@ -130,8 +130,8 @@ def _path_matches_any_suffix(path: str, suffixes: set[str]) -> bool:
     return False
 
 
-def _read_model_type(model_path: str | Path) -> str | None:
-    """Read the top-level ``model_type`` from a model's ``config.json``.
+def _read_model_config(model_path: str | Path) -> dict | None:
+    """Read a model's ``config.json`` without resolving weight shards.
 
     Returns ``None`` when the config is unreachable or unparseable so
     callers can treat "can't tell" as "not this family".
@@ -162,9 +162,15 @@ def _read_model_type(model_path: str | Path) -> str | None:
         return None
     try:
         config = json.loads(config_path.read_text())
-        return config.get("model_type", "")
+        return config if isinstance(config, dict) else None
     except Exception:
         return None
+
+
+def _read_model_type(model_path: str | Path) -> str | None:
+    """Read the top-level ``model_type`` from a model's ``config.json``."""
+    config = _read_model_config(model_path)
+    return config.get("model_type", "") if config is not None else None
 
 
 # Model_types the Gemma 4 text loader path claims. This is a deliberate
@@ -277,6 +283,37 @@ def gemma4_family_kind(model_path: str | Path) -> str | None:
     return None
 
 
+def _has_cross_layer_kv_sharing(config: object) -> bool:
+    """Return whether a config declares a positive integer borrower count."""
+    if not isinstance(config, dict):
+        return False
+    shared = config.get("num_kv_shared_layers", 0)
+    return isinstance(shared, int) and not isinstance(shared, bool) and shared > 0
+
+
+def gemma4_load_plan(model_path: str | Path) -> tuple[str | None, bool]:
+    """Return ``(family_kind, needs_shared_kv_loader)`` from one config read.
+
+    Current native Gemma 4 classes discard the producer cache object when a
+    later layer reuses its K/V tensors.  That loses the quantization metadata
+    required by the attention dispatcher.  Checkpoints with an explicit
+    cross-layer sharing split therefore use Rapid's text loader, whose cache
+    handoff preserves that metadata.  Dense checkpoints keep the native path.
+    """
+    config = _read_model_config(model_path)
+    if config is None:
+        return None, False
+    model_type = config.get("model_type", "")
+    if model_type in _GEMMA4_UNIFIED_MODEL_TYPES:
+        kind = "unified"
+    elif model_type in _GEMMA4_NONUNIFIED_MODEL_TYPES:
+        kind = "nonunified"
+    else:
+        return None, False
+    text_config = config.get("text_config", config)
+    return kind, _has_cross_layer_kv_sharing(text_config)
+
+
 class Gemma4TextWrapper(nn.Module):
     """Wraps mlx-vlm's Gemma4 LanguageModel for mlx-lm compatibility.
 
@@ -372,10 +409,15 @@ class Gemma4TextWrapper(nn.Module):
 # the fresh-install path working with zero extras.
 
 
-def _resolve_gemma4_text_classes():
+def _resolve_gemma4_text_classes(text_config: dict | None = None):
     """Return ``(TextConfig, LanguageModel)`` for the NON-unified ``gemma4``
     arch — upstream ``mlx_vlm.models.gemma4`` when importable, else the
     vendored copy (dataclass-identical, no ``[vision]`` extra needed)."""
+    if _has_cross_layer_kv_sharing(text_config):
+        from vllm_mlx.models.gemma4_vendored import config as _v_cfg
+        from vllm_mlx.models.gemma4_vendored import language as _v_lang
+
+        return _v_cfg.TextConfig, _v_lang.LanguageModel
     try:
         from mlx_vlm.models.gemma4.config import TextConfig
         from mlx_vlm.models.gemma4.language import LanguageModel
@@ -392,7 +434,7 @@ def _resolve_gemma4_text_classes():
         return _v_cfg.TextConfig, _v_lang.LanguageModel
 
 
-def _resolve_gemma4_unified_text_classes():
+def _resolve_gemma4_unified_text_classes(text_config: dict | None = None):
     """Return ``(TextConfig, LanguageModel)`` for the ``gemma4_unified`` arch.
 
     Prefer upstream ``mlx_vlm.models.gemma4_unified`` when mlx-vlm is
@@ -424,6 +466,11 @@ def _resolve_gemma4_unified_text_classes():
     vendored copy are unavailable, which cannot happen because the
     vendored copy ships inside the wheel.
     """
+    if _has_cross_layer_kv_sharing(text_config):
+        from vllm_mlx.models.gemma4_vendored import config as _v_cfg
+        from vllm_mlx.models.gemma4_vendored import language as _v_lang
+
+        return _v_cfg.TextConfig, _v_lang.LanguageModel
     try:
         from mlx_vlm.models.gemma4_unified import LanguageModel
         from mlx_vlm.models.gemma4_unified.config import TextConfig
@@ -727,7 +774,7 @@ def _load_gemma4_text_impl(
     # (e.g. ``gemma4_assistant``) instead of a coarser default.
     routed_model_type = config.get("model_type") or default_model_type
 
-    TextConfig, LanguageModel = resolve_classes()
+    TextConfig, LanguageModel = resolve_classes(text_config)
 
     tc = TextConfig.from_dict(text_config)
 

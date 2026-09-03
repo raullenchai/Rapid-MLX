@@ -46,6 +46,35 @@ GEMMA4_UNIFIED_CONFIG = {
     "text_config": {"model_type": "gemma4_unified_text", "sliding_window": 1024},
 }
 
+GEMMA4_DENSE_HYBRID_CONFIG = {
+    "model_type": "gemma4_unified",
+    "text_config": {
+        "model_type": "gemma4_unified_text",
+        "sliding_window": 512,
+        "num_kv_shared_layers": 0,
+        "layer_types": [
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    },
+}
+
+GEMMA4_SHARED_HYBRID_CONFIG = {
+    "model_type": "gemma4",
+    "text_config": {
+        "model_type": "gemma4_text",
+        "sliding_window": 512,
+        "num_kv_shared_layers": 2,
+        "layer_types": [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    },
+}
+
 # Full-attention control family (Qwen3.5-style): no sliding window, no MLA.
 SUPPORTED_CONFIG = {
     "model_type": "qwen3_5",
@@ -104,6 +133,44 @@ def test_gemma4_unified_explicit_request_is_rejected():
             model_name="gemma-4-12b-alias",
             hf_config=GEMMA4_UNIFIED_CONFIG,
         )
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int4"])
+def test_dense_hybrid_explicit_request_allows_per_layer_quantization(dtype):
+    decision = resolve_kv_cache_dtype(
+        dtype,
+        explicit=True,
+        model_name="local-hybrid-checkpoint",
+        hf_config=GEMMA4_DENSE_HYBRID_CONFIG,
+    )
+    assert decision.dtype == dtype
+    assert decision.downgraded is False
+
+
+def test_unqualified_hybrid_family_remains_rejected():
+    config = {
+        "model_type": "future_hybrid",
+        "sliding_window": 512,
+        "layer_types": ["sliding_attention", "full_attention"],
+    }
+
+    with pytest.raises(KVCacheQuantizationUnsupportedError):
+        resolve_kv_cache_dtype(
+            "int8",
+            explicit=True,
+            model_name="future-hybrid",
+            hf_config=config,
+        )
+
+
+def test_cross_layer_shared_hybrid_defers_to_loaded_capability_probe():
+    decision = resolve_kv_cache_dtype(
+        "int8",
+        explicit=True,
+        model_name="local-shared-hybrid-checkpoint",
+        hf_config=GEMMA4_SHARED_HYBRID_CONFIG,
+    )
+    assert decision.dtype == "int8"
 
 
 @pytest.mark.parametrize("dtype", ["int8", "int4"])
@@ -293,7 +360,7 @@ def _scheduler_stub(explicit: bool):
 
 
 @pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
-def test_live_cache_probe_flags_rotating_cache():
+def test_live_cache_probe_accepts_plain_plus_rotating_hybrid():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
     from vllm_mlx.scheduler import Scheduler
@@ -302,9 +369,277 @@ def test_live_cache_probe_flags_rotating_cache():
         def make_cache(self):
             return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
 
+    assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_cross_layer_shared_hybrid():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _FakeModel:
+        args = SimpleNamespace(num_kv_shared_layers=2)
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
     assert (
         Scheduler._quantized_live_cache_incompatibility(_FakeModel())
-        == "RotatingKVCache"
+        == "cross-layer shared KV"
+    )
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
+    from mlx_lm.models.cache import KVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _LanguageModel:
+        supports_quantized_shared_kv = True
+        config = SimpleNamespace(num_kv_shared_layers=2)
+
+    class _FakeModel:
+        language_model = _LanguageModel()
+
+        def make_cache(self):
+            return [KVCache(), KVCache()]
+
+    assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_attention_sinks_before_ready():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _Layer:
+        self_attn = SimpleNamespace(sinks=object())
+
+    class _Inner:
+        layers = [_Layer()]
+
+    class _FakeModel:
+        model = _Inner()
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
+    reason = Scheduler._quantized_live_cache_incompatibility(_FakeModel())
+    assert reason is not None
+    assert "attention sinks" in reason
+
+    with pytest.raises(KVCacheQuantizationUnsupportedError, match="attention sinks"):
+        _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
+
+
+@pytest.mark.requires_mlx
+def test_attention_probe_supports_alternate_attention_attribute_and_empty_layers():
+    from vllm_mlx.scheduler import Scheduler
+
+    class _AttentionLayer:
+        attention = SimpleNamespace(attn_sink=object())
+
+    class _NoAttentionLayer:
+        pass
+
+    model = SimpleNamespace(model=SimpleNamespace(layers=[_NoAttentionLayer()]))
+    assert Scheduler._quantized_attention_incompatibility(model) is None
+
+    model.model.layers = [_AttentionLayer()]
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
+    model.model.layers = [SimpleNamespace(self_attn=SimpleNamespace())]
+    assert Scheduler._quantized_attention_incompatibility(model) is None
+
+
+@pytest.mark.requires_mlx
+def test_attention_probe_looks_through_non_decoder_wrapper_layers():
+    from vllm_mlx.scheduler import Scheduler
+
+    sink_layer = SimpleNamespace(self_attn=SimpleNamespace(sinks=object()))
+    model = SimpleNamespace(
+        layers=[],
+        model=SimpleNamespace(layers=[sink_layer]),
+    )
+
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
+    model.layers = [SimpleNamespace(self_attn=SimpleNamespace())]
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
+
+@pytest.mark.requires_mlx
+def test_init_quantization_constructs_prompt_cache_once(monkeypatch):
+    from mlx_lm.models.cache import KVCache, make_prompt_cache
+
+    calls = 0
+
+    def _counted_make_prompt_cache(model):
+        nonlocal calls
+        calls += 1
+        return make_prompt_cache(model)
+
+    monkeypatch.setattr(
+        "mlx_lm.models.cache.make_prompt_cache", _counted_make_prompt_cache
+    )
+
+    class _FakeModel:
+        args = SimpleNamespace(head_dim=64)
+
+        def make_cache(self):
+            return [KVCache()]
+
+    _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
+    assert calls == 1
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_unknown_cache_type():
+    from vllm_mlx.scheduler import Scheduler
+
+    class _UnknownCache:
+        pass
+
+    class _FakeModel:
+        def make_cache(self):
+            return [_UnknownCache()]
+
+    assert (
+        Scheduler._quantized_live_cache_incompatibility(_FakeModel()) == "_UnknownCache"
+    )
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_layout_negative_paths():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _Broken:
+        def make_cache(self):
+            raise ValueError("stub")
+
+    class _Shared:
+        args = SimpleNamespace(num_kv_shared_layers=1)
+
+        def make_cache(self):
+            return [KVCache()]
+
+    class _UnknownCache:
+        pass
+
+    class _Unknown:
+        def make_cache(self):
+            return [_UnknownCache()]
+
+    class _RotatingOnly:
+        def make_cache(self):
+            return [RotatingKVCache(max_size=8, keep=0)]
+
+    assert Scheduler._quantized_live_cache_layout(_Broken()) is None
+    assert Scheduler._quantized_live_cache_layout(_Shared()) is None
+    assert Scheduler._quantized_live_cache_layout(_Unknown()) is None
+    assert Scheduler._quantized_live_cache_layout(_RotatingOnly()) is None
+
+
+@pytest.mark.requires_mlx
+def test_batch_generator_legacy_constructor_fallback(monkeypatch):
+    """A runtime without the stream keyword still builds the same generator."""
+    import vllm_mlx.scheduler as scheduler_module
+    from vllm_mlx.request import SamplingParams
+
+    calls = []
+    legacy_generator = SimpleNamespace(_make_new_cache=lambda: [])
+
+    def _batch_generator(**kwargs):
+        calls.append(kwargs)
+        if "stream" in kwargs:
+            raise TypeError("unexpected keyword argument 'stream'")
+        return legacy_generator
+
+    monkeypatch.setattr(scheduler_module, "BatchGenerator", _batch_generator)
+    monkeypatch.setattr(scheduler_module, "make_sampler", lambda **_: object())
+
+    scheduler = scheduler_module.Scheduler.__new__(scheduler_module.Scheduler)
+    scheduler.model = object()
+    scheduler.tokenizer = object()
+    scheduler._get_stop_tokens = lambda: set()
+    scheduler.memory_aware_cache = None
+    scheduler.model_config = None
+    scheduler.config = SimpleNamespace(
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefill_step_size=1,
+        spec_decode="none",
+        enable_suffix_decoding=False,
+        kv_cache_quantization=True,
+        kv_cache_turboquant=None,
+        kv_cache_quantization_bits=4,
+    )
+    scheduler._kv_quant_live_disabled = False
+    scheduler._kv_quant_group_size = 32
+
+    result = scheduler._create_batch_generator(SamplingParams(max_tokens=8))
+
+    assert result is legacy_generator
+    assert len(calls) == 2
+    assert "stream" in calls[0]
+    assert "stream" not in calls[1]
+    assert scheduler._live_kv_quant == (32, 4)
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("bits", [4, 8])
+def test_init_quantization_reports_hybrid_component_policy(caplog, bits):
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    class _FakeModel:
+        args = SimpleNamespace(head_dim=64, num_kv_shared_layers=0)
+
+        def make_cache(self):
+            return [
+                RotatingKVCache(max_size=8, keep=0),
+                KVCache(),
+                RotatingKVCache(max_size=8, keep=0),
+            ]
+
+    sched = _scheduler_stub(explicit=True)
+    sched.config.kv_cache_quantization_bits = bits
+    with caplog.at_level(logging.INFO):
+        sched._init_kv_quantization(_FakeModel())
+    assert sched._kv_quant_live_disabled is False
+    assert sched._kv_quant_layout.quantizable_layers == 1
+    assert sched._kv_quant_layout.rotating_layers == 2
+    assert any(
+        f"1/3 full-attention layers use int{bits}" in record.message
+        and "2 bounded rotating layers remain bf16" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.requires_mlx
+def test_init_quantization_reports_shared_borrowers(caplog):
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    class _LanguageModel:
+        supports_quantized_shared_kv = True
+        config = SimpleNamespace(head_dim=64, num_kv_shared_layers=2)
+
+    class _FakeModel:
+        language_model = _LanguageModel()
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
+    sched = _scheduler_stub(explicit=True)
+    with caplog.at_level(logging.INFO):
+        sched._init_kv_quantization(_FakeModel())
+    assert sched._kv_quant_layout.shared_borrower_layers == 2
+    assert any(
+        "2 cross-layer KV borrowers" in record.message for record in caplog.records
     )
 
 
