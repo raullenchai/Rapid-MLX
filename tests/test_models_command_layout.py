@@ -177,6 +177,15 @@ def test_search_ignores_case(capsys):
     assert any(ln.lstrip().startswith("qwen3") for ln in out.splitlines())
 
 
+def test_search_title_shows_stripped_term(capsys):
+    """#2355 (codex r6 NIT): the title shows the stripped search term, not the
+    raw ``--search`` value — ``--search " qwen "`` matches ``qwen`` and the
+    title must claim ``'qwen'`` (not the literal ``' qwen '``)."""
+    out = _capture(capsys, search="  qwen3-0.6b  ")
+    assert "matching 'qwen3-0.6b'" in out
+    assert "matching '  qwen3-0.6b  '" not in out
+
+
 def test_modality_audio_shows_only_audio_section(capsys):
     """#2355: ``--modality audio`` blanks the text chat table and shows
     only the audio section — the terminal settles on the requested slice."""

@@ -6738,6 +6738,10 @@ def models_command(args):
     # the full catalog + the existing recommendation pointer.
     search_term = (getattr(args, "search", None) or "").strip().casefold()
     search_active = bool(search_term)
+    # The title shows the stripped original (user-facing case preserved) so
+    # ``--search " qwen "`` doesn't claim it matched the literal ``' qwen '``
+    # while actually matching ``qwen`` (codex r6 NIT).
+    search_display = (getattr(args, "search", None) or "").strip()
     modality = getattr(args, "modality", None)
 
     def _matches_search(alias: str) -> bool:
@@ -6815,7 +6819,7 @@ def models_command(args):
     if modality:
         title = f"Models [{modality}]"
     if search_active:
-        title += f" matching '{args.search}'"
+        title += f" matching '{search_display}'"
     # The count reflects the section actually shown (a modality view empties
     # the text ``profiles`` but presents its own tagged section). (codex #3)
     if modality == "video-gen":
