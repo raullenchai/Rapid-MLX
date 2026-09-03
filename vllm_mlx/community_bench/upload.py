@@ -37,9 +37,11 @@ anyone correlate a public board entry with a private telemetry stream.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import secrets
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -74,27 +76,33 @@ def board_url() -> str:
     override = os.environ.get(BOARD_URL_ENV, "").strip()
     if not override:
         return DEFAULT_BOARD_URL
-    parsed = urllib.parse.urlparse(override)
+    return validate_board_url(override, source=BOARD_URL_ENV)
+
+
+def validate_board_url(value: str, *, source: str = "benchmark upload URL") -> str:
+    """Apply the HTTPS/loopback policy to configured and explicit targets."""
+
+    parsed = urllib.parse.urlparse(value)
     # The resolved target is printed on the consent screen and repeated in
     # error messages, so embedded credentials would land in terminals and CI
     # logs. Refuse rather than redact: a URL needing userinfo to reach the
     # board is not a configuration we want to support silently.
     if parsed.username or parsed.password:
         raise SubmitError(
-            f"{BOARD_URL_ENV} must not embed credentials in the URL — the "
+            f"{source} must not embed credentials in the URL — the "
             f"destination is displayed and logged."
         )
     if parsed.scheme == "https":
-        return override
+        return value
     if parsed.scheme == "http" and (parsed.hostname or "") in {
         "localhost",
         "127.0.0.1",
         "::1",
     }:
-        return override
+        return value
     raise SubmitError(
-        f"{BOARD_URL_ENV} must be an https:// URL (or http:// on loopback for "
-        f"local development); got {override!r}. Refusing to send your "
+        f"{source} must be an https:// URL (or http:// on loopback for "
+        f"local development); got {value!r}. Refusing to send your "
         f"submission in clear text."
     )
 
@@ -131,54 +139,73 @@ def commit_install_id(candidate: str) -> str:
     Returns the id that is now on disk — which may be another process's if it
     won the race. Callers must use the return value, not their candidate.
 
-    The write is a fully-written temp file plus ``os.link``, not ``O_EXCL`` on
-    the destination: link is atomic and the file only ever becomes visible
-    already containing an id, so a concurrent reader can never observe an
-    empty file and mistake it for corruption.
+    A per-install advisory lock serializes both first creation and repair of a
+    malformed file across processes and threads. The value is fully written to
+    a unique mode-0600 tempfile before an atomic replace, so readers never see
+    a partial value.
 
     Never raises. An unwritable home costs a stable identity, not a
     submission; the only consequence is that the server counts this run
     against a fresh per-install bucket.
     """
     path = _install_id_path()
-    try:
-        existing = path.read_text().strip()
-        if _valid_id(existing):
-            return existing
-        malformed = True
-    except (OSError, UnicodeError):
-        malformed = path.exists()
-
     tmp = None
+    lock_fd = None
+    directory_fd = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        lock_path = path.with_name(f".{path.name}.lock")
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
-            os.write(fd, (candidate + "\n").encode())
+            existing = path.read_text().strip()
+            if _valid_id(existing):
+                return existing
+        except (OSError, UnicodeError):
+            pass
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        tmp = Path(tmp_name)
+        try:
+            encoded = (candidate + "\n").encode()
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("install identity write made no progress")
+                offset += written
+            os.fsync(fd)
         finally:
             os.close(fd)
 
-        if malformed:
-            # Garbage on disk: replace it. Two processes both repairing will
-            # disagree on the id for this one run and agree from the next one
-            # onwards. Rarer and less harmful than the alternative, which is
-            # never repairing and re-minting on every single submission.
-            os.replace(tmp, path)
-            tmp = None
-            return candidate
-        try:
-            os.link(tmp, path)
-            return candidate
-        except FileExistsError:
-            winner = path.read_text().strip()
-            return winner if _valid_id(winner) else candidate
+        os.replace(tmp, path)
+        tmp = None
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        os.fsync(directory_fd)
+        return candidate
     except (OSError, UnicodeError):
         return candidate
     finally:
         if tmp is not None:
             try:
                 os.unlink(tmp)
+            except OSError:
+                pass
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
             except OSError:
                 pass
 
@@ -223,7 +250,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
     the opposite of what the response is asking for.
     """
     target = url or board_url()
-    body = json.dumps(payload).encode("utf-8")
+    body = submission_body(payload)
     last: Exception | None = None
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -293,6 +320,12 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
     raise SubmitError(str(last))
 
 
+def submission_body(payload: dict) -> bytes:
+    """Serialize the exact HTTP request body used by preview and upload."""
+
+    return json.dumps(payload).encode("utf-8")
+
+
 __all__ = [
     "DEFAULT_BOARD_URL",
     "BOARD_URL_ENV",
@@ -303,4 +336,6 @@ __all__ = [
     "peek_install_id",
     "new_run_group",
     "post_submission",
+    "submission_body",
+    "validate_board_url",
 ]

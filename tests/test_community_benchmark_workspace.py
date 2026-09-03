@@ -9,12 +9,14 @@ import json
 import multiprocessing
 import os
 import signal
+import stat
 import subprocess
 import sys
 import textwrap
 import threading
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +25,15 @@ import pytest
 
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
-from vllm_mlx.community_bench import benchmark_contracts, local_runner, run_builder
+from vllm_mlx.community_bench import (
+    atomic_upload,
+    benchmark_contracts,
+    local_runner,
+    run_builder,
+)
 from vllm_mlx.community_bench import cli as community_cli
 from vllm_mlx.community_bench import runner as bench_runner
+from vllm_mlx.community_bench import upload as benchmark_upload
 from vllm_mlx.community_bench import workspace as workspace_module
 from vllm_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
@@ -35,6 +43,7 @@ from vllm_mlx.community_bench.benchmark_contracts import (
 from vllm_mlx.community_bench.hardware import Hardware, Software
 from vllm_mlx.community_bench.run_builder import build_run, execution_config, utc_now
 from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
+from vllm_mlx.community_bench.upload import SubmitError
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
@@ -94,6 +103,7 @@ def _mock_local_context(
     ("packaged", "source"),
     [
         ("benchmark-run.schema.json", "benchmark-run.schema.json"),
+        ("submission-receipt.schema.json", "submission-receipt.schema.json"),
         ("rapid-community-speed-v1.json", "protocols/rapid-community-speed-v1.json"),
         ("rapid-community-speed-v2.json", "protocols/rapid-community-speed-v2.json"),
         ("rapid-image-speed-v1.json", "protocols/rapid-image-speed-v1.json"),
@@ -139,7 +149,11 @@ def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     plan = plan_for_alias("flux2-klein-4b")
     assert plan["model"]["identity_strength"] == "unresolved"
     assert plan["model"]["comparable"] is False
-    assert plan["privacy"] == {"storage": "local", "uploads": False}
+    assert plan["privacy"] == {
+        "storage": "local",
+        "uploads": False,
+        "upload": "explicit_consent_only",
+    }
     assert registered_workload("text_generation")["protocol_version"] == 2
 
 
@@ -207,7 +221,682 @@ def test_results_cli_forwards_latest_limit(
     args = SimpleNamespace(benchmark_action="results", limit=8, json=True)
 
     assert community_cli.benchmark_command(args) == 0
-    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "runs": []}
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 1,
+        "runs": [],
+        "receipts": {},
+    }
+
+
+def _receipt(
+    run_id: str, *, already: bool = False, run_digest: str | None = None
+) -> dict:
+    return {
+        "schema_version": 1,
+        "submission_id": run_id,
+        "status": "accepted",
+        "already_exists": already,
+        "accepted_at": "2026-09-01T20:00:00Z",
+        "run_digest": run_digest or "sha256:" + "a" * 64,
+        "contributor": {"name": "rapid-silver-otter", "tag": "abc"},
+    }
+
+
+def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    called = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: called.append(1),
+    )
+    monkeypatch.setattr(atomic_upload, "peek_install_id", lambda: "a" * 12)
+    output = io.StringIO()
+
+    result = atomic_upload.upload_run(
+        run,
+        stdin=io.StringIO("n\n"),
+        stdout=output,
+        url="https://rapidmlx.com/api/benchmarks/atomic",
+    )
+
+    assert result is None
+    assert called == []
+    assert not (tmp_path / "bench-install-id").exists()
+    assert "observes the source IP" in output.getvalue()
+    assert "does not put it in the benchmark record" in output.getvalue()
+    exact_body = benchmark_upload.submission_body(
+        {**run, "install_id": "a" * 12}
+    ).decode()
+    assert exact_body in output.getvalue()
+
+
+def test_atomic_upload_rejects_cleartext_explicit_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="must be an https:// URL"):
+        atomic_upload.upload_run(
+            _text_run(),
+            assume_yes=True,
+            url="http://collector.example/submit",
+        )
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_atomic_upload_sends_validated_run_and_requires_matching_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = {}
+
+    def post(payload, **kwargs):
+        assert kwargs["url"] == "https://rapidmlx.com/api/benchmarks/atomic"
+        sent.update(payload)
+        return {
+            "ok": True,
+            "receipt": _receipt(
+                run["run_id"], run_digest=atomic_upload.atomic_run_digest(payload)
+            ),
+        }
+
+    monkeypatch.setattr(atomic_upload, "post_submission", post)
+    monkeypatch.setattr(
+        atomic_upload,
+        "board_url",
+        lambda: "https://rapidmlx.com/api/benchmarks",
+    )
+
+    acceptance = atomic_upload.upload_run(run, assume_yes=True)
+
+    assert acceptance is not None
+    assert acceptance.receipt == _receipt(
+        run["run_id"], run_digest=atomic_upload.atomic_run_digest(sent)
+    )
+    assert acceptance.install_id == sent["install_id"]
+    assert len(sent["install_id"]) == 12
+    assert "install_id" not in run
+    assert sent
+    BenchmarkRunValidator().validate(sent)
+
+
+def test_atomic_preview_is_the_exact_later_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    run["measurements"][0]["total_duration_ms"] = 100.25
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+    assert not (tmp_path / "bench-install-id").exists()
+    assert preview["payload_json"].encode() == benchmark_upload.submission_body(
+        preview["payload"]
+    )
+
+    def post(payload, **kwargs):
+        assert payload == preview["payload"]
+        assert kwargs["url"] == preview["target"]
+        return {
+            "receipt": _receipt(
+                run["run_id"], run_digest=atomic_upload.atomic_run_digest(payload)
+            )
+        }
+
+    monkeypatch.setattr(atomic_upload, "post_submission", post)
+    atomic_upload.upload_run(
+        run,
+        assume_yes=True,
+        approved_install_id=preview["install_id"],
+        approved_payload_digest=preview["payload_digest"],
+        approved_body_digest=preview["body_digest"],
+        approved_target=preview["target"],
+    )
+
+
+def test_atomic_run_digest_uses_ingestion_service_number_format() -> None:
+    render = atomic_upload._ecmascript_number
+    assert render(100.0) == "100"
+    assert render(-0.0) == "0"
+    assert render(0.00123) == "0.00123"
+    assert render(1e-6) == "0.000001"
+    assert render(1e-7) == "1e-7"
+    assert render(1e20) == "100000000000000000000"
+    assert render(1e21) == "1e+21"
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ({"ok": True}, "without a submission receipt"),
+        ({"receipt": {"schema_version": 1}}, "invalid submission receipt"),
+    ],
+)
+def test_atomic_upload_rejects_missing_or_invalid_receipt(
+    response: dict, message: str
+) -> None:
+    with pytest.raises(SubmitError, match=message):
+        atomic_upload._validated_receipt(
+            response, _text_run()["run_id"], "sha256:" + "a" * 64
+        )
+
+
+def test_atomic_upload_rejects_receipt_for_different_run() -> None:
+    run = _text_run()
+    receipt = _receipt(
+        "00000000-0000-4000-8000-000000000099",
+        run_digest="sha256:" + "a" * 64,
+    )
+    with pytest.raises(SubmitError, match="uploaded run"):
+        atomic_upload._validated_receipt(
+            {"receipt": receipt}, run["run_id"], receipt["run_digest"]
+        )
+
+
+def test_atomic_digest_rejects_non_finite_and_unsupported_values() -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        atomic_upload.atomic_run_digest({"value": float("nan")})
+    with pytest.raises(TypeError, match="unsupported benchmark payload value"):
+        atomic_upload.atomic_run_digest({"value": object()})
+
+
+def test_atomic_upload_rejects_receipt_for_different_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda payload, **kwargs: {"receipt": _receipt(run["run_id"])},
+    )
+
+    with pytest.raises(SubmitError, match="uploaded payload"):
+        atomic_upload.upload_run(run, assume_yes=True)
+
+
+def test_atomic_upload_aborts_if_approved_install_id_loses_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = []
+    monkeypatch.setattr(atomic_upload, "commit_install_id", lambda candidate: "b" * 12)
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="install id changed"):
+        atomic_upload.upload_run(
+            run,
+            assume_yes=True,
+            approved_install_id="a" * 12,
+        )
+    assert sent == []
+
+
+def test_atomic_upload_aborts_if_destination_changes_after_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCH_BOARD_URL", "https://first.example/api/benchmarks/atomic"
+    )
+    preview = atomic_upload.preview_run(run)
+    monkeypatch.setenv(
+        "RAPID_MLX_BENCH_BOARD_URL", "https://second.example/api/benchmarks/atomic"
+    )
+    sent = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="destination changed"):
+        atomic_upload.upload_run(
+            run,
+            assume_yes=True,
+            approved_install_id=preview["install_id"],
+            approved_payload_digest=preview["payload_digest"],
+            approved_body_digest=preview["body_digest"],
+            approved_target=preview["target"],
+        )
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_atomic_upload_binds_exact_serialized_body_not_only_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _text_run()
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+    reordered = {key: run[key] for key in reversed(run)}
+    sent = []
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+
+    with pytest.raises(SubmitError, match="serialized benchmark changed"):
+        atomic_upload.upload_run(
+            reordered,
+            assume_yes=True,
+            approved_install_id=preview["install_id"],
+            approved_payload_digest=preview["payload_digest"],
+            approved_body_digest=preview["body_digest"],
+            approved_target=preview["target"],
+        )
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_share_cli_rejects_archive_changed_after_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    preview = atomic_upload.preview_run(run)
+
+    changed = json.loads(json.dumps(run))
+    changed["measurements"][0]["total_duration_ms"] += 0.5
+    archive.save(changed)
+    sent = []
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(
+        atomic_upload,
+        "post_submission",
+        lambda *args, **kwargs: sent.append(args),
+    )
+    args = SimpleNamespace(
+        benchmark_action="share",
+        run_id=run["run_id"],
+        yes=True,
+        json=True,
+        preview=False,
+        install_id=preview["install_id"],
+        payload_digest=preview["payload_digest"],
+        body_digest=preview["body_digest"],
+        target=preview["target"],
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    assert "changed after preview" in capsys.readouterr().err
+    assert sent == []
+    assert not (tmp_path / "bench-install-id").exists()
+
+
+def test_install_id_commit_is_stable_across_same_process_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    (tmp_path / "bench-install-id").write_text("malformed\n")
+    candidates = [f"{index:012x}" for index in range(16)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        settled = list(pool.map(benchmark_upload.commit_install_id, candidates))
+
+    assert len(set(settled)) == 1
+    assert settled[0] in candidates
+    assert (tmp_path / "bench-install-id").read_text().strip() == settled[0]
+    assert list(tmp_path.glob(".bench-install-id.*.tmp")) == []
+
+
+def test_install_id_cleanup_errors_do_not_reverse_a_committed_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_flock = benchmark_upload.fcntl.flock
+    real_close = benchmark_upload.os.close
+    lock_fd = None
+
+    def flaky_flock(descriptor, operation):
+        nonlocal lock_fd
+        if operation == benchmark_upload.fcntl.LOCK_EX:
+            lock_fd = descriptor
+            return real_flock(descriptor, operation)
+        raise OSError("unlock failed")
+
+    def flaky_close(descriptor):
+        real_close(descriptor)
+        if descriptor == lock_fd:
+            raise OSError("close reported failure")
+
+    monkeypatch.setattr(benchmark_upload.fcntl, "flock", flaky_flock)
+    monkeypatch.setattr(benchmark_upload.os, "close", flaky_close)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert (tmp_path / "bench-install-id").read_text().strip() == "a" * 12
+
+
+def test_install_id_commit_syncs_file_and_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_fsync = benchmark_upload.os.fsync
+    synced = []
+
+    def observed_fsync(descriptor):
+        synced.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(benchmark_upload.os, "fsync", observed_fsync)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert synced == [False, True]
+
+
+def test_install_id_commit_completes_a_partial_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_write = benchmark_upload.os.write
+    calls = 0
+
+    def partial_first_write(descriptor, data):
+        nonlocal calls
+        calls += 1
+        return real_write(descriptor, data[:3] if calls == 1 else data)
+
+    monkeypatch.setattr(benchmark_upload.os, "write", partial_first_write)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert calls == 2
+    assert (tmp_path / "bench-install-id").read_text() == "a" * 12 + "\n"
+
+
+def test_install_id_commit_handles_zero_progress_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setattr(benchmark_upload.os, "write", lambda descriptor, data: 0)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert not (tmp_path / "bench-install-id").exists()
+    assert list(tmp_path.glob(".bench-install-id.*.tmp")) == []
+
+
+def test_install_id_directory_close_error_is_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    real_close = benchmark_upload.os.close
+
+    def close_then_report_directory_error(descriptor):
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        real_close(descriptor)
+        if is_directory:
+            raise OSError("directory close reported failure")
+
+    monkeypatch.setattr(benchmark_upload.os, "close", close_then_report_directory_error)
+
+    assert benchmark_upload.commit_install_id("a" * 12) == "a" * 12
+    assert (tmp_path / "bench-install-id").read_text().strip() == "a" * 12
+
+
+def test_local_archive_receipt_marks_only_an_existing_run_shared(
+    tmp_path: Path,
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+
+    path = archive.save_receipt(receipt, install_id=install_id)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert archive.receipt(run["run_id"]) == receipt
+    unknown = dict(receipt, submission_id="00000000-0000-4000-8000-000000000099")
+    with pytest.raises(FileNotFoundError):
+        archive.save_receipt(unknown, install_id=install_id)
+
+    malformed = dict(receipt, status="maybe")
+    with pytest.raises(ValueError, match="submission_receipt"):
+        archive.save_receipt(malformed, install_id=install_id)
+
+    changed = json.loads(json.dumps(run))
+    changed["measurements"][0]["total_duration_ms"] += 0.5
+    archive.save(changed)
+    assert archive.receipt(run["run_id"]) is None
+
+
+@pytest.mark.parametrize("contents", [b'{"schema_version":', b"\xff\xfe"])
+def test_corrupt_optional_receipt_does_not_hide_local_runs(
+    tmp_path: Path, contents: bytes
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    archive.receipts_dir.mkdir(parents=True, exist_ok=True)
+    (archive.receipts_dir / f"{run['run_id']}.json").write_bytes(contents)
+
+    assert archive.receipt(run["run_id"]) is None
+    assert archive.list() == [run]
+
+
+def test_optional_receipt_rejects_invalid_envelope_shapes(tmp_path: Path) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    archive.receipts_dir.mkdir(parents=True, exist_ok=True)
+    path = archive.receipts_dir / f"{run['run_id']}.json"
+
+    for envelope in (
+        {"schema_version": 2},
+        {"schema_version": 1, "install_id": 7, "receipt": {}},
+        {
+            "schema_version": 1,
+            "install_id": "012345abcdef",
+            "receipt": _receipt(run["run_id"]) | {"status": "invalid"},
+        },
+    ):
+        path.write_text(json.dumps(envelope))
+        assert archive.receipt(run["run_id"]) is None
+
+
+def test_save_receipt_defensively_rejects_missing_submission_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    monkeypatch.setattr(
+        workspace_module.SubmissionReceiptValidator,
+        "validate",
+        lambda self, receipt: None,
+    )
+
+    with pytest.raises(ValueError, match="missing a submission id"):
+        archive.save_receipt({}, install_id="012345abcdef")
+
+
+def test_share_cli_saves_server_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+    acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=receipt,
+        install_id=install_id,
+        payload_digest=receipt["run_digest"],
+    )
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(
+        community_cli,
+        "upload_run",
+        lambda local_run, **kwargs: acceptance,
+    )
+    args = SimpleNamespace(
+        benchmark_action="share", run_id=run["run_id"], yes=True, json=True
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uploaded"] is True
+    assert payload["receipt"] == receipt
+    assert archive.receipt(run["run_id"]) == receipt
+
+
+def test_share_cli_reports_acceptance_when_receipt_persistence_loses_archive_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    run = _text_run()
+    archive.save(run)
+    install_id = "012345abcdef"
+    receipt = _receipt(
+        run["run_id"],
+        run_digest=atomic_upload.atomic_run_digest({**run, "install_id": install_id}),
+    )
+    acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=receipt,
+        install_id=install_id,
+        payload_digest=receipt["run_digest"],
+    )
+
+    def accepted_then_archive_changes(local_run, **kwargs):
+        changed = json.loads(json.dumps(local_run))
+        changed["measurements"][0]["total_duration_ms"] += 0.5
+        archive.save(changed)
+        return acceptance
+
+    monkeypatch.setattr(
+        community_cli.LocalRunArchive,
+        "default",
+        classmethod(lambda cls: archive),
+    )
+    monkeypatch.setattr(community_cli, "upload_run", accepted_then_archive_changes)
+    args = SimpleNamespace(
+        benchmark_action="share", run_id=run["run_id"], yes=True, json=True
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["uploaded"] is True
+    assert payload["receipt_saved"] is False
+    assert archive.receipt(run["run_id"]) is None
+
+
+def test_share_cli_requires_confirmation_for_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    args = SimpleNamespace(
+        benchmark_action="share",
+        run_id="00000000-0000-4000-8000-000000000001",
+        yes=False,
+        json=True,
+        preview=False,
+    )
+
+    assert community_cli.benchmark_command(args) == 1
+    assert "requires --yes" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_share_cli_preview_prints_exact_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+) -> None:
+    run = _text_run()
+
+    class Archive:
+        def get(self, run_id: str):
+            return run
+
+    _cli_archive(monkeypatch, Archive())
+    monkeypatch.setattr(
+        community_cli,
+        "preview_run",
+        lambda local_run: {"target": "https://example.test/atomic"},
+    )
+    args = SimpleNamespace(
+        benchmark_action="share",
+        run_id=run["run_id"],
+        yes=False,
+        json=json_output,
+        preview=True,
+    )
+
+    assert community_cli.benchmark_command(args) == 0
+    assert (
+        json.loads(capsys.readouterr().out)["target"] == "https://example.test/atomic"
+    )
+
+
+def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = _text_run()
+
+    class Archive:
+        def get(self, run_id: str):
+            return run
+
+        def save_receipt(self, receipt, *, install_id):
+            raise OSError("read-only archive")
+
+    _cli_archive(monkeypatch, Archive())
+    args = SimpleNamespace(
+        benchmark_action="share",
+        run_id=run["run_id"],
+        yes=False,
+        json=False,
+        preview=False,
+    )
+    monkeypatch.setattr(community_cli, "upload_run", lambda local_run, **kwargs: None)
+    assert community_cli.benchmark_command(args) == 0
+    assert "Upload cancelled" in capsys.readouterr().out
+
+    receipt = _receipt(run["run_id"], already=True)
+    acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=receipt,
+        install_id="012345abcdef",
+        payload_digest=receipt["run_digest"],
+    )
+    monkeypatch.setattr(
+        community_cli, "upload_run", lambda local_run, **kwargs: acceptance
+    )
+    args.yes = True
+    assert community_cli.benchmark_command(args) == 0
+    output = capsys.readouterr().out
+    assert "already uploaded" in output
+    assert "local receipt could not be saved" in output
 
 
 def test_unknown_run_model_returns_structured_unsaved_cli_error(
@@ -1900,7 +2589,9 @@ def test_cli_plan_prints_protocol_and_local_storage(
     out = capsys.readouterr().out
     assert "Model:    example-text" in out
     assert "Protocol: rapid-community-speed v2" in out
-    assert "Storage:  local only (no upload)" in out
+    assert (
+        "Storage:  local; upload requires a separate share command and consent" in out
+    )
 
 
 def test_cli_results_prints_empty_hint_then_rows(
@@ -1911,6 +2602,9 @@ def test_cli_results_prints_empty_hint_then_rows(
     class Archive:
         def list(self, *, limit=None):
             return list(rows)
+
+        def receipt(self, run_id: str):
+            return None
 
     _cli_archive(monkeypatch, Archive())
     args = SimpleNamespace(benchmark_action="results", limit=None, json=False)

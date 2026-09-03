@@ -72,6 +72,27 @@ def public_prompt(case_id: str) -> str:
     raise ValueError(f"no registered prompt for case {case_id!r}")
 
 
+class SubmissionReceiptValidator:
+    """Validate the immutable server acceptance boundary."""
+
+    def __init__(self) -> None:
+        schema = _read_json("submission-receipt.schema.json")
+        self._validator = jsonschema.Draft202012Validator(
+            schema,
+            format_checker=jsonschema.FormatChecker(),
+        )
+
+    def validate(self, receipt: dict[str, Any]) -> None:
+        failures = sorted(
+            self._validator.iter_errors(receipt),
+            key=lambda error: tuple(str(part) for part in error.path),
+        )
+        if failures:
+            failure = failures[0]
+            path = "/".join(str(part) for part in failure.absolute_path)
+            raise CatalogValidationError("submission_receipt", path, failure.message)
+
+
 class BenchmarkRunValidator:
     """Validate a run and pin registered claims to their packaged workload."""
 

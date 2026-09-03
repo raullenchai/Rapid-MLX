@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import heapq
 import json
 import os
@@ -13,7 +14,11 @@ from typing import Any
 
 from vllm_mlx.catalog import build_legacy_catalog_snapshot
 
-from .benchmark_contracts import BenchmarkRunValidator, registered_workload
+from .benchmark_contracts import (
+    BenchmarkRunValidator,
+    SubmissionReceiptValidator,
+    registered_workload,
+)
 
 _TASK_PROTOCOL = {
     "text_generation": "rapid-community-speed",
@@ -121,7 +126,11 @@ def plan_for_alias(alias_name: str) -> dict[str, Any]:
                 "schema_version": 1,
                 "model": entry,
                 "workload": registered_workload(entry["task_type"]),
-                "privacy": {"storage": "local", "uploads": False},
+                "privacy": {
+                    "storage": "local",
+                    "uploads": False,
+                    "upload": "explicit_consent_only",
+                },
             }
     raise ValueError(f"unknown or unsupported benchmark model {alias_name!r}")
 
@@ -146,17 +155,21 @@ class LocalRunArchive:
     def runs_dir(self) -> Path:
         return self.root / "runs"
 
-    def save(self, run: dict[str, Any]) -> Path:
-        BenchmarkRunValidator().validate(run)
-        self.runs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self.runs_dir, 0o700)
-        target = self.runs_dir / f"{run['run_id']}.json"
+    @property
+    def receipts_dir(self) -> Path:
+        return self.root / "receipts"
+
+    @staticmethod
+    def _atomic_save(directory: Path, name: str, value: dict[str, Any]) -> Path:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        target = directory / f"{name}.json"
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{run['run_id']}.", suffix=".tmp", dir=self.runs_dir
+            prefix=f".{name}.", suffix=".tmp", dir=directory
         )
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(run, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -168,6 +181,61 @@ class LocalRunArchive:
             except FileNotFoundError:
                 pass
         return target
+
+    def save(self, run: dict[str, Any]) -> Path:
+        BenchmarkRunValidator().validate(run)
+        return self._atomic_save(self.runs_dir, run["run_id"], run)
+
+    def save_receipt(self, receipt: dict[str, Any], *, install_id: str) -> Path:
+        SubmissionReceiptValidator().validate(receipt)
+        run_id = receipt.get("submission_id")
+        if not isinstance(run_id, str):
+            raise ValueError("receipt is missing a submission id")
+        # A receipt may only exist for a locally archived run. This prevents a
+        # forged receipt file from making an unrelated row look shared.
+        run = self.get(run_id)
+        from .atomic_upload import atomic_run_digest
+
+        wire = copy.deepcopy(run)
+        wire["install_id"] = install_id
+        if atomic_run_digest(wire) != receipt["run_digest"]:
+            raise ValueError("receipt does not identify the current archived run")
+        envelope = {
+            "schema_version": 1,
+            "install_id": install_id,
+            "receipt": receipt,
+        }
+        return self._atomic_save(self.receipts_dir, run_id, envelope)
+
+    def receipt(self, run_id: str) -> dict[str, Any] | None:
+        # Reuse the run-id validation and require that the result still exists.
+        self.get(run_id)
+        path = self.receipts_dir / f"{run_id}.json"
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(envelope, dict) or envelope.get("schema_version") != 1:
+            return None
+        install_id = envelope.get("install_id")
+        value = envelope.get("receipt")
+        if (
+            not isinstance(install_id, str)
+            or not isinstance(value, dict)
+            or value.get("submission_id") != run_id
+        ):
+            return None
+        try:
+            SubmissionReceiptValidator().validate(value)
+        except ValueError:
+            return None
+        from .atomic_upload import atomic_run_digest
+
+        wire = copy.deepcopy(self.get(run_id))
+        wire["install_id"] = install_id
+        if atomic_run_digest(wire) != value["run_digest"]:
+            return None
+        return value
 
     def get(self, run_id: str) -> dict[str, Any]:
         if not run_id or any(

@@ -11843,6 +11843,37 @@ Examples:
     )
     community_inspect.add_argument("run_id")
     community_inspect.add_argument("--json", action="store_true")
+    community_share = community_subparsers.add_parser(
+        "share", help="Explicitly upload one locally saved benchmark result"
+    )
+    community_share.add_argument("run_id")
+    community_share.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm upload (for callers that already presented a consent dialog)",
+    )
+    community_share.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print the exact upload payload without writing or sending it",
+    )
+    community_share.add_argument(
+        "--install-id",
+        help=argparse.SUPPRESS,
+    )
+    community_share.add_argument(
+        "--payload-digest",
+        help=argparse.SUPPRESS,
+    )
+    community_share.add_argument(
+        "--body-digest",
+        help=argparse.SUPPRESS,
+    )
+    community_share.add_argument(
+        "--target",
+        help=argparse.SUPPRESS,
+    )
+    community_share.add_argument("--json", action="store_true")
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two

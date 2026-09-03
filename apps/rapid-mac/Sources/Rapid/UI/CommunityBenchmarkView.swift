@@ -109,6 +109,41 @@ private struct CommunityBenchmarkCatalogEnvelope: Decodable {
 
 private struct CommunityBenchmarkResults: Decodable {
     let runs: [CommunityBenchmarkResult]
+    let receipts: [String: CommunityBenchmarkReceipt]?
+}
+
+private struct CommunityBenchmarkReceipt: Decodable {
+    let submissionID: String
+    let alreadyExists: Bool
+    let acceptedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case submissionID = "submission_id"
+        case alreadyExists = "already_exists"
+        case acceptedAt = "accepted_at"
+    }
+}
+
+private struct CommunityBenchmarkShareResponse: Decodable {
+    let uploaded: Bool
+    let receiptSaved: Bool
+    let receipt: CommunityBenchmarkReceipt
+
+    enum CodingKeys: String, CodingKey {
+        case uploaded, receipt
+        case receiptSaved = "receipt_saved"
+    }
+}
+
+struct CommunityBenchmarkUploadPreview: Identifiable {
+    let runID: String
+    let target: String
+    let installID: String
+    let payloadDigest: String
+    let bodyDigest: String
+    let payloadJSON: String
+
+    var id: String { runID }
 }
 
 private struct CommunityBenchmarkResult: Decodable, Identifiable {
@@ -133,17 +168,56 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
         }
         let components: [Component]
     }
+    struct Machine: Decodable {
+        struct Profile: Decodable {
+            let chip: String
+            let memoryGib: Int
+            let cpuCores: Int
+            let gpuCores: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case chip
+                case memoryGib = "memory_gib"
+                case cpuCores = "cpu_cores"
+                case gpuCores = "gpu_cores"
+            }
+        }
+        struct OS: Decodable { let version: String }
+        let profile: Profile
+        let os: OS
+    }
+    struct Execution: Decodable {
+        struct Runtime: Decodable {
+            let rapidMLX: String
+            let mlx: String
+            let python: String
+
+            enum CodingKeys: String, CodingKey {
+                case rapidMLX = "rapid_mlx"
+                case mlx, python
+            }
+        }
+        let runtime: Runtime
+        let configDigest: String
+
+        enum CodingKeys: String, CodingKey {
+            case runtime
+            case configDigest = "config_digest"
+        }
+    }
     let id: String
     let completedAt: String
     let workload: Workload
     let outcome: Outcome
     let measurements: [Measurement]?
     let model: Model
+    let machine: Machine?
+    let execution: Execution
 
     enum CodingKeys: String, CodingKey {
         case id = "run_id"
         case completedAt = "completed_at"
-        case workload, outcome, measurements, model
+        case workload, outcome, measurements, model, machine, execution
     }
 
     var duration: String? {
@@ -157,6 +231,7 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
     }
 
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
+
 }
 
 final class BenchmarkProcessBox: @unchecked Sendable {
@@ -287,6 +362,43 @@ enum CommunityBenchmarkCommand {
 
     static func benchmarkResultsArguments(limit: Int = 8) -> [String] {
         ["benchmark", "results", "--limit", String(limit), "--json"]
+    }
+
+    static func benchmarkSharePreviewArguments(runID: String) -> [String] {
+        ["benchmark", "share", runID, "--preview", "--json"]
+    }
+
+    static func benchmarkShareArguments(
+        runID: String, installID: String, payloadDigest: String,
+        bodyDigest: String, target: String
+    ) -> [String] {
+        [
+            "benchmark", "share", runID, "--yes", "--install-id", installID,
+            "--payload-digest", payloadDigest, "--body-digest", bodyDigest,
+            "--target", target, "--json",
+        ]
+    }
+
+    static func decodeSharePreview(_ data: Data, runID: String) throws
+        -> CommunityBenchmarkUploadPreview
+    {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let target = root["target"] as? String,
+              let installID = root["install_id"] as? String,
+              let payloadDigest = root["payload_digest"] as? String,
+              let bodyDigest = root["body_digest"] as? String,
+              let payloadJSON = root["payload_json"] as? String
+        else {
+            throw Failure(message: "The benchmark preview was incomplete.")
+        }
+        return CommunityBenchmarkUploadPreview(
+            runID: runID,
+            target: target,
+            installID: installID,
+            payloadDigest: payloadDigest,
+            bodyDigest: bodyDigest,
+            payloadJSON: payloadJSON
+        )
     }
 
     @MainActor
@@ -440,6 +552,10 @@ struct CommunityBenchmarkView: View {
     @State private var isRunning = false
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
+    @State private var shareTask: Task<Void, Never>?
+    @State private var shareCandidate: CommunityBenchmarkUploadPreview?
+    @State private var sharingRunID: String?
+    @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
 
@@ -474,6 +590,42 @@ struct CommunityBenchmarkView: View {
             // control disappears. ServerManager keeps the lease until the
             // subprocess tree has actually been reaped.
             runTask?.cancel()
+            shareTask?.cancel()
+        }
+        .sheet(item: $shareCandidate) { preview in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Share benchmark result?")
+                    .font(.title2.weight(.semibold))
+                Text("Everything in the JSON below will be sent to \(preview.target).")
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    Text(preview.payloadJSON)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .background(RapidTheme.surfaceCanvas)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                Text(
+                    "No name, hostname, serial number, hardware UUID, prompts, "
+                        + "outputs, file paths, or IP-address field are included in the JSON. "
+                        + "The service observes the source IP for short-lived rate limiting "
+                        + "but does not put it in the benchmark record."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { shareCandidate = nil }
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Cancel")
+                    Button("Share") { share(preview) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Confirm")
+                }
+            }
+            .padding(24)
+            .frame(minWidth: 680, minHeight: 600)
         }
     }
 
@@ -560,9 +712,21 @@ struct CommunityBenchmarkView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 3) {
+                        VStack(alignment: .trailing, spacing: 5) {
                             Text(result.duration ?? result.outcome.status.capitalized)
-                            Text("Local").font(.caption).foregroundStyle(.secondary)
+                            if receipts[result.id] != nil {
+                                Label("Shared", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Button(sharingRunID == result.id ? "Sharing…" : "Share") {
+                                    prepareShare(result)
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                .disabled(sharingRunID != nil || binary == nil)
+                                .accessibilityIdentifier("CommunityBenchmark.Share.\(result.id)")
+                            }
                         }
                     }
                     .padding(.vertical, 8)
@@ -619,6 +783,72 @@ struct CommunityBenchmarkView: View {
         }
     }
 
+    private func prepareShare(_ result: CommunityBenchmarkResult) {
+        guard let binary else { return }
+        sharingRunID = result.id
+        errorMessage = nil
+        shareTask = Task {
+            do {
+                let data = try await CommunityBenchmarkCommand.run(
+                    binary: binary,
+                    arguments: CommunityBenchmarkCommand.benchmarkSharePreviewArguments(
+                        runID: result.id
+                    )
+                )
+                shareCandidate = try CommunityBenchmarkCommand.decodeSharePreview(
+                    data, runID: result.id
+                )
+            } catch is CancellationError {
+                // Navigation cancelled the preview command.
+            } catch {
+                errorMessage = "Couldn’t prepare benchmark upload: \(error.localizedDescription)"
+            }
+            sharingRunID = nil
+            shareTask = nil
+        }
+    }
+
+    private func share(_ preview: CommunityBenchmarkUploadPreview) {
+        guard let binary else { return }
+        shareCandidate = nil
+        sharingRunID = preview.runID
+        errorMessage = nil
+        shareTask = Task {
+            do {
+                let data = try await CommunityBenchmarkCommand.run(
+                    binary: binary,
+                    arguments: CommunityBenchmarkCommand.benchmarkShareArguments(
+                        runID: preview.runID,
+                        installID: preview.installID,
+                        payloadDigest: preview.payloadDigest,
+                        bodyDigest: preview.bodyDigest,
+                        target: preview.target
+                    )
+                )
+                let response = try JSONDecoder().decode(
+                    CommunityBenchmarkShareResponse.self, from: data
+                )
+                guard response.uploaded else {
+                    throw CommunityBenchmarkCommand.Failure(
+                        message: "The benchmark was not uploaded."
+                    )
+                }
+                if response.receiptSaved {
+                    receipts[preview.runID] = response.receipt
+                } else {
+                    await refreshResults()
+                    errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
+                }
+            } catch is CancellationError {
+                // Navigation cancelled the upload command and its subprocess.
+            } catch {
+                errorMessage = "Couldn’t share benchmark: \(error.localizedDescription)"
+            }
+            sharingRunID = nil
+            shareTask = nil
+        }
+    }
+
     private func refreshResults() async {
         guard benchmarkCLIAvailable, let binary else { return }
         do {
@@ -626,7 +856,9 @@ struct CommunityBenchmarkView: View {
                 binary: binary,
                 arguments: CommunityBenchmarkCommand.benchmarkResultsArguments()
             )
-            results = try JSONDecoder().decode(CommunityBenchmarkResults.self, from: data).runs
+            let envelope = try JSONDecoder().decode(CommunityBenchmarkResults.self, from: data)
+            results = envelope.runs
+            receipts = envelope.receipts ?? [:]
         } catch {
             if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
         }
