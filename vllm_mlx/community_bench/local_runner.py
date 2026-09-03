@@ -139,8 +139,9 @@ def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -
 def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, float]:
     """Probe an MP4 with the small FFmpeg binary shipped by Desktop.
 
-    Desktop deliberately omits imageio/OpenCV. A stream copy makes FFmpeg walk
-    every video packet without decoding or retaining a second media stack.
+    Desktop deliberately omits imageio/OpenCV. Decode and re-encode through its
+    constrained VideoToolbox FFmpeg to prove every frame is readable without
+    retaining a second media stack or a second artifact on disk.
     """
 
     try:
@@ -152,8 +153,8 @@ def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, flo
                 path,
                 "-map",
                 "0:v:0",
-                "-c",
-                "copy",
+                "-c:v",
+                "h264_videotoolbox",
                 "-movflags",
                 "frag_keyframe+empty_moov",
                 "-f",

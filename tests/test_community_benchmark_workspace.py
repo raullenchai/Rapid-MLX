@@ -3208,7 +3208,10 @@ def test_bundled_ffmpeg_probe_has_no_second_artifact_and_a_timeout(
 
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["timeout"] == local_runner._VIDEO_ARTIFACT_PROBE_TIMEOUT_S
-    assert captured["command"][-1] == "pipe:1"
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[command.index("-c:v") + 1] == "h264_videotoolbox"
+    assert command[-1] == "pipe:1"
 
 
 def test_probe_video_artifact_returns_worker_payload(
