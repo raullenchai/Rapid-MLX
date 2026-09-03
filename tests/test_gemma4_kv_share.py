@@ -47,6 +47,7 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 
+import inspect
 import json
 import logging
 
@@ -62,6 +63,14 @@ GEMMA4_SIZES = [
     ("26B-A4B", 30, 0),
     ("31B", 60, 0),
 ]
+
+
+def test_shared_cache_extension_preserves_positional_call_order():
+    from vllm_mlx.models.gemma4_vendored import language
+
+    for callable_type in (language.Attention, language.DecoderLayer):
+        parameters = list(inspect.signature(callable_type.__call__).parameters)
+        assert parameters.index("offset") < parameters.index("shared_cache")
 
 
 def _build_text_config(num_hidden_layers: int, num_kv_shared_layers: int) -> TextConfig:
@@ -464,6 +473,94 @@ def test_vendored_fallback_borrow_active():
     """The fresh-install path (no mlx-vlm ``[vision]`` extra) must also keep
     borrow active. Force the vendored branch regardless of what is installed."""
     _assert_e2b_active_sharing(TextConfig, LanguageModel)
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_quantized_shared_kv_keeps_producer_attention_metadata(bits, monkeypatch):
+    """A shared full-attention borrower must reuse the producer's quantized
+    K/V through quantized SDPA without appending to its cache a second time.
+
+    The tiny topology includes a full-attention producer and borrower, and the
+    two calls cross the sliding-window boundary. This is the exact metadata
+    hand-off that previously sent raw quantized triples to ordinary SDPA.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    tc = TextConfig.from_dict(
+        {
+            "num_hidden_layers": 15,
+            "num_kv_shared_layers": 10,
+            "sliding_window": 4,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 32,
+            "global_head_dim": 32,
+            "vocab_size": 64,
+            "vocab_size_per_layer_input": 64,
+            "hidden_size_per_layer_input": 0,
+            "use_double_wide_mlp": False,
+        }
+    )
+    lm = LanguageModel(tc)
+    # Exercise a restored one-cache-per-layer layout and a valid same-type
+    # borrower chain. Production checkpoints currently point borrowers
+    # directly at producers, but restored/future layouts may route through a
+    # borrower; its intermediate must still carry the original producer cache.
+    from mlx_lm.models.cache import RotatingKVCache
+
+    caches = [
+        KVCache()
+        if layer.layer_type == "full_attention"
+        else RotatingKVCache(max_size=tc.sliding_window, keep=0)
+        for layer in lm.model.layers
+    ]
+    root_producer_idx = lm.model.previous_kvs[9]
+    assert lm.model.layers[9].layer_type == lm.model.layers[14].layer_type
+    lm.model.previous_kvs[14] = 9
+
+    from vllm_mlx.models.gemma4_vendored import language as language_module
+
+    original_attention = language_module.scaled_dot_product_attention
+    attention_caches = []
+
+    def _recording_attention(*args, **kwargs):
+        attention_caches.append(kwargs.get("cache"))
+        return original_attention(*args, **kwargs)
+
+    monkeypatch.setattr(
+        language_module, "scaled_dot_product_attention", _recording_attention
+    )
+
+    first_out = lm(
+        mx.array([[1, 2, 3, 4, 5, 6]]),
+        cache=caches,
+        return_shared_kv=True,
+    )
+    first = first_out.logits
+    caches = [
+        cache.to_quantized(group_size=32, bits=bits)
+        if type(cache) is KVCache
+        else cache
+        for cache in caches
+    ]
+    attention_caches.clear()
+    second = lm(mx.array([[7]]), cache=caches).logits
+    mx.eval(first, second)
+
+    assert first.shape == (1, 6, 64)
+    assert second.shape == (1, 1, 64)
+    assert bool(mx.all(mx.isfinite(second)).item())
+    assert first_out.shared_kv_states
+    quantized_full = [cache for cache in caches if hasattr(cache, "bits")]
+    assert quantized_full
+    assert all(cache.bits == bits for cache in quantized_full)
+    assert attention_caches[9] is caches[root_producer_idx]
+    assert attention_caches[14] is caches[root_producer_idx], (
+        "a borrower chain must preserve its root producer's cache object"
+    )
 
 
 # --------------------------------------------------------------------------
