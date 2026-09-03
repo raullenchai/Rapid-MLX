@@ -686,6 +686,7 @@ class Gemma4TextModel(nn.Module):
             )
         ):
             kvs, offset, shared_cache = intermediates[prev_idx]
+            borrows_kv = kvs is not None
             h, kvs, offset = layer(
                 h,
                 m,
@@ -698,7 +699,7 @@ class Gemma4TextModel(nn.Module):
             intermediates[idx] = (
                 kvs,
                 offset,
-                c if c is not None else shared_cache,
+                shared_cache if borrows_kv else c,
             )
             if hidden_sink is not None and idx in capture_set:
                 hidden_sink.append(h)

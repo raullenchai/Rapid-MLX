@@ -467,7 +467,7 @@ def test_vendored_fallback_borrow_active():
 
 
 @pytest.mark.parametrize("bits", [4, 8])
-def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
+def test_quantized_shared_kv_keeps_producer_attention_metadata(bits, monkeypatch):
     """A shared full-attention borrower must reuse the producer's quantized
     K/V through quantized SDPA without appending to its cache a second time.
 
@@ -480,8 +480,8 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
 
     tc = TextConfig.from_dict(
         {
-            "num_hidden_layers": 10,
-            "num_kv_shared_layers": 5,
+            "num_hidden_layers": 15,
+            "num_kv_shared_layers": 10,
             "sliding_window": 4,
             "hidden_size": 64,
             "intermediate_size": 128,
@@ -496,7 +496,34 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
         }
     )
     lm = LanguageModel(tc)
-    caches = lm.make_cache()
+    # Exercise a restored one-cache-per-layer layout and a valid same-type
+    # borrower chain. Production checkpoints currently point borrowers
+    # directly at producers, but restored/future layouts may route through a
+    # borrower; its intermediate must still carry the original producer cache.
+    from mlx_lm.models.cache import RotatingKVCache
+
+    caches = [
+        KVCache()
+        if layer.layer_type == "full_attention"
+        else RotatingKVCache(max_size=tc.sliding_window, keep=0)
+        for layer in lm.model.layers
+    ]
+    root_producer_idx = lm.model.previous_kvs[9]
+    assert lm.model.layers[9].layer_type == lm.model.layers[14].layer_type
+    lm.model.previous_kvs[14] = 9
+
+    from vllm_mlx.models.gemma4_vendored import language as language_module
+
+    original_attention = language_module.scaled_dot_product_attention
+    attention_caches = []
+
+    def _recording_attention(*args, **kwargs):
+        attention_caches.append(kwargs.get("cache"))
+        return original_attention(*args, **kwargs)
+
+    monkeypatch.setattr(
+        language_module, "scaled_dot_product_attention", _recording_attention
+    )
 
     first_out = lm(
         mx.array([[1, 2, 3, 4, 5, 6]]),
@@ -510,6 +537,7 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
         else cache
         for cache in caches
     ]
+    attention_caches.clear()
     second = lm(mx.array([[7]]), cache=caches).logits
     mx.eval(first, second)
 
@@ -520,6 +548,10 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
     quantized_full = [cache for cache in caches if hasattr(cache, "bits")]
     assert quantized_full
     assert all(cache.bits == bits for cache in quantized_full)
+    assert attention_caches[9] is caches[root_producer_idx]
+    assert attention_caches[14] is caches[root_producer_idx], (
+        "a borrower chain must preserve its root producer's cache object"
+    )
 
 
 # --------------------------------------------------------------------------
