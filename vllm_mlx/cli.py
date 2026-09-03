@@ -6815,17 +6815,18 @@ def models_command(args):
     elif modality == "audio":
         shown = len(audio_entries)
     else:
-        # Whole-catalog view (no modality filter) shows the text table AND
-        # any tagged sections (video / image / audio) that have entries.
-        # The title count must reflect every section actually shown — for a
-        # ``--search`` that matches only a tagged model, counting just the
-        # text table would print a misleading "(0 aliases)". (codex r3 BLOCKING)
-        shown = (
-            len(profiles)
-            + len(video_profiles)
-            + len(image_profiles)
-            + len(audio_entries)
-        )
+        shown = len(profiles)
+        if search_active:
+            # Whole-catalog ``--search`` shows the text table AND any tagged
+            # sections (video / image / audio) with matching entries. The
+            # title count must reflect every matching section — counting just
+            # the text table would print a misleading "(0 aliases)" for a
+            # search that matches only, say, a video model. (codex r3 BLOCKING)
+            # The default (no search) keeps the legacy contract: the top title
+            # counts the main text table and each tagged section carries its
+            # own ``(N aliases)`` sub-count.
+            shown = shown + len(video_profiles) + len(image_profiles)
+            shown += len(audio_entries)
     print(f"  {title} ({shown} aliases)")
 
     # Alias width is computed from the actual registry so new long names
