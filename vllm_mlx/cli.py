@@ -6681,6 +6681,25 @@ def models_command(args):
     from vllm_mlx.model_aliases import list_profiles
     from vllm_mlx.model_sizes import format_size
 
+    search_display = (getattr(args, "search", None) or "").strip()
+    search_term = search_display.casefold()
+    search_active = bool(search_term)
+    modality = getattr(args, "modality", None)
+
+    # The narrowing contract currently targets the human available-models
+    # catalog.  Do not silently accept the flags on the cached or stable JSON
+    # surfaces and then return an unfiltered payload: that looks successful to
+    # scripts while doing the opposite of what the caller requested.
+    if (search_active or modality) and (
+        getattr(args, "json", False) or getattr(args, "cached", False)
+    ):
+        print(
+            "rapid-mlx models: --search/--modality cannot be combined with "
+            "--json or --cached",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     # JSON mode emits ONLY the payload on stdout — no staleness banner, no
     # table — so a caller can pipe it straight into a parser.
     if getattr(args, "json", False):
@@ -6728,8 +6747,116 @@ def models_command(args):
         for a, p in all_profiles.items()
         if a not in video_profiles and a not in image_profiles
     }
+
+    # #2355: narrow the 200+-line catalog so a new user isn't forced to
+    # grep it externally. ``--search`` is a case-insensitive substring match
+    # on the alias name; ``--modality`` restricts to a single tagged section
+    # (text chat, video-gen, image-gen, or audio). When a modality/scoped
+    # search is requested the OTHER sections are suppressed so the terminal
+    # settles on exactly the requested slice. The default (no flags) keeps
+    # the full catalog + the existing recommendation pointer.
+    # The title shows the stripped original (user-facing case preserved) so
+    # ``--search " qwen "`` doesn't claim it matched the literal ``' qwen '``
+    # while actually matching ``qwen`` (codex r6 NIT).
+
+    def _matches_search(alias: str) -> bool:
+        return not search_active or search_term in alias.casefold()
+
+    if modality == "text":
+        # ``--modality text``: show ONLY the text chat table — blank every
+        # tagged section (video / image / audio) so the view really is
+        # text-only, unlike the default full catalog. (codex review #1)
+        profiles = {a: p for a, p in profiles.items() if _matches_search(a)}
+        video_profiles = {}
+        image_profiles = {}
+    elif modality in ("video-gen", "image-gen", "audio"):
+        # A non-text modality request: blank every OTHER section (text chat
+        # table + the other tagged sections) and show only the requested one
+        # below (search applies within it).
+        profiles = {}
+        if modality == "video-gen":
+            video_profiles = {
+                a: p for a, p in video_profiles.items() if _matches_search(a)
+            }
+            image_profiles = {}
+        elif modality == "image-gen":
+            video_profiles = {}
+            image_profiles = {
+                a: p for a, p in image_profiles.items() if _matches_search(a)
+            }
+        else:  # audio
+            video_profiles = {}
+            image_profiles = {}
+    else:
+        # No modality filter (full catalog): apply search to the chat table
+        # and, if a search is active, to the tagged sections too
+        # (whole-catalog grep).
+        profiles = {a: p for a, p in profiles.items() if _matches_search(a)}
+        if search_active:
+            video_profiles = {
+                a: p for a, p in video_profiles.items() if _matches_search(a)
+            }
+            image_profiles = {
+                a: p for a, p in image_profiles.items() if _matches_search(a)
+            }
+
+    # Load + filter the audio registry ONCE so the title count and the
+    # rendered section (below) share the same snapshot (codex r4 NIT) — a
+    # broken/missing registry degrades to [] (never a crash), a non-audio
+    # modality request blanks it, and a search filters it, exactly like the
+    # video/image sections above. Audio aliases live in their own registry
+    # (``vllm_mlx/audio/aliases.json``), separate from the text profiles.
+    #
+    # Catch only the expectable "registry unavailable / malformed" failures
+    # (absent optional module or attribute, missing/unreadable aliases.json,
+    # malformed JSON). A genuine bug in ``list_audio_aliases`` itself (e.g. a
+    # TypeError) must surface loudly rather than silently render an empty
+    # audio catalog (codex r5 NIT). ``ImportError`` also covers the bare-module
+    # monkeypatch used by the broken-registry coverage test.
+    try:
+        from vllm_mlx.audio.registry import list_audio_aliases
+    except (ImportError, ModuleNotFoundError):
+        _all_audio = []
+    else:
+        try:
+            _all_audio = list_audio_aliases()
+        except (FileNotFoundError, OSError, ValueError):
+            _all_audio = []
+    if modality and modality != "audio":
+        audio_entries = []
+    elif search_active:
+        audio_entries = [e for e in _all_audio if search_term in e.alias.casefold()]
+    else:
+        audio_entries = _all_audio
+
     print()
-    print(f"  Available models ({len(profiles)} aliases)")
+    title = "Available models"
+    if modality:
+        title = f"Models [{modality}]"
+    if search_active:
+        title += f" matching '{search_display}'"
+    # The count reflects the section actually shown (a modality view empties
+    # the text ``profiles`` but presents its own tagged section). (codex #3)
+    if modality == "video-gen":
+        shown = len(video_profiles)
+    elif modality == "image-gen":
+        shown = len(image_profiles)
+    elif modality == "audio":
+        shown = len(audio_entries)
+    else:
+        shown = len(profiles)
+        if search_active:
+            # Whole-catalog ``--search`` shows the text table AND any tagged
+            # sections (video / image / audio) with matching entries. The
+            # title count must reflect every matching section — counting just
+            # the text table would print a misleading "(0 aliases)" for a
+            # search that matches only, say, a video model. (codex r3 BLOCKING)
+            # The default (no search) keeps the legacy contract: the top title
+            # counts the main text table and each tagged section carries its
+            # own ``(N aliases)`` sub-count.
+            shown = shown + len(video_profiles) + len(image_profiles)
+            shown += len(audio_entries)
+    print(f"  {title} ({shown} aliases)")
 
     # Alias width is computed from the actual registry so new long names
     # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
@@ -6837,15 +6964,9 @@ def models_command(args):
     # they had to read the docs site. Now the audio registry
     # (vllm_mlx/audio/aliases.json) feeds the same table so
     # ``rapid-mlx models`` is the canonical "what can I serve?" view
-    # across every lane.
-    try:
-        from vllm_mlx.audio.registry import list_audio_aliases
-
-        audio_entries = list_audio_aliases()
-    except Exception:
-        # A malformed audio registry must NOT break the text alias
-        # listing — silently degrade by skipping the audio section.
-        audio_entries = []
+    # across every lane. ``audio_entries`` is already loaded + gated up
+    # above (before the title count) so the count and this table agree on
+    # the same snapshot (codex r4 NIT); nothing to re-load here.
 
     if audio_entries:
         audio_alias_width = max(
@@ -6943,6 +7064,9 @@ def models_command(args):
         "  Size is an approximate download footprint (weight+tokenizer); "
         "“—” = unknown. The exact size is confirmed at pull time."
     )
+    print("  Narrow: `rapid-mlx models --search <term>` (alias match)")
+    print("          `rapid-mlx models --modality text|audio|video-gen|image-gen`")
+    print("  Pick a model: run `rapid-mlx recipe` for RAM-fit recommendations")
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
     print("       `rapid-mlx chat <alias>` for an interactive REPL")
@@ -11893,6 +12017,25 @@ Examples:
         help="Emit the model list as machine-readable JSON instead of the "
         "human table (stable keys; pairs with --cached). Prefer this over "
         "scraping the text columns.",
+    )
+    models_parser.add_argument(
+        "--search",
+        metavar="TERM",
+        default=None,
+        help="Case-insensitive substring match against the alias name. "
+        "Narrows the 200+-line catalog to rows containing TERM "
+        "(e.g. --search qwen picks only qwen aliases). Applies to the "
+        "human available-models table; cannot be combined with --json or "
+        "--cached.",
+    )
+    models_parser.add_argument(
+        "--modality",
+        choices=("text", "video-gen", "image-gen", "audio"),
+        default=None,
+        help="Show only models of this modality (text, audio, video-gen, "
+        "image-gen). Omit the flag to show the full catalog: the text chat "
+        "table plus every tagged section. Applies to the human "
+        "available-models table; cannot be combined with --json or --cached.",
     )
     recipe_parser = subparsers.add_parser(
         "recipe", help="Recommend the smart and fast models for this Mac"
