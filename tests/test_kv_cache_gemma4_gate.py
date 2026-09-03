@@ -147,6 +147,22 @@ def test_dense_hybrid_explicit_request_allows_per_layer_quantization(dtype):
     assert decision.downgraded is False
 
 
+def test_unqualified_hybrid_family_remains_rejected():
+    config = {
+        "model_type": "future_hybrid",
+        "sliding_window": 512,
+        "layer_types": ["sliding_attention", "full_attention"],
+    }
+
+    with pytest.raises(KVCacheQuantizationUnsupportedError):
+        resolve_kv_cache_dtype(
+            "int8",
+            explicit=True,
+            model_name="future-hybrid",
+            hf_config=config,
+        )
+
+
 def test_cross_layer_shared_hybrid_defers_to_loaded_capability_probe():
     decision = resolve_kv_cache_dtype(
         "int8",
@@ -451,6 +467,34 @@ def test_attention_probe_looks_through_non_decoder_wrapper_layers():
 
     assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
 
+    model.layers = [SimpleNamespace(self_attn=SimpleNamespace())]
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
+
+@pytest.mark.requires_mlx
+def test_init_quantization_constructs_prompt_cache_once(monkeypatch):
+    from mlx_lm.models.cache import KVCache, make_prompt_cache
+
+    calls = 0
+
+    def _counted_make_prompt_cache(model):
+        nonlocal calls
+        calls += 1
+        return make_prompt_cache(model)
+
+    monkeypatch.setattr(
+        "mlx_lm.models.cache.make_prompt_cache", _counted_make_prompt_cache
+    )
+
+    class _FakeModel:
+        args = SimpleNamespace(head_dim=64)
+
+        def make_cache(self):
+            return [KVCache()]
+
+    _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
+    assert calls == 1
+
 
 @pytest.mark.requires_mlx
 def test_live_cache_probe_rejects_unknown_cache_type():
@@ -508,7 +552,7 @@ def test_batch_generator_legacy_constructor_fallback(monkeypatch):
     from vllm_mlx.request import SamplingParams
 
     calls = []
-    legacy_generator = object()
+    legacy_generator = SimpleNamespace(_make_new_cache=lambda: [])
 
     def _batch_generator(**kwargs):
         calls.append(kwargs)
@@ -531,8 +575,12 @@ def test_batch_generator_legacy_constructor_fallback(monkeypatch):
         prefill_step_size=1,
         spec_decode="none",
         enable_suffix_decoding=False,
-        kv_cache_quantization=False,
+        kv_cache_quantization=True,
+        kv_cache_turboquant=None,
+        kv_cache_quantization_bits=4,
     )
+    scheduler._kv_quant_live_disabled = False
+    scheduler._kv_quant_group_size = 32
 
     result = scheduler._create_batch_generator(SamplingParams(max_tokens=8))
 
@@ -540,6 +588,7 @@ def test_batch_generator_legacy_constructor_fallback(monkeypatch):
     assert len(calls) == 2
     assert "stream" in calls[0]
     assert "stream" not in calls[1]
+    assert scheduler._live_kv_quant == (32, 4)
 
 
 @pytest.mark.requires_mlx

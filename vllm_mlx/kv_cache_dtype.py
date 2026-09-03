@@ -217,6 +217,13 @@ def _supports_hybrid_partial_quantization(
     separately verifies cache classes and cross-layer sharing capability
     before the server reports ready.
     """
+    if not isinstance(hf_config, dict) or hf_config.get("model_type") not in {
+        "gemma4",
+        "gemma4_assistant",
+        "gemma4_unified",
+    }:
+        return False
+
     for cfg in _candidate_configs(hf_config):
         layer_types = cfg.get("layer_types")
         if not isinstance(layer_types, list) or not layer_types:

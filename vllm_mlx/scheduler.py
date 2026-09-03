@@ -4366,14 +4366,12 @@ class Scheduler:
             layers = getattr(owner, "layers", None)
             if not isinstance(layers, (list, tuple)):
                 continue
-            inspected_attention = False
             for layer in layers:
                 attention = getattr(layer, "self_attn", None)
                 if attention is None:
                     attention = getattr(layer, "attention", None)
                 if attention is None:
                     continue
-                inspected_attention = True
                 if (
                     getattr(attention, "sinks", None) is not None
                     or getattr(attention, "attn_sink", None) is not None
@@ -4382,16 +4380,13 @@ class Scheduler:
                         "attention sinks require a fused quantized-attention "
                         "kernel that is unavailable in this MLX runtime"
                     )
-            # An outer wrapper may expose an empty or unrelated ``layers``
-            # collection. Only an attention-bearing decoder stack is
-            # authoritative; otherwise keep looking through wrapped owners.
-            if inspected_attention:
-                return None
         return None
 
     @classmethod
-    def _quantized_live_cache_incompatibility(cls, model) -> str | None:
-        """Structural capability probe for the quantized live cache (#78).
+    def _quantized_live_cache_probe(
+        cls, model
+    ) -> tuple[str | None, "Scheduler._QuantizedLiveCacheLayout | None"]:
+        """Probe incompatibility and layout from one cache construction (#78).
 
         Asks the model what caches it actually builds — no family names,
         no config heuristics. Returns ``None`` for an all-plain layout or a
@@ -4407,12 +4402,12 @@ class Scheduler:
 
             caches = make_prompt_cache(model)
         except Exception:
-            return cls._KV_CACHE_UNPROBEABLE
+            return cls._KV_CACHE_UNPROBEABLE, None
         if not caches:
-            return cls._KV_CACHE_UNPROBEABLE
+            return cls._KV_CACHE_UNPROBEABLE, None
         attention_reason = cls._quantized_attention_incompatibility(model)
         if attention_reason is not None:
-            return attention_reason
+            return attention_reason, None
         from .quantized_batch_cache import supported_kv_cache_types
 
         plain_kv_types, rotating_types = supported_kv_cache_types()
@@ -4424,12 +4419,24 @@ class Scheduler:
             if type(c) not in plain_kv_types and type(c) not in rotating_types
         ]
         if unsupported:
-            return unsupported[0]
+            return unsupported[0], None
         if quantizable == 0:
-            return "RotatingKVCache" if rotating else cls._KV_CACHE_UNPROBEABLE
+            reason = "RotatingKVCache" if rotating else cls._KV_CACHE_UNPROBEABLE
+            return reason, None
         if cls._has_unsupported_cross_layer_kv_sharing(model):
-            return "cross-layer shared KV"
-        return None
+            return "cross-layer shared KV", None
+        return None, cls._QuantizedLiveCacheLayout(
+            quantizable_layers=quantizable,
+            rotating_layers=rotating,
+            total_layers=len(caches),
+            shared_borrower_layers=cls._cross_layer_kv_sharing_count(model),
+        )
+
+    @classmethod
+    def _quantized_live_cache_incompatibility(cls, model) -> str | None:
+        """Return only the compatibility result for focused callers/tests."""
+        reason, _ = cls._quantized_live_cache_probe(model)
+        return reason
 
     @staticmethod
     def _cross_layer_kv_sharing_count(model) -> int:
@@ -4461,32 +4468,9 @@ class Scheduler:
 
     @classmethod
     def _quantized_live_cache_layout(cls, model):
-        """Return the verified per-component live-cache layout, if usable."""
-        try:
-            from mlx_lm.models.cache import make_prompt_cache
-
-            caches = make_prompt_cache(model)
-        except Exception:
-            return None
-        if not caches or cls._has_unsupported_cross_layer_kv_sharing(model):
-            return None
-        from .quantized_batch_cache import supported_kv_cache_types
-
-        plain_kv_types, rotating_types = supported_kv_cache_types()
-        if any(
-            type(c) not in plain_kv_types and type(c) not in rotating_types
-            for c in caches
-        ):
-            return None
-        quantizable = sum(type(c) in plain_kv_types for c in caches)
-        if quantizable == 0:
-            return None
-        return cls._QuantizedLiveCacheLayout(
-            quantizable_layers=quantizable,
-            rotating_layers=sum(type(c) in rotating_types for c in caches),
-            total_layers=len(caches),
-            shared_borrower_layers=cls._cross_layer_kv_sharing_count(model),
-        )
+        """Return only the verified layout for focused callers/tests."""
+        _, layout = cls._quantized_live_cache_probe(model)
+        return layout
 
     def _init_kv_quantization(self, model) -> None:
         """Resolve the LIVE cache's group size + install gate (#1197).
@@ -4516,7 +4500,9 @@ class Scheduler:
         ):
             return
 
-        incompatible_cache = self._quantized_live_cache_incompatibility(model)
+        incompatible_cache, self._kv_quant_layout = self._quantized_live_cache_probe(
+            model
+        )
         if incompatible_cache is not None:
             unprobeable = incompatible_cache == self._KV_CACHE_UNPROBEABLE
             if getattr(self.config, "kv_cache_dtype_explicit", False):
@@ -4547,7 +4533,6 @@ class Scheduler:
             # Unprobeable + auto-selected: the head-dim probe below keeps
             # the pre-#78 disable behavior.
 
-        self._kv_quant_layout = self._quantized_live_cache_layout(model)
         if self._kv_quant_layout is not None and self._kv_quant_layout.rotating_layers:
             logger.info(
                 "[kv-cache] hybrid partial quantization: %d/%d full-attention "
