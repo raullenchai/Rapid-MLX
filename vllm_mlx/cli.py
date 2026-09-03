@@ -10426,7 +10426,7 @@ Examples:
             "\n"
             "Once the model is warmed up the server prints its 'Ready:' URL; "
             "the OpenAI-compatible endpoints (/v1/models, /v1/chat/completions, "
-            "/v1/audio, ...) serve from that base URL. Most options below are "
+            "/v1/audio/*, ...) serve from that base URL. Most options below are "
             "advanced tuning; the common journey needs only <model> and --port."
         ),
         epilog=(

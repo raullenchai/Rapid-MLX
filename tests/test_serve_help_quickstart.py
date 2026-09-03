@@ -93,8 +93,14 @@ def test_serve_help_points_to_discovery_commands(serve_help):
 
 def test_serve_help_explains_the_ready_url(serve_help):
     """#2354: the description must tell the user what success looks like —
-    the 'Ready:' URL / OpenAI-compatible base they connect to."""
-    assert "Ready:" in _intro(serve_help)
+    the 'Ready:' URL / OpenAI-compatible base they connect to. The audio
+    endpoints are listed as a route FAMILY (``/v1/audio/*``), not a bare
+    ``/v1/audio`` which 404s (the actual routes are transcriptions/
+    translations/speech/voices — codex r2 nit)."""
+    intro = _intro(serve_help)
+    assert "Ready:" in intro
+    assert "/v1/audio/*" in intro
+    assert " /v1/audio," not in intro  # a bare /v1/audio route does not exist
 
 
 def test_serve_parser_still_parses_a_normal_invocation():
