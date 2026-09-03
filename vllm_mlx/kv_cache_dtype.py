@@ -12,25 +12,15 @@ Three user-facing dtypes:
   workloads, used as the reasoning/code profile.
 * ``int4`` — 4-bit ``QuantizedKVCache``. Smallest KV footprint.
 
-The R15 rollout defaulted to int4 on the theory that Apple Silicon
-decode is memory-bandwidth-bound, so a 4×-smaller KV cache should
-speed up every decode step. The live serve path
-(``QuantizedBatchKVCache``, #1197) implements quantization as
-dequant-on-read — it materializes full-precision K/V every decode
-step — so the bandwidth win never materializes and per-token cost
-GROWS with context instead: measured on qwen3.5-4b at 16k context,
-bf16 134.6 tok/s vs int4 98.2 (-27%) vs int8 86.1 (-36%); the
-short-context numbers that motivated the int4 default (#910,
-292-token prompts) could not see this. Until the read path uses a
-fused quantized-attention kernel, quantized KV is a memory/quality
-trade-off the operator must opt into, not a free speedup (#1853).
+The live serve path uses packed K/V with fused quantized attention. KV
+quantization remains an explicit memory/quality trade-off: it reduces resident
+cache bytes but is not assumed to improve latency on every model or context.
 
 Unsupported-family safelist:
 
-* Sliding-window attention (Gemma 3/4, GPT-OSS) — the rotating buffer
-  can't tolerate arbitrary-boundary quant blocks; on Gemma 4 the
-  quantized cache reaches the KV-shared text layers as raw tuples and
-  every request fails (#78).
+* Pure sliding-window attention — rotating buffers cannot tolerate arbitrary
+  quant-block boundaries. Hybrid layouts are handled per layer: compatible
+  full-attention caches are quantized while bounded rotating caches stay BF16.
 * Multi-head Latent Attention (DeepSeek V3+, Kimi K2.5) — the K
   projection is already compressed; quantizing on top compounds error.
 
@@ -211,6 +201,41 @@ def _is_sliding_window(
     return any(pat in needle for pat in _SLIDING_WINDOW_PATTERNS)
 
 
+def _supports_hybrid_partial_quantization(
+    hf_config: dict[str, Any] | None,
+) -> bool:
+    """Whether config proves a safe full-attention + rotating split.
+
+    Quantized rotating caches are not supported, but a hybrid model does not
+    need them in order to reduce its long-context footprint: exact full-
+    attention ``KVCache`` layers can be quantized independently while bounded
+    sliding-window layers remain BF16.  Require an explicit per-layer layout;
+    a scalar ``sliding_window`` alone cannot prove that any full-attention
+    component exists.
+
+    This is only the config-level admission check. The loaded-model probe
+    separately verifies cache classes and cross-layer sharing capability
+    before the server reports ready.
+    """
+    if not isinstance(hf_config, dict) or hf_config.get("model_type") not in {
+        "gemma4",
+        "gemma4_assistant",
+        "gemma4_unified",
+    }:
+        return False
+
+    for cfg in _candidate_configs(hf_config):
+        layer_types = cfg.get("layer_types")
+        if not isinstance(layer_types, list) or not layer_types:
+            continue
+        normalized = {value.lower() for value in layer_types if isinstance(value, str)}
+        has_full = "full_attention" in normalized
+        has_sliding = any("sliding" in value for value in normalized)
+        if has_full and has_sliding:
+            return True
+    return False
+
+
 def _is_mla(
     *,
     model_name: str,
@@ -285,9 +310,13 @@ def quantized_kv_unsupported_reason(
         hf_config=hf_config,
         alias_metadata=alias_metadata,
     ):
+        if _supports_hybrid_partial_quantization(hf_config):
+            return None
         return (
             "sliding-window attention (rotating KV buffers are "
-            "incompatible with QuantizedKVCache block boundaries)"
+            "incompatible with QuantizedKVCache block boundaries, and the "
+            "config does not prove an independently quantizable full-attention "
+            "component without cross-layer KV sharing)"
         )
     if _is_mla(
         model_name=model_name or "",
@@ -409,9 +438,8 @@ def resolve_kv_cache_dtype(
         reason = "bf16 selected (no QuantizedKVCache wrap)"
     else:
         reason = (
-            f"{requested} selected (operator override; dequant-on-read "
-            f"costs O(context) per decode step — #1853); "
-            f"model={model_name or hf_path or 'unknown'} not in safelist"
+            f"{requested} selected (operator override; packed live KV with "
+            f"fused quantized attention); model={model_name or hf_path or 'unknown'}"
         )
 
     return KVCacheDtypeDecision(
