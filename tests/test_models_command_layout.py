@@ -192,6 +192,18 @@ def test_modality_video_gen_shows_video_section(capsys):
     assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
 
 
+def test_modality_image_gen_shows_image_section(capsys):
+    """#2355: ``--modality image-gen`` shows the image section and hides
+    the text chat table + video section."""
+    out = _capture(capsys, modality="image-gen")
+    assert "Models [image-gen]" in out
+    assert "Image models" in out
+    # Video section must not be present (only the requested modality).
+    assert "Video models" not in out
+    # A text chat alias must not leak in.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+
+
 def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
     """#2355 regression: no filters keeps the full catalog AND points the
     user to the recipe command for RAM-fit recommendations."""
