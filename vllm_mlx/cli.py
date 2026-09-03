@@ -6787,12 +6787,22 @@ def models_command(args):
     # modality request blanks it, and a search filters it, exactly like the
     # video/image sections above. Audio aliases live in their own registry
     # (``vllm_mlx/audio/aliases.json``), separate from the text profiles.
+    #
+    # Catch only the expectable "registry unavailable / malformed" failures
+    # (absent optional module or attribute, missing/unreadable aliases.json,
+    # malformed JSON). A genuine bug in ``list_audio_aliases`` itself (e.g. a
+    # TypeError) must surface loudly rather than silently render an empty
+    # audio catalog (codex r5 NIT). ``ImportError`` also covers the bare-module
+    # monkeypatch used by the broken-registry coverage test.
     try:
         from vllm_mlx.audio.registry import list_audio_aliases
-
-        _all_audio = list_audio_aliases()
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         _all_audio = []
+    else:
+        try:
+            _all_audio = list_audio_aliases()
+        except (FileNotFoundError, OSError, ValueError):
+            _all_audio = []
     if modality and modality != "audio":
         audio_entries = []
     elif search_active:

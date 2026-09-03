@@ -186,6 +186,10 @@ def test_modality_audio_shows_only_audio_section(capsys):
     assert "[audio:" in out or "Audio models" in out
     # Text chat aliases (e.g. qwen3-0.6b) must NOT appear.
     assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+    # The other tagged sections must be blanked too — audio-only really is
+    # audio-only (codex r5 BLOCKING).
+    assert "Video models" not in out
+    assert "Image models" not in out
 
 
 def test_modality_video_gen_shows_video_section(capsys):
@@ -231,6 +235,44 @@ def test_modality_audio_count_does_not_crash(capsys):
     section actually shown without crashing on the audio registry."""
     out = _capture(capsys, modality="audio")
     assert "Models [audio]" in out
+
+
+def test_broken_audio_registry_propagates_a_genuine_bug(capsys, monkeypatch):
+    """#2355 (codex r5 NIT): a REAL bug in the audio registry must surface
+    loudly, not be silently swallowed into a misleading empty catalog. Only
+    the expectable 'registry unavailable / malformed' failures (absent module,
+    missing file, bad JSON) degrade — anything else propagates."""
+    import json
+
+    import pytest
+
+    from vllm_mlx import model_aliases as ma
+    from vllm_mlx.audio import registry as audio_registry
+
+    # Patch list_profiles so the text table is minimal and deterministic.
+    monkeypatch.setattr(
+        ma, "list_profiles", lambda: {"qwen3-0.6b": ma.AliasProfile(hf_path="x/q")}
+    )
+
+    # list_audio_aliases raises a GENUINE bug (RuntimeError) — not a
+    # registry-format failure — so it must propagate, not degrade to [].
+    monkeypatch.setattr(
+        audio_registry,
+        "list_audio_aliases",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        _capture(capsys)
+
+    # A malformed aliases.json (JSONDecodeError, a ValueError subclass) is an
+    # expectable format failure and still degrades: the text table renders.
+    monkeypatch.setattr(
+        audio_registry,
+        "list_audio_aliases",
+        lambda: (_ for _ in ()).throw(json.JSONDecodeError("bad", "doc", 0)),
+    )
+    out = _capture(capsys)
+    assert "qwen3-0.6b" in out  # text table intact despite broken audio registry
 
 
 def test_modality_audio_count_tolerates_a_broken_audio_registry(capsys, monkeypatch):
