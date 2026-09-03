@@ -1764,6 +1764,21 @@ def test_video_request_failure_preserves_server_detail(
     }
 
 
+def test_local_request_failure_uses_bounded_fallback_for_non_json_error() -> None:
+    class NonJSONErrorResponse(_HTTPErrorResponse):
+        def json(self) -> dict:
+            raise ValueError("not JSON")
+
+    with pytest.raises(
+        RuntimeError,
+        match="video benchmark request failed with HTTP 400: "
+        "local server rejected the request",
+    ):
+        local_runner._raise_for_status(
+            NonJSONErrorResponse({}), phase="video benchmark request"
+        )
+
+
 def test_video_artifact_is_downloaded_and_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3261,6 +3276,35 @@ def test_ffmpeg_environment_variable_does_not_imply_sidecar_bundle(
     assert local_runner._is_sidecar_bundled_ffmpeg(
         "/Applications/Rapid.app/Contents/Resources/rapid-mlx/bin/ffmpeg"
     )
+
+
+def test_sidecar_ffmpeg_detection_fails_closed_on_unresolvable_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner.os.path,
+        "realpath",
+        lambda path: (_ for _ in ()).throw(OSError("unresolvable path")),
+    )
+    assert local_runner._is_sidecar_bundled_ffmpeg("/app/bin/ffmpeg") is False
+
+
+def test_video_probe_without_imageio_or_ffmpeg_explains_required_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def import_without_imageio(name: str, *args: object, **kwargs: object):
+        if name == "imageio.v2":
+            raise ImportError("imageio unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_imageio)
+    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
+    monkeypatch.setattr(local_runner.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match=r"validation requires rapid-mlx\[video\]"):
+        local_runner._probe_video_artifact_unbounded("clip.mp4")
 
 
 def test_probe_video_artifact_returns_worker_payload(
