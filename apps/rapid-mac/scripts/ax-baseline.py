@@ -22,7 +22,8 @@ What the normalizer keeps
   * ``AXEnabled``
   * the *kind* of ``AXValue`` — ``bool:true`` / ``bool:false`` for toggles,
     ``number`` / ``text`` / ``empty`` for everything else
-  * sibling order below the window level
+  * sibling order below the window level, except for narrowly identified
+    SwiftUI overlays whose AX position is known to vary by session
 
 What it drops or rewrites, and why
   * ``bounds`` — absolute screen coordinates move whenever the window opens at
@@ -276,6 +277,40 @@ def normalize_transient_overlay_children(children: list[Node]) -> list[Node]:
         if child.record.get("role") == "AXSplitGroup"
     )
     return remaining[:split_index] + overlay + remaining[split_index:]
+
+
+def normalize_update_overlay_children(children: list[Node]) -> list[Node]:
+    """Anchor the update overlay immediately before the footer version pill.
+
+    SwiftUI flattens the bottom-trailing ``UpdateCard`` overlay into the same
+    AX sibling list as the footer.  Managed macOS runners have returned that
+    identified overlay on either side of the live Memory gauge for identical
+    UI state.  The footer version pill is the stable, app-authored anchor that
+    follows both variants, so move only the uniquely identified overlay next
+    to it.  Duplicate overlays or a missing anchor remain unmodified and will
+    still produce a structural diff.
+    """
+    update_indexes = [
+        index
+        for index, child in enumerate(children)
+        if child.record.get("identifier") == "UpdateCard"
+    ]
+    pill_indexes = [
+        index
+        for index, child in enumerate(children)
+        if child.record.get("identifier") == "Footer.DesktopVersionPill"
+    ]
+    if len(update_indexes) != 1 or len(pill_indexes) != 1:
+        return children
+
+    update = children[update_indexes[0]]
+    remaining = [child for child in children if child is not update]
+    pill_index = next(
+        index
+        for index, child in enumerate(remaining)
+        if child.record.get("identifier") == "Footer.DesktopVersionPill"
+    )
+    return remaining[:pill_index] + [update] + remaining[pill_index:]
 
 
 def _subtree_has_identifier(node: Node, identifier: str) -> bool:
@@ -620,6 +655,7 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
         if node_is_toolbar:
             children = normalize_toolbar_children(children)
         children = normalize_transient_overlay_children(children)
+        children = normalize_update_overlay_children(children)
         for child in children:
             walk(
                 child, depth + 1, sort_children=False, parent_is_toolbar=node_is_toolbar
