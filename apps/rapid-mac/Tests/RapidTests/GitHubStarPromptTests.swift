@@ -46,7 +46,16 @@ struct GitHubStarPromptTests {
         #expect(card.contains("Text(\"Star on GitHub\")"))
         #expect(!card.contains("Text(\"Open GitHub\")"))
         #expect(card.contains(".frame(width: 360)"))
-        #expect(card.contains(".frame(width: 84, height: RapidTheme.ControlHeight.medium)"))
+        #expect(
+            card.components(separatedBy: ".fixedSize(horizontal: true, vertical: false)").count - 1
+                == 3,
+            "every visible action label must keep its intrinsic width"
+        )
+        #expect(
+            card.components(separatedBy: "expands: true").count - 1 == 3,
+            "the primary action and second-row actions must fill their available rows"
+        )
+        #expect(!card.contains(".frame(width: 84, height: RapidTheme.ControlHeight.medium)"))
         #expect(card.contains(".padding(14)"))
         #expect(content.contains(".padding(.trailing, 16)"))
         #expect(content.contains(".padding(.bottom, 40)"))
