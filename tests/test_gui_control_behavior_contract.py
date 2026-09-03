@@ -567,6 +567,7 @@ def test_catalog_integrity_waits_for_the_cross_modality_management_snapshot():
     )
     mark_ready = flow.index("management_ready=1", wait_for_image)
     break_loop = flow.index("break", mark_ready)
+    retry_delay = flow.index("sleep 0.25", break_loop)
     loop_end = flow.index("done", break_loop)
     require_ready = flow.index(
         '|| die "complete cross-modality Model Management inventory was not observed"'
@@ -582,6 +583,7 @@ def test_catalog_integrity_waits_for_the_cross_modality_management_snapshot():
         < wait_for_image
         < mark_ready
         < break_loop
+        < retry_delay
         < loop_end
         < require_ready
         < semantic_assertion
