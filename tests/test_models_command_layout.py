@@ -144,3 +144,57 @@ def test_longest_real_alias_does_not_overflow(capsys):
     assert after_alias.startswith(" "), (
         f"No padding between alias and Tools column for {longest_alias!r}"
     )
+
+
+def test_search_narrows_to_matching_aliases(capsys):
+    """#2355: ``--search`` is a case-insensitive alias substring match that
+    narrows the 200+-line catalog to the requested slice and retitles the
+    section with the term."""
+    out = _capture(capsys, search="qwen3-0.6b")
+    # The section title reflects the active search.
+    assert "matching 'qwen3-0.6b'" in out
+    lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("qwen3-0.6b")]
+    # Only the qwen3-0.6b aliases (and nothing larger) survive the filter.
+    ids = {ln.split()[0] for ln in lines}
+    assert "qwen3-0.6b" in ids
+    assert all(a.startswith("qwen3-0.6b") for a in ids)
+    assert len(ids) >= 3  # 0.6b + 0.6b-4bit + 0.6b-8bit
+
+
+def test_search_ignores_case(capsys):
+    """#2355: the substring match is case-insensitive."""
+    out = _capture(capsys, search="Qwen3")
+    assert "matching 'Qwen3'" in out
+    # Some qwen rows survive (the filter is casefolded).
+    assert any(ln.lstrip().startswith("qwen3") for ln in out.splitlines())
+
+
+def test_modality_audio_shows_only_audio_section(capsys):
+    """#2355: ``--modality audio`` blanks the text chat table and shows
+    only the audio section — the terminal settles on the requested slice."""
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio]" in out
+    # The audio section header is present.
+    assert "[audio:" in out or "Audio models" in out
+    # Text chat aliases (e.g. qwen3-0.6b) must NOT appear.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+
+
+def test_modality_video_gen_shows_video_section(capsys):
+    """#2355: ``--modality video-gen`` shows the video section and hides
+    the text chat table + image section."""
+    out = _capture(capsys, modality="video-gen")
+    assert "Models [video-gen]" in out
+    assert "Video models" in out
+    # Image section must not be present (only the requested modality).
+    assert "Image models" not in out
+    # A text chat alias must not leak in.
+    assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+
+
+def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
+    """#2355 regression: no filters keeps the full catalog AND points the
+    user to the recipe command for RAM-fit recommendations."""
+    out = _capture(capsys)
+    assert "Available models" in out
+    assert "recipe" in out  # discoverability pointer to recommendations

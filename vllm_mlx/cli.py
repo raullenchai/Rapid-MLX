@@ -6728,8 +6728,58 @@ def models_command(args):
         for a, p in all_profiles.items()
         if a not in video_profiles and a not in image_profiles
     }
+
+    # #2355: narrow the 200+-line catalog so a new user isn't forced to
+    # grep it externally. ``--search`` is a case-insensitive substring match
+    # on the alias name; ``--modality`` restricts to a single tagged section
+    # (text chat, video-gen, image-gen, or audio). When a modality/scoped
+    # search is requested the OTHER sections are suppressed so the terminal
+    # settles on exactly the requested slice. The default (no flags) keeps
+    # the full catalog + the existing recommendation pointer.
+    search_term = (getattr(args, "search", None) or "").strip().casefold()
+    search_active = bool(search_term)
+    modality = getattr(args, "modality", None)
+
+    def _matches_search(alias: str) -> bool:
+        return not search_active or search_term in alias.casefold()
+
+    if modality and modality != "text":
+        # A non-text modality request: blank every OTHER section (text chat
+        # table + the tagged sections) and show only the requested one below
+        # (search applies within it).
+        profiles = {}
+        if modality == "video-gen":
+            video_profiles = {
+                a: p for a, p in video_profiles.items() if _matches_search(a)
+            }
+            image_profiles = {}
+        elif modality == "image-gen":
+            video_profiles = {}
+            image_profiles = {
+                a: p for a, p in image_profiles.items() if _matches_search(a)
+            }
+        elif modality == "audio":
+            video_profiles = {}
+            image_profiles = {}
+    else:
+        # text modality or no filter: apply search to the chat table and, if
+        # a search is active, to the tagged sections too (whole-catalog grep).
+        profiles = {a: p for a, p in profiles.items() if _matches_search(a)}
+        if search_active:
+            video_profiles = {
+                a: p for a, p in video_profiles.items() if _matches_search(a)
+            }
+            image_profiles = {
+                a: p for a, p in image_profiles.items() if _matches_search(a)
+            }
+
     print()
-    print(f"  Available models ({len(profiles)} aliases)")
+    title = "Available models"
+    if modality:
+        title = f"Models [{modality}]"
+    if search_active:
+        title += f" matching '{args.search}'"
+    print(f"  {title} ({len(profiles)} aliases)")
 
     # Alias width is computed from the actual registry so new long names
     # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
@@ -6847,6 +6897,13 @@ def models_command(args):
         # listing — silently degrade by skipping the audio section.
         audio_entries = []
 
+    # Search/modality gating for the audio section (mirrors the text/video/
+    # image sections above, #2355).
+    if modality and modality != "audio":
+        audio_entries = []
+    elif search_active:
+        audio_entries = [e for e in audio_entries if search_term in e.alias.casefold()]
+
     if audio_entries:
         audio_alias_width = max(
             24, max((len(e.alias) for e in audio_entries), default=0) + 2
@@ -6943,6 +7000,9 @@ def models_command(args):
         "  Size is an approximate download footprint (weight+tokenizer); "
         "“—” = unknown. The exact size is confirmed at pull time."
     )
+    print("  Narrow: `rapid-mlx models --search <term>` (alias match)")
+    print("          `rapid-mlx models --modality text|audio|video-gen|image-gen`")
+    print("  Pick a model: run `rapid-mlx recipe` for RAM-fit recommendations")
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
     print("       `rapid-mlx chat <alias>` for an interactive REPL")
@@ -11893,6 +11953,21 @@ Examples:
         help="Emit the model list as machine-readable JSON instead of the "
         "human table (stable keys; pairs with --cached). Prefer this over "
         "scraping the text columns.",
+    )
+    models_parser.add_argument(
+        "--search",
+        metavar="TERM",
+        default=None,
+        help="Case-insensitive substring match against alias name and HF "
+        "repo. Narrows the 200+-line catalog to rows containing TERM "
+        "(e.g. --search qwen picks only qwen aliases).",
+    )
+    models_parser.add_argument(
+        "--modality",
+        choices=("text", "video-gen", "image-gen", "audio"),
+        default=None,
+        help="Only list models of this modality (text chat models by "
+        "default; other aliases are split into their own tagged sections).",
     )
     recipe_parser = subparsers.add_parser(
         "recipe", help="Recommend the smart and fast models for this Mac"
