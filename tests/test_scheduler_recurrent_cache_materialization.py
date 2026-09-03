@@ -549,7 +549,9 @@ def test_output_chain_failure_escalates_after_limit(monkeypatch):
         assert scheduler._materialize_active_recurrent_cache() is not None
     assert scheduler._recurrent_output_chain_failures == limit - 1
 
-    with pytest.raises(RuntimeError, match="simulated persistent output-chain"):
+    with pytest.raises(
+        scheduler_module._RecurrentOutputChainError, match="Metal handle"
+    ):
         scheduler._materialize_active_recurrent_cache()
     assert scheduler._recurrent_output_chain_failures == limit
 
@@ -567,3 +569,54 @@ def test_output_chain_failure_escalates_after_limit(monkeypatch):
     monkeypatch.setattr(scheduler_module.mx, "eval", fail_cache)
     with pytest.raises(RuntimeError, match="simulated cache-state"):
         scheduler._materialize_active_recurrent_cache()
+
+
+def test_output_chain_collection_failure_escalates_after_limit(monkeypatch):
+    """#2834 (codex r4): a persistently RAISING output surface — as opposed to
+    a merely ABSENT one — must feed the same escalation counter. Before r4,
+    ``_collect_recurrent_outputs`` swallowed a raising ``_next_*`` /
+    ``TokenBuffer.tokens`` access as if the surface were absent, the barrier
+    saw ``collection_failed=False`` and no outputs, cleared the counter every
+    step, and a persistently-uncollectable output chain never reached the
+    escalation limit — the exact unbounded chain this barrier exists to bound.
+    """
+    recurrent = _OutputRecurrentLayer()
+    batch = _RaisingOutputBatch([recurrent])
+    generator = _OutputGenerator(batch)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = generator
+    scheduler._recurrent_output_chain_failures = 0
+    limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
+
+    # Cache-state realize succeeds; the output-chain surface is uncollectable.
+    monkeypatch.setattr(scheduler_module.mx, "eval", _detaching_eval)
+
+    for _ in range(limit - 1):
+        assert scheduler._materialize_active_recurrent_cache() is not None
+    assert scheduler._recurrent_output_chain_failures == limit - 1
+
+    with pytest.raises(
+        scheduler_module._RecurrentOutputChainError, match="Metal handle"
+    ):
+        scheduler._materialize_active_recurrent_cache()
+    assert scheduler._recurrent_output_chain_failures == limit
+
+
+class _RaisingOutputBatch(_OutputBatch):
+    """An output batch whose ``_next_tokens`` accessor raises on every read —
+    modelling a persistent mlx-lm patch-level incompatibility on that surface
+    while ``layer.state`` (the cache-state barrier) stays fully intact.
+
+    The base ``__init__`` assigns ``self._next_tokens`` directly, which the
+    read-only property forbids, so this subclass wires its own surfaces (and
+    the ``_token_context`` buffers ``advance_outputs`` mutates) without ever
+    assigning ``_next_tokens``."""
+
+    @property
+    def _next_tokens(self):
+        raise RuntimeError("simulated persistent output-surface access failure")
+
+    def __init__(self, cache):
+        self.prompt_cache = cache
+        self._next_logprobs = [_OutputNode(), _OutputNode()]
+        self._token_context = [_TokenBuffer(), _TokenBuffer()]

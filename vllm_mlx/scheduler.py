@@ -168,6 +168,16 @@ _RECURRENT_MATERIALIZE_MAX_INTERVAL = 64
 _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT = 8
 
 
+class _RecurrentOutputChainError(RuntimeError):
+    """Raised when a recurrent lane's per-step decode output chain cannot be
+    realized (or, codex r4, even collected) ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT``
+    consecutive times. The barrier exists so the lazy per-step graph cannot grow
+    to Metal's 499000-handle ceiling (#2834/#2836); a persistent failure means
+    that safety guarantee is no longer upheld, so the lane fails rather than
+    silently continuing toward unbounded handle growth.
+    """
+
+
 def _pflash_compressed(request: Request) -> bool:
     """Whether PFlash replaced this request's prompt with a compressed
     subsequence. Used to gate every prefix-cache store/fetch site so the
@@ -9253,11 +9263,15 @@ class Scheduler:
         # immediately; if only the output chain failed it is the NEW #2834
         # surface and goes through guarded retry/escalation. Dense lanes never
         # reach here, so no per-token eval is added to a dense batch.
-        outputs = self._collect_recurrent_outputs(generation_batch)
-        self._retry_materialize_output_chain(states, outputs)
+        outputs, collection_failed = self._collect_recurrent_outputs(generation_batch)
+        self._retry_materialize_output_chain(
+            states, outputs, collection_failed=collection_failed
+        )
         return len(states)
 
-    def _retry_materialize_output_chain(self, states, outputs) -> int:
+    def _retry_materialize_output_chain(
+        self, states, outputs, *, collection_failed: bool = False
+    ) -> int:
         """Realize the per-step decode output chain (guarded retry/escalation).
 
         The caller has already collected ``outputs`` (host-side) and hands us
@@ -9276,39 +9290,60 @@ class Scheduler:
             rather than hard-crashing or silently conceding to an unbounded
             output graph (codex r1, r3).
 
+        ``collection_failed`` (codex r4) is the host-side analogue: an output
+        attribute whose ACCESS raised (not one that is merely absent) is a
+        collection failure for that surface and must feed the SAME
+        escalation counter — otherwise a persistently-raising surface would
+        read as "no outputs", clear the counter every step, and the unbounded
+        chain it exists to bound would never escalate.
+
         On success the dereference counter resets so a cleared transient
-        recovers. Realizing with an empty/outputs-only list (a batch currently
-        exposing no output tensors) is fine: the cache-state half already
-        realized, and the combined eval is just ``mx.eval(states)``.
+        recovers. Realizing with an empty/absent output list that DID collect
+        cleanly (a batch genuinely exposing no output tensors) is fine: the
+        cache-state half already realized, and the combined eval is just
+        ``mx.eval(states)``.
         """
 
-        def _escalate() -> int:
+        def _escalate(failure: Exception | None = None) -> int:
             self._recurrent_output_chain_failures += 1
             if (
                 self._recurrent_output_chain_failures
                 >= _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
             ):
                 logger.error(
-                    "[recurrent-output-chain] %d consecutive realize-failures; "
-                    "a persistent incompatibility is leaving the per-step "
-                    "decode output chain unbounded. Failing the lane rather "
-                    "than drifting toward Metal handle exhaustion.",
+                    "[recurrent-output-chain] %d consecutive realize/collect "
+                    "failures; a persistent incompatibility is leaving the "
+                    "per-step decode output chain unbounded. Failing the lane "
+                    "rather than drifting toward Metal handle exhaustion.",
                     self._recurrent_output_chain_failures,
                 )
-                raise
+                raise _RecurrentOutputChainError(
+                    "recurrent decode output chain could not be realized "
+                    f"{self._recurrent_output_chain_failures} consecutive "
+                    "times; failing the lane rather than drifting toward "
+                    "Metal handle exhaustion"
+                ) from failure
             logger.warning(
-                "[recurrent-output-chain] realize failed (attempt %d/%d); the "
-                "cache-state barrier already realized this step's state so the "
-                "graph stays bounded this interval, but a recurring failure "
-                "will escalate.",
+                "[recurrent-output-chain] realize/collect failed (attempt "
+                "%d/%d); the cache-state barrier already realized this step's "
+                "state so the graph stays bounded this interval, but a "
+                "recurring failure will escalate.",
                 self._recurrent_output_chain_failures,
                 _RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT,
             )
             return 0
 
+        if collection_failed:
+            # An output surface raised on ACCESS — indistinguishable from a
+            # realize failure for the purpose of bounding the chain, so route
+            # it through the same escalation path (codex r4). Cache-state was
+            # already realized by the caller, so this step is still bounded.
+            return _escalate()
+
         if not outputs:
-            # No output tensors exposed: still realize the cache state. This is
-            # the same barrier #1834 already issued — not a doubled sync.
+            # No output tensors exposed (and collection was clean): still
+            # realize the cache state. This is the same barrier #1834 already
+            # issued — not a doubled sync.
             try:
                 mx.eval(states)
             except Exception:
@@ -9320,7 +9355,7 @@ class Scheduler:
 
         try:
             mx.eval([*states, *outputs])  # single device barrier (r3)
-        except Exception:
+        except Exception as exc:
             # Classify the failure: if the cache-state half is broken too, that
             # is the proven-necessary barrier and must propagate, not count as a
             # retryable output-chain miss (r2).
@@ -9328,66 +9363,69 @@ class Scheduler:
                 mx.eval(states)
             except Exception:
                 raise
-            return _escalate()
+            return _escalate(exc)
         self._recurrent_output_chain_failures = 0
         return len(outputs)
 
-    def _collect_recurrent_outputs(self, generation_batch) -> list:
-        """Best-effort collect the per-step decode output chain tensors.
+    def _collect_recurrent_outputs(self, generation_batch) -> tuple[list, bool]:
+        """Collect the per-step decode output chain tensors, returning
+        ``(outputs, collection_failed)``.
 
         Mirrors the cache-state barrier for the OTHER half of the lazy graph
         that #1834 did not cover: the tensors ``mlx_lm generate._step`` hands
         to ``mx.async_eval(self._next_tokens, self._next_logprobs,
         token_context)``. On dense batches every layer is trimmable, so the
         caller returns before ever reaching this — no per-token host sync on a
-        dense lane.
+        dense lane. Collection only (the caller realizes).
 
-        Collection only (the caller realizes). The attribute surface varies
-        across mlx-lm patch levels, so each optional surface is individually
-        guarded: a single version-mismatched ``TokenBuffer.tokens`` property
-        raising is skipped for that item rather than failing the whole batch.
-        A batch that exposes nothing simply contributes nothing, and the
-        cache-state barrier still fires.
+        The attribute surface varies across mlx-lm patch levels, so each
+        optional surface must be tolerated. Critically (codex r4), GENUINELY
+        ABSENT attributes are not failures, but an attribute whose ACCESS
+        RAISED is — a persistently-raising surface would otherwise read as
+        "no outputs", the barrier would clear its escalation counter each step,
+        and the unbounded chain it exists to bound would never escalate.
+        ``collection_failed`` is set when any surface access raised, so the
+        caller can route it into the same retry/escalation path as a realize
+        failure. ``_safe`` returns ``(value, errored)`` to tell the two apart.
         """
         outputs: list = []
+        collection_failed = False
 
-        def _safe(attr) -> object:
+        def _safe(attr) -> tuple[object, bool]:
             try:
-                return getattr(generation_batch, attr, None)
+                return getattr(generation_batch, attr, None), False
             except Exception:
-                return None
+                return None, True
 
-        try:
-            next_tokens = _safe("_next_tokens")
-            if next_tokens is not None:
-                outputs.append(next_tokens)
-        except Exception:
-            pass
+        next_tokens, errored = _safe("_next_tokens")
+        collection_failed = collection_failed or errored
+        if next_tokens is not None:
+            outputs.append(next_tokens)
 
-        try:
-            next_logprobs = _safe("_next_logprobs")
-            if isinstance(next_logprobs, (list, tuple)):
-                for lp in next_logprobs:
-                    if lp is not None:
-                        outputs.append(lp)
-            elif next_logprobs is not None:
-                outputs.append(next_logprobs)
-        except Exception:
-            pass
+        next_logprobs, errored = _safe("_next_logprobs")
+        collection_failed = collection_failed or errored
+        if isinstance(next_logprobs, (list, tuple)):
+            for lp in next_logprobs:
+                if lp is not None:
+                    outputs.append(lp)
+        elif next_logprobs is not None:
+            outputs.append(next_logprobs)
 
-        try:
-            token_context = _safe("_token_context") or None
-            if isinstance(token_context, (list, tuple)):
-                for tc in token_context:
-                    try:
-                        tok = getattr(tc, "tokens", None)
-                    except Exception:
-                        tok = None
-                    if tok is not None:
-                        outputs.append(tok)
-        except Exception:
-            pass
-        return outputs
+        token_context, errored = _safe("_token_context")
+        collection_failed = collection_failed or errored
+        if isinstance(token_context, (list, tuple)):
+            for tc in token_context:
+                try:
+                    tok = getattr(tc, "tokens", None)
+                except Exception:
+                    # A TokenBuffer whose ``tokens`` accessor raises is a
+                    # collection failure for that surface, not an absent one.
+                    collection_failed = True
+                    tok = None
+                if tok is not None:
+                    outputs.append(tok)
+
+        return outputs, collection_failed
 
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by ID."""
