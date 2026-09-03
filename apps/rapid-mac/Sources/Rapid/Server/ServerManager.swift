@@ -656,11 +656,11 @@ final class ServerManager {
     let host: String = "127.0.0.1"
 
     /// The port the most recent ``start()`` actually bound rapid-mlx
-    /// to. Initialised to ``PortSweep.defaultPort`` (8000) so callers
+    /// to. Initialised to ``PortSweep.defaultPort`` (7659) so callers
     /// reading this before the first spawn don't have to special-case
-    /// "no port yet". When ``PortAllocator`` falls back to 8001+ the
-    /// value is republished so ChatViewModel re-targets the chat
-    /// client URL.
+    /// "no port yet". When ``PortAllocator`` falls back to 7660+ (or
+    /// the 8000…8009 legacy window) the value is republished so
+    /// ChatViewModel re-targets the chat client URL.
     private(set) var activePort: Int = PortSweep.defaultPort
 
     /// Issue #17 desktop-half: active bearer secret. Generated or restored
@@ -2180,7 +2180,7 @@ final class ServerManager {
         }
     }
 
-    /// Spawn `rapid-mlx serve <alias> --host 127.0.0.1 --port 8000`,
+    /// Spawn `rapid-mlx serve <alias> --host 127.0.0.1 --port <allocated>`,
     /// stream its stdout/stderr into `logLines`, and poll `/healthz`
     /// until it returns 200. On success the state transitions
     /// `.idle/.stopped -> .starting -> .ready`; on failure the child is
@@ -2584,8 +2584,9 @@ final class ServerManager {
         // shape hard-coded :8000 and surfaced rapid-mlx's own
         // "Port 8000 is already in use" stderr as a generic crash —
         // common when the user runs vite / jupyter / fastapi on the
-        // same machine. ``PortAllocator`` walks 8000..8009 and picks
-        // the first port not held by a foreign process.
+        // same machine. ``PortAllocator`` walks 7659..7668 first
+        // (then 8000..8009 as legacy fallback) and picks the first
+        // port not held by a foreign process.
         //
         // Run OFF the main actor. ``allocate()`` is blocking work by
         // nature: per candidate port it forks ``lsof`` (+ one ``ps``

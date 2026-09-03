@@ -110,10 +110,12 @@ struct PortAllocatorTests {
         #expect(!PortAllocator.canBind(port: 60_031, host: "127.0.0.1"))
     }
 
-    @Test("Default candidate window is 8000..8009")
+    @Test("Default candidate window is 7659..7668 plus 8000..8009 legacy fallback")
     func defaultWindow() {
-        #expect(PortAllocator.candidatePorts == Array(8000...8009))
-        #expect(PortAllocator.candidatePorts.count == 10)
+        // Primary window is the RMLX phone-keypad range; 8000…8009 is
+        // probed after it so existing 127.0.0.1:8000 clients keep working.
+        #expect(PortAllocator.candidatePorts == Array(7659...7668) + Array(8000...8009))
+        #expect(PortAllocator.candidatePorts.count == 20)
     }
 
     // MARK: - #455 RAPID_DESKTOP_PORT override (test-harness isolation)
@@ -147,7 +149,7 @@ struct PortAllocatorTests {
         ]
         for env in fallbacks {
             #expect(
-                PortAllocator.resolveCandidatePorts(environment: env) == Array(8000...8009),
+                PortAllocator.resolveCandidatePorts(environment: env) == Array(7659...7668) + Array(8000...8009),
                 "invalid override \(env) must fall back to the default window"
             )
         }
@@ -172,7 +174,7 @@ struct PortSweepPortArgTests {
         // bigger ``isRapidOwnedCommand`` ownership semantics are
         // covered by ``PortSweepTests`` and unaffected here.
         _ = PortSweep.sweep()  // must not throw / crash
-        #expect(PortSweep.defaultPort == 8000)
+        #expect(PortSweep.defaultPort == 7659)
     }
 
     @Test("Back-compat shim: PortSweep.port == defaultPort")

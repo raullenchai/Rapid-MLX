@@ -47,23 +47,23 @@ struct ChatStreamClientDefaultBaseURLTests {
     /// Codex r1 NIT-3 / r2 NIT-A: SoT comparison alone won't flag
     /// the case where someone intentionally moves
     /// `PortSweep.defaultPort` without auditing the other surfaces
-    /// that hard-code `:8000` for documentation or scripting
+    /// that hard-code a literal port for documentation or scripting
     /// reasons. Pin the absolute port number so a deliberate port
     /// change is a multi-place edit — this test fails loudly, the
     /// reviewer reads the list below, and bumps every pin in the
     /// same PR.
     ///
-    /// Downstream surfaces that pin the literal `:8000` (grep
-    /// `8000` confirmed at codex r2 review time — `.github/workflows/`
+    /// Downstream surfaces re-audited at the 0.13.x 7659 default
+    /// change (grep `8000` / `7659` confirmed — `.github/workflows/`
     /// has none today, so do NOT cite a release.yml smoke probe):
-    ///   * `docs/userflows.md` — sample curl snippets
-    ///   * `docs/plans/v1-prod-readiness-gaps.md` — audit notes
-    ///   * `scripts/fake-rapid-mlx.sh` — release-smoke fake server
-    ///   * `Sources/Rapid/TestDriver.swift` — doc comment
-    ///   * `Sources/Rapid/Server/ServerManager.swift` — doc comment
-    @Test("Default port is the documented 8000 — bump fails loudly if PortSweep.defaultPort moves")
-    func default_port_is_pinned_8000() {
-        #expect(ChatStreamClient.defaultBaseURL.port == 8000,
+    ///   * `docs/userflows.md` — (already clean of a literal port)
+    ///   * `docs/plans/v1-prod-readiness-gaps.md` — (already clean)
+    ///   * `scripts/fake-rapid-mlx.sh` — (already clean)
+    ///   * `Sources/Rapid/TestDriver.swift` — (already clean)
+    ///   * `Sources/Rapid/Server/ServerManager.swift` — doc comments
+    @Test("Default port is the documented 7659 — bump fails loudly if PortSweep.defaultPort moves")
+    func default_port_is_pinned_7659() {
+        #expect(ChatStreamClient.defaultBaseURL.port == 7659,
                 "If you intentionally changed PortSweep.defaultPort, update this pin AND every docs/scripts surface listed in the doc-comment above.")
     }
 
