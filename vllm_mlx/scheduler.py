@@ -4542,12 +4542,15 @@ class Scheduler:
                 getattr(self.config, "kv_cache_quantization_bits", 8),
                 self._kv_quant_layout.rotating_layers,
             )
-            if self._kv_quant_layout.shared_borrower_layers:
-                logger.info(
-                    "[kv-cache] %d cross-layer KV borrowers reuse producer "
-                    "caches and allocate no independent KV",
-                    self._kv_quant_layout.shared_borrower_layers,
-                )
+        if (
+            self._kv_quant_layout is not None
+            and self._kv_quant_layout.shared_borrower_layers
+        ):
+            logger.info(
+                "[kv-cache] %d cross-layer KV borrowers reuse producer "
+                "caches and allocate no independent KV",
+                self._kv_quant_layout.shared_borrower_layers,
+            )
 
         from .quantized_batch_cache import (
             probe_kv_head_dims,

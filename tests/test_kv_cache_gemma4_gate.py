@@ -392,7 +392,7 @@ def test_live_cache_probe_rejects_cross_layer_shared_hybrid():
 
 @pytest.mark.requires_mlx
 def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
-    from mlx_lm.models.cache import KVCache, RotatingKVCache
+    from mlx_lm.models.cache import KVCache
 
     from vllm_mlx.scheduler import Scheduler
 
@@ -404,7 +404,7 @@ def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
         language_model = _LanguageModel()
 
         def make_cache(self):
-            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+            return [KVCache(), KVCache()]
 
     assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
 

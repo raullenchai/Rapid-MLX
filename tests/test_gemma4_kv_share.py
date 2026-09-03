@@ -47,6 +47,7 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 
+import inspect
 import json
 import logging
 
@@ -62,6 +63,14 @@ GEMMA4_SIZES = [
     ("26B-A4B", 30, 0),
     ("31B", 60, 0),
 ]
+
+
+def test_shared_cache_extension_preserves_positional_call_order():
+    from vllm_mlx.models.gemma4_vendored import language
+
+    for callable_type in (language.Attention, language.DecoderLayer):
+        parameters = list(inspect.signature(callable_type.__call__).parameters)
+        assert parameters.index("offset") < parameters.index("shared_cache")
 
 
 def _build_text_config(num_hidden_layers: int, num_kv_shared_layers: int) -> TextConfig:

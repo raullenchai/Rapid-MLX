@@ -252,8 +252,8 @@ class Attention(nn.Module):
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
         shared_kv: Optional[tuple] = None,
-        shared_cache: Optional[Any] = None,
         offset: Optional[Any] = None,
+        shared_cache: Optional[Any] = None,
     ) -> mx.array:
         B, L, _ = x.shape
 
@@ -369,8 +369,8 @@ class DecoderLayer(nn.Module):
         cache: Optional[Any] = None,
         per_layer_input: Optional[mx.array] = None,
         shared_kv: Optional[tuple] = None,
-        shared_cache: Optional[Any] = None,
         offset: Optional[Any] = None,
+        shared_cache: Optional[Any] = None,
     ) -> mx.array:
         residual = x
 
