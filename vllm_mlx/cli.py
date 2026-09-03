@@ -6743,10 +6743,17 @@ def models_command(args):
     def _matches_search(alias: str) -> bool:
         return not search_active or search_term in alias.casefold()
 
-    if modality and modality != "text":
+    if modality == "text":
+        # ``--modality text``: show ONLY the text chat table — blank every
+        # tagged section (video / image / audio) so the view really is
+        # text-only, unlike the default full catalog. (codex review #1)
+        profiles = {a: p for a, p in profiles.items() if _matches_search(a)}
+        video_profiles = {}
+        image_profiles = {}
+    elif modality in ("video-gen", "image-gen", "audio"):
         # A non-text modality request: blank every OTHER section (text chat
-        # table + the tagged sections) and show only the requested one below
-        # (search applies within it).
+        # table + the other tagged sections) and show only the requested one
+        # below (search applies within it).
         profiles = {}
         if modality == "video-gen":
             video_profiles = {
@@ -6758,12 +6765,13 @@ def models_command(args):
             image_profiles = {
                 a: p for a, p in image_profiles.items() if _matches_search(a)
             }
-        elif modality == "audio":
+        else:  # audio
             video_profiles = {}
             image_profiles = {}
     else:
-        # text modality or no filter: apply search to the chat table and, if
-        # a search is active, to the tagged sections too (whole-catalog grep).
+        # No modality filter (full catalog): apply search to the chat table
+        # and, if a search is active, to the tagged sections too
+        # (whole-catalog grep).
         profiles = {a: p for a, p in profiles.items() if _matches_search(a)}
         if search_active:
             video_profiles = {
@@ -6779,7 +6787,30 @@ def models_command(args):
         title = f"Models [{modality}]"
     if search_active:
         title += f" matching '{args.search}'"
-    print(f"  {title} ({len(profiles)} aliases)")
+    # The count reflects the section actually shown (a modality view empties
+    # the text ``profiles`` but presents its own tagged section). (codex #3)
+    if modality == "video-gen":
+        shown = len(video_profiles)
+    elif modality == "image-gen":
+        shown = len(image_profiles)
+    elif modality == "audio":
+        # ``audio_entries`` is computed below (after the text/video/image
+        # sections); import the audio registry here with the same guarded
+        # fallback so an absent/broken registry yields 0, not a crash.
+        try:
+            from vllm_mlx.audio.registry import list_audio_aliases
+
+            audio_for_count = list_audio_aliases()
+        except Exception:
+            audio_for_count = []
+        shown = (
+            len(audio_for_count)
+            if not search_active
+            else len([e for e in audio_for_count if search_term in e.alias.casefold()])
+        )
+    else:
+        shown = len(profiles)
+    print(f"  {title} ({shown} aliases)")
 
     # Alias width is computed from the actual registry so new long names
     # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the

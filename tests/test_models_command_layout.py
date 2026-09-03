@@ -204,6 +204,27 @@ def test_modality_image_gen_shows_image_section(capsys):
     assert not any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
 
 
+def test_modality_text_restricts_to_text_chat(capsys):
+    """#2355 (codex review #1): ``--modality text`` must show ONLY the text
+    chat table — the video / image / audio sections are blanked so the view
+    really is text-only (unlike the default full catalog)."""
+    out = _capture(capsys, modality="text")
+    assert "Models [text]" in out
+    # A text chat alias appears.
+    assert any(ln.lstrip().startswith("qwen3-0.6b") for ln in out.splitlines())
+    # Tagged sections are suppressed.
+    assert "Video models" not in out
+    assert "Image models" not in out
+    assert "Audio models" not in out
+
+
+def test_modality_audio_count_does_not_crash(capsys):
+    """#2355 (codex review #3): the modality title count must reflect the
+    section actually shown without crashing on the audio registry."""
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio]" in out
+
+
 def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
     """#2355 regression: no filters keeps the full catalog AND points the
     user to the recipe command for RAM-fit recommendations."""
