@@ -693,3 +693,135 @@ class _RaisingOutputBatch(_OutputBatch):
         self.prompt_cache = cache
         self._next_logprobs = [_OutputNode(), _OutputNode()]
         self._token_context = [_TokenBuffer(), _TokenBuffer()]
+
+
+class _OnlyRaisingNextTokensBatch(_OutputBatch):
+    """An output batch where EVERY surface is missing except ``_next_tokens``,
+    which raises on access. The collector gathers NO outputs while recording a
+    collection_error — exercising the 'nothing collectible AND a surface
+    raised' escalation branch (codex r4/r5: the cache-state barrier already
+    fired in the caller, so escalation is safe)."""
+
+    @property
+    def _next_tokens(self):
+        raise RuntimeError("simulated only-raising output surface")
+
+    def __init__(self, cache):
+        self.prompt_cache = cache
+        self._next_logprobs = None
+        self._token_context = None
+
+
+def test_output_chain_nothing_collectible_and_surface_raised_escalates(monkeypatch):
+    """#2834 (coverage): when the collector gathers ZERO outputs AND a surface
+    raised on access, ``_retry_materialize_output_chain`` must escalate
+    (nothing was realized by mB, so the only thing keeping the graph bounded is
+    escalating) — not silently clear the counter as if it were a clean no-op."""
+    recurrent = _OutputRecurrentLayer()
+    batch = _OnlyRaisingNextTokensBatch([recurrent])
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = _OutputGenerator(batch)
+    scheduler._recurrent_output_chain_failures = 0
+    limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", _detaching_eval)
+
+    for _ in range(limit - 1):
+        assert scheduler._materialize_active_recurrent_cache() is not None
+    assert scheduler._recurrent_output_chain_failures == limit - 1
+
+    with pytest.raises(
+        scheduler_module._RecurrentOutputChainError, match="Metal handle"
+    ):
+        scheduler._materialize_active_recurrent_cache()
+
+
+class _ScalarLogprobsRaisingContextBatch(_OutputBatch):
+    """Covers the two remaining collector branches: (1) a scalar (non-list)
+    ``_next_logprobs`` value is appended directly; (2) a ``TokenBuffer`` whose
+    ``tokens`` accessor raises is recorded as a collection error rather than an
+    absent surface — while the valid buffer and scalar logprobs still reach
+    ``mx.eval`` (never discard a collectible output chain, r6#2)."""
+
+    def __init__(self, cache):
+        self.prompt_cache = cache
+        self._next_tokens = _OutputNode()
+        self._next_logprobs = _OutputNode()  # scalar, not a list
+        self._token_context = [_TokenBufferWithRaisingTokens(), _TokenBuffer()]
+
+
+class _TokenBufferWithRaisingTokens(_TokenBuffer):
+    @property
+    def tokens(self):
+        raise RuntimeError("simulated TokenBuffer.tokens access failure")
+
+
+def test_collector_scalar_logprobs_and_raising_token_buffer(monkeypatch):
+    """#2834 (coverage): the collector must (a) append a scalar ``_next_logprobs``
+    value and (b) treat a raising ``TokenBuffer.tokens`` as a collection error
+    (not absence) — while still realizing the valid scalar logprobs and the
+    valid token buffer. The raising surface routes into the escalation counter;
+    the valid outputs are NOT discarded."""
+    recurrent = _OutputRecurrentLayer()
+    batch = _ScalarLogprobsRaisingContextBatch([recurrent])
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = _OutputGenerator(batch)
+    scheduler._recurrent_output_chain_failures = 0
+
+    evals = []
+
+    def eval_and_record(value):
+        evals.append(value)
+        return _detaching_eval(value)
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", eval_and_record)
+
+    # One step: valid outputs (scalar logprobs + valid buffer tokens) are
+    # realized, and the raising surface feeds the escalation counter (to 1,
+    # below the limit so no raise).
+    result = scheduler._materialize_active_recurrent_cache()
+    assert scheduler._recurrent_output_chain_failures == 1
+
+    # The cache-state barrier fired ([[head]]), and the collected outputs were
+    # realized even though one surface raised (r6#2).
+    realized = [v for v in evals if v != [[recurrent.head]]]
+    assert realized, "expected the collected output chain to be realized"
+    flattened = []
+    for v in realized:
+        flattened.extend(v if isinstance(v, list) else [v])
+    assert id(batch._next_logprobs) in {id(x) for x in flattened}
+    assert id(batch._token_context[1]._buf) in {id(x) for x in flattened}
+
+
+def test_materialize_with_no_batch_generator_resets_counter(monkeypatch):
+    """#2834 (coverage): with NO active lane, the barrier clears any failure
+    counter left by a prior recurrent request and returns 0 — so a NEW request
+    never inherits a stale streak (codex r7)."""
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._recurrent_output_chain_failures = 5
+    scheduler._recurrent_output_chain_batch = object()
+    scheduler.batch_generator = None
+
+    assert scheduler._materialize_active_recurrent_cache() == 0
+    assert scheduler._recurrent_output_chain_failures == 0
+    assert scheduler._recurrent_output_chain_batch is None
+
+
+def test_materialize_with_empty_cache_resets_counter(monkeypatch):
+    """#2834 (coverage): a generation batch with NO ``prompt_cache`` (falsy)
+    is nothing to materialize — the barrier clears a stale failure streak and
+    returns without touching the output chain."""
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._recurrent_output_chain_failures = 3
+    scheduler._recurrent_output_chain_batch = object()
+    scheduler.batch_generator = _OutputGenerator(_OutputBatch([]))  # empty cache
+
+    assert scheduler._materialize_active_recurrent_cache() == 0
+    # The empty cache means nothing was materialized: the stale streak is
+    # cleared so a NEW request never inherits it, and the batch-identity
+    # tracking now points at the new (empty-cache) batch.
+    assert scheduler._recurrent_output_chain_failures == 0
+    assert (
+        scheduler._recurrent_output_chain_batch
+        is scheduler.batch_generator._generation_batch
+    )
