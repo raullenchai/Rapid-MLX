@@ -73,7 +73,12 @@ def load_prefix_cache_from_disk() -> None:
         return
     try:
         d = get_cache_dir()
-        logger.info(f"[lifespan] Loading prefix cache from {d}")
+        # #2356: this auto-load runs on the deferred background task scheduled
+        # AFTER the Ready banner is printed (see server._deferred_load_prefix_cache).
+        # At INFO it scrolled the Ready/Connect block off the terminal; the
+        # per-boot cache counts are warm-start detail, so they live at DEBUG.
+        # Operator-requested explicit loads/imports surface their own feedback.
+        logger.debug(f"[lifespan] Loading prefix cache from {d}")
         # #1111 codex r3: the STARTUP auto-load must NOT protect reloaded
         # entries. ``save_to_disk`` persists ALL live entries — including
         # opportunistic (unprotected) non-trimmable ones — so protecting them on
@@ -83,9 +88,9 @@ def load_prefix_cache_from_disk() -> None:
         # only the EXPLICIT ``POST /v1/cache/import`` (#476) pins its entries.
         loaded = cfg.engine.load_cache_from_disk(d, protected_import=False)
         if loaded > 0:
-            logger.info(f"[lifespan] Loaded {loaded} prefix cache entries")
+            logger.debug(f"[lifespan] Loaded {loaded} prefix cache entries")
         else:
-            logger.info("[lifespan] No prefix cache entries found on disk")
+            logger.debug("[lifespan] No prefix cache entries found on disk")
         _load_radix_index_after_cache(cfg.engine, d)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
@@ -127,7 +132,10 @@ def _load_radix_index_after_cache(engine, cache_dir: str) -> None:
         )
         if not radix_matches_entries:
             radix.rebuild_from_keys(keys)
-            logger.info(f"[radix] rebuilt index from {len(keys)} loaded cache entries")
+            # #2356: runs on the deferred post-ready background task, so at INFO
+            # it buried the Ready banner. Radix rebuild is a warm-start
+            # accelerator detail, not a user-facing readiness signal.
+            logger.debug(f"[radix] rebuilt index from {len(keys)} loaded cache entries")
     except Exception as e:  # pragma: no cover — defensive
         logger.warning(f"[radix] rebuild_from_keys failed: {e}", exc_info=True)
 

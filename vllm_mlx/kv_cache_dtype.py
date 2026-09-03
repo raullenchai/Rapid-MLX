@@ -447,14 +447,17 @@ def dtype_to_quantization_bits(dtype: str) -> tuple[bool, int]:
 def log_kv_cache_decision(
     decision: KVCacheDtypeDecision, *, model_name: str | None = None
 ) -> None:
-    """Emit the operator-facing startup log line for a decision.
+    """Emit the operator-facing startup log line for a decision, exactly once.
 
     The log line is the operator's window into what
     ``resolve_kv_cache_dtype`` decided — without it, a downgrade from
-    int4 to bf16 looks like a perf regression. Always logged at INFO so
-    it survives in default deployments. Also prints to stdout for
-    parity with the existing CLI banners (operators run ``rapid-mlx
-    serve`` in foreground much more often than they ``journalctl`` it).
+    int4 to bf16 looks like a perf regression. It is a single ``logger.info``
+    emission: in a foreground ``rapid-mlx serve`` the root handler writes to
+    stderr (visible on the terminal), and in log-backed deployments the INFO
+    record survives into the log. The decision is surfaced exactly once —
+    #2356 flagged that a previous ``logger.info`` + ``print(msg)`` pair sent
+    the same line to the terminal twice (stderr and stdout), so a user's
+    startup card never settled on a single dtype line.
     """
     msg = f"KV cache dtype: {decision.dtype} — {decision.reason}"
     if model_name and model_name not in decision.reason:
@@ -462,4 +465,3 @@ def log_kv_cache_decision(
             f"KV cache dtype: {decision.dtype} (model={model_name}) — {decision.reason}"
         )
     logger.info(msg)
-    print(msg)
