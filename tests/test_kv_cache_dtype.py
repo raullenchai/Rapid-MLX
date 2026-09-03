@@ -365,11 +365,10 @@ def test_bf16_reason_is_neutral_and_not_a_downgrade():
     assert decision.downgraded is False
 
 
-def test_int4_override_reason_cites_decode_cost():
+def test_int4_override_reason_reports_fused_packed_path():
     decision = resolve_kv_cache_dtype("int4", model_name="qwen3-4b-4bit")
-    # Opting into quantized KV must leave a breadcrumb in the log that
-    # the operator accepted the O(context) dequant-on-read decode cost.
-    assert "#1853" in decision.reason
+    assert "packed live KV" in decision.reason
+    assert "fused quantized attention" in decision.reason
     assert decision.downgraded is False
 
 
