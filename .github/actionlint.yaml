@@ -3,4 +3,5 @@
 # distinguish it from a typo in a GitHub-hosted runner name.
 self-hosted-runner:
   labels:
+    - manzanita-standard
     - rapid-mlx-release
