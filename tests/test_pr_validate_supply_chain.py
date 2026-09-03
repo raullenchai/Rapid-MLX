@@ -126,9 +126,7 @@ diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
     )
     def test_shell_or_traversal_path_stays_blocking(self, ctx_factory, unsafe_path):
         """A roster-looking line must not become a shell-injection bypass."""
-        diff = ROSTER_ONLY_DIFF.replace(
-            "tests/test_new_lane_contract.py", unsafe_path
-        )
+        diff = ROSTER_ONLY_DIFF.replace("tests/test_new_lane_contract.py", unsafe_path)
         ctx = ctx_factory(
             [".github/workflows/ci.yml", unsafe_path],
             diff,
