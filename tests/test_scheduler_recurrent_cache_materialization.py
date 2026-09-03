@@ -326,3 +326,184 @@ def test_step_arms_barrier_on_idle_to_active_edge(monkeypatch):
     assert "barrier" not in events[tail:]  # depth 63 < 64, no second barrier yet
     scheduler.step()  # depth reaches 64
     assert events[-3:] == ["next", "barrier", "responses"]
+
+
+class _OutputNode:
+    """Models a lazily-scheduled decode OUTPUT tensor (issue #2834).
+
+    ``parent`` models the MLX lazy-graph reference an ``async_eval`` output
+    retains to the prior step: on a recurrent/hybrid lane ``gb._next_tokens`` /
+    ``_next_logprobs`` / ``token_context`` are re-scheduled by the forward each
+    step and are NOT detached unless someone evaluates them. The #1834 barrier
+    only realizes ``layer.state``, so this separate output chain can grow
+    unboundedly and exhaust Metal's 499000-handle ceiling even though the cache
+    state stays bounded.
+    """
+
+    def __init__(self, parent=None):
+        self.parent = parent
+
+
+class _TokenBuffer:
+    """Models mlx_lm's ``TokenBuffer`` — the logits-processor
+    ``token_context`` accumulator whose lazily grown buffer feeds ``_step``'s
+    ``async_eval``."""
+
+    def __init__(self):
+        self._buf = _OutputNode()
+
+    @property
+    def tokens(self):
+        return self._buf
+
+
+class _OutputBatch:
+    """A recurrent generation batch exposing the per-step output chain the
+    scheduler's barrier must realize."""
+
+    def __init__(self, cache):
+        self.prompt_cache = cache
+        self._next_tokens = _OutputNode()
+        self._next_logprobs = [_OutputNode(), _OutputNode()]
+        self._token_context = [_TokenBuffer(), _TokenBuffer()]
+
+    def advance_outputs(self):
+        # One recurrent decode step: every output re-references the prior step.
+        self._next_tokens = _OutputNode(self._next_tokens)
+        self._next_logprobs = [_OutputNode(p) for p in self._next_logprobs]
+        for tc in self._token_context:
+            tc._buf = _OutputNode(tc._buf)
+
+
+class _OutputGenerator:
+    def __init__(self, batch):
+        self._generation_batch = batch
+
+
+class _OutputRecurrentLayer:
+    def __init__(self):
+        self.head = _OutputNode()
+
+    def is_trimmable(self):
+        return False
+
+    @property
+    def state(self):
+        return [self.head]
+
+
+def _detaching_eval(values, seen=None):
+    """A monkeypatched ``mx.eval`` that detaches every graph it is handed —
+    exactly like a real realization pass — and records what it received."""
+    if seen is None:
+        seen = []
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    for v in values:
+        seen.append(v)
+        if isinstance(v, (list, tuple)):
+            _detaching_eval(v, seen=seen)
+            continue
+        node = v
+        while hasattr(node, "parent") and node.parent is not None:
+            node.parent = None
+            node = node.parent
+    return len(values)
+
+
+def test_recurrent_barrier_realizes_per_step_output_chain(monkeypatch):
+    """#2834 regression: the hybrid barrier must realize the per-step decode
+    OUTPUT chain (``_next_tokens`` / ``_next_logprobs`` / ``token_context``),
+    not just ``layer.state``. Before the fix this chain was never evaluated, so
+    it grew unboundedly; after the fix the barrier detaches it on the SAME
+    cadence as the cache state."""
+    recurrent = _OutputRecurrentLayer()
+    batch = _OutputBatch([recurrent])
+    generator = _OutputGenerator(batch)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = generator
+
+    seen = []
+    monkeypatch.setattr(
+        scheduler_module.mx,
+        "eval",
+        lambda *a, **k: _detaching_eval(*a, seen=seen),
+    )
+
+    # Build an unbounded output chain exactly the way a running recurrent
+    # model would: many decode steps with no intervening realization.
+    for _ in range(1_000):
+        batch.advance_outputs()
+
+    # The chain is deep before the barrier (the bug state).
+    assert _chain_length(batch._next_tokens) > 900
+
+    scheduler._materialize_active_recurrent_cache()
+
+    # The barrier realized the cache state AND detached the output chain.
+    assert _chain_length(batch._next_tokens) == 1
+    for lp in batch._next_logprobs:
+        assert _chain_length(lp) == 1
+    for tc in batch._token_context:
+        assert _chain_length(tc._buf) == 1
+
+    # Every output surface was handed to mx.eval at least once.
+    seen_kinds = {id(v) for v in seen}
+    assert id(batch._next_tokens) in seen_kinds
+    for lp in batch._next_logprobs:
+        assert id(lp) in seen_kinds
+    for tc in batch._token_context:
+        assert id(tc._buf) in seen_kinds
+
+
+def test_dense_batch_barrier_does_not_touch_output_chain(monkeypatch):
+    """The dense no-per-token-eval guarantee must hold for the OUTPUT chain
+    too: on a dense (all-trimmable) lane the barrier returns before reaching
+    the output-chain realization, so it influences none of the batch's
+    ``_next_*`` / ``token_context`` tensors."""
+    dense = _Layer(trimmable=True)
+    batch = _OutputBatch([dense])
+    generator = _OutputGenerator(batch)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = generator
+
+    for _ in range(200):
+        batch.advance_outputs()
+    deep = _chain_length(batch._next_tokens)
+    assert deep > 100
+
+    evals = []
+    monkeypatch.setattr(scheduler_module.mx, "eval", lambda value: evals.append(value))
+
+    assert scheduler._materialize_active_recurrent_cache() == 0
+    assert evals == []
+    # The output chain is untouched — dense lanes never realize it per step.
+    assert _chain_length(batch._next_tokens) == deep
+
+
+def test_barrier_tolerates_missing_output_surface(monkeypatch):
+    """Hot-path safety: the output-chain passthrough must not raise when the
+    batch lacks the per-step output attributes (older mlx-lm surfaces) or holds
+    None placeholders — and it must never suppress the cache-state eval."""
+    layer = _Layer(trimmable=False)
+    batch = _NoOutputBatch([layer])
+    generator = _GeneratorNoOut(batch)
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = generator
+
+    evals = []
+    monkeypatch.setattr(scheduler_module.mx, "eval", lambda value: evals.append(value))
+
+    assert scheduler._materialize_active_recurrent_cache() == 1
+    assert evals == [[[layer.head]]]  # cache-state barrier still fired
+
+
+class _NoOutputBatch:
+    def __init__(self, cache):
+        self.prompt_cache = cache
+        # Deliberately NO _next_tokens / _next_logprobs / _token_context.
+
+
+class _GeneratorNoOut:
+    def __init__(self, batch):
+        self._generation_batch = batch

@@ -9220,7 +9220,68 @@ class Scheduler:
         if not states:
             return 0
         mx.eval(states)
+        # Issue #2834/#2836: realizing ``layer.state`` bounds the *cache-state*
+        # lazy graph, but the per-step decode OUTPUT chain is a separate graph
+        # surface. ``mlx_lm generate._step`` schedules ``self._next_tokens``,
+        # ``self._next_logprobs`` and the logits-processor ``token_context``
+        # via ``mx.async_eval`` but does not detach them from the prior step —
+        # on a recurrent/hybrid lane the forward pass re-invokes those async
+        # nodes each step, so the output chain can grow unboundedly and hit
+        # Metal's 499000-handle ceiling even though ``layer.state`` stays
+        # bounded (the #1834 math caps cache-state alone at ~71 units, ~150x
+        # below the ceiling). Realize the output chain on the SAME depth
+        # interval below (same barrier cadence, same host sync) so it cannot
+        # grow. Dense lanes already returned at ``if not states`` above, so
+        # this dense no-sync guarantee is untouched.
+        self._materialize_recurrent_output_chain(generation_batch)
         return len(states)
+
+    def _materialize_recurrent_output_chain(self, generation_batch) -> int:
+        """Realize the per-step decode output chain on a recurrent lane.
+
+        Mirrors the cache-state barrier for the OTHER half of the lazy graph
+        that #1834 did not cover: the tensors ``mlx_lm generate._step`` hands
+        to ``mx.async_eval(self._next_tokens, self._next_logprobs,
+        token_context)``. On dense batches every layer is trimmable, so the
+        caller never reaches here — this realizes no per-token host sync on a
+        dense lane.
+
+        Everything below is guarded: the attribute surface varies across mlx-lm
+        patch levels and this runs on the engine hot path, so any shape the
+        batch exposes must be tolerated. Failures here are isolated (the caller
+        already computed the cache state) so a passthrough defect cannot
+        silently disable the cache-state barrier.
+        """
+        try:
+            # ``_next_tokens`` is a single batch array (or None pre-sampling).
+            next_tokens = getattr(generation_batch, "_next_tokens", None)
+            outputs: list = []
+            if next_tokens is not None:
+                outputs.append(next_tokens)
+            # ``_next_logprobs`` is a list of per-row arrays.
+            next_logprobs = getattr(generation_batch, "_next_logprobs", None)
+            if isinstance(next_logprobs, (list, tuple)):
+                outputs.extend(lp for lp in next_logprobs if lp is not None)
+            elif next_logprobs is not None:
+                outputs.append(next_logprobs)
+            # ``_token_context`` is a list of TokenBuffer objects whose lazily
+            # grown buffer is the per-step ``token_context`` async_eval lives
+            # on. Realize each buffer slice so the concat chain detaches.
+            for tc in getattr(generation_batch, "_token_context", None) or []:
+                tok = getattr(tc, "tokens", None)
+                if tok is not None:
+                    outputs.append(tok)
+            if not outputs:
+                return 0
+            mx.eval(outputs)
+            return len(outputs)
+        except Exception:
+            logger.exception(
+                "[recurrent-output-chain] passthrough failed; the cache-state "
+                "barrier already realized this step's state so the graph "
+                "remains bounded this interval"
+            )
+            return 0
 
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by ID."""
