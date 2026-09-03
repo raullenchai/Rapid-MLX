@@ -10418,8 +10418,8 @@ Examples:
         description=(
             "Start a local OpenAI-compatible inference server.\n"
             "\n"
-            "  rapid-mlx serve <model> [--port N]\n"
-            "    <model>    a short alias (rapid-mlx models) or HF repo\n"
+            "  rapid-mlx serve qwen3.5-4b-4bit\n"
+            "    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n"
             "    --port     bind port (default 8000)\n"
             "    --host     bind host (default 127.0.0.1, loopback-only)\n"
             "    --api-key  require a bearer token on every request\n"
@@ -10430,7 +10430,7 @@ Examples:
             "serve from\n"
             "that base URL. Most options below are advanced tuning; the "
             "common journey\n"
-            "needs only <model> and --port."
+            "needs only a model (--port/--host default to local use)."
         ),
         epilog=(
             "First-time tips:\n"

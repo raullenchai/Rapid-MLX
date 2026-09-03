@@ -59,11 +59,34 @@ def _epilog(serve_help: str) -> str:
 def test_serve_help_leads_with_a_command_line(serve_help):
     """#2354: the help must open with a copyable serve command — in the
     description block ahead of the options section, not merely present
-    somewhere in the 500-line dump."""
+    somewhere in the 500-line dump.
+
+    codex r5/r6/r7: the leading command must be genuinely RUNNABLE when a
+    new user pastes it — a concrete real model name, no shell metacharacters
+    (``<model>`` would read as input redirection, ``[--port N]`` as a glob).
+    The ``<model>`` placeholder is still explained on the legend line below,
+    so the template intent is preserved without polluting the copyable line.
+    """
     intro = _intro(serve_help)
-    assert "rapid-mlx serve <model>" in intro
-    # The command line must precede the options section, not follow it.
-    assert serve_help.index("rapid-mlx serve <model>") < serve_help.index("options:")
+    # The copyable command is the indented '  rapid-mlx serve ...' line.
+    cmd = next(
+        ln.strip() for ln in intro.splitlines() if ln.startswith("  rapid-mlx serve")
+    )
+    for metachar in ("<", ">", "["):
+        assert metachar not in cmd, (
+            f"copyable command must not contain {metachar!r}: {cmd!r}"
+        )
+    assert cmd.startswith("rapid-mlx serve ")
+    model = cmd[len("rapid-mlx serve ") :].strip()
+    # Concrete real alias (not a placeholder token).
+    assert model, "command line must name a model"
+    assert not any(ch in model for ch in "<[]>"), (
+        f"model arg must be concrete: {model!r}"
+    )
+    # The placeholder is still documented in the legend.
+    assert "<model>" in intro
+    # The command must precede the options section, not follow it.
+    assert serve_help.index(cmd) < serve_help.index("options:")
 
 
 def test_serve_help_shows_the_essential_options(serve_help):
@@ -80,6 +103,9 @@ def test_serve_help_shows_the_essential_options(serve_help):
     ):
         assert flag in intro
         assert phrase in intro, f"intro must explain {flag} in plain terms: {phrase!r}"
+    # codex r7 nit: --port is optional (default 8000); the intro must not
+    # imply a first server needs to pass it (or --host) explicitly.
+    assert "default" in intro
 
 
 def test_serve_help_points_to_discovery_commands(serve_help):
