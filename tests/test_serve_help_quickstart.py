@@ -66,6 +66,11 @@ def test_serve_help_leads_with_a_command_line(serve_help):
     (``<model>`` would read as input redirection, ``[--port N]`` as a glob).
     The ``<model>`` placeholder is still explained on the legend line below,
     so the template intent is preserved without polluting the copyable line.
+
+    codex r8 BLOCKING: 'concrete' must mean more than 'no metacharacters' —
+    the named model has to actually exist in the alias catalog, or an
+    invalid placeholder like ``not-a-real-model`` would pass. Resolve the
+    extracted model through ``list_profiles()``.
     """
     intro = _intro(serve_help)
     # The copyable command is the indented '  rapid-mlx serve ...' line.
@@ -78,10 +83,16 @@ def test_serve_help_leads_with_a_command_line(serve_help):
         )
     assert cmd.startswith("rapid-mlx serve ")
     model = cmd[len("rapid-mlx serve ") :].strip()
-    # Concrete real alias (not a placeholder token).
+    # Concrete real alias (not a placeholder token) *and* present in the
+    # actual catalog, so a removed or invented model fails (codex r8).
     assert model, "command line must name a model"
     assert not any(ch in model for ch in "<[]>"), (
         f"model arg must be concrete: {model!r}"
+    )
+    from vllm_mlx.model_aliases import list_profiles
+
+    assert model in list_profiles(), (
+        f"help example model {model!r} is not a served alias"
     )
     # The placeholder is still documented in the legend.
     assert "<model>" in intro
