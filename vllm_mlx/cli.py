@@ -6681,6 +6681,25 @@ def models_command(args):
     from vllm_mlx.model_aliases import list_profiles
     from vllm_mlx.model_sizes import format_size
 
+    search_display = (getattr(args, "search", None) or "").strip()
+    search_term = search_display.casefold()
+    search_active = bool(search_term)
+    modality = getattr(args, "modality", None)
+
+    # The narrowing contract currently targets the human available-models
+    # catalog.  Do not silently accept the flags on the cached or stable JSON
+    # surfaces and then return an unfiltered payload: that looks successful to
+    # scripts while doing the opposite of what the caller requested.
+    if (search_active or modality) and (
+        getattr(args, "json", False) or getattr(args, "cached", False)
+    ):
+        print(
+            "rapid-mlx models: --search/--modality cannot be combined with "
+            "--json or --cached",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     # JSON mode emits ONLY the payload on stdout — no staleness banner, no
     # table — so a caller can pipe it straight into a parser.
     if getattr(args, "json", False):
@@ -6736,13 +6755,9 @@ def models_command(args):
     # search is requested the OTHER sections are suppressed so the terminal
     # settles on exactly the requested slice. The default (no flags) keeps
     # the full catalog + the existing recommendation pointer.
-    search_term = (getattr(args, "search", None) or "").strip().casefold()
-    search_active = bool(search_term)
     # The title shows the stripped original (user-facing case preserved) so
     # ``--search " qwen "`` doesn't claim it matched the literal ``' qwen '``
     # while actually matching ``qwen`` (codex r6 NIT).
-    search_display = (getattr(args, "search", None) or "").strip()
-    modality = getattr(args, "modality", None)
 
     def _matches_search(alias: str) -> bool:
         return not search_active or search_term in alias.casefold()
@@ -12009,7 +12024,9 @@ Examples:
         default=None,
         help="Case-insensitive substring match against the alias name. "
         "Narrows the 200+-line catalog to rows containing TERM "
-        "(e.g. --search qwen picks only qwen aliases).",
+        "(e.g. --search qwen picks only qwen aliases). Applies to the "
+        "human available-models table; cannot be combined with --json or "
+        "--cached.",
     )
     models_parser.add_argument(
         "--modality",
@@ -12017,7 +12034,8 @@ Examples:
         default=None,
         help="Show only models of this modality (text, audio, video-gen, "
         "image-gen). Omit the flag to show the full catalog: the text chat "
-        "table plus every tagged section.",
+        "table plus every tagged section. Applies to the human "
+        "available-models table; cannot be combined with --json or --cached.",
     )
     recipe_parser = subparsers.add_parser(
         "recipe", help="Recommend the smart and fast models for this Mac"

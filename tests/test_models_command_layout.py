@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from vllm_mlx.cli import models_command
 from vllm_mlx.model_aliases import list_profiles
 
@@ -346,3 +348,18 @@ def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
     out = _capture(capsys)
     assert "Available models" in out
     assert "recipe" in out  # discoverability pointer to recommendations
+
+
+@pytest.mark.parametrize("other_flag", ("json", "cached"))
+@pytest.mark.parametrize("filter_flag", ("search", "modality"))
+def test_filters_do_not_silently_noop_on_other_views(
+    capsys, other_flag, filter_flag
+):
+    """Accepted filter syntax must never return an unfiltered alternate view."""
+    args = {"cached": False, "json": False, "search": None, "modality": None}
+    args[other_flag] = True
+    args[filter_flag] = "qwen" if filter_flag == "search" else "text"
+    with pytest.raises(SystemExit) as exc:
+        models_command(SimpleNamespace(**args))
+    assert exc.value.code == 2
+    assert "cannot be combined" in capsys.readouterr().err
