@@ -10434,8 +10434,8 @@ Examples:
         ),
         epilog=(
             "First-time tips:\n"
-            "  `rapid-mlx models` lists what you can serve;\n"
-            "  `rapid-mlx recipe` recommends the best model for this Mac."
+            "  rapid-mlx models  lists what you can serve;\n"
+            "  rapid-mlx recipe  recommends the best model for this Mac."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
