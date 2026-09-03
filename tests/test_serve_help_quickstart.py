@@ -53,7 +53,7 @@ def _intro(serve_help: str) -> str:
 
 def _epilog(serve_help: str) -> str:
     """The tips epilog block, which appears after the options section."""
-    return serve_help[serve_help.rindex("First-time tips:"):]
+    return serve_help[serve_help.rindex("First-time tips:") :]
 
 
 def test_serve_help_leads_with_a_command_line(serve_help):
