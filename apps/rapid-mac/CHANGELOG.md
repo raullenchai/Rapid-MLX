@@ -17,12 +17,47 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.13.4] — 2026-09-02
+
+Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
+adds an experimental end-to-end video workspace, and turns Community
+Benchmark into a private-by-default local workspace with explicit sharing.
+
+### Added
+
+- **Local video generation in Desktop.** An opt-in Video workspace supports
+  LTX 2.5, Wan 2.1, and CogVideoX-Fun with queued jobs, progress, cancellation,
+  restart-safe results, and early memory validation.
+- **Private-by-default Community Benchmark.** CLI and Desktop users can run,
+  inspect, and archive reproducible measurements locally; sharing requires an
+  explicit preview and consent, with duplicate submission protection.
+- **Atomic model discovery and recommendations.** CLI, Server, and Desktop now
+  consume one validated model registry and recommendation policy.
+- Opt-in persistent conversation memory, isolated Mermaid previews, per-model
+  request metrics, and clearer in-app update discovery.
+
 ### Changed
 
 - **Qualified MTP models are fast by default.** Qwen3.5 4B/9B, Qwen3.6 27B,
   and Qwen3.8 27B automatically use their validated continuous speculative
   scheduler in CLI, Server, and Desktop. Desktop shows the active setting and
   keeps a persistent off switch for users who prefer ordinary decoding.
+- Across mixed four-request cohorts, the qualified paths improved aggregate
+  throughput by 14.1%–30.8%. Qwen3.8 27B decode measured 1.43× the 0.13.3
+  ordinary path at 128 tokens of context and 2.34× at 32K.
+- Per-model Metal limits now adapt to available unified memory and failed
+  launches provide actionable fit guidance.
+
+### Fixed
+
+- Singleton MTP retains exclusive scheduler ownership until its request
+  departs, so concurrently arriving plain or tool requests wait instead of
+  aborting both streams with a 503.
+- Quantized-KV and paged-cache requests fail closed on unsupported layouts;
+  paged prefix reuse now rolls back ownership cleanly after reconstruction
+  failures.
+- Model-download, GUI attachment, update, video-job, and MTP lifecycle failures
+  have more bounded cleanup and clearer recovery behavior.
 
 ## [0.13.3] — 2026-08-31
 
@@ -3662,7 +3697,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...HEAD
+[0.13.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...rapid-mac-v0.13.4
 [0.13.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...rapid-mac-v0.13.3
 [0.13.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2-rc1...rapid-mac-v0.13.2
 [0.13.2-rc1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.1...rapid-mac-v0.13.2-rc1
