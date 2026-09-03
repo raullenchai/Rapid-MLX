@@ -173,6 +173,32 @@ def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     assert "bf16" in combined
 
 
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--kv-cache-dtype", "int8"],
+        ["--kv-cache-quantization", "--kv-cache-quantization-bits", "8"],
+    ],
+)
+def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
+    tmp_path, flags, capsys
+):
+    """Exercise the in-process CLI exception mapping as well as subprocess E2E."""
+    from vllm_mlx import cli
+
+    model_dir = tmp_path / "gemma4-config-only"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
+    args = cli.build_parser().parse_args(["serve", str(model_dir), "--no-mllm", *flags])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(args)
+
+    assert exc_info.value.code == 2
+    assert "cannot be honored" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # MLLM-lane admission (pre-ready)
 # ---------------------------------------------------------------------------
@@ -283,6 +309,20 @@ def test_live_cache_probe_accepts_plain_kvcache():
     assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
 
 
+@pytest.mark.requires_mlx
+def test_live_cache_probe_treats_empty_cache_list_as_unprobeable():
+    from vllm_mlx.scheduler import Scheduler
+
+    class _EmptyModel:
+        def make_cache(self):
+            return []
+
+    assert (
+        Scheduler._quantized_live_cache_incompatibility(_EmptyModel())
+        == Scheduler._KV_CACHE_UNPROBEABLE
+    )
+
+
 @pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
 def test_explicit_request_fails_closed_on_incompatible_cache():
     """Rotating cache + explicit request: engine start raises pre-ready."""
@@ -321,6 +361,47 @@ def test_auto_request_disables_quantization_on_incompatible_cache(caplog):
     with caplog.at_level(logging.WARNING):
         sched._init_kv_quantization(_FakeModel())
     assert sched._kv_quant_live_disabled is True
+
+
+@pytest.mark.requires_mlx
+def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, capsys):
+    """A late structural rejection keeps the same actionable CLI contract."""
+    from vllm_mlx import cli, server
+
+    model_dir = tmp_path / "supported-config"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(SUPPORTED_CONFIG))
+    args = cli.build_parser().parse_args(
+        ["serve", str(model_dir), "--no-mllm", "--kv-cache-dtype", "int8"]
+    )
+    error = KVCacheQuantizationUnsupportedError(
+        requested="int8",
+        model_name="probe-model",
+        family_reason="the live cache layout could not be probed",
+    )
+    monkeypatch.setattr(
+        cli,
+        "_gather_kv_cache_dtype_inputs",
+        lambda model: (SUPPORTED_CONFIG, None),
+    )
+    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server, "configure_model_residency", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        server, "load_model", lambda *args, **kwargs: (_ for _ in ()).throw(error)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(args)
+
+    assert exc_info.value.code == 2
+    output = capsys.readouterr().out
+    assert "--kv-cache-dtype int8 cannot be honored" in output
+    assert "live cache layout could not be probed" in output
 
 
 # ---------------------------------------------------------------------------
