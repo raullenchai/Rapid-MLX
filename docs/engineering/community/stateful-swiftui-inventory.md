@@ -29,10 +29,11 @@ still be needed for presentation boundaries.
 - **Sources:** [`AudioView.swift`](../../../apps/rapid-mac/Sources/Rapid/UI/AudioView.swift),
   [`DictationView.swift`](../../../apps/rapid-mac/Sources/Rapid/UI/DictationView.swift),
   and [`DictationController.swift`](../../../apps/rapid-mac/Sources/Rapid/Dictation/DictationController.swift).
-- **View-owned concern:** readiness actions, model-load tasks, in-flight model
-  aliases, download-status reactions, voice-preview task identity/cancellation,
-  and the handoff from download to warmup remain coordinated across view
-  callbacks.
+- **View-owned concern:** readiness state precedence and stale model events now
+  live in the shared `AudioReadinessState` reducer. Readiness actions,
+  model-load effects, download-status reactions, voice-preview task
+  identity/cancellation, and the handoff from download to warmup remain
+  coordinated across view callbacks.
 - **Impact/evidence:** Silent first-use download and premature hotkey arming
   escaped to dogfood; see the
   [regression ledger](escaped-gui-regressions.md#dictations-first-use-silently-downloaded-a-model--pr-2188)

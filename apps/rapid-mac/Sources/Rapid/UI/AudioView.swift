@@ -41,40 +41,53 @@ struct AudioView: View {
         viewModel.audioModels.first { $0.alias == selectedAlias }
     }
 
+    /// One reducer owns precedence between catalog, pull, load, lane-ready and
+    /// active-operation facts. Both Audio tabs use the same lifecycle as the
+    /// Dictation setup surface, including stale-alias rejection.
+    private var audioReadinessState: AudioReadinessState {
+        let readyAlias: String? = if server.voiceCoLoadsOnPrimary,
+                                    selectedEntry?.cached == true,
+                                    !selectedAlias.isEmpty {
+            selectedAlias
+        } else if case .ready = server.readinessState(for: selectedAlias) {
+            selectedAlias
+        } else {
+            nil
+        }
+        let activity: AudioReadinessState.Activity? = if viewModel.isSynthesizing {
+            .synthesizing
+        } else if viewModel.isLoadingVoices {
+            .loadingVoices
+        } else if viewModel.previewingVoice != nil {
+            .previewingVoice
+        } else {
+            nil
+        }
+        let isLoading = modelLoadsInFlight.contains(selectedAlias)
+            || server.isResidentLoadInFlight(selectedAlias)
+
+        return .resolve(.init(
+            alias: selectedAlias,
+            catalogLoaded: viewModel.catalogLoaded,
+            cached: selectedEntry?.cached,
+            sizeText: selectedEntry?.sizeOnDisk,
+            download: AudioReadinessState.downloadSnapshot(
+                alias: selectedAlias,
+                job: downloads.job(for: selectedAlias)
+            ),
+            loading: isLoading ? .init(
+                alias: selectedAlias,
+                detail: "Downloading or loading the audio model…"
+            ) : nil,
+            readyAlias: readyAlias,
+            activity: activity.map { .init(alias: selectedAlias, activity: $0) }
+        ))
+    }
+
     /// Audio uses the same lifecycle SSOT and CTA semantics as Chat and
-    /// Images: choose → Download & start / Start → ready.
+    /// Images: choose → Download / Start → ready.
     private var readiness: ModelReadiness {
-        // Voice co-loading: once the app is serving ANY model on the primary
-        // server, speech is available in the same process — the chosen STT/TTS
-        // engine lazy-loads on the mounted ``/v1/audio/*`` lane whenever an
-        // audio request arrives (the desktop passes ``--enable-audio`` on every
-        // spawn). So with a primary model up AND the voice weights on disk,
-        // the selected audio model is effectively ready without ever replacing
-        // the chat LLM/VLM. When the voice weights aren't cached yet, fall
-        // through so the download/start CTA still appears.
-        if server.voiceCoLoadsOnPrimary,
-           viewModel.audioModels.first(where: { $0.alias == selectedAlias })?.cached == true,
-           !selectedAlias.isEmpty {
-            return .ready(alias: selectedAlias)
-        }
-        // Audio-only `serve` processes intentionally report healthy before
-        // loading their lazy STT/TTS engine. For an uncached model that
-        // process-level signal is not readiness: the first audio request would
-        // still begin the weight download. The explicit DownloadManager job is
-        // authoritative until the catalog confirms the weights are on disk.
-        if let selectedEntry,
-           let downloadReadiness = Self.audioDownloadReadiness(
-               alias: selectedAlias,
-               cached: selectedEntry.cached,
-               sizeText: selectedEntry.sizeOnDisk,
-               job: downloads.job(for: selectedAlias),
-               activationInFlight: modelLoadsInFlight.contains(selectedAlias)
-           ) {
-            return downloadReadiness
-        }
-        if server.isResidentLoadInFlight(selectedAlias) {
-            return .starting(alias: selectedAlias, detail: "Downloading or loading the audio model…")
-        }
+        if let override = audioReadinessState.modelReadinessOverride { return override }
         let cacheState: ModelReadiness.CacheState
         if selectedAlias.isEmpty || !viewModel.catalogLoaded {
             cacheState = .catalogPending
@@ -101,39 +114,6 @@ struct AudioView: View {
             },
             downloadInFlight: downloads.isDownloading(selectedAlias)
         )
-    }
-
-    @MainActor
-    static func audioDownloadReadiness(
-        alias: String,
-        cached: Bool,
-        sizeText: String?,
-        job: DownloadManager.Job?,
-        activationInFlight: Bool
-    ) -> ModelReadiness? {
-        guard !alias.isEmpty, !cached else { return nil }
-        if let job {
-            switch job.status {
-            case .running:
-                return .downloading(
-                    alias: alias,
-                    detail: job.progress.progressSubtitle,
-                    fraction: job.progress.progressFraction
-                )
-            case .failed(let message):
-                return .failed(alias: alias, message: message, action: .retry(alias: alias))
-            case .completed:
-                if activationInFlight {
-                    return .starting(alias: alias, detail: "Finishing the download…")
-                }
-            case .cancelled:
-                break
-            }
-        }
-        if activationInFlight {
-            return .downloading(alias: alias, detail: "Starting the download…", fraction: nil)
-        }
-        return .needsDownload(alias: alias, sizeText: sizeText)
     }
 
     var body: some View {
