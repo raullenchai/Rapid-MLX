@@ -1380,6 +1380,38 @@ def _install_mtp_vendored(
     # the uid must keep failing closed until removal or verified uid reuse.
     _terminal_uids: dict[int, str | None] = {}
 
+    # mlx-lm's BatchGenerator generates first and admits new prompt work in
+    # the same ``next()`` call.  Once this vendored verifier has emitted for a
+    # singleton, its request-local cache/token transaction owns the persistent
+    # GenerationBatch exclusively; extending that batch before the owner
+    # departs makes a plain handoff impossible without duplicating output.
+    #
+    # Use BatchGenerator's existing completion-capacity admission boundary as
+    # the lock instead of maintaining a second queue.  ``_mtp_step`` lowers
+    # the capacity while it is still on the generate-first half of the cycle,
+    # so mlx-lm's immediately-following capacity check leaves new prompts in
+    # its authoritative FIFO.  Normal finish/cancellation restores the exact
+    # configured capacity before the next admission cycle.
+    _nominal_completion_batch_size = getattr(batch_gen, "completion_batch_size", None)
+    _admission_owner_uid: int | None = None
+
+    def _lock_singleton_admission(uid: int) -> None:
+        nonlocal _admission_owner_uid
+        if _nominal_completion_batch_size is None:
+            return
+        _admission_owner_uid = uid
+        batch_gen.completion_batch_size = 1
+        batch_gen._mtp_vendored_admission_owner = uid
+
+    def _release_singleton_admission(uid: int) -> None:
+        nonlocal _admission_owner_uid
+        if _admission_owner_uid != uid:
+            return
+        if _nominal_completion_batch_size is not None:
+            batch_gen.completion_batch_size = _nominal_completion_batch_size
+        _admission_owner_uid = None
+        batch_gen._mtp_vendored_admission_owner = None
+
     _stats = {
         "vendored_steps": 0,
         "fallthrough_steps": 0,
@@ -1451,6 +1483,7 @@ def _install_mtp_vendored(
         boundary: no generator, marker, or log-once key may retain the request.
         """
         _cleanup_uid(uid)
+        _release_singleton_admission(uid)
         _disabled_uids.pop(uid, None)
         _terminal_uids.pop(uid, None)
         # Materialize the keys before mutating the source set. Passing a
@@ -1702,6 +1735,19 @@ def _install_mtp_vendored(
 
         uid = gb.uids[0]
 
+        # A row cannot replace the speculative owner without passing through
+        # the normal finish/remove boundary that releases both its caches and
+        # admission lock.  Detect an out-of-band filter/replacement before
+        # constructing a generator or mutating token bookkeeping.
+        if _admission_owner_uid not in (None, uid):
+            _stats["invariant_violations"] += 1
+            raise RuntimeError(
+                "[MTP-vendored] conflicting singleton admission owners: "
+                f"active={_admission_owner_uid}, observed={uid}. "
+                "Request removal is required before the generation slot can "
+                "be reassigned."
+            )
+
         if uid in _terminal_uids:
             terminal_req_id = _terminal_uids[uid]
             current_req_id = (
@@ -1825,6 +1871,7 @@ def _install_mtp_vendored(
                 # FIRST-call construction so the new request gets a
                 # fresh MTP path.
                 _cleanup_uid(uid)
+                _release_singleton_admission(uid)
                 state = None
 
         if state is None:
@@ -1994,6 +2041,7 @@ def _install_mtp_vendored(
                 "request_id": _first_call_req_id,
                 "sampling_fingerprint": sampling_options["fingerprint"],
             }
+            _lock_singleton_admission(uid)
             _stats["vendored_steps"] += 1
             # Codex round-I BLOCKING #2 / round-J BLOCKING #2+#3:
             # keep ``gb._next_tokens`` / ``gb._next_logprobs`` in a
@@ -2185,6 +2233,7 @@ def _install_mtp_vendored(
     gb._mtp_vendored_state = _state
     gb._mtp_vendored_disabled_uids = _disabled_uids
     gb._mtp_vendored_terminal_uids = _terminal_uids
+    batch_gen._mtp_vendored_admission_owner = None
 
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
