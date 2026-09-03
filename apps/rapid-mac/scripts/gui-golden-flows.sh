@@ -3646,9 +3646,28 @@ flow_catalog_integrity() {
     see_main "$OUT/catalog-settings.json"
     press "$OUT/catalog-settings.json" Settings.Category.modelManagement \
         "$OUT/catalog-open-mm.json"
-    see_main "$OUT/catalog-model-management.json"
-    jq -e '.data.walk.complete == true' "$OUT/catalog-model-management.json" >/dev/null \
-        || die "could not completely observe Model Management"
+    # Opening the panel starts its own asynchronous, cross-modality catalog
+    # refresh. The chat picker above is not a completion barrier for that
+    # separate task: on a fast host it can expose the cached chat rows before
+    # the image inventory has joined the snapshot. Wait for the exact largest
+    # managed fixture this flow is about, rather than asserting against a
+    # partially rendered but otherwise complete accessibility tree.
+    local management_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/catalog-model-management.json"
+        if jq -e '.data.walk.complete == true
+                  and any(.data.ui_elements[]?;
+                          .identifier == "Settings.ModelManagement.LargestModel"
+                          and ([.title // "", .value // "", .description // ""]
+                               | join(" ") | contains("fake-image-alias")))' \
+               "$OUT/catalog-model-management.json" >/dev/null; then
+            management_ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    [[ "$management_ready" == 1 ]] \
+        || die "complete cross-modality Model Management inventory was not observed"
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-alias")' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "Model Management inventory was not observed"

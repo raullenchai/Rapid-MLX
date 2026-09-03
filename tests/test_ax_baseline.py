@@ -247,6 +247,71 @@ def test_unrelated_anonymous_scroll_area_after_search_panel_keeps_order_sensitiv
     assert ax_baseline.render(window_a, ()) != ax_baseline.render(window_b, ())
 
 
+def test_update_overlay_order_is_session_independent(ax_baseline):
+    memory = ax_baseline.Node(
+        {"role": "AXUnknown", "description": "Memory normal: 4 GB used out of 16 GB"}
+    )
+    update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    pill = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Footer.DesktopVersionPill"}
+    )
+    host_a = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_a.children = [update, memory, pill]
+    host_b = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_b.children = [memory, update, pill]
+    app_a = ax_baseline.Node({"role": "AXApplication"})
+    app_a.children = [host_a]
+    app_b = ax_baseline.Node({"role": "AXApplication"})
+    app_b.children = [host_b]
+
+    assert ax_baseline.render(app_a, ()) == ax_baseline.render(app_b, ())
+
+
+def test_update_overlay_does_not_hide_unrelated_sibling_reordering(ax_baseline):
+    first = ax_baseline.Node({"role": "AXUnknown", "identifier": "Footer.First"})
+    second = ax_baseline.Node({"role": "AXUnknown", "identifier": "Footer.Second"})
+    update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    pill = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Footer.DesktopVersionPill"}
+    )
+    host_a = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_a.children = [first, update, second, pill]
+    host_b = ax_baseline.Node({"role": "AXGroup", "identifier": "host"})
+    host_b.children = [second, update, first, pill]
+    app_a = ax_baseline.Node({"role": "AXApplication"})
+    app_a.children = [host_a]
+    app_b = ax_baseline.Node({"role": "AXApplication"})
+    app_b.children = [host_b]
+
+    assert ax_baseline.render(app_a, ()) != ax_baseline.render(app_b, ())
+
+
+@pytest.mark.parametrize("missing", ["update", "pill"])
+def test_update_overlay_requires_unique_pair(ax_baseline, missing):
+    update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    pill = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Footer.DesktopVersionPill"}
+    )
+    children = [update, pill]
+    if missing == "update":
+        children = [pill]
+    else:
+        children = [update]
+
+    assert ax_baseline.normalize_update_overlay_children(children) == children
+
+
+def test_duplicate_update_overlay_is_not_normalized(ax_baseline):
+    first_update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    second_update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    pill = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Footer.DesktopVersionPill"}
+    )
+    children = [first_update, pill, second_update]
+
+    assert ax_baseline.normalize_update_overlay_children(children) == children
+
+
 def test_scrollbar_subtree_is_ignored_but_scroll_area_remains(ax_baseline):
     area = ax_baseline.Node({"role": "AXScrollArea", "identifier": "Results"})
     bar = ax_baseline.Node({"role": "AXScrollBar", "value": 0.5})
