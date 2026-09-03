@@ -70,7 +70,7 @@ class TestRosterOnlyEnrollment:
         roster must NOT be [BLOCKING] — it's the expected shape of a
         'I added a test' contribution."""
         ctx = ctx_factory(
-            [".github/workflows/ci.yml"],
+            [".github/workflows/ci.yml", "tests/test_new_lane_contract.py"],
             ROSTER_ONLY_DIFF,
             external=True,
         )
@@ -87,7 +87,7 @@ class TestRosterOnlyEnrollment:
         (e.g. an unpinned action) must remain [BLOCKING] for an external
         author."""
         ctx = ctx_factory(
-            [".github/workflows/ci.yml"],
+            [".github/workflows/ci.yml", "tests/test_new_lane_contract.py"],
             MIXED_DIFF,
             external=True,
         )
@@ -107,8 +107,56 @@ diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 +            - uses: actions/checkout@main
 """
         ctx = ctx_factory(
-            [".github/workflows/ci.yml"],
+            [".github/workflows/ci.yml", "tests/test_new_lane_contract.py"],
             diff,
+            external=True,
+        )
+        result = _run(ctx)
+        assert result.status == "fail", result.summary
+        assert any("[BLOCKING]" in f for f in result.findings)
+
+    @pytest.mark.parametrize(
+        "unsafe_path",
+        (
+            "tests/../payload.py",
+            "tests/test_ok.py;curl.py",
+            "tests/$(payload).py",
+            "tests/'payload'.py",
+        ),
+    )
+    def test_shell_or_traversal_path_stays_blocking(self, ctx_factory, unsafe_path):
+        """A roster-looking line must not become a shell-injection bypass."""
+        diff = ROSTER_ONLY_DIFF.replace(
+            "tests/test_new_lane_contract.py", unsafe_path
+        )
+        ctx = ctx_factory(
+            [".github/workflows/ci.yml", unsafe_path],
+            diff,
+            external=True,
+        )
+        result = _run(ctx)
+        assert result.status == "fail", result.summary
+        assert any("[BLOCKING]" in f for f in result.findings)
+
+    def test_roster_path_not_added_by_pr_stays_blocking(self, ctx_factory):
+        """The exception applies to a contributed test, not an arbitrary line."""
+        ctx = ctx_factory(
+            [".github/workflows/ci.yml"],
+            ROSTER_ONLY_DIFF,
+            external=True,
+        )
+        result = _run(ctx)
+        assert result.status == "fail", result.summary
+        assert any("[BLOCKING]" in f for f in result.findings)
+
+    def test_other_workflow_roster_lookalike_stays_blocking(self, ctx_factory):
+        """Only the explicit ci.yml roster is eligible for the exception."""
+        other = ROSTER_ONLY_DIFF.replace(
+            ".github/workflows/ci.yml", ".github/workflows/release.yml"
+        )
+        ctx = ctx_factory(
+            [".github/workflows/release.yml", "tests/test_new_lane_contract.py"],
+            other,
             external=True,
         )
         result = _run(ctx)

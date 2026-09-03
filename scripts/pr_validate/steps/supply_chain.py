@@ -72,9 +72,23 @@ def _is_hook_file(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in HOOK_PATHS)
 
 
-# A roster-enrollment line in a CI workflow file: `tests/<name>.py \` — the
-# exact shape the explicit test roster asks a contributor to add (issue #2522).
-_ROSTER_LINE = re.compile(r"^\s*tests/[^\s\\]+\.py\s+\\?\s*$")
+# A roster-enrollment line in the explicit CI test command.  Keep the path
+# grammar deliberately narrower than a shell token: allowing characters such
+# as ``$()``, quotes, ``;`` or ``..`` here would turn the exception itself into
+# a workflow-code injection bypass.
+_ROSTER_LINE = re.compile(
+    r"^(?P<indent>\s+)(?P<path>tests/[A-Za-z0-9_./-]+\.py)\s+\\?\s*$"
+)
+
+
+def _safe_roster_path(line: str, files_changed: set[str]) -> bool:
+    """Return whether *line* names a test file added by this PR."""
+    match = _ROSTER_LINE.fullmatch(line)
+    if match is None:
+        return False
+    path = match.group("path")
+    parts = Path(path).parts
+    return ".." not in parts and path in files_changed
 
 
 def _roster_only_workflow_files(files_changed: list[str], diff: str) -> set[str]:
@@ -89,7 +103,9 @@ def _roster_only_workflow_files(files_changed: list[str], diff: str) -> set[str]
     else (removed lines, non-roster edits) is NOT roster-only and stays
     BLOCKING (issue #2522)."""
     workflow_files = {f for f in files_changed if f.startswith(".github/workflows/")}
-    if not workflow_files:
+    # The exception is for this repository's one explicit Python test roster,
+    # not for arbitrary workflow files containing a roster-looking shell line.
+    if workflow_files != {".github/workflows/ci.yml"}:
         return set()
 
     # Accumulate the *content* lines (with +/-/space marker) per workflow file.
@@ -118,7 +134,8 @@ def _roster_only_workflow_files(files_changed: list[str], diff: str) -> set[str]
         # A pure append has NO removed lines; context lines are unchanged
         # neighboring list entries (the wrapper is safe). So roster-only ==
         # not removing anything AND every added line is a roster enrollment.
-        if all(_ROSTER_LINE.match(ln[1:]) for ln in added):
+        changed = set(files_changed)
+        if all(_safe_roster_path(ln[1:], changed) for ln in added):
             roster_only.add(path)
     return roster_only
 
@@ -225,7 +242,8 @@ class SupplyChainStep(Step):
                 added = [
                     ln[1:]
                     for ln in diff.splitlines()
-                    if ln.startswith("+") and _ROSTER_LINE.match(ln[1:])
+                    if ln.startswith("+")
+                    and _safe_roster_path(ln[1:], set(ctx.files_changed))
                 ]
                 detail = " Roster-only test enrollment: " + ", ".join(
                     f"`{a.strip()}`" for a in added
