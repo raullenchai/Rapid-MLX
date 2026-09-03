@@ -182,7 +182,7 @@ def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
     ],
 )
 def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
-    tmp_path, flags, capsys
+    tmp_path, flags, capsys, monkeypatch
 ):
     """Exercise the in-process CLI exception mapping as well as subprocess E2E."""
     from vllm_mlx import cli
@@ -191,6 +191,18 @@ def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps(GEMMA4_UNIFIED_CONFIG))
     args = cli.build_parser().parse_args(["serve", str(model_dir), "--no-mllm", *flags])
+
+    # ``serve_command`` installs middleware before loading the model. Keep this
+    # in-process exception-mapping test independent of the process-global
+    # Starlette app, which may already have served requests in the full suite.
+    from vllm_mlx import server
+    from vllm_mlx.middleware import request_logging
+
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
+    monkeypatch.setattr(
+        request_logging, "install_request_logging_middleware", lambda *_: None
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         cli.serve_command(args)
@@ -390,6 +402,13 @@ def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         server, "configure_model_residency", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
+    from vllm_mlx.middleware import request_logging
+
+    monkeypatch.setattr(
+        request_logging, "install_request_logging_middleware", lambda *_: None
     )
     monkeypatch.setattr(
         server, "load_model", lambda *args, **kwargs: (_ for _ in ()).throw(error)
