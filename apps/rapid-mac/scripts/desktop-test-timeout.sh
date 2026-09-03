@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Desktop test-suite hang backstop.
 #
-# Wraps `swift test --no-parallel` so a hung suite can never burn the whole
-# job timeout (20 minutes, once 45) with no diagnostic. Two complementary
+# Wraps `swift test` so a hung suite can never burn the whole job timeout
+# (20 minutes, once 45) with no diagnostic. Two complementary
 # mechanisms (see #2488):
 #
 #   1. Per-suite `.timeLimit(.minutes(2))` (TestTimeouts.hangProne) applied to
@@ -47,7 +47,13 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 # --- Launch `swift test` in the background, remember its PID ---------------
-swift test --no-parallel &
+# Serial remains the safe default for local callers. CI can opt into the
+# parallel runner after validating that the async subprocess guard is present.
+if [[ "${RAPID_DESKTOP_TEST_PARALLEL:-0}" == "1" ]]; then
+    swift test &
+else
+    swift test --no-parallel &
+fi
 TEST_PID=$!
 
 # --- Watchdog: fail fast if the run outlives the deadline while still alive --

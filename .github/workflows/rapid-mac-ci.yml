@@ -243,6 +243,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Preserve SwiftPM's dependency checkouts and compiler outputs between
+      # ephemeral VMs. The SHA suffix makes every successful revision an
+      # immutable cache; restore-keys lets the next revision incrementally
+      # rebuild from the most recent compatible Package.swift/toolchain state.
+      # GitHub scopes pull-request caches to the PR merge ref, preventing an
+      # untrusted PR from poisoning main's cache.
+      - name: Restore SwiftPM build cache
+        id: swiftpm-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: apps/rapid-mac/.build
+          key: rapid-mac-spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode-16.4-${{ hashFiles('apps/rapid-mac/Package.swift') }}-${{ github.sha }}
+          restore-keys: |
+            rapid-mac-spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode-16.4-${{ hashFiles('apps/rapid-mac/Package.swift') }}-
+
       - name: swift build
         run: swift build
 
@@ -250,24 +265,27 @@ jobs:
       # excluded, so nothing compiled or ran ~3,100 test functions — which is
       # how a starter model that degenerates on an ordinary chat question
       # shipped for months while tests pinning that exact alias sat dormant.
-      # --no-parallel is load-bearing, not a preference. swift-testing
-      # parallelises across a cooperative pool sized to the core count, and
-      # several suites here call `proc.waitUntilExit()` — a synchronous
-      # blocking wait. On this 12-core dev machine there is enough slack to
-      # absorb that; on a GitHub runner there is not, and the pool starves:
-      # the first attempt logged 1,416 tests started, ZERO finished, and sat
-      # there until the job timed out, leaving orphan `head` / `swiftpm-testing`
-      # processes behind. Serialised it is 15s vs 4s locally — cheap insurance.
-      #
-      # The real fix is to stop blocking threads inside async tests; until
-      # then, do not drop this flag.
+      # The suite used to require --no-parallel because synchronous Process
+      # waits could starve Swift's cooperative pool on small runners. Those
+      # waits now go through bounded TestSubprocess native threads, and a source
+      # guard rejects regressions. Exercise the parallel path on Manzanita;
+      # the existing per-suite and whole-run watchdogs remain active.
       #
       # #2488: wrapped by scripts/desktop-test-timeout.sh so a hung suite
       # (per-suite .timeLimit(.minutes(2)) on the hang-prone suites) or a hung
       # whole run (per-run deadline + /usr/bin/sample + ps + vm_stat artifact)
       # fails fast with a readable reason instead of burning the job timeout.
       - name: swift test
+        env:
+          RAPID_DESKTOP_TEST_PARALLEL: "1"
         run: ./scripts/desktop-test-timeout.sh
+
+      - name: Record SwiftPM cache state
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.swiftpm-cache.outputs.cache-hit }}
+        run: |
+          echo "SwiftPM exact cache hit: ${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
 
       # #2488: upload the hang-sample artifact (stack + system state) so the
       # cause of a hung/failed desktop-test run is inspectable from the CI log
