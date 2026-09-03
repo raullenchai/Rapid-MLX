@@ -302,12 +302,8 @@ def test_update_overlay_requires_unique_pair(ax_baseline, missing):
 
 
 def test_duplicate_update_overlay_is_not_normalized(ax_baseline):
-    first_update = ax_baseline.Node(
-        {"role": "AXGroup", "identifier": "UpdateCard"}
-    )
-    second_update = ax_baseline.Node(
-        {"role": "AXGroup", "identifier": "UpdateCard"}
-    )
+    first_update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
+    second_update = ax_baseline.Node({"role": "AXGroup", "identifier": "UpdateCard"})
     pill = ax_baseline.Node(
         {"role": "AXButton", "identifier": "Footer.DesktopVersionPill"}
     )
