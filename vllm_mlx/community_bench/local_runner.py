@@ -136,7 +136,9 @@ def _validated_image_count(result: dict[str, Any], *, width: int, height: int) -
     return len(data)
 
 
-def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, float]:
+def _probe_video_with_ffmpeg(
+    path: str, ffmpeg: str, *, desktop_bundle: bool = False
+) -> tuple[int, int, int, float]:
     """Probe an MP4 with the small FFmpeg binary shipped by Desktop.
 
     Desktop deliberately omits imageio/OpenCV. Decode and re-encode through its
@@ -145,14 +147,8 @@ def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, flo
     """
 
     try:
-        result = subprocess.run(
+        sink = (
             [
-                ffmpeg,
-                "-hide_banner",
-                "-i",
-                path,
-                "-map",
-                "0:v:0",
                 "-c:v",
                 "h264_videotoolbox",
                 "-movflags",
@@ -160,7 +156,12 @@ def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, flo
                 "-f",
                 "mp4",
                 "pipe:1",
-            ],
+            ]
+            if desktop_bundle
+            else ["-f", "null", "-"]
+        )
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", path, "-map", "0:v:0", *sink],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
@@ -190,9 +191,12 @@ def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
     try:
         import imageio.v2 as imageio
     except ImportError:
-        ffmpeg = os.environ.get("FFMPEG_BINARY") or shutil.which("ffmpeg")
+        bundled_ffmpeg = os.environ.get("FFMPEG_BINARY")
+        ffmpeg = bundled_ffmpeg or shutil.which("ffmpeg")
         if ffmpeg:
-            return _probe_video_with_ffmpeg(path, ffmpeg)
+            return _probe_video_with_ffmpeg(
+                path, ffmpeg, desktop_bundle=bundled_ffmpeg is not None
+            )
         raise RuntimeError("video artifact validation requires rapid-mlx[video]")
 
     try:

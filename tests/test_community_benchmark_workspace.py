@@ -3204,7 +3204,9 @@ def test_bundled_ffmpeg_probe_has_no_second_artifact_and_a_timeout(
 
     monkeypatch.setattr(local_runner.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
-        local_runner._probe_video_with_ffmpeg("clip.mp4", "/app/bin/ffmpeg")
+        local_runner._probe_video_with_ffmpeg(
+            "clip.mp4", "/app/bin/ffmpeg", desktop_bundle=True
+        )
 
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["timeout"] == local_runner._VIDEO_ARTIFACT_PROBE_TIMEOUT_S
@@ -3212,6 +3214,37 @@ def test_bundled_ffmpeg_probe_has_no_second_artifact_and_a_timeout(
     assert isinstance(command, list)
     assert command[command.index("-c:v") + 1] == "h264_videotoolbox"
     assert command[-1] == "pipe:1"
+
+
+def test_system_ffmpeg_probe_uses_portable_null_muxer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr=(
+            "Stream #0:0: Video: h264, yuv420p, 832x480, 24 fps, 24 tbr\n"
+            "frame=   81 fps=0.0 q=-0.0 Lsize=N/A\n"
+        ),
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured["command"] = command
+        return completed
+
+    monkeypatch.setattr(local_runner.subprocess, "run", run)
+    assert local_runner._probe_video_with_ffmpeg("clip.mp4", "/usr/bin/ffmpeg") == (
+        832,
+        480,
+        81,
+        24.0,
+    )
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[-3:] == ["-f", "null", "-"]
+    assert "h264_videotoolbox" not in command
 
 
 def test_probe_video_artifact_returns_worker_payload(
