@@ -283,6 +283,14 @@ def gemma4_family_kind(model_path: str | Path) -> str | None:
     return None
 
 
+def _has_cross_layer_kv_sharing(config: object) -> bool:
+    """Return whether a config declares a positive integer borrower count."""
+    if not isinstance(config, dict):
+        return False
+    shared = config.get("num_kv_shared_layers", 0)
+    return isinstance(shared, int) and not isinstance(shared, bool) and shared > 0
+
+
 def gemma4_load_plan(model_path: str | Path) -> tuple[str | None, bool]:
     """Return ``(family_kind, needs_shared_kv_loader)`` from one config read.
 
@@ -303,12 +311,7 @@ def gemma4_load_plan(model_path: str | Path) -> tuple[str | None, bool]:
     else:
         return None, False
     text_config = config.get("text_config", config)
-    shared = (
-        text_config.get("num_kv_shared_layers", 0)
-        if isinstance(text_config, dict)
-        else 0
-    )
-    return kind, isinstance(shared, int) and not isinstance(shared, bool) and shared > 0
+    return kind, _has_cross_layer_kv_sharing(text_config)
 
 
 class Gemma4TextWrapper(nn.Module):
@@ -410,7 +413,7 @@ def _resolve_gemma4_text_classes(text_config: dict | None = None):
     """Return ``(TextConfig, LanguageModel)`` for the NON-unified ``gemma4``
     arch — upstream ``mlx_vlm.models.gemma4`` when importable, else the
     vendored copy (dataclass-identical, no ``[vision]`` extra needed)."""
-    if isinstance(text_config, dict) and text_config.get("num_kv_shared_layers", 0) > 0:
+    if _has_cross_layer_kv_sharing(text_config):
         from vllm_mlx.models.gemma4_vendored import config as _v_cfg
         from vllm_mlx.models.gemma4_vendored import language as _v_lang
 
@@ -463,7 +466,7 @@ def _resolve_gemma4_unified_text_classes(text_config: dict | None = None):
     vendored copy are unavailable, which cannot happen because the
     vendored copy ships inside the wheel.
     """
-    if isinstance(text_config, dict) and text_config.get("num_kv_shared_layers", 0) > 0:
+    if _has_cross_layer_kv_sharing(text_config):
         from vllm_mlx.models.gemma4_vendored import config as _v_cfg
         from vllm_mlx.models.gemma4_vendored import language as _v_lang
 

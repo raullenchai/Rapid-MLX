@@ -4366,12 +4366,14 @@ class Scheduler:
             layers = getattr(owner, "layers", None)
             if not isinstance(layers, (list, tuple)):
                 continue
+            inspected_attention = False
             for layer in layers:
                 attention = getattr(layer, "self_attn", None)
                 if attention is None:
                     attention = getattr(layer, "attention", None)
                 if attention is None:
                     continue
+                inspected_attention = True
                 if (
                     getattr(attention, "sinks", None) is not None
                     or getattr(attention, "attn_sink", None) is not None
@@ -4380,8 +4382,11 @@ class Scheduler:
                         "attention sinks require a fused quantized-attention "
                         "kernel that is unavailable in this MLX runtime"
                     )
-            # The first concrete decoder stack is authoritative.
-            return None
+            # An outer wrapper may expose an empty or unrelated ``layers``
+            # collection. Only an attention-bearing decoder stack is
+            # authoritative; otherwise keep looking through wrapped owners.
+            if inspected_attention:
+                return None
         return None
 
     @classmethod
@@ -4634,9 +4639,8 @@ class Scheduler:
 
         # ``--kv-cache-dtype int8/int4`` must reach the LIVE continuous-batching
         # KV cache, not just the retained prefix cache (#1197). Swap the
-        # generator's plain ``BatchKVCache`` for a packed
-        # ``QuantizedBatchKVCache`` consumed by fused quantized attention.
-        # TurboQuant has its own path, so this only
+        # generator's plain ``BatchKVCache`` for packed ``QuantizedBatchKVCache``
+        # storage consumed by fused quantized attention. TurboQuant only
         # runs for the plain quantization toggle. The head_dim-compatible group
         # size (and the disable-on-incompatible decision) were resolved once in
         # __init__ so the live and retained caches never diverge.

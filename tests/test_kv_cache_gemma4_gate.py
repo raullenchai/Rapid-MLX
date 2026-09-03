@@ -435,6 +435,22 @@ def test_attention_probe_supports_alternate_attention_attribute_and_empty_layers
     model.model.layers = [_AttentionLayer()]
     assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
 
+    model.model.layers = [SimpleNamespace(self_attn=SimpleNamespace())]
+    assert Scheduler._quantized_attention_incompatibility(model) is None
+
+
+@pytest.mark.requires_mlx
+def test_attention_probe_looks_through_non_decoder_wrapper_layers():
+    from vllm_mlx.scheduler import Scheduler
+
+    sink_layer = SimpleNamespace(self_attn=SimpleNamespace(sinks=object()))
+    model = SimpleNamespace(
+        layers=[],
+        model=SimpleNamespace(layers=[sink_layer]),
+    )
+
+    assert "attention sinks" in Scheduler._quantized_attention_incompatibility(model)
+
 
 @pytest.mark.requires_mlx
 def test_live_cache_probe_rejects_unknown_cache_type():
@@ -483,6 +499,47 @@ def test_live_cache_layout_negative_paths():
     assert Scheduler._quantized_live_cache_layout(_Shared()) is None
     assert Scheduler._quantized_live_cache_layout(_Unknown()) is None
     assert Scheduler._quantized_live_cache_layout(_RotatingOnly()) is None
+
+
+@pytest.mark.requires_mlx
+def test_batch_generator_legacy_constructor_fallback(monkeypatch):
+    """A runtime without the stream keyword still builds the same generator."""
+    import vllm_mlx.scheduler as scheduler_module
+    from vllm_mlx.request import SamplingParams
+
+    calls = []
+    legacy_generator = object()
+
+    def _batch_generator(**kwargs):
+        calls.append(kwargs)
+        if "stream" in kwargs:
+            raise TypeError("unexpected keyword argument 'stream'")
+        return legacy_generator
+
+    monkeypatch.setattr(scheduler_module, "BatchGenerator", _batch_generator)
+    monkeypatch.setattr(scheduler_module, "make_sampler", lambda **_: object())
+
+    scheduler = scheduler_module.Scheduler.__new__(scheduler_module.Scheduler)
+    scheduler.model = object()
+    scheduler.tokenizer = object()
+    scheduler._get_stop_tokens = lambda: set()
+    scheduler.memory_aware_cache = None
+    scheduler.model_config = None
+    scheduler.config = SimpleNamespace(
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefill_step_size=1,
+        spec_decode="none",
+        enable_suffix_decoding=False,
+        kv_cache_quantization=False,
+    )
+
+    result = scheduler._create_batch_generator(SamplingParams(max_tokens=8))
+
+    assert result is legacy_generator
+    assert len(calls) == 2
+    assert "stream" in calls[0]
+    assert "stream" not in calls[1]
 
 
 @pytest.mark.requires_mlx

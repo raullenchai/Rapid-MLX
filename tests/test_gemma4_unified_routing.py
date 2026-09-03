@@ -145,6 +145,17 @@ def test_unified_shared_kv_resolver_forces_metadata_preserving_classes():
     ) == (TextConfig, LanguageModel)
 
 
+@pytest.mark.parametrize("bad_value", [True, "1", 1.5, [1], None])
+def test_shared_kv_resolvers_reject_malformed_counts(bad_value):
+    config = {"num_kv_shared_layers": bad_value}
+
+    nonunified = gemma4_text._resolve_gemma4_text_classes(config)
+    unified = gemma4_text._resolve_gemma4_unified_text_classes(config)
+
+    assert nonunified[0].__module__.startswith("mlx_vlm.models.gemma4")
+    assert unified[0].__module__.startswith("mlx_vlm.models.gemma4_unified")
+
+
 def test_is_gemma4_model_is_family_wide_alias(tmp_path):
     """``is_gemma4_model`` is the back-compat family-wide predicate: it
     tracks ``is_gemma4_family_model`` for every model_type (True for
