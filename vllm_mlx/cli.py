@@ -10539,6 +10539,29 @@ Examples:
     serve_parser = subparsers.add_parser(
         "serve",
         help="Start OpenAI-compatible server",
+        description=(
+            "Start a local OpenAI-compatible inference server.\n"
+            "\n"
+            "  rapid-mlx serve qwen3.5-4b-4bit\n"
+            "    <model>    pick yours: a short alias (rapid-mlx models) or HF repo\n"
+            "    --port     bind port (default 8000)\n"
+            "    --host     bind host (default 127.0.0.1, loopback-only)\n"
+            "    --api-key  require a bearer token on every request\n"
+            "\n"
+            "Once warmed up the server prints its 'Ready:' URL; the "
+            "OpenAI-compatible\n"
+            "endpoints (/v1/models, /v1/chat/completions, /v1/audio/*, ...) "
+            "serve from\n"
+            "that base URL. Most options below are advanced tuning; the "
+            "common journey\n"
+            "needs only a model (--port/--host default to local use)."
+        ),
+        epilog=(
+            "First-time tips:\n"
+            "  rapid-mlx models  lists what you can serve;\n"
+            "  rapid-mlx recipe  recommends the best model for this Mac."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
     serve_parser.add_argument(
