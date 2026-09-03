@@ -73,7 +73,11 @@ struct GitHubStarPromptCard: View {
                 }
                 .padding(.trailing, 28)
 
-                HStack(spacing: RapidTheme.Space.sm) {
+                // Keep the primary action on its own row. Three actions no
+                // longer fit beside the leading icon at the card's 360pt
+                // minimum width, and allowing SwiftUI to compress them turns
+                // every label into an ellipsis.
+                VStack(spacing: RapidTheme.Space.sm) {
                     Button {
                         Task {
                             switch await prompt.attemptDirectStar() {
@@ -100,6 +104,7 @@ struct GitHubStarPromptCard: View {
                                     .font(.system(size: 10, weight: .semibold))
                             }
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(RapidPrimaryButtonStyle(
@@ -114,31 +119,41 @@ struct GitHubStarPromptCard: View {
                     )
                     .accessibilityIdentifier("GitHub.Star.ValueMoment.Open")
 
-                    Button("Later") { prompt.deferPrompt() }
+                    HStack(spacing: RapidTheme.Space.sm) {
+                        Button { prompt.deferPrompt() } label: {
+                            Text("Later")
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
                         .buttonStyle(RapidSecondaryButtonStyle(
+                            expands: true,
                             height: RapidTheme.ControlHeight.medium,
                             font: .system(size: 14, weight: .medium)
                         ))
-                        .frame(width: 84, height: RapidTheme.ControlHeight.medium)
+                        .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
                         .disabled(prompt.isStarring)
                         .accessibilityIdentifier("GitHub.Star.ValueMoment.Later")
 
-                    Menu("Feedback") {
-                        Button("Bug report") {
-                            openURL(GitHubCommunity.feedbackBugReportURL)
+                        Menu {
+                            Button("Bug report") {
+                                openURL(GitHubCommunity.feedbackBugReportURL)
+                            }
+                            .accessibilityIdentifier("GitHub.Star.ValueMoment.BugReport")
+                            Button("Feature request") {
+                                openURL(GitHubCommunity.feedbackFeatureRequestURL)
+                            }
+                            .accessibilityIdentifier("GitHub.Star.ValueMoment.FeatureRequest")
+                        } label: {
+                            Text("Feedback")
+                                .fixedSize(horizontal: true, vertical: false)
                         }
-                        .accessibilityIdentifier("GitHub.Star.ValueMoment.BugReport")
-                        Button("Feature request") {
-                            openURL(GitHubCommunity.feedbackFeatureRequestURL)
-                        }
-                        .accessibilityIdentifier("GitHub.Star.ValueMoment.FeatureRequest")
+                        .buttonStyle(RapidSecondaryButtonStyle(
+                            expands: true,
+                            height: RapidTheme.ControlHeight.medium,
+                            font: .system(size: 14, weight: .medium)
+                        ))
+                        .frame(maxWidth: .infinity, minHeight: RapidTheme.ControlHeight.medium)
+                        .accessibilityIdentifier("GitHub.Star.ValueMoment.Feedback")
                     }
-                    .buttonStyle(RapidSecondaryButtonStyle(
-                        height: RapidTheme.ControlHeight.medium,
-                        font: .system(size: 14, weight: .medium)
-                    ))
-                    .frame(width: 84, height: RapidTheme.ControlHeight.medium)
-                    .accessibilityIdentifier("GitHub.Star.ValueMoment.Feedback")
                 }
             }
 
