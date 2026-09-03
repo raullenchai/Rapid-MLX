@@ -228,10 +228,9 @@ jobs:
   build:
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
-    # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
-    # swift-tools-version and the release workflow's runner. macos-latest still
-    # resolves to macos-14 (Swift 5.x) on GitHub-hosted runners.
-    runs-on: macos-15
+    # Manzanita's pinned image provides macOS Sequoia, Xcode 16.4, and Swift
+    # 6.1.2, matching Package.swift's Swift 6 toolchain requirement.
+    runs-on: manzanita-standard
     # A hung test would otherwise sit on the 6-hour default. The whole
     # job is ~2 min warm; 20 leaves room for a cold package resolve and
     # still fails fast. Learned the hard way: a headless-incompatible
@@ -361,8 +360,8 @@ jobs:
   # macos.sh in actions/runner-images inserts kTCCServiceAccessibility with
   # auth_value 2 (allowed) for /bin/bash and for the agent that parents the
   # runner, and configure-autologin.sh gives the VM a real logged-in Aqua
-  # session so an .app can actually open a window. Both are image properties,
-  # not promises — which is what the preflight step below is for.
+  # session so an .app can actually open a window. Manzanita's golden image
+  # preserves those properties, and the preflight below verifies them.
   gui-golden-flows:
     needs:
       - changes
@@ -370,9 +369,8 @@ jobs:
     if: >-
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true'
-    # macos-15 for the same reason as the build job: Package.swift is
-    # swift-tools-version 6.0, and macos-14 still defaults to Swift 5.x.
-    runs-on: macos-15
+    # Use the same pinned Swift 6 image as the build job.
+    runs-on: manzanita-standard
     strategy:
       # A failure in one product journey must not cancel independent evidence
       # from the other selected groups. The stable desktop-tests facade still
