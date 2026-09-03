@@ -40,6 +40,34 @@ from vllm_mlx.prefix_cache import BlockCacheEntry
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
 
+def _kv_layer_states(num_tokens, layers=1, heads=2, head_dim=4, base=0.0):
+    """Extracted layer-state dicts backed by real mlx-lm KVCache state —
+    the only layout ``store_cache`` accepts (see tests/test_paged_cache.py)."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    states = []
+    for layer in range(layers):
+        cache = KVCache()
+        n = num_tokens * heads * head_dim
+        keys = (
+            mx.arange(n, dtype=mx.float32).reshape(1, heads, num_tokens, head_dim)
+            + base
+            + layer
+        )
+        values = keys + 0.5
+        cache.update_and_fetch(keys, values)
+        states.append(
+            {
+                "state": cache.state,
+                "meta_state": cache.meta_state,
+                "class_name": "KVCache",
+                "class_ref": KVCache,
+            }
+        )
+    return states
+
+
 def _make_scheduler_with_legacy_cache(
     gpu_memory_utilization: float = 0.5,
 ) -> Scheduler:
@@ -648,8 +676,16 @@ class TestBlockAwareCacheEviction:
     (``release_pressure_blocks`` / ``evict_lru_blocks``) starves. Under
     Metal pressure the admission gate then rejects ALL new requests while
     ``active`` stays pinned above cap — a permanent 503 wedge. These tests
-    pin the fix: pressure evicts the LRU prefix-index entry and drops its
-    resident block tensors so active memory falls back under cap.
+    pin the fix: pressure evicts the LRU STORED entry (request-table
+    owner), clearing its private blocks' tensors and releasing its refs.
+
+    Ownership model (#2955 codex round 1): the prefix index holds
+    METADATA only — never a physical block reference. Every live
+    reference belongs to a stored request-table entry or an active
+    fetch-held table, so the index pressure path may prune stale
+    metadata but must never clear or free an allocated block; resident
+    KV on unreferenced (ref_count == 0) free-queue slabs is reclaimed
+    exclusively by ``release_paged_cache_blocks_under_pressure``.
     """
 
     def _make_paged_scheduler(self, gpu_memory_utilization: float = 0.5):
@@ -666,19 +702,25 @@ class TestBlockAwareCacheEviction:
         tokenizer = MagicMock()
         tokenizer.encode = lambda s: list(range(len(s)))
         model = MagicMock()
+        # use_paged_cache triggers the structural capability probe at
+        # Scheduler init (#2955); a plain full-attention factory passes it.
+        from mlx_lm.models.cache import KVCache
+
+        model.make_cache = lambda: [KVCache(), KVCache()]
         return Scheduler(model=model, tokenizer=tokenizer, config=config)
 
-    def test_pressure_evicts_block_aware_entries(self):
-        """Pressure must evict LRU prefix-index entries and drop the
-        resident KV tensors of their blocks (the pre-fix wedge)."""
+    def test_index_pressure_never_touches_allocated_blocks(self):
+        """The index owns metadata, not a physical reference: with no
+        stored request-table entries to drain, sustained pressure must not
+        clear or free ANY allocated block via the index path — a
+        ref_count of 1 here can be an active fetch's sole reference."""
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
         assert bac is not None
         paged = bac.paged_cache
 
-        # Manually populate the prefix index + resident block tensors the
-        # way store_cache does: hash entry -> (tokens, block_ids) with
-        # blocks that carry cache_data (resident Metal memory).
+        # Index entries pointing at allocated blocks (ref_count == 1)
+        # whose reference is held elsewhere (e.g. a fetch-held table).
         blocks = []
         for i in range(4):
             blk = paged.allocate_block()
@@ -695,17 +737,21 @@ class TestBlockAwareCacheEviction:
             ),
         ):
             n = sched.evict_prefix_cache_under_pressure(max_evict=10)
-        # Pressure stays high, so BOTH entries are evicted (max_evict=10
-        # is not the binding constraint; the empty index is). Each entry's
-        # resident block tensors must be dropped.
-        assert n == 2
-        assert "h1" not in bac._prefix_index
-        assert "h2" not in bac._prefix_index
-        assert all(b.cache_data is None for b in blocks)
-        assert sched.num_prefix_cache_pressure_evictions == 2
+        # Entries still own their recorded prefixes (nothing stale), so no
+        # metadata is pruned and — critically — no block is cleared/freed.
+        assert n == 0
+        assert "h1" in bac._prefix_index
+        assert "h2" in bac._prefix_index
+        for b in blocks:
+            assert b.cache_data is not None
+            assert b.ref_count == 1
+            assert b.block_id in paged.allocated_blocks
+        assert sched.num_prefix_cache_pressure_evictions == 0
 
-    def test_pressure_drains_until_index_empty(self):
-        """Persistent pressure drains entries until the index is empty."""
+    def test_pressure_prunes_stale_index_metadata_until_empty(self):
+        """Persistent pressure prunes STALE index entries (slots freed and
+        reallocated for different tokens) until none remain — without
+        touching the reallocated blocks' live KV."""
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
         paged = bac.paged_cache
@@ -713,6 +759,10 @@ class TestBlockAwareCacheEviction:
         for i in range(4):
             blk = paged.allocate_block()
             blk.cache_data = [MagicMock()]
+            # Reallocated slot: it now owns a DIFFERENT token history, so
+            # its cumulative identity mismatches the index entry's tokens.
+            blk.token_count = paged.block_size
+            blk.hash_value = paged.compute_block_hash([900 + i] * paged.block_size)
             blocks.append(blk)
         bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
         bac._prefix_index["h2"] = ([5, 6, 7, 8], [b.block_id for b in blocks[2:]])
@@ -724,10 +774,72 @@ class TestBlockAwareCacheEviction:
             ),
         ):
             n = sched.evict_prefix_cache_under_pressure(max_evict=10)
-        assert n == 2  # both entries evicted
+        assert n == 2  # both stale entries pruned
         assert len(bac._prefix_index) == 0
-        assert all(b.cache_data is None for b in blocks)
+        # The blocks belong to their new owners: KV and refs untouched.
+        for b in blocks:
+            assert b.cache_data is not None
+            assert b.ref_count == 1
+            assert b.block_id in paged.allocated_blocks
         assert sched.num_prefix_cache_pressure_evictions == 2
+
+    def test_released_missing_block_metadata_pruned_without_touching_live_blocks(
+        self,
+    ):
+        """Codex round 2 #1: after owner release a referenced block is
+        ABSENT from ``allocated_blocks``, making the index entry forever
+        unreachable (``increment_ref`` fails on absent slots) — pressure
+        must prune that dead metadata. It must do so without clearing or
+        freeing anything physical: live blocks referenced by other entries
+        keep their KV/refs, and the released slot's resident slab is left
+        for the free-queue sweep."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        bs = paged.block_size  # 4 in this fixture
+        live_tokens = list(range(bs))
+
+        # Live entry first, so the slot released below cannot be handed
+        # back as this allocation.
+        live = paged.allocate_block()
+        live.cache_data = [MagicMock()]
+        live.token_count = bs
+        live.hash_value = paged.compute_block_hash(live_tokens)
+        live_key = paged.compute_block_hash(live_tokens)
+
+        # Released block: its owner freed it, so the slot left
+        # allocated_blocks for the free queue (KV still resident).
+        gone = paged.allocate_block()
+        gone.cache_data = [MagicMock()]
+        gid = gone.block_id
+        paged.free_block(gid)
+        assert gid not in paged.allocated_blocks
+
+        bac._prefix_index["h_gone"] = ([11, 12, 13, 14], [gid])
+        bac._prefix_index[live_key] = (live_tokens, [live.block_id])
+
+        free_before = paged.free_block_queue.num_free_blocks
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+        # Exactly the dead metadata was pruned; the live entry survives.
+        assert n == 1
+        assert "h_gone" not in bac._prefix_index
+        assert live_key in bac._prefix_index
+        assert live.cache_data is not None
+        assert live.ref_count == 1
+        assert live.block_id in paged.allocated_blocks
+        assert bac._find_best_prefix_match(live_tokens) is not None
+        # Nothing physical was touched: the released slot was not freed
+        # again and its resident slab is intact (reclaiming it is the
+        # free-queue sweep's job, not the metadata prune's).
+        assert paged.free_block_queue.num_free_blocks == free_before
+        assert gone.cache_data is not None
 
     def test_no_eviction_when_index_empty(self):
         """Empty prefix index -> no-op (no crash, no counter tick)."""
@@ -742,20 +854,30 @@ class TestBlockAwareCacheEviction:
         assert n == 0
         assert sched.num_prefix_cache_pressure_evictions == 0
 
-    def test_pinned_blocks_not_evicted(self):
-        """Pinned blocks (system prompt) must survive pressure eviction."""
+    def test_pinned_prefix_survives_and_stays_reachable(self):
+        """A pinned prefix (system prompt) must survive index-path pressure
+        AND remain reachable: its entry keeps verifying ownership, so it is
+        never pruned, while a stale sibling entry is."""
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
         paged = bac.paged_cache
-        blocks = []
-        for i in range(4):
-            blk = paged.allocate_block()
-            blk.cache_data = [MagicMock()]
-            blocks.append(blk)
-        # Pin the first block of entry h1 — its tensor must survive.
-        blocks[0].is_pinned = True
-        bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
-        bac._prefix_index["h2"] = ([5, 6, 7, 8], [b.block_id for b in blocks[2:]])
+        bs = paged.block_size  # 4 in this fixture
+        pinned_tokens = list(range(bs))
+
+        pinned = paged.allocate_block()
+        pinned.cache_data = [MagicMock()]
+        pinned.cache_class_name = "cache"
+        pinned.is_pinned = True
+        pinned.token_count = bs
+        pinned.hash_value = paged.compute_block_hash(pinned_tokens)
+        pinned_key = paged.compute_block_hash(pinned_tokens)
+        bac._prefix_index[pinned_key] = (pinned_tokens, [pinned.block_id])
+
+        stale = paged.allocate_block()
+        stale.cache_data = [MagicMock()]
+        stale.token_count = bs
+        stale.hash_value = paged.compute_block_hash([999] * bs)  # reallocated
+        bac._prefix_index["h_stale"] = ([5, 6, 7, 8], [stale.block_id])
 
         with (
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
@@ -764,15 +886,14 @@ class TestBlockAwareCacheEviction:
             ),
         ):
             n = sched.evict_prefix_cache_under_pressure(max_evict=10)
-        # Both entries are evicted under sustained pressure, but the
-        # pinned block (h1's first block) keeps its tensor — only
-        # non-pinned resident tensors are released.
-        assert n == 2
-        assert blocks[0].cache_data is not None  # pinned survives
-        assert blocks[1].cache_data is None
-        assert blocks[2].cache_data is None
-        assert blocks[3].cache_data is None
-        assert sched.num_prefix_cache_pressure_evictions == 2
+        # Only the stale metadata is pruned; the pinned prefix keeps its
+        # entry, its tensor, and its reachability.
+        assert n == 1
+        assert "h_stale" not in bac._prefix_index
+        assert pinned_key in bac._prefix_index
+        assert pinned.cache_data is not None
+        assert stale.cache_data is not None  # reallocated block untouched
+        assert bac._find_best_prefix_match(pinned_tokens) is not None
 
     def test_pressure_releases_full_kv_request_table_entries(self):
         """Pressure must drop the FULL-KV tensor held by ``_request_tables``
@@ -802,12 +923,10 @@ class TestBlockAwareCacheEviction:
         bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks[:2]]),
-            cache_data=[MagicMock()],  # full KV tensor
             last_access=1.0,
         )
         bac._request_tables["req-2"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks[2:]]),
-            cache_data=[MagicMock()],
             last_access=2.0,
         )
 
@@ -857,7 +976,6 @@ class TestBlockAwareCacheEviction:
         blocks[0].is_pinned = True  # system-prompt block, referenced by req-1
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[b.block_id for b in blocks]),
-            cache_data=[MagicMock()],
             last_access=1.0,
         )
 
@@ -891,7 +1009,6 @@ class TestBlockAwareCacheEviction:
         private.ref_count = 1
         bac._request_tables["req-1"] = BlockCacheEntry(
             block_table=MagicMock(block_ids=[shared.block_id, private.block_id]),
-            cache_data=[MagicMock()],
             last_access=1.0,
         )
 
@@ -906,32 +1023,90 @@ class TestBlockAwareCacheEviction:
         assert shared.cache_data is not None  # live KV preserved
         assert private.cache_data is None  # unshared block reclaimed
 
-    def test_index_eviction_returns_blocks_to_free_queue(self):
-        """Index-path eviction must not just clear tensors — it must also
-        return the block slots to the free queue (decrement ref_count),
-        or the pool leaks and eventually exhausts max_cache_blocks."""
+    def test_owner_eviction_preserves_active_fetch_then_free_queue_reclaims(self):
+        """Full ownership lifecycle under pressure (real KV, no mocks):
+
+        stored owner + active fetch share blocks → pressure evicts the
+        stored owner (shared blocks survive on the fetch's reference) →
+        another pressure tick leaves the active fetch's block data/table
+        intact (index path prunes nothing live) → releasing the active
+        fetch sends the blocks to the free queue with KV resident → the
+        normal free-queue pressure path reclaims the slabs."""
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
         paged = bac.paged_cache
-        blk = paged.allocate_block()  # ref_count == 1
-        blk.cache_data = [MagicMock()]
-        bid = blk.block_id
-        assert bid in paged.allocated_blocks
-        free_before = paged.free_block_queue.num_free_blocks
-        bac._prefix_index["h1"] = ([1, 2, 3, 4], [bid])
+        tokens = list(range(8))  # two full blocks (block_size=4)
 
+        # Stored owner: a finished request whose entry owns the blocks.
+        assert bac.store_cache("owner", tokens, _kv_layer_states(8)) is not None
+        owner_bids = list(bac._request_tables["owner"].block_table.block_ids)
+        assert len(owner_bids) == 2
+        blocks = [paged.allocated_blocks[b] for b in owner_bids]
+        assert all(b.ref_count == 1 for b in blocks)
+
+        # Active fetch shares the same blocks: fetch-held table + one
+        # tentative-committed reference per block, but NO request-table
+        # entry (only store_cache creates those).
+        table, remaining = bac.fetch_cache("active", tokens)
+        assert table is not None and remaining == []
+        assert list(table.block_ids) == owner_bids
+        assert all(b.ref_count == 2 for b in blocks)
+
+        # Tick 1: the stored owner (the only rt entry) is evicted. Its
+        # blocks are shared (ref_count > 1) so their KV must survive; the
+        # entry's references are released to the active fetch alone.
         with (
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
             patch.object(
                 sched, "_current_metal_active_bytes", return_value=200 * 10**9
             ),
         ):
-            sched.evict_prefix_cache_under_pressure(max_evict=1)
+            n = sched.evict_prefix_cache_under_pressure(max_evict=1)
+        assert n == 1
+        assert "owner" not in bac._request_tables
+        for b in blocks:
+            assert b.ref_count == 1  # held by the ACTIVE fetch table only
+            assert b.cache_data is not None
+            assert b.block_id in paged.allocated_blocks
 
-        # Tensor cleared AND the slot returned to the pool.
-        assert blk.cache_data is None
-        assert bid not in paged.allocated_blocks
-        assert paged.free_block_queue.num_free_blocks == free_before + 1
+        # Tick 2: only index metadata remains. The entries still verify
+        # their recorded ownership, so the index path prunes nothing and —
+        # critically — never clears/frees the active fetch's blocks.
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        assert n == 0
+        assert paged.get_block_table("active") is not None
+        assert len(bac._prefix_index) > 0  # prefix metadata stays
+        for b in blocks:
+            assert b.ref_count == 1
+            assert b.cache_data is not None
+            assert b.block_id in paged.allocated_blocks
+
+        # Release the active fetch: blocks drop to ref 0 and re-enter the
+        # free queue with their KV still resident (reusable slabs).
+        free_before = paged.free_block_queue.num_free_blocks
+        bac.release_cache("active")
+        assert paged.free_block_queue.num_free_blocks == free_before + len(blocks)
+        assert all(b.cache_data is not None for b in blocks)
+
+        # The normal free-queue pressure path is what reclaims the slabs.
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            released = sched.release_paged_cache_blocks_under_pressure()
+        assert released == len(blocks)
+        assert all(b.cache_data is None for b in blocks)
+        # No resurrection: a later fetch of the same tokens is a clean miss.
+        miss_table, miss_remaining = bac.fetch_cache("later", tokens)
+        assert miss_table is None and miss_remaining == tokens
 
     def test_fetch_guard_rejects_reallocated_block(self):
         """A prefix-index hit whose block was freed and REALLOCATED for
@@ -945,8 +1120,11 @@ class TestBlockAwareCacheEviction:
 
         blk = paged.allocate_block()
         blk.cache_data = [MagicMock()]
-        # store_cache registers a full block as hash_value = hash(its tokens);
-        # index is keyed by the prefix hash the fetch path recomputes.
+        # store_cache records every block's span and its cumulative identity
+        # hash (the hash of the whole prefix through the block — for the
+        # first block that equals hash(its own tokens)); the index is keyed
+        # by the same cumulative hash the fetch path recomputes.
+        blk.token_count = bs
         blk.hash_value = paged.compute_block_hash(tokens)
         bac._prefix_index[paged.compute_block_hash(tokens)] = (tokens, [blk.block_id])
 

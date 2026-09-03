@@ -48,7 +48,7 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
-from .errors import BackpressureError  # noqa: E402
+from .errors import BackpressureError, PagedCacheUnsupportedLayoutError  # noqa: E402
 from .kv_estimation import (  # noqa: E402
     _cfg_get,
     _valid_layer_types,
@@ -125,7 +125,11 @@ from .gdn_prefill import install as install_gdn_prefill_kernel
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
-from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
+from .prefix_cache import (
+    BlockAwarePrefixCache,
+    PrefixCacheManager,
+    validate_paged_cache_capability,
+)
 from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
@@ -3768,8 +3772,44 @@ class Scheduler:
         self.paged_cache_manager: PagedCacheManager | None = None
         self.block_aware_cache: BlockAwarePrefixCache | None = None
 
+        # Fail closed on the contradictory pair BEFORE the enablement
+        # branch: an explicit --use-paged-cache with the prefix cache
+        # disabled would otherwise be silently ignored (the paged store IS
+        # a prefix-cache backend, so nothing would be constructed) — the
+        # same silent-option failure the capability gate below exists to
+        # prevent (#2955).
+        if self.config.use_paged_cache and not self.config.enable_prefix_cache:
+            raise PagedCacheUnsupportedLayoutError(
+                "--use-paged-cache requires the prefix cache: the paged "
+                "block store is a prefix-cache backend, and prefix caching "
+                "is disabled in this configuration, so the explicit paged "
+                "request cannot take effect. Remove --use-paged-cache, or "
+                "drop --disable-prefix-cache so the prefix cache is enabled."
+            )
+
         if self.config.enable_prefix_cache:
             if self.config.use_paged_cache:
+                # Fail closed BEFORE serving: the paged block serializer only
+                # supports plain full-attention KVCache layouts. An explicit
+                # --use-paged-cache on a rotating/hybrid/recurrent/quantized
+                # layout must abort startup with an actionable typed error
+                # instead of coming up healthy with zero reuse (#2955). This
+                # is a structural probe of the loaded model's prompt-cache
+                # factory — no model/architecture names involved.
+                # Any EXPLICIT KV-cache transform request (ordinary live
+                # quantization or TurboQuant) is rejected outright — the
+                # paged store implements neither, so the pair fails closed
+                # even when the transform's own probes would fall back and
+                # disable it at runtime. Honoring the flags with silently
+                # untransformed plain blocks is the same silent-option
+                # failure this gate exists to prevent.
+                validate_paged_cache_capability(
+                    model,
+                    kv_cache_transform_requested=bool(
+                        self.config.kv_cache_quantization
+                        or getattr(self.config, "kv_cache_turboquant", None)
+                    ),
+                )
                 # Use paged cache for memory efficiency
                 self.paged_cache_manager = PagedCacheManager(
                     block_size=self.config.paged_cache_block_size,
@@ -6428,23 +6468,21 @@ class Scheduler:
             # admission gate then rejects ALL new requests while active
             # stays pinned above cap — a permanent 503 wedge (the
             # D-METAL-CAP symptom) with no in-process recovery. Fix:
-            # evict the LRU prefix-index entry and drop its resident
-            # block tensors so active memory falls back under cap and
-            # admission resumes. Stale index entries are guarded by the
-            # fetch-side live check (blk.cache_data is None => miss).
+            # evict the LRU stored entry — clear its private blocks'
+            # resident tensors and release the entry — so active memory
+            # falls back under cap and admission resumes. Index entries
+            # that outlive their blocks are guarded by the fetch-side
+            # live checks (increment_ref fails on absent slots;
+            # blk.cache_data is None => miss).
             index = getattr(self.block_aware_cache, "_prefix_index", None)
             paged = self.block_aware_cache.paged_cache
-            # 1) Release the FULL-KV tensor pinned by the oldest
-            # request-table entry FIRST — this is the actual Metal
-            # allocation owner. The block slices are only views into
-            # the same underlying buffer; the entry's ``cache_data`` is
-            # what pins it. Without this, pressure eviction clears
-            # slices forever while active memory never drops (the
-            # observed D-METAL-CAP wedge: evictions_total grows, active
-            # stays pinned above cap). Pop the entry so its block
-            # ref-counts drop and the blocks can re-enter the free
-            # queue. Doing this before the index pop also guarantees
-            # full-KV entries drain even when the LRU index is empty.
+            # 1) Evict the LRU request-table entry FIRST. Since #2955 the
+            # entry retains no full-KV snapshot — blocks own independent
+            # contiguous tensor copies — so eviction means: drop the
+            # private blocks' resident tensors, then release the entry's
+            # block references so the slots re-enter the free queue.
+            # Doing this before the index pop guarantees stored entries
+            # drain even when the LRU index is empty.
             rt = getattr(self.block_aware_cache, "_request_tables", None)
             if rt:
                 # True LRU: evict the least-recently-used entry
@@ -6454,18 +6492,10 @@ class Scheduler:
                     (rid, rentry)
                     for rid in list(rt.keys())
                     if (rentry := rt.get(rid)) is not None
-                    and rentry.cache_data is not None
                 ]
                 if evictable:
                     rid, rentry = min(evictable, key=lambda kv: kv[1].last_access)
                     block_ids = rentry.block_table.block_ids
-                    # Drop this request's OWN full-KV buffer. Its per-block
-                    # tensors are independent MLX slice arrays, so this does
-                    # not invalidate a pinned or shared block's tensor — the
-                    # buffer's memory stays live through whichever slices
-                    # still reference it. Reclaiming the entry's own buffer
-                    # is worthwhile even when every block is pinned/shared.
-                    rentry.cache_data = None
                     for bid in block_ids:
                         blk = paged.allocated_blocks.get(bid)
                         if blk is None or blk.cache_data is None:
@@ -6513,102 +6543,43 @@ class Scheduler:
                                 exc_info=True,
                             )
                     logger.debug(
-                        "[D-METAL-PFX-evict] dropped full-KV entry %s "
+                        "[D-METAL-PFX-evict] dropped stored entry %s "
                         "(request_tables=%d)",
                         rid,
                         len(rt),
                     )
                     return True
-            # 2) Then evict the LRU prefix-index entry and drop its
-            # resident block tensors, so stale index entries stop
-            # pinning block slices. Stale entries are guarded by the
-            # fetch-side live check (blk.cache_data is None => miss).
+            # 2) Index-only cleanup. The prefix index owns METADATA, never
+            # a physical block reference: every live reference belongs to a
+            # stored request-table entry (drained above via release_cache)
+            # or an active fetch-held table. So this path must not clear or
+            # free ANY allocated block — a ref_count of 1 here can be an
+            # active fetch's sole reference, and clearing/freeing it would
+            # corrupt live KV or hand the slot back to the free queue while
+            # a table still points at it. We only prune entries whose
+            # recorded cumulative ownership no longer verifies (slot
+            # reallocated / identity mismatch); every other entry stays so
+            # its prefix remains reachable (pinned prefixes keep their
+            # identities and therefore always verify). Resident KV on
+            # unreferenced (ref_count == 0) free-queue slabs is reclaimed
+            # exclusively by release_paged_cache_blocks_under_pressure.
             if index:
-                # dict preserves insertion order: first key = LRU. Walk in
-                # LRU order and skip any entry whose blocks are ALL pinned
-                # or absent: popping such an entry would make the prefix
-                # unreachable while freeing nothing, and returning False on
-                # it would halt the caller's eviction loop prematurely.
+                # dict preserves insertion order: first key = LRU.
                 for oldest_hash in list(index.keys()):
                     cached_tokens, block_ids = index[oldest_hash]
                     # An index entry can outlive its physical blocks. If one
                     # of those slots was subsequently reallocated, ref_count
                     # alone cannot distinguish the new owner's live KV from
-                    # the old prefix. Prune the stale index entry without
-                    # touching any block unless every slot still owns the
-                    # token slice recorded by this prefix.
-                    stale = False
-                    bs = self.block_aware_cache.block_size
-                    for j, bid in enumerate(block_ids):
-                        blk = paged.allocated_blocks.get(bid)
-                        block_tokens = cached_tokens[j * bs : (j + 1) * bs]
-                        expected_hash = paged.compute_block_hash(block_tokens)
-                        # Missing blocks are handled by the eligibility
-                        # check below. A ``None`` hash is retained for
-                        # compatibility with legacy/unhashed fixtures; all
-                        # newly stored production blocks record ownership.
-                        if (
-                            blk is not None
-                            and blk.hash_value is not None
-                            and blk.hash_value != expected_hash
-                        ):
-                            stale = True
-                            break
-                    if stale:
+                    # the old prefix — block identities cover the whole
+                    # preceding history, not per-chunk content, so the check
+                    # recomputes the same chained hashes store_cache records
+                    # and prunes only metadata that no longer owns its
+                    # recorded prefix.
+                    if self.block_aware_cache.index_entry_is_stale(
+                        cached_tokens, block_ids
+                    ):
                         index.pop(oldest_hash)
                         return True
-                    # Skip an entry only when NONE of its blocks are
-                    # clearable — absent, pinned, or still shared with a
-                    # live request (ref_count > 1). Popping such an entry
-                    # would make the prefix unreachable while freeing
-                    # nothing and would halt the caller's eviction loop.
-                    if all(
-                        (blk := paged.allocated_blocks.get(bid)) is None
-                        or blk.is_pinned
-                        or blk.ref_count > 1
-                        for bid in block_ids
-                    ):
-                        continue
-                    index.pop(oldest_hash)
-                    evicted = 0
-                    for bid in block_ids:
-                        blk = paged.allocated_blocks.get(bid)
-                        # Never clear a pinned or still-shared block: its KV
-                        # is live for another request.
-                        if blk is None or blk.is_pinned or blk.ref_count > 1:
-                            continue
-                        # Release the block's resident KV tensor regardless
-                        # of hash registration variant. store_cache
-                        # registers blocks via register_block_hash (legacy
-                        # hash_value only, block_hash stays None), so the
-                        # chain-hash gated _maybe_evict_cached_block would
-                        # short-circuit and leak the tensor. Mirror its
-                        # cleanup directly: drop any hash mapping, clear
-                        # the tensor.
-                        if (
-                            blk.hash_value is not None
-                            and paged.hash_to_block.get(blk.hash_value) == blk.block_id
-                        ):
-                            del paged.hash_to_block[blk.hash_value]
-                        if blk.block_hash is not None:
-                            paged.cached_block_hash_to_block.pop(
-                                blk.block_hash, blk.block_id
-                            )
-                        if blk.cache_data is not None:
-                            blk.reset_hash()
-                            blk.cache_data = None  # Free tensor memory
-                            blk.cache_class_name = None
-                            paged.stats.evictions += 1
-                            evicted += 1
-                        # Return the block slot to the free queue. Unlike the
-                        # request-table path (which frees via release_cache ->
-                        # delete_block_table), the index path holds its own
-                        # ref, so clearing the tensor alone would leak the
-                        # block from the pool and eventually exhaust
-                        # max_cache_blocks. free_block decrements ref and
-                        # enqueues the (now-empty) block when it reaches 0.
-                        paged.free_block(bid)
-                    return evicted > 0
                 return False
             return False
         return False
@@ -6788,16 +6759,18 @@ class Scheduler:
             request.cache_hit_type = "miss"
             request.remaining_tokens = request.prompt_token_ids
         elif self.block_aware_cache is not None:
-            # Use paged cache
+            # Use paged cache. ``fetch_cache`` is transactional: it returns a
+            # block table only after reconstruction succeeded, so a returned
+            # hit always carries usable KV state.
             block_table, remaining = self.block_aware_cache.fetch_cache(
                 request.request_id,
                 request.prompt_token_ids,
             )
             if block_table and block_table.num_tokens > 0:
-                request.cache_hit_type = "hit"
-                # Reconstruct actual KVCache objects from stored tensor data
+                # Returns the caches the committed transaction already built.
                 reconstructed = self.block_aware_cache.reconstruct_cache(block_table)
                 if reconstructed:
+                    request.cache_hit_type = "hit"
                     request.prompt_cache = reconstructed
                     request.block_table = block_table
                     request.cached_tokens = block_table.num_tokens
@@ -6809,11 +6782,16 @@ class Scheduler:
                         f"{len(remaining)} tokens remaining, cache reconstructed"
                     )
                 else:
-                    # Reconstruction failed, treat as cache miss
+                    # Defensive: a committed fetch guarantees a
+                    # reconstructable table, so this should be unreachable.
+                    # Release the held refs and fall back to a full prefill.
+                    self.block_aware_cache.release_cache(request.request_id)
                     request.cache_hit_type = "miss"
                     request.remaining_tokens = request.prompt_token_ids
-                    logger.debug(
-                        f"Request {request.request_id}: paged cache reconstruction failed"
+                    logger.warning(
+                        f"Request {request.request_id}: paged cache "
+                        "reconstruction failed after committed fetch; "
+                        "released refs and treating as miss"
                     )
             else:
                 request.cache_hit_type = "miss"
@@ -7429,6 +7407,11 @@ class Scheduler:
             # Release cache references so Metal buffers can be freed
             request.prompt_cache = None
             request._extracted_cache = None
+        if self.block_aware_cache is not None:
+            # A cancelled request stores nothing, so nothing owns the block
+            # refs its fetch hit acquired — release them here. Idempotent
+            # (safe if _cleanup_finished releases again later).
+            self.block_aware_cache.release_cache(request_id)
         self.finished_req_ids.add(request_id)
         self._cleanup_detokenizer(request_id)
 
@@ -8557,6 +8540,7 @@ class Scheduler:
                 if self.block_aware_cache is not None:
                     # Store in paged cache
                     # Key includes both prompt and output tokens for multi-turn chat caching
+                    stored_table = None
                     if (
                         hasattr(request, "_extracted_cache")
                         and request._extracted_cache is not None
@@ -8565,7 +8549,7 @@ class Scheduler:
                             full_token_sequence = list(request.prompt_token_ids) + list(
                                 request.output_token_ids
                             )
-                            self.block_aware_cache.store_cache(
+                            stored_table = self.block_aware_cache.store_cache(
                                 request_id,
                                 full_token_sequence,
                                 request._extracted_cache,
@@ -8578,9 +8562,15 @@ class Scheduler:
                             logger.debug(
                                 f"Failed to store paged cache for {request_id}: {e}"
                             )
-                    # NOTE: Do NOT call release_cache here - blocks should persist
-                    # for future requests to share. The LRU eviction will clean up
-                    # unused blocks when under memory pressure.
+                    if stored_table is None:
+                        # Nothing stored (no extracted cache, unsupported
+                        # layout, or store failure): no entry owns this
+                        # request's blocks, so release any refs a fetch hit
+                        # acquired. Idempotent no-op when nothing is held.
+                        self.block_aware_cache.release_cache(request_id)
+                    # NOTE (stored case): do NOT call release_cache — the
+                    # stored entry owns the blocks so future requests can
+                    # share them; pressure-driven LRU eviction cleans up.
 
                 elif self.memory_aware_cache is not None:
                     # Keep mid-prefill entry as prefix cache for future

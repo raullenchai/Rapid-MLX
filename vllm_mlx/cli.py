@@ -4571,8 +4571,12 @@ def serve_command(args):
         )
     print(f"Stream interval: {args.stream_interval} tokens")
     if args.use_paged_cache:
+        # Echo the REQUEST, not an active cache: lane and layout capability
+        # are validated at engine startup and fail closed (#2955), so this
+        # line must not read as a running paged cache.
         print(
-            f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
+            f"Paged cache requested: block_size={args.paged_cache_block_size}, "
+            f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
         )
     elif enable_prefix_cache and not args.no_memory_aware_cache:
         cache_info = (
@@ -5583,7 +5587,8 @@ def bench_command(args):
 
         if args.use_paged_cache:
             print(
-                f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
+                f"Paged cache requested: block_size={args.paged_cache_block_size}, "
+                f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
             )
 
         # Generate prompts
@@ -11005,7 +11010,12 @@ Examples:
     serve_parser.add_argument(
         "--use-paged-cache",
         action="store_true",
-        help="Use paged KV cache for memory efficiency (experimental)",
+        help=(
+            "Use paged KV cache for memory efficiency (experimental). "
+            "Requires a model whose prompt cache is plain full-attention "
+            "KV on every layer; startup fails with an actionable error "
+            "for rotating/hybrid/recurrent/quantized cache layouts."
+        ),
     )
     serve_parser.add_argument(
         "--paged-cache-block-size",
@@ -11618,7 +11628,12 @@ Examples:
     bench_parser.add_argument(
         "--use-paged-cache",
         action="store_true",
-        help="Use paged KV cache for memory efficiency (experimental)",
+        help=(
+            "Use paged KV cache for memory efficiency (experimental). "
+            "Requires a model whose prompt cache is plain full-attention "
+            "KV on every layer; startup fails with an actionable error "
+            "for rotating/hybrid/recurrent/quantized cache layouts."
+        ),
     )
     bench_parser.add_argument(
         "--paged-cache-block-size",
