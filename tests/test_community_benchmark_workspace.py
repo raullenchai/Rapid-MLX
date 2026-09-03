@@ -3247,6 +3247,22 @@ def test_system_ffmpeg_probe_uses_portable_null_muxer(
     assert "h264_videotoolbox" not in command
 
 
+def test_ffmpeg_environment_variable_does_not_imply_sidecar_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_runner.sys, "executable", "/usr/bin/python3")
+    assert local_runner._is_sidecar_bundled_ffmpeg("/usr/local/bin/ffmpeg") is False
+
+    monkeypatch.setattr(
+        local_runner.sys,
+        "executable",
+        "/Applications/Rapid.app/Contents/Resources/rapid-mlx/python/bin/python3.12",
+    )
+    assert local_runner._is_sidecar_bundled_ffmpeg(
+        "/Applications/Rapid.app/Contents/Resources/rapid-mlx/bin/ffmpeg"
+    )
+
+
 def test_probe_video_artifact_returns_worker_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -16,6 +16,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -187,6 +188,19 @@ def _probe_video_with_ffmpeg(
     )
 
 
+def _is_sidecar_bundled_ffmpeg(ffmpeg: str) -> bool:
+    """Return whether FFmpeg and this interpreter share the sidecar root."""
+
+    try:
+        ffmpeg_root = os.path.dirname(os.path.dirname(os.path.realpath(ffmpeg)))
+        python_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))
+        )
+        return ffmpeg_root == python_root
+    except (OSError, ValueError):
+        return False
+
+
 def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
     try:
         import imageio.v2 as imageio
@@ -195,7 +209,7 @@ def _probe_video_artifact_unbounded(path: str) -> tuple[int, int, int, float]:
         ffmpeg = bundled_ffmpeg or shutil.which("ffmpeg")
         if ffmpeg:
             return _probe_video_with_ffmpeg(
-                path, ffmpeg, desktop_bundle=bundled_ffmpeg is not None
+                path, ffmpeg, desktop_bundle=_is_sidecar_bundled_ffmpeg(ffmpeg)
             )
         raise RuntimeError("video artifact validation requires rapid-mlx[video]")
 
