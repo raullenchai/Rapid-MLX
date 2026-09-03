@@ -31,6 +31,7 @@ struct DesktopServerPortField: View {
                 TextField("7659", text: $draft)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 80)
+                    .accessibilityIdentifier("ConnectTools.ServerPort.Field")
                     .onAppear { draft = storedPortText }
                 Button(saved ? "Saved" : "Save") {
                     let t = draft.trimmingCharacters(in: .whitespaces)
@@ -45,6 +46,7 @@ struct DesktopServerPortField: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { saved = false }
                 }
                 .disabled(!isDirty || (!draft.isEmpty && !isValid))
+                .accessibilityIdentifier("ConnectTools.ServerPort.Save")
                 if !draft.isEmpty && !isValid {
                     Text("1…65535, 1024+ recommended")
                         .font(.caption)
