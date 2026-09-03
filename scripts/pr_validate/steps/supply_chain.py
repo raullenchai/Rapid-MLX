@@ -72,6 +72,57 @@ def _is_hook_file(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in HOOK_PATHS)
 
 
+# A roster-enrollment line in a CI workflow file: `tests/<name>.py \` — the
+# exact shape the explicit test roster asks a contributor to add (issue #2522).
+_ROSTER_LINE = re.compile(r"^\s*tests/[^\s\\]+\.py\s+\\?\s*$")
+
+
+def _roster_only_workflow_files(files_changed: list[str], diff: str) -> set[str]:
+    """Return the workflow files whose diff is PURELY a test-roster enrollment.
+
+    Enrolling a new test in the explicit CI roster (adding
+    ``tests/<name>.py \\`` to the list in ``.github/workflows/ci.yml``) is the
+    expected shape of a "I added a test" contribution. A workflow edit that is
+    ONLY such additions — no removed lines, no other added/modified lines in any
+    workflow file — is not a supply-chain risk and, for an external author,
+    should not ``[BLOCKING]``. Any workflow file whose diff contains anything
+    else (removed lines, non-roster edits) is NOT roster-only and stays
+    BLOCKING (issue #2522)."""
+    workflow_files = {f for f in files_changed if f.startswith(".github/workflows/")}
+    if not workflow_files:
+        return set()
+
+    # Accumulate the *content* lines (with +/-/space marker) per workflow file.
+    per_file: dict[str, list[str]] = {f: [] for f in workflow_files}
+    cur_path = ""
+    for line in diff.splitlines():
+        if line.startswith("diff --git a/"):
+            cur_path = line.split(" b/", 1)[-1]
+            continue
+        if cur_path not in per_file:
+            continue
+        if line.startswith(("+++ ", "--- ", "@@")):
+            continue  # hunk headers
+        marker = line[:1]
+        if marker in ("+", "-", " "):
+            per_file[cur_path].append(line)
+
+    roster_only: set[str] = set()
+    for path, content in per_file.items():
+        added = [ln for ln in content if ln.startswith("+")]
+        removed = [ln for ln in content if ln.startswith("-")]
+        if removed:
+            continue  # anything deleted from a workflow file is NOT roster-only
+        if not added:
+            continue  # no actual change tracked (blank/file-empty hunk)
+        # A pure append has NO removed lines; context lines are unchanged
+        # neighboring list entries (the wrapper is safe). So roster-only ==
+        # not removing anything AND every added line is a roster enrollment.
+        if all(_ROSTER_LINE.match(ln[1:]) for ln in added):
+            roster_only.add(path)
+    return roster_only
+
+
 # Backwards-compatibility alias — the dep-declaration matcher now
 # lives in ``_test_env.is_dep_declaration_file`` (shared with
 # ``test_env_check``); kept as a constant here so existing call
@@ -152,10 +203,36 @@ class SupplyChainStep(Step):
         if hook_files:
             # Even an "innocent-looking" hook change is worth surfacing.
             # External-author + hook change = strong reason to read.
-            severity = "BLOCKING" if ctx.is_external_author else "warning"
+            #
+            # Exception (issue #2522): a workflow edit that is PURELY
+            # enrolling a new test in the explicit CI roster
+            # (``tests/<name>.py \`` added, nothing else in any workflow
+            # file) is the expected shape of a "I added a test" contribution.
+            # It stays surfaced as a WARNING (with the added lines) but does
+            # not BLOCK an external author. Any other workflow edit — removed
+            # lines, non-roster edits, edits to non-workflow hook files —
+            # keeps BLOCKING.
+            roster_only = _roster_only_workflow_files(ctx.files_changed, diff)
+            external_hooks = [f for f in hook_files if f not in roster_only]
+            if external_hooks and ctx.is_external_author:
+                severity = "BLOCKING"
+            else:
+                severity = "warning"
+            detail = ""
+            if severity == "warning" and roster_only:
+                # Include the roster-enrollment lines (the diff hunk) so the
+                # human still inspects exactly what was added (issue #2522).
+                added = [
+                    ln[1:]
+                    for ln in diff.splitlines()
+                    if ln.startswith("+") and _ROSTER_LINE.match(ln[1:])
+                ]
+                detail = " Roster-only test enrollment: " + ", ".join(
+                    f"`{a.strip()}`" for a in added
+                )
             findings.append(
                 f"[{severity}] modifies install/CI hook(s): {hook_files}. "
-                "These run unattended; review every line."
+                "These run unattended; review every line." + detail
             )
 
         # 2. Suspicious patterns in ADDED lines (not removed — removed
