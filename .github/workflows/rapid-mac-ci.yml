@@ -243,21 +243,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Preserve SwiftPM's dependency checkouts and compiler outputs between
-      # ephemeral VMs. The SHA suffix makes every successful revision an
-      # immutable cache; restore-keys lets the next revision incrementally
-      # rebuild from the most recent compatible Package.swift/toolchain state.
-      # GitHub scopes pull-request caches to the PR merge ref, preventing an
-      # untrusted PR from poisoning main's cache.
-      - name: Restore SwiftPM build cache
-        id: swiftpm-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: apps/rapid-mac/.build
-          key: rapid-mac-spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode-16.4-${{ hashFiles('apps/rapid-mac/Package.swift') }}-${{ github.sha }}
-          restore-keys: |
-            rapid-mac-spm-v1-${{ runner.os }}-${{ runner.arch }}-xcode-16.4-${{ hashFiles('apps/rapid-mac/Package.swift') }}-
-
       - name: swift build
         run: swift build
 
@@ -283,13 +268,6 @@ jobs:
       # fails fast with a readable reason instead of burning the job timeout.
       - name: swift test
         run: ./scripts/desktop-test-timeout.sh
-
-      - name: Record SwiftPM cache state
-        if: always()
-        env:
-          CACHE_HIT: ${{ steps.swiftpm-cache.outputs.cache-hit }}
-        run: |
-          echo "SwiftPM exact cache hit: ${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
 
       # #2488: upload the hang-sample artifact (stack + system state) so the
       # cause of a hung/failed desktop-test run is inspectable from the CI log
