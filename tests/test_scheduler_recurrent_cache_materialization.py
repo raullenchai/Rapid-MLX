@@ -588,22 +588,32 @@ def test_output_chain_collection_failure_escalates_after_limit(monkeypatch):
     scheduler._recurrent_output_chain_failures = 0
     limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
 
-    # Cache-state realize succeeds; the output-chain surface is uncollectable.
+    # Cache-state realize succeeds; the ``_next_tokens`` surface is
+    # uncollectable while ``_next_logprobs`` / ``token_context`` stay valid.
     # Record every value handed to mx.eval so we can assert the cache-state
-    # barrier still fires on each collection-failed step (codex r5) — it must
-    # not be skipped for up to `limit` intervals while collection escalates.
-    cache_state_evals = []
+    # barrier (`[[head]]`) still fires on each collection-failed step (codex
+    # r5/r6) — it must not be skipped for up to `limit` intervals while
+    # collection escalates — and that the valid partial outputs ARE realized
+    # every step (r6#2: never discard a collectible output chain).
+    evals = []
 
     def eval_and_record(value):
-        cache_state_evals.append(value)
+        evals.append(value)
         return _detaching_eval(value)
 
     monkeypatch.setattr(scheduler_module.mx, "eval", eval_and_record)
 
+    cache_head = recurrent.head
     for _ in range(limit - 1):
         assert scheduler._materialize_active_recurrent_cache() is not None
     assert scheduler._recurrent_output_chain_failures == limit - 1
-    assert len(cache_state_evals) == limit - 1  # cache-state realized every step
+    # The cache-state eval (states = [[head]]) fired on EVERY step.
+    assert evals.count([[cache_head]]) == limit - 1
+    # The valid partial outputs (any non-cache-state realize) were realized
+    # every step too — not discarded because one surface raised (r6#2).
+    output_evals = [v for v in evals if v != [[cache_head]]]
+    assert len(output_evals) == limit - 1
+    assert all(isinstance(v, list) and v for v in output_evals)
 
     with pytest.raises(
         scheduler_module._RecurrentOutputChainError, match="Metal handle"

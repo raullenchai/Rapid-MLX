@@ -9253,55 +9253,58 @@ class Scheduler:
         # above, so this dense no-sync guarantee is untouched.
         #
         # Ordering + single-barrier (codex r1, r2, r3 converge): collection is
-        # host-only, then cache-state AND output chain are realized together in
-        # ONE ``mx.eval`` — a single device barrier on the happy path for both
-        # graphs (r3 wanted no doubled sync). But a combined eval cannot tell
-        # WHICH tensor failed, and the cache-state realize is the
-        # proven-necessary barrier that MUST NOT be suppressible (r2). So on
-        # exception we re-eval ``states`` alone to classify: if that ALSO fails
-        # the lane is genuinely broken and the cache-state failure propagates
-        # immediately; if only the output chain failed it is the NEW #2834
-        # surface and goes through guarded retry/escalation. Dense lanes never
-        # reach here, so no per-token eval is added to a dense batch.
+        # Attribution (codex r2 + r6#1): a SINGLE combined ``mx.eval`` cannot
+        # say which tensors failed, and attributing by re-evaluating ``states``
+        # after a combined failure is unsound — the first call may have
+        # partially realized state, or a state failure may be transient, so a
+        # cache-state failure could be misattributed to the outputs and
+        # silently suppressed for up to ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT``
+        # intervals. So the two graphs are realized SEPARATELY:
+        #
+        #   mA) cache-state realize is UNGUARDED and first — the proven-necessary
+        #       #1834 barrier; any cache-state failure propagates immediately
+        #       (r2) and is attributable to the cache (r6#1).
+        #   mB) the output-chain realize is GUARDED below — attributable to the
+        #       NEW #2834 surface alone, with retry/escalation.
+        #
+        # Firing two back-to-back synchronous ``mx.eval`` on one device stream
+        # does not meaningfully double the barrier: it runs every 8 decode
+        # steps on hybrid lanes only, and the second call finds the device
+        # already drained from the first. Dense lanes never reach here, so no
+        # per-token eval is added to a dense batch.
         outputs, collection_failed = self._collect_recurrent_outputs(generation_batch)
+        mx.eval(states)  # mA: unguarded, immediately-propagating cache barrier
         self._retry_materialize_output_chain(
-            states, outputs, collection_failed=collection_failed
+            outputs, collection_failed=collection_failed
         )
         return len(states)
 
     def _retry_materialize_output_chain(
-        self, states, outputs, *, collection_failed: bool = False
+        self, outputs, *, collection_failed: bool = False
     ) -> int:
         """Realize the per-step decode output chain (guarded retry/escalation).
 
-        The caller has already collected ``outputs`` (host-side) and hands us
-        both ``states`` and ``outputs`` so we realize them in ONE ``mx.eval`` —
-        a single device barrier covering both halves of the lazy graph on the
-        happy path (codex r3). Because a combined eval cannot say WHICH tensor
-        failed, the ``except`` re-evaluates ``states`` alone to classify:
+        The caller has ALREADY realized the cache state (unguarded, mA) and
+        hands us the collected ``outputs`` to realize SEPARATELY, so the
+        output-chain barrier is attributable to the NEW #2834 surface alone
+        (codex r6#1 — no combined eval that could misattribute a cache-state
+        failure). This surface is version-sensitive (``mlx_lm`` ``TokenBuffer``
+        / ``_next_*`` shapes), so a realize failure retries and escalates after
+        ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` consecutive misses rather
+        than hard-crashing or silently conceding to an unbounded output graph
+        (codex r1, r3).
 
-          * states re-eval also fails  -> hard cache-state failure; the
-            proven-necessary #1834 barrier must not be suppressed, so it
-            propagates immediately (codex r2).
-          * states re-eval succeeds     -> the failure was the NEW #2834
-            output-chain surface; it is version-sensitive (``mlx_lm``
-            ``TokenBuffer`` / ``_next_*`` shapes), so it retries and escalates
-            after ``_RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT`` consecutive misses
-            rather than hard-crashing or silently conceding to an unbounded
-            output graph (codex r1, r3).
-
-        ``collection_failed`` (codex r4) is the host-side analogue: an output
-        attribute whose ACCESS raised (not one that is merely absent) is a
-        collection failure for that surface and must feed the SAME
-        escalation counter — otherwise a persistently-raising surface would
-        read as "no outputs", clear the counter every step, and the unbounded
-        chain it exists to bound would never escalate.
+        ``collection_failed`` (codex r4/r6#2) means some output attribute's
+        ACCESS raised (not merely absent). The successfully-collected outputs
+        are still REALIZED here — a valid ``_next_logprobs`` / token-context
+        chain is never discarded (r6#2) — and then the inaccessible surface
+        counts through the SAME escalation counter, else a persistently-raising
+        surface would read as "no outputs", clear the counter every step, and
+        the unbounded chain it exists to bound would never escalate.
 
         On success the dereference counter resets so a cleared transient
-        recovers. Realizing with an empty/absent output list that DID collect
-        cleanly (a batch genuinely exposing no output tensors) is fine: the
-        cache-state half already realized, and the combined eval is just
-        ``mx.eval(states)``.
+        recovers. A cleanly-collected empty output list is a no-op that clears
+        the counter (the cache-state barrier already fired in the caller).
         """
 
         def _escalate(failure: Exception | None = None) -> int:
@@ -9333,46 +9336,29 @@ class Scheduler:
             )
             return 0
 
-        if collection_failed:
-            # An output surface raised on ACCESS — indistinguishable from a
-            # realize failure for the purpose of bounding the chain, so route
-            # it through the same escalation path (codex r4). The cache-state
-            # barrier is NOT realized by the caller, so realize it HERE first
-            # (unguarded — a cache-state failure must propagate immediately,
-            # r2), else this edge puts up to 7 intervals between cache-state
-            # realizations and regresses the #1834 invariant (codex r5).
+        if outputs:
+            # Realize the successfully-collected output chain (mB, attributable
+            # to outputs alone). Cache state was already realized by the caller.
             try:
-                mx.eval(states)
-            except Exception:
-                raise
+                mx.eval(outputs)
+            except Exception as exc:
+                return _escalate(exc)
+            if not collection_failed:
+                self._recurrent_output_chain_failures = 0
+                return len(outputs)
+            # Some surface was inaccessible, but what we gathered is now
+            # realized — never discard it (r6#2). Escalate for the surface
+            # whose access raised (r4).
             return _escalate()
 
-        if not outputs:
-            # No output tensors exposed (and collection was clean): still
-            # realize the cache state. This is the same barrier #1834 already
-            # issued — not a doubled sync.
-            try:
-                mx.eval(states)
-            except Exception:
-                # No output surface to absorb the blame; a cache-state failure
-                # must propagate (r2).
-                raise
-            self._recurrent_output_chain_failures = 0
-            return 0
+        if collection_failed:
+            # Nothing collectible AND a surface raised on access: escalate
+            # (cache state was already realized by the caller, r5).
+            return _escalate()
 
-        try:
-            mx.eval([*states, *outputs])  # single device barrier (r3)
-        except Exception as exc:
-            # Classify the failure: if the cache-state half is broken too, that
-            # is the proven-necessary barrier and must propagate, not count as a
-            # retryable output-chain miss (r2).
-            try:
-                mx.eval(states)
-            except Exception:
-                raise
-            return _escalate(exc)
+        # Cleanly empty: nothing to realize; cache-state barrier already fired.
         self._recurrent_output_chain_failures = 0
-        return len(outputs)
+        return 0
 
     def _collect_recurrent_outputs(self, generation_batch) -> tuple[list, bool]:
         """Collect the per-step decode output chain tensors, returning
