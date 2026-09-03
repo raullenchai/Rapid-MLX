@@ -225,6 +225,19 @@ def test_modality_audio_count_does_not_crash(capsys):
     assert "Models [audio]" in out
 
 
+def test_modality_audio_count_tolerates_a_broken_audio_registry(capsys, monkeypatch):
+    """#2355 (coverage): a broken/missing audio registry must not crash the
+    modality count — the guarded fallback yields 0 aliases and the title
+    still renders."""
+    import sys
+    import types
+
+    broken = types.ModuleType("vllm_mlx.audio.registry")
+    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.registry", broken)
+    out = _capture(capsys, modality="audio")
+    assert "Models [audio] (0 aliases)" in out
+
+
 def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
     """#2355 regression: no filters keeps the full catalog AND points the
     user to the recipe command for RAM-fit recommendations."""
