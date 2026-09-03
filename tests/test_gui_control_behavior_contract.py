@@ -557,6 +557,23 @@ def test_launch_baseline_waits_for_the_authoritative_integration_registry():
     assert 'see_main "$OUT/launch.json"' in flow[:settle]
 
 
+def test_catalog_integrity_waits_for_the_cross_modality_management_snapshot():
+    flow = _harness_flow_body("flow_catalog_integrity")
+    open_panel = flow.index("Settings.Category.modelManagement")
+    wait_for_image = flow.index(
+        '.identifier == "Settings.ModelManagement.LargestModel"'
+    )
+    require_ready = flow.index(
+        '|| die "complete cross-modality Model Management inventory was not observed"'
+    )
+    semantic_assertion = flow.index(
+        '|| die "disk overview did not identify the largest managed model"'
+    )
+
+    assert open_panel < wait_for_image < require_ready < semantic_assertion
+    assert "for _ in {1..40}; do" in flow[open_panel:require_ready]
+
+
 @pytest.mark.parametrize("flow", SNAP_AUDIT_FLOWS)
 def test_semantic_control_audits_are_blocking_gui_ci(flow: str):
     """Each semantic audit is gated, and its failure leaves usable evidence.
