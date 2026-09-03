@@ -103,6 +103,26 @@ def test_serve_help_explains_the_ready_url(serve_help):
     assert " /v1/audio," not in intro  # a bare /v1/audio route does not exist
 
 
+def test_serve_help_documented_defaults_match_the_parser(serve_help):
+    """#2354 (codex r2 nit): the quick-start hard-codes ``(default 8000)`` and
+    ``(default 127.0.0.1...`` for the two flags a first user touches. Those
+    strings must stay in lock-step with the parser's actual defaults, or the
+    help silently lies when a default changes. Assert the documented numbers
+    equal the serve subparser's resolved defaults, and that the intro
+    presents them."""
+    parser = cli.build_parser()
+    serve = next(
+        a.choices["serve"]
+        for a in parser._actions
+        if a.dest == "command" and "serve" in a.choices
+    )
+    port = str(serve.get_default("port"))
+    host = str(serve.get_default("host"))
+    intro = _intro(serve_help)
+    assert f"(default {port})" in intro
+    assert f"(default {host}," in intro
+
+
 def test_serve_parser_still_parses_a_normal_invocation():
     """#2354 regression guard: adding the description/epilog must not change
     how an ordinary ``serve <model> --port N`` invocation parses."""
