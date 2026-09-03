@@ -92,12 +92,15 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         }
 
         struct InputReferenceLimit: Decodable, Sendable, Hashable {
-            let accepted: Bool
+            // The live server contract (issue #2969) expresses support by the
+            // PRESENCE of ``input_reference`` with a valid reference limit —
+            // the retired ``accepted`` boolean is no longer sent. It must not
+            // be decoded, or an otherwise-healthy 200 response is rejected.
             let maximumBytes: Int
             let formats: [String]
 
             enum CodingKeys: String, CodingKey {
-                case accepted, formats
+                case formats
                 case maximumBytes = "maximum_bytes"
             }
         }
@@ -137,7 +140,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     let limits: Limits
 
     var acceptedReferenceMIMETypes: Set<String> {
-        guard let input = limits.inputReference, input.accepted else { return [] }
+        guard let input = limits.inputReference else { return [] }
         return Set(input.formats.compactMap { format in
             switch format.lowercased() {
             case "jpeg", "jpg", "image/jpeg": "image/jpeg"
@@ -212,7 +215,6 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
 
     var referenceMaximumBytes: Int {
         guard let inputReference = limits.inputReference,
-              inputReference.accepted,
               inputReference.maximumBytes > 0 else { return 0 }
         return min(inputReference.maximumBytes, VideoClient.maxReferenceBytes)
     }
@@ -238,9 +240,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let fps = limits.fps
         let frames = limits.frames
         let workload = limits.workload
+        // Live contract (issue #2969): ``input_reference`` is present exactly
+        // when image-input is supported, so a present-but-malformed reference
+        // limit (zero/negative bytes or no recognizable format) fails closed.
         let validInput = limits.inputReference.map {
-            $0.maximumBytes >= 0
-                && (!$0.accepted || ($0.maximumBytes > 0 && !acceptedReferenceMIMETypes.isEmpty))
+            $0.maximumBytes > 0 && !acceptedReferenceMIMETypes.isEmpty
         } ?? true
         guard !model.isEmpty,
               !family.isEmpty,
@@ -259,7 +263,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               frames.offset <= frames.maximum,
               workload.metric == "pixel_frames",
               workload.maximum > 0,
-              workload.dimensionRounding == "multiple_of_64",
+              Self.alignment(options: workload.dimensionRounding) != nil,
               validInput else {
             throw VideoClientError.invalidResponse
         }
@@ -272,9 +276,12 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               seconds > 0,
               limits.fps.default > 0 else { return false }
         // Workload normalization is a separate server contract from the
-        // request-size alignment. This client validates only multiple_of_64.
-        guard let width = Self.roundUp(dimensions.width, to: 64),
-              let height = Self.roundUp(dimensions.height, to: 64) else { return false }
+        // request-size alignment. Derive the alignment from the advertised
+        // dimension_rounding (ceil_to_32 / ceil_to_64 / none) instead of a
+        // hard-coded multiple-of-64 (issue #2969).
+        guard let alignment = Self.alignment(options: limits.workload.dimensionRounding),
+              let width = Self.roundUp(dimensions.width, to: alignment),
+              let height = Self.roundUp(dimensions.height, to: alignment) else { return false }
         let frameStep = max(1, limits.frames.step)
         let frameOffset = limits.frames.offset
         guard frameOffset >= 0 else { return false }
@@ -307,6 +314,20 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
 
     private static func contains(_ value: Int, minimum: Int, maximum: Int) -> Bool {
         minimum <= maximum && value >= minimum && value <= maximum
+    }
+
+    /// The pixel-alignment divisor implied by a server ``dimension_rounding``
+    /// token (issue #2969). The live server emits ``ceil_to_32`` (ltx-2.5),
+    /// ``ceil_to_64`` (Wan and the default lanes), and ``none`` (cogvideox-fun).
+    /// Any other token is unrecognized and fails closed by returning ``nil``,
+    /// preserving the previous reject-on-unknown behavior.
+    private static func alignment(options: String) -> Int? {
+        switch options {
+        case "ceil_to_64": 64
+        case "ceil_to_32": 32
+        case "none": 1
+        default: nil
+        }
     }
 
     private static func product(_ lhs: Int, _ rhs: Int) -> Int? {

@@ -183,7 +183,7 @@ enum DevSnapshot {
                     workload: .init(
                         metric: "pixel_frames",
                         maximum: 38_141_952,
-                        dimensionRounding: "multiple_of_64"
+                        dimensionRounding: "ceil_to_64"
                     )
                 )
             )

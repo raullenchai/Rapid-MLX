@@ -59,7 +59,7 @@ struct VideoClientTests {
     func unsupportedRoundingFailsClosed() async {
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
-            of: #""dimension_rounding":"multiple_of_64""#,
+            of: #""dimension_rounding":"ceil_to_64""#,
             with: #""dimension_rounding":"floor""#
         )
         VideoStubProtocol.response = (200, Data(json.utf8))
@@ -82,7 +82,25 @@ struct VideoClientTests {
         #expect(value.durationPresets(for: "592x592") == [1, 2])
     }
 
-    @Test("Image input follows advertised formats and acceptance")
+    @Test("Workload alignment follows the advertised ceil_to_32 / none tokens")
+    func workloadAlignmentFollowsServerToken() throws {
+        func withRounding(_ token: String) throws -> VideoCapabilities {
+            let json = Self.capabilitiesJSON.replacingOccurrences(
+                of: #""dimension_rounding":"ceil_to_64""#,
+                with: #""dimension_rounding":"\#(token)""#
+            )
+            return try JSONDecoder().decode(VideoCapabilities.self, from: Data(json.utf8))
+        }
+
+        // ceil_to_32 (ltx-2.5 lane) validates and rounds to 32.
+        let c32 = try withRounding("ceil_to_32")
+        #expect(c32.durationPresets(for: "592x592").count > 0)
+        // none (cogvideox-fun lane) validates with alignment 1.
+        let none = try withRounding("none")
+        #expect(none.durationPresets(for: "1280x720").count > 0)
+    }
+
+    @Test("Image input follows advertised formats; presence of input_reference enables it")
     func imageInputUsesCapabilityContract() throws {
         let jpegOnly = Self.capabilitiesJSON.replacingOccurrences(
             of: #"["jpeg","png","webp"]"#,
@@ -92,12 +110,38 @@ struct VideoClientTests {
         #expect(value.supportsImageInput)
         #expect(value.acceptedReferenceMIMETypes == ["image/jpeg"])
 
-        let rejected = jpegOnly.replacingOccurrences(of: #""accepted":true"#, with: #""accepted":false"#)
-        let rejectedValue = try JSONDecoder().decode(
-            VideoCapabilities.self, from: Data(rejected.utf8)
+        // Live contract (issue #2969): the PRESENCE of input_reference (with a
+        // valid limit), not a retired ``accepted`` boolean, expresses support.
+        // A MISSING input_reference must disable image input entirely.
+        let absent = #"""
+        {
+          "object":"video.capabilities","model":"ltx","modality":"video-gen","family":"ltx-2.3",
+          "modes":["text-to-video","image-to-video"],
+          "limits":{
+            "size":{"type":"range","width":{"minimum":256,"maximum":1920,"multiple_of":64},"height":{"minimum":256,"maximum":1920,"multiple_of":64},"also_supported":["1280x720","720x1280"]},
+            "seconds":{"minimum":1,"maximum":20,"default":4},
+            "fps":{"minimum":1,"maximum":60,"default":24,"fixed":false},
+            "frames":{"minimum":9,"maximum":1201,"step":8,"offset":1},
+            "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"ceil_to_64"}
+          },
+          "controls":{}
+        }
+        """#
+        let absentValue = try JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(absent.utf8)
         )
-        #expect(!rejectedValue.supportsImageInput)
-        #expect(rejectedValue.acceptedReferenceMIMETypes.isEmpty)
+        #expect(!absentValue.supportsImageInput)
+        #expect(absentValue.acceptedReferenceMIMETypes.isEmpty)
+        #expect(absentValue.referenceMaximumBytes == 0)
+
+        // A present-but-malformed input_reference (zero bytes) fails closed in
+        // validated(): it advertises support but carries no usable limit.
+        let zeroBytes = jpegOnly.replacingOccurrences(
+            of: #""maximum_bytes":20971520"#, with: #""maximum_bytes":0"#
+        )
+        #expect(throws: VideoClientError.invalidResponse) {
+            _ = try JSONDecoder().decode(VideoCapabilities.self, from: Data(zeroBytes.utf8)).validated()
+        }
     }
 
     @Test("Reference MIME type is detected from bytes, not the filename")
@@ -323,8 +367,8 @@ struct VideoClientTests {
         "seconds":{"minimum":1,"maximum":20,"default":4},
         "fps":{"minimum":1,"maximum":60,"default":24,"fixed":false},
         "frames":{"minimum":9,"maximum":1201,"step":8,"offset":1},
-        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"multiple_of_64"},
-        "input_reference":{"accepted":true,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}
+        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"ceil_to_64"},
+        "input_reference":{"maximum_bytes":20971520,"maximum_pixels":1811939328,"formats":["jpeg","png","webp"]}
       },
       "controls":{}
     }
