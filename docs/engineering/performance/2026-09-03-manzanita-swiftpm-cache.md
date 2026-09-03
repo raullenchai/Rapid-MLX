@@ -96,8 +96,21 @@ lockfile/manifest digest, and build flags. Give each job a private writable APFS
 clone; atomically promote only a successful trusted generation. Never mount one
 read-write `.build` or DerivedData directory into concurrent customer VMs.
 
-Untrusted pull requests may read a trusted default-branch seed but must write to
-their own PR/merge-ref namespace and must never promote into the trusted lane.
+The mount must be selected for the specific dispatched job before Tart boots;
+mounting the entire fleet cache root would let customer code enumerate another
+tenant's data. Inside the guest, a GitHub runner job-start hook can read the
+event payload and export `SWIFTPM_BUILD_DIR` through `GITHUB_ENV`, pointing
+SwiftPM at the private mounted generation without requiring a workflow edit.
+The same generation can expose the normal Xcode DerivedData location. A
+job-completed hook records metadata, but host-side promotion must wait for the
+reported GitHub conclusion and must enforce a timeout because runner hooks have
+no built-in timeout.
+
+Untrusted pull requests must write to their own PR/merge-ref namespace and must
+never promote into the trusted lane. They may read only a sanitized,
+dependency-download seed. Do not seed an untrusted job from a cache that might
+contain privileged build outputs or secrets; global package-download caches are
+safer than an entire prior workspace or DerivedData generation.
 
 ### L2: NAS/object-store archive
 
@@ -107,6 +120,12 @@ metadata- and small-file-heavy; local NVMe should stay on the hot path.
 
 GitHub's cache service can remain a portable fallback for small dependency
 archives, but the measured full `.build` archive is not a useful hot cache.
+
+For a zero-friction product, default package-download caches can be baked into
+the image, while writable repository build state requires the dynamic,
+job-specific mount above. Graft's static pool mounts are suitable for shared
+read-only caches but are not sufficient for a per-repository writable cache;
+that selection belongs in Manzanita's dispatcher/node daemon.
 
 ## DerivedData and test plan
 
@@ -135,7 +154,9 @@ alone did not make them safe.
 
 - GitHub dependency caching: <https://docs.github.com/en/actions/concepts/workflows-and-actions/dependency-caching>
 - GitHub cache matching and scope: <https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching>
+- GitHub runner pre/post-job hooks: <https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts>
 - SwiftPM reset/cache/scratch paths: <https://docs.swift.org/swiftpm/documentation/packagemanagerdocs/packagereset/>
+- SwiftPM `SWIFTPM_BUILD_DIR` implementation: <https://github.com/swiftlang/swift-package-manager/blob/365bca96aafe6177f66bc88ae7f9167d1706a509/Sources/SPMBuildCore/BuildSystem/BuildSystem.swift#L329-L336>
 - Tart host directory mounts: <https://tart.run/quick-start/>
 - Orchard: <https://github.com/openai/orchard>
 - Graft image and cache guidance: <https://github.com/Arborist-sh/graft/blob/main/docs/images-and-caching.md>
