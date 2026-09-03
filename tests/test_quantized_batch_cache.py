@@ -2,8 +2,8 @@
 
 Strategy
 --------
-``QuantizedBatchKVCache`` stores quantized KV but returns bf16 (dequant-on-read),
-so two invariants are checked:
+``QuantizedBatchKVCache`` stores quantized KV and returns packed triples to the
+fused quantized-attention dispatcher, so three invariants are checked:
 
 1. **Bookkeeping is bit-exact vs BatchKVCache.** ``offset`` / ``left_padding`` /
    ``_idx`` / ``make_mask`` / ``nbytes>`` structure never touch quantization, so
@@ -13,7 +13,13 @@ so two invariants are checked:
    axis is 1:1 with tokens in the packed tensor, the value returned for a written
    chunk is exactly ``dequantize(quantize(chunk))`` — deterministic, so the
    comparison is bit-exact (max-abs-diff == 0), not merely "close".
+
+3. **Model attention takes the fused packed path.** The public attention
+   dispatcher sees the cache's ``bits``/``group_size`` metadata and invokes
+   quantized SDPA without materializing the full BF16 history.
 """
+
+import sys
 
 import pytest
 
@@ -56,6 +62,19 @@ def _max_abs(a, b):
 def _deq(cache, triple):
     """Dequantize an update_and_fetch return (quantized triples, #1751)."""
     return _dequantize(list(triple), cache._q_group_size, cache._q_bits)
+
+
+def test_supported_cache_types_without_optional_vision_runtime(monkeypatch):
+    """The base install keeps mlx-lm cache support without mlx-vlm."""
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.quantized_batch_cache import supported_kv_cache_types
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
+    plain, rotating = supported_kv_cache_types()
+
+    assert plain == (KVCache,)
+    assert rotating == (RotatingKVCache,)
 
 
 def _ref_attention_fp32(queries, k, v, mask):
@@ -976,6 +995,46 @@ def test_cache_exposes_quantized_dispatch_attrs():
     q.update_and_fetch(k, k)
     # group size auto-adjusted for head_dim=96 must show through the attr
     assert q.group_size == 32
+
+
+def test_public_attention_dispatch_consumes_packed_cache(monkeypatch):
+    """The model-facing dispatcher must select quantized SDPA for this cache."""
+    import mlx_lm.models.base as mlx_base
+
+    q = QuantizedBatchKVCache([0], group_size=32, bits=8)
+    keys = mx.random.normal((1, 2, 8, 64)).astype(mx.bfloat16)
+    values = mx.random.normal((1, 2, 8, 64)).astype(mx.bfloat16)
+    packed_keys, packed_values = q.update_and_fetch(keys, values)
+    queries = mx.random.normal((1, 2, 1, 64)).astype(mx.bfloat16)
+
+    original = mlx_base.quantized_scaled_dot_product_attention
+    calls = []
+
+    def _recording_quantized_attention(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mlx_base,
+        "quantized_scaled_dot_product_attention",
+        _recording_quantized_attention,
+    )
+    output = mlx_base.scaled_dot_product_attention(
+        queries,
+        packed_keys,
+        packed_values,
+        cache=q,
+        scale=1.0,
+        mask=None,
+    )
+    mx.eval(output)
+
+    assert calls
+    assert calls[0][0][1] is packed_keys
+    assert calls[0][0][2] is packed_values
+    assert calls[0][1]["group_size"] == q.group_size
+    assert calls[0][1]["bits"] == q.bits
+    assert output.shape == queries.shape
 
 
 def test_fused_qsdpa_matches_dequant_reference_batched_gqa():
