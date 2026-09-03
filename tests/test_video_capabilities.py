@@ -113,6 +113,40 @@ async def test_cogvideox_capabilities_report_fixed_mvp_shape(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_wan_capabilities_include_registered_community_benchmark_size(
+    monkeypatch,
+) -> None:
+    engine = SimpleNamespace(
+        model_name="Anes1032/Wan2.2-TI2V-5B-mlx-q8",
+        video_family="wan",
+        native_fps=24,
+        _wan_engine=SimpleNamespace(model_type="ti2v", max_area=832 * 512),
+    )
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+
+    body = await video.video_capabilities()
+
+    assert "832x480" in body["limits"]["size"]["also_supported"]
+
+
+@pytest.mark.asyncio
+async def test_wan_capabilities_require_aligned_canvas_area_for_benchmark_size(
+    monkeypatch,
+) -> None:
+    engine = SimpleNamespace(
+        model_name="Anes1032/Wan2.2-TI2V-5B-mlx-q8",
+        video_family="wan",
+        native_fps=24,
+        _wan_engine=SimpleNamespace(model_type="ti2v", max_area=832 * 512 - 1),
+    )
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+
+    body = await video.video_capabilities()
+
+    assert "832x480" not in body["limits"]["size"]["also_supported"]
+
+
+@pytest.mark.asyncio
 async def test_wan_capabilities_use_checkpoint_limits(monkeypatch) -> None:
     engine = SimpleNamespace(
         model_name="Anes1032/Wan2.2-TI2V-5B-mlx-q8",
@@ -126,7 +160,7 @@ async def test_wan_capabilities_use_checkpoint_limits(monkeypatch) -> None:
 
     assert body["modes"] == ["image-to-video"]
     assert body["limits"]["size"]["maximum_area"] == 901_120
-    assert body["limits"]["size"]["also_supported"] == []
+    assert body["limits"]["size"]["also_supported"] == ["832x480"]
     assert body["limits"]["fps"] == {
         "minimum": 24,
         "maximum": 24,
@@ -153,6 +187,7 @@ async def test_wan_only_lists_openai_sizes_accepted_after_alignment(
     assert body["limits"]["size"]["also_supported"] == [
         "1280x720",
         "720x1280",
+        "832x480",
     ]
 
 

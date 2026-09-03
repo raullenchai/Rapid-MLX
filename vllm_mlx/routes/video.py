@@ -40,6 +40,10 @@ _VIDEO_JOB_SCHEMA_VERSION = 1
 _VIDEO_JOB_METADATA = "job.json"
 _MAX_VIDEO_JOB_METADATA_BYTES = 64 * 1024
 _VIDEO_ID_RE = re.compile(r"video_[0-9a-f]{32}\Z")
+# The registered Community Benchmark uses Wan's common 480p landscape target.
+# Wan renders through a 64-aligned working canvas and crops/scales to the
+# requested output, just like the OpenAI-compatible 720p exceptions below.
+_WAN_STANDARD_OUTPUT_SIZE = (832, 480)
 _jobs_lock = threading.Lock()
 _ephemeral_jobs_roots = {Path(tempfile.mkdtemp(prefix="rapid-mlx-videos-"))}
 _jobs_root = next(iter(_ephemeral_jobs_roots))
@@ -690,19 +694,25 @@ def _video_engine():
     return engine
 
 
-def _parse_size(value: str, *, multiple: int = 64) -> tuple[int, int]:
+def _parse_size(
+    value: str,
+    *,
+    multiple: int = 64,
+    also_supported: set[tuple[int, int]] | None = None,
+) -> tuple[int, int]:
     try:
         width, height = (int(part) for part in value.lower().split("x", 1))
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=400, detail="size must be WIDTHxHEIGHT"
         ) from exc
-    openai_sizes = {(1280, 720), (720, 1280)}
+    exceptional_sizes = {(1280, 720), (720, 1280)}
+    exceptional_sizes.update(also_supported or ())
     is_model_aligned = width % multiple == 0 and height % multiple == 0
     if not (
         256 <= width <= 1920
         and 256 <= height <= 1920
-        and (is_model_aligned or (width, height) in openai_sizes)
+        and (is_model_aligned or (width, height) in exceptional_sizes)
     ):
         raise HTTPException(
             status_code=400,
@@ -741,7 +751,7 @@ def _video_capabilities(engine) -> dict:
             "i2v": ["image-to-video"],
             "ti2v": ["text-to-video", "image-to-video"],
         }.get(model_type, ["text-to-video", "image-to-video"])
-        openai_sizes = [(1280, 720), (720, 1280)]
+        openai_sizes = [(1280, 720), (720, 1280), _WAN_STANDARD_OUTPUT_SIZE]
         supported_openai_sizes = [
             f"{width}x{height}"
             for width, height in openai_sizes
@@ -1052,7 +1062,11 @@ async def create_video(
             )
         width, height = 672, 384
     else:
-        width, height = _parse_size(size, multiple=32 if is_ltx25 else 64)
+        width, height = _parse_size(
+            size,
+            multiple=32 if is_ltx25 else 64,
+            also_supported={_WAN_STANDARD_OUTPUT_SIZE} if is_wan else None,
+        )
     native_fps = 5 if is_cogvideox else getattr(engine, "native_fps", 24)
     request_fps = native_fps if fps is None else fps
     if not 1 <= request_fps <= 60:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import builtins
 import contextlib
 import io
 import json
@@ -22,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from vllm_mlx.bench import _server
 from vllm_mlx.catalog import rcj_digest
@@ -69,6 +71,15 @@ class _Response:
 
     def json(self) -> dict:
         return self._payload
+
+
+class _HTTPErrorResponse(_Response):
+    status_code = 400
+
+    def raise_for_status(self) -> None:
+        response = requests.Response()
+        response.status_code = self.status_code
+        raise requests.HTTPError("400 Client Error", response=response)
 
 
 def _png_base64(width: int, height: int) -> str:
@@ -1719,6 +1730,55 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     }
 
 
+def test_video_request_failure_preserves_server_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "video_generation", "mlx-community/example-video-model"
+    )
+
+    @contextlib.contextmanager
+    def serve(alias: str, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _HTTPErrorResponse(
+            {"detail": "video width/height must be divisible by 64"}
+        ),
+    )
+
+    with pytest.raises(
+        local_runner.LocalBenchmarkError,
+        match="video benchmark request failed with HTTP 400: .*divisible by 64",
+    ) as error:
+        local_runner.run_local("example-video", archive=archive)
+
+    assert error.value.saved is True
+    assert error.value.run["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
+
+
+def test_local_request_failure_uses_bounded_fallback_for_non_json_error() -> None:
+    class NonJSONErrorResponse(_HTTPErrorResponse):
+        def json(self) -> dict:
+            raise ValueError("not JSON")
+
+    with pytest.raises(
+        RuntimeError,
+        match="video benchmark request failed with HTTP 400: "
+        "local server rejected the request",
+    ):
+        local_runner._raise_for_status(
+            NonJSONErrorResponse({}), phase="video benchmark request"
+        )
+
+
 def test_video_artifact_is_downloaded_and_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3097,6 +3157,153 @@ def test_video_probe_translates_decoder_crashes(
     monkeypatch.setitem(sys.modules, "imageio.v2", v2)
 
     with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
+        local_runner._probe_video_artifact_unbounded("clip.mp4")
+
+
+def test_video_probe_uses_bundled_ffmpeg_without_imageio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def import_without_imageio(name: str, *args: object, **kwargs: object):
+        if name == "imageio.v2":
+            raise ImportError("Desktop intentionally omits imageio")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_imageio)
+    monkeypatch.setenv("FFMPEG_BINARY", "/app/rapid-mlx/bin/ffmpeg")
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr=(
+            "Stream #0:0: Video: h264, yuv420p, 832x480, 24 fps, 24 tbr\n"
+            "frame=   81 fps=0.0 q=-1.0 Lsize=1KiB\n"
+        ),
+    )
+    monkeypatch.setattr(
+        local_runner.subprocess, "run", lambda *args, **kwargs: completed
+    )
+
+    assert local_runner._probe_video_artifact_unbounded("clip.mp4") == (
+        832,
+        480,
+        81,
+        24.0,
+    )
+
+
+def test_bundled_ffmpeg_probe_rejects_unparseable_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="invalid data"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
+        local_runner._probe_video_with_ffmpeg("clip.mp4", "/app/bin/ffmpeg")
+
+
+def test_bundled_ffmpeg_probe_has_no_second_artifact_and_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured.update(command=command, **kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(local_runner.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
+        local_runner._probe_video_with_ffmpeg(
+            "clip.mp4", "/app/bin/ffmpeg", desktop_bundle=True
+        )
+
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["timeout"] == local_runner._VIDEO_ARTIFACT_PROBE_TIMEOUT_S
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[command.index("-c:v") + 1] == "h264_videotoolbox"
+    assert command[-1] == "pipe:1"
+
+
+def test_system_ffmpeg_probe_uses_portable_null_muxer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="",
+        stderr=(
+            "Stream #0:0: Video: h264, yuv420p, 832x480, 24 fps, 24 tbr\n"
+            "frame=   81 fps=0.0 q=-0.0 Lsize=N/A\n"
+        ),
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured["command"] = command
+        return completed
+
+    monkeypatch.setattr(local_runner.subprocess, "run", run)
+    assert local_runner._probe_video_with_ffmpeg("clip.mp4", "/usr/bin/ffmpeg") == (
+        832,
+        480,
+        81,
+        24.0,
+    )
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[-3:] == ["-f", "null", "-"]
+    assert "h264_videotoolbox" not in command
+
+
+def test_ffmpeg_environment_variable_does_not_imply_sidecar_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_runner.sys, "executable", "/usr/bin/python3")
+    assert local_runner._is_sidecar_bundled_ffmpeg("/usr/local/bin/ffmpeg") is False
+
+    monkeypatch.setattr(
+        local_runner.sys,
+        "executable",
+        "/Applications/Rapid.app/Contents/Resources/rapid-mlx/python/bin/python3.12",
+    )
+    assert local_runner._is_sidecar_bundled_ffmpeg(
+        "/Applications/Rapid.app/Contents/Resources/rapid-mlx/bin/ffmpeg"
+    )
+
+
+def test_sidecar_ffmpeg_detection_fails_closed_on_unresolvable_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_runner.os.path,
+        "realpath",
+        lambda path: (_ for _ in ()).throw(OSError("unresolvable path")),
+    )
+    assert local_runner._is_sidecar_bundled_ffmpeg("/app/bin/ffmpeg") is False
+
+
+def test_video_probe_without_imageio_or_ffmpeg_explains_required_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+
+    def import_without_imageio(name: str, *args: object, **kwargs: object):
+        if name == "imageio.v2":
+            raise ImportError("imageio unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_imageio)
+    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
+    monkeypatch.setattr(local_runner.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match=r"validation requires rapid-mlx\[video\]"):
         local_runner._probe_video_artifact_unbounded("clip.mp4")
 
 

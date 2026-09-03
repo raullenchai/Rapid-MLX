@@ -306,6 +306,55 @@ async def test_wan_job_uses_native_fps_and_async_video_contract(
 
 
 @pytest.mark.asyncio
+async def test_wan_route_accepts_registered_community_benchmark_size(
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    class FakeWanEngine:
+        model_name = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
+        video_family = "wan"
+        native_fps = 24
+        _wan_engine = None
+
+        def validate_request(self, **kwargs):
+            captured["validated"] = kwargs
+
+        def generate(self, *, output_path: Path, **kwargs):
+            captured.update(kwargs)
+            output_path.write_bytes(b"mp4")
+
+    engine = FakeWanEngine()
+    engine._wan_engine = engine
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+
+    created = await video.create_video(
+        prompt="ocean sunrise",
+        model="wan2.2-ti2v-5b-q8",
+        seconds="ignored",
+        size="832x480",
+        seed=9,
+        frames=81,
+        fps=24,
+        guidance_scale=5.0,
+        input_reference=None,
+    )
+    for _ in range(100):
+        current = await video.retrieve_video(created["id"])
+        if current["status"] == "completed":
+            break
+        await asyncio.sleep(0.01)
+
+    assert current["status"] == "completed"
+    assert current["size"] == "832x480"
+    assert captured["width"] == 832
+    assert captured["height"] == 512
+    assert captured["output_width"] == 832
+    assert captured["output_height"] == 480
+    await video.delete_video(created["id"])
+
+
+@pytest.mark.asyncio
 async def test_wan_route_rejects_non_native_fps(monkeypatch) -> None:
     class FakeWanEngine:
         model_name = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
