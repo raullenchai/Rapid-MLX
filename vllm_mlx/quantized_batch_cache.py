@@ -1,4 +1,4 @@
-"""Quantized, continuous-batching KV cache (dequant-on-read).
+"""Quantized, continuous-batching KV cache (fused packed-KV reads).
 
 Background (#1197)
 ------------------
@@ -78,6 +78,25 @@ from mlx_lm.models.cache import (  # noqa: E402
     create_causal_mask,
     dynamic_roll,
 )
+
+
+def supported_kv_cache_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
+    """Return exact plain and rotating KV cache classes installed locally.
+
+    mlx-lm and mlx-vlm expose separate classes with the same names.  Keeping
+    their discovery here gives install, prefix normalization, and the
+    scheduler's structural capability probe one authoritative definition.
+    """
+    from mlx_lm.models.cache import RotatingKVCache
+
+    plain: tuple[type, ...] = (KVCache,)
+    rotating: tuple[type, ...] = (RotatingKVCache,)
+    try:
+        from mlx_vlm.models.cache import KVCache as VLMKVCache
+        from mlx_vlm.models.cache import RotatingKVCache as VLMRotatingKVCache
+    except ImportError:
+        return plain, rotating
+    return plain + (VLMKVCache,), rotating + (VLMRotatingKVCache,)
 
 
 def _quantize(x: mx.array, group_size: int, bits: int) -> list[mx.array]:
@@ -637,8 +656,9 @@ def install_quantized_batch_cache(
     :class:`QuantizedBatchKVCache`) is therefore a single, minimal instance-level
     hook — no mlx-lm internals are patched.
 
-    Only exact top-level ``KVCache`` layers are swapped. Everything else keeps
-    its bf16 behavior:
+    Only exact top-level ``KVCache`` layers are swapped. This deliberately
+    supports hybrid per-layer layouts: full-attention layers use packed KV while
+    bounded rotating layers keep their bf16 behavior.
 
     * ``RotatingKVCache`` (sliding-window / ``max_kv_size``) — quantized batched
       sliding-window is NYI upstream (``BatchRotatingKVCache`` raises NYI).
@@ -669,9 +689,11 @@ def install_quantized_batch_cache(
         # instead of the server wedging.
         return False
 
+    plain_kv_types, _ = supported_kv_cache_types()
+
     def _quantized_make_new_cache():
         return [
-            _QuantizableKVCache(group_size, bits) if type(c) is KVCache else c
+            _QuantizableKVCache(group_size, bits) if type(c) in plain_kv_types else c
             for c in orig_make_new_cache()
         ]
 
@@ -862,9 +884,11 @@ def normalize_caches_for_quantization(caches: list, group_size: int, bits: int) 
     ``RotatingKVCache`` / hybrid / ``CacheList`` layers pass through untouched
     (see that function for why ``CacheList`` models stay bf16).
     """
+    plain_kv_types, _ = supported_kv_cache_types()
+
     out = []
     for c in caches:
-        if type(c) is KVCache:
+        if type(c) in plain_kv_types:
             q = _QuantizableKVCache(group_size, bits)
             q.keys, q.values, q.offset = c.keys, c.values, c.offset
             out.append(q)
