@@ -55,6 +55,20 @@ struct GitHubStarPromptTests {
             card.components(separatedBy: "expands: true").count - 1 == 3,
             "the primary action and second-row actions must fill their available rows"
         )
+        let primaryActionEnd = card.range(
+            of: ".accessibilityIdentifier(\"GitHub.Star.ValueMoment.Open\")"
+        )
+        let laterActionStart = card.range(of: "Button { prompt.deferPrompt() }")
+        if let primaryActionEnd, let laterActionStart,
+           primaryActionEnd.upperBound < laterActionStart.lowerBound {
+            let betweenActionRows = card[primaryActionEnd.upperBound..<laterActionStart.lowerBound]
+            #expect(
+                betweenActionRows.contains("HStack(spacing: RapidTheme.Space.sm) {"),
+                "Later and Feedback must begin in a separate row after the primary action"
+            )
+        } else {
+            Issue.record("could not locate the primary and secondary action boundaries")
+        }
         #expect(!card.contains(".frame(width: 84, height: RapidTheme.ControlHeight.medium)"))
         #expect(card.contains(".padding(14)"))
         #expect(content.contains(".padding(.trailing, 16)"))
