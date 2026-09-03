@@ -6781,6 +6781,25 @@ def models_command(args):
                 a: p for a, p in image_profiles.items() if _matches_search(a)
             }
 
+    # Load + filter the audio registry ONCE so the title count and the
+    # rendered section (below) share the same snapshot (codex r4 NIT) — a
+    # broken/missing registry degrades to [] (never a crash), a non-audio
+    # modality request blanks it, and a search filters it, exactly like the
+    # video/image sections above. Audio aliases live in their own registry
+    # (``vllm_mlx/audio/aliases.json``), separate from the text profiles.
+    try:
+        from vllm_mlx.audio.registry import list_audio_aliases
+
+        _all_audio = list_audio_aliases()
+    except Exception:
+        _all_audio = []
+    if modality and modality != "audio":
+        audio_entries = []
+    elif search_active:
+        audio_entries = [e for e in _all_audio if search_term in e.alias.casefold()]
+    else:
+        audio_entries = _all_audio
+
     print()
     title = "Available models"
     if modality:
@@ -6794,39 +6813,19 @@ def models_command(args):
     elif modality == "image-gen":
         shown = len(image_profiles)
     elif modality == "audio":
-        # ``audio_entries`` is computed below (after the text/video/image
-        # sections); import the audio registry here with the same guarded
-        # fallback so an absent/broken registry yields 0, not a crash.
-        try:
-            from vllm_mlx.audio.registry import list_audio_aliases
-
-            audio_for_count = list_audio_aliases()
-        except Exception:
-            audio_for_count = []
-        shown = (
-            len(audio_for_count)
-            if not search_active
-            else len([e for e in audio_for_count if search_term in e.alias.casefold()])
-        )
+        shown = len(audio_entries)
     else:
         # Whole-catalog view (no modality filter) shows the text table AND
         # any tagged sections (video / image / audio) that have entries.
         # The title count must reflect every section actually shown — for a
         # ``--search`` that matches only a tagged model, counting just the
         # text table would print a misleading "(0 aliases)". (codex r3 BLOCKING)
-        shown = len(profiles) + len(video_profiles) + len(image_profiles)
-        try:
-            from vllm_mlx.audio.registry import list_audio_aliases
-
-            audio_for_count = list_audio_aliases()
-        except Exception:
-            audio_for_count = []
-        if not search_active:
-            shown += len(audio_for_count)
-        else:
-            shown += len(
-                [e for e in audio_for_count if search_term in e.alias.casefold()]
-            )
+        shown = (
+            len(profiles)
+            + len(video_profiles)
+            + len(image_profiles)
+            + len(audio_entries)
+        )
     print(f"  {title} ({shown} aliases)")
 
     # Alias width is computed from the actual registry so new long names
@@ -6935,22 +6934,9 @@ def models_command(args):
     # they had to read the docs site. Now the audio registry
     # (vllm_mlx/audio/aliases.json) feeds the same table so
     # ``rapid-mlx models`` is the canonical "what can I serve?" view
-    # across every lane.
-    try:
-        from vllm_mlx.audio.registry import list_audio_aliases
-
-        audio_entries = list_audio_aliases()
-    except Exception:
-        # A malformed audio registry must NOT break the text alias
-        # listing — silently degrade by skipping the audio section.
-        audio_entries = []
-
-    # Search/modality gating for the audio section (mirrors the text/video/
-    # image sections above, #2355).
-    if modality and modality != "audio":
-        audio_entries = []
-    elif search_active:
-        audio_entries = [e for e in audio_entries if search_term in e.alias.casefold()]
+    # across every lane. ``audio_entries`` is already loaded + gated up
+    # above (before the title count) so the count and this table agree on
+    # the same snapshot (codex r4 NIT); nothing to re-load here.
 
     if audio_entries:
         audio_alias_width = max(

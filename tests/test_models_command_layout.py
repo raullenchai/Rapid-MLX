@@ -153,12 +153,20 @@ def test_search_narrows_to_matching_aliases(capsys):
     out = _capture(capsys, search="qwen3-0.6b")
     # The section title reflects the active search.
     assert "matching 'qwen3-0.6b'" in out
+    # The filter narrows to the matching slice: the qwen3-0.6b rows survive,
+    # and a KNOWN UNRELATED alias that exists in the real catalog must NOT
+    # leak through. Scoring presence/absence of concrete aliases (rather than
+    # parsing every table row) catches a filter that keeps the matches but
+    # also lets non-matching rows through (codex r4).
     lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("qwen3-0.6b")]
-    # Only the qwen3-0.6b aliases (and nothing larger) survive the filter.
     ids = {ln.split()[0] for ln in lines}
-    assert "qwen3-0.6b" in ids
-    assert all(a.startswith("qwen3-0.6b") for a in ids)
     assert len(ids) >= 3  # 0.6b + 0.6b-4bit + 0.6b-8bit
+    # ``deepseek`` / ``gemma3`` aliases exist in the full catalog but must be
+    # filtered out by a ``qwen3-0.6b`` search.
+    for leaked in ("deepseek", "gemma3"):
+        assert not any(ln.lstrip().startswith(leaked) for ln in out.splitlines()), (
+            f"search 'qwen3-0.6b' leaked a {leaked} row"
+        )
 
 
 def test_search_ignores_case(capsys):
@@ -269,8 +277,14 @@ def test_whole_catalog_search_counts_tagged_matches(capsys, monkeypatch):
     )
 
     out = _capture(capsys, search="voodoo")
-    matches = [ln for ln in out.splitlines() if "voodoo" in ln]
-    assert any("voodoo" in ln for ln in matches)
+    # The single video-lane match must render as an actual ALIAS TABLE ROW
+    # (first column == ``voodoo-video``) in the video section — checking any
+    # line containing "voodoo" would also be satisfied by the title line
+    # "matching 'voodoo'" (codex r4).
+    video_rows = [
+        ln for ln in out.splitlines() if ln.lstrip().startswith("voodoo-video")
+    ]
+    assert video_rows, "voodoo-video table row must render under the search"
     # The title counts the single video-lane match, not ``(0 aliases)``.
     assert "matching 'voodoo' (1 aliases)" in out
 
