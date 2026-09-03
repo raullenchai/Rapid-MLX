@@ -2961,19 +2961,57 @@ def test_residency_control_plane_validates_and_forwards_performance(monkeypatch)
 
 
 def test_resident_performance_uses_cli_kv_safety_gate(monkeypatch):
+    """#78: a control-plane kv_cache_dtype is operator-explicit, so an
+    unsupported family is now REJECTED with the shared typed error
+    (mapped to 422 by the residency route) instead of being silently
+    downgraded to bf16 as before."""
+    from vllm_mlx.kv_cache_dtype import KVCacheQuantizationUnsupportedError
     from vllm_mlx.runtime.resident_models import resolve_resident_performance
 
     monkeypatch.setattr(
         "vllm_mlx.cli._gather_kv_cache_dtype_inputs",
         lambda _name: ({"sliding_window": 4096}, None),
     )
-    resolved = resolve_resident_performance(
-        ResidentPerformanceConfig(kv_cache_dtype="int4", cache_memory_mb=2048),
-        model_name="example/sliding-model",
-        model_path=None,
-    )
+    with pytest.raises(KVCacheQuantizationUnsupportedError):
+        resolve_resident_performance(
+            ResidentPerformanceConfig(kv_cache_dtype="int4", cache_memory_mb=2048),
+            model_name="example/sliding-model",
+            model_path=None,
+        )
 
-    assert resolved == ResidentPerformanceConfig(
-        kv_cache_dtype="bf16",
-        cache_memory_mb=2048,
+
+def test_residency_route_maps_kv_unsupported_rejection_to_422(monkeypatch):
+    """#78: the residency route must surface the shared typed rejection as an
+    actionable 422 BEFORE load, not a 500 from the generic handler."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes.residency import router
+
+    manager, _, _, _ = manager_fixture(limit_gib=20)
+    monkeypatch.setattr(
+        "vllm_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
     )
+    monkeypatch.setattr(
+        "vllm_mlx.cli._gather_kv_cache_dtype_inputs",
+        # Sliding-window layout with an explicit quantized-KV perf request:
+        # resolve_resident_performance raises KVCacheQuantizationUnsupportedError.
+        lambda _name: ({"sliding_window": 4096}, None),
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/models/load",
+            json={
+                "model": "sliding-model",
+                "performance": {
+                    "kv_cache_dtype": "int4",
+                    "cache_memory_mb": 2048,
+                },
+            },
+        )
+    assert response.status_code == 422
+    assert "#78" not in response.json()["detail"]
+    assert "kv" in response.json()["detail"].lower()

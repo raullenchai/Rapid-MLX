@@ -647,6 +647,36 @@ def _probe_mllm_cache_type(language_model: Any) -> str | None:
     return first_incompatible_mllm_cache_type(test_cache)
 
 
+def _check_mllm_kv_quantization(scheduler_config: Any, model_name: str) -> None:
+    """MLLM-lane capability gate for quantized KV caches (#78).
+
+    The MLLM continuous-batching lane has no quantized-KV wiring
+    (``MLLMSchedulerConfig`` carries no quantization knobs). An
+    operator-explicit request therefore fails before weights load and
+    before the port reports ready; auto/profile-selected quantization
+    (e.g. the ``--reasoning`` int8 pin) serves bf16 with a warning
+    instead of staying silent.
+    """
+    if not getattr(scheduler_config, "kv_cache_quantization", False):
+        return
+    if getattr(scheduler_config, "kv_cache_dtype_explicit", False):
+        from ..kv_cache_dtype import KVCacheQuantizationUnsupportedError
+
+        raise KVCacheQuantizationUnsupportedError(
+            requested=getattr(scheduler_config, "kv_cache_dtype", "int8"),
+            model_name=model_name,
+            family_reason=(
+                "the multimodal (MLLM) serving lane has no quantized "
+                "KV-cache path, so the request would be silently ignored"
+            ),
+        )
+    logger.warning(
+        "[kv-cache] quantized KV cache (auto-selected) is not available on "
+        "the MLLM serving lane for '%s'; serving a bf16 KV cache.",
+        model_name,
+    )
+
+
 def _resolve_mllm_cache_policy(
     cache_type: str | None,
     max_num_seqs: int,
@@ -1453,6 +1483,9 @@ class BatchedEngine(BaseEngine):
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM, TextOnlyCheckpointError
         from ..scheduler import SchedulerConfig
+
+        # Capability gate BEFORE loading weights (#78).
+        _check_mllm_kv_quantization(self._scheduler_config, self._model_name)
 
         # MLLM-tuned default for ``prefill_step_size``. Vision tokens balloon
         # the prompt size on VLMs (~2200 tokens for a 1920×1080 Qwen3-VL

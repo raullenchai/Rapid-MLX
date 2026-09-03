@@ -25,12 +25,20 @@ short-context numbers that motivated the int4 default (#910,
 fused quantized-attention kernel, quantized KV is a memory/quality
 trade-off the operator must opt into, not a free speedup (#1853).
 
-Auto-downgrade safelist (forces ``bf16``):
+Unsupported-family safelist:
 
-* Sliding-window attention (Gemma 3, GPT-OSS) — the rotating buffer
-  can't tolerate arbitrary-boundary quant blocks.
+* Sliding-window attention (Gemma 3/4, GPT-OSS) — the rotating buffer
+  can't tolerate arbitrary-boundary quant blocks; on Gemma 4 the
+  quantized cache reaches the KV-shared text layers as raw tuples and
+  every request fails (#78).
 * Multi-head Latent Attention (DeepSeek V3+, Kimi K2.5) — the K
   projection is already compressed; quantizing on top compounds error.
+
+An operator-EXPLICIT int8/int4 request on a safelisted family raises
+:class:`KVCacheQuantizationUnsupportedError` before the server reports
+ready (#78) — never a silent bf16 fallback. Only auto/profile-selected
+quantization downgrades to ``bf16``. Nested ``text_config`` dicts
+(multimodal wrappers) are scanned structurally.
 
 The ``--reasoning`` profile pins to ``int8`` regardless of the dtype
 flag (AIME-class hard math collapses ~20pt at sub-4-bit on Qwen3
@@ -108,6 +116,50 @@ _SLIDING_WINDOW_MODEL_TYPES: frozenset[str] = frozenset(
 )
 
 
+class KVCacheQuantizationUnsupportedError(ValueError):
+    """An explicit int8/int4 KV-cache request cannot be honored (#78).
+
+    The single typed rejection contract for every serving lane (text
+    CLI, MLLM engine start, residency route): raised — before the
+    server reports ready — instead of silently serving bf16 when the
+    operator explicitly asked for a quantized KV cache that the model
+    or lane has no supported path for. Only auto/profile-selected
+    quantization may downgrade to bf16.
+
+    Attributes:
+        requested: The dtype the operator asked for.
+        model_name: Model alias / path the request targeted.
+        family_reason: Why the request cannot be honored.
+    """
+
+    def __init__(self, *, requested: str, model_name: str, family_reason: str):
+        self.requested = requested
+        self.model_name = model_name
+        self.family_reason = family_reason
+        super().__init__(
+            f"--kv-cache-dtype {requested} cannot be honored for "
+            f"'{model_name}': {family_reason}. Remove the flag (bf16 is "
+            f"the default and safe everywhere), or pick a full-attention "
+            f"model family for quantized KV."
+        )
+
+
+def _candidate_configs(hf_config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Config dicts to scan: the top level plus a nested ``text_config``.
+
+    Multimodal checkpoints (Gemma 4) nest the language backbone's fields
+    under ``text_config``; the top-level-only read let int8/int4 through
+    on every Gemma-4 alias (#78).
+    """
+    if hf_config is None:
+        return []
+    configs = [hf_config]
+    text_config = hf_config.get("text_config")
+    if isinstance(text_config, dict):
+        configs.append(text_config)
+    return configs
+
+
 @dataclass(frozen=True)
 class KVCacheDtypeDecision:
     """Outcome of :func:`resolve_kv_cache_dtype`.
@@ -143,13 +195,15 @@ def _is_sliding_window(
     if alias_metadata is not None and alias_metadata.get("sliding_window"):
         return True
 
-    if hf_config is not None:
+    for cfg in _candidate_configs(hf_config):
         # Canonical HF field — populated when the architecture rotates a
         # fixed window per layer (Gemma 3, GPT-OSS, Mistral sliding).
-        sw = hf_config.get("sliding_window")
+        # Checked on the top level AND the nested ``text_config`` so a
+        # multimodal wrapper config (Gemma 4) can't hide the field (#78).
+        sw = cfg.get("sliding_window")
         if isinstance(sw, int) and sw > 0:
             return True
-        model_type = hf_config.get("model_type")
+        model_type = cfg.get("model_type")
         if isinstance(model_type, str) and model_type in _SLIDING_WINDOW_MODEL_TYPES:
             return True
 
@@ -188,8 +242,8 @@ def _is_mla(
     needle = f"{model_name or ''} {hf_path or ''}".lower()
     name_hit = any(pat in needle for pat in _MLA_PATTERNS)
 
-    if hf_config is not None:
-        model_type = hf_config.get("model_type")
+    for cfg in _candidate_configs(hf_config):
+        model_type = cfg.get("model_type")
         if isinstance(model_type, str) and model_type in _MLA_MODEL_TYPES:
             return True
 
@@ -197,8 +251,8 @@ def _is_mla(
         # signal (name match). Avoids the false-positive class where a
         # non-DeepSeek/Kimi model ships both rank fields for unrelated
         # reasons.
-        q_rank = hf_config.get("q_lora_rank")
-        kv_rank = hf_config.get("kv_lora_rank")
+        q_rank = cfg.get("q_lora_rank")
+        kv_rank = cfg.get("kv_lora_rank")
         rank_pair = (
             isinstance(q_rank, int)
             and q_rank > 0
@@ -211,10 +265,48 @@ def _is_mla(
     return name_hit
 
 
+def quantized_kv_unsupported_reason(
+    *,
+    model_name: str | None = None,
+    hf_path: str | None = None,
+    hf_config: dict[str, Any] | None = None,
+    alias_metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """Return why this model cannot serve a quantized KV cache, or None.
+
+    Single source of truth for the family-capability policy — the
+    dtype resolver, the legacy ``--kv-cache-quantization`` CLI branch,
+    and the runtime residency gate all consume this one predicate so
+    the serving lanes cannot drift (#78).
+    """
+    if _is_sliding_window(
+        model_name=model_name or "",
+        hf_path=hf_path,
+        hf_config=hf_config,
+        alias_metadata=alias_metadata,
+    ):
+        return (
+            "sliding-window attention (rotating KV buffers are "
+            "incompatible with QuantizedKVCache block boundaries)"
+        )
+    if _is_mla(
+        model_name=model_name or "",
+        hf_path=hf_path,
+        hf_config=hf_config,
+        alias_metadata=alias_metadata,
+    ):
+        return (
+            "MLA architecture (K projection already compressed via "
+            "q_lora_rank/kv_lora_rank; quantizing on top compounds error)"
+        )
+    return None
+
+
 def resolve_kv_cache_dtype(
     requested: str,
     *,
     reasoning: bool = False,
+    explicit: bool = False,
     model_name: str | None = None,
     hf_path: str | None = None,
     hf_config: dict[str, Any] | None = None,
@@ -228,6 +320,12 @@ def resolve_kv_cache_dtype(
         reasoning: When True, pin to :data:`REASONING_KV_CACHE_DTYPE`
             regardless of ``requested`` — for AIME / hard math / code
             workloads where sub-4-bit drops -20pt on thinking variants.
+        explicit: True when the operator explicitly asked for
+            ``requested`` (CLI flag / control-plane request). An
+            explicit int8/int4 on an unsupported family then raises
+            :class:`KVCacheQuantizationUnsupportedError` pre-ready
+            instead of silently falling back to bf16 (#78); auto/
+            default requests keep the downgrade behavior.
         model_name: Alias key or display name. Used for substring
             detection when ``hf_config`` is unavailable.
         hf_path: Resolved HuggingFace repo path. Same as ``model_name``
@@ -283,34 +381,20 @@ def resolve_kv_cache_dtype(
     # Safelist only kicks in for sub-bf16 requests; an operator who
     # explicitly asked for bf16 should never be silently moved.
     if requested != "bf16":
-        if _is_sliding_window(
-            model_name=model_name or "",
+        family_reason = quantized_kv_unsupported_reason(
+            model_name=model_name,
             hf_path=hf_path,
             hf_config=hf_config,
             alias_metadata=alias_metadata,
-        ):
-            reason = (
-                f"sliding-window attention detected (rotating buffer is "
-                f"incompatible with QuantizedKVCache block boundaries); "
-                f"falling back from {requested} to bf16"
-            )
-            return KVCacheDtypeDecision(
-                dtype="bf16",
-                reason=reason,
-                downgraded=True,
-                requested=requested,
-            )
-        if _is_mla(
-            model_name=model_name or "",
-            hf_path=hf_path,
-            hf_config=hf_config,
-            alias_metadata=alias_metadata,
-        ):
-            reason = (
-                f"MLA architecture detected (K projection already "
-                f"compressed via q_lora_rank/kv_lora_rank); falling back "
-                f"from {requested} to bf16 to avoid compounding error"
-            )
+        )
+        if family_reason is not None:
+            if explicit:
+                raise KVCacheQuantizationUnsupportedError(
+                    requested=requested,
+                    model_name=model_name or hf_path or "unknown",
+                    family_reason=family_reason,
+                )
+            reason = f"{family_reason} detected; falling back from {requested} to bf16"
             return KVCacheDtypeDecision(
                 dtype="bf16",
                 reason=reason,

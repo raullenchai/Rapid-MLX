@@ -122,7 +122,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts, but dequant-on-read costs decode throughput at long context (measured -27% int4 / -36% int8 at 16k). Sliding-window (Gemma 3, GPT-OSS) and MLA (DeepSeek V3+, Kimi K2.5) models auto-downgrade to bf16. | bf16 |
+| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts, but dequant-on-read costs decode throughput at long context (measured -27% int4 / -36% int8 at 16k). An explicit int8/int4 on a sliding-window (Gemma 3/4, GPT-OSS) or MLA (DeepSeek V3+, Kimi K2.5) model is rejected before the server reports ready; only auto/profile-selected quantization downgrades to bf16. | bf16 |
 | `--reasoning` | Reasoning profile: pins `--kv-cache-dtype` to int8 regardless of the dtype flag (sub-4-bit KV drops accuracy on AIME-class math) | off |
 | `--kv-cache-quantization` | Deprecated alias of `--kv-cache-dtype int8`; wins when both flags are passed (backwards compatibility) | off |
 | `--kv-cache-quantization-bits` | Bit width for KV cache quantization (4 or 8) | 8 |

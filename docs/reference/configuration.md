@@ -92,7 +92,7 @@ needed by the application; leave it unset for URL/base64-only deployments.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts at a decode-throughput cost at long context; sliding-window and MLA models auto-downgrade to bf16. | `bf16` |
+| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts at a decode-throughput cost at long context. An explicit int8/int4 request on a sliding-window (Gemma 3/4, GPT-OSS) or MLA (DeepSeek V3+, Kimi K2.5) model is rejected before the server reports ready; only auto/profile-selected quantization downgrades to bf16. | `bf16` |
 | `--reasoning` | Pins `--kv-cache-dtype` to int8 (reasoning-accuracy profile) | `false` |
 | `--kv-cache-quantization` | Deprecated alias of `--kv-cache-dtype int8`; wins when both are passed | `false` |
 | `--kv-cache-quantization-bits` | Bit width for KV cache quantization (4 or 8) | `8` |

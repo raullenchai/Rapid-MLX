@@ -4195,9 +4195,21 @@ def serve_command(args):
     # the legacy --kv-cache-quantization flag is passed, honor it
     # verbatim for backwards compatibility; the new dtype flag only
     # takes effect on operators who haven't pinned the legacy bool.
+    # Operator-explicit quantization (either CLI shape), computed BEFORE
+    # the branch below mutates ``args.kv_cache_quantization`` (#78).
+    _kv_quant_explicit = bool(args.kv_cache_quantization) or (
+        args.kv_cache_dtype != "bf16"
+    )
+    # The typed rejection must be importable at the point the
+    # scheduler/MLLM-lane backstop raises it during load_model, regardless
+    # of which KV branch ran above (#78). Imported into this function scope
+    # so the ``except`` clause below always resolves the name.
+    from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
+
     kv_cache_decision = None
     if not args.kv_cache_turboquant and not args.kv_cache_quantization:
         from .kv_cache_dtype import (
+            KVCacheQuantizationUnsupportedError,
             dtype_to_quantization_bits,
             log_kv_cache_decision,
             resolve_kv_cache_dtype,
@@ -4205,17 +4217,22 @@ def serve_command(args):
 
         hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
         _continuous_mtp = getattr(args, "mtp_continuous_batching", False)
-        kv_cache_decision = resolve_kv_cache_dtype(
-            args.kv_cache_dtype,
-            # BF16 is at least as quality-preserving as the reasoning
-            # profile's int8 cache. Continuous MTP requires the unquantized
-            # transactional cache, so the method-specific capability wins.
-            reasoning=args.reasoning and not _continuous_mtp,
-            model_name=args.model,
-            hf_path=(alias_meta or {}).get("hf_path"),
-            hf_config=hf_cfg,
-            alias_metadata=alias_meta,
-        )
+        try:
+            kv_cache_decision = resolve_kv_cache_dtype(
+                args.kv_cache_dtype,
+                # BF16 is at least as quality-preserving as the reasoning
+                # profile's int8 cache. Continuous MTP requires the unquantized
+                # transactional cache, so the method-specific capability wins.
+                reasoning=args.reasoning and not _continuous_mtp,
+                explicit=_kv_quant_explicit,
+                model_name=args.model,
+                hf_path=(alias_meta or {}).get("hf_path"),
+                hf_config=hf_cfg,
+                alias_metadata=alias_meta,
+            )
+        except KVCacheQuantizationUnsupportedError as e:
+            print(f"\n  Error: {e}\n")
+            sys.exit(2)
         if _continuous_mtp and args.reasoning:
             logging.getLogger(__name__).info(
                 "Continuous MTP cache policy: keeping BF16 KV cache; the "
@@ -4245,6 +4262,8 @@ def serve_command(args):
         from .kv_cache_dtype import (
             REASONING_KV_CACHE_DTYPE,
             KVCacheDtypeDecision,
+            KVCacheQuantizationUnsupportedError,
+            resolve_kv_cache_dtype,
         )
 
         # The two rejections that used to live here (``--reasoning`` +
@@ -4252,6 +4271,21 @@ def serve_command(args):
         # ``kv_cache_flag_conflict`` and already fired above, so anything
         # reaching this point has a legal bits value.
         legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
+        # The legacy flag is equally operator-explicit, so it goes through
+        # the same resolver gate as --kv-cache-dtype (#78).
+        _legacy_hf_cfg, _legacy_alias_meta = _gather_kv_cache_dtype_inputs(args.model)
+        try:
+            resolve_kv_cache_dtype(
+                legacy_dtype,
+                explicit=True,
+                model_name=args.model,
+                hf_path=(_legacy_alias_meta or {}).get("hf_path"),
+                hf_config=_legacy_hf_cfg,
+                alias_metadata=_legacy_alias_meta,
+            )
+        except KVCacheQuantizationUnsupportedError as e:
+            print(f"\n  Error: {e}\n")
+            sys.exit(2)
         # When --reasoning is set alongside the (compatible) bits=8
         # legacy flag, the operator-facing reason should still
         # advertise the reasoning profile so the startup banner is
@@ -4421,6 +4455,9 @@ def serve_command(args):
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
         kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
+        # Lane-level gates (MLLM engine, live-cache probe) hard-fail
+        # explicit requests they cannot honor (#78).
+        kv_cache_dtype_explicit=_kv_quant_explicit,
         # TurboQuant compression (R15 Phase 4: mode-aware). Shared
         # helper (#969) — ``python -m vllm_mlx.server`` calls the same
         # ``turboquant_scheduler_kwargs`` so both entrypoints stay in
@@ -4738,6 +4775,15 @@ def serve_command(args):
             enable_disk_stream=getattr(args, "disk_stream", False),
             disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
+    except KVCacheQuantizationUnsupportedError as e:
+        # The scheduler/MLLM-lane backstop (#78) rejects an explicit
+        # quantized-KV request that the CLI-time resolver could not see (a
+        # freshly-downloaded model whose config wasn't readable yet surfaces
+        # only once weights load). Surface the SAME actionable error and exit
+        # code (2) as the CLI resolver so every serving lane reports the dtype
+        # contract identically instead of a generic model-load failure.
+        print(f"\n  Error: {e}\n")
+        sys.exit(2)
     except Exception as e:
         # Opt-in telemetry (Phase 2.2 error wiring): record that a model
         # failed to load on the ``serve`` path. The payload carries only a
@@ -10666,8 +10712,10 @@ Examples:
             "KV cache 2x/4x for memory-constrained hosts, but the live-cache "
             "dequant-on-read costs O(context) per decode step — measured "
             "-27%% (int4) / -36%% (int8) at 16k context (#1853). "
-            "Sliding-window (Gemma 3, GPT-OSS) and MLA (DeepSeek V3+, "
-            "Kimi K2.5) models auto-downgrade to bf16. Use --reasoning "
+            "An explicit int8/int4 on a sliding-window (Gemma 3/4, "
+            "GPT-OSS) or MLA (DeepSeek V3+, Kimi K2.5) model is rejected "
+            "before the server reports ready; only auto/profile-selected "
+            "quantization downgrades to bf16. Use --reasoning "
             "for AIME / hard math."
         ),
     )

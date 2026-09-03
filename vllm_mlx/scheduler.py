@@ -535,6 +535,16 @@ class SchedulerConfig:
     # model descriptor and runtime also attest it.
     mtp_allow_dynamic_membership: bool = False
 
+    # True when quantization was an operator-explicit request (CLI flag /
+    # control-plane) rather than an auto/profile default (#78). Lane
+    # capability gates hard-fail explicit requests they cannot honor
+    # (before the server reports ready) instead of silently serving bf16.
+    # APPEND-ONLY: kept at the tail so the historical positional prefix
+    # (``model_name`` / ``vision_min_pixels`` / ``vision_max_pixels``) is
+    # not shifted — see ``test_scheduler_config_preserves_the_historical_
+    # positional_prefix``.
+    kv_cache_dtype_explicit: bool = False
+
     def __post_init__(self) -> None:
         if not isinstance(self.mtp_continuous_batching, bool):
             raise ValueError("mtp_continuous_batching must be a boolean")
@@ -4284,6 +4294,35 @@ class Scheduler:
             self._sampler_cache.popitem(last=False)
         return sampler
 
+    #: Sentinel for a model whose cache layout could not be probed at all.
+    _KV_CACHE_UNPROBEABLE = "unprobeable"
+
+    @classmethod
+    def _quantized_live_cache_incompatibility(cls, model) -> str | None:
+        """Structural capability probe for the quantized live cache (#78).
+
+        Asks the model what caches it actually builds — no family names,
+        no config heuristics. Returns ``None`` when every cache is a
+        plain ``KVCache`` (verified quantized read path), the offending
+        type name otherwise (``RotatingKVCache`` for sliding windows,
+        ``ArraysCache``/``MambaCache`` for hybrids), or
+        :data:`_KV_CACHE_UNPROBEABLE` when no cache list could be built.
+        Backstops the config-level safelist for models whose HF config
+        was not readable at CLI time (fresh download).
+        """
+        try:
+            from mlx_lm.models.cache import KVCache, make_prompt_cache
+
+            caches = make_prompt_cache(model)
+        except Exception:
+            return cls._KV_CACHE_UNPROBEABLE
+        if not caches:
+            return cls._KV_CACHE_UNPROBEABLE
+        for c in caches:
+            if type(c) is not KVCache:
+                return type(c).__name__
+        return None
+
     def _init_kv_quantization(self, model) -> None:
         """Resolve the LIVE cache's group size + install gate (#1197).
 
@@ -4311,6 +4350,40 @@ class Scheduler:
             and not getattr(self.config, "kv_cache_turboquant", None)
         ):
             return
+
+        incompatible_cache = self._quantized_live_cache_incompatibility(model)
+        if incompatible_cache is not None:
+            unprobeable = incompatible_cache == self._KV_CACHE_UNPROBEABLE
+            if getattr(self.config, "kv_cache_dtype_explicit", False):
+                # Fail closed (#78): an explicit quantized request must not
+                # report ready and gamble on the first request — neither on
+                # a known-incompatible layout nor on an unverifiable one.
+                from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
+
+                raise KVCacheQuantizationUnsupportedError(
+                    requested=getattr(self.config, "kv_cache_dtype", "int8"),
+                    model_name=getattr(self.config, "model_name", None)
+                    or type(model).__name__,
+                    family_reason=(
+                        "the model's KV-cache layout could not be probed, so "
+                        "a supported quantized read path cannot be verified"
+                        if unprobeable
+                        else f"the model builds a {incompatible_cache} KV "
+                        f"cache (sliding-window/hybrid attention) with no "
+                        f"supported quantized read path"
+                    ),
+                )
+            if not unprobeable:
+                self._kv_quant_live_disabled = True
+                logger.warning(
+                    "[kv-cache] live KV quantization disabled: model builds a "
+                    "%s cache (sliding-window/hybrid attention) with no "
+                    "supported quantized read path; serving a bf16 live cache.",
+                    incompatible_cache,
+                )
+                return
+            # Unprobeable + auto-selected: the head-dim probe below keeps
+            # the pre-#78 disable behavior.
 
         from .quantized_batch_cache import (
             probe_kv_head_dims,
