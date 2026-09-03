@@ -143,7 +143,7 @@ def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, flo
     every video packet without decoding or retaining a second media stack.
     """
 
-    with tempfile.NamedTemporaryFile(prefix="rapid-probe-", suffix=".mp4") as copy:
+    try:
         result = subprocess.run(
             [
                 ffmpeg,
@@ -154,16 +154,21 @@ def _probe_video_with_ffmpeg(path: str, ffmpeg: str) -> tuple[int, int, int, flo
                 "0:v:0",
                 "-c",
                 "copy",
+                "-movflags",
+                "frag_keyframe+empty_moov",
                 "-f",
                 "mp4",
-                "-y",
-                copy.name,
+                "pipe:1",
             ],
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             env={**os.environ, "LC_ALL": "C"},
+            timeout=_VIDEO_ARTIFACT_PROBE_TIMEOUT_S,
             check=False,
         )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("video benchmark returned an invalid MP4 artifact") from exc
     output = result.stderr
     stream = re.search(
         r"Stream #\S+.*Video:.*?\b(\d{2,5})x(\d{2,5})\b.*?\b([0-9.]+) fps\b",

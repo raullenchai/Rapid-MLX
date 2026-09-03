@@ -3193,6 +3193,24 @@ def test_bundled_ffmpeg_probe_rejects_unparseable_media(
         local_runner._probe_video_with_ffmpeg("clip.mp4", "/app/bin/ffmpeg")
 
 
+def test_bundled_ffmpeg_probe_has_no_second_artifact_and_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured.update(command=command, **kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(local_runner.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="invalid MP4 artifact"):
+        local_runner._probe_video_with_ffmpeg("clip.mp4", "/app/bin/ffmpeg")
+
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["timeout"] == local_runner._VIDEO_ARTIFACT_PROBE_TIMEOUT_S
+    assert captured["command"][-1] == "pipe:1"
+
+
 def test_probe_video_artifact_returns_worker_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
