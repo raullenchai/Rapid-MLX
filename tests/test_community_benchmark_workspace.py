@@ -3166,7 +3166,9 @@ def test_video_probe_uses_bundled_ffmpeg_without_imageio(
             "frame=   81 fps=0.0 q=-1.0 Lsize=1KiB\n"
         ),
     )
-    monkeypatch.setattr(local_runner.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(
+        local_runner.subprocess, "run", lambda *args, **kwargs: completed
+    )
 
     assert local_runner._probe_video_artifact_unbounded("clip.mp4") == (
         832,
