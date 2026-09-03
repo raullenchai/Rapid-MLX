@@ -6809,7 +6809,24 @@ def models_command(args):
             else len([e for e in audio_for_count if search_term in e.alias.casefold()])
         )
     else:
-        shown = len(profiles)
+        # Whole-catalog view (no modality filter) shows the text table AND
+        # any tagged sections (video / image / audio) that have entries.
+        # The title count must reflect every section actually shown — for a
+        # ``--search`` that matches only a tagged model, counting just the
+        # text table would print a misleading "(0 aliases)". (codex r3 BLOCKING)
+        shown = len(profiles) + len(video_profiles) + len(image_profiles)
+        try:
+            from vllm_mlx.audio.registry import list_audio_aliases
+
+            audio_for_count = list_audio_aliases()
+        except Exception:
+            audio_for_count = []
+        if not search_active:
+            shown += len(audio_for_count)
+        else:
+            shown += len(
+                [e for e in audio_for_count if search_term in e.alias.casefold()]
+            )
     print(f"  {title} ({shown} aliases)")
 
     # Alias width is computed from the actual registry so new long names
@@ -11997,8 +12014,9 @@ Examples:
         "--modality",
         choices=("text", "video-gen", "image-gen", "audio"),
         default=None,
-        help="Only list models of this modality (text chat models by "
-        "default; other aliases are split into their own tagged sections).",
+        help="Show only models of this modality (text, audio, video-gen, "
+        "image-gen). Omit the flag to show the full catalog: the text chat "
+        "table plus every tagged section.",
     )
     recipe_parser = subparsers.add_parser(
         "recipe", help="Recommend the smart and fast models for this Mac"

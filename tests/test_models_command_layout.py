@@ -238,6 +238,43 @@ def test_modality_audio_count_tolerates_a_broken_audio_registry(capsys, monkeypa
     assert "Models [audio] (0 aliases)" in out
 
 
+def test_whole_catalog_search_counts_tagged_matches(capsys, monkeypatch):
+    """#2355 (codex r3 BLOCKING): a ``--search`` with no ``--modality`` greps
+    the whole catalog, so the title count must include matches in the tagged
+    (video / image / audio) sections too. Before the fix, a search matching
+    only a tagged model printed its rows under a misleading ``(0 aliases)``."""
+    import sys
+    import types
+
+    from vllm_mlx import model_aliases
+    from vllm_mlx.model_aliases import AliasProfile
+
+    # A tiny controlled registry with one chat + one video-gen + one
+    # image-gen alias. ``voodoo`` is deliberately unique to the video lane.
+    monkeypatch.setattr(
+        model_aliases,
+        "list_profiles",
+        lambda: {
+            "qwen3-0.6b": AliasProfile(hf_path="x/qwen"),
+            "voodoo-video": AliasProfile(hf_path="x/voodoo", modality="video-gen"),
+            "photon-img": AliasProfile(hf_path="x/photon", modality="image-gen"),
+        },
+    )
+    # Blank the audio registry so the aggregate count is exactly the three
+    # aliases above (guarded import degrades to 0 aliases, not a crash).
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.audio.registry",
+        types.ModuleType("vllm_mlx.audio.registry"),
+    )
+
+    out = _capture(capsys, search="voodoo")
+    matches = [ln for ln in out.splitlines() if "voodoo" in ln]
+    assert any("voodoo" in ln for ln in matches)
+    # The title counts the single video-lane match, not ``(0 aliases)``.
+    assert "matching 'voodoo' (1 aliases)" in out
+
+
 def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
     """#2355 regression: no filters keeps the full catalog AND points the
     user to the recipe command for RAM-fit recommendations."""
