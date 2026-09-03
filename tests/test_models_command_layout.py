@@ -352,9 +352,7 @@ def test_default_view_preserves_full_catalog_and_recipe_pointer(capsys):
 
 @pytest.mark.parametrize("other_flag", ("json", "cached"))
 @pytest.mark.parametrize("filter_flag", ("search", "modality"))
-def test_filters_do_not_silently_noop_on_other_views(
-    capsys, other_flag, filter_flag
-):
+def test_filters_do_not_silently_noop_on_other_views(capsys, other_flag, filter_flag):
     """Accepted filter syntax must never return an unfiltered alternate view."""
     args = {"cached": False, "json": False, "search": None, "modality": None}
     args[other_flag] = True
