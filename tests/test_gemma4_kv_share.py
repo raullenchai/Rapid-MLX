@@ -466,6 +466,56 @@ def test_vendored_fallback_borrow_active():
     _assert_e2b_active_sharing(TextConfig, LanguageModel)
 
 
+@pytest.mark.parametrize("bits", [4, 8])
+def test_quantized_shared_kv_keeps_producer_attention_metadata(bits):
+    """A shared full-attention borrower must reuse the producer's quantized
+    K/V through quantized SDPA without appending to its cache a second time.
+
+    The tiny topology includes a full-attention producer and borrower, and the
+    two calls cross the sliding-window boundary. This is the exact metadata
+    hand-off that previously sent raw quantized triples to ordinary SDPA.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    tc = TextConfig.from_dict(
+        {
+            "num_hidden_layers": 10,
+            "num_kv_shared_layers": 5,
+            "sliding_window": 4,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 32,
+            "global_head_dim": 32,
+            "vocab_size": 64,
+            "vocab_size_per_layer_input": 64,
+            "hidden_size_per_layer_input": 0,
+            "use_double_wide_mlp": False,
+        }
+    )
+    lm = LanguageModel(tc)
+    caches = lm.make_cache()
+
+    first = lm(mx.array([[1, 2, 3, 4, 5, 6]]), cache=caches).logits
+    caches = [
+        cache.to_quantized(group_size=32, bits=bits)
+        if type(cache) is KVCache
+        else cache
+        for cache in caches
+    ]
+    second = lm(mx.array([[7]]), cache=caches).logits
+    mx.eval(first, second)
+
+    assert first.shape == (1, 6, 64)
+    assert second.shape == (1, 1, 64)
+    assert bool(mx.all(mx.isfinite(second)).item())
+    quantized_full = [cache for cache in caches if hasattr(cache, "bits")]
+    assert quantized_full
+    assert all(cache.bits == bits for cache in quantized_full)
+
+
 # --------------------------------------------------------------------------
 # 3. Guard fires on the real load path
 # --------------------------------------------------------------------------

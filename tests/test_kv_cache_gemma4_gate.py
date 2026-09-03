@@ -46,6 +46,35 @@ GEMMA4_UNIFIED_CONFIG = {
     "text_config": {"model_type": "gemma4_unified_text", "sliding_window": 1024},
 }
 
+GEMMA4_DENSE_HYBRID_CONFIG = {
+    "model_type": "gemma4_unified",
+    "text_config": {
+        "model_type": "gemma4_unified_text",
+        "sliding_window": 512,
+        "num_kv_shared_layers": 0,
+        "layer_types": [
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    },
+}
+
+GEMMA4_SHARED_HYBRID_CONFIG = {
+    "model_type": "gemma4",
+    "text_config": {
+        "model_type": "gemma4_text",
+        "sliding_window": 512,
+        "num_kv_shared_layers": 2,
+        "layer_types": [
+            "sliding_attention",
+            "full_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    },
+}
+
 # Full-attention control family (Qwen3.5-style): no sliding window, no MLA.
 SUPPORTED_CONFIG = {
     "model_type": "qwen3_5",
@@ -104,6 +133,28 @@ def test_gemma4_unified_explicit_request_is_rejected():
             model_name="gemma-4-12b-alias",
             hf_config=GEMMA4_UNIFIED_CONFIG,
         )
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int4"])
+def test_dense_hybrid_explicit_request_allows_per_layer_quantization(dtype):
+    decision = resolve_kv_cache_dtype(
+        dtype,
+        explicit=True,
+        model_name="local-hybrid-checkpoint",
+        hf_config=GEMMA4_DENSE_HYBRID_CONFIG,
+    )
+    assert decision.dtype == dtype
+    assert decision.downgraded is False
+
+
+def test_cross_layer_shared_hybrid_defers_to_loaded_capability_probe():
+    decision = resolve_kv_cache_dtype(
+        "int8",
+        explicit=True,
+        model_name="local-shared-hybrid-checkpoint",
+        hf_config=GEMMA4_SHARED_HYBRID_CONFIG,
+    )
+    assert decision.dtype == "int8"
 
 
 @pytest.mark.parametrize("dtype", ["int8", "int4"])
@@ -281,7 +332,7 @@ def _scheduler_stub(explicit: bool):
 
 
 @pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
-def test_live_cache_probe_flags_rotating_cache():
+def test_live_cache_probe_accepts_plain_plus_rotating_hybrid():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
     from vllm_mlx.scheduler import Scheduler
@@ -290,9 +341,121 @@ def test_live_cache_probe_flags_rotating_cache():
         def make_cache(self):
             return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
 
+    assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_cross_layer_shared_hybrid():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _FakeModel:
+        args = SimpleNamespace(num_kv_shared_layers=2)
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
     assert (
         Scheduler._quantized_live_cache_incompatibility(_FakeModel())
-        == "RotatingKVCache"
+        == "cross-layer shared KV"
+    )
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _LanguageModel:
+        supports_quantized_shared_kv = True
+        config = SimpleNamespace(num_kv_shared_layers=2)
+
+    class _FakeModel:
+        language_model = _LanguageModel()
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
+    assert Scheduler._quantized_live_cache_incompatibility(_FakeModel()) is None
+
+
+@pytest.mark.requires_mlx
+def test_live_cache_probe_rejects_attention_sinks_before_ready():
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    from vllm_mlx.scheduler import Scheduler
+
+    class _Layer:
+        self_attn = SimpleNamespace(sinks=object())
+
+    class _Inner:
+        layers = [_Layer()]
+
+    class _FakeModel:
+        model = _Inner()
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
+    reason = Scheduler._quantized_live_cache_incompatibility(_FakeModel())
+    assert reason is not None
+    assert "attention sinks" in reason
+
+    with pytest.raises(KVCacheQuantizationUnsupportedError, match="attention sinks"):
+        _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("bits", [4, 8])
+def test_init_quantization_reports_hybrid_component_policy(caplog, bits):
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    class _FakeModel:
+        args = SimpleNamespace(head_dim=64, num_kv_shared_layers=0)
+
+        def make_cache(self):
+            return [
+                RotatingKVCache(max_size=8, keep=0),
+                KVCache(),
+                RotatingKVCache(max_size=8, keep=0),
+            ]
+
+    sched = _scheduler_stub(explicit=True)
+    sched.config.kv_cache_quantization_bits = bits
+    with caplog.at_level(logging.INFO):
+        sched._init_kv_quantization(_FakeModel())
+    assert sched._kv_quant_live_disabled is False
+    assert sched._kv_quant_layout.quantizable_layers == 1
+    assert sched._kv_quant_layout.rotating_layers == 2
+    assert any(
+        f"1/3 full-attention layers use int{bits}" in record.message
+        and "2 bounded rotating layers remain bf16" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.requires_mlx
+def test_init_quantization_reports_shared_borrowers(caplog):
+    from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+    class _LanguageModel:
+        supports_quantized_shared_kv = True
+        config = SimpleNamespace(head_dim=64, num_kv_shared_layers=2)
+
+    class _FakeModel:
+        language_model = _LanguageModel()
+
+        def make_cache(self):
+            return [KVCache(), RotatingKVCache(max_size=8, keep=0)]
+
+    sched = _scheduler_stub(explicit=True)
+    with caplog.at_level(logging.INFO):
+        sched._init_kv_quantization(_FakeModel())
+    assert sched._kv_quant_layout.shared_borrower_layers == 2
+    assert any(
+        "2 cross-layer KV borrowers" in record.message for record in caplog.records
     )
 
 

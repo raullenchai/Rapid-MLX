@@ -4346,31 +4346,142 @@ class Scheduler:
     #: Sentinel for a model whose cache layout could not be probed at all.
     _KV_CACHE_UNPROBEABLE = "unprobeable"
 
+    @dataclass(frozen=True)
+    class _QuantizedLiveCacheLayout:
+        quantizable_layers: int
+        rotating_layers: int
+        total_layers: int
+        shared_borrower_layers: int = 0
+
+    @staticmethod
+    def _quantized_attention_incompatibility(model) -> str | None:
+        """Return a structural attention feature unsupported by fused QSDPA."""
+        layer_owners = [
+            model,
+            getattr(model, "model", None),
+            getattr(model, "language_model", None),
+            getattr(getattr(model, "language_model", None), "model", None),
+        ]
+        for owner in layer_owners:
+            layers = getattr(owner, "layers", None)
+            if not isinstance(layers, (list, tuple)):
+                continue
+            for layer in layers:
+                attention = getattr(layer, "self_attn", None)
+                if attention is None:
+                    attention = getattr(layer, "attention", None)
+                if attention is None:
+                    continue
+                if (
+                    getattr(attention, "sinks", None) is not None
+                    or getattr(attention, "attn_sink", None) is not None
+                ):
+                    return (
+                        "attention sinks require a fused quantized-attention "
+                        "kernel that is unavailable in this MLX runtime"
+                    )
+            # The first concrete decoder stack is authoritative.
+            return None
+        return None
+
     @classmethod
     def _quantized_live_cache_incompatibility(cls, model) -> str | None:
         """Structural capability probe for the quantized live cache (#78).
 
         Asks the model what caches it actually builds — no family names,
-        no config heuristics. Returns ``None`` when every cache is a
-        plain ``KVCache`` (verified quantized read path), the offending
-        type name otherwise (``RotatingKVCache`` for sliding windows,
-        ``ArraysCache``/``MambaCache`` for hybrids), or
+        no config heuristics. Returns ``None`` for an all-plain layout or a
+        verified mixture of plain ``KVCache`` and bounded ``RotatingKVCache``;
+        rotating components remain bf16. Returns the offending type name for
+        other layouts (``ArraysCache``/``MambaCache``), or
         :data:`_KV_CACHE_UNPROBEABLE` when no cache list could be built.
         Backstops the config-level safelist for models whose HF config
         was not readable at CLI time (fresh download).
         """
         try:
-            from mlx_lm.models.cache import KVCache, make_prompt_cache
+            from mlx_lm.models.cache import make_prompt_cache
 
             caches = make_prompt_cache(model)
         except Exception:
             return cls._KV_CACHE_UNPROBEABLE
         if not caches:
             return cls._KV_CACHE_UNPROBEABLE
-        for c in caches:
-            if type(c) is not KVCache:
-                return type(c).__name__
+        attention_reason = cls._quantized_attention_incompatibility(model)
+        if attention_reason is not None:
+            return attention_reason
+        from .quantized_batch_cache import supported_kv_cache_types
+
+        plain_kv_types, rotating_types = supported_kv_cache_types()
+        quantizable = sum(type(c) in plain_kv_types for c in caches)
+        rotating = sum(type(c) in rotating_types for c in caches)
+        unsupported = [
+            type(c).__name__
+            for c in caches
+            if type(c) not in plain_kv_types and type(c) not in rotating_types
+        ]
+        if unsupported:
+            return unsupported[0]
+        if quantizable == 0:
+            return "RotatingKVCache" if rotating else cls._KV_CACHE_UNPROBEABLE
+        if cls._has_unsupported_cross_layer_kv_sharing(model):
+            return "cross-layer shared KV"
         return None
+
+    @staticmethod
+    def _cross_layer_kv_sharing_count(model) -> int:
+        """Return the configured number of cache-borrowing layers."""
+        candidates = [
+            model,
+            getattr(model, "args", None),
+            getattr(model, "config", None),
+            getattr(model, "language_model", None),
+            getattr(getattr(model, "language_model", None), "args", None),
+            getattr(getattr(model, "language_model", None), "config", None),
+        ]
+        for candidate in candidates:
+            value = getattr(candidate, "num_kv_shared_layers", None)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        return 0
+
+    @classmethod
+    def _has_unsupported_cross_layer_kv_sharing(cls, model) -> bool:
+        """Whether sharing loses metadata required for quantized attention."""
+        if cls._cross_layer_kv_sharing_count(model) == 0:
+            return False
+        language_model = getattr(model, "language_model", None)
+        return not bool(
+            getattr(model, "supports_quantized_shared_kv", False)
+            or getattr(language_model, "supports_quantized_shared_kv", False)
+        )
+
+    @classmethod
+    def _quantized_live_cache_layout(cls, model):
+        """Return the verified per-component live-cache layout, if usable."""
+        try:
+            from mlx_lm.models.cache import make_prompt_cache
+
+            caches = make_prompt_cache(model)
+        except Exception:
+            return None
+        if not caches or cls._has_unsupported_cross_layer_kv_sharing(model):
+            return None
+        from .quantized_batch_cache import supported_kv_cache_types
+
+        plain_kv_types, rotating_types = supported_kv_cache_types()
+        if any(
+            type(c) not in plain_kv_types and type(c) not in rotating_types
+            for c in caches
+        ):
+            return None
+        quantizable = sum(type(c) in plain_kv_types for c in caches)
+        if quantizable == 0:
+            return None
+        return cls._QuantizedLiveCacheLayout(
+            quantizable_layers=quantizable,
+            rotating_layers=sum(type(c) in rotating_types for c in caches),
+            total_layers=len(caches),
+            shared_borrower_layers=cls._cross_layer_kv_sharing_count(model),
+        )
 
     def _init_kv_quantization(self, model) -> None:
         """Resolve the LIVE cache's group size + install gate (#1197).
@@ -4417,22 +4528,36 @@ class Scheduler:
                         "the model's KV-cache layout could not be probed, so "
                         "a supported quantized read path cannot be verified"
                         if unprobeable
-                        else f"the model builds a {incompatible_cache} KV "
-                        f"cache (sliding-window/hybrid attention) with no "
-                        f"supported quantized read path"
+                        else f"the loaded model is incompatible: {incompatible_cache}"
                     ),
                 )
             if not unprobeable:
                 self._kv_quant_live_disabled = True
                 logger.warning(
-                    "[kv-cache] live KV quantization disabled: model builds a "
-                    "%s cache (sliding-window/hybrid attention) with no "
-                    "supported quantized read path; serving a bf16 live cache.",
+                    "[kv-cache] live KV quantization disabled: %s; serving a "
+                    "bf16 live cache.",
                     incompatible_cache,
                 )
                 return
             # Unprobeable + auto-selected: the head-dim probe below keeps
             # the pre-#78 disable behavior.
+
+        self._kv_quant_layout = self._quantized_live_cache_layout(model)
+        if self._kv_quant_layout is not None and self._kv_quant_layout.rotating_layers:
+            logger.info(
+                "[kv-cache] hybrid partial quantization: %d/%d full-attention "
+                "layers use int%d; %d bounded rotating layers remain bf16",
+                self._kv_quant_layout.quantizable_layers,
+                self._kv_quant_layout.total_layers,
+                getattr(self.config, "kv_cache_quantization_bits", 8),
+                self._kv_quant_layout.rotating_layers,
+            )
+            if self._kv_quant_layout.shared_borrower_layers:
+                logger.info(
+                    "[kv-cache] %d cross-layer KV borrowers reuse producer "
+                    "caches and allocate no independent KV",
+                    self._kv_quant_layout.shared_borrower_layers,
+                )
 
         from .quantized_batch_cache import (
             probe_kv_head_dims,
@@ -4509,8 +4634,9 @@ class Scheduler:
 
         # ``--kv-cache-dtype int8/int4`` must reach the LIVE continuous-batching
         # KV cache, not just the retained prefix cache (#1197). Swap the
-        # generator's plain ``BatchKVCache`` for a quantized, dequant-on-read
-        # ``QuantizedBatchKVCache``. TurboQuant has its own path, so this only
+        # generator's plain ``BatchKVCache`` for a packed
+        # ``QuantizedBatchKVCache`` consumed by fused quantized attention.
+        # TurboQuant has its own path, so this only
         # runs for the plain quantization toggle. The head_dim-compatible group
         # size (and the disable-on-incompatible decision) were resolved once in
         # __init__ so the live and retained caches never diverge.

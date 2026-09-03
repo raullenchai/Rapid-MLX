@@ -90,6 +90,36 @@ def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
     assert gemma4_text.gemma4_family_kind(d) == "nonunified"
 
 
+@pytest.mark.parametrize(
+    "model_type,expected_kind",
+    [("gemma4", "nonunified"), ("gemma4_unified", "unified")],
+)
+def test_load_plan_detects_cross_layer_shared_kv(tmp_path, model_type, expected_kind):
+    d = _write_config(tmp_path, model_type)
+    (d / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": model_type,
+                "text_config": {"num_kv_shared_layers": 20},
+            }
+        )
+    )
+    assert gemma4_text.gemma4_load_plan(d) == (expected_kind, True)
+
+
+def test_load_plan_keeps_dense_gemma_on_native_path(tmp_path):
+    d = _write_config(tmp_path, "gemma4")
+    (d / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gemma4",
+                "text_config": {"num_kv_shared_layers": 0},
+            }
+        )
+    )
+    assert gemma4_text.gemma4_load_plan(d) == ("nonunified", False)
+
+
 def test_is_gemma4_model_is_family_wide_alias(tmp_path):
     """``is_gemma4_model`` is the back-compat family-wide predicate: it
     tracks ``is_gemma4_family_model`` for every model_type (True for
@@ -349,6 +379,50 @@ def test_dispatch_routes_to_matching_loader(
     assert called.get("loader") == expected_loader, (
         f"{model_type} should route to {expected_loader}, got {called.get('loader')}"
     )
+
+
+@pytest.mark.parametrize(
+    "model_type,expected_loader",
+    [
+        ("gemma4", "load_gemma4_text"),
+        ("gemma4_unified", "load_gemma4_unified_text"),
+    ],
+)
+def test_dispatch_shared_kv_uses_metadata_preserving_loader(
+    tmp_path, monkeypatch, model_type, expected_loader
+):
+    """Shared-KV checkpoints must not enter the native loader first."""
+    from vllm_mlx.utils import tokenizer as tok
+
+    d = _write_config(tmp_path, model_type)
+    (d / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": model_type,
+                "text_config": {"num_kv_shared_layers": 20},
+            }
+        )
+    )
+
+    def _native_must_not_run(*_args, **_kwargs):
+        raise AssertionError("shared-KV Gemma must bypass native mlx_lm.load")
+
+    monkeypatch.setattr("mlx_lm.load", _native_must_not_run)
+    monkeypatch.setattr(tok, "_needs_tokenizer_fallback", lambda *_: False)
+    monkeypatch.setattr(tok, "_is_vendored_arch_model", lambda *_: False)
+    monkeypatch.setattr(tok, "_register_vendored_archs", lambda *_: None)
+
+    called = []
+
+    def _stub(model_name, tokenizer_config=None):
+        called.append((model_name, tokenizer_config))
+        return "MODEL", "TOKENIZER"
+
+    monkeypatch.setattr(gemma4_text, expected_loader, _stub)
+    result = tok._load_model_with_fallback_impl(str(d), {})
+
+    assert result == ("MODEL", "TOKENIZER")
+    assert called == [(str(d), {})]
 
 
 # --------------------------------------------------------------------------
