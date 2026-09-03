@@ -13,6 +13,11 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXHeading desc="Connect your agents, Connect any agent or editor that supports a local base URL. It's free and stays on your Mac." enabled=true
           AXScrollArea
+            AXStaticText value=text enabled=true
+            AXTextField id="ConnectTools.ServerPort.Field" value=empty enabled=true
+            AXButton id="ConnectTools.ServerPort.Save" desc="Save" enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
             AXHeading desc="Start here, Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands." enabled=true
             AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
             AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
