@@ -253,6 +253,7 @@ class Attention(nn.Module):
         cache: Optional[Any] = None,
         shared_kv: Optional[tuple] = None,
         offset: Optional[Any] = None,
+        shared_cache: Optional[Any] = None,
     ) -> mx.array:
         B, L, _ = x.shape
 
@@ -261,7 +262,9 @@ class Attention(nn.Module):
 
         if shared_kv is not None:
             keys, values = shared_kv
+            attention_cache = shared_cache
         else:
+            attention_cache = cache
             keys = self.k_proj(x).reshape(B, L, self.n_kv_heads, self.head_dim)
 
             # k_eq_v: values from raw k_proj (before k_norm)
@@ -286,7 +289,12 @@ class Attention(nn.Module):
         queries = self.rope(queries, offset=offset)
 
         output = scaled_dot_product_attention(
-            queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            queries,
+            keys,
+            values,
+            cache=attention_cache,
+            scale=self.scale,
+            mask=mask,
         )
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
@@ -362,12 +370,18 @@ class DecoderLayer(nn.Module):
         per_layer_input: Optional[mx.array] = None,
         shared_kv: Optional[tuple] = None,
         offset: Optional[Any] = None,
+        shared_cache: Optional[Any] = None,
     ) -> mx.array:
         residual = x
 
         h = self.input_layernorm(x)
         h, shared_kv, offset = self.self_attn(
-            h, mask, cache, shared_kv=shared_kv, offset=offset
+            h,
+            mask,
+            cache,
+            shared_kv=shared_kv,
+            shared_cache=shared_cache,
+            offset=offset,
         )
         h = self.post_attention_layernorm(h)
         h = residual + h
@@ -661,7 +675,7 @@ class Gemma4TextModel(nn.Module):
             per_layer_inputs = [None] * len(self.layers)
 
         capture_set = set(capture_layer_ids) if capture_layer_ids else set()
-        intermediates = [(None, None)] * len(self.layers)
+        intermediates = [(None, None, None)] * len(self.layers)
         for idx, (layer, c, m, prev_idx, pli) in enumerate(
             zip(
                 self.layers,
@@ -671,17 +685,28 @@ class Gemma4TextModel(nn.Module):
                 per_layer_inputs,
             )
         ):
-            kvs, offset = intermediates[prev_idx]
+            kvs, offset, shared_cache = intermediates[prev_idx]
+            borrows_kv = kvs is not None
             h, kvs, offset = layer(
-                h, m, c, per_layer_input=pli, shared_kv=kvs, offset=offset
+                h,
+                m,
+                c,
+                per_layer_input=pli,
+                shared_kv=kvs,
+                shared_cache=shared_cache,
+                offset=offset,
             )
-            intermediates[idx] = (kvs, offset)
+            intermediates[idx] = (
+                kvs,
+                offset,
+                shared_cache if borrows_kv else c,
+            )
             if hidden_sink is not None and idx in capture_set:
                 hidden_sink.append(h)
 
         if shared_kv_sink is not None:
             for idx, layer in enumerate(self.layers):
-                kvs, _ = intermediates[idx]
+                kvs, _, _ = intermediates[idx]
                 if kvs is not None:
                     shared_kv_sink[layer.layer_type] = kvs
 
@@ -702,6 +727,10 @@ class Gemma4TextModel(nn.Module):
 
 
 class LanguageModel(nn.Module):
+    # Borrower layers receive the producer cache metadata alongside shared K/V,
+    # preserving quantized-attention dispatch without updating the cache twice.
+    supports_quantized_shared_kv = True
+
     def __init__(self, config: TextConfig):
         super().__init__()
         self.config = config
