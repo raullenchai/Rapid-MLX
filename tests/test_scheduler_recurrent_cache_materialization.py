@@ -589,11 +589,21 @@ def test_output_chain_collection_failure_escalates_after_limit(monkeypatch):
     limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
 
     # Cache-state realize succeeds; the output-chain surface is uncollectable.
-    monkeypatch.setattr(scheduler_module.mx, "eval", _detaching_eval)
+    # Record every value handed to mx.eval so we can assert the cache-state
+    # barrier still fires on each collection-failed step (codex r5) — it must
+    # not be skipped for up to `limit` intervals while collection escalates.
+    cache_state_evals = []
+
+    def eval_and_record(value):
+        cache_state_evals.append(value)
+        return _detaching_eval(value)
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", eval_and_record)
 
     for _ in range(limit - 1):
         assert scheduler._materialize_active_recurrent_cache() is not None
     assert scheduler._recurrent_output_chain_failures == limit - 1
+    assert len(cache_state_evals) == limit - 1  # cache-state realized every step
 
     with pytest.raises(
         scheduler_module._RecurrentOutputChainError, match="Metal handle"

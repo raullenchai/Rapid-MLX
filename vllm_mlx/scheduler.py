@@ -9336,8 +9336,15 @@ class Scheduler:
         if collection_failed:
             # An output surface raised on ACCESS — indistinguishable from a
             # realize failure for the purpose of bounding the chain, so route
-            # it through the same escalation path (codex r4). Cache-state was
-            # already realized by the caller, so this step is still bounded.
+            # it through the same escalation path (codex r4). The cache-state
+            # barrier is NOT realized by the caller, so realize it HERE first
+            # (unguarded — a cache-state failure must propagate immediately,
+            # r2), else this edge puts up to 7 intervals between cache-state
+            # realizations and regresses the #1834 invariant (codex r5).
+            try:
+                mx.eval(states)
+            except Exception:
+                raise
             return _escalate()
 
         if not outputs:
