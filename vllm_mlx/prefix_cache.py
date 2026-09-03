@@ -908,8 +908,7 @@ class BlockAwarePrefixCache:
         if not HAS_MLX or not isinstance(cache_data, list) or not cache_data:
             return None
 
-        usable_tokens: int | None = None
-        class_name: str | None = None
+        layouts: list[tuple[str, int]] = []
         for layer_state in cache_data:
             if not isinstance(layer_state, dict) or "state" not in layer_state:
                 return None
@@ -925,13 +924,13 @@ class BlockAwarePrefixCache:
                 return None
             keys, values = state
             seq_len = min(keys.shape[seq_axis], values.shape[seq_axis])
-            usable_tokens = (
-                seq_len if usable_tokens is None else min(usable_tokens, seq_len)
-            )
-            class_name = name
+            layouts.append((name, seq_len))
 
-        if class_name is None or usable_tokens is None:
-            return None
+        # ``cache_data`` is a non-empty list (checked above) and every
+        # iteration either refused the layout or recorded one, so at least
+        # one layout is present here.
+        class_name = layouts[-1][0]
+        usable_tokens = min(seq_len for _, seq_len in layouts)
         return class_name, usable_tokens
 
     # Cache classes whose ``state`` is ``(keys, values)`` and whose seq

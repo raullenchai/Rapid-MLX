@@ -1775,3 +1775,758 @@ class TestStoredBlockBufferIndependence:
         # If any stored block aliased the caller's tensors, their full
         # backing buffers would stay resident past this point.
         assert before - after >= int(0.9 * state_bytes)
+
+
+# ---------------------------------------------------------------------------
+# Paged-cache lifecycle invariants (#2955): cumulative identity, reallocated
+# and stale metadata, transactional acquisition/materialization/rollback,
+# pin/unpin, and the scheduler's hit / fallback / cancel / pressure paths.
+# ---------------------------------------------------------------------------
+
+
+def _make_paged_scheduler(block_size=4, max_blocks=32):
+    """Real ``Scheduler`` with a paged ``BlockAwarePrefixCache`` behind a
+    plain full-attention cache factory (passes the #2955 structural gate)."""
+    from unittest.mock import MagicMock
+
+    from mlx_lm.models.cache import KVCache
+
+    from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+
+    config = SchedulerConfig(
+        max_num_seqs=4,
+        enable_prefix_cache=True,
+        use_memory_aware_cache=False,
+        use_paged_cache=True,
+        paged_cache_block_size=block_size,
+        max_cache_blocks=max_blocks,
+    )
+    model = MagicMock()
+    model.make_cache = lambda: [KVCache(), KVCache()]
+    tokenizer = MagicMock()
+    tokenizer.encode = lambda s: list(range(len(s)))
+    return Scheduler(model=model, tokenizer=tokenizer, config=config)
+
+
+def _make_request(request_id, tokens):
+    from vllm_mlx.request import Request, SamplingParams
+
+    return Request(
+        request_id=request_id,
+        prompt=list(tokens),
+        sampling_params=SamplingParams(max_tokens=4),
+        prompt_token_ids=list(tokens),
+    )
+
+
+def _pressure_tick(sched, max_evict=10):
+    """One pressure-eviction call with Metal reported far above the cap."""
+    from unittest.mock import patch
+
+    with (
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+        patch.object(sched, "_current_metal_active_bytes", return_value=200 * 10**9),
+    ):
+        return sched.evict_prefix_cache_under_pressure(max_evict=max_evict)
+
+
+class TestPrefixHasherCumulativeIdentity:
+    """``PrefixHasher`` is the one identity that index keys, block
+    registrations and ownership guards all agree on: it hashes the whole
+    token history through a block, never the block's own chunk."""
+
+    def test_seeded_constructor_continues_the_same_chain(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        chained = PrefixHasher()
+        chained.update([1, 2])
+        chained.update([3, 4])
+        assert PrefixHasher([1, 2, 3, 4]).hexdigest() == chained.hexdigest()
+
+        # store_cache seeds the hasher with the tokens a fetched table
+        # already covers and extends it per new block: same chain.
+        seeded = PrefixHasher([1, 2])
+        seeded.update([3, 4])
+        assert seeded.hexdigest() == chained.hexdigest()
+
+        # No seed tokens, however spelled, is the empty chain.
+        assert PrefixHasher([]).hexdigest() == PrefixHasher().hexdigest()
+        assert PrefixHasher(None).hexdigest() == PrefixHasher().hexdigest()
+
+    def test_identity_depends_on_history_not_on_chunk(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        full = PrefixHasher([1, 2, 3, 4]).hexdigest()
+        same_chunk_other_history = PrefixHasher([9, 9, 3, 4]).hexdigest()
+        chunk_alone = PrefixHasher([3, 4]).hexdigest()
+        assert len({full, same_chunk_other_history, chunk_alone}) == 3
+
+
+class TestReallocatedSlotIdentity:
+    """A slot refilled with new KV must never resurrect as a hit for the
+    tokens it used to hold, and the legacy hash map is never authoritative
+    over the identity a block actually claims."""
+
+    def test_reallocation_retires_legacy_only_registration(self):
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        # One usable slot (block 0 is the reserved null block).
+        manager = PagedCacheManager(block_size=4, max_blocks=2)
+        block = manager.allocate_block()
+        assert block is not None
+        old_hash = manager.compute_block_hash([1, 2, 3, 4])
+        block.token_count = 4
+        block.cache_data = [object()]  # stands in for a resident KV slice
+        block.cache_class_name = "KVCache"
+        # store_cache registers full blocks exactly like this: identity +
+        # legacy map only, no chain ``block_hash``.
+        manager.register_block_hash_value(block, old_hash)
+        assert block.block_hash is None
+        assert manager.find_cached_block_by_hash(old_hash, record_stats=False) is block
+
+        assert manager.free_block(block.block_id) is True
+        # The freed slab keeps its registration while parked...
+        assert manager.hash_to_block.get(old_hash) == block.block_id
+
+        reused = manager.allocate_block()
+        assert reused is block
+        # ...and reuse retires it BEFORE the slot is handed to a new owner.
+        assert old_hash not in manager.hash_to_block
+        assert reused.hash_value is None
+        assert reused.cache_data is None
+        assert reused.cache_class_name is None
+        misses_before = manager.stats.cache_misses
+        assert manager.find_cached_block_by_hash(old_hash) is None
+        assert manager.stats.cache_misses == misses_before + 1
+
+    def test_lookup_prunes_mapping_superseded_by_a_new_identity(self):
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=4)
+        block = manager.allocate_block()
+        first = manager.compute_block_hash([1, 2, 3, 4])
+        second = manager.compute_block_hash([5, 6, 7, 8])
+        manager.register_block_hash_value(block, first)
+        manager.register_block_hash_value(block, second)
+        assert manager.hash_to_block[first] == block.block_id  # left behind
+
+        # The block no longer claims ``first``: the lookup must not serve
+        # the slot for the old tokens — it prunes the mapping, counts a
+        # miss, and stays a plain miss afterwards.
+        misses_before = manager.stats.cache_misses
+        assert manager.find_cached_block_by_hash(first) is None
+        assert first not in manager.hash_to_block
+        assert manager.stats.cache_misses == misses_before + 1
+        assert manager.find_cached_block_by_hash(first) is None
+        assert manager.stats.cache_misses == misses_before + 2
+        # The identity the block does claim still resolves as a hit.
+        hits_before = manager.stats.cache_hits
+        assert manager.find_cached_block_by_hash(second) is block
+        assert manager.stats.cache_hits == hits_before + 1
+
+    def test_paged_fork_onto_reused_id_releases_old_table(self):
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=8)
+        source = manager.create_block_table("src")
+        src_block = manager.allocate_block()
+        manager.add_block_to_table(source, src_block, 4)
+        stale = manager.create_block_table("dst")
+        stale_block = manager.allocate_block()
+        manager.add_block_to_table(stale, stale_block, 4)
+        free_before = manager.free_blocks
+
+        forked = manager.fork_block_table(source, "dst")
+
+        assert forked is not stale and forked.request_id == "dst"
+        assert manager.request_tables["dst"] is forked
+        # The overwritten table's only reference was released, not leaked.
+        assert stale_block.block_id not in manager.allocated_blocks
+        assert manager.free_blocks == free_before + 1
+        # The source block is shared by both tables — exactly once.
+        assert manager.allocated_blocks[src_block.block_id].ref_count == 2
+        manager.delete_block_table("dst")
+        assert manager.allocated_blocks[src_block.block_id].ref_count == 1
+
+
+class TestStoreLayoutFailClosed:
+    """Every unblockizable layout is refused before any block, table or
+    index entry is touched; the slice helper refuses what it cannot back."""
+
+    def test_store_refuses_unblockizable_layouts_without_side_effects(self):
+        states = _kv_layer_states(4)
+        cases = {
+            "empty-list": [],
+            "tuple": (),
+            "string": "state",
+            "layer-without-state": [{"class_name": "KVCache"}],
+            "layer-not-a-dict": [["not", "a", "dict"]],
+            "layer-without-class": [{"state": states[0]["state"], "class_name": None}],
+            "rotating-class": [
+                {"state": states[0]["state"], "class_name": "RotatingKVCache"}
+            ],
+            "second-layer-bad": states + [{"class_name": "KVCache"}],
+        }
+        for label, cache_data in cases.items():
+            cache, manager = _make_cache(block_size=4)
+            allocated_before = manager.stats.allocated_blocks
+            assert cache.store_cache("req", list(range(8)), cache_data) is None, label
+            assert manager.stats.allocated_blocks == allocated_before, label
+            assert manager.get_block_table("req") is None, label
+            assert "req" not in cache._request_tables, label
+            assert cache._prefix_index == {}, label
+
+    def test_slice_helper_refuses_layer_without_state(self):
+        cache, _ = _make_cache(block_size=4)
+        assert (
+            cache._extract_block_tensor_slice([{"class_name": "KVCache"}], 0, 4) is None
+        )
+
+    def test_slice_helper_refuses_block_beyond_backed_rows(self):
+        cache, _ = _make_cache(block_size=4)
+        states = _kv_layer_states(6)
+        assert cache._extract_block_tensor_slice(states, 0, 4) is not None
+        # Rows 4..8 are only partially backed (6 rows): the whole block is
+        # refused rather than a short slice being stored.
+        assert cache._extract_block_tensor_slice(states, 4, 8) is None
+
+
+class TestStoreHonesty:
+    """A store claims exactly the tokens it materialized blocks for."""
+
+    def test_state_with_no_rows_stores_nothing(self):
+        import mlx.core as mx
+
+        cache, manager = _make_cache(block_size=4)
+        empty = mx.zeros((1, 2, 0, 4), dtype=mx.float32)
+        states = [{"state": (empty, empty), "class_name": "KVCache"}]
+        allocated_before = manager.stats.allocated_blocks
+
+        assert cache.store_cache("req", list(range(8)), states) is None
+
+        assert manager.stats.allocated_blocks == allocated_before
+        assert manager.get_block_table("req") is None
+        assert "req" not in cache._request_tables
+        assert cache._prefix_index == {}
+
+    def test_short_state_stores_backed_tokens_with_partial_block_identity(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        cache, manager = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        # Only 6 of the 8 prompt tokens are backed by KV rows.
+        table = cache.store_cache("req", tokens8, _kv_layer_states(6))
+        assert table is not None
+        assert table.num_tokens == 6 and len(table.block_ids) == 2
+        full, partial = (manager.allocated_blocks[b] for b in table.block_ids)
+        assert full.token_count == 4 and partial.token_count == 2
+
+        # Both blocks carry the cumulative identity through their end...
+        assert full.hash_value == PrefixHasher(tokens8[:4]).hexdigest()
+        assert partial.hash_value == PrefixHasher(tokens8[:6]).hexdigest()
+        # ...but only the full block is registered for sharing.
+        assert manager.hash_to_block[full.hash_value] == full.block_id
+        assert partial.hash_value not in manager.hash_to_block
+
+        # The index covers exactly the backed prefix and verifies live.
+        assert set(cache._prefix_index) == {full.hash_value, partial.hash_value}
+        assert cache._prefix_index[partial.hash_value] == (
+            tokens8[:6],
+            list(table.block_ids),
+        )
+        assert cache.index_entry_is_stale(tokens8[:6], list(table.block_ids)) is False
+
+        # A later request reuses the full block only — a partial block is
+        # never shared — and is told to compute the rest.
+        fetched, remaining = cache.fetch_cache("other", tokens8)
+        assert fetched is not None
+        assert list(fetched.block_ids) == [full.block_id]
+        assert remaining == tokens8[4:]
+
+    def test_slice_failure_truncates_store_at_last_whole_block(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        cache, manager = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        real_contiguous = mx.contiguous
+        calls = {"n": 0}
+
+        def flaky_contiguous(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 3:  # first tensor of the SECOND block
+                raise RuntimeError("injected slice failure")
+            return real_contiguous(*args, **kwargs)
+
+        with patch("mlx.core.contiguous", side_effect=flaky_contiguous):
+            table = cache.store_cache("req", tokens8, _kv_layer_states(8))
+
+        assert calls["n"] >= 3
+        assert table is not None
+        assert len(table.block_ids) == 1 and table.num_tokens == 4
+        assert manager.stats.allocated_blocks == 2  # null block + one block
+        # Index and identity cover only the materialized prefix.
+        (entry,) = cache._prefix_index.values()
+        assert entry == (tokens8[:4], list(table.block_ids))
+        fetched, remaining = cache.fetch_cache("other", tokens8)
+        assert fetched is not None
+        assert fetched.num_tokens == 4 and remaining == tokens8[4:]
+
+
+class TestAcquisitionRollback:
+    """Candidate acquisition is transactional: a block that vanishes
+    between lookup and acquisition truncates the candidate at the last
+    contiguous block, a candidate with nothing acquired leaves no table
+    behind, and a reference taken on a vanished block is given back."""
+
+    def test_owner_release_after_lookup_truncates_candidate(self):
+        from unittest.mock import patch
+
+        cache, manager = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        # "short" owns block A; "long" extends a fetch hit on A with B.
+        short = cache.store_cache("short", tokens8[:4], _kv_layer_states(4))
+        (a,) = short.block_ids
+        held, _ = cache.fetch_cache("long", tokens8)
+        assert held is not None and list(held.block_ids) == [a]
+        long = cache.store_cache("long", tokens8, _kv_layer_states(8))
+        assert list(long.block_ids)[0] == a
+        b = long.block_ids[1]
+        hits_before, saved_before = cache._hits, cache._tokens_saved
+        real_lookup = manager.find_shared_prefix
+
+        def lookup_then_owner_releases(tokens, **kwargs):
+            ids, rest = real_lookup(tokens, **kwargs)
+            assert ids == [a, b]
+            cache.release_cache("long")  # B's only owner goes away
+            return ids, rest
+
+        with patch.object(
+            manager, "find_shared_prefix", side_effect=lookup_then_owner_releases
+        ):
+            table, remaining = cache.fetch_cache("req", tokens8)
+
+        # Truncated at the vanished block: only A's tokens are claimed.
+        assert table is not None and list(table.block_ids) == [a]
+        assert table.num_tokens == 4 and remaining == tokens8[4:]
+        assert b not in manager.allocated_blocks
+        assert manager.allocated_blocks[a].ref_count == 2
+        assert cache._hits == hits_before + 1
+        assert cache._tokens_saved == saved_before + 4
+        assert cache.reconstruct_cache(table)[0].offset == 4
+
+    def test_owner_release_after_lookup_aborts_with_no_table(self):
+        from unittest.mock import patch
+
+        cache, manager = _make_cache(block_size=4)
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        seed_ids = list(seed.block_ids)
+        real_lookup = manager.find_shared_prefix
+
+        def lookup_then_owner_releases(tokens_, **kwargs):
+            ids, rest = real_lookup(tokens_, **kwargs)
+            assert ids == seed_ids
+            cache.release_cache("seed")
+            return ids, rest
+
+        with patch.object(
+            manager, "find_shared_prefix", side_effect=lookup_then_owner_releases
+        ):
+            table, remaining = cache.fetch_cache("req", tokens)
+
+        assert table is None and remaining == tokens
+        assert manager.get_block_table("req") is None
+        assert "req" not in cache._pending_reconstructed
+        assert cache._misses == 1 and cache._hits == 0
+        for bid in seed_ids:
+            assert bid not in manager.allocated_blocks
+        # Every slot is back in the pool: nothing leaked.
+        assert manager.free_blocks == manager.max_blocks - 1
+
+    def test_block_vanishing_after_ref_bump_is_rolled_back(self):
+        cache, manager = _make_cache(block_size=4)
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        a, victim = seed.block_ids
+
+        class _VanishOnce(dict):
+            """Reports the victim gone exactly once — the lookup that
+            follows a successful ref bump, as if another owner had freed
+            it in between (the manager lock is not held across the two)."""
+
+            armed = True
+
+            def get(self, key, default=None):
+                if self.armed and key == victim:
+                    self.armed = False
+                    return None
+                return super().get(key, default)
+
+        manager.allocated_blocks = _VanishOnce(manager.allocated_blocks)
+
+        table, remaining = cache.fetch_cache("req", tokens)
+
+        assert table is not None and list(table.block_ids) == [a]
+        assert remaining == tokens[4:]
+        # The tentative reference on the vanished block was given back.
+        assert manager.allocated_blocks[victim].ref_count == 1
+        assert manager.allocated_blocks[a].ref_count == 2
+        assert cache._hits == 1 and cache._tokens_saved == 4
+
+
+class TestPrefixIndexOwnershipGuard:
+    """Index metadata is served only while every referenced block still
+    owns the recorded cumulative prefix; anything else is a miss for
+    fetch and pin, and prunable metadata for pressure."""
+
+    def test_reallocated_slot_is_rejected_and_flagged_stale(self):
+        # One usable slot, so the second store reuses the first one's.
+        cache, manager = _make_cache(block_size=4, max_blocks=2)
+        old = [1, 2, 3, 4]
+        new = [5, 6, 7, 8]
+        first = cache.store_cache("first", old, _kv_layer_states(4))
+        (slot,) = first.block_ids
+        (old_key,) = cache._prefix_index
+        assert cache._prefix_index[old_key] == (old, [slot])
+
+        # The owner releases, then the slot is refilled for other tokens.
+        cache.release_cache("first")
+        second = cache.store_cache("second", new, _kv_layer_states(4, base=50.0))
+        assert list(second.block_ids) == [slot]
+        assert manager.allocated_blocks[slot].cache_data is not None
+        # The old entry survives as metadata pointing at the reused slot.
+        assert cache._prefix_index[old_key] == (old, [slot])
+
+        # Identity mismatch: the resident KV belongs to ``new``.
+        assert cache.index_entry_is_stale(old, [slot]) is True
+        assert cache._find_best_prefix_match(old) is None
+        table, remaining = cache.fetch_cache("probe", old)
+        assert table is None and remaining == old
+        assert cache._misses == 1 and cache._hits == 0
+        assert manager.allocated_blocks[slot].ref_count == 1
+
+        # The new owner's prefix is intact and still served.
+        assert cache.index_entry_is_stale(new, [slot]) is False
+        table, remaining = cache.fetch_cache("probe-new", new)
+        assert table is not None and remaining == []
+        assert manager.allocated_blocks[slot].ref_count == 2
+
+    def test_entry_claiming_more_tokens_than_its_blocks_verify_is_skipped(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        cache, _ = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        table = cache.store_cache("seed", tokens8[:4], _kv_layer_states(4))
+        (slot,) = table.block_ids
+        # Metadata that claims 8 tokens but names only the 4-token block.
+        cache._prefix_index[PrefixHasher(tokens8).hexdigest()] = (tokens8, [slot])
+
+        # The over-claiming entry is skipped; the longest VERIFIED prefix
+        # wins instead.
+        assert cache._find_best_prefix_match(tokens8) == (tokens8[:4], [slot])
+
+    def test_entry_whose_blocks_exceed_its_tokens_is_not_served(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        cache, _ = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        table = cache.store_cache("seed", tokens8, _kv_layer_states(8))
+        a, b = table.block_ids
+        # Metadata for 4 tokens that names two 4-token blocks.
+        key4 = PrefixHasher(tokens8[:4]).hexdigest()
+        cache._prefix_index[key4] = (tokens8[:4], [a, b])
+
+        assert cache._find_best_prefix_match(tokens8[:4]) is None
+        assert cache.index_entry_is_stale(tokens8[:4], [a, b]) is True
+
+    def test_unhashed_blocks_extend_the_chain_without_being_stale(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        cache, manager = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        table = cache.store_cache("seed", tokens8, _kv_layer_states(8))
+        a, b = table.block_ids
+
+        # A block that claims no identity (legacy/unhashed) is tolerated:
+        # the chain continues through its span so a later hashed block is
+        # still verified against the SAME cumulative identity.
+        manager.allocated_blocks[a].hash_value = None
+        assert cache.index_entry_is_stale(tokens8, [a, b]) is False
+        # ...and a later hashed block that disagrees still flags the entry.
+        manager.allocated_blocks[b].hash_value = PrefixHasher([9] * 8).hexdigest()
+        assert cache.index_entry_is_stale(tokens8, [a, b]) is True
+        # When the entry's tokens run out before an unhashed block, the
+        # rest is unverifiable, not stale.
+        manager.allocated_blocks[b].hash_value = None
+        assert cache.index_entry_is_stale(tokens8[:4], [a, b]) is False
+
+    def test_index_never_records_a_prefix_past_an_unverifiable_block(self):
+        from vllm_mlx.paged_cache import PrefixHasher
+
+        cache, _ = _make_cache(block_size=4)
+        tokens8 = list(range(8))
+        table = cache.store_cache("seed", tokens8[:4], _kv_layer_states(4))
+        (a,) = table.block_ids
+        cache._prefix_index.clear()
+
+        cache._update_prefix_index(tokens8, [a, 999])  # 999: no such block
+
+        assert cache._prefix_index == {
+            PrefixHasher(tokens8[:4]).hexdigest(): (tokens8[:4], [a]),
+        }
+
+
+class TestPrefixIndexFallbackAndPinning:
+    """The block-hash map is a dedup accelerator; the prefix index plus
+    per-block identities are the ownership record. Fetch and pin keep
+    working through the index when the map has no mapping, and pinning
+    sticks to the verified blocks."""
+
+    def test_fetch_falls_back_to_verified_index_entry(self):
+        cache, manager = _make_cache(block_size=4)
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        manager.hash_to_block.clear()
+        assert manager.find_shared_prefix(tokens, record_stats=False) == ([], tokens)
+
+        table, remaining = cache.fetch_cache("req", tokens + [42])
+
+        assert table is not None
+        assert list(table.block_ids) == list(seed.block_ids)
+        assert table.num_tokens == 8 and remaining == [42]
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+        assert cache._hits == 1 and cache._tokens_saved == 8
+        assert cache.reconstruct_cache(table)[0].offset == 8
+
+    def test_pin_and_unpin_through_shared_prefix(self):
+        cache, manager = _make_cache(block_size=4)
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+
+        assert cache.pin_prefix(tokens) is True
+        assert sorted(manager.get_pinned_block_ids()) == sorted(seed.block_ids)
+        assert cache.unpin_prefix(tokens) is True
+        assert manager.get_pinned_block_ids() == []
+        # Nothing pinned any more: a repeat unpin reports no work done.
+        assert cache.unpin_prefix(tokens) is False
+
+    def test_pin_and_unpin_through_index_fallback(self):
+        cache, manager = _make_cache(block_size=4)
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        manager.hash_to_block.clear()
+
+        assert cache.pin_prefix(tokens) is True
+        assert sorted(manager.get_pinned_block_ids()) == sorted(seed.block_ids)
+        assert cache.unpin_prefix(tokens) is True
+        assert manager.get_pinned_block_ids() == []
+
+    def test_pin_and_unpin_unknown_prefix_report_false(self):
+        cache, manager = _make_cache(block_size=4)
+        cache.store_cache("seed", list(range(8)), _kv_layer_states(8))
+        unknown = [77, 78, 79, 80]
+
+        assert cache.pin_prefix(unknown) is False
+        assert cache.unpin_prefix(unknown) is False
+        assert manager.get_pinned_block_ids() == []
+
+
+class TestSchedulerPagedRequestLifecycle:
+    """The scheduler's paged-cache lifecycle end to end: an admitted
+    request commits a fetch hit and owns its refs, a cancelled request
+    releases what its hit acquired, and a committed fetch that cannot be
+    rehosted is released and served as a miss — never a phantom hit."""
+
+    def _seed(self, sched, tokens):
+        table = sched.block_aware_cache.store_cache(
+            "seed", tokens, _kv_layer_states(len(tokens))
+        )
+        assert table is not None
+        return table
+
+    def test_admitted_request_commits_hit_and_owns_refs(self):
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        tokens = list(range(8))
+        seed = self._seed(sched, tokens)
+
+        request = _make_request("req-hit", tokens + [100, 101])
+        sched.add_request(request)
+
+        assert request.cache_hit_type == "hit"
+        assert request.cached_tokens == 8
+        assert request.shared_prefix_blocks == 2
+        assert request.remaining_tokens == [100, 101]
+        assert request.block_table is not None
+        assert request.block_table.request_id == "req-hit"
+        assert list(request.block_table.block_ids) == list(seed.block_ids)
+        # The caches the fetch transaction built are handed to the request
+        # (stash consumed), rehosted at the cached offset.
+        assert request.prompt_cache is not None
+        assert request.prompt_cache[0].offset == 8
+        assert "req-hit" not in cache._pending_reconstructed
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+        assert cache._hits == 1 and cache._misses == 0
+        assert "req-hit" in sched.requests
+
+    def test_unrelated_prompt_is_a_miss_holding_nothing(self):
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        self._seed(sched, list(range(8)))
+
+        request = _make_request("req-miss", [500, 501, 502, 503, 504])
+        sched.add_request(request)
+
+        assert request.cache_hit_type == "miss"
+        assert request.cached_tokens == 0
+        assert request.prompt_cache is None
+        assert request.block_table is None
+        assert request.remaining_tokens == request.prompt_token_ids
+        assert manager.get_block_table("req-miss") is None
+        assert cache._misses == 1 and cache._hits == 0
+
+    def test_cancel_releases_refs_acquired_by_the_hit(self):
+        from vllm_mlx.request import RequestStatus
+
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        tokens = list(range(8))
+        seed = self._seed(sched, tokens)
+        request = _make_request("req-cancel", tokens)
+        sched.add_request(request)
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+
+        assert sched.abort_request("req-cancel") is True
+        sched._process_pending_aborts()
+
+        assert request.status == RequestStatus.FINISHED_CANCELLED
+        assert request.prompt_cache is None
+        assert "req-cancel" in sched.finished_req_ids
+        assert manager.get_block_table("req-cancel") is None
+        assert "req-cancel" not in cache._pending_reconstructed
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 1
+            assert manager.allocated_blocks[bid].cache_data is not None
+        # Idempotent: the later finished-cleanup release finds nothing held.
+        cache.release_cache("req-cancel")
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 1
+        # The seed entry still serves hits.
+        table, remaining = cache.fetch_cache("req-after", tokens)
+        assert table is not None and remaining == []
+
+    def test_unrehostable_committed_fetch_is_released_and_served_as_miss(self, caplog):
+        import logging
+        from unittest.mock import patch
+
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        tokens = list(range(8))
+        seed = self._seed(sched, tokens)
+        request = _make_request("req-fallback", tokens + [7, 7])
+
+        with (
+            patch.object(cache, "reconstruct_cache", return_value=None),
+            caplog.at_level(logging.WARNING),
+        ):
+            sched.add_request(request)
+
+        assert request.cache_hit_type == "miss"
+        assert request.prompt_cache is None
+        assert request.block_table is None
+        assert request.cached_tokens == 0
+        assert request.remaining_tokens == request.prompt_token_ids
+        # The refs the committed fetch held were released: nothing is
+        # owned by a request that will now prefill from scratch.
+        assert manager.get_block_table("req-fallback") is None
+        assert "req-fallback" not in cache._pending_reconstructed
+        for bid in seed.block_ids:
+            assert manager.allocated_blocks[bid].ref_count == 1
+        assert any(
+            "reconstruction failed after committed fetch" in record.getMessage()
+            for record in caplog.records
+        )
+        # Admission still completed.
+        assert "req-fallback" in sched.requests
+
+
+class TestSchedulerPagedPressureCleanup:
+    """Pressure ticks drain stored owners first, then prune only index
+    metadata that no longer owns its prefix — never a live block."""
+
+    def test_owner_eviction_then_stale_metadata_prune_then_quiescence(self):
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        seed_ids = list(seed.block_ids)
+        index_keys = set(cache._prefix_index)
+        assert len(index_keys) == 2
+
+        # Tick 1: the stored owner is evicted (blocks cleared + released).
+        assert _pressure_tick(sched, max_evict=1) == 1
+        assert "seed" not in cache._request_tables
+        for bid in seed_ids:
+            assert bid not in manager.allocated_blocks
+        # The index outlived its blocks: dead metadata, still present.
+        assert set(cache._prefix_index) == index_keys
+
+        # Tick 2: with no owner left, the index path prunes entries whose
+        # blocks are gone — one per eviction — without touching any slot.
+        free_before = manager.free_blocks
+        assert _pressure_tick(sched, max_evict=10) == 2
+        assert cache._prefix_index == {}
+        assert manager.free_blocks == free_before
+        assert sched.num_prefix_cache_pressure_evictions == 3
+
+        # Tick 3: nothing left to reclaim.
+        assert _pressure_tick(sched, max_evict=10) == 0
+        # A later request is a clean miss — no phantom hit on freed slots.
+        table, remaining = cache.fetch_cache("later", tokens)
+        assert table is None and remaining == tokens
+
+    def test_index_prune_leaves_active_fetch_blocks_untouched(self):
+        sched = _make_paged_scheduler()
+        cache = sched.block_aware_cache
+        manager = cache.paged_cache
+        tokens = list(range(8))
+        seed = cache.store_cache("seed", tokens, _kv_layer_states(8))
+        seed_ids = list(seed.block_ids)
+        # An active request holds the seed's blocks through a fetch hit.
+        held, _ = cache.fetch_cache("active", tokens)
+        assert held is not None
+        for bid in seed_ids:
+            assert manager.allocated_blocks[bid].ref_count == 2
+
+        # Owner eviction: shared blocks keep their KV (ref > 1) and the
+        # active fetch becomes the sole owner.
+        assert _pressure_tick(sched, max_evict=1) == 1
+        for bid in seed_ids:
+            blk = manager.allocated_blocks[bid]
+            assert blk.ref_count == 1 and blk.cache_data is not None
+
+        # Index-only pass: the entries still verify against the live,
+        # identity-intact blocks, so nothing is pruned or cleared.
+        assert _pressure_tick(sched, max_evict=10) == 0
+        assert len(cache._prefix_index) == 2
+        for bid in seed_ids:
+            blk = manager.allocated_blocks[bid]
+            assert blk.ref_count == 1 and blk.cache_data is not None
+        # The active request can still be rehosted from its table.
+        assert cache.reconstruct_cache(held) is not None
+
+        # Once the active request releases, the entries are dead and the
+        # next tick prunes them.
+        cache.release_cache("active")
+        assert _pressure_tick(sched, max_evict=10) == 2
+        assert cache._prefix_index == {}
