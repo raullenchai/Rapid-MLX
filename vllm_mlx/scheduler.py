@@ -9209,12 +9209,17 @@ class Scheduler:
         """
         batch_generator = self.batch_generator
         if batch_generator is None:
+            # No active lane: clear any failure counter left by a prior
+            # recurrent request so a NEW request never inherits a stale streak
+            # (codex r7). Failures are scoped to an ACTIVE recurrent lane.
+            self._recurrent_output_chain_failures = 0
             return 0
         generation_batch = getattr(batch_generator, "_generation_batch", None)
         if generation_batch is None:
             generation_batch = getattr(batch_generator, "active_batch", None)
         cache = getattr(generation_batch, "prompt_cache", None)
         if not cache:
+            self._recurrent_output_chain_failures = 0
             return 0
 
         states = []
@@ -9239,6 +9244,12 @@ class Scheduler:
                 if state is not None:
                     states.append(state)
         if not states:
+            # No recurrent state to materialize (all-trimmable/dense lane): the
+            # output-chain failure counter is scoped to an ACTIVE recurrent
+            # lane, so clear any streak left by a prior recurrent request —
+            # a dense period must not let stale failures cascade into a new
+            # recurrent request (codex r7).
+            self._recurrent_output_chain_failures = 0
             return 0
         # Issue #2834/#2836: realizing ``layer.state`` bounds the *cache-state*
         # lazy graph, but the per-step decode OUTPUT chain is a separate graph

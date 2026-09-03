@@ -622,6 +622,44 @@ def test_output_chain_collection_failure_escalates_after_limit(monkeypatch):
     assert scheduler._recurrent_output_chain_failures == limit
 
 
+def test_failure_counter_resets_when_recurrent_lane_goes_inactive(monkeypatch):
+    """#2834 (codex r7): the output-chain failure counter is scoped to an
+    ACTIVE recurrent lane. A streak accumulated on one recurrent request must
+    NOT cascade into a later one across an idle/dense interval — otherwise a
+    NEW request could hit the escalation limit on its FIRST failure, failing a
+    lane that was never actually broken. The dense/no-recurrent-state early
+    returns clear the counter."""
+    limit = scheduler_module._RECURRENT_OUTPUT_CHAIN_FAILURE_LIMIT
+
+    monkeypatch.setattr(scheduler_module.mx, "eval", _detaching_eval)
+
+    def _recurrent_scheduler(layer):
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.batch_generator = _OutputGenerator(_RaisingOutputBatch([layer]))
+        scheduler._recurrent_output_chain_failures = 0
+        return scheduler
+
+    # --- recurrent lane with a persistently-raising output surface ---
+    scheduler = _recurrent_scheduler(_OutputRecurrentLayer())
+    for _ in range(limit - 1):
+        scheduler._materialize_active_recurrent_cache()
+    assert scheduler._recurrent_output_chain_failures == limit - 1
+
+    # --- the lane goes inactive (all-trimmable / dense batch) ---
+    dense_scheduler = _scheduler_with([_Layer(trimmable=True)])
+    dense_scheduler._recurrent_output_chain_failures = limit - 1  # stale streak
+    assert dense_scheduler._materialize_active_recurrent_cache() == 0
+    # Dense period cleared the stale counter (codex r7).
+    assert dense_scheduler._recurrent_output_chain_failures == 0
+
+    # --- a NEW recurrent request starts on a fresh counter ---
+    fresh = _recurrent_scheduler(_OutputRecurrentLayer())
+    fresh._materialize_active_recurrent_cache()
+    # First failure of the new lane must NOT inherit the old streak: it sits at
+    # 1, well below the escalation limit.
+    assert fresh._recurrent_output_chain_failures == 1
+
+
 class _RaisingOutputBatch(_OutputBatch):
     """An output batch whose ``_next_tokens`` accessor raises on every read —
     modelling a persistent mlx-lm patch-level incompatibility on that surface
