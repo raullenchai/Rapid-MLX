@@ -1885,6 +1885,34 @@ def test_is_repo_cached_rejects_symlinked_blob_store_anchor(tmp_path, monkeypatc
     assert gate.is_repo_cached("user/blob-anchor-escape") is False
 
 
+def test_is_repo_cached_rejects_symlinked_snapshot_anchor(tmp_path, monkeypatch):
+    """A revision directory cannot redirect the manifest into another repo."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--snapshot-anchor-escape"
+    snapshots = repo_root / "snapshots"
+    snapshots.mkdir(parents=True)
+    foreign_snap = cache_root / "models--other--repo" / "snapshots" / "foreign"
+    (foreign_snap / "sidecars").mkdir(parents=True)
+    (foreign_snap / "model.safetensors").write_bytes(b"model")
+    (foreign_snap / "sidecars" / "helper.safetensors").write_bytes(b"helper")
+    (foreign_snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.weight": "model.safetensors",
+                    "helper.weight": "sidecars/helper.safetensors",
+                }
+            }
+        )
+    )
+    (snapshots / "abc").symlink_to(foreign_snap)
+    _seed_refs_main(repo_root, "abc")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/snapshot-anchor-escape") is False
+
+
 @pytest.mark.parametrize(
     "sidecar",
     (
