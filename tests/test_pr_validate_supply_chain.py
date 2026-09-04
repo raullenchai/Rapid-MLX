@@ -119,6 +119,22 @@ index 1111111..2222222 100644
 
 _WORKFLOW = ".github/workflows/ci.yml"
 
+# A NEW test is genuinely added, but its ``tests/foo.py \`` line is inserted
+# at the top of the workflow file (NOT inside the explicit ``pytest \`` test
+# roster). It must NOT qualify as roster-only — the token alone, outside the
+# roster list, is not an enrollment (codex r1 #2).
+_NON_ROSTER_CONTEXT_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,3 +1,4 @@
+ name: CI
+ on: [push]
++tests/test_serving_lane_reason_contract.py \\
+ jobs:
+"""
+
 
 def _ctx(
     diff: str,
@@ -185,6 +201,16 @@ def test_enrolling_modified_existing_test_not_roster_only(tmp_path):
     enrolling a test this PR merely edits must not qualify."""
     roster_only, _ = _roster_only_workflows(
         _MODIFIED_TEST_DIFF, {_WORKFLOW, "tests/test_existing.py"}
+    )
+    assert roster_only == set()
+
+
+def test_roster_token_outside_roster_list_not_roster_only(tmp_path):
+    """Regression (codex r1 #2): a ``tests/foo.py \\`` line added at the top of
+    the workflow (outside the `pytest \\` roster) is not an enrollment, even
+    though the token and new-file checks pass — it must NOT be downgraded."""
+    roster_only, _ = _roster_only_workflows(
+        _NON_ROSTER_CONTEXT_DIFF, {_WORKFLOW, _ENROLLED}
     )
     assert roster_only == set()
 

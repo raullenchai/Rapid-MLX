@@ -120,6 +120,22 @@ def _roster_addition_path(content: str) -> str | None:
     return path
 
 
+# A ``run: |``-block command line that opens a pytest test roster, e.g.
+# ``          pytest \``. An enrollment is only trusted when it is anchored to
+# the explicit roster list — i.e. the line directly above it is itself a
+# roster entry or the ``pytest`` command that starts the list (codex r1 #2).
+_PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest(\s.*)?\\?\s*$")
+
+
+def _roster_anchor(content: str) -> bool:
+    """True if *content* is a line that may legally sit directly above a
+    roster entry inside the explicit test list: either another roster entry
+    or the ``pytest \\`` command that opens the list."""
+    return bool(_ROSTER_ENTRY_RE.match(content)) or bool(
+        _PYTEST_ROSTER_CMD.match(content)
+    )
+
+
 def _roster_only_workflows(
     diff: str, files_changed: set[str]
 ) -> tuple[set[str], dict[str, list[str]]]:
@@ -128,8 +144,8 @@ def _roster_only_workflows(
     Returns ``(roster_only, roster_additions)``:
 
     * ``roster_only`` — the set of workflow files whose ENTIRE diff is a
-      pure roster enrollment (only ``tests/<name>.py \\`` lines added, no
-      removed lines, no other change).
+      pure roster enrollment (only ``tests/<name>.py \\`` lines added to the
+      explicit test list, no removed lines, no other change).
     * ``roster_additions`` — ``{workflow_file: [test paths enrolled]}`` for
       those roster-only files, so the human gets the exact added lines.
 
@@ -147,9 +163,11 @@ def _roster_only_workflows(
     new_files = _new_files(diff)
     files_changed_set = set(files_changed)
 
-    # Group added/removed content lines per workflow file.
+    # Collect every kind of line (context / added / removed) per workflow file,
+    # in file order, so we can anchor an added roster line to the lines around
+    # it (the roster list) rather than accepting the token anywhere in YAML.
     per_file: dict[str, dict[str, list[str]]] = {
-        f: {"added": [], "removed": []} for f in workflow_files
+        f: {"lines": [], "added": [], "removed": []} for f in workflow_files
     }
     cur_path = ""
     in_hunk = False
@@ -170,10 +188,12 @@ def _roster_only_workflows(
         if not in_hunk and line.startswith(("--- ", "+++ ")):
             continue
         marker = line[:1]
-        if marker == "+":
-            per_file[cur_path]["added"].append(line[1:])
-        elif marker == "-":
-            per_file[cur_path]["removed"].append(line[1:])
+        if marker in (" ", "+", "-"):
+            per_file[cur_path]["lines"].append((marker, line[1:]))
+            if marker == "+":
+                per_file[cur_path]["added"].append(line[1:])
+            elif marker == "-":
+                per_file[cur_path]["removed"].append(line[1:])
 
     roster_only: set[str] = set()
     roster_additions: dict[str, list[str]] = {}
@@ -185,10 +205,22 @@ def _roster_only_workflows(
             continue  # no tracked change; stay conservative
         enrolled: list[str] = []
         ok = True
-        for content in block["added"]:
+        for i, (marker, content) in enumerate(block["lines"]):
+            if marker != "+":
+                continue
             p = _roster_addition_path(content)
-            # Must be a real roster token for a test this PR NEWLY adds.
-            if p is None or p not in new_files or p not in files_changed_set:
+            if p is None:
+                ok = False
+                break
+            # Must be a NEW test this PR adds...
+            if p not in new_files or p not in files_changed_set:
+                ok = False
+                break
+            # ...appended INTO the explicit roster list: the line directly
+            # above it is a roster entry or the opening ``pytest \`` command,
+            # not a top-level YAML scalar or an unrelated ``run:`` block.
+            prev = block["lines"][i - 1][1] if i > 0 else ""
+            if not _roster_anchor(prev):
                 ok = False
                 break
             enrolled.append(p)
