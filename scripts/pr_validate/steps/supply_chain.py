@@ -120,20 +120,29 @@ def _roster_addition_path(content: str) -> str | None:
     return path
 
 
+# An anchor roster line must CONTINUE the shell list — i.e. it ends with a
+# backslash continuation, exactly like every entry in the real roster. A
+# terminal ``tests/foo.py`` (no backslash) runs as its own command, so a
+# ``tests/new.py \`` following it would be a SECOND command, not another
+# pytest argument — that is not an enrollment (codex r1 round-2).
+_ROSTER_CONTINUE_RE = re.compile(r"^\s*tests/[A-Za-z0-9_./-]+\.py\s*\\\s*$")
+
 # The ``run: |``-block command that OPENS a pytest test roster, e.g.
 # ``          pytest \``. It must end with a continuation backslash: a
 # complete, non-continuing command like ``pytest -q`` runs as its own shell
 # invocation and does NOT open the multi-line ``tests/x.py \`` list (codex
 # r1 #2). An enrollment is only trusted when it is anchored to that list —
-# the line directly above it is another roster entry or this opening command.
+# the line directly above it is another (continuing) roster entry or this
+# opening command.
 _PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest\b.*\\\s*$")
 
 
 def _roster_anchor(content: str) -> bool:
     """True if *content* is a line that may legally sit directly above a
     roster entry inside the explicit test list: either another roster entry
-    or the ``pytest \\`` command that opens the list."""
-    return bool(_ROSTER_ENTRY_RE.match(content)) or bool(
+    that CONTINUES (ends in ``\\``) or the ``pytest \\`` command that opens
+    the list."""
+    return bool(_ROSTER_CONTINUE_RE.match(content)) or bool(
         _PYTEST_ROSTER_CMD.match(content)
     )
 

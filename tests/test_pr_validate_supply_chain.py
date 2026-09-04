@@ -182,6 +182,20 @@ index 1111111..2222222 100644
 +            {_ENROLLED} \\
 """
 
+# Regression for codex r1 round-2: the preceding roster entry that anchors an
+# added line must CONTINUE (end in ``\\``). Here the preceding entry has no
+# backslash — a shell terminal — so the added ``tests/foo.py \\`` after it
+# would be a SECOND command, not a pytest argument. Not an enrollment.
+_TERMINAL_ANCHOR_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -441 +441,2 @@
+             tests/test_mllm_hybrid_probe.py
++            {_ENROLLED} \\
+"""
+
 
 def _ctx(
     diff: str,
@@ -279,6 +293,16 @@ def test_non_continuing_pytest_command_not_roster_only(tmp_path):
     multi-line roster and must not be treated as an enrollment."""
     roster_only, _ = _roster_only_workflows(
         _NON_CONTINUING_PYTEST_DIFF, {_WORKFLOW, _ENROLLED}
+    )
+    assert roster_only == set()
+
+
+def test_terminal_anchor_entry_not_roster_only(tmp_path):
+    """Regression (codex r1 round-2): an added ``tests/foo.py \\`` line whose
+    preceding roster entry does NOT end in a continuation backslash runs as a
+    separate shell command, so it is not a pytest argument / enrollment."""
+    roster_only, _ = _roster_only_workflows(
+        _TERMINAL_ANCHOR_DIFF, {_WORKFLOW, _ENROLLED}
     )
     assert roster_only == set()
 
