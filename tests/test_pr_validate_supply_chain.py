@@ -386,6 +386,60 @@ def test_new_files_detects_created_file():
     assert _ENROLLED in new
 
 
+def test_mid_list_no_backslash_entry_is_not_roster_only():
+    """Regression (codex r1 round-4): a no-backslash ``tests/x.py`` line
+    sandwiched BEFORE an existing continuing roster entry would cut the
+    pytest command short and run later paths as separate commands — it is
+    not a terminal enrollment and must NOT be downgraded."""
+    from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
+
+    head = (
+        "name: CI\n"
+        "jobs:\n"
+        "  t:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          pytest \\\n"
+        "            tests/test_alpha.py \\\n"
+        "            tests/test_mid.py\n"  # no backslash
+        "            tests/test_beta.py \\\n"
+    )
+    lines = _pytest_roster_lines(head)
+    # line 9 (the sandwiched no-backslash entry) must NOT count as a genuine
+    # roster terminal (it would cut the pytest command and run beta as a
+    # separate command).
+    assert 9 not in lines
+
+    # End-to-end: adding that no-backslash line at position 9 is not a valid
+    # enrollment and stays BLOCKING (the path is new, but the position is not
+    # a genuine roster terminal). The added test must be "new" to isolate the
+    # position check.
+    newfile = (
+        "diff --git a/tests/test_mid.py b/tests/test_mid.py\n"
+        "new file mode 100644\n"
+        "index 0000000..9999999\n"
+        "--- /dev/null\n"
+        "+++ b/tests/test_mid.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+pass\n"
+    )
+    inserted = (
+        "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+        "--- a/.github/workflows/ci.yml\n"
+        "+++ b/.github/workflows/ci.yml\n"
+        "@@ -8 +9,3 @@\n"
+        "+            tests/test_mid.py\n"
+        "             tests/test_beta.py \\\n"
+    )
+    roster_only, _ = _roster_only_workflows(
+        newfile + inserted,
+        {".github/workflows/ci.yml", "tests/test_mid.py"},
+        {".github/workflows/ci.yml": head},
+    )
+    assert roster_only == set()
+
+
 def test_terminal_roster_entry_without_backslash_is_enrollment():
     """Regression (codex r1 round-4): the final roster entry of a ``run: |``
     block may omit the shell continuation backslash; it is still a valid

@@ -158,9 +158,15 @@ def _pytest_roster_lines(content: str) -> set[int]:
             while j < n and _ROSTER_CONTINUE_RE.match(lines[j]):
                 roster.add(j + 1)  # 1-based
                 j += 1
-            # ...optionally followed by one terminal entry (no continuation).
+            # ...optionally followed by one TERMINAL entry (no continuation).
+            # A no-backslash line only ends the list legitimately when it is
+            # the genuine final argument: if another continuing roster entry
+            # immediately follows, the no-backslash line would cut the pytest
+            # command short and run later paths as separate commands — that is
+            # a behavior change, not an enrollment (codex r1 round-4).
             if j < n and _ROSTER_ENTRY_RE.match(lines[j]):
-                roster.add(j + 1)
+                if j + 1 >= n or not _ROSTER_CONTINUE_RE.match(lines[j + 1]):
+                    roster.add(j + 1)
                 j += 1
             i = j
         else:
