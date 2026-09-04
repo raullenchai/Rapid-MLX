@@ -22,15 +22,20 @@ Two contract tests:
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vllm_mlx.api.errors import GuidedGenerationCancelledError
+from vllm_mlx.api.models import ChatCompletionRequest
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.routes.chat import router as chat_router
+from vllm_mlx.routes.chat import stream_chat_completion_guided
+from vllm_mlx.routes.health import cancel_request
 
 
 class _GuidedEngine:
@@ -122,6 +127,365 @@ def _parse_sse_events(text: str) -> tuple[list[dict], bool]:
         except json.JSONDecodeError:
             continue
     return events, saw_done
+
+
+@pytest.mark.asyncio
+async def test_guided_stream_publishes_cancellable_id_before_buffered_output():
+    """The first SSE event addresses live guided work, not completed work."""
+
+    class _CancellableGuidedEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__()
+            self.cancelled = asyncio.Event()
+            self.live_request_id: str | None = None
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            self.guided_calls.append(
+                {"messages": messages, "json_schema": json_schema, "kwargs": kwargs}
+            )
+            self.live_request_id = kwargs["request_id"]
+            kwargs["request_id_holder"][0] = self.live_request_id
+            kwargs["request_admitted_event"].set()
+            await self.cancelled.wait()
+            raise GuidedGenerationCancelledError()
+
+        def abort_guided_request(self, request_id: str) -> bool:
+            if request_id != self.live_request_id or self.cancelled.is_set():
+                return False
+            self.cancelled.set()
+            return True
+
+        async def abort_request(self, request_id: str) -> bool:
+            return self.abort_guided_request(request_id)
+
+    engine = _CancellableGuidedEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    holder: list[str | None] = [None]
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-" + "a" * 32,
+        strict_mode=True,
+        request_id_holder=holder,
+    )
+
+    first = json.loads((await anext(stream)).removeprefix("data: "))
+    request_id = first["id"]
+    assert request_id == "chatcmpl-" + "a" * 32
+    assert holder == [request_id]
+    assert engine.cancelled.is_set() is False
+
+    response = await cancel_request(request_id)
+    assert response == {
+        "object": "request.cancel",
+        "id": request_id,
+        "cancelled": True,
+    }
+
+    terminal = json.loads((await anext(stream)).removeprefix("data: "))
+    assert terminal["choices"][0]["finish_reason"] == "cancelled"
+    assert terminal["choices"][0]["delta"] == {}
+    assert await anext(stream) == "data: [DONE]\n\n"
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert engine.stream_calls == [], "cancellation must never fall back unconstrained"
+
+
+@pytest.mark.asyncio
+async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner():
+    """Shutdown emits the model-replacement terminal and clears its ledger."""
+
+    class _ShutdownGuidedEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__()
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            kwargs["request_admitted_event"].set()
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
+            return True
+
+    engine = _ShutdownGuidedEngine()
+    reset_config().engine = engine
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-" + "b" * 32,
+        strict_mode=True,
+    )
+
+    events = [event async for event in stream]
+
+    assert any('"code": "model_replacement"' in event for event in events)
+    assert events[-1] == "data: [DONE]\n\n"
+    assert engine.lifecycle_consumed is True
+    assert engine.stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_retained_handoff_keeps_replacement_semantics():
+    """A retained guided owner carries shutdown cause through handoff."""
+    from types import SimpleNamespace
+
+    class _ShutdownHandoffEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__(raise_in_guided=True)
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        def finish_guided_handoff(self, _request_id: str):
+            return SimpleNamespace(
+                cancelled=True,
+                lifecycle_task=self.lifecycle_owner,
+            )
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
+            return True
+
+    engine = _ShutdownHandoffEngine()
+    reset_config().engine = engine
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-" + "c" * 32,
+        strict_mode=True,
+    )
+
+    events = [event async for event in stream]
+
+    assert any('"code": "model_replacement"' in event for event in events)
+    assert all('"finish_reason":"cancelled"' not in event for event in events)
+    assert events[-1] == "data: [DONE]\n\n"
+    assert engine.lifecycle_consumed is True
+    assert engine.stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
+    """The public id stays owned until the fallback scheduler is admitted."""
+
+    class _HandoffEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__(raise_in_guided=True)
+            self.handoff_calls = 0
+            self.scheduler_aborts: list[str] = []
+            self.guided_owned = True
+            self.cancelled = False
+            self.fallback_started = asyncio.Event()
+            self.release_fallback = asyncio.Event()
+
+        def finish_guided_handoff(self, request_id: str) -> bool:
+            assert request_id == "chatcmpl-handoff"
+            self.handoff_calls += 1
+            self.guided_owned = False
+            return self.cancelled
+
+        async def stream_chat(self, messages, **kwargs):
+            self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+            self.fallback_started.set()
+            await self.release_fallback.wait()
+            kwargs["request_id_holder"][0] = kwargs["request_id"]
+            kwargs["request_admitted_event"].set()
+            yield GenerationOutput(
+                text="FALLBACK-MUST-NOT-LEAK",
+                new_text="FALLBACK-MUST-NOT-LEAK",
+                finished=True,
+                finish_reason="stop",
+            )
+
+        async def abort_request(self, request_id: str) -> bool:
+            if self.guided_owned:
+                self.cancelled = True
+                return True
+            self.scheduler_aborts.append(request_id)
+            return True
+
+    engine = _HandoffEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    holder: list[str | None] = [None]
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-handoff",
+        request_id_holder=holder,
+    )
+
+    admission = json.loads((await anext(stream)).removeprefix("data: "))
+    assert admission["id"] == "chatcmpl-handoff"
+    fallback_result = asyncio.create_task(anext(stream))
+    await engine.fallback_started.wait()
+    assert fallback_result.done() is False
+
+    response = await cancel_request("chatcmpl-handoff")
+    assert response["cancelled"] is True
+    engine.release_fallback.set()
+
+    terminal = json.loads((await fallback_result).removeprefix("data: "))
+    assert terminal["choices"][0]["finish_reason"] == "cancelled"
+    assert terminal["choices"][0]["delta"] == {}
+    assert "FALLBACK-MUST-NOT-LEAK" not in json.dumps(terminal)
+    done = await anext(stream)
+    assert done == "data: [DONE]\n\n"
+    assert "FALLBACK-MUST-NOT-LEAK" not in done
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert engine.handoff_calls == 1
+    assert engine.scheduler_aborts == ["chatcmpl-handoff"]
+    assert len(engine.stream_calls) == 1
+    assert engine.guided_calls[0]["kwargs"]["retain_guided_request_on_failure"] is True
+
+
+@pytest.mark.asyncio
+async def test_closing_after_admission_cancels_unfinished_guided_task():
+    """Disconnect after ID publication cannot leave buffered work alive."""
+
+    class _BlockedGuidedEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__()
+            self.cancelled = asyncio.Event()
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            kwargs["request_admitted_event"].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled.set()
+
+    engine = _BlockedGuidedEngine()
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-close-after-admission",
+    )
+
+    await anext(stream)
+    await stream.aclose()
+    await asyncio.wait_for(engine.cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_fallback_await_finishes_retained_handoff():
+    """A disconnect before fallback admission releases the guided identity."""
+
+    class _BlockedFallbackEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__(raise_in_guided=True)
+            self.fallback_started = asyncio.Event()
+            self.handoffs = 0
+
+        async def stream_chat(self, messages, **kwargs):
+            self.fallback_started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover - establishes the async-generator shape
+
+        def finish_guided_handoff(self, request_id: str):
+            assert request_id == "chatcmpl-cancel-fallback"
+            self.handoffs += 1
+            return False
+
+    engine = _BlockedFallbackEngine()
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-cancel-fallback",
+    )
+
+    await anext(stream)
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.wait_for(engine.fallback_started.wait(), timeout=1)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert engine.handoffs == 1
+
+
+def test_nonstream_guided_user_cancel_is_not_model_replacement():
+    """An explicit cancel propagates through the ordinary cancellation path."""
+    import concurrent.futures
+
+    class _CancelledEngine(_GuidedEngine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError()
+
+    cfg = reset_config()
+    cfg.engine = _CancelledEngine()
+    cfg.model_name = "test-model"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    with pytest.raises(concurrent.futures.CancelledError):
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "emit json"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "result",
+                        "schema": {"type": "object"},
+                        "strict": False,
+                    },
+                },
+            },
+        )
 
 
 _SCHEMA = {
@@ -415,6 +779,13 @@ def test_streaming_guided_fallback_preserves_id_and_created():
 
     ids = {e["id"] for e in events if "id" in e}
     createds = {e["created"] for e in events if "created" in e}
+    role_events = [
+        e
+        for e in events
+        for choice in e.get("choices", [])
+        if (choice.get("delta") or {}).get("role") == "assistant"
+    ]
+    assert len(role_events) == 1, "guided fallback must not duplicate the role frame"
     assert len(ids) == 1, (
         f"all chunks must share one id across the guided→unconstrained "
         f"fallback handoff; saw {ids}"

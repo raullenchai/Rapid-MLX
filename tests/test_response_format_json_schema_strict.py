@@ -1852,6 +1852,36 @@ def test_responses_strict_true_guided_failure_returns_502(_rate_limiter_state):
     assert snap["strict_violations_total"] == 1
 
 
+def test_responses_guided_cancellation_is_lifecycle_not_schema_failure(
+    _rate_limiter_state,
+):
+    """Shutdown cancellation never becomes a 502 or unconstrained retry."""
+    from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+    class _CancelledEngine(_Engine):
+        def __init__(self):
+            super().__init__(supports_guided=True)
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
+            return True
+
+    engine = _CancelledEngine()
+    client = _make_responses_client(engine, _rate_limiter_state)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 503, resp.text
+    assert engine.chat_calls == []
+    assert engine.lifecycle_consumed is True
+    assert response_format_metrics.snapshot()["strict_violations_total"] == 0
+
+
 def test_strict_true_with_tools_returns_400_chat():
     """Codex r3 BLOCKING #2 hole — strict + tools: the existing
     ``if response_format and not request.tools`` guard around the
@@ -2413,6 +2443,34 @@ def test_strict_true_non_streaming_guided_raises_returns_502_no_fallback():
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     assert snap["strict_violations_total"] == 1
+
+
+def test_non_streaming_guided_cancellation_never_falls_back_unconstrained():
+    """A stopped guided worker propagates lifecycle cancellation only."""
+    from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+    class _CancelledEngine(_Engine):
+        def __init__(self):
+            super().__init__(supports_guided=True)
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
+            return True
+
+    engine = _CancelledEngine()
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=False))
+    assert resp.status_code == 503, resp.text
+    assert engine.chat_calls == []
+    assert engine.stream_calls == []
+    assert engine.lifecycle_consumed is True
 
 
 def test_strict_false_streaming_guided_raises_still_falls_back():

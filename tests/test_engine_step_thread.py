@@ -15,6 +15,7 @@ must be routed through the same worker via _run_on_step_thread().
 These tests exercise that machinery without spinning up a real model.
 """
 
+import asyncio
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -434,6 +435,8 @@ class TestGuidedGenerationStepThread:
             engine._tokenizer.encode = MagicMock(return_value=[1, 2])
             engine._model_load_executor = executor
             engine._engine = None
+            engine._guided_requests_lock = threading.Lock()
+            engine._guided_abort_events = {}
 
             # Force HAS_GUIDED True so supports_guided_generation passes.
             from vllm_mlx.engine import batched as batched_mod
@@ -442,8 +445,11 @@ class TestGuidedGenerationStepThread:
 
             captured: dict = {}
 
-            def fake_run_guided(prompt, json_schema, max_tokens, temperature):
+            def fake_run_guided(
+                prompt, json_schema, max_tokens, temperature, should_abort
+            ):
                 captured["thread"] = threading.current_thread().name
+                assert should_abort() is False
                 return '{"ok": true}'
 
             engine._run_guided_generation = fake_run_guided
@@ -454,8 +460,8 @@ class TestGuidedGenerationStepThread:
                 max_tokens=8,
                 temperature=0.0,
             )
-
             assert result.text == '{"ok": true}'
+            assert engine._guided_abort_events == {}
             assert captured["thread"].startswith("mlx-step-test"), (
                 f"_run_guided_generation ran on {captured['thread']!r}, "
                 "expected mlx-step worker. asyncio.to_thread() would dispatch "
@@ -479,6 +485,8 @@ class TestGuidedGenerationStepThread:
         engine._tokenizer.encode = MagicMock(return_value=[1])
         engine._model_load_executor = None
         engine._engine = None
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
 
         from vllm_mlx.engine import batched as batched_mod
 
@@ -486,8 +494,9 @@ class TestGuidedGenerationStepThread:
 
         called = {"n": 0}
 
-        def fake_run_guided(prompt, json_schema, max_tokens, temperature):
+        def fake_run_guided(prompt, json_schema, max_tokens, temperature, should_abort):
             called["n"] += 1
+            assert should_abort() is False
             return '{"ok": true}'
 
         engine._run_guided_generation = fake_run_guided
@@ -496,12 +505,12 @@ class TestGuidedGenerationStepThread:
             messages=[{"role": "user", "content": "hi"}],
             json_schema={"type": "object"},
         )
-
         # Should still execute (via asyncio default executor) even without
         # a mlx-step worker. Caller may then hit Stream(gpu, N), but the
         # dispatch itself must not crash.
         assert called["n"] == 1
         assert result.text == '{"ok": true}'
+        assert engine._guided_abort_events == {}
 
     @pytest.mark.asyncio
     async def test_raise_on_failure_skips_unconstrained_fallback(self, monkeypatch):
@@ -526,6 +535,8 @@ class TestGuidedGenerationStepThread:
         engine._tokenizer.encode = MagicMock(return_value=[1])
         engine._model_load_executor = None
         engine._engine = None
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
 
         from vllm_mlx.engine import batched as batched_mod
         from vllm_mlx.engine.base import GenerationOutput
@@ -559,6 +570,7 @@ class TestGuidedGenerationStepThread:
         )
         assert result.text == "FALLBACK"
         assert chat_calls["n"] == 1
+        assert engine._guided_abort_events == {}
 
         # Opt-in path: raises instead, self.chat is never called again.
         with pytest.raises(RuntimeError, match="Guided generation produced no result"):
@@ -568,6 +580,218 @@ class TestGuidedGenerationStepThread:
                 raise_on_failure=True,
             )
         assert chat_calls["n"] == 1  # unchanged — raise short-circuited self.chat
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_public_abort_stops_guided_worker_and_cleans_identity(
+        self, monkeypatch
+    ):
+        """A guided id stays live until the executor cooperatively exits."""
+        import concurrent.futures
+        import time
+
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            engine = BatchedEngine.__new__(BatchedEngine)
+            engine._loaded = True
+            engine._is_mllm = False
+            engine._model = MagicMock()
+            engine._tokenizer = MagicMock()
+            engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+            engine._tokenizer.encode = MagicMock(return_value=[1])
+            engine._model_load_executor = executor
+            engine._engine = None
+            engine._mllm_scheduler = None
+            engine._guided_requests_lock = threading.Lock()
+            engine._guided_abort_events = {}
+            monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+
+            started = threading.Event()
+            stopped = threading.Event()
+
+            def fake_run_guided(
+                prompt, json_schema, max_tokens, temperature, should_abort
+            ):
+                started.set()
+                while not should_abort():
+                    time.sleep(0.001)
+                stopped.set()
+                raise GuidedGenerationCancelledError()
+
+            engine._run_guided_generation = fake_run_guided
+            holder: list[str | None] = [None]
+            admitted = asyncio.Event()
+            task = asyncio.create_task(
+                engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    request_id="chatcmpl-public-guided",
+                    request_id_holder=holder,
+                    request_admitted_event=admitted,
+                    raise_on_failure=True,
+                )
+            )
+
+            await asyncio.wait_for(admitted.wait(), timeout=1)
+            assert await asyncio.to_thread(started.wait, 1)
+            assert holder == ["chatcmpl-public-guided"]
+            assert "chatcmpl-public-guided" in engine._guided_abort_events
+            assert await engine.abort_request("chatcmpl-public-guided") is True
+            with pytest.raises(GuidedGenerationCancelledError) as cancelled:
+                await task
+            assert cancelled.value.lifecycle_task is task
+            assert await asyncio.to_thread(stopped.wait, 1)
+            assert engine._guided_abort_events == {}
+            assert await engine.abort_request("chatcmpl-public-guided") is False
+        finally:
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_async_task_cancel_publishes_worker_stop_token(self, monkeypatch):
+        """Cancelling the response task must not leave executor work running."""
+        import concurrent.futures
+        import time
+
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            engine = BatchedEngine.__new__(BatchedEngine)
+            engine._loaded = True
+            engine._is_mllm = False
+            engine._model = MagicMock()
+            engine._tokenizer = MagicMock()
+            engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+            engine._tokenizer.encode = MagicMock(return_value=[1])
+            engine._model_load_executor = executor
+            engine._engine = None
+            engine._guided_requests_lock = threading.Lock()
+            engine._guided_abort_events = {}
+            monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+
+            started = threading.Event()
+            stopped = threading.Event()
+
+            def fake_run_guided(
+                prompt, json_schema, max_tokens, temperature, should_abort
+            ):
+                started.set()
+                while not should_abort():
+                    time.sleep(0.001)
+                stopped.set()
+                raise GuidedGenerationCancelledError()
+
+            engine._run_guided_generation = fake_run_guided
+            task = asyncio.create_task(
+                engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    request_id="chatcmpl-disconnected-guided",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert await asyncio.to_thread(stopped.wait, 1)
+            await asyncio.sleep(0)
+            assert engine._guided_abort_events == {}
+        finally:
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_abort_after_final_model_call_still_suppresses_buffered_result(
+        self, monkeypatch
+    ):
+        """An accepted cancel wins the worker-complete/result-commit race."""
+        import concurrent.futures
+
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            engine = BatchedEngine.__new__(BatchedEngine)
+            engine._loaded = True
+            engine._is_mllm = False
+            engine._model = MagicMock()
+            engine._tokenizer = MagicMock()
+            engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+            engine._tokenizer.encode = MagicMock(return_value=[1])
+            engine._model_load_executor = executor
+            engine._engine = None
+            engine._guided_requests_lock = threading.Lock()
+            engine._guided_abort_events = {}
+            monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+
+            def fake_run_guided(
+                prompt, json_schema, max_tokens, temperature, should_abort
+            ):
+                # Simulate cancel landing after the final model call. The
+                # worker returns a valid buffer without another loop check.
+                assert engine.abort_guided_request("chatcmpl-final-race") is True
+                return '{"must_not_commit": true}'
+
+            engine._run_guided_generation = fake_run_guided
+            with pytest.raises(GuidedGenerationCancelledError):
+                await engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    request_id="chatcmpl-final-race",
+                )
+            assert engine._guided_abort_events == {}
+        finally:
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_guided_failure_retains_identity_until_fallback_handoff(
+        self, monkeypatch
+    ):
+        """Best-effort SSE has no unowned id window before admission."""
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._is_mllm = False
+        engine._model = MagicMock()
+        engine._tokenizer = MagicMock()
+        engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+        engine._tokenizer.encode = MagicMock(return_value=[1])
+        engine._model_load_executor = None
+        engine._engine = None
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_stopping = False
+        monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+        engine._run_guided_generation = MagicMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="produced no result"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="chatcmpl-handoff",
+                raise_on_failure=True,
+                retain_guided_request_on_failure=True,
+            )
+
+        owner = asyncio.current_task()
+        assert owner is not None
+        engine._abort_all_guided_requests()
+        outcome = engine.finish_guided_handoff("chatcmpl-handoff")
+        assert outcome.cancelled is True
+        assert outcome.lifecycle_task is owner
+        assert engine.consume_lifecycle_task_abort(owner) is True
+        assert engine._guided_abort_events == {}
 
 
 class TestMLLMSchedulerStepThread:

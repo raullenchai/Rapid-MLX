@@ -11,6 +11,35 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+def _make_guided_engine(monkeypatch, run_guided, *, executor=None):
+    """Build the no-weights engine shape used by cancellation lifecycle tests."""
+    import threading
+
+    from vllm_mlx.engine import batched as batched_mod
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+    monkeypatch.setattr(
+        batched_mod, "shared_apply_chat_template", lambda *_a, **_k: "prompt"
+    )
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._loaded = True
+    engine._is_mllm = False
+    engine._model_name = "test-model"
+    engine._model = MagicMock()
+    engine._tokenizer = MagicMock()
+    engine._tokenizer.encode = MagicMock(return_value=[1])
+    engine._model_load_executor = executor
+    engine._engine = None
+    engine._mllm_scheduler = None
+    engine._guided_requests_lock = threading.Lock()
+    engine._guided_abort_events = {}
+    engine._guided_owner_tasks = {}
+    engine._guided_stopping = False
+    engine._run_guided_generation = run_guided
+    return engine
+
+
 class _StubAsyncEngine:
     """Minimal async engine stub exposing ``abort_request`` as a coroutine."""
 
@@ -36,6 +65,486 @@ class _StubSyncMllmScheduler:
 
 
 class TestBatchedEngineAbortRouting:
+    def test_constructor_initializes_guided_lifecycle_state(self, monkeypatch):
+        from vllm_mlx.engine import batched as batched_mod
+
+        monkeypatch.setattr(batched_mod, "is_mllm_model", lambda _name: False)
+        engine = batched_mod.BatchedEngine("test-model", force_text=True)
+
+        assert engine._guided_abort_events == {}
+        assert engine._guided_owner_tasks == {}
+        assert engine._guided_stopping is False
+
+    def test_guided_registry_legacy_shapes_and_direct_abort(self):
+        """Lightweight embedders get lazy state without weakening cancellation."""
+        import asyncio
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        event = threading.Event()
+        engine._register_guided_request("req", event)
+
+        assert engine._guided_owner_tasks == {}
+        assert engine.abort_guided_request("missing") is False
+        assert engine.abort_guided_request("req") is True
+        assert event.is_set()
+
+        owner = asyncio.new_event_loop().create_task(asyncio.sleep(0))
+        try:
+            engine._mark_lifecycle_aborted_tasks((owner,))
+            assert not hasattr(engine, "_lifecycle_aborted_tasks")
+
+            engine._admission_lock = threading.Lock()
+            engine._mark_lifecycle_aborted_tasks((owner,))
+            assert owner in engine._lifecycle_aborted_tasks
+        finally:
+            owner.cancel()
+            owner.get_loop().run_until_complete(
+                asyncio.gather(owner, return_exceptions=True)
+            )
+            owner.get_loop().close()
+
+    def test_guided_helpers_are_safe_before_runtime_initialization(self):
+        """Abort and handoff are harmless on legacy ``__new__`` engines."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+
+        event = threading.Event()
+        engine._register_guided_request("legacy", event)
+        assert engine._guided_abort_events == {"legacy": event}
+        assert engine._guided_owner_tasks == {}
+        assert engine._guided_stopping is False
+        assert engine._finish_guided_request("legacy", event) is False
+
+        assert engine.abort_guided_request("missing") is False
+        uninitialized = BatchedEngine.__new__(BatchedEngine)
+        uninitialized._abort_all_guided_requests()
+        outcome = uninitialized.finish_guided_handoff("missing")
+        assert outcome.cancelled is False
+        assert outcome.lifecycle_task is None
+
+    def test_guided_handoff_returns_owner_and_cancel_state(self):
+        import asyncio
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        loop = asyncio.new_event_loop()
+        owner = loop.create_task(asyncio.sleep(0))
+        try:
+            engine = BatchedEngine.__new__(BatchedEngine)
+            engine._guided_requests_lock = threading.Lock()
+            event = threading.Event()
+            event.set()
+            engine._guided_abort_events = {"req": event}
+            engine._guided_owner_tasks = {"req": owner}
+
+            outcome = engine.finish_guided_handoff("req")
+
+            assert outcome.cancelled is True
+            assert outcome.lifecycle_task is owner
+            assert engine._guided_abort_events == {}
+            assert engine._guided_owner_tasks == {}
+        finally:
+            owner.cancel()
+            loop.run_until_complete(asyncio.gather(owner, return_exceptions=True))
+            loop.close()
+
+    @pytest.mark.asyncio
+    async def test_guided_abort_precedes_scheduler_routing(self):
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._guided_requests_lock = threading.Lock()
+        event = threading.Event()
+        engine._guided_abort_events = {"req-guided": event}
+        engine._guided_owner_tasks = {}
+        engine._mllm_scheduler = _StubSyncMllmScheduler(returns=False)
+        engine._engine = _StubAsyncEngine(returns=False)
+
+        assert await engine.abort_request("req-guided") is True
+        assert event.is_set()
+        assert engine._mllm_scheduler.calls == []
+        assert engine._engine.calls == []
+
+    @pytest.mark.asyncio
+    async def test_start_reopens_guided_admission_and_stop_closes_it(self):
+        """Restart and shutdown own guided admission with the engine lifecycle."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = False
+        engine._is_mllm = False
+        engine._model_name = "test-model"
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_owner_tasks = {}
+        engine._guided_stopping = True
+        engine._validate_lane_capabilities = MagicMock()
+        engine._start_llm = AsyncMock()
+
+        await engine.start()
+        assert engine._guided_stopping is False
+
+        engine._mllm_scheduler = None
+        engine._engine = None
+        engine._model_load_executor = None
+        engine._processor = object()
+        engine._mllm_instance = object()
+        engine._engine_started = True
+        await engine.stop()
+        assert engine._guided_stopping is True
+        assert engine._loaded is False
+
+    @pytest.mark.asyncio
+    async def test_guided_admission_publication_is_best_effort(self, monkeypatch):
+        """A broken compatibility holder cannot prevent worker admission."""
+        import concurrent.futures
+
+        class _BrokenHolder:
+            def __setitem__(self, _index, _value):
+                raise RuntimeError("read-only holder")
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            engine = _make_guided_engine(
+                monkeypatch,
+                lambda **_kwargs: '{"ok": true}',
+                executor=executor,
+            )
+            admitted = MagicMock()
+
+            result = await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id_holder=_BrokenHolder(),
+                request_admitted_event=admitted,
+            )
+
+            assert result.text == '{"ok": true}'
+            admitted.set.assert_called_once_with()
+            assert engine._guided_abort_events == {}
+        finally:
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_guided_submission_failure_releases_identity(self, monkeypatch):
+        class _RejectingExecutor:
+            def submit(self, *_args, **_kwargs):
+                raise RuntimeError("executor stopped")
+
+        engine = _make_guided_engine(
+            monkeypatch,
+            lambda **_kwargs: "unused",
+            executor=_RejectingExecutor(),
+        )
+
+        with pytest.raises(RuntimeError, match="executor stopped"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="submission-failed",
+            )
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_guided_worker_cancellation_preserves_lifecycle(self, monkeypatch):
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        def cancelled(**_kwargs):
+            raise GuidedGenerationCancelledError()
+
+        engine = _make_guided_engine(monkeypatch, cancelled)
+
+        with pytest.raises(GuidedGenerationCancelledError) as exc:
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="worker-cancelled",
+            )
+        assert exc.value.lifecycle_task is not None
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_guided_worker_base_exception_releases_identity(self, monkeypatch):
+        class _WorkerFailure(BaseException):
+            pass
+
+        def fail(**_kwargs):
+            raise _WorkerFailure()
+
+        engine = _make_guided_engine(monkeypatch, fail)
+
+        with pytest.raises(_WorkerFailure):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="worker-failed",
+            )
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_completed_cancelled_future_releases_identity(self, monkeypatch):
+        def cancel(**_kwargs):
+            raise asyncio.CancelledError()
+
+        import asyncio
+
+        engine = _make_guided_engine(monkeypatch, cancel)
+
+        with pytest.raises(asyncio.CancelledError):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="future-cancelled",
+            )
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_defers_cleanup_until_worker_finishes(self, monkeypatch):
+        """A live executor future owns the registry until its callback runs."""
+        import asyncio
+        import concurrent.futures
+        import threading
+        import time
+
+        started = threading.Event()
+        abort_seen = threading.Event()
+        release_worker = threading.Event()
+        stopped = threading.Event()
+
+        def cooperate(*, should_abort, **_kwargs):
+            started.set()
+            while not should_abort():
+                time.sleep(0.001)
+            abort_seen.set()
+            release_worker.wait()
+            stopped.set()
+            return None
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        engine = None
+        task = None
+        try:
+            engine = _make_guided_engine(monkeypatch, cooperate, executor=executor)
+            task = asyncio.create_task(
+                engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    request_id="pending-worker",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert await asyncio.to_thread(abort_seen.wait, 1)
+            assert "pending-worker" in engine._guided_abort_events
+
+            release_worker.set()
+            assert await asyncio.to_thread(stopped.wait, 1)
+            for _ in range(100):
+                if not engine._guided_abort_events:
+                    break
+                await asyncio.sleep(0.001)
+            assert engine._guided_abort_events == {}
+        finally:
+            release_worker.set()
+            if engine is not None:
+                engine.abort_guided_request("pending-worker")
+            if task is not None and not task.done():
+                task.cancel()
+            executor.shutdown(wait=True)
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_retained_guided_failure_keeps_identity_for_handoff(
+        self, monkeypatch
+    ):
+        engine = _make_guided_engine(monkeypatch, lambda **_kwargs: None)
+
+        with pytest.raises(RuntimeError, match="produced no result"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="retained-failure",
+                raise_on_failure=True,
+                retain_guided_request_on_failure=True,
+            )
+        assert "retained-failure" in engine._guided_abort_events
+        outcome = engine.finish_guided_handoff("retained-failure")
+        assert outcome.cancelled is False
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_abort_after_worker_result_suppresses_commit(self, monkeypatch):
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        engine = None
+
+        def abort_then_return(**_kwargs):
+            assert engine is not None
+            assert engine.abort_guided_request("result-race") is True
+            return '{"must_not_commit": true}'
+
+        engine = _make_guided_engine(monkeypatch, abort_then_return)
+        with pytest.raises(GuidedGenerationCancelledError):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="result-race",
+            )
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_retained_guided_failure_honors_accepted_abort(self, monkeypatch):
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        engine = None
+
+        def abort_then_fail(**_kwargs):
+            assert engine is not None
+            assert engine.abort_guided_request("retained") is True
+            return None
+
+        engine = _make_guided_engine(monkeypatch, abort_then_fail)
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="retained",
+                raise_on_failure=True,
+                retain_guided_request_on_failure=True,
+            )
+        assert engine._guided_abort_events == {}
+
+    def test_run_guided_generation_never_degrades_cancellation(self, monkeypatch):
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        class _CancelledGenerator:
+            def __init__(self, _model, _tokenizer):
+                pass
+
+            def generate_json(self, **_kwargs):
+                raise GuidedGenerationCancelledError()
+
+        monkeypatch.setattr(batched_mod, "GuidedGenerator", _CancelledGenerator)
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._model = object()
+        engine._tokenizer = object()
+        engine._is_mllm = False
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            engine._run_guided_generation("prompt", {}, 8, 0.0)
+
+    def test_guided_registry_cleanup_is_instance_safe_and_shutdown_signals_all(self):
+        """Late cleanup cannot remove a newer job reusing the same id."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._guided_requests_lock = threading.Lock()
+        first = threading.Event()
+        replacement = threading.Event()
+        engine._guided_abort_events = {"req-guided": replacement, "req-other": first}
+        engine._guided_owner_tasks = {}
+
+        engine._finish_guided_request("req-guided", first)
+        assert engine._guided_abort_events["req-guided"] is replacement
+
+        with pytest.raises(RuntimeError, match="already active"):
+            engine._register_guided_request("req-guided", threading.Event())
+
+        engine._abort_all_guided_requests()
+        assert first.is_set()
+        assert replacement.is_set()
+
+        late = threading.Event()
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            engine._register_guided_request("req-late", late)
+        assert late.is_set()
+        assert "req-late" not in engine._guided_abort_events
+
+    def test_stop_and_registration_serialize_on_the_guided_lock(self):
+        """A registration waiting behind shutdown cannot miss its signal."""
+        import threading
+
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_owner_tasks = {}
+        engine._guided_stopping = False
+        late = threading.Event()
+        started = threading.Event()
+        outcome: list[type[BaseException]] = []
+
+        def register_late() -> None:
+            started.set()
+            try:
+                engine._register_guided_request("req-late", late)
+            except BaseException as exc:
+                outcome.append(type(exc))
+
+        with engine._guided_requests_lock:
+            thread = threading.Thread(target=register_late)
+            thread.start()
+            assert started.wait(timeout=1)
+            engine._guided_stopping = True
+        thread.join(timeout=1)
+
+        assert outcome == [GuidedGenerationCancelledError]
+        assert late.is_set()
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_guided_owner_in_real_lifecycle_ledger(self):
+        """Guided shutdown cancellation reaches the standard route 503 ledger."""
+        import asyncio
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_owner_tasks = {}
+        engine._guided_stopping = False
+        owner = asyncio.current_task()
+        assert owner is not None
+        abort_event = threading.Event()
+
+        engine._register_guided_request("req-guided", abort_event, owner)
+        engine._abort_all_guided_requests()
+
+        assert abort_event.is_set()
+        assert engine.consume_lifecycle_task_abort(owner) is True
+        assert engine.consume_lifecycle_task_abort(owner) is False
+
     @pytest.mark.asyncio
     async def test_routes_to_mllm_scheduler_when_present(self):
         from vllm_mlx.engine.batched import BatchedEngine
@@ -104,6 +613,77 @@ class TestBaseEngineDefaultAbort:
         sentinel = object()
         result = await BaseEngine.abort_request(sentinel, "any")  # type: ignore[arg-type]
         assert result is False
+
+
+class TestGuidedRouteCancellationClassification:
+    """Explicit user cancellation stays distinct from model replacement."""
+
+    @staticmethod
+    def _cancelled_engine():
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine.base import GenerationOutput
+
+        class _CancelledEngine:
+            preserve_native_tool_format = False
+            is_mllm = False
+            tokenizer = None
+            supports_guided_generation = True
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                return "prompt"
+
+            async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+                raise GuidedGenerationCancelledError()
+
+            async def chat(self, *, messages, **kwargs):
+                return GenerationOutput(text='{"value": 42}', finished=True)
+
+        return _CancelledEngine()
+
+    def test_responses_guided_user_cancel_propagates_cancelled_error(self):
+        import concurrent.futures
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.middleware.auth import rate_limiter
+        from vllm_mlx.routes.responses import router as responses_router
+
+        saved_enabled = rate_limiter.enabled
+        saved_rpm = rate_limiter.requests_per_minute
+        saved_requests = dict(rate_limiter._requests)
+        try:
+            rate_limiter.enabled = False
+            cfg = reset_config()
+            cfg.engine = self._cancelled_engine()
+            cfg.model_name = "test-model"
+            cfg.model_registry = None
+            cfg.no_thinking = True
+            app = FastAPI()
+            app.include_router(responses_router)
+            client = TestClient(app)
+            with pytest.raises(concurrent.futures.CancelledError):
+                client.post(
+                    "/v1/responses",
+                    json={
+                        "model": "test-model",
+                        "input": "emit json",
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": "result",
+                                "schema": {"type": "object"},
+                                "strict": True,
+                            }
+                        },
+                    },
+                )
+        finally:
+            rate_limiter.enabled = saved_enabled
+            rate_limiter.requests_per_minute = saved_rpm
+            rate_limiter._requests.clear()
+            rate_limiter._requests.update(saved_requests)
 
 
 class TestCancelRequestEndpoint:

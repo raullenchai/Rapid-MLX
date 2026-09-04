@@ -465,6 +465,92 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_LLGUIDANCE = original
 
+    def test_default_calls_preserve_legacy_decode_override_signature(self, monkeypatch):
+        """The optional cancellation callback does not break subclasses."""
+        import vllm_mlx.api.guided as guided
+
+        class _LegacyGenerator(guided.GuidedGenerator):
+            def _decode_constrained(self, *, grammar, prompt, max_tokens, temperature):
+                return "legacy-ok"
+
+        class _MatcherStub:
+            @staticmethod
+            def grammar_from_json_schema(*_args, **_kwargs):
+                return object()
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(guided, "LLMatcher", _MatcherStub)
+        generator = _LegacyGenerator(object(), object())
+
+        assert (
+            generator.generate_json(
+                "hi", {"type": "object"}, max_tokens=8, temperature=0.0
+            )
+            == "legacy-ok"
+        )
+        assert (
+            generator.generate_json_object("hi", max_tokens=8, temperature=0.0)
+            == "legacy-ok"
+        )
+
+    def test_generate_json_forwards_and_preserves_cancellation(self, monkeypatch):
+        """The public callback reaches decode and cancellation is never degraded."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        callback = lambda: True
+
+        class _MatcherStub:
+            @staticmethod
+            def grammar_from_json_schema(*_args, **_kwargs):
+                return object()
+
+        class _CancelledGenerator(guided.GuidedGenerator):
+            def _decode_constrained(self, **kwargs):
+                assert kwargs["should_abort"] is callback
+                raise GuidedGenerationCancelledError()
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(guided, "LLMatcher", _MatcherStub)
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            _CancelledGenerator(object(), object()).generate_json(
+                "hi",
+                {"type": "object"},
+                max_tokens=8,
+                temperature=0.0,
+                should_abort=callback,
+            )
+
+    def test_module_helper_forwards_and_preserves_cancellation(self, monkeypatch):
+        """The convenience helper keeps the same cooperative-cancel contract."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        callback = lambda: True
+
+        class _CancelledGenerator:
+            def __init__(self, _model, _tokenizer):
+                pass
+
+            def generate_json(self, **kwargs):
+                assert kwargs["should_abort"] is callback
+                raise GuidedGenerationCancelledError()
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(guided, "GuidedGenerator", _CancelledGenerator)
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            guided.generate_with_schema(
+                object(),
+                object(),
+                "hi",
+                {"type": "object"},
+                max_tokens=8,
+                temperature=0.0,
+                should_abort=callback,
+            )
+
     def test_degrades_gracefully_without_fast_tokenizer(self):
         """A tokenizer with no underlying fast (``._tokenizer``) tokenizer
         must NOT crash — ``_get_lltokenizer`` logs and returns None, and
@@ -628,6 +714,62 @@ class TestConstrainedDecodeWithRealLLGuidance:
             "means the decode loop lost context (missing KV cache) so the "
             "context-dependent fake model emitted the wrong planned tokens"
         )
+
+    def test_cancellation_is_observed_between_prefill_chunks(
+        self, wrapped_tokenizer, monkeypatch
+    ):
+        """Long-prompt cancellation stops before the next model chunk."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        target = '{"a":1}'
+        plan = wrapped_tokenizer._tokenizer.encode(target)
+        prompt = "prefill boundary " * 8
+        gen, _ = self._make_generator(wrapped_tokenizer, plan, prompt=prompt)
+        monkeypatch.setattr(guided, "_PREFILL_STEP_SIZE", 4)
+        checks = 0
+
+        def should_abort():
+            nonlocal checks
+            checks += 1
+            # Initial check, then the first chunk's pre/post checks.
+            return checks >= 3
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            gen.generate_json_object(
+                prompt,
+                max_tokens=32,
+                temperature=0.0,
+                should_abort=should_abort,
+            )
+        assert checks == 3
+
+    def test_cancellation_is_observed_between_constrained_decode_steps(
+        self, wrapped_tokenizer
+    ):
+        """A committed constrained token cannot hide later cancellation."""
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        target = '{"a":1}'
+        plan = wrapped_tokenizer._tokenizer.encode(target)
+        gen, _ = self._make_generator(wrapped_tokenizer, plan)
+        checks = 0
+
+        def should_abort():
+            nonlocal checks
+            checks += 1
+            # Initial + trailing-prefill checks, first loop entry, and the
+            # post-forward check after one constrained token was consumed.
+            return checks >= 5
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            gen.generate_json_object(
+                "prompt",
+                max_tokens=32,
+                temperature=0.0,
+                should_abort=should_abort,
+            )
+        assert checks == 5
 
     def test_negative_control_first_token_mask(self, wrapped_tokenizer):
         """NEGATIVE CONTROL: under a JSON-object grammar the first-step

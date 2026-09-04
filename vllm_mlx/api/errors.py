@@ -40,6 +40,22 @@ class GuidedSchemaCompileError(Exception):
     """
 
 
+class GuidedGenerationCancelledError(Exception):
+    """Internal control signal for cooperatively cancelled guided work.
+
+    This is deliberately distinct from an operational guided-decoder failure:
+    callers must terminate the request instead of falling back to unconstrained
+    generation after the client has cancelled its schema-constrained request.
+    """
+
+    def __init__(self, *, lifecycle_task: object | None = None) -> None:
+        super().__init__()
+        # When shutdown initiated the stop, this is the exact task entered in
+        # the engine's lifecycle ledger.  The guided worker may be nested under
+        # a disconnect guard, so consumers must not substitute current_task().
+        self.lifecycle_task = lifecycle_task
+
+
 def guided_schema_compile_error_detail(
     exc: BaseException,
     param: str | None = None,

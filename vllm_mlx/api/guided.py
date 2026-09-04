@@ -27,6 +27,7 @@ Two constraint modes are supported, matching the two the OpenAI
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 # ``GuidedSchemaCompileError`` originally lived in THIS module; it now lives in
@@ -43,7 +44,7 @@ from typing import Any
 # ``from vllm_mlx.api.guided import *``. Adding an ``__all__`` would silently
 # hide every name not listed, breaking existing ``import *`` consumers; leaving
 # it off keeps all module-level public names exported.
-from .errors import GuidedSchemaCompileError
+from .errors import GuidedGenerationCancelledError, GuidedSchemaCompileError
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ class GuidedGenerator:
         prompt: str,
         max_tokens: int,
         temperature: float,
+        should_abort: Callable[[], bool] | None = None,
     ) -> str | None:
         """Run an ``mlx_lm`` decode loop constrained by an llguidance grammar.
 
@@ -380,6 +382,12 @@ class GuidedGenerator:
         benign truncated-parse ``None``.
         """
         from mlx_lm.models.cache import make_prompt_cache
+
+        def check_cancelled() -> None:
+            if should_abort is not None and should_abort():
+                raise GuidedGenerationCancelledError()
+
+        check_cancelled()
 
         lltok = self._get_lltokenizer()
         if lltok is None:
@@ -451,17 +459,22 @@ class GuidedGenerator:
         #      generated token still sees full context.
         y = mx.array(prompt_ids)
         while y.size > _PREFILL_STEP_SIZE:
+            check_cancelled()
             model(y[:_PREFILL_STEP_SIZE][None], cache=cache)
             mx.eval([c.state for c in cache])
+            check_cancelled()
             y = y[_PREFILL_STEP_SIZE:]
             mx.clear_cache()
 
         # Trailing remainder (1 .. _PREFILL_STEP_SIZE tokens): this final
         # forward pass yields the last-token logits for the first sample.
+        check_cancelled()
         logits = model(y[None], cache=cache)[:, -1, :]
+        check_cancelled()
 
         generated: list[int] = []
         for _ in range(max_tokens):
+            check_cancelled()
             if matcher.is_stopped():
                 break
 
@@ -501,6 +514,7 @@ class GuidedGenerator:
             if matcher.is_stopped() or len(generated) >= max_tokens:
                 break
             logits = model(mx.array([tok])[None], cache=cache)[:, -1, :]
+            check_cancelled()
 
         # Only return output the grammar actually completed. ``is_accepting``
         # is True iff the matcher is in a state where the grammar is fully
@@ -519,6 +533,7 @@ class GuidedGenerator:
         json_schema: dict[str, Any],
         max_tokens: int = 256,
         temperature: float = 0.7,
+        should_abort: Callable[[], bool] | None = None,
     ) -> str | None:
         """Generate JSON output constrained to a schema.
 
@@ -572,12 +587,17 @@ class GuidedGenerator:
                 schema_str,
                 overrides={"whitespace_flexible": True},
             )
-            return self._decode_constrained(
-                grammar=grammar,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            decode_kwargs: dict[str, Any] = {
+                "grammar": grammar,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if should_abort is not None:
+                decode_kwargs["should_abort"] = should_abort
+            return self._decode_constrained(**decode_kwargs)
+        except GuidedGenerationCancelledError:
+            raise
         except GuidedSchemaCompileError:
             # llguidance rejected the (structurally-valid) schema LAZILY at
             # matcher construction (``matcher.get_error()``) → operational.
@@ -599,6 +619,7 @@ class GuidedGenerator:
         prompt: str,
         max_tokens: int = 256,
         temperature: float = 0.7,
+        should_abort: Callable[[], bool] | None = None,
     ) -> str | None:
         """
         Generate any valid JSON object.
@@ -627,12 +648,17 @@ class GuidedGenerator:
                 _JSON_OBJECT_SCHEMA,
                 overrides={"whitespace_flexible": True},
             )
-            return self._decode_constrained(
-                grammar=grammar,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            decode_kwargs: dict[str, Any] = {
+                "grammar": grammar,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if should_abort is not None:
+                decode_kwargs["should_abort"] = should_abort
+            return self._decode_constrained(**decode_kwargs)
+        except GuidedGenerationCancelledError:
+            raise
         except Exception:
             logger.exception("JSON object generation failed")
             return None
@@ -682,6 +708,7 @@ def generate_with_schema(
     json_schema: dict[str, Any],
     max_tokens: int = 256,
     temperature: float = 0.7,
+    should_abort: Callable[[], bool] | None = None,
 ) -> str | None:
     """
     Convenience function for one-shot guided JSON generation.
@@ -693,6 +720,7 @@ def generate_with_schema(
         json_schema: JSON schema
         max_tokens: Maximum tokens
         temperature: Sampling temperature
+        should_abort: Optional callback that reports request cancellation.
 
     Returns:
         JSON string or None if guided generation unavailable/failed
@@ -702,12 +730,17 @@ def generate_with_schema(
 
     try:
         generator = GuidedGenerator(model, tokenizer)
-        return generator.generate_json(
-            prompt=prompt,
-            json_schema=json_schema,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        generation_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "json_schema": json_schema,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if should_abort is not None:
+            generation_kwargs["should_abort"] = should_abort
+        return generator.generate_json(**generation_kwargs)
+    except GuidedGenerationCancelledError:
+        raise
     except Exception as e:
         # ``generate_json`` already degrades EVERY failure (compile-reject
         # included) to ``None`` internally, so nothing schema-specific escapes
