@@ -3086,15 +3086,13 @@ def _salvage_forced_scalar_arguments(
     if ptype == "integer":
         if isinstance(value, bool):
             return None  # never coerce bool → number
-        # Only a genuine JSON integer (a Python ``int``) satisfies an integer
-        # property. An integral float (``72.0``) is deliberately NOT accepted:
-        # ``json.loads`` parsed it as a float, and the downstream draft-aware
-        # jsonschema validator tests ``numbers.Integral`` on the DECODED value,
-        # so a float never satisfies ``"type": "integer"`` — and ``int()``-
-        # coercing could silently corrupt a large value already rounded by the
-        # JSON parse. Failing closed is consistent with both. (Codex has argued
-        # both ways across rounds; this is the correct, non-lossy resolution.)
-        if isinstance(value, int):
+        # JSON Schema defines a number with a zero fractional part (``72.0``,
+        # ``1e3``) as a valid integer, and the downstream draft-aware jsonschema
+        # validator accepts it (verified empirically). Accept genuine ints and
+        # INTEGRAL floats; serialize a float VERBATIM (never ``int()``-coerce —
+        # that could silently corrupt a large value already rounded by
+        # json.loads), so the downstream validator sees the exact parsed number.
+        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
             return json.dumps({prop: value})
         return None  # a non-integral float cannot satisfy an integer property
     if ptype == "number":

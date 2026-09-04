@@ -97,16 +97,17 @@ class TestSalvageForcedScalarArguments:
         assert json.loads(out) == {"degrees": 72}
 
     def test_fractional_float_rejected_for_integer_prop(self):
-        # A non-integer float would fail integer validation → refuse to salvage.
+        # A non-integral float would fail integer validation → refuse to salvage.
         int_tool = _tool("temperature", ["degrees"], ptype="integer")
         assert (
             _salvage_forced_scalar_arguments("temperature", "72.5", [int_tool]) is None
         )
-        # An integral float is still a FLOAT, whose json.loads parse may have
-        # already lost precision on large values — fail closed rather than
-        # int()-coerce (codex BLOCKING). Only a genuine JSON integer salvages.
+        # An INTEGRAL float is a valid JSON-Schema integer and the downstream
+        # jsonschema validator accepts it; serialize it verbatim (no lossy
+        # int()-coercion).
         assert (
-            _salvage_forced_scalar_arguments("temperature", "72.0", [int_tool]) is None
+            _salvage_forced_scalar_arguments("temperature", "72.0", [int_tool])
+            == '{"degrees": 72.0}'
         )
         assert (
             _salvage_forced_scalar_arguments("temperature", "72", [int_tool])
