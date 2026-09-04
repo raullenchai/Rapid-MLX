@@ -328,6 +328,78 @@ class TestDetectionRequiresAValidationBlock:
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
 
+    def test_conditional_derivation_does_not_count(self):
+        """Codex r3: an assignment inside a sibling ``if`` may not have run."""
+        clause = (
+            "{%- if x %}{%- set r = reasoning_effort %}{%- endif %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_later_derivation_does_not_count(self):
+        clause = (
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+            "{%- set r = reasoning_effort %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_derivation_inside_a_loop_does_not_leak(self):
+        clause = (
+            "{%- for m in messages %}{%- set r = reasoning_effort %}{%- endfor %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_derivation_in_an_enclosing_block_counts(self):
+        clause = (
+            "{%- if enable_thinking %}{%- set r = reasoning_effort %}"
+            "{%- for m in messages %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+            "{%- endfor %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a",)
+
+    def test_unrelated_membership_first_in_the_condition_is_skipped(self):
+        """Codex r3: every conjunct/disjunct is inspected, not just the first."""
+        clause = (
+            "{%- if mode not in ['x'] or reasoning_effort not in ['a', 'b'] %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_conditional_raise_expression_does_not_count(self):
+        """Codex r3: ``{{ raise_exception(...) if strict else '' }}`` may
+        never raise."""
+        clause = (
+            "{%- if reasoning_effort not in ['a'] %}"
+            "{{ raise_exception('bad') if strict else '' }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_default_outside_the_vocabulary_does_not_count(self):
+        """Codex r3: ``set reasoning_effort = 'unsupported'`` proves nothing
+        about which values the template accepts."""
+        clause = (
+            "{%- if reasoning_effort not in ['a', 'b'] %}"
+            "{%- set reasoning_effort = 'unsupported' %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_non_literal_default_does_not_count(self):
+        clause = (
+            "{%- if reasoning_effort not in ['a', 'b'] %}"
+            "{%- set reasoning_effort = fallback %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_validation_in_an_elif_test_counts(self):
+        clause = (
+            "{%- if not enable_thinking %}off"
+            "{%- elif reasoning_effort not in ['a', 'b'] %}{{ raise_exception('z') }}"
+            "{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
     def test_first_validation_block_wins_over_a_later_branch(self):
         clause = QWEN38_TEMPLATE + "{%- if reasoning_effort in ('zzz',) %}q{%- endif %}"
         assert detect_native_reasoning_effort_levels(clause) == (

@@ -1162,24 +1162,28 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
 )
 
 # A template declares its native effort vocabulary only when it *validates*
-# ``reasoning_effort`` against a literal set. Proven on the Jinja AST, not by
-# pattern matching (codex #3048 r1/r2):
+# ``reasoning_effort`` against a literal set. Proven on the Jinja AST by a
+# forward, scope-aware walk (codex #3048 r1–r3), never by pattern matching:
 #
 #   * an ``{% if <var> not in ('a', 'b') %}`` test where ``<var>`` is
-#     ``reasoning_effort`` itself or a variable assigned from an expression
-#     that references it (Qwen3.8's ``resolved_reasoning_effort``); the test
-#     may be one disjunct/conjunct of a larger condition (Hy3 prefixes
-#     ``not reasoning_effort is defined or``) but never sits under ``not``;
-#   * whose block body — at its top level, not inside a nested ``if``/``for`` —
-#     either rejects (``{{ raise_exception(...) }}``, Qwen3.8) or replaces the
-#     value with a default (``{% set <var> = ... %}``, Hy3).
+#     ``reasoning_effort`` itself or a variable assigned — earlier in the
+#     same or an enclosing block, so it is guaranteed to have run — from an
+#     expression that references it (Qwen3.8's ``resolved_reasoning_effort``).
+#     An assignment inside a sibling ``if`` / ``for`` body, or one that comes
+#     later, does not count. The membership test may be any conjunct or
+#     disjunct of the condition (Hy3 prefixes ``not reasoning_effort is
+#     defined or``) but never sits under ``not``;
+#   * whose block body — at its top level, not inside a nested statement or a
+#     conditional expression — either is a bare ``{{ raise_exception(...) }}``
+#     (Qwen3.8) or re-assigns ``<var>`` to a *literal from that same set*
+#     (Hy3's ``{% set reasoning_effort = 'no_think' %}``).
 #
 # Nothing else counts: Harmony merely interpolates the value, North Mini Code
 # compares against a single ``"none"`` sentinel, a template that just
 # *branches* on a subset (``{% if reasoning_effort in ('high', 'xhigh') %}``)
-# says nothing about which values it accepts, and a rejection that is itself
-# conditional inside the block may never fire. All of those keep the
-# token-cap fallback, as does a template jinja2 cannot parse.
+# says nothing about which values it accepts, and a rejection that may not
+# fire proves nothing. All of those keep the token-cap fallback, as does a
+# template jinja2 cannot parse.
 
 
 def _jinja_nodes():
@@ -1212,43 +1216,24 @@ def _template_parser():
     return jinja2.Environment(extensions=["jinja2.ext.loopcontrols", _GenerationBlock])
 
 
-def _names_derived_from_reasoning_effort(tree, nodes) -> set[str]:
-    """``reasoning_effort`` plus every name ``{% set %}`` from an expression
-    that (transitively) references it, in document order."""
-    derived = {"reasoning_effort"}
-    assignments = [
-        (assign.target.name, assign.node)
-        for assign in tree.find_all(nodes.Assign)
-        if isinstance(assign.target, nodes.Name)
-    ]
-    changed = True
-    while changed:
-        changed = False
-        for target, expr in assignments:
-            if target in derived:
-                continue
-            referenced = [expr] if isinstance(expr, nodes.Name) else []
-            referenced.extend(expr.find_all(nodes.Name))
-            if any(name.name in derived for name in referenced):
-                derived.add(target)
-                changed = True
-    return derived
+def _references_any(expr, names: set[str], nodes) -> bool:
+    if isinstance(expr, nodes.Name) and expr.name in names:
+        return True
+    return any(name.name in names for name in expr.find_all(nodes.Name))
 
 
-def _not_in_membership(expr, nodes):
-    """Return the ``<x> not in <literal set>`` Compare inside ``expr``, looking
-    through ``and`` / ``or`` only (never ``not``, which inverts it)."""
+def _not_in_memberships(expr, nodes):
+    """Yield every ``<x> not in <y>`` Compare inside ``expr``, looking through
+    ``and`` / ``or`` only (never ``not``, which inverts it)."""
     if isinstance(expr, (nodes.And, nodes.Or)):
-        return _not_in_membership(expr.left, nodes) or _not_in_membership(
-            expr.right, nodes
-        )
-    if (
+        yield from _not_in_memberships(expr.left, nodes)
+        yield from _not_in_memberships(expr.right, nodes)
+    elif (
         isinstance(expr, nodes.Compare)
         and len(expr.ops) == 1
         and expr.ops[0].op == "notin"
     ):
-        return expr
-    return None
+        yield expr
 
 
 def _tested_name(expr, nodes) -> str | None:
@@ -1270,21 +1255,85 @@ def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
     return levels or None
 
 
-def _body_unconditionally_rejects_or_defaults(body, tested: str, nodes) -> bool:
+def _is_bare_raise(expr, nodes) -> bool:
+    return (
+        isinstance(expr, nodes.Call)
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == "raise_exception"
+    )
+
+
+def _body_unconditionally_rejects_or_defaults(
+    body, tested: str, levels: tuple[str, ...], nodes
+) -> bool:
     for stmt in body:
         if isinstance(stmt, nodes.Output) and any(
-            isinstance(call.node, nodes.Name) and call.node.name == "raise_exception"
-            for call in stmt.find_all(nodes.Call)
+            _is_bare_raise(item, nodes) for item in stmt.nodes
         ):
             return True
         if (
             isinstance(stmt, nodes.Assign)
             and isinstance(stmt.target, nodes.Name)
             and stmt.target.name == tested
+            and isinstance(stmt.node, nodes.Const)
+            and stmt.node.value in levels
         ):
             return True
-        # Anything nested (``if`` / ``for`` / ...) is conditional: skip it.
+        # Anything nested (``if`` / ``for`` / a conditional expression inside
+        # an output) may not run: it proves nothing.
     return False
+
+
+def _validation_levels(if_node, derived: set[str], nodes) -> tuple[str, ...] | None:
+    for compare in _not_in_memberships(if_node.test, nodes):
+        tested = _tested_name(compare.expr, nodes)
+        if tested is None or tested not in derived:
+            continue
+        levels = _literal_levels(compare.ops[0].expr, nodes)
+        if levels is None:
+            continue
+        if _body_unconditionally_rejects_or_defaults(
+            if_node.body, tested, levels, nodes
+        ):
+            return levels
+    return None
+
+
+def _walk_for_validation(stmts, derived: set[str], nodes) -> tuple[str, ...] | None:
+    """Forward walk of one statement list. ``derived`` is copied per block so
+    an assignment only counts for statements that follow it in the same or a
+    nested block — never for siblings of the block it sits in."""
+    derived = set(derived)
+    for stmt in stmts:
+        if isinstance(stmt, nodes.Assign):
+            if isinstance(stmt.target, nodes.Name) and _references_any(
+                stmt.node, derived, nodes
+            ):
+                derived.add(stmt.target.name)
+            continue
+        if isinstance(stmt, nodes.If):
+            branches = [stmt] + list(stmt.elif_)
+            for branch in branches:
+                levels = _validation_levels(branch, derived, nodes)
+                if levels:
+                    return levels
+            for block in [branch.body for branch in branches] + [stmt.else_]:
+                levels = _walk_for_validation(block, derived, nodes)
+                if levels:
+                    return levels
+            continue
+        # Any other statement with nested statement lists (for / with /
+        # filter / macro / call blocks, the parsed ``generation`` span, ...).
+        for _field, value in stmt.iter_fields():
+            if (
+                isinstance(value, list)
+                and value
+                and all(isinstance(item, nodes.Stmt) for item in value)
+            ):
+                levels = _walk_for_validation(value, derived, nodes)
+                if levels:
+                    return levels
+    return None
 
 
 @functools.lru_cache(maxsize=64)
@@ -1297,20 +1346,7 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
         tree = env.parse(template)
     except Exception:
         return None
-    derived = _names_derived_from_reasoning_effort(tree, nodes)
-    for if_node in tree.find_all(nodes.If):
-        compare = _not_in_membership(if_node.test, nodes)
-        if compare is None:
-            continue
-        tested = _tested_name(compare.expr, nodes)
-        if tested is None or tested not in derived:
-            continue
-        levels = _literal_levels(compare.ops[0].expr, nodes)
-        if levels is None:
-            continue
-        if _body_unconditionally_rejects_or_defaults(if_node.body, tested, nodes):
-            return levels
-    return None
+    return _walk_for_validation(tree.body, {"reasoning_effort"}, nodes)
 
 
 def detect_native_reasoning_effort_levels(
