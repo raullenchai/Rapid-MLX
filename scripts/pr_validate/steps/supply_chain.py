@@ -137,45 +137,50 @@ _ROSTER_CONTINUE_RE = re.compile(r"^\s*tests/[A-Za-z0-9_./-]+\.py\s*\\\s*$")
 _PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest\b.*\\\s*$")
 
 
-def _anchored_to_roster(lines: list[tuple[str, str, bool]], i: int) -> bool:
-    """True if the added line at index *i* sits inside the explicit pytest
-    test roster — i.e. the contiguous chain of ``tests/*.py \\`` lines above
-    it traces BACKWARD to a ``pytest \\`` opener, not to some other multiline
-    command (an uploader receiving test-file arguments, for example).
-
-    Walk backward through continuing roster entries; the chain terminates
-    correctly when it reaches a ``pytest \\`` opener, or when it runs off the
-    top of this file's visible diff while still inside roster entries (the
-    real end-of-roster append: the opener is lines above the hunk context).
-    It is rejected if the chain reaches a non-pytest, non-roster opener."""
-    j = i - 1
-    while j >= 0:
-        marker, content, first_in_hunk = lines[j]
-        if _PYTEST_ROSTER_CMD.match(content):
-            return True  # reached the `pytest \` opener
-        if not _ROSTER_CONTINUE_RE.match(content):
-            return False  # non-pytest, non-roster opener → not the roster list
-        if first_in_hunk:
-            return True  # block continues above the visible diff (the roster)
-        j -= 1
-    return False
+def _pytest_roster_lines(content: str) -> set[int]:
+    """Return the (1-based) line numbers in *content* that are roster entries
+    of the explicit pytest test list. This is the authoritative, ground-truth
+    denominator: the contiguous ``tests/*.py \\`` continuation lines that
+    immediately follow a ``pytest \\`` command. Codex r1 round-3 — do not
+    trust hunk context (a long non-pytest file list would hide its opener);
+    verify each added line against the ACTUAL roster location in the file."""
+    roster: set[int] = set()
+    lines = content.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        if _PYTEST_ROSTER_CMD.match(lines[i]):
+            j = i + 1
+            while j < n and _ROSTER_CONTINUE_RE.match(lines[j]):
+                roster.add(j + 1)  # 1-based
+                j += 1
+            i = j
+        else:
+            i += 1
+    return roster
 
 
 def _roster_only_workflows(
-    diff: str, files_changed: set[str]
+    diff: str, files_changed: set[str], head_content: dict[str, str]
 ) -> tuple[set[str], dict[str, list[str]]]:
     """Classify every workflow file touched by the PR.
+
+    ``head_content`` must map each modified workflow path to its HEAD file
+    text (the full file the diff will produce once merged) — used to verify
+    that each added roster line lands inside the ACTUAL pytest roster, rather
+    than trusting diff hunk context.
 
     Returns ``(roster_only, roster_additions)``:
 
     * ``roster_only`` — the set of workflow files whose ENTIRE diff is a
       pure roster enrollment (only ``tests/<name>.py \\`` lines added to the
-      explicit test list, no removed lines, no other change).
+      explicit pytest test list, no removed lines, no other change).
     * ``roster_additions`` — ``{workflow_file: [test paths enrolled]}`` for
       those roster-only files, so the human gets the exact added lines.
 
-    A workflow file in ``files_changed`` that fails any of those checks is
-    simply absent from both — it stays [BLOCKING]."""
+    A workflow file that fails any check (removed lines, metadata, a roster
+    token added outside the real roster, a file we cannot verify) is absent
+    from both — it stays [BLOCKING]."""
 
     workflow_files = {f for f in files_changed if f.startswith(_WORKFLOW_PREFIX)}
     if not workflow_files:
@@ -187,15 +192,18 @@ def _roster_only_workflows(
     # edits an existing test cannot get the downgrade.
     new_files = _new_files(diff)
     files_changed_set = set(files_changed)
+    # Authoritative roster line numbers, from the actual HEAD file.
+    roster_lines = {
+        path: _pytest_roster_lines(head_content[path])
+        for path in workflow_files
+        if path in head_content
+    }
 
     # Collect every kind of line (context / added / removed) per workflow file,
-    # in file order, so we can anchor an added roster line to the lines around
-    # it (the roster list) rather than accepting the token anywhere in YAML.
-    # Each entry is ``(marker, content, first_in_hunk)`` — the flag lets us
-    # refuse an anchor that would cross a ``@@`` hunk boundary (the line above
-    # may be a different region of the file).
-    per_file: dict[str, dict[str, list[tuple[str, str, bool]]]] = {
-        f: {"lines": [], "added": [], "removed": []} for f in workflow_files
+    # tracking each added line's absolute NEW-file line number (from the @@
+    # hunk headers) so we can match it against the real roster location.
+    per_file: dict[str, dict[str, list]] = {
+        f: {"added": [], "removed": []} for f in workflow_files
     }
     # Workflow diffs carrying extended metadata (rename/copy/mode change) are
     # structural, not roster enrollments — a roster-only ``+tests/x.py \``
@@ -203,7 +211,7 @@ def _roster_only_workflows(
     metadata_files: set[str] = set()
     cur_path = ""
     in_hunk = False
-    first_in_hunk = False
+    new_lineno = 0
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
@@ -212,8 +220,10 @@ def _roster_only_workflows(
         if cur_path not in per_file:
             continue
         if line.startswith("@@"):
-            in_hunk = True  # everything after this is file content, not headers
-            first_in_hunk = True
+            # @@ -a,b +c,d @@ → the first new-file line is c.
+            in_hunk = True
+            m = re.search(r"\+(\d+)", line)
+            new_lineno = int(m.group(1)) if m else 0
             continue
         # Extended diff metadata lines (no + / - / space marker): a rename,
         # copy, or mode change of the workflow file itself is disqualifying.
@@ -237,12 +247,13 @@ def _roster_only_workflows(
         if not in_hunk and line.startswith(("--- ", "+++ ")):
             continue
         marker = line[:1]
-        per_file[cur_path]["lines"].append((marker, line[1:], first_in_hunk))
-        first_in_hunk = False
         if marker == "+":
-            per_file[cur_path]["added"].append(line[1:])
+            per_file[cur_path]["added"].append((new_lineno, line[1:]))
+            new_lineno += 1  # an added line occupies a new-file position
         elif marker == "-":
             per_file[cur_path]["removed"].append(line[1:])
+        elif marker == " ":
+            new_lineno += 1  # a context line also occupies a new-file position
 
     roster_only: set[str] = set()
     roster_additions: dict[str, list[str]] = {}
@@ -253,28 +264,21 @@ def _roster_only_workflows(
             continue
         if not block["added"]:
             continue  # no tracked change; stay conservative
+        # We must be able to verify the file against its real roster; without
+        # head content we cannot prove the additions are roster-only.
+        if path not in roster_lines:
+            continue
         enrolled: list[str] = []
         ok = True
-        for i, (marker, content, first_in_hunk) in enumerate(block["lines"]):
-            if marker != "+":
-                continue
+        for lineno, content in block["added"]:
             p = _roster_addition_path(content)
-            if p is None:
+            # A real roster token for a test this PR NEWLY adds...
+            if p is None or p not in new_files or p not in files_changed_set:
                 ok = False
                 break
-            # Must be a NEW test this PR adds...
-            if p not in new_files or p not in files_changed_set:
-                ok = False
-                break
-            # ...appended INTO the explicit pytest test roster: never a
-            # top-level YAML scalar, an unrelated ``run:`` block, or a
-            # different region of the file. The added line must not open its
-            # own hunk (no valid anchor), and its continuation chain must
-            # trace back to a ``pytest \`` opener.
-            if first_in_hunk:
-                ok = False  # no valid in-hunk anchor; stay conservative
-                break
-            if not _anchored_to_roster(block["lines"], i):
+            # ...placed at a line that is ACTUALLY a pytest-roster entry in the
+            # merged file (ground truth, not hunk context).
+            if lineno not in roster_lines[path]:
                 ok = False
                 break
             enrolled.append(p)
@@ -395,8 +399,18 @@ class SupplyChainStep(Step):
             # doesn't BLOCK the behavior the gate is meant to encourage. Any
             # other workflow edit, or any non-workflow hook file modified
             # alongside, keeps [BLOCKING] for external authors.
+            # Build the HEAD content of each modified workflow file (the PR
+            # head is checked out in the working tree) so roster-only can be
+            # verified against the file's ACTUAL pytest roster, not diff hunk
+            # context (codex r1 round-3).
+            head_content: dict[str, str] = {}
+            for wf in ctx.files_changed:
+                if wf.startswith(_WORKFLOW_PREFIX):
+                    p = ctx.repo_root / wf
+                    if p.is_file():
+                        head_content[wf] = p.read_text()
             roster_only, roster_additions = _roster_only_workflows(
-                diff, set(ctx.files_changed)
+                diff, set(ctx.files_changed), head_content
             )
             roster_downgrade = bool(
                 ctx.is_external_author

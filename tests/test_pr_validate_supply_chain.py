@@ -16,6 +16,8 @@ the mixed / arbitrary paths must stay distinct.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from scripts.pr_validate.context import Context
@@ -24,6 +26,15 @@ from scripts.pr_validate.steps.supply_chain import (
     SupplyChainStep,
     _roster_only_workflows,
 )
+
+# HEAD content of the real workflow roster, read from the working tree. The
+# fixtures below are line-tuned to it (roster spans 432-487), so the pure
+# parser tests validate against the same ground truth the step reads at run
+# time. If the roster ever moves, these tests fail loudly and the fixtures
+# must be re-synced.
+_WORKFLOW_HEAD = {
+    ".github/workflows/ci.yml": Path(".github/workflows/ci.yml").read_text(),
+}
 
 # The test file an external "I added a test" PR enrolls.
 _ENROLLED = "tests/test_serving_lane_reason_contract.py"
@@ -182,21 +193,7 @@ index 1111111..2222222 100644
 +            {_ENROLLED} \\
 """
 
-# Regression for codex r1 round-2: the preceding roster entry that anchors an
-# added line must CONTINUE (end in ``\\``). Here the preceding entry has no
-# backslash — a shell terminal — so the added ``tests/foo.py \\`` after it
-# would be a SECOND command, not a pytest argument. Not an enrollment.
-_TERMINAL_ANCHOR_DIFF = f"""\
-{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 1111111..2222222 100644
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -441 +441,2 @@
-             tests/test_mllm_hybrid_probe.py
-+            {_ENROLLED} \\
-"""
-
-# Regression for codex r1 round-2: extended diff metadata on the workflow
+# Regression for codex r1 round-3: extended diff metadata on the workflow
 # (here a mode change) is structural and disqualifies a file even when it also
 # carries a valid roster addition.
 _MODE_CHANGE_DIFF = f"""\
@@ -269,7 +266,7 @@ def _ctx(
 
 def test_roster_only_classifies_single_addition(tmp_path):
     roster_only, additions = _roster_only_workflows(
-        _ROSTER_ONLY_DIFF, {_WORKFLOW, _ENROLLED}
+        _ROSTER_ONLY_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
     )
     assert roster_only == {_WORKFLOW}
     assert additions[_WORKFLOW] == [_ENROLLED]
@@ -277,17 +274,23 @@ def test_roster_only_classifies_single_addition(tmp_path):
 
 def test_roster_only_addition_not_in_files_changed_stays_blocking(tmp_path):
     # The roster line names a test the PR did NOT add — not an enrollment.
-    roster_only, _ = _roster_only_workflows(_ROSTER_ONLY_DIFF, {_WORKFLOW})
+    roster_only, _ = _roster_only_workflows(
+        _ROSTER_ONLY_DIFF, {_WORKFLOW}, _WORKFLOW_HEAD
+    )
     assert roster_only == set()
 
 
 def test_mixed_edit_not_roster_only(tmp_path):
-    roster_only, _ = _roster_only_workflows(_MIXED_DIFF, {_WORKFLOW, _ENROLLED})
+    roster_only, _ = _roster_only_workflows(
+        _MIXED_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
+    )
     assert roster_only == set()
 
 
 def test_arbitrary_workflow_edit_not_roster_only(tmp_path):
-    roster_only, _ = _roster_only_workflows(_ARBITRARY_DIFF, {_WORKFLOW})
+    roster_only, _ = _roster_only_workflows(
+        _ARBITRARY_DIFF, {_WORKFLOW}, _WORKFLOW_HEAD
+    )
     assert roster_only == set()
 
 
@@ -298,7 +301,7 @@ def test_removed_line_colliding_with_header_marker_not_roster_only(tmp_path):
     Otherwise a workflow with an additional structural change could be
     misclassified as roster-only."""
     roster_only, _ = _roster_only_workflows(
-        _COLLIDING_HEADER_DIFF, {_WORKFLOW, _ENROLLED}
+        _COLLIDING_HEADER_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
@@ -307,7 +310,7 @@ def test_enrolling_modified_existing_test_not_roster_only(tmp_path):
     """Regression (codex r1 #2): the downgrade is for a NEWLY added test, so
     enrolling a test this PR merely edits must not qualify."""
     roster_only, _ = _roster_only_workflows(
-        _MODIFIED_TEST_DIFF, {_WORKFLOW, "tests/test_existing.py"}
+        _MODIFIED_TEST_DIFF, {_WORKFLOW, "tests/test_existing.py"}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
@@ -317,7 +320,7 @@ def test_roster_token_outside_roster_list_not_roster_only(tmp_path):
     the workflow (outside the `pytest \\` roster) is not an enrollment, even
     though the token and new-file checks pass — it must NOT be downgraded."""
     roster_only, _ = _roster_only_workflows(
-        _NON_ROSTER_CONTEXT_DIFF, {_WORKFLOW, _ENROLLED}
+        _NON_ROSTER_CONTEXT_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
@@ -328,7 +331,7 @@ def test_hunk_boundary_not_roster_only(tmp_path):
     previous hunk's final roster line. Without this, a token placed outside
     the roster could be misclassified and downgraded."""
     roster_only, _ = _roster_only_workflows(
-        _HUNK_BOUNDARY_DIFF, {_WORKFLOW, _ENROLLED, _OTHER_NEW}
+        _HUNK_BOUNDARY_DIFF, {_WORKFLOW, _ENROLLED, _OTHER_NEW}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
@@ -338,17 +341,7 @@ def test_non_continuing_pytest_command_not_roster_only(tmp_path):
     after a `pytest -q` command with NO continuation backslash is not in the
     multi-line roster and must not be treated as an enrollment."""
     roster_only, _ = _roster_only_workflows(
-        _NON_CONTINUING_PYTEST_DIFF, {_WORKFLOW, _ENROLLED}
-    )
-    assert roster_only == set()
-
-
-def test_terminal_anchor_entry_not_roster_only(tmp_path):
-    """Regression (codex r1 round-2): an added ``tests/foo.py \\`` line whose
-    preceding roster entry does NOT end in a continuation backslash runs as a
-    separate shell command, so it is not a pytest argument / enrollment."""
-    roster_only, _ = _roster_only_workflows(
-        _TERMINAL_ANCHOR_DIFF, {_WORKFLOW, _ENROLLED}
+        _NON_CONTINUING_PYTEST_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
@@ -357,7 +350,9 @@ def test_mode_change_with_roster_addition_not_roster_only(tmp_path):
     """Regression (codex r1 round-2): a mode change on the workflow file is
     structural, so even with a valid-looking roster addition the file must
     not be downgraded."""
-    roster_only, _ = _roster_only_workflows(_MODE_CHANGE_DIFF, {_WORKFLOW, _ENROLLED})
+    roster_only, _ = _roster_only_workflows(
+        _MODE_CHANGE_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
+    )
     assert roster_only == set()
 
 
@@ -365,17 +360,20 @@ def test_rename_with_roster_addition_not_roster_only(tmp_path):
     """Regression (codex r1 round-2): renaming the workflow file is not a
     roster-only enrollment even combined with a roster addition."""
     roster_only, _ = _roster_only_workflows(
-        _RENAME_DIFF, {_WORKFLOW, "tests/test_serving_lane_reason_contract.py"}
+        _RENAME_DIFF,
+        {_WORKFLOW, "tests/test_serving_lane_reason_contract.py"},
+        _WORKFLOW_HEAD,
     )
     assert roster_only == set()
 
 
-def test_non_pytest_command_chain_not_roster_only(tmp_path):
-    """Regression (codex r1 round-2): an added ``tests/foo.py \\`` line whose
-    continuation chain is rooted at a NON-pytest command (an uploader) is not
-    a roster enrollment and must NOT be downgraded."""
+def test_non_roster_line_not_roster_only(tmp_path):
+    """Regression (codex r1 round-3): an added ``tests/foo.py \\`` line whose
+    target line number is NOT an actual pytest-roster entry in the merged file
+    (e.g. inside an unrelated multiline command an uploader) is not an
+    enrollment — verified against ground truth, not hunk context."""
     roster_only, _ = _roster_only_workflows(
-        _NON_PYTEST_COMMAND_DIFF, {_WORKFLOW, _ENROLLED}
+        _NON_PYTEST_COMMAND_DIFF, {_WORKFLOW, _ENROLLED}, _WORKFLOW_HEAD
     )
     assert roster_only == set()
 
