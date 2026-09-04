@@ -1314,12 +1314,13 @@ def _install_role_manager(monkeypatch, manager):
     monkeypatch.setattr(audio_route, "_residency_manager", lambda: manager)
 
 
-@pytest.mark.asyncio
 def test_noop_role_admission_commit_is_noop():
-    """pr_validate codex BLOCKING (round-6): ``_NoopRoleAdmission.commit()``
-    must exist and be a no-op so an unmanaged server (no residency manager)
-    that publishes an engine and then gets cancelled surfaces the real
-    ``CancelledError`` — not an ``AttributeError`` from a missing method."""
+    """pr_validate codex NIT (round-8): ``_NoopRoleAdmission.commit()`` must
+    exist and be a no-op so an unmanaged server (no residency manager) that
+    publishes an engine and then gets cancelled surfaces the real
+    ``CancelledError`` — not an ``AttributeError`` from a missing method.
+    Synchronous: no asyncio marker, as a sync test under stricter
+    pytest-asyncio configs would warn."""
 
     from vllm_mlx.routes.audio import _NoopRoleAdmission
 
