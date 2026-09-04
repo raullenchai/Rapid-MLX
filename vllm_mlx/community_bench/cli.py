@@ -22,12 +22,7 @@ def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
     if not isinstance(contributor, dict):
         return None
     name, tag = contributor.get("name"), contributor.get("tag")
-    if (
-        not isinstance(name, str)
-        or not name
-        or not isinstance(tag, str)
-        or not tag
-    ):
+    if not isinstance(name, str) or not name or not isinstance(tag, str) or not tag:
         return None
     slug = quote(f"{name}-{tag}", safe="-")
     return f"{name} ·{tag}", f"{_CONTRIBUTOR_BASE_URL}/{slug}"

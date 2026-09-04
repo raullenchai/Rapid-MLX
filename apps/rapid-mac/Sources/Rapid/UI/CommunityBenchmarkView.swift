@@ -2,6 +2,10 @@ import Darwin
 import Foundation
 import SwiftUI
 
+private let communityBenchmarkLeaderboardURL = URL(
+    string: "https://rapidmlx.com/leaderboard"
+)!
+
 struct CommunityBenchmarkModel: Identifiable, Hashable {
     let entry: ModelEntry
     let task: ModelTask
@@ -674,9 +678,10 @@ struct CommunityBenchmarkView: View {
             } else {
                 Link(
                     "View Community Benchmark",
-                    destination: URL(string: "https://rapidmlx.com/leaderboard")!
+                    destination: communityBenchmarkLeaderboardURL
                 )
-                .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
             }
             Text("Thanks for helping other Mac users choose models with real-world evidence.")
                 .font(.callout)
