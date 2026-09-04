@@ -140,19 +140,35 @@ def _roster_only_workflows(
     if not workflow_files:
         return set(), {}
 
+    # A roster enrollment is only meaningful for a test this PR NEWLY adds
+    # (issue #2522: "I added a test" → enroll it). Compute the newly-created
+    # files from the diff's ``new file mode`` markers so a PR that merely
+    # edits an existing test cannot get the downgrade.
+    new_files = _new_files(diff)
+    files_changed_set = set(files_changed)
+
     # Group added/removed content lines per workflow file.
     per_file: dict[str, dict[str, list[str]]] = {
         f: {"added": [], "removed": []} for f in workflow_files
     }
     cur_path = ""
+    in_hunk = False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
+            in_hunk = False
+            continue
+        if line.startswith("@@"):
+            in_hunk = True  # everything after this is file content, not headers
             continue
         if cur_path not in per_file:
             continue
-        if line.startswith(("+++ ", "--- ", "@@")):
-            continue  # hunk / file headers
+        # ``--- /path`` and ``+++ /path`` are file headers ONLY before the
+        # first hunk. Inside a hunk a content line may itself begin with
+        # ``-- `` / ``++ `` (e.g. a removed ``-- flag`` line) and must be
+        # treated as a real change, not skipped as a header.
+        if not in_hunk and line.startswith(("--- ", "+++ ")):
+            continue
         marker = line[:1]
         if marker == "+":
             per_file[cur_path]["added"].append(line[1:])
@@ -171,8 +187,8 @@ def _roster_only_workflows(
         ok = True
         for content in block["added"]:
             p = _roster_addition_path(content)
-            # Must be a real roster token AND a test the PR itself adds.
-            if p is None or p not in files_changed:
+            # Must be a real roster token for a test this PR NEWLY adds.
+            if p is None or p not in new_files or p not in files_changed_set:
                 ok = False
                 break
             enrolled.append(p)
@@ -180,6 +196,28 @@ def _roster_only_workflows(
             roster_only.add(path)
             roster_additions[path] = enrolled
     return roster_only, roster_additions
+
+
+def _new_files(diff: str) -> set[str]:
+    """Return the repo-relative paths of files newly created in *diff*
+    (``new file mode`` markers). Used to require that a roster enrollment
+    point at a test this PR actually adds, not an existing one it edits."""
+    new_files: set[str] = set()
+    cur_path = ""
+    is_new = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            if is_new and cur_path:
+                new_files.add(cur_path)
+            cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
+            is_new = False
+            continue
+        if line.startswith("new file mode"):
+            is_new = True
+            continue
+    if is_new and cur_path:
+        new_files.add(cur_path)
+    return new_files
 
 
 # Backwards-compatibility alias — the dep-declaration matcher now

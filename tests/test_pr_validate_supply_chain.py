@@ -28,10 +28,25 @@ from scripts.pr_validate.steps.supply_chain import (
 # The test file an external "I added a test" PR enrolls.
 _ENROLLED = "tests/test_serving_lane_reason_contract.py"
 
+# The diff of the NEWLY-created test file being enrolled (``new file mode``
+# makes it count as a fresh contribution — required for the downgrade).
+_NEW_TEST_DIFF = f"""\
+diff --git a/{_ENROLLED} b/{_ENROLLED}
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/{_ENROLLED}
+@@ -0,0 +1,3 @@
++"\"test contract run on the new lane\"\"
++from test_stuff import run
+
+"""
+
 # A unified diff adding ONE line to the Linux test roster in ci.yml — the
-# exact "encourage me" case from issue #2522 / PR #2514.
+# exact "encourage me" case from issue #2522 / PR #2514. Includes the new
+# test file so the enrollment points at a genuinely new contribution.
 _ROSTER_ONLY_DIFF = f"""\
-diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
@@ -43,7 +58,7 @@ index 1111111..2222222 100644
 # Same roster addition PLUS a real structural edit to the same workflow
 # (swapping ``runs-on``) — a mixed case that must still BLOCK.
 _MIXED_DIFF = f"""\
-diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
@@ -64,6 +79,42 @@ index 1111111..2222222 100644
 @@ -80 +80 @@
 -            runs-on: ubuntu-latest
 +            runs-on: macos-14
+"""
+
+# A "roster-only" diff that ALSO removes a line whose content begins with
+# ``-- ``, so the diff line starts ``--- ``, colliding with the file-header
+# marker. The parser must NOT drop that removed line once inside the hunk —
+# otherwise a structural change gets misclassified as roster-only and
+# downgraded (regression for codex r1 finding #1).
+_COLLIDING_HEADER_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -8 +8,0 @@
+--- --quiet-node
+@@ -441 +442,2 @@
+             tests/test_mllm_hybrid_probe.py \\
++            {_ENROLLED} \\
+"""
+
+# An enrollment of an EXISTING (modified, not new) test file — must NOT get
+# the downgrade, because the exemption is for "I added a new test".
+_MODIFIED_TEST_DIFF = """\
+diff --git a/tests/test_existing.py b/tests/test_existing.py
+index 1111111..2222222 100644
+--- a/tests/test_existing.py
++++ b/tests/test_existing.py
+@@ -1 +1 @@
+-import os
++import os  # touched, not new
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -441 +441,2 @@
+             tests/test_mllm_hybrid_probe.py \\
++            tests/test_existing.py \\
 """
 
 _WORKFLOW = ".github/workflows/ci.yml"
@@ -115,6 +166,35 @@ def test_mixed_edit_not_roster_only(tmp_path):
 def test_arbitrary_workflow_edit_not_roster_only(tmp_path):
     roster_only, _ = _roster_only_workflows(_ARBITRARY_DIFF, {_WORKFLOW})
     assert roster_only == set()
+
+
+def test_removed_line_colliding_with_header_marker_not_roster_only(tmp_path):
+    """Regression (codex r1 #1): a removed line whose content begins with
+    ``-- `` produces a diff line starting ``--- ``, which must be treated as
+    a real removed change once inside the hunk — NOT skipped as a file header.
+    Otherwise a workflow with an additional structural change could be
+    misclassified as roster-only."""
+    roster_only, _ = _roster_only_workflows(
+        _COLLIDING_HEADER_DIFF, {_WORKFLOW, _ENROLLED}
+    )
+    assert roster_only == set()
+
+
+def test_enrolling_modified_existing_test_not_roster_only(tmp_path):
+    """Regression (codex r1 #2): the downgrade is for a NEWLY added test, so
+    enrolling a test this PR merely edits must not qualify."""
+    roster_only, _ = _roster_only_workflows(
+        _MODIFIED_TEST_DIFF, {_WORKFLOW, "tests/test_existing.py"}
+    )
+    assert roster_only == set()
+
+
+def test_new_files_detects_created_file():
+    from scripts.pr_validate.steps.supply_chain import _new_files
+
+    assert _NEW_TEST_DIFF.split("diff --git a/")[1]  # sanity: top block is the new file
+    new = _new_files(_ROSTER_ONLY_DIFF)
+    assert _ENROLLED in new
 
 
 # ---------------------------------------------------------------------------
