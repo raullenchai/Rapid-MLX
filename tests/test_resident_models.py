@@ -4370,6 +4370,9 @@ def test_role_enum_accepts_canonical_underscore_aliases():
     ):
         assert ResidentRole.coerce(role).value == wire
 
+    with pytest.raises(ResidentModelError, match="invalid role"):
+        ResidentRole.coerce(7)  # type: ignore[arg-type]
+
 
 @pytest.mark.asyncio
 async def test_role_aliases_share_one_canonical_ledger_key():

@@ -99,10 +99,8 @@ _ALLOWED_RECOVERY_ACTIONS: dict[ResidentRole, tuple[str, ...]] = {
 }
 
 
-def _recovery_actions_for(role: ResidentRole | None) -> list[str]:
-    """Return the server-declared recovery actions for a role (empty if none)."""
-    if role is None:
-        return []
+def _recovery_actions_for(role: ResidentRole) -> list[str]:
+    """Return the server-declared recovery actions for a validated role."""
     return list(_ALLOWED_RECOVERY_ACTIONS[role])
 
 
@@ -845,7 +843,7 @@ class ResidentModelManager:
             key=lambda item: (str(item["role"]), str(item["model_id"])),
         )
 
-    def _recovery_actions_for(self, role: ResidentRole | None) -> list[str]:
+    def _recovery_actions_for(self, role: ResidentRole) -> list[str]:
         """Return the server-declared recovery actions for a role."""
         return _recovery_actions_for(role)
 
