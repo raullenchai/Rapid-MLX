@@ -22,10 +22,20 @@ def test_mtp_policy_reports_default_tools_as_target_verified():
         resolve_speculative_request_policy,
     )
 
-    policy = resolve_speculative_request_policy(" MTP ")
+    policy = resolve_speculative_request_policy(" MTP ", default_tools_verified=True)
     assert policy is not None
     assert policy.method == "mtp"
     assert policy.request_fallback_features == ()
+
+
+def test_mtp_policy_keeps_tools_paused_until_live_path_is_verified():
+    from vllm_mlx.speculative.request_policy import (
+        resolve_speculative_request_policy,
+    )
+
+    policy = resolve_speculative_request_policy("mtp")
+    assert policy is not None
+    assert policy.request_fallback_features == ("tools",)
 
 
 def test_other_speculative_methods_do_not_inherit_mtp_tool_policy():
@@ -43,13 +53,19 @@ def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
     from vllm_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
-        config=SimpleNamespace(spec_decode="mtp"),
+        config=SimpleNamespace(spec_decode="mtp", enable_tool_logits_bias=False),
         spec_decode_runtime_method="mtp",
         spec_decode_runtime_attempted=True,
+        _tool_logits_processor_factory=None,
     )
     engine = object()
     monkeypatch.setattr(models_route, "_engine_for", lambda _model_id: engine)
     monkeypatch.setattr(models_route, "_scheduler_of", lambda candidate: scheduler)
+    monkeypatch.setattr(
+        models_route,
+        "effective_parsers_for",
+        lambda *_args: ("hermes", None),
+    )
 
     info = models_route._resolve_speculative_decoding("served-model")
 
@@ -64,6 +80,31 @@ def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
         "runtime_state": "active",
         "request_fallback_features": [],
     }
+
+
+def test_model_profile_keeps_tools_paused_with_optional_tool_bias(monkeypatch):
+    from vllm_mlx.routes import models as models_route
+
+    scheduler = SimpleNamespace(
+        config=SimpleNamespace(spec_decode="mtp", enable_tool_logits_bias=True),
+        spec_decode_runtime_method="mtp",
+        spec_decode_runtime_attempted=True,
+        _tool_logits_processor_factory=lambda: object(),
+    )
+    engine = object()
+    monkeypatch.setattr(models_route, "_engine_for", lambda _model_id: engine)
+    monkeypatch.setattr(models_route, "_scheduler_of", lambda candidate: scheduler)
+    monkeypatch.setattr(
+        models_route,
+        "effective_parsers_for",
+        lambda *_args: ("hermes", None),
+    )
+
+    info = models_route._resolve_speculative_decoding("served-model")
+
+    assert info is not None
+    assert info.runtime_state == "active"
+    assert info.request_fallback_features == ["tools"]
 
 
 def test_model_profile_reports_pending_before_lazy_runtime_install(
