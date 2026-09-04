@@ -753,6 +753,39 @@ class TestScheduleWaitingInsertDispatch:
             )
         )
 
+    def test_real_schedule_registers_tool_guard_as_transactional_mtp_safe(self):
+        """An ordinary tools request keeps MTP without admitting other processors."""
+        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        request = Request(
+            request_id="req-tool-mtp-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.has_tools = True
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [103]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert len(admitted) == 1
+        assert isinstance(admitted[0], AgentRepetitionLogitsProcessor)
+        assert tuple(admitted) == request._mtp_safe_logits_processors
+
     def _build_dispatch_args(
         self,
         prefix_boundary: int,

@@ -75,6 +75,26 @@ def test_logits_processor_masks_predicted_token_once():
     assert processor.interventions == 1
 
 
+def test_mtp_processor_state_restores_rejected_tentative_intervention():
+    pattern = list(range(24))
+    committed = pattern + pattern[:-2]
+    processor = AgentRepetitionLogitsProcessor(committed)
+    logits = mx.zeros((1, 32))
+    boundary = processor.mtp_snapshot_state()
+
+    # Two tentative tokens complete the second 24-token copy, so the next
+    # token would start the third copy and must be blocked on this branch.
+    processed = processor.mtp_apply(mx.array(pattern[-2:]), logits)
+    mx.eval(processed)
+    assert float(processed[0, pattern[0]].item()) == float("-inf")
+    assert processor.interventions == 1
+
+    processor.mtp_restore_state(boundary)
+    assert processor.interventions == 0
+    assert processor.last_match is None
+    assert processor._last_intervention_length == -1
+
+
 def test_ignores_short_stutter_and_near_repeat():
     assert detect_repeated_token_suffix([7] * 200) is None
     pattern = list(range(12))
