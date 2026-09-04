@@ -3015,3 +3015,245 @@ def test_residency_route_maps_kv_unsupported_rejection_to_422(monkeypatch):
     assert response.status_code == 422
     assert "#78" not in response.json()["detail"]
     assert "kv" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Protected-role admission (forced alignment). These exercise the shared
+# residency ledger's ``admit_role``/``release_role`` transaction path with a
+# bare manager (no registry primary) so the alignment role is tested in
+# isolation — entirely MLX-free.
+# ---------------------------------------------------------------------------
+
+
+def role_manager_fixture(*, limit_gib=4.0):
+    """A manager with no primary model so role admission is tested alone."""
+
+    registry = ModelRegistry()
+    clock = Clock()
+    manager = ResidentModelManager(
+        registry,
+        lambda name, path=None, perf=None: entry(name),
+        memory_limit_bytes=limit_gib * GIB,
+        clock=clock,
+        memory_reader=lambda: 0,
+    )
+    return manager, clock
+
+
+def _aligner_bytes() -> int:
+    # The real catalog footprint of qwen3-aligner /
+    # mlx-community/Qwen3-ForcedAligner-0.6B-8bit (~1.19 GiB).
+    return 1276473392
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_admitted_under_budget_and_ledger_resident():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        # During the load the reservation is charged in the "loading" state.
+        roles = manager.snapshot()["roles"]
+        entry = next(r for r in roles if r["role"] == "alignment")
+        assert entry["state"] == "loading"
+        assert entry["reserved_bytes"] == _aligner_bytes()
+
+    # After the context succeeds the reservation is committed resident.
+    roles = manager.snapshot()["roles"]
+    entry = next(r for r in roles if r["role"] == "alignment")
+    assert entry["state"] == "resident"
+    assert entry["capacity_source"] == "catalog"
+    # The reservation is charged to the shared accounted usage.
+    assert manager._accounted_usage() >= _aligner_bytes()
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rejected_with_typed_507_when_over_ceiling():
+    # Ceiling below the aligner footprint with no eligible eviction ->
+    # the typed role_capacity envelope must be produced.
+    manager, _ = role_manager_fixture(limit_gib=0.5)  # 0.5 GiB < aligner
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    exc = exc_info.value
+    assert exc.reason == "role_capacity_alignment"
+    assert exc.requested_bytes == _aligner_bytes()
+    assert exc.limit_bytes == int(0.5 * GIB)
+    assert exc.requested_role == "alignment"
+    envelope = exc.envelope()
+    assert envelope["error"]["type"] == "insufficient_capacity_error"
+    assert envelope["error"]["code"] == "insufficient_capacity_error"
+    assert envelope["error"]["reason"] == "role_capacity_alignment"
+    assert envelope["error"]["requested_bytes"] == _aligner_bytes()
+    assert envelope["error"]["limit_bytes"] == int(0.5 * GIB)
+    # No leaked reservation on rejection.
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_on_load_failure_keeps_ledger_empty():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(RuntimeError, match="weight load failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            raise RuntimeError("weight load failed")
+
+    # A failed load leaves no leaked reservation.
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_on_cancellation_keeps_ledger_empty():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            raise asyncio.CancelledError()
+
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_replace_retires_previous_on_failure():
+    # A new aligner replaces a previous one; the load drops the old engine so
+    # its reservation must not be restored on failure (retire_previous).
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    # First aligner loads and commits.
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager.snapshot()["roles"][0]["model"] == "qwen3-aligner"
+
+    # Replace with a second aligner whose load fails after retire_previous.
+    with pytest.raises(RuntimeError, match="reload failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ) as admission:
+            admission.retire_previous()
+            raise RuntimeError("reload failed")
+
+    # The old engine is gone, so no reservation should remain.
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_replace_restores_previous_unless_retired():
+    # Without retire_previous, a failed replacement restores the previous
+    # reservation (the old engine still exists).
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+
+    try:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ):
+            raise RuntimeError("reload failed")
+    except RuntimeError:
+        pass
+
+    # Previous aligner reservation restored (old engine survives).
+    roles = manager.snapshot()["roles"]
+    assert len(roles) == 1
+    assert roles[0]["model"] == "qwen3-aligner"
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_unknown_capacity_fails_closed_under_ceiling():
+    # Under a configured ceiling, a model with no catalog/local-cache size
+    # must fail closed rather than admit blind.
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="some-unknown-aligner",
+            requested_bytes=None,
+            capacity_source="unknown",
+        ):
+            pass
+
+    assert exc_info.value.reason == "role_capacity_unknown"
+    assert exc_info.value.requested_bytes is None
+    assert exc_info.value.envelope()["error"]["reason"] == "role_capacity_unknown"
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_no_ceiling_admits_without_typed_rejection():
+    # With no configured ceiling (limit 0) admission bypasses capacity checks
+    # entirely, preserving pre-existing behavior for unmanaged servers.
+    manager, _ = role_manager_fixture(limit_gib=0.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=None,  # unknown, but no ceiling -> admitted
+        capacity_source="unknown",
+    ):
+        pass
+
+    roles = manager.snapshot()["roles"]
+    assert len(roles) == 1
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_release_removes_ledger_charge():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager._accounted_usage() >= _aligner_bytes()
+
+    await manager.release_role("alignment")
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0

@@ -315,6 +315,7 @@ async def test_lane_snapshot_reports_resident_model_after_successful_load():
     assert dispatcher.snapshot() == [
         {
             "lane": "stt",
+            "role": "speech-input",
             "model": "whisper-small",
             "state": "resident",
             "active_requests": 0,
@@ -1266,3 +1267,262 @@ async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
         await lifespan.__anext__()
 
     assert bound == [engine]
+
+
+# ---------------------------------------------------------------------------
+# Alignment-role admission wiring (issue #2405). These exercise the shared
+# residency ledger integration used by the forced-alignment lane — the
+# ``_admitting_alignment`` context manager that resolves the aligner footprint
+# from catalog metadata and admits it as the distinct ``alignment`` role with
+# the typed 507 contract. Entirely MLX-free: a real ResidentModelManager with
+# stubbed engines stands in for the server residency, and STTEngine is stubbed
+# via ``vllm_mlx.audio.stt.STTEngine``.
+# ---------------------------------------------------------------------------
+
+
+def _aligner_catalog_bytes() -> int:
+    # Real manifest footprint for qwen3-aligner /
+    # mlx-community/Qwen3-ForcedAligner-0.6B-8bit.
+    return 1276473392
+
+
+def _make_role_manager(limit_gib: float):
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.runtime.resident_models import ResidentModelManager
+
+    registry = ModelRegistry()
+    manager = ResidentModelManager(
+        registry,
+        lambda name, path=None, perf=None: ModelEntry(
+            engine=object(), model_name=name, model_path=f"repo/{name}"
+        ),
+        memory_limit_bytes=int(limit_gib * 1024**3),
+        memory_reader=lambda: 0,
+    )
+    return manager
+
+
+def _install_role_manager(monkeypatch, manager):
+    """Point the audio route's residency lookup at a real manager so it
+    performs actual role admission. ``monkeypatch`` restores the config field
+    and the module function after the test."""
+    from vllm_mlx.config import get_config
+    from vllm_mlx.routes import audio as audio_route
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "residency_manager", manager)
+    monkeypatch.setattr(audio_route, "_residency_manager", lambda: manager)
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_resolves_footprint_before_load(monkeypatch):
+    """The alignment admission resolves the aligner footprint from catalog
+    metadata (not blind) and is admitted through the shared ledger."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    result = []
+    async with audio_route._admitting_alignment("qwen3-aligner") as admission:
+        result.append(("inside", admission))
+        roles = manager.snapshot()["roles"]
+        entry = next(r for r in roles if r["role"] == "alignment")
+        # Footprint resolved from the catalog before load.
+        assert entry["reserved_bytes"] == _aligner_catalog_bytes()
+        assert entry["capacity_source"] == "catalog"
+        assert entry["state"] == "loading"
+
+    # After success the role commits resident.
+    roles = manager.snapshot()["roles"]
+    entry = next(r for r in roles if r["role"] == "alignment")
+    assert entry["state"] == "resident"
+    assert result[0][0] == "inside"
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_returns_507_envelope_when_over_budget(
+    monkeypatch,
+):
+    """Under a residency ceiling too small to hold the aligner, admission
+    raises the typed 507 HTTP envelope (no blind load)."""
+    from fastapi import HTTPException
+
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=0.4)  # 0.4 GiB < aligner
+    _install_role_manager(monkeypatch, manager)
+
+    with pytest.raises(HTTPException) as exc_info:
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            pass
+
+    assert exc_info.value.status_code == 507
+    envelope = exc_info.value.detail["error"]
+    assert envelope["type"] == "insufficient_capacity_error"
+    assert envelope["code"] == "insufficient_capacity_error"
+    assert envelope["reason"] == "role_capacity_alignment"
+    assert envelope["param"] == "model"
+    assert envelope["requested_bytes"] == _aligner_catalog_bytes()
+    assert envelope["limit_bytes"] == int(0.4 * 1024**3)
+    # No leaked reservation.
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_rolls_back_on_load_failure(monkeypatch):
+    """A failed load inside the admission rolls back the reservation so the
+    ledger holds no leaked charge."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    with pytest.raises(RuntimeError, match="aligner load failed"):
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            raise RuntimeError("aligner load failed")
+
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_rolls_back_on_cancellation(monkeypatch):
+    """Cancellation inside the admission leaves no leaked reservation."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    with pytest.raises(asyncio.CancelledError):
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            raise asyncio.CancelledError()
+
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_evicting_aligner_releases_alignment_role(monkeypatch):
+    """An ASR request evicting the aligner lane releases the alignment role
+    so the ledger does not keep charging a dropped engine."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    # Reserve the alignment role as if an aligner is resident.
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_catalog_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager.snapshot()["roles"]
+
+    # Simulate the aligner engine being resident in the cache.
+    class _CachedAligner:
+        model_name = "qwen3-aligner"
+
+        def unload(self) -> None:
+            pass
+
+    monkeypatch.setattr(audio_route, "_aligner_engine", _CachedAligner())
+
+    # ASR evicts the aligner lane.
+    await audio_route._evict_other_lane("asr")
+
+    assert audio_route._aligner_engine is None
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_releases_alignment_role(monkeypatch):
+    """Shutdown unloads the aligner and drops its role reservation."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_catalog_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+
+    class _Cached:
+        model_name = "qwen3-aligner"
+
+        def unload(self) -> None:
+            pass
+
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    monkeypatch.setattr(audio_route, "_aligner_engine", _Cached())
+    monkeypatch.setattr(audio_route, "_tts_engine", None)
+    monkeypatch.setattr(audio_route, "_music_engine", None)
+
+    await audio_route.shutdown_audio_lanes()
+
+    assert manager.snapshot()["roles"] == []
+
+
+# ---------------------------------------------------------------------------
+# Cached-model validation path (issue #2405): after an aligner is resident,
+# a repeat request for the SAME model does not re-admit (no double charge),
+# inferring against the cached engine, while the role stays charged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch):
+    """The cached-model validation path (issue #2405): after admission + load,
+    a repeat request for the SAME model does not reload the aligner — it
+    infers against the cached engine while a single role reservation stays
+    resident. Driven through the model-worker boundary, not the upload path."""
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+    operations: list[str] = []
+
+    class _Aligner:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            operations.append("load-aligner")
+
+        def align(self, path: str, text: str, **kwargs):
+            operations.append("infer-aligner")
+            return "aligned"
+
+    worker = _RecordingWorker()
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr(audio_route, "_aligner_engine", None)
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    bind_audio_worker(worker)
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    try:
+        # First call: admit the alignment role, then load on the worker thread.
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            audio_route._load_aligner_blocking("qwen3-aligner")
+
+        # Second + third calls reuse the cached engine (no reload, no re-admit).
+        audio_route._align_blocking("qwen3-aligner", "a.wav", "t", "en")
+        audio_route._align_blocking("qwen3-aligner", "b.wav", "u", None)
+    finally:
+        bind_audio_worker(None)
+
+    # Loaded exactly once; two cached infer calls against the reused engine.
+    assert operations.count("load-aligner") == 1
+    assert operations.count("infer-aligner") == 2
+    # A single alignment role reservation remains resident in the ledger.
+    roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert len(roles) == 1
+    assert roles[0]["state"] == "resident"
+    assert roles[0]["reserved_bytes"] == _aligner_catalog_bytes()

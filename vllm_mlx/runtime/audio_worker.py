@@ -12,6 +12,16 @@ from typing import Any, Protocol, TypeVar
 
 _T = TypeVar("_T")
 
+# Map each audio lane to the shared residency role that budgets it. Forced
+# alignment loads a persistent aligner on the model worker; charging it as
+# the distinct ``alignment`` role (rather than the dictation speech-input
+# role) lets admission budget both independently while sharing one ceiling.
+LANE_ROLES = {
+    "stt": "speech-input",
+    "alignment": "alignment",
+    "tts": "speech-output",
+}
+
 
 class ModelWorker(Protocol):
     """Minimal execution surface exported by an inference engine."""
@@ -192,6 +202,7 @@ class AudioWorkerDispatcher:
             return [
                 {
                     "lane": lane,
+                    "role": LANE_ROLES.get(lane),
                     "model": state.model,
                     "state": state.state,
                     "active_requests": state.active_requests,

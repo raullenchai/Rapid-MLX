@@ -13,6 +13,7 @@ import tempfile
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
@@ -157,6 +158,64 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 _stt_engine = None
 _tts_engine = None
 _music_engine: Any = None
+
+
+class _NoopRoleAdmission:
+    """Stand-in admission when no residency manager is configured."""
+
+    def retire_previous(self) -> None:
+        pass
+
+
+def _residency_manager():
+    """Return the shared residency manager when this server configured one."""
+
+    from ..config import get_config
+
+    return get_config().residency_manager
+
+
+@asynccontextmanager
+async def _admitting_alignment(model_name: str, *, replace_existing: bool = False):
+    """Reserve the forced-alignment role before constructing its weights.
+
+    Resolves the aligner footprint from catalog/local-cache metadata and
+    admits it through the shared residency ledger as the distinct
+    ``alignment`` role — the same role-based shared-capacity admission the
+    dictation lane uses, so an aligner can never materialize without a role
+    reservation or typed capacity decision. Rejection surfaces the
+    established typed 507 envelope.
+    """
+
+    manager = _residency_manager()
+    if manager is None:
+        yield _NoopRoleAdmission()
+        return
+
+    from ..runtime.resident_models import ResidentModelCapacityError
+    from ..runtime.role_capacity import alignment_capacity
+
+    capacity = alignment_capacity(model_name)
+    try:
+        async with manager.admit_role(
+            role="alignment",
+            model_id=model_name,
+            requested_bytes=capacity.requested_bytes,
+            capacity_source=capacity.source,
+            replace_existing=replace_existing,
+        ) as admission:
+            yield admission
+    except ResidentModelCapacityError as exc:
+        raise HTTPException(status_code=507, detail=exc.envelope()) from exc
+
+
+async def _release_alignment_role() -> None:
+    """Stop charging the alignment role after its engine was released."""
+
+    manager = _residency_manager()
+    if manager is not None:
+        await manager.release_role("alignment")
+
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
 # the route can validate the model BEFORE streaming the upload (F-165):
@@ -1555,6 +1614,9 @@ async def shutdown_audio_lanes() -> None:
         finally:
             _stt_engine = None
             _aligner_engine = None
+            # A shutdown releases every cached engine; drop the alignment role
+            # reservation so the ledger does not outlive the process's model.
+            await _release_alignment_role()
 
     async with _get_tts_lane_lock():
         try:
@@ -1631,22 +1693,26 @@ async def _evict_other_lane(keep: str) -> None:
     frees on refcount, so clearing the global is the release.
     """
     lane, cached = _other_stt_lane(keep)
-    if cached is None:
-        return
-    logger.info(
-        "Releasing %s model %s to load the other STT lane "
-        "(one STT model resident at a time)",
-        lane,
-        getattr(cached, "model_name", "?"),
-    )
-    unload = getattr(cached, "unload", None)
-    if callable(unload):
-        from ..runtime.audio_worker import run_audio_mlx
-
-        await run_audio_mlx(
-            lane, getattr(cached, "model_name", "unknown"), "unload", unload
+    if cached is not None:
+        logger.info(
+            "Releasing %s model %s to load the other STT lane "
+            "(one STT model resident at a time)",
+            lane,
+            getattr(cached, "model_name", "?"),
         )
-    _clear_other_stt_lane(keep)
+        unload = getattr(cached, "unload", None)
+        if callable(unload):
+            from ..runtime.audio_worker import run_audio_mlx
+
+            await run_audio_mlx(
+                lane, getattr(cached, "model_name", "unknown"), "unload", unload
+            )
+        _clear_other_stt_lane(keep)
+    # When the aligner lane is dropped (an ASR request evicts it), stop
+    # charging its role so the ledger never keeps a reservation for an
+    # engine this process no longer holds.
+    if lane == "alignment":
+        await _release_alignment_role()
 
 
 def _evict_other_lane_sync(keep: str) -> None:
@@ -1671,6 +1737,53 @@ def _evict_other_lane_sync(keep: str) -> None:
     _clear_other_stt_lane(keep)
 
 
+def _load_aligner_blocking(model_name: str) -> None:
+    """Load (or reload) the cached aligner engine on the model worker thread.
+
+    Extracted from :func:`_align_blocking` so the async layer can wrap the
+    actual weight load in the shared ``alignment``-role admission — the
+    reservation is entered BEFORE this runs, so admission can already have
+    rejected an over-budget aligner without touching the disk.
+    """
+    global _aligner_engine
+
+    if _aligner_engine is not None and _aligner_engine.model_name == model_name:
+        return
+    from ..audio.stt import STTEngine
+
+    # Drop the ASR lane's model before loading ours. The lock already
+    # stops the two lanes RUNNING at once, but without this they both
+    # stay resident after alternating requests — two multi-GB models in
+    # unified memory for a server that can only use one at a time. The
+    # caller holds the lane lock, so no ASR request is mid-flight and
+    # this cannot pull weights out from under one.
+    _evict_other_lane_sync("aligner")
+    # Also drop any PREVIOUS aligner (a different aligner alias) before
+    # loading the replacement, so two multi-GB aligner models never sit
+    # resident together during ``load()``. Inert under the current
+    # single-aligner registry — the branch only re-enters when the cache
+    # was already emptied (an ASR request evicted us), so there is nothing
+    # to drop — but it keeps the "one STT model resident" invariant true if
+    # a second aligner alias is ever registered. On a failed reload the
+    # cache stays ``None`` and the next request reloads from disk, strictly
+    # better than pinning a stale model.
+    _aligner_engine = None
+    # Load into a local first and publish only on success. Caching a
+    # half-constructed engine would leave later requests matching on
+    # ``model_name`` against an object whose weights never loaded.
+    #
+    # Named ``aligner``, not ``engine``: test_route_engine_contract
+    # scans this module for ``engine.<method>()`` calls and requires
+    # the method to exist on the LLM ``BaseEngine``. An ``STTEngine``
+    # is a different hierarchy entirely, so the name would trip that
+    # gate with a false positive.
+    aligner = STTEngine(model_name)
+    from ..runtime.audio_worker import run_audio_mlx_sync
+
+    run_audio_mlx_sync("alignment", model_name, "load", aligner.load)
+    _aligner_engine = aligner
+
+
 def _align_blocking(
     model_name: str,
     audio_path: str,
@@ -1679,7 +1792,8 @@ def _align_blocking(
 ):
     """Blocking half of the forced-alignment request — runs on a thread.
 
-    Loads (or reuses) the aligner engine and runs
+    Ensures the aligner engine is resident (reusing the already-admitted
+    load from :func:`_load_aligner_blocking`) and runs
     :meth:`STTEngine.align`. Split out of :func:`_run_alignment_request`
     so the async handler can hand the seconds-long weight load + align
     to a worker thread instead of stalling the event loop.
@@ -1690,46 +1804,13 @@ def _align_blocking(
     """
     global _aligner_engine
 
-    from ..audio.stt import STTEngine
-
     # STTEngine.align defaults language to "Chinese"; only forward an
     # explicit caller value so the engine default stands otherwise.
     align_kwargs = {}
     if language:
         align_kwargs["language"] = language
 
-    if _aligner_engine is None or _aligner_engine.model_name != model_name:
-        # Drop the ASR lane's model before loading ours. The lock already
-        # stops the two lanes RUNNING at once, but without this they both
-        # stay resident after alternating requests — two multi-GB models in
-        # unified memory for a server that can only use one at a time. The
-        # caller holds the lane lock, so no ASR request is mid-flight and
-        # this cannot pull weights out from under one.
-        _evict_other_lane_sync("aligner")
-        # Also drop any PREVIOUS aligner (a different aligner alias) before
-        # loading the replacement, so two multi-GB aligner models never sit
-        # resident together during ``load()``. Inert under the current
-        # single-aligner registry — the branch only re-enters when the cache
-        # was already emptied (an ASR request evicted us), so there is nothing
-        # to drop — but it keeps the "one STT model resident" invariant true if
-        # a second aligner alias is ever registered. On a failed reload the
-        # cache stays ``None`` and the next request reloads from disk, strictly
-        # better than pinning a stale model.
-        _aligner_engine = None
-        # Load into a local first and publish only on success. Caching a
-        # half-constructed engine would leave later requests matching on
-        # ``model_name`` against an object whose weights never loaded.
-        #
-        # Named ``aligner``, not ``engine``: test_route_engine_contract
-        # scans this module for ``engine.<method>()`` calls and requires
-        # the method to exist on the LLM ``BaseEngine``. An ``STTEngine``
-        # is a different hierarchy entirely, so the name would trip that
-        # gate with a false positive.
-        aligner = STTEngine(model_name)
-        from ..runtime.audio_worker import run_audio_mlx_sync
-
-        run_audio_mlx_sync("alignment", model_name, "load", aligner.load)
-        _aligner_engine = aligner
+    _load_aligner_blocking(model_name)
     from ..runtime.audio_worker import run_audio_mlx_sync
 
     return run_audio_mlx_sync(
@@ -1810,6 +1891,26 @@ async def _run_alignment_request(
         # for exactly as long as the worker runs, even if the client
         # disconnects and cancels us mid-align.
         async with _get_stt_lane_lock():
+            # Admit the forced-alignment model through the shared residency
+            # ledger as the distinct ``alignment`` role BEFORE its weights
+            # load, so an over-budget aligner is rejected with the typed 507
+            # envelope without ever touching disk. Only the weight-load step
+            # is wrapped: an inference failure on a successfully-loaded
+            # aligner must not release a resident engine's reservation.
+            needs_load = _aligner_engine is None or (
+                _aligner_engine.model_name != model_name
+            )
+            if needs_load:
+                prev_aligner = _aligner_engine
+                async with _admitting_alignment(
+                    model_name,
+                    replace_existing=prev_aligner is not None,
+                ) as admission:
+                    if prev_aligner is not None:
+                        # The load below drops the previous aligner engine, so
+                        # a failed reload must not restore its old reservation.
+                        admission.retire_previous()
+                    await run_to_completion(_load_aligner_blocking, model_name)
             result = await run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )
