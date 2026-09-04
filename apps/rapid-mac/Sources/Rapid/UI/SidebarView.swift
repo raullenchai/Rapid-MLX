@@ -232,7 +232,8 @@ struct SidebarView: View {
             if let server, !server.residency.models.isEmpty {
                 residencyFooter(
                     server.residency,
-                    preferredAlias: server.servingAlias
+                    preferredAlias: server.servingAlias,
+                    server: server
                 )
             }
         }
@@ -442,7 +443,8 @@ struct SidebarView: View {
 
     private func residencyFooter(
         _ snapshot: ModelResidencySnapshot,
-        preferredAlias: String?
+        preferredAlias: String?,
+        server: ServerManager
     ) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
             HStack(spacing: RapidTheme.Space.xs) {
@@ -453,18 +455,32 @@ struct SidebarView: View {
                     .font(RapidFont.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
-                Text(memorySummary(snapshot))
+                Text(
+                    Self.memorySummary(
+                        usedBytes: snapshot.memoryUsedBytes,
+                        limitBytes: snapshot.memoryLimitBytes
+                    )
+                )
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
-            if snapshot.memoryLimitBytes > 0 {
-                ProgressView(
-                    value: min(1, Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes))
-                )
-                .controlSize(.mini)
-                .tint(RapidTheme.brandAmber)
+            HStack(spacing: RapidTheme.Space.xs) {
+                if snapshot.memoryLimitBytes > 0 {
+                    ProgressView(
+                        value: min(
+                            1,
+                            Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes)
+                        )
+                    )
+                    .controlSize(.mini)
+                    .tint(RapidTheme.brandAmber)
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                residentUnloadButton(snapshot: snapshot, server: server)
             }
 
             ForEach(snapshot.models.prefix(4)) { model in
@@ -498,13 +514,98 @@ struct SidebarView: View {
                 .fill(RapidTheme.hairline)
                 .frame(height: 1)
         }
-        .accessibilityIdentifier("Sidebar.Residency")
+        // Deliberately no accessibility modifier on this container: SwiftUI
+        // propagates container metadata and would mask the eject button and
+        // model-row semantics. The visible "Resident" heading names the group.
     }
 
-    private func memorySummary(_ snapshot: ModelResidencySnapshot) -> String {
-        let used = Self.formatBytes(snapshot.memoryUsedBytes)
-        guard snapshot.memoryLimitBytes > 0 else { return used }
-        return "\(used) / \(Self.formatBytes(snapshot.memoryLimitBytes))"
+    /// One visible release valve for the whole resident-memory pool. The
+    /// startup model is intentionally pinned by the engine, so presenting a
+    /// per-row eject action would be dishonest: ejecting that row means
+    /// stopping the resident runtime and therefore releasing every model it
+    /// owns. Keeping the control beside the aggregate memory bar makes that
+    /// scope clear and avoids shortening model names in the narrow rail.
+    private func residentUnloadButton(
+        snapshot: ModelResidencySnapshot,
+        server: ServerManager
+    ) -> some View {
+        let hasActiveRequests = snapshot.models.contains { $0.activeRequests > 0 }
+        let disabled = Self.residentUnloadDisabled(
+            isOperating: server.isOperating,
+            chatIsStreaming: chat.isStreaming,
+            hasActiveRequests: hasActiveRequests
+        )
+        let label = Self.residentUnloadLabel(
+            modelCount: snapshot.models.count,
+            memoryUsedBytes: snapshot.memoryUsedBytes
+        )
+
+        return Button {
+            Task { await server.stop() }
+        } label: {
+            Group {
+                if server.isOperating {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "eject.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(disabled ? .tertiary : .secondary)
+        .disabled(disabled)
+        .help(
+            Self.residentUnloadHelp(
+                isOperating: server.isOperating,
+                hasActiveResponse: chat.isStreaming || hasActiveRequests,
+                enabledLabel: label
+            )
+        )
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("Sidebar.Residency.Unload")
+    }
+
+    nonisolated static func residentUnloadDisabled(
+        isOperating: Bool,
+        chatIsStreaming: Bool,
+        hasActiveRequests: Bool
+    ) -> Bool {
+        isOperating || chatIsStreaming || hasActiveRequests
+    }
+
+    nonisolated static func residentUnloadHelp(
+        isOperating: Bool,
+        hasActiveResponse: Bool,
+        enabledLabel: String
+    ) -> String {
+        if isOperating { return "Unloading models…" }
+        if hasActiveResponse {
+            return "Stop the active response before unloading models"
+        }
+        return enabledLabel
+    }
+
+    nonisolated static func residentUnloadLabel(
+        modelCount: Int,
+        memoryUsedBytes: UInt64
+    ) -> String {
+        let subject = modelCount == 1 ? "model" : "all models"
+        return "Unload \(subject) and free \(formatBytes(memoryUsedBytes))"
+    }
+
+    nonisolated static func memorySummary(usedBytes: UInt64, limitBytes: UInt64) -> String {
+        let used = Self.formatBytes(usedBytes)
+        guard limitBytes > 0 else { return used }
+        let limit = Self.formatBytes(limitBytes)
+        if let unit = used.split(separator: " ").last,
+           limit.hasSuffix(" \(unit)") {
+            return "\(used.dropLast(unit.count + 1)) / \(limit)"
+        }
+        return "\(used) / \(limit)"
     }
 
     nonisolated private static func formatBytes(_ bytes: UInt64) -> String {

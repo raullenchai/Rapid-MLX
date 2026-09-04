@@ -17,6 +17,12 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+
+- **One-click model unload in Desktop.** The resident-memory footer now has an
+  eject control that releases loaded models when the server is idle, while
+  protecting active chat and API responses from accidental interruption.
+
 ## [0.13.4] — 2026-09-02
 
 Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
