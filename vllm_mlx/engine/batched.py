@@ -4067,7 +4067,7 @@ class BatchedEngine(BaseEngine):
                     self._guided_owner_tasks[request_id] = owner_task
         if stopped:
             self._mark_lifecycle_aborted_tasks((owner_task,))
-            raise GuidedGenerationCancelledError()
+            raise GuidedGenerationCancelledError(lifecycle_task=owner_task)
 
     def _mark_lifecycle_aborted_tasks(
         self, tasks: tuple[asyncio.Task | None, ...]
@@ -4279,6 +4279,11 @@ class BatchedEngine(BaseEngine):
         # executor future complete while its thread still owns MLX state.
         try:
             result = await asyncio.shield(future)
+        except GuidedGenerationCancelledError as exc:
+            self._finish_guided_request(request_id, abort_event)
+            raise GuidedGenerationCancelledError(
+                lifecycle_task=asyncio.current_task()
+            ) from exc
         except asyncio.CancelledError:
             abort_event.set()
             if future.done():
@@ -4299,7 +4304,9 @@ class BatchedEngine(BaseEngine):
         if result is None and raise_on_failure and retain_request_on_failure:
             if abort_event.is_set():
                 self._finish_guided_request(request_id, abort_event)
-                raise GuidedGenerationCancelledError()
+                raise GuidedGenerationCancelledError(
+                    lifecycle_task=asyncio.current_task()
+                )
             raise RuntimeError(
                 "Guided generation produced no result "
                 "(llguidance import/grammar failure — see prior log)"
@@ -4312,7 +4319,7 @@ class BatchedEngine(BaseEngine):
         # checking the stop token happened under one lock, so an abort either
         # wins before commit or receives ``False`` after completion committed.
         if was_aborted:
-            raise GuidedGenerationCancelledError()
+            raise GuidedGenerationCancelledError(lifecycle_task=asyncio.current_task())
 
         if result is None:
             # Fallback to standard generation. The streaming caller passes

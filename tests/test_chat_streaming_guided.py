@@ -201,6 +201,50 @@ async def test_guided_stream_publishes_cancellable_id_before_buffered_output():
 
 
 @pytest.mark.asyncio
+async def test_guided_stream_shutdown_consumes_exact_lifecycle_owner():
+    """Shutdown emits the model-replacement terminal and clears its ledger."""
+
+    class _ShutdownGuidedEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__()
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            kwargs["request_admitted_event"].set()
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
+            return True
+
+    engine = _ShutdownGuidedEngine()
+    reset_config().engine = engine
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-" + "b" * 32,
+        strict_mode=True,
+    )
+
+    events = [event async for event in stream]
+
+    assert any('"code": "model_replacement"' in event for event in events)
+    assert events[-1] == "data: [DONE]\n\n"
+    assert engine.lifecycle_consumed is True
+    assert engine.stream_calls == []
+
+
+@pytest.mark.asyncio
 async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
     """The public id stays owned until the fallback scheduler is admitted."""
 

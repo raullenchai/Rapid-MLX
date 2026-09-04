@@ -86,6 +86,7 @@ from ..service.helpers import (
     _build_prompt_with_thinking_compat,
     _build_usage,
     _check_admission_or_503,
+    _consume_guided_lifecycle_cancel,
     _disconnect_guard,
     _effective_enable_thinking,
     _extract_streaming_token_logprobs,
@@ -5271,6 +5272,11 @@ async def _create_chat_completion_impl(
             except GuidedGenerationCancelledError as exc:
                 # Engine-owned cancellation is lifecycle control, never a
                 # guided failure eligible for unconstrained fallback.
+                if _consume_guided_lifecycle_cancel(engine, exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Request cancelled by model replacement",
+                    ) from exc
                 raise asyncio.CancelledError() from exc
             except HTTPException:
                 raise
@@ -7857,7 +7863,20 @@ async def stream_chat_completion_guided(
             # contract if decoding or post-validation later fails.
             yield f"{_sse_prefix}{_sse_suffix}"
             output = await guided_task
-        except GuidedGenerationCancelledError:
+        except GuidedGenerationCancelledError as exc:
+            if _consume_guided_lifecycle_cancel(engine, exc):
+                error_data = json.dumps(
+                    {
+                        "error": {
+                            "message": "Request cancelled by model replacement",
+                            "type": "server_error",
+                            "code": "model_replacement",
+                        }
+                    }
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
             for event in _cancelled_terminal_events():
                 yield event
             return

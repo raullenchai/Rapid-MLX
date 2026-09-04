@@ -1859,17 +1859,26 @@ def test_responses_guided_cancellation_is_lifecycle_not_schema_failure(
     from vllm_mlx.api.errors import GuidedGenerationCancelledError
 
     class _CancelledEngine(_Engine):
-        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
-            raise GuidedGenerationCancelledError()
+        def __init__(self):
+            super().__init__(supports_guided=True)
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
 
-        def consume_lifecycle_task_abort(self, _task) -> bool:
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
             return True
 
-    engine = _CancelledEngine(supports_guided=True)
+    engine = _CancelledEngine()
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post("/v1/responses", json=_responses_payload(strict=True))
     assert resp.status_code == 503, resp.text
     assert engine.chat_calls == []
+    assert engine.lifecycle_consumed is True
     assert response_format_metrics.snapshot()["strict_violations_total"] == 0
 
 
@@ -2441,18 +2450,27 @@ def test_non_streaming_guided_cancellation_never_falls_back_unconstrained():
     from vllm_mlx.api.errors import GuidedGenerationCancelledError
 
     class _CancelledEngine(_Engine):
-        def consume_lifecycle_task_abort(self, _task) -> bool:
+        def __init__(self):
+            super().__init__(supports_guided=True)
+            self.lifecycle_owner = object()
+            self.lifecycle_consumed = False
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError(lifecycle_task=self.lifecycle_owner)
+
+        def consume_lifecycle_task_abort(self, task) -> bool:
+            if task is not self.lifecycle_owner or self.lifecycle_consumed:
+                return False
+            self.lifecycle_consumed = True
             return True
 
-    engine = _CancelledEngine(
-        supports_guided=True,
-        guided_raises=GuidedGenerationCancelledError(),
-    )
+    engine = _CancelledEngine()
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=False))
     assert resp.status_code == 503, resp.text
     assert engine.chat_calls == []
     assert engine.stream_calls == []
+    assert engine.lifecycle_consumed is True
 
 
 def test_strict_false_streaming_guided_raises_still_falls_back():

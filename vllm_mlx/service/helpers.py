@@ -167,6 +167,14 @@ def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> N
     raise exc
 
 
+def _consume_guided_lifecycle_cancel(engine, exc) -> bool:
+    """Consume shutdown ownership carried by a guided cancellation signal."""
+
+    task = getattr(exc, "lifecycle_task", None)
+    consume_abort = getattr(engine, "consume_lifecycle_task_abort", None)
+    return bool(task is not None and callable(consume_abort) and consume_abort(task))
+
+
 def _raise_backpressure_503(exc: Exception) -> None:
     """Convert ``BackpressureError`` from the scheduler into HTTP 503
     with a Retry-After header (RFC 9110 §10.2.4).

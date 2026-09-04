@@ -641,8 +641,9 @@ class TestGuidedGenerationStepThread:
             assert holder == ["chatcmpl-public-guided"]
             assert "chatcmpl-public-guided" in engine._guided_abort_events
             assert await engine.abort_request("chatcmpl-public-guided") is True
-            with pytest.raises(GuidedGenerationCancelledError):
+            with pytest.raises(GuidedGenerationCancelledError) as cancelled:
                 await task
+            assert cancelled.value.lifecycle_task is task
             assert await asyncio.to_thread(stopped.wait, 1)
             assert engine._guided_abort_events == {}
             assert await engine.abort_request("chatcmpl-public-guided") is False
