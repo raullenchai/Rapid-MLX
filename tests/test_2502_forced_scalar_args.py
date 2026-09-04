@@ -31,6 +31,31 @@ from vllm_mlx.routes.chat import (
     _synthesize_forced_tool_call,
 )
 
+# DeepSeek-style tool-call wire delimiters (begin / end), matching the route's
+# ``_WIRE_OPENERS`` / ``_WIRE_CLOSERS`` byte-for-byte.
+_BEGIN_MARKER = (
+    "<"
+    + chr(0xFF5C)
+    + "tool"
+    + chr(0x2581)
+    + "calls"
+    + chr(0x2581)
+    + "begin"
+    + chr(0xFF5C)
+    + ">"
+)
+_END_MARKER = (
+    "<"
+    + chr(0xFF5C)
+    + "tool"
+    + chr(0x2581)
+    + "calls"
+    + chr(0x2581)
+    + "end"
+    + chr(0xFF5C)
+    + ">"
+)
+
 
 def _tool(
     name: str,
@@ -303,6 +328,15 @@ class TestRecoverBareScalarFromRaw:
         assert _recover_bare_scalar_from_raw(None) is None
         assert _recover_bare_scalar_from_raw("") is None
 
+    def test_begin_end_marker_wire_format_recovers_scalar(self):
+        # codex BLOCKING (round 3): the begin marker must not also be treated as
+        # a closer, or no scalar inside this wire format would recover. The begin
+        # (more) and end (尽) markers are the DeepSeek-style tool-call delimiters.
+        begin = _BEGIN_MARKER
+        end = _END_MARKER
+        raw = begin + '{"name": "weather", "arguments": "SF"}' + end
+        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == '"SF"'
+
     def test_rejects_colon_with_intervening_garbage(self):
         # codex BLOCKING #2: the key must be immediately followed by a colon.
         raw = '<tool_call>{"name": "x", "arguments" garbage, "foo": 7}'
@@ -320,6 +354,20 @@ class TestRecoverBareScalarFromRaw:
         assert (
             _recover_bare_scalar_from_raw(
                 '<tool_call>{"name": "x", "arguments": trueish}', expected_name="x"
+            )
+            is None
+        )
+        # Trailing garbage after whitespace is also rejected.
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": 72 oops}', expected_name="x"
+            )
+            is None
+        )
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": "SF" garbage}',
+                expected_name="x",
             )
             is None
         )

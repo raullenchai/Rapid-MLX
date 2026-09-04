@@ -2931,7 +2931,6 @@ def _recover_bare_scalar_from_raw(
         "<function=",
         "<function>",
         "<｜tool▁calls▁begin｜>",
-        "<｜tool▁calls▁end｜>",
         "[TOOL_CALLS]",
         "<|python_tag|>",
         "<minimax:tool_call>",
@@ -2941,7 +2940,6 @@ def _recover_bare_scalar_from_raw(
         "</tool_call>",
         "</function>",
         "<｜tool▁calls▁end｜>",
-        "<｜tool▁calls▁begin｜>",
         "[/TOOL_CALLS]",
         "</minimax:tool_call>",
         "</invoke>",
@@ -3048,11 +3046,14 @@ def _recover_bare_scalar_from_raw(
             else:
                 continue
             after = j
-        # Fail closed on malformed values: a bare scalar must be followed by a
-        # JSON/structural terminator (`,` `}` `]` whitespace or a wire closer),
-        # never a stray alphanumeric (`"arguments": 72oops` / `trueish`).
-        terminated = after >= len(rest) or rest[after] in " \t\r\n,}]:/>"
-        if not terminated:
+        # Fail closed on malformed values: after the scalar, skip trailing
+        # whitespace, then require end-of-input, a structural delimiter (`,` `}`
+        # `]`), or the start of a recognized wire closer. Trailing garbage
+        # (`72 oops`, `"SF" garbage`) must NOT be accepted (codex BLOCKING).
+        cursor = after
+        while cursor < len(rest) and rest[cursor] in " \t\r\n":
+            cursor += 1
+        if cursor < len(rest) and rest[cursor] not in ",}]:</>":
             continue
         # Ensure the scalar re-parses to a scalar (never an object/array/null).
         try:
