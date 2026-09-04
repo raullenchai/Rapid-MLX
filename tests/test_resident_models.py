@@ -3446,3 +3446,71 @@ async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load
     assert "tts-extra" not in roles
     assert "speech-input" in roles  # retained + credited, its engine accounted
     assert manager._accounted_usage() == other + speech
+
+
+async def test_alignment_role_commit_finalize_is_cancellation_shielded():
+    """pr_validate codex BLOCKING (round-22): after ``admission.commit()`` the
+    engine is resident, so a cancellation arriving while the success-path
+    finalization waits on the manager lock must STILL retire the evicted
+    sibling (and keep the committed record resident) — never leak a phantom
+    sibling charge. The success finalization runs under a cancel-drained
+    shield, so whether the cancellation is handled by that shield or by the
+    ``committed`` rollback branch, the invariant holds: sibling retired,
+    alignment record resident."""
+    from vllm_mlx.runtime.resident_models import ResidentRoleAdmission
+
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    speech = int(0.4 * GIB)
+    aligner = int(0.3 * GIB)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=speech,
+        capacity_source="catalog",
+    ):
+        pass
+
+    # align() commits the engine inside its body, then BLOCKS holding the
+    # manager lock so cancellation lands deterministically AFTER publication.
+    committed_in_body = asyncio.Event()
+    release_body_lock = asyncio.Event()
+
+    async def _align():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ) as admission:
+            # Engine published -> mark resident; a cancellation anywhere after
+            # this must not resurrect the evicted sibling.
+            if isinstance(admission, ResidentRoleAdmission):
+                admission.commit()
+            # Hold the manager lock and park: the body owns the lock here, so
+            # cancelling now exercises the post-commit cleanup under lock
+            # contention (either the committed-rollback branch or the shielded
+            # else-finalize) — both must retire the sibling.
+            async with manager._lock:
+                committed_in_body.set()
+                await release_body_lock.wait()
+
+    align_task = asyncio.create_task(_align())
+    await committed_in_body.wait()  # committed and holding the manager lock
+    align_task.cancel()  # cancel AFTER publication
+    release_body_lock.set()  # let the post-commit cleanup run (drains)
+
+    try:
+        await align_task
+    except asyncio.CancelledError:
+        pass
+
+    # The cancellation must not leak: sibling retired (ASR engine evicted) and
+    # the committed alignment record resident.
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" not in roles
+    (aligned,) = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert aligned["state"] == "resident"
+    assert aligned["reserved_bytes"] == aligner

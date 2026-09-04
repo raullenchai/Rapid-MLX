@@ -868,14 +868,57 @@ class ResidentModelManager:
                     self._roles.pop(release_exclusive_role, None)
             raise
         else:
-            async with self._lock:
-                if self._roles.get(role) is record:
-                    record.state = "resident"
-                    record.loaded_at = self._clock()
-                # Success: the aligner loaded and evicted the ASR engine ->
-                # retire the retained sibling reservation.
-                if exclusive_sibling is not None:
-                    self._roles.pop(release_exclusive_role, None)
+            # Success finalization runs under a cancellation SHIELD (pr_validate
+            # round-22): after the route's ``admission.commit()`` the engine is
+            # already resident, so a cancellation arriving while the success-path
+            # ``await self._lock`` is blocked must NOT skip the finalization —
+            # that would leave the committed engine's reservation stuck in
+            # ``"loading"`` and the evicted sibling (if any) charged forever.
+            # The shield lets the finalize run to completion; if the surrounding
+            # task is cancelled, we wait for the shielded finalize first and
+            # THEN re-raise, never leaking a phantom sibling charge.
+            finalize = asyncio.ensure_future(
+                self._finalize_role_commit(
+                    role=role,
+                    record=record,
+                    exclusive_sibling=exclusive_sibling,
+                    release_exclusive_role=release_exclusive_role,
+                )
+            )
+            try:
+                await asyncio.shield(finalize)
+            except asyncio.CancelledError:
+                # Drain the shielded finalize before propagating cancellation.
+                try:
+                    await asyncio.shield(finalize)
+                except asyncio.CancelledError:
+                    pass
+                raise
+
+    async def _finalize_role_commit(
+        self,
+        *,
+        role: str,
+        record,
+        exclusive_sibling,
+        release_exclusive_role: str | None,
+    ) -> None:
+        """Complete the success-path role commit under a shielded lock.
+
+        Marks the admitted record resident and retires the retained
+        mutually-exclusive sibling (the aligner evicted its engine). Runs inside
+        :meth:`admit_role`'s success finalization, shielded from cancellation so
+        a committed engine is never left ``"loading"`` and a phantom sibling
+        charge is never leaked when the context is cancelled mid-commit.
+        """
+        async with self._lock:
+            if self._roles.get(role) is record:
+                record.state = "resident"
+                record.loaded_at = self._clock()
+            # Success: the aligner loaded and evicted the ASR engine ->
+            # retire the retained sibling reservation.
+            if exclusive_sibling is not None:
+                self._roles.pop(release_exclusive_role, None)
 
     async def release_role(self, role: str) -> None:
         """Stop charging a role after its owning lane released the engine."""
