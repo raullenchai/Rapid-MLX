@@ -1478,10 +1478,20 @@ async def test_shutdown_releases_alignment_role(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch):
-    """The cached-model validation path (issue #2405): after admission + load,
-    a repeat request for the SAME model does not reload the aligner — it
-    infers against the cached engine while a single role reservation stays
-    resident. Driven through the model-worker boundary, not the upload path."""
+    """pr_validate codex BLOCKING #5: drive THREE real ``_run_alignment_request``
+    calls for the SAME model and assert one load, three inferences, and one
+    resident role reservation.
+
+    After admission + load, a repeat real request for the SAME model must not
+    reload the aligner NOR re-admit the role — it infers against the cached
+    engine while a single resident reservation stays in the ledger. Driving the
+    full route (not ``_admitting_alignment``/``_load_aligner_blocking`` by
+    hand) means a regression that reloads or re-admits per request fails here.
+    """
+    import io
+
+    from fastapi import UploadFile
+
     from vllm_mlx.routes import audio as audio_route
     from vllm_mlx.runtime.audio_worker import bind_audio_worker
 
@@ -1507,20 +1517,40 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
 
-    try:
-        # First call: admit the alignment role, then load on the worker thread.
-        async with audio_route._admitting_alignment("qwen3-aligner"):
-            audio_route._load_aligner_blocking("qwen3-aligner")
+    def _recording_load(model_name, on_discard_previous=None):
+        # Mirror the real loader's idempotency: once the engine for this model
+        # is published, a repeat call is a no-op (no reload, no re-load).
+        if (
+            audio_route._aligner_engine is not None
+            and audio_route._aligner_engine.model_name == model_name
+        ):
+            return
+        operations.append("load-aligner")
+        audio_route._aligner_engine = _Aligner(model_name)
+        if on_discard_previous is not None:
+            on_discard_previous()
 
-        # Second + third calls reuse the cached engine (no reload, no re-admit).
-        audio_route._align_blocking("qwen3-aligner", "a.wav", "t", "en")
-        audio_route._align_blocking("qwen3-aligner", "b.wav", "u", None)
+    monkeypatch.setattr(audio_route, "_load_aligner_blocking", _recording_load)
+
+    def _request(i: int):
+        return audio_route._run_alignment_request(
+            UploadFile(filename=f"clip{i}.wav", file=io.BytesIO(b"\x00" * 64)),
+            model="qwen3-aligner",
+            text="你好",
+            language=None,
+            response_format="json",
+        )
+
+    try:
+        for i in range(3):
+            await _request(i)
     finally:
         bind_audio_worker(None)
 
-    # Loaded exactly once; two cached infer calls against the reused engine.
+    # Loaded exactly once across three real requests; three cached infer calls
+    # against the reused engine.
     assert operations.count("load-aligner") == 1
-    assert operations.count("infer-aligner") == 2
+    assert operations.count("infer-aligner") == 3
     # A single alignment role reservation remains resident in the ledger.
     roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
     assert len(roles) == 1
