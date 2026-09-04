@@ -2254,15 +2254,96 @@ async def test_failed_stop_exposes_cleanup_failed_and_keeps_bytes_charged():
     assert failed_row["cleanup_failed"] == "stop failed"
     assert _accounted_bytes(manager, "chat-old") == 4 * GIB
 
-    # A later shutdown reports rather than silently claims the bytes free: the
-    # failed record remains observable.
-    await manager.shutdown()
+    # A later shutdown reports rather than silently claiming success or the
+    # bytes free: the failed record remains observable.
+    with pytest.raises(ResidentModelError, match="chat-old: stop failed"):
+        await manager.shutdown()
     assert _accounted_bytes(manager, "chat-old") == 4 * GIB
     current_row = next(
         item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
     )
     assert current_row["state"] == "failed"
     assert current_row["cleanup_failed"] == "stop failed"
+
+
+@pytest.mark.asyncio
+async def test_explicit_unload_propagates_stop_failure():
+    registry = ModelRegistry()
+    engine = FailingStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    manager._index_record(
+        ResidencyRecord(
+            entry=target,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await manager.unload("chat-target")
+
+    assert manager._retiring[id(engine)].state == "failed"
+    assert _accounted_bytes(manager, "chat-target") == 2 * GIB
+
+
+@pytest.mark.asyncio
+async def test_ttl_does_not_report_failed_cleanup_as_evicted():
+    registry = ModelRegistry()
+    engine = FailingStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(
+        registry,
+        AsyncMock(),
+        idle_ttl_seconds=60,
+        memory_reader=lambda: 0,
+        clock=lambda: 61,
+    )
+    manager._index_record(
+        ResidencyRecord(
+            entry=target,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    assert await manager.evict_expired() == []
+    assert manager._retiring[id(engine)].state == "failed"
+    assert _accounted_bytes(manager, "chat-target") == 2 * GIB
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reports_every_failed_cleanup_after_draining_all():
+    registry = ModelRegistry()
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    engines = {}
+    for model_id in ("chat-a", "chat-b"):
+        engine = FailingStopLifecycleEngine()
+        engines[model_id] = engine
+        target = entry(model_id, engine)
+        registry.add(target)
+        manager._index_record(
+            ResidencyRecord(
+                entry=target,
+                estimated_bytes=2 * GIB,
+                loaded_at=0,
+                last_used_at=0,
+            )
+        )
+
+    with pytest.raises(ResidentModelError) as caught:
+        await manager.shutdown()
+
+    assert "chat-a: stop failed" in str(caught.value)
+    assert "chat-b: stop failed" in str(caught.value)
+    assert all(engine.stopped is True for engine in engines.values())
+    assert all(
+        manager._retiring[id(engine)].state == "failed" for engine in engines.values()
+    )
 
 
 @pytest.mark.asyncio

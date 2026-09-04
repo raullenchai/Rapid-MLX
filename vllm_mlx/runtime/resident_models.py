@@ -7,7 +7,7 @@ import gc
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Protocol, TypedDict
@@ -705,28 +705,37 @@ class ResidentModelManager:
             except asyncio.CancelledError:
                 pass
 
-        cleanups: list[asyncio.Future] = []
+        cleanups: dict[int, asyncio.Future] = {}
         async with self._lock:
+            existing_retirements = list(self._retiring.values())
             dynamic = [
                 record for record in self._records.values() if not record.primary
             ]
             for record in dynamic:
-                cleanups.append(
-                    self._begin_evict_locked(record, reason="shutdown", count=False)
+                cleanups[id(record.entry.engine)] = self._begin_evict_locked(
+                    record, reason="shutdown", count=False
                 )
             # Join any retirement already in flight (spawned offline by a prior
             # cancelled or replaced operation) so shutdown drains them too.
-            cleanups.extend(
-                self._begin_evict_locked(
+            for retirement in existing_retirements:
+                cleanups[id(retirement.record.entry.engine)] = self._begin_evict_locked(
                     retirement.record,
                     reason="shutdown",
                     count=False,
                 )
-                for retirement in list(self._retiring.values())
-            )
         # Drain every retirement OUTSIDE the lock: a suspended stop must never
         # hold self._lock while unrelated residency operations are waiting.
-        await self._await_cleanups(cleanups)
+        await self._await_cleanups(list(cleanups.values()))
+        failures = self._cleanup_failures(cleanups)
+        if failures:
+            details = "; ".join(
+                f"{model_id}: {message}" for model_id, message, _error in failures
+            )
+            error = ResidentModelError(f"resident model cleanup failed: {details}")
+            first_cause = failures[0][2]
+            if first_cause is not None:
+                raise error from first_cause
+            raise error
 
     async def _ttl_loop(self) -> None:
         interval = min(60.0, max(1.0, self.idle_ttl_seconds / 4.0))
@@ -738,6 +747,7 @@ class ResidentModelManager:
         if self.idle_ttl_seconds <= 0:
             return []
         cleanups: list[asyncio.Future] = []
+        attempted: list[tuple[str, int]] = []
         async with self._lock:
             now = self._clock()
             expired = sorted(
@@ -754,9 +764,15 @@ class ResidentModelManager:
             )
             evicted = []
             for record in expired:
-                evicted.append(record.model_id)
+                attempted.append((record.model_id, id(record.entry.engine)))
                 cleanups.append(self._begin_evict_locked(record, reason="idle_ttl"))
         await self._await_cleanups(cleanups)
+        failed = {
+            identity for _model_id, identity in attempted if identity in self._retiring
+        }
+        evicted.extend(
+            model_id for model_id, identity in attempted if identity not in failed
+        )
         return evicted
 
     async def _evict_for_locked(
@@ -1873,11 +1889,19 @@ class ResidentModelManager:
                 raise ResidentModelError("pinned models cannot be unloaded")
             if record.active_requests or not _engine_is_idle(record.entry.engine):
                 raise ResidentModelBusyError("model is serving an active request")
+            identity = id(record.entry.engine)
             cleanup = self._begin_evict_locked(record, reason="explicit")
         # Await cleanup OUTSIDE the lock: a suspended stop() must not hold the
         # manager lock while unrelated residency operations run. The shield lets
         # a caller cancellation propagate promptly while cleanup continues.
         await self._await_cleanups([cleanup])
+        retirement = self._retiring.get(identity)
+        if retirement is not None and retirement.state == "failed":
+            if retirement.cleanup_error is not None:
+                raise retirement.cleanup_error
+            raise ResidentModelError(
+                retirement.cleanup_failed or "resident model cleanup failed"
+            )
 
     def _begin_evict_locked(
         self,
@@ -2012,6 +2036,24 @@ class ResidentModelManager:
         """Await retirement cleanup completions (call OUTSIDE self._lock)."""
         if cleanups:
             await asyncio.gather(*cleanups)
+
+    def _cleanup_failures(
+        self, identities: Iterable[int]
+    ) -> list[tuple[str, str, BaseException | None]]:
+        """Return truthful failures for attempted engine identities."""
+        failures = []
+        for identity in identities:
+            retirement = self._retiring.get(identity)
+            if retirement is None or retirement.state != "failed":
+                continue
+            failures.append(
+                (
+                    retirement.record.model_id,
+                    retirement.cleanup_failed or "retirement cleanup failed",
+                    retirement.cleanup_error,
+                )
+            )
+        return failures
 
     async def _retire_sequentially(
         self, plan: list[tuple[ResidencyRecord, str]]
