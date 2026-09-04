@@ -196,7 +196,10 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     from ..runtime.resident_models import ResidentModelCapacityError
     from ..runtime.role_capacity import alignment_capacity
 
-    capacity = alignment_capacity(model_name)
+    # Resolve the footprint off the event loop: the catalog fast-path is
+    # in-memory, but the verified-local-cache fallback walks the HF cache and
+    # must not stall unrelated requests (the call is per-load, not per-token).
+    capacity = await asyncio.to_thread(alignment_capacity, model_name)
     try:
         async with manager.admit_role(
             role="alignment",
@@ -1916,10 +1919,12 @@ async def _run_alignment_request(
                 _aligner_engine.model_name != model_name
             )
             if needs_load:
-                prev_aligner = _aligner_engine
+                # A pending load ALWAYS (re)establishes the alignment role, even
+                # if a stale/previous reservation exists, so ``admit_role``
+                # never 409/500s on "role already resident" — the stale ledger
+                # entry self-heals rather than blocking the request.
                 async with _admitting_alignment(
-                    model_name,
-                    replace_existing=prev_aligner is not None,
+                    model_name, replace_existing=True
                 ) as admission:
                     # ``on_discard_previous`` fires ONLY when the load actually
                     # drops the previous aligner (a different alias), so an
@@ -1933,11 +1938,17 @@ async def _run_alignment_request(
                             admission.retire_previous,
                         )
                     except asyncio.CancelledError:
-                        # The worker loaded AND published the engine before the
-                        # cancellation drained it. Keep the reservation (the
-                        # weights are accounted) instead of rolling it back into
-                        # an unaccounted-resident desync.
-                        if _aligner_engine is not None:
+                        # The worker loaded AND published the engine for THE
+                        # REQUESTED model before the cancellation drained it.
+                        # Keep that reservation (the weights are accounted)
+                        # instead of rolling it back into an unaccounted-
+                        # resident desync. A cancelled replacement that never
+                        # discarded/published model_name leaves the old engine
+                        # + its reservation untouched.
+                        if (
+                            _aligner_engine is not None
+                            and _aligner_engine.model_name == model_name
+                        ):
                             admission.commit()
                         raise
             result = await run_to_completion(

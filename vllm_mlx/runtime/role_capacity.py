@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +16,6 @@ class RoleCapacity:
     source: str
 
 
-@lru_cache(maxsize=64)
 def _local_cache_bytes(hf_id: str) -> int | None:
     """Return the verified on-disk footprint of ``hf_id`` in the local HF cache.
 
