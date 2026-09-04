@@ -416,8 +416,8 @@ private actor VideoFakeClient: VideoClientProtocol {
         "seconds":{"minimum":1,"maximum":20,"default":4},
         "fps":{"minimum":1,"maximum":60,"default":24,"fixed":false},
         "frames":{"minimum":9,"maximum":1201,"step":8,"offset":1},
-        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"multiple_of_64"},
-        "input_reference":{"accepted":true,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}
+        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"ceil_to_64"},
+        "input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}
       }
     }
     """#

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Rapid
@@ -55,12 +56,30 @@ struct VideoClientTests {
         }
     }
 
-    @Test("Unsupported workload rounding fails closed")
+    @Test("Unrecognized dimension_rounding fails closed")
     func unsupportedRoundingFailsClosed() async {
+        // A future alignment can be larger than the values this client knows.
+        // Guessing 64 would under-count workload for e.g. ceil_to_128, so an
+        // unknown value must reject the capabilities payload.
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
-            of: #""dimension_rounding":"multiple_of_64""#,
-            with: #""dimension_rounding":"floor""#
+            of: #""dimension_rounding":"ceil_to_64""#,
+            with: #""dimension_rounding":"ceil_to_128""#
+        )
+        VideoStubProtocol.response = (200, Data(json.utf8))
+
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
+    }
+
+    @Test("Malformed (blank) dimension_rounding fails closed")
+    func blankRoundingFailsClosed() async {
+        // An empty/blank rounding label is malformed and rejects too.
+        let client = makeClient()
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""dimension_rounding":"ceil_to_64""#,
+            with: #""dimension_rounding":""#
         )
         VideoStubProtocol.response = (200, Data(json.utf8))
 
@@ -82,22 +101,116 @@ struct VideoClientTests {
         #expect(value.durationPresets(for: "592x592") == [1, 2])
     }
 
-    @Test("Image input follows advertised formats and acceptance")
+    @Test("Image input is enabled by input_reference presence, not an accepted boolean")
     func imageInputUsesCapabilityContract() throws {
+        // The input_reference object has no `accepted` field in the current
+        // contract; its presence with usable limits enables image-to-video.
+        let value = try JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(Self.capabilitiesJSON.utf8)
+        )
+        #expect(value.supportsImageInput)
+        #expect(value.acceptedReferenceMIMETypes == ["image/jpeg", "image/png", "image/webp"])
+        #expect(value.referenceMaximumBytes == 20 * 1024 * 1024)
+
+        // Limited formats narrow the accepted reference MIME types.
         let jpegOnly = Self.capabilitiesJSON.replacingOccurrences(
             of: #"["jpeg","png","webp"]"#,
             with: #"["jpeg"]"#
         )
-        let value = try JSONDecoder().decode(VideoCapabilities.self, from: Data(jpegOnly.utf8))
-        #expect(value.supportsImageInput)
-        #expect(value.acceptedReferenceMIMETypes == ["image/jpeg"])
-
-        let rejected = jpegOnly.replacingOccurrences(of: #""accepted":true"#, with: #""accepted":false"#)
-        let rejectedValue = try JSONDecoder().decode(
-            VideoCapabilities.self, from: Data(rejected.utf8)
+        let jpegValue = try JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(jpegOnly.utf8)
         )
-        #expect(!rejectedValue.supportsImageInput)
-        #expect(rejectedValue.acceptedReferenceMIMETypes.isEmpty)
+        #expect(jpegValue.supportsImageInput)
+        #expect(jpegValue.acceptedReferenceMIMETypes == ["image/jpeg"])
+    }
+
+    @Test("Image input is disabled when input_reference is absent")
+    func imageInputDisabledWithoutReference() throws {
+        // Omit the input_reference object entirely (a video model that only
+        // supports text-to-video, like CogVideoX-Fun, never sends it).
+        // Replace the object with JSON null so the container stays well-formed;
+        // the optional decodes to nil, identical to the key being absent.
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}"#,
+            with: #""input_reference":null"#
+        )
+        let value = try JSONDecoder().decode(VideoCapabilities.self, from: Data(json.utf8))
+        #expect(value.limits.inputReference == nil)
+        #expect(!value.supportsImageInput)
+        #expect(value.referenceMaximumBytes == 0)
+        #expect(value.acceptedReferenceMIMETypes.isEmpty)
+    }
+
+    @Test("Legacy accepted:false keeps image input disabled without rejecting the payload")
+    func legacyAcceptedFalseDisablesImageInput() async throws {
+        // A transitional server may still send the retired `accepted` boolean.
+        // `accepted: false` must disable image input (not enable it by being
+        // ignored) yet must not reject the whole payload during skew.
+        let client = makeClient()
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}"#,
+            with: #""input_reference":{"accepted":false,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}"#
+        )
+        let decoded = try? JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(json.utf8)
+        )
+        #expect(decoded.map { !$0.supportsImageInput } == true)
+
+        VideoStubProtocol.response = (200, Data(json.utf8))
+        let value = try await client.capabilities(port: 8123, bearer: nil)
+        #expect(!value.supportsImageInput)
+        #expect(value.referenceMaximumBytes == 0)
+        #expect(value.acceptedReferenceMIMETypes.isEmpty)
+        #expect(!value.sizePresets.isEmpty)
+    }
+
+    @Test("Image input is disabled when reference limits are unusable")
+    func imageInputDisabledWhenReferenceUnusable() async {
+        // A zero byte budget leaves no usable reference limit, so image input is
+        // disabled (and no MIME types are advertised), and the payload itself
+        // fails closed on validation.
+        let client = makeClient()
+        let zeroBytes = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""maximum_bytes":20971520"#,
+            with: #""maximum_bytes":0"#
+        )
+        let zeroValue = try! JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(zeroBytes.utf8)
+        )
+        #expect(!zeroValue.supportsImageInput)
+        #expect(zeroValue.acceptedReferenceMIMETypes.isEmpty)
+        VideoStubProtocol.response = (200, Data(zeroBytes.utf8))
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
+
+        // A non-positive pixel ceiling is likewise unusable and fails closed.
+        let zeroPixels = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""maximum_pixels":16777216"#,
+            with: #""maximum_pixels":0"#
+        )
+        let pixelsValue = try! JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(zeroPixels.utf8)
+        )
+        #expect(!pixelsValue.supportsImageInput)
+        #expect(pixelsValue.acceptedReferenceMIMETypes.isEmpty)
+        VideoStubProtocol.response = (200, Data(zeroPixels.utf8))
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
+    }
+
+    @Test("Current contract with ceil_to_64 rounding decodes to working video")
+    func currentContractDecodesToWorkingVideo() async throws {
+        let client = makeClient()
+        VideoStubProtocol.response = (200, Data(Self.capabilitiesJSON.utf8))
+
+        let value = try await client.capabilities(port: 8123, bearer: "secret")
+
+        #expect(value.modes == [.textToVideo, .imageToVideo])
+        #expect(!value.sizePresets.isEmpty)
+        #expect(!value.durationPresets(for: "512x512").isEmpty)
+        #expect(value.supportsImageInput)
     }
 
     @Test("Reference MIME type is detected from bytes, not the filename")
@@ -276,6 +389,35 @@ struct VideoClientTests {
         }
     }
 
+    @Test("Reference loader enforces the advertised decoded-pixel ceiling")
+    func referencePixelCeilingIsEnforced() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "rapid-video-reference-pixel-tests-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("two-pixel.png")
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: source)
+
+        #expect(try VideoReferenceLoader.load(from: source, maximumPixels: 2) == png)
+        #expect(throws: VideoReferenceLoaderError.tooLarge) {
+            _ = try VideoReferenceLoader.load(from: source, maximumPixels: 1)
+        }
+    }
+
     @Test("Failed save leaves an existing destination untouched")
     func failedSavePreservesDestination() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -323,8 +465,8 @@ struct VideoClientTests {
         "seconds":{"minimum":1,"maximum":20,"default":4},
         "fps":{"minimum":1,"maximum":60,"default":24,"fixed":false},
         "frames":{"minimum":9,"maximum":1201,"step":8,"offset":1},
-        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"multiple_of_64"},
-        "input_reference":{"accepted":true,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}
+        "workload":{"metric":"pixel_frames","maximum":38141952,"dimension_rounding":"ceil_to_64"},
+        "input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}
       },
       "controls":{}
     }

@@ -89,16 +89,41 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
                 case metric, maximum
                 case dimensionRounding = "dimension_rounding"
             }
+
+            /// Alignment step applied to generation dimensions before the
+            /// pixel-workload budget is checked. Mirrors the server's
+            /// `dimension_rounding` vocabulary (`none` -> raw dimensions,
+            /// `ceil_to_32`, `ceil_to_64`).
+            ///
+            /// Unknown values have no safe fallback: treating a future larger
+            /// alignment as 64 could under-count workload and expose a preset the
+            /// server must reject. Callers therefore fail closed on `nil`.
+            var alignmentStep: Int? {
+                switch dimensionRounding {
+                case "none": 1
+                case "ceil_to_32": 32
+                case "ceil_to_64": 64
+                default: nil
+                }
+            }
         }
 
         struct InputReferenceLimit: Decodable, Sendable, Hashable {
-            let accepted: Bool
             let maximumBytes: Int
+            let maximumPixels: Int?
             let formats: [String]
+            /// Legacy field from the retired contract. Absent for the current
+            /// server (which signals image-to-video support by the reference's
+            /// presence); honored here so a transitional server that still sends
+            /// `accepted: false` keeps image input disabled rather than enabling
+            /// it by ignoring the flag.
+            let accepted: Bool?
 
             enum CodingKeys: String, CodingKey {
-                case accepted, formats
+                case formats
                 case maximumBytes = "maximum_bytes"
+                case maximumPixels = "maximum_pixels"
+                case accepted
             }
         }
 
@@ -136,8 +161,12 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     let modes: [VideoModelCapability]
     let limits: Limits
 
-    var acceptedReferenceMIMETypes: Set<String> {
-        guard let input = limits.inputReference, input.accepted else { return [] }
+    /// Image MIME types advertised by the reference, independent of whether the
+    /// reference is currently usable. Kept separate from the gated
+    /// ``acceptedReferenceMIMETypes`` so the usability checks (which read this)
+    /// do not depend on a gated value.
+    private var inputReferenceFormats: Set<String> {
+        guard let input = limits.inputReference else { return [] }
         return Set(input.formats.compactMap { format in
             switch format.lowercased() {
             case "jpeg", "jpg", "image/jpeg": "image/jpeg"
@@ -148,10 +177,30 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         })
     }
 
+    /// The `input_reference` limit is usable when the server advertises a
+    /// positive byte budget, at least one image MIME type this client can
+    /// produce, and (when declared) a positive pixel ceiling. A legacy
+    /// `accepted: false` (retired current-server field) explicitly disables it.
+    private var usableReferenceLimits: Bool {
+        guard let input = limits.inputReference,
+              input.accepted != false,
+              input.maximumBytes > 0,
+              !inputReferenceFormats.isEmpty else { return false }
+        return input.maximumPixels.map { $0 > 0 } ?? true
+    }
+
+    /// The image MIME types this client accepts for a reference image.
+    /// Non-empty only while the reference is present AND usable, so an
+    /// explicitly disabled (legacy `accepted: false`) or malformed reference
+    /// never advertises supported formats.
+    var acceptedReferenceMIMETypes: Set<String> {
+        usableReferenceLimits ? inputReferenceFormats : []
+    }
+
+    /// Image-to-video is enabled by the presence of a usable `input_reference`
+    /// limit object, not by a retired `accepted` boolean.
     var supportsImageInput: Bool {
-        modes.contains(.imageToVideo)
-            && referenceMaximumBytes > 0
-            && !acceptedReferenceMIMETypes.isEmpty
+        modes.contains(.imageToVideo) && usableReferenceLimits
     }
 
     /// Conservative, familiar output shapes. The API remains authoritative:
@@ -210,11 +259,21 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             ? [limits.seconds.default] : []
     }
 
+    /// The usable byte budget for an input reference image. Returns 0 unless the
+    /// reference limit is fully usable (positive byte budget, at least one image
+    /// MIME type, and a positive pixel ceiling when declared) so a disabled or
+    /// malformed reference never exposes a positive budget to callers.
     var referenceMaximumBytes: Int {
-        guard let inputReference = limits.inputReference,
-              inputReference.accepted,
-              inputReference.maximumBytes > 0 else { return 0 }
-        return min(inputReference.maximumBytes, VideoClient.maxReferenceBytes)
+        guard let input = limits.inputReference, usableReferenceLimits else { return 0 }
+        return min(input.maximumBytes, VideoClient.maxReferenceBytes)
+    }
+
+    /// Optional decoded-pixel ceiling advertised by the active server. Older
+    /// compatible servers omit it, in which case the byte limit remains the
+    /// only client-side bound and the server stays authoritative.
+    var referenceMaximumPixels: Int? {
+        guard let input = limits.inputReference, usableReferenceLimits else { return nil }
+        return input.maximumPixels
     }
 
     func validated() throws -> Self {
@@ -238,9 +297,19 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let fps = limits.fps
         let frames = limits.frames
         let workload = limits.workload
-        let validInput = limits.inputReference.map {
-            $0.maximumBytes >= 0
-                && (!$0.accepted || ($0.maximumBytes > 0 && !acceptedReferenceMIMETypes.isEmpty))
+        // A present input_reference must be either usable, or explicitly
+        // disabled by a legacy `accepted: false` (a transitional server that
+        // still sends the retired flag). Any other present-but-unusable
+        // reference misses the byte/formats/pixel limits and fails closed;
+        // absent is fine — it simply means text-to-video.
+        let validInput = limits.inputReference.map { reference in
+            reference.accepted == false
+                || (
+                    reference.maximumBytes > 0
+                        && !reference.formats.isEmpty
+                        && !acceptedReferenceMIMETypes.isEmpty
+                        && (reference.maximumPixels.map { $0 > 0 } ?? true)
+                )
         } ?? true
         guard !model.isEmpty,
               !family.isEmpty,
@@ -259,7 +328,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               frames.offset <= frames.maximum,
               workload.metric == "pixel_frames",
               workload.maximum > 0,
-              workload.dimensionRounding == "multiple_of_64",
+              workload.alignmentStep != nil,
               validInput else {
             throw VideoClientError.invalidResponse
         }
@@ -272,9 +341,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               seconds > 0,
               limits.fps.default > 0 else { return false }
         // Workload normalization is a separate server contract from the
-        // request-size alignment. This client validates only multiple_of_64.
-        guard let width = Self.roundUp(dimensions.width, to: 64),
-              let height = Self.roundUp(dimensions.height, to: 64) else { return false }
+        // request-size alignment. The rounding step is taken from the
+        // server-advertised dimension_rounding vocabulary (see WorkloadLimit).
+        guard let step = limits.workload.alignmentStep else { return false }
+        guard let width = Self.roundUp(dimensions.width, to: step),
+              let height = Self.roundUp(dimensions.height, to: step) else { return false }
         let frameStep = max(1, limits.frames.step)
         let frameOffset = limits.frames.offset
         guard frameOffset >= 0 else { return false }
