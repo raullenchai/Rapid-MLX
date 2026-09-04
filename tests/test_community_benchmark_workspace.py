@@ -874,6 +874,10 @@ def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run = _text_run()
+    assert (
+        community_cli._contributor_profile({"contributor": {"name": "", "tag": "abc"}})
+        is None
+    )
 
     class Archive:
         def get(self, run_id: str):
