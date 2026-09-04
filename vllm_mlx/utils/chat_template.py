@@ -1254,14 +1254,14 @@ def _is_definedness_guard(expr, tested: str, nodes) -> bool:
     if isinstance(expr, nodes.Not):
         inner = expr.node
         if isinstance(inner, nodes.Name):
-            return inner.name == tested
-        return (
+            return bool(inner.name == tested)
+        return bool(
             isinstance(inner, nodes.Test)
             and inner.name == "defined"
             and isinstance(inner.node, nodes.Name)
             and inner.node.name == tested
         )
-    return (
+    return bool(
         isinstance(expr, nodes.Test)
         and expr.name in ("undefined", "none")
         and isinstance(expr.node, nodes.Name)

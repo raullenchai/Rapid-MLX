@@ -508,6 +508,65 @@ class TestDetectionRequiresAValidationBlock:
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 
+    def test_a_bare_effort_test_makes_the_branch_path_constrained(self):
+        clause = (
+            "{%- if reasoning_effort %}"
+            "{%- if reasoning_effort not in ['a'] %}{{ raise_exception('z') }}"
+            "{%- endif %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            # the membership's left side is not a value-preserving name
+            "{%- if (reasoning_effort | upper) not in ['A'] %}"
+            "{{ raise_exception('z') }}{%- endif %}",
+            "{%- if 'x' not in ['a'] %}{{ raise_exception('z') }}{%- endif %}",
+            # the set mixes in a non-string / non-literal item
+            "{%- if reasoning_effort not in ['a', 1] %}"
+            "{{ raise_exception('z') }}{%- endif %}",
+            "{%- if reasoning_effort not in ['a', other] %}"
+            "{{ raise_exception('z') }}{%- endif %}",
+        ],
+    )
+    def test_ill_formed_membership_tests_publish_nothing(self, clause):
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "rebind",
+        [
+            # tuple unpacking on the path
+            "{%- set r, q = 'c', 'd' %}",
+            # tuple unpacking inside a skipped (effort-dependent) branch
+            "{%- if reasoning_effort == 'x' %}{%- set r, q = 'c', 'd' %}{%- endif %}",
+            # names bound by import / from-import (str and alias-tuple targets)
+            "{%- import 'x.jinja' as r %}",
+            "{%- from 'x.jinja' import r %}",
+            "{%- from 'x.jinja' import q as r %}",
+            # a tuple loop target
+            "{%- for r, q in items %}{%- endfor %}",
+        ],
+    )
+    def test_every_rebinding_shape_forgets_the_derived_name(self, rebind):
+        clause = (
+            "{%- set r = reasoning_effort %}" + rebind + "{%- if r not in ['a'] %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_without_jinja2_detection_publishes_nothing(self, monkeypatch):
+        from vllm_mlx.utils import chat_template as module
+
+        monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
+        module._template_parser.cache_clear()
+        module._native_reasoning_effort_levels_for_source.cache_clear()
+        try:
+            assert detect_native_reasoning_effort_levels(QWEN38_TEMPLATE) is None
+        finally:
+            module._template_parser.cache_clear()
+            module._native_reasoning_effort_levels_for_source.cache_clear()
+
     @pytest.mark.parametrize(
         "expr",
         [
