@@ -135,6 +135,53 @@ index 1111111..2222222 100644
  jobs:
 """
 
+# A second new test file, enrolled alongside the primary one — used by the
+# hunk-boundary fixture below so BOTH hunks carry a fully-legitimate
+# new-file enrollment under the (buggy) flat-list logic.
+_OTHER_NEW = "tests/test_first_new.py"
+_OTHER_NEW_DIFF = f"""\
+diff --git a/{_OTHER_NEW} b/{_OTHER_NEW}
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/{_OTHER_NEW}
+@@ -0,0 +1 @@
++pass
+
+"""
+
+# Regression for codex r1 #2 (hunk boundaries): the FIRST added line of a
+# later hunk is anchored ONLY if we ignore hunk boundaries. Hunk 1 is a real
+# roster append (context `tests/...py \` + added entry); hunk 2's first line
+# is a roster-shaped token placed OUTSIDE the roster — under the buggy flat
+# list it would inherit hunk 1's roster anchor and be misclassified. The new
+# code rejects any added line that opens its own hunk.
+_HUNK_BOUNDARY_DIFF = f"""\
+{_NEW_TEST_DIFF}{_OTHER_NEW_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -441 +441,2 @@
+             tests/test_mllm_hybrid_probe.py \\
++            {_OTHER_NEW} \\
+@@ -1 +2,2 @@
++            {_ENROLLED} \\
+"""
+
+# Regression for codex r1 #2 (opening pytest command must continue): a line
+# following a plain ``pytest -q`` (NO trailing backslash) runs as its own
+# shell command and does NOT open the multi-line roster, so an added
+# ``tests/foo.py \`` after it is not an enrollment.
+_NON_CONTINUING_PYTEST_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -354,1 +354,2 @@
+          pytest -q
++            {_ENROLLED} \\
+"""
+
 
 def _ctx(
     diff: str,
@@ -211,6 +258,27 @@ def test_roster_token_outside_roster_list_not_roster_only(tmp_path):
     though the token and new-file checks pass — it must NOT be downgraded."""
     roster_only, _ = _roster_only_workflows(
         _NON_ROSTER_CONTEXT_DIFF, {_WORKFLOW, _ENROLLED}
+    )
+    assert roster_only == set()
+
+
+def test_hunk_boundary_not_roster_only(tmp_path):
+    """Regression (codex r1 #2 / hunk boundaries): a roster token that is the
+    FIRST added line of its own hunk must not inherit an anchor from the
+    previous hunk's final roster line. Without this, a token placed outside
+    the roster could be misclassified and downgraded."""
+    roster_only, _ = _roster_only_workflows(
+        _HUNK_BOUNDARY_DIFF, {_WORKFLOW, _ENROLLED, _OTHER_NEW}
+    )
+    assert roster_only == set()
+
+
+def test_non_continuing_pytest_command_not_roster_only(tmp_path):
+    """Regression (codex r1 #2): an added ``tests/foo.py \\`` line directly
+    after a `pytest -q` command with NO continuation backslash is not in the
+    multi-line roster and must not be treated as an enrollment."""
+    roster_only, _ = _roster_only_workflows(
+        _NON_CONTINUING_PYTEST_DIFF, {_WORKFLOW, _ENROLLED}
     )
     assert roster_only == set()
 

@@ -120,11 +120,13 @@ def _roster_addition_path(content: str) -> str | None:
     return path
 
 
-# A ``run: |``-block command line that opens a pytest test roster, e.g.
-# ``          pytest \``. An enrollment is only trusted when it is anchored to
-# the explicit roster list — i.e. the line directly above it is itself a
-# roster entry or the ``pytest`` command that starts the list (codex r1 #2).
-_PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest(\s.*)?\\?\s*$")
+# The ``run: |``-block command that OPENS a pytest test roster, e.g.
+# ``          pytest \``. It must end with a continuation backslash: a
+# complete, non-continuing command like ``pytest -q`` runs as its own shell
+# invocation and does NOT open the multi-line ``tests/x.py \`` list (codex
+# r1 #2). An enrollment is only trusted when it is anchored to that list —
+# the line directly above it is another roster entry or this opening command.
+_PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest\b.*\\\s*$")
 
 
 def _roster_anchor(content: str) -> bool:
@@ -166,11 +168,15 @@ def _roster_only_workflows(
     # Collect every kind of line (context / added / removed) per workflow file,
     # in file order, so we can anchor an added roster line to the lines around
     # it (the roster list) rather than accepting the token anywhere in YAML.
-    per_file: dict[str, dict[str, list[str]]] = {
+    # Each entry is ``(marker, content, first_in_hunk)`` — the flag lets us
+    # refuse an anchor that would cross a ``@@`` hunk boundary (the line above
+    # may be a different region of the file).
+    per_file: dict[str, dict[str, list[tuple[str, str, bool]]]] = {
         f: {"lines": [], "added": [], "removed": []} for f in workflow_files
     }
     cur_path = ""
     in_hunk = False
+    first_in_hunk = False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
@@ -178,6 +184,7 @@ def _roster_only_workflows(
             continue
         if line.startswith("@@"):
             in_hunk = True  # everything after this is file content, not headers
+            first_in_hunk = True
             continue
         if cur_path not in per_file:
             continue
@@ -189,7 +196,8 @@ def _roster_only_workflows(
             continue
         marker = line[:1]
         if marker in (" ", "+", "-"):
-            per_file[cur_path]["lines"].append((marker, line[1:]))
+            per_file[cur_path]["lines"].append((marker, line[1:], first_in_hunk))
+            first_in_hunk = False
             if marker == "+":
                 per_file[cur_path]["added"].append(line[1:])
             elif marker == "-":
@@ -205,7 +213,7 @@ def _roster_only_workflows(
             continue  # no tracked change; stay conservative
         enrolled: list[str] = []
         ok = True
-        for i, (marker, content) in enumerate(block["lines"]):
+        for i, (marker, content, first_in_hunk) in enumerate(block["lines"]):
             if marker != "+":
                 continue
             p = _roster_addition_path(content)
@@ -217,9 +225,13 @@ def _roster_only_workflows(
                 ok = False
                 break
             # ...appended INTO the explicit roster list: the line directly
-            # above it is a roster entry or the opening ``pytest \`` command,
-            # not a top-level YAML scalar or an unrelated ``run:`` block.
-            prev = block["lines"][i - 1][1] if i > 0 else ""
+            # above it (WITHIN the same hunk) is a roster entry or the
+            # opening ``pytest \`` command — never a top-level YAML scalar,
+            # an unrelated ``run:`` block, or a different region of the file.
+            if first_in_hunk:
+                ok = False  # no valid in-hunk anchor; stay conservative
+                break
+            prev = block["lines"][i - 1][1]
             if not _roster_anchor(prev):
                 ok = False
                 break
