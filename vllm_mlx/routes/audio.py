@@ -1939,6 +1939,11 @@ def _align_blocking(
         align_kwargs["language"] = language
 
     _load_aligner_blocking(model_name)
+    # The loader guarantees the aligner is resident by this point: it publishes
+    # the engine on the worker thread and any load failure propagates out of
+    # ``_load_aligner_blocking`` before we reach here, so ``_aligner_engine``
+    # is never ``None`` at the call site below.
+    assert _aligner_engine is not None
     from ..runtime.audio_worker import run_audio_mlx_sync
 
     return run_audio_mlx_sync(
