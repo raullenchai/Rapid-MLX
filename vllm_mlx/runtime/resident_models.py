@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import gc
 import logging
 import re
@@ -24,6 +25,97 @@ _QUANT_RE = re.compile(r"(?<!\d)(2|3|4|6|8|16)[-]?bit", re.IGNORECASE)
 
 class ResidentModelError(RuntimeError):
     """Base class for resident-model control-plane failures."""
+
+
+class ResidentRole(str, enum.Enum):
+    """Closed set of roles the shared residency lifecycle can budget.
+
+    The shared process residency ceiling is owned by the manager and must be
+    able to reject an unsafe admission *before* any weights load, with a
+    conflict that names the resident roles involved. Non-exhaustive open
+    strings would let an unknown lane charge the ceiling or let a consumer
+    guess at roles that were never defined, so every role string entering
+    :meth:`ResidentModelManager.admit_role` / ``release_role`` is coerced to
+    this closed enum before touching the ledger.
+
+    Wire values preserve the legacy reservation strings (``"alignment"`` and
+    the dash-form ``"speech-input"`` used by the forced-alignment route's
+    ``release_exclusive_role``) so existing callers keep working unchanged.
+    """
+
+    ASSISTANT = "assistant"
+    SPEECH_INPUT = "speech-input"
+    SPEECH_OUTPUT = "speech-output"
+    ALIGNMENT = "alignment"
+    IMAGE_GENERATION = "image-generation"
+    VIDEO_GENERATION = "video-generation"
+
+    @classmethod
+    def coerce(cls, value: ResidentRole | str | None) -> ResidentRole | None:
+        """Validate a role string against the closed set.
+
+        Accepts a ``ResidentRole`` member, a member's dash-form wire value, or
+        the canonical underscore alias (e.g. ``speech_input``); raises
+        ``ResidentModelError`` for any other string rather than silently
+        admitting an unknown lane. ``None`` (the assistant/replacement path)
+        maps to ``None``.
+        """
+        if value is None or isinstance(value, ResidentRole):
+            return value
+        if not isinstance(value, str):
+            raise ResidentModelError(
+                f"invalid role {value!r}: expected one of "
+                f"{sorted(member.value for member in cls)}"
+            )
+        member = (
+            cls(value)
+            if value in cls._value2member_map_
+            else _ROLE_INPUT_ALIASES.get(value)
+        )
+        if member is None:
+            raise ResidentModelError(
+                f"unknown resident role {value!r}: must be one of "
+                f"{sorted(member.value for member in cls)}"
+            )
+        return member
+
+
+# Server-declared VALID recovery actions per role, the stable contract the
+# typed 507 envelope exposes so the downstream UX (#2306) can offer the user
+# concrete, actionable choices instead of guessing at capacity or deriving
+# roles from model aliases. Owned here (data-driven) rather than re-derived
+# by callers; the manager pulls from this one table.
+_ALLOWED_RECOVERY_ACTIONS: dict[ResidentRole, tuple[str, ...]] = {
+    ResidentRole.SPEECH_INPUT: (
+        "select_smaller_speech_input",
+        "stop_speech_output",
+        "unload_assistant",
+    ),
+    ResidentRole.SPEECH_OUTPUT: ("stop_speech_output",),
+    ResidentRole.ALIGNMENT: ("unload_assistant",),
+    ResidentRole.ASSISTANT: (),
+    ResidentRole.IMAGE_GENERATION: (),
+    ResidentRole.VIDEO_GENERATION: (),
+}
+
+
+def _recovery_actions_for(role: ResidentRole) -> list[str]:
+    """Return the server-declared recovery actions for a validated role."""
+    return list(_ALLOWED_RECOVERY_ACTIONS[role])
+
+
+# Canonical underscore aliases accepted on role input (e.g. ``speech_input``)
+# alongside the dash-form wire values, so callers may use either without
+# silently inventing a role. Kept OUTSIDE the enum class: a ``str``-mixin enum
+# auto-converts a class-level dict of strings into an unexpected member.
+_ROLE_INPUT_ALIASES: dict[str, ResidentRole] = {
+    "assistant": ResidentRole.ASSISTANT,
+    "speech_input": ResidentRole.SPEECH_INPUT,
+    "speech_output": ResidentRole.SPEECH_OUTPUT,
+    "alignment": ResidentRole.ALIGNMENT,
+    "image_generation": ResidentRole.IMAGE_GENERATION,
+    "video_generation": ResidentRole.VIDEO_GENERATION,
+}
 
 
 class ResidentModelCapacityError(ResidentModelError):
@@ -50,6 +142,8 @@ class ResidentModelCapacityError(ResidentModelError):
         limit_bytes: int | None = None,
         used_bytes: int | None = None,
         requested_role: str | None = None,
+        resident_roles: list[dict[str, object]] | None = None,
+        recovery_actions: list[str] | None = None,
     ) -> None:
         self.replacement_projection = replacement_projection
         self.reason = reason
@@ -57,6 +151,8 @@ class ResidentModelCapacityError(ResidentModelError):
         self.limit_bytes = limit_bytes
         self.used_bytes = used_bytes
         self.requested_role = requested_role
+        self.resident_roles = resident_roles
+        self.recovery_actions = recovery_actions
         super().__init__(message)
 
     def envelope(self) -> dict[str, object]:
@@ -65,6 +161,11 @@ class ResidentModelCapacityError(ResidentModelError):
         Populated only when the error was raised from ``admit_role`` (role
         fields present). A legacy replacement/assistant capacity error has no
         typed role envelope — its caller keeps using ``replacement_projection``.
+
+        The role envelope is ADDITIVE-SAFE: consumers that cannot parse the
+        newer role fields keep working from ``reason``/bytes, while consumers
+        that can parse them use ``requested_role`` / ``resident_roles`` /
+        ``recovery_actions`` without guessing capacity or deriving roles.
         """
         if self.reason is None:
             return {
@@ -75,18 +176,24 @@ class ResidentModelCapacityError(ResidentModelError):
                     "param": "model",
                 }
             }
-        return {
-            "error": {
-                "message": str(self),
-                "type": "insufficient_capacity_error",
-                "code": "insufficient_capacity_error",
-                "reason": self.reason,
-                "param": "model",
-                "requested_bytes": self.requested_bytes,
-                "limit_bytes": self.limit_bytes,
-                "used_bytes": self.used_bytes,
-            }
+        envelope: dict[str, object] = {
+            "message": str(self),
+            "type": "insufficient_capacity_error",
+            "code": "insufficient_capacity_error",
+            "reason": self.reason,
+            "param": "model",
+            "requested_bytes": self.requested_bytes,
+            "limit_bytes": self.limit_bytes,
+            "used_bytes": self.used_bytes,
+            "requested_role": self.requested_role,
+            "resident_roles": self.resident_roles
+            if self.resident_roles is not None
+            else [],
+            "recovery_actions": self.recovery_actions
+            if self.recovery_actions is not None
+            else [],
         }
+        return {"error": envelope}
 
 
 class ResidentModelBusyError(ResidentModelError):
@@ -685,6 +792,73 @@ class ResidentModelManager:
         # force until the actual process footprint grows past it.
         return max(measured, reserved)
 
+    def _coerce_role(self, role: str | ResidentRole | None) -> ResidentRole | None:
+        """Validate a role against the closed enum before it touches the ledger.
+
+        Central location so every role string entering ``admit_role`` /
+        ``release_role`` — and thus ``self._roles`` — is checked against the
+        closed set rather than silently accepted.
+        """
+        return ResidentRole.coerce(role)
+
+    def _resident_roles_snapshot(self) -> list[dict[str, object]]:
+        """Snapshot every live role charged by the typed 507 envelope.
+
+        Capacity accounting combines registry-backed models in ``_records``
+        with auxiliary reservations in ``_roles``. The conflict envelope must
+        describe that same set; otherwise it can recommend unloading the
+        assistant while omitting the assistant from ``resident_roles``.
+        """
+
+        def model_role(record: ResidencyRecord) -> str:
+            group = _replacement_group(record.entry)
+            return {
+                "image-gen": ResidentRole.IMAGE_GENERATION.value,
+                "video-gen": ResidentRole.VIDEO_GENERATION.value,
+            }.get(group, group)
+
+        model_roles = [
+            {
+                "role": model_role(record),
+                "model_id": record.model_id,
+                "reserved_bytes": max(
+                    record.estimated_bytes,
+                    record.measured_bytes,
+                ),
+                "state": record.state,
+            }
+            for record in self._records.values()
+        ]
+        retiring_roles = [
+            {
+                "role": model_role(retirement.record),
+                "model_id": retirement.record.model_id,
+                "reserved_bytes": max(
+                    retirement.record.estimated_bytes,
+                    retirement.record.measured_bytes,
+                ),
+                "state": retirement.state,
+            }
+            for retirement in self._retiring.values()
+        ]
+        auxiliary_roles = [
+            {
+                "role": record.role,
+                "model_id": record.model_id,
+                "reserved_bytes": record.reserved_bytes,
+                "state": record.state,
+            }
+            for record in self._roles.values()
+        ]
+        return sorted(
+            [*model_roles, *retiring_roles, *auxiliary_roles],
+            key=lambda item: (str(item["role"]), str(item["model_id"])),
+        )
+
+    def _recovery_actions_for(self, role: ResidentRole) -> list[str]:
+        """Return the server-declared recovery actions for a role."""
+        return _recovery_actions_for(role)
+
     def contains(self, model_name: str) -> bool:
         return self._canonical(model_name) is not None
 
@@ -794,7 +968,7 @@ class ResidentModelManager:
         ):
             candidates = self._eviction_candidates_locked(exclude)
             if not candidates:
-                usage = max(0, self._accounted_usage() - usage_credit_bytes)
+                usage = self._accounted_usage()
                 if requested_role is None:
                     raise ResidentModelCapacityError(
                         "resident model memory ceiling exceeded: "
@@ -803,6 +977,8 @@ class ResidentModelManager:
                         f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
                         "no idle unpinned model is eligible for eviction"
                     )
+                coerced_role = self._coerce_role(requested_role)
+                assert coerced_role is not None
                 raise ResidentModelCapacityError(
                     (
                         "insufficient capacity for role "
@@ -817,6 +993,8 @@ class ResidentModelManager:
                     limit_bytes=self.memory_limit_bytes,
                     used_bytes=usage,
                     requested_role=requested_role,
+                    resident_roles=self._resident_roles_snapshot(),
+                    recovery_actions=self._recovery_actions_for(coerced_role),
                 )
             await self._evict_locked(candidates[0], reason="memory_pressure")
 
@@ -880,6 +1058,22 @@ class ResidentModelManager:
         and the configured ceiling is never breached by a restore.
         """
 
+        # Validate every role string against the closed enum BEFORE it touches
+        # the ledger: an unknown lane must never charge the shared ceiling or
+        # read the ledger under a role the lifecycle does not own.
+        coerced_role = self._coerce_role(role)
+        assert coerced_role is not None  # role is required for role admission
+        # Store only the enum wire value.  Merely validating an accepted alias
+        # is insufficient: keeping ``speech_input`` as a dictionary key would
+        # let a later ``speech-input`` admission create a second reservation
+        # for the same logical role, and release through the other spelling
+        # would miss it.
+        role = coerced_role.value
+        coerced_exclusive_role = self._coerce_role(release_exclusive_role)
+        release_exclusive_role = (
+            coerced_exclusive_role.value if coerced_exclusive_role is not None else None
+        )
+
         async with self._lock:
             previous = self._roles.get(role)
             # Capture the mutually-exclusive sibling WITHOUT removing it. The
@@ -918,7 +1112,7 @@ class ResidentModelManager:
                     if exclusive_sibling is not None
                     else 0
                 )
-                used = max(0, self._accounted_usage() - usage_credit)
+                used = self._accounted_usage()
                 if self.memory_limit_bytes > 0 and requested_bytes is None:
                     raise ResidentModelCapacityError(
                         (
@@ -932,6 +1126,8 @@ class ResidentModelManager:
                         limit_bytes=self.memory_limit_bytes,
                         used_bytes=used,
                         requested_role=role,
+                        resident_roles=self._resident_roles_snapshot(),
+                        recovery_actions=self._recovery_actions_for(coerced_role),
                     )
                 reserved_bytes = max(0, int(requested_bytes or 0))
                 await self._evict_for_locked(
@@ -1066,8 +1262,13 @@ class ResidentModelManager:
     async def release_role(self, role: str) -> None:
         """Stop charging a role after its owning lane released the engine."""
 
+        # Gate release against the closed enum too: an unknown role must not be
+        # silently popped (which would imply the lifecycle owned a lane it never
+        # defined), keeping ``_roles`` consistent with the closed role set.
+        coerced_role = self._coerce_role(role)
+        assert coerced_role is not None  # role is required for release
         async with self._lock:
-            self._roles.pop(role, None)
+            self._roles.pop(coerced_role.value, None)
 
     async def load(
         self,
