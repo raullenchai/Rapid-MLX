@@ -90,6 +90,60 @@ enum DevSnapshot {
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
         let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
+        if ProcessInfo.processInfo.environment["RAPID_DEV_RESIDENCY_ONLY"] == "1" {
+            let model = ResidentModelStatus(
+                id: "qwen3.5-4b-4bit",
+                modelPath: "mlx-community/qwen3.5-4b-4bit",
+                aliases: ["qwen3.5-4b-4bit"],
+                modality: "text",
+                state: "resident",
+                pinned: true,
+                primary: true,
+                activeRequests: 0,
+                estimatedBytes: 6_335_076_762,
+                measuredBytes: nil,
+                idleSeconds: 12
+            )
+            let previewServer = ServerManager(
+                testingState: .ready(alias: model.id),
+                binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
+                residency: ModelResidencySnapshot(
+                    memoryLimitBytes: 15_032_385_536,
+                    memoryUsedBytes: 6_335_076_762,
+                    memoryAvailableBytes: 8_697_308_774,
+                    idleTTLSeconds: 900,
+                    loadsTotal: 1,
+                    evictionsTotal: 0,
+                    models: [model]
+                )
+            )
+            func sidebar() -> AnyView {
+                AnyView(
+                    SidebarView(
+                        selection: .constant(.chat),
+                        chat: chat,
+                        onNewChat: {},
+                        onSelectConversation: { _ in },
+                        server: previewServer
+                    )
+                    .frame(width: SidebarView.columnIdealWidth, height: 640)
+                    .background(RapidTheme.surfaceSidebar)
+                    .tint(RapidTheme.brandAmber)
+                )
+            }
+            let size = CGSize(width: SidebarView.columnIdealWidth, height: 640)
+            renderHosted(
+                sidebar(), size: size, appearance: .aqua,
+                to: "\(dir)/resident-unload-sidebar-light.png"
+            )
+            renderHosted(
+                sidebar(), size: size, appearance: .darkAqua,
+                to: "\(dir)/resident-unload-sidebar-dark.png"
+            )
+            NSApp.terminate(nil)
+            return
+        }
+
         // Focused gate regression: render only the shipping sidebar and quit.
         // The full snapshot matrix is intentionally broad and takes minutes;
         // this lane gives feature-gate work a fast, deterministic visual proof
