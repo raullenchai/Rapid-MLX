@@ -304,11 +304,10 @@ class ResidentRoleAdmission:
 
         Called by the alignment lane the INSTANT the ASR engine evicted by
         ``_evict_other_lane_sync("aligner")`` is actually gone. After this
-        point the retired ``speech-input`` reservation points at a phantom
-        engine, so the rollback must NOT restore it — restoring would charge
-        a resident engine that no longer exists. Before the discard the
-        sibling may still be resident (a re-admission failure before the
-        eviction dropped nothing), so restoration stays correct until then.
+        point the retained ``speech-input`` reservation points at a phantom
+        engine, so a rollback must DROP it rather than leave a charge for an
+        engine that no longer exists. Before the discard the sibling is still
+        its engine's true reservation and stays in the ledger.
         """
         self.exclusive_retired = True
 
@@ -748,35 +747,38 @@ class ResidentModelManager:
         :meth:`ResidentRoleAdmission.retire_previous`.
 
         ``release_exclusive_role`` adds a SECOND mutually-exclusive auxiliary
-        role to the same atomic transaction. The named role's current
-        reservation (``self._roles`` — the real auxiliary ledger, never the
-        ``snapshot()`` projection) is retired up front so the new role is not
-        double-charged against the ceiling (e.g. alignment retiring the
-        dictation ``speech-input`` role whose ASR engine the aligner evicts).
-        The release and the new role's admission happen under the SAME
-        ``self._lock`` critical section. The manager lock is NOT held across
-        the yielded load (a seconds-long weight load), so a concurrent
-        admission may consume the freed capacity in that window; on
-        failure/cancellation the rollback therefore re-runs capacity
-        enforcement ATOMICALLY under the lock before restoring the retired
-        reservation — restoration is skipped if it would exceed the ceiling
-        (or if the caller signaled :meth:`ResidentRoleAdmission.retire_exclusive`,
-        meaning the sibling's engine was already discarded). On success the
-        retired reservation stays retired.
+        role to the same transaction (e.g. alignment retiring the dictation
+        ``speech-input`` role whose ASR engine the aligner evicts). The
+        sibling's reservation is RETAINED in ``self._roles`` — the real
+        auxiliary ledger, never the ``snapshot()`` projection — for the whole
+        transaction and its bytes are CREDITED against the new role's admission,
+        so the two are never double-charged (no false 507) yet no concurrent
+        admission can consume the sibling's capacity (no steal window). The new
+        role's admission and the sibling's retention happen under the SAME
+        ``self._lock`` critical section. On success (commit) — including a load
+        that finished under cancellation — the sibling is retired when the
+        aligner evicts its engine. On failure/cancellation the sibling stays in
+        the ledger (matching its still-resident engine) unless the load evicted
+        it first, in which case the caller's
+        :meth:`ResidentRoleAdmission.retire_exclusive` signal drops the now
+        phantom reservation. A still-resident engine is never left unaccounted,
+        and the configured ceiling is never breached by a restore.
         """
 
         async with self._lock:
             previous = self._roles.get(role)
-            # Retire the mutually-exclusive sibling's reservation ATOMICALLY
-            # with this admission. ``self._roles`` is the authoritative
-            # auxiliary-role ledger (in contrast to ``snapshot()["roles"]``,
-            # which mixes in synthesized projection entries for ordinary
-            # models and would let a caller release the wrong thing / a
-            # non-reservation). The retired reservation is captured here and
-            # either restored on rollback or confirmed-stale on commit.
-            released_exclusive = None
+            # Capture the mutually-exclusive sibling WITHOUT removing it. The
+            # sibling's reservation is RETAINED in ``_roles`` for the whole
+            # transaction — its bytes stay accounted, so NO concurrent admission
+            # can consume them and a rollback can never be forced to choose
+            # between an unaccounted engine and an over-ceiling ledger (pr_validate
+            # round-19). ``self._roles`` is the authoritative auxiliary-role
+            # ledger (in contrast to ``snapshot()["roles"]``, which mixes in
+            # synthesized projection entries for ordinary models and would let a
+            # caller release the wrong thing / a non-reservation).
+            exclusive_sibling = None
             if release_exclusive_role is not None and release_exclusive_role != role:
-                released_exclusive = self._roles.pop(release_exclusive_role, None)
+                exclusive_sibling = self._roles.get(release_exclusive_role)
             try:
                 if previous is not None and not replace_existing:
                     raise ResidentModelError(f"role {role!r} is already resident")
@@ -790,7 +792,17 @@ class ResidentModelManager:
                     raise ResidentModelError(
                         f"role {role!r} already has a loading admission in flight"
                     )
-                usage_credit = previous.reserved_bytes if previous is not None else 0
+                # Credit the new role against BOTH the same-role previous and the
+                # retained mutually-exclusive sibling: the aligner admission nets
+                # out the ASR engine bytes it will evict, so it is not falsely
+                # rejected while the ASR engine is still resident.
+                usage_credit = (
+                    previous.reserved_bytes if previous is not None else 0
+                ) + (
+                    exclusive_sibling.reserved_bytes
+                    if exclusive_sibling is not None
+                    else 0
+                )
                 used = max(0, self._accounted_usage() - usage_credit)
                 if self.memory_limit_bytes > 0 and requested_bytes is None:
                     raise ResidentModelCapacityError(
@@ -825,18 +837,20 @@ class ResidentModelManager:
                 admission = ResidentRoleAdmission(record=record, previous=previous)
             except BaseException:
                 # Any failure BEFORE admission is decided (capacity error,
-                # invariant conflict) must not leave the retired exclusive role
-                # unaccounted — restore it exactly as it was captured, atomically
-                # under this same lock, before the error propagates.
-                if released_exclusive is not None:
-                    self._roles[release_exclusive_role] = released_exclusive
+                # invariant conflict) leaves the retained sibling untouched in
+                # ``_roles`` — nothing to restore, nothing leaked.
                 raise
         try:
             yield admission
         except BaseException:
             if admission.committed:
                 # The engine was already published on the model worker (e.g.
-                # the load finished under cancellation); keep it accounted.
+                # the load finished under cancellation); keep it accounted. The
+                # successful load evicted the ASR engine -> drop the retained
+                # (by now phantom) sibling reservation.
+                async with self._lock:
+                    if exclusive_sibling is not None:
+                        self._roles.pop(release_exclusive_role, None)
                 raise
             async with self._lock:
                 if self._roles.get(role) is record:
@@ -844,38 +858,24 @@ class ResidentModelManager:
                         self._roles[role] = previous
                     else:
                         self._roles.pop(role, None)
-                # Restore the retired exclusive role's reservation ATOMICALLY
-                # with this rollback — but ONLY within the configured ceiling.
-                # The sibling's bytes were freed for the duration of the yielded
-                # load (to avoid a false 507 while the aligner would evict the
-                # ASR engine), and the manager lock is NOT held across that
-                # load, so a concurrent admission may legitimately have consumed
-                # the freed capacity. Re-running capacity enforcement here
-                # (under the lock, after the alignment record above is removed)
-                # means restoration cannot push the ledger past ``memory_limit``:
-                # if it would, the sibling stays retired and its engine is left
-                # unaccounted rather than exceeding the hard ceiling. ``setdefault``
-                # also never clobbers a GENUINELY newer reservation for the role
-                # (whose owner is authoritative). And if the caller signaled
-                # ``retire_exclusive`` — the instant the sibling's engine was
-                # actually discarded, restoring would charge a phantom engine
-                # that no longer exists — it stays retired regardless.
-                if (
-                    released_exclusive is not None
-                    and not admission.exclusive_retired
-                    and (
-                        self.memory_limit_bytes <= 0
-                        or self._accounted_usage() + released_exclusive.reserved_bytes
-                        <= self.memory_limit_bytes
-                    )
-                ):
-                    self._roles.setdefault(release_exclusive_role, released_exclusive)
+                # The retained sibling was never removed, so it needs no
+                # "restore". If the load evicted its engine before failing
+                # (``retire_exclusive`` -> ``exclusive_retired`` — the round-18
+                # case), the reservation now guards a phantom engine and must be
+                # dropped; otherwise it stays charged, exactly matching its
+                # still-resident engine.
+                if exclusive_sibling is not None and admission.exclusive_retired:
+                    self._roles.pop(release_exclusive_role, None)
             raise
         else:
             async with self._lock:
                 if self._roles.get(role) is record:
                     record.state = "resident"
                     record.loaded_at = self._clock()
+                # Success: the aligner loaded and evicted the ASR engine ->
+                # retire the retained sibling reservation.
+                if exclusive_sibling is not None:
+                    self._roles.pop(release_exclusive_role, None)
 
     async def release_role(self, role: str) -> None:
         """Stop charging a role after its owning lane released the engine."""

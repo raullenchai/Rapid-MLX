@@ -3384,13 +3384,15 @@ async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
     assert speech["reserved_bytes"] == small
 
 
-async def test_alignment_role_release_exclusive_restore_is_capacity_enforced():
-    """pr_validate codex BLOCKING (round-19): the manager lock is NOT held
-    across the yielded aligner load, so a CONCURRENT admission can consume the
-    capacity freed by retiring ``speech-input``. On rollback the retired
-    reservation is restored only within the configured ceiling — if re-adding
-    it would exceed ``memory_limit`` (because another model legitimately took
-    the freed headroom), it stays retired rather than violating the ceiling."""
+async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load():
+    """pr_validate codex BLOCKING (round-19/21): the manager lock is NOT held
+    across the yielded aligner load, so the mutually-exclusive sibling's
+    capacity could be STOLEN by a concurrent admission if it were released
+    up front. Instead the sibling reservation is RETAINED (credited against the
+    aligner, never freed), so a concurrent admission CANNOT claim its bytes:
+    it is rejected with 507 while the aligner loads, and the rollback leaves
+    the sibling's still-resident engine correctly accounted — no unaccounted
+    engine and no over-ceiling ledger."""
     manager, _ = role_manager_fixture(limit_gib=1.0)
     GIB = 1024**3
     speech = int(0.4 * GIB)
@@ -3415,10 +3417,10 @@ async def test_alignment_role_release_exclusive_restore_is_capacity_enforced():
         pass
     assert manager._accounted_usage() == other + speech
 
-    # Enter alignment (retires speech-input -> frees 0.4; aligner 0.3 fits).
-    # During the yielded LOAD (lock released) a concurrent admission claims the
-    # freed headroom: a second role consuming almost all remaining capacity.
-    with pytest.raises(RuntimeError, match="load failed"):
+    # Enter alignment (speech-input retained + credited, so no false 507 and
+    # no freed capacity). During the yielded LOAD a concurrent admission wants
+    # the sibling's bytes, but they are RETAINED -> it cannot fit -> 507.
+    with pytest.raises(ResidentModelCapacityError):
         async with manager.admit_role(
             role="alignment",
             model_id="qwen3-aligner",
@@ -3435,10 +3437,12 @@ async def test_alignment_role_release_exclusive_restore_is_capacity_enforced():
                 pass
             raise RuntimeError("load failed")
 
+    # The concurrent tts-extra admission was REJECTED (sibling capacity
+    # retained), so on rollback the ledger is exactly as before the aligner:
+    # speech-input restored (its engine is still resident) + tts, alignment gone.
     roles = {r["role"] for r in manager.snapshot()["roles"]}
     assert "alignment" not in roles
-    assert "tts" in roles and "tts-extra" in roles
-    # speech-input was NOT restored: its freed capacity was consumed by the
-    # concurrent tts-extra admission, so restoring it would breach the ceiling.
-    assert "speech-input" not in roles
-    assert manager._accounted_usage() == other + concurrent
+    assert "tts" in roles
+    assert "tts-extra" not in roles
+    assert "speech-input" in roles  # retained + credited, its engine accounted
+    assert manager._accounted_usage() == other + speech

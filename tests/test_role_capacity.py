@@ -185,10 +185,18 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
 
     class _BareSafeTensorNoIndexRepo:
         repo_id = "c/BareSafeTensorModel"
-        # A single, ordinarily-named .safetensors with NO index (round-15):
-        # it could be one weight of several in a selective download, so we
-        # cannot prove completeness -> fail closed.
+        # A CANONICAL single-file .safetensors (`model.safetensors`) with NO
+        # index (round-21): an unsharded checkpoint is published under this
+        # verbatim name, and a sharded download never uses it, so a lone
+        # canonical file is the WHOLE checkpoint -> charged, not rejected.
         revisions = (_Rev(refs={"main"}, files=(("model.safetensors", 9900),)),)
+
+    class _NonCanonicalWeightNoIndexRepo:
+        repo_id = "c/NonCanonicalWeightModel"
+        # A NON-canonical single weight (`encoder-1.bin`) with no index could
+        # be one piece of a selective multi-file download -> still fails closed
+        # (only canonical names prove an unsharded checkpoint).
+        revisions = (_Rev(refs={"main"}, files=(("encoder-1.bin", 5000),)),)
 
     class _ShardedGgufNoIndexRepo:
         repo_id = "c/ShardedGgufModel"
@@ -261,6 +269,7 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
             _CompleteRepo,
             _OldCompletedPlusPartialRepo,
             _BareSafeTensorNoIndexRepo,
+            _NonCanonicalWeightNoIndexRepo,
             _ShardedGgufNoIndexRepo,
             _ShardedCompleteRepo,
             _ShardedIncompleteRepo,
@@ -289,7 +298,12 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     assert "c/nondefaultmodel" not in index
     # A shard-PATTERNED weight with no index is an incomplete download -> fail closed.
     assert "c/shardednoindexmodel" not in index
-    # A bare .safetensors with NO index cannot be proven complete -> fail closed.
-    assert "c/baresafetensormodel" not in index
+    # A CANONICAL single-file .safetensors (`model.safetensors`) is the WHOLE
+    # unsharded checkpoint -> charged its actual bytes (round-21).
+    assert index["c/baresafetensormodel"] == 9900
+    # A NON-canonical single weight with no index could be a piece of a
+    # selective download -> fails closed (only canonical names prove a whole
+    # unsharded checkpoint).
+    assert "c/noncanonicalweightmodel" not in index
     # A SPLIT GGUF without a proven full shard set fails closed.
     assert "c/shardedggufmodel" not in index

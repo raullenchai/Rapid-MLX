@@ -139,9 +139,14 @@ def _revision_is_complete(rev) -> bool:
       * a shard-PATTERNED weight file (``*-NNNNN-of-MMMMM.safetensors`` /
         ``*.bin``) with NO readable index is an incomplete multi-shard download
         → fail closed, never charge a fraction;
-      * otherwise an irreducible single-file weight (``*.gguf``, a bare
-        non-shard ``*.safetensors``/``*.bin``, ``*.npz``/``*.npy``) needs no
-        cross-file verification.
+      * otherwise a fully resident single-file layout is verifiably complete
+        when it carries a canonical single-file weight: ``*.gguf`` (GGUF is
+        always one self-contained file) or a canonical unsharded name
+        (``model.safetensors``, ``pytorch_model.bin``, ``model.bin``,
+        ``model.npz``, ``model.npy``) — a sharded download never uses those
+        plain names, so a lone canonical file is the WHOLE checkpoint; any
+        other bare weight name could be one piece of a selective download and
+        still fails closed.
     """
     files = {f.file_name.lower() for f in rev.files}
 
@@ -186,12 +191,28 @@ def _revision_is_complete(rev) -> bool:
         )
         return False
 
-    # With NO shard index, the only layout we can charge with confidence is a
-    # NON-SPLIT single-file GGUF weight (split GGUFs named ``-NNNNN-of-MMMMM``
-    # are excluded above). A bare ``.safetensors``/``.bin``/``.npz`` -- even
-    # non-shard-pattern -- could be one ordinarily-named weight of several in a
-    # selective download, so we fail closed unless an index proves the full set.
-    return any(name.endswith(".gguf") for name in files)
+    # With NO shard index, a ref-bound snapshot is complete when it holds ONE
+    # self-contained weight via a CANONICAL single-file name. GGUF is always a
+    # single self-contained file. A canonical unsharded name (`model.safetensors`,
+    # `pytorch_model.bin`, `model.bin`, `model.npz`, `model.npy`) means the
+    # checkpoint was published unsharded — a sharded download names its shards
+    # `model-00001-of-000XX.*`, never a plain canonical name (those were already
+    # rejected above), so a lone canonical file is the WHOLE checkpoint, not a
+    # piece of a selective download. Any other single weight name (e.g.
+    # `encoder-1.bin`) could be one of several in a selective download, so it
+    # still fails closed unless an index proves the full set (pr_validate
+    # round-21: a fully-cached canonical single-file checkpoint must not be
+    # falsely rejected as unknown).
+    canonical_single_file = {
+        "model.safetensors",
+        "pytorch_model.bin",
+        "model.bin",
+        "model.npz",
+        "model.npy",
+    }
+    return any(name.endswith(".gguf") for name in files) or any(
+        name in canonical_single_file for name in files
+    )
 
 
 def _default_completed_revision(revisions):

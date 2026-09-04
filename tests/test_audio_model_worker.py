@@ -1335,10 +1335,11 @@ async def test_admitting_alignment_releases_resident_speech_input_role(
     monkeypatch,
 ):
     """pr_validate codex BLOCKING (round-12/14): alignment and the dictation
-    STT lane are mutually exclusive, so a resident ``speech-input`` reservation
-    must be released BEFORE the alignment capacity admission — otherwise the
-    ledger charges both roles and can false-507 even though loading the aligner
-    would immediately drop the ASR engine."""
+    STT lane are mutually exclusive, so the resident ``speech-input``
+    reservation must not be DOUBLE-CHARGED with the alignment role — otherwise
+    the ledger can false-507 even though loading the aligner would immediately
+    drop the ASR engine. The sibling is RETAINED through the admission but
+    CREDITED against the alignment capacity check, and retired on success."""
 
     from vllm_mlx.routes import audio as audio_route
 
@@ -1355,13 +1356,18 @@ async def test_admitting_alignment_releases_resident_speech_input_role(
         pass
     assert [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
 
-    # Entering alignment admission must release the speech-input reservation so
-    # only the alignment role is charged against the ceiling.
+    # Entering alignment admission admits the aligner WITHOUT double-charging
+    # (the retained speech-input bytes are credited, so no false 507) and
+    # commits on success with the ASR-aligned sibling retired.
     async with audio_route._admitting_alignment("qwen3-aligner") as admission:
-        roles = {r["role"] for r in manager.snapshot()["roles"]}
-        assert "speech-input" not in roles
-        assert "alignment" in roles
         assert admission is not None
+        # Retained (still its engine's true reservation) but credited against
+        # the aligner, so only the aligner's NET bytes consumed headroom.
+        assert "alignment" in {r["role"] for r in manager.snapshot()["roles"]}
+    # After success the aligner evicted the ASR engine, so the sibling retired.
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" not in roles
+    assert "alignment" in roles
 
 
 @pytest.mark.asyncio
