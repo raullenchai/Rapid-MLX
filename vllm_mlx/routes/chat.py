@@ -3260,7 +3260,13 @@ def _salvage_forced_scalar_arguments(
         if isinstance(value, (str,)) and not isinstance(value, bool):
             return json.dumps({prop: value})
         return None
-    if ptype in ("integer", "number"):
+    if ptype == "integer":
+        if isinstance(value, bool):
+            return None  # never coerce bool → number
+        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
+            return json.dumps({prop: int(value)})
+        return None  # a non-integer float cannot satisfy an integer property
+    if ptype == "number":
         if isinstance(value, bool):
             return None  # never coerce bool → number
         if isinstance(value, (int, float)):

@@ -122,6 +122,19 @@ class TestSalvageForcedScalarArguments:
         out = _salvage_forced_scalar_arguments("temperature", "72", [_NUM])
         assert json.loads(out) == {"degrees": 72}
 
+    def test_fractional_float_rejected_for_integer_prop(self):
+        # codex NIT round-5: a non-integer float would fail integer validation;
+        # refuse to salvage it (fail closed).
+        int_tool = _tool("temperature", ["degrees"], ptype="integer")
+        assert (
+            _salvage_forced_scalar_arguments("temperature", "72.5", [int_tool]) is None
+        )
+        # An integral float is fine.
+        assert (
+            _salvage_forced_scalar_arguments("temperature", "72.0", [int_tool])
+            == '{"degrees": 72}'
+        )
+
     def test_multi_required_never_guesses(self):
         assert _salvage_forced_scalar_arguments("add", "7", [_ADD]) is None
 
