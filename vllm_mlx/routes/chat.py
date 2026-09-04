@@ -3065,7 +3065,7 @@ def _salvage_forced_scalar_arguments(
         # object/array fragment (`  {"unbalanced": ...`) still fails closed.
         if arguments.lstrip()[0] in '{}["':
             return None
-        value = arguments
+        value: str | int | float | bool = arguments
     elif isinstance(decoded, (str, int, float, bool)):
         value = decoded
     else:
