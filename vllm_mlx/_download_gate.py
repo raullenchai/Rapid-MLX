@@ -787,8 +787,11 @@ def _is_nonempty_snapshot_manifest_file(path: str, snap_dir: str) -> bool:
         repo_root = _snapshot_repo_root(snap_dir)
         repo_root_real = os.path.realpath(repo_root)
         if os.path.abspath(repo_root) != os.path.abspath(snap_dir):
-            snapshots_real = os.path.join(repo_root_real, "snapshots")
-            if not snapshot_real.startswith(snapshots_real + os.sep):
+            relative_snapshot = os.path.relpath(
+                os.path.abspath(snap_dir), os.path.abspath(repo_root)
+            )
+            expected_snapshot = os.path.join(repo_root_real, relative_snapshot)
+            if snapshot_real != expected_snapshot:
                 return False
         expected_blobs = os.path.join(repo_root_real, "blobs")
         blobs_real = os.path.realpath(expected_blobs)

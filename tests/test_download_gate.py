@@ -1913,6 +1913,34 @@ def test_is_repo_cached_rejects_symlinked_snapshot_anchor(tmp_path, monkeypatch)
     assert gate.is_repo_cached("user/snapshot-anchor-escape") is False
 
 
+def test_is_repo_cached_rejects_current_revision_linked_to_old_revision(
+    tmp_path, monkeypatch
+):
+    """A same-repo snapshot redirect cannot make stale weights current."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--stale-snapshot"
+    old_snap = repo_root / "snapshots" / "old"
+    (old_snap / "sidecars").mkdir(parents=True)
+    (old_snap / "model.safetensors").write_bytes(b"old-model")
+    (old_snap / "sidecars" / "helper.safetensors").write_bytes(b"old-helper")
+    (old_snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.weight": "model.safetensors",
+                    "helper.weight": "sidecars/helper.safetensors",
+                }
+            }
+        )
+    )
+    (repo_root / "snapshots" / "current").symlink_to(old_snap)
+    _seed_refs_main(repo_root, "current")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/stale-snapshot") is False
+
+
 @pytest.mark.parametrize(
     "sidecar",
     (
