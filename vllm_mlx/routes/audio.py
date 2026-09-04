@@ -212,6 +212,14 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     # must not stall unrelated requests (the call is per-load, not per-token).
     capacity = await asyncio.to_thread(alignment_capacity, model_name)
 
+    # Alignment and the dictation STT lane are MUTUALLY EXCLUSIVE (the aligner
+    # load evicts the ASR engine via ``_evict_other_lane_sync``). So before
+    # charging the alignment role against the ceiling, release any resident
+    # ``speech-input`` reservation — otherwise the ledger temporarily charges
+    # BOTH roles and can return a false 507 that would be impossible after the
+    # ASR engine is dropped. A no-op when the dictation role is not reserved.
+    await manager.release_role("speech-input")
+
     # Scope the typed-error mapping to ADMISSION ENTRY ONLY. Entering the
     # context manager explicitly (``__aenter__``) is where ``admit_role``
     # raises the capacity / invariant errors, so those handlers must not also

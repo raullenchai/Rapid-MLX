@@ -1330,6 +1330,41 @@ def test_noop_role_admission_commit_is_noop():
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_admitting_alignment_releases_resident_speech_input_role(
+    monkeypatch,
+):
+    """pr_validate codex BLOCKING (round-12/14): alignment and the dictation
+    STT lane are mutually exclusive, so a resident ``speech-input`` reservation
+    must be released BEFORE the alignment capacity admission — otherwise the
+    ledger charges both roles and can false-507 even though loading the aligner
+    would immediately drop the ASR engine."""
+
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    # A dictation speech-input reservation is resident (both weights present).
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=_aligner_catalog_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+
+    # Entering alignment admission must release the speech-input reservation so
+    # only the alignment role is charged against the ceiling.
+    async with audio_route._admitting_alignment("qwen3-aligner") as admission:
+        roles = {r["role"] for r in manager.snapshot()["roles"]}
+        assert "speech-input" not in roles
+        assert "alignment" in roles
+        assert admission is not None
+
+
+@pytest.mark.asyncio
 async def test_admitting_alignment_does_not_map_body_errors(monkeypatch):
     """pr_validate codex BLOCKING (round-7): the ``_admitting_alignment``
     exception mapping covers only ADMISSION ENTRY. A ``ResidentModelError``
