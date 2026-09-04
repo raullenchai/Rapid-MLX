@@ -152,6 +152,14 @@ class TestSalvageForcedScalarArguments:
             is None
         )
         assert _salvage_forced_scalar_arguments("weather", "[bad", [_WEATHER]) is None
+        # A whitespace-prefixed broken fragment also fails closed (codex).
+        assert (
+            _salvage_forced_scalar_arguments("weather", '  {"unbalanced": ', [_WEATHER])
+            is None
+        )
+        assert (
+            _salvage_forced_scalar_arguments("weather", "  [bad,", [_WEATHER]) is None
+        )
 
     def test_legit_string_with_colon_is_accepted(self):
         # codex round-6: a bare string containing ':' is not necessarily a broken

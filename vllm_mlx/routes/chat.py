@@ -3055,7 +3055,9 @@ def _salvage_forced_scalar_arguments(
         # accepted (codex); ``{"unbalanced": ...`` / ``["bad`` are rejected.
         if not isinstance(arguments, str) or not arguments.strip():
             return None
-        if arguments[0] in '{}["':
+        # Inspect the first NON-WHITESPACE char so a whitespace-prefixed broken
+        # object/array fragment (`  {"unbalanced": ...`) still fails closed.
+        if arguments.lstrip()[0] in '{}["':
             return None
         value = arguments
     elif isinstance(decoded, (str, int, float, bool)):
