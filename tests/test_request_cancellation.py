@@ -51,12 +51,53 @@ class TestBatchedEngineAbortRouting:
         engine._finish_guided_request("req-guided", first)
         assert engine._guided_abort_events["req-guided"] is replacement
 
+        with pytest.raises(RuntimeError, match="already active"):
+            engine._register_guided_request("req-guided", threading.Event())
+
         engine._abort_all_guided_requests()
         assert first.is_set()
         assert replacement.is_set()
 
-        with pytest.raises(RuntimeError, match="already active"):
-            engine._register_guided_request("req-guided", threading.Event())
+        late = threading.Event()
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            engine._register_guided_request("req-late", late)
+        assert late.is_set()
+        assert "req-late" not in engine._guided_abort_events
+
+    def test_stop_and_registration_serialize_on_the_guided_lock(self):
+        """A registration waiting behind shutdown cannot miss its signal."""
+        import threading
+
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_stopping = False
+        late = threading.Event()
+        started = threading.Event()
+        outcome: list[type[BaseException]] = []
+
+        def register_late() -> None:
+            started.set()
+            try:
+                engine._register_guided_request("req-late", late)
+            except BaseException as exc:
+                outcome.append(type(exc))
+
+        with engine._guided_requests_lock:
+            thread = threading.Thread(target=register_late)
+            thread.start()
+            assert started.wait(timeout=1)
+            engine._guided_stopping = True
+        thread.join(timeout=1)
+
+        assert outcome == [GuidedGenerationCancelledError]
+        assert late.is_set()
+        assert engine._guided_abort_events == {}
 
     @pytest.mark.asyncio
     async def test_routes_to_mllm_scheduler_when_present(self):

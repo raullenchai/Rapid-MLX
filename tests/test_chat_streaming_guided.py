@@ -200,6 +200,65 @@ async def test_guided_stream_publishes_cancellable_id_before_buffered_output():
     assert engine.stream_calls == [], "cancellation must never fall back unconstrained"
 
 
+@pytest.mark.asyncio
+async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
+    """The public id stays owned until the fallback scheduler is admitted."""
+
+    class _HandoffEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__(raise_in_guided=True)
+            self.handoff_calls = 0
+            self.scheduler_aborts: list[str] = []
+
+        def finish_guided_handoff(self, request_id: str) -> bool:
+            assert request_id == "chatcmpl-handoff"
+            self.handoff_calls += 1
+            return True
+
+        async def stream_chat(self, messages, **kwargs):
+            self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+            kwargs["request_id_holder"][0] = kwargs["request_id"]
+            kwargs["request_admitted_event"].set()
+            yield GenerationOutput(
+                text="FALLBACK-MUST-NOT-LEAK",
+                new_text="FALLBACK-MUST-NOT-LEAK",
+                finished=True,
+                finish_reason="stop",
+            )
+
+        async def abort_request(self, request_id: str) -> bool:
+            self.scheduler_aborts.append(request_id)
+            return True
+
+    engine = _HandoffEngine()
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    holder: list[str | None] = [None]
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-handoff",
+        request_id_holder=holder,
+    )
+
+    admission = json.loads((await anext(stream)).removeprefix("data: "))
+    assert admission["id"] == "chatcmpl-handoff"
+    terminal = json.loads((await anext(stream)).removeprefix("data: "))
+    assert terminal["choices"][0]["finish_reason"] == "cancelled"
+    assert await anext(stream) == "data: [DONE]\n\n"
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert engine.handoff_calls == 1
+    assert engine.scheduler_aborts == ["chatcmpl-handoff"]
+    assert len(engine.stream_calls) == 1
+    assert engine.guided_calls[0]["kwargs"]["retain_guided_request_on_failure"] is True
+
+
 _SCHEMA = {
     "type": "object",
     "$defs": {

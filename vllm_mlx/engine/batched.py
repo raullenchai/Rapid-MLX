@@ -995,6 +995,7 @@ class BatchedEngine(BaseEngine):
         # that token only at safe prefill/decode boundaries.
         self._guided_requests_lock = threading.Lock()
         self._guided_abort_events: dict[str, threading.Event] = {}
+        self._guided_stopping = False
 
     @property
     def model_name(self) -> str:
@@ -1454,6 +1455,8 @@ class BatchedEngine(BaseEngine):
         else:
             await self._start_llm()
 
+        with self._guided_requests_lock:
+            self._guided_stopping = False
         self._loaded = True
         self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
@@ -4042,7 +4045,11 @@ class BatchedEngine(BaseEngine):
         if not hasattr(self, "_guided_requests_lock"):
             self._guided_requests_lock = threading.Lock()
             self._guided_abort_events = {}
+            self._guided_stopping = False
         with self._guided_requests_lock:
+            if getattr(self, "_guided_stopping", False):
+                abort_event.set()
+                raise GuidedGenerationCancelledError()
             if request_id in self._guided_abort_events:
                 raise RuntimeError("guided request identity is already active")
             self._guided_abort_events[request_id] = abort_event
@@ -4078,16 +4085,31 @@ class BatchedEngine(BaseEngine):
             return True
 
     def _abort_all_guided_requests(self) -> None:
-        """Unblock the model-owning executor before engine shutdown."""
+        """Close guided admission and unblock workers before shutdown."""
 
         lock = getattr(self, "_guided_requests_lock", None)
         registry = getattr(self, "_guided_abort_events", None)
         if lock is None or registry is None:
             return
         with lock:
-            abort_events = tuple(registry.values())
-        for abort_event in abort_events:
-            abort_event.set()
+            self._guided_stopping = True
+            for abort_event in registry.values():
+                abort_event.set()
+
+    def finish_guided_handoff(self, request_id: str) -> bool:
+        """Transfer a retained guided identity to an admitted fallback.
+
+        Returns whether cancellation reached the guided owner before the
+        scheduler-backed fallback took ownership.
+        """
+
+        lock = getattr(self, "_guided_requests_lock", None)
+        registry = getattr(self, "_guided_abort_events", None)
+        if lock is None or registry is None:
+            return False
+        with lock:
+            abort_event = registry.pop(request_id, None)
+            return bool(abort_event is not None and abort_event.is_set())
 
     async def generate_with_schema(
         self,
@@ -4164,6 +4186,9 @@ class BatchedEngine(BaseEngine):
         request_id = kwargs.pop("request_id", None) or f"guided-{uuid.uuid4().hex}"
         request_id_holder = kwargs.pop("request_id_holder", None)
         request_admitted_event = kwargs.pop("request_admitted_event", None)
+        retain_request_on_failure = bool(
+            kwargs.pop("retain_guided_request_on_failure", False)
+        )
         abort_event = threading.Event()
         self._register_guided_request(request_id, abort_event)
         if request_id_holder is not None:
@@ -4211,23 +4236,37 @@ class BatchedEngine(BaseEngine):
 
         # ``shield`` prevents an HTTP task cancellation from marking the
         # executor future complete while its thread still owns MLX state.
-        was_aborted = False
         try:
             result = await asyncio.shield(future)
         except asyncio.CancelledError:
             abort_event.set()
-            raise
-        finally:
-            # Normal completion/failure atomically observes cancellation and
-            # releases the id before fallback can reuse it. If the response
-            # task exits while the shielded worker is still live, retain
-            # ownership and attach cleanup to actual worker completion.
             if future.done():
-                was_aborted = self._finish_guided_request(request_id, abort_event)
+                self._finish_guided_request(request_id, abort_event)
             else:
                 future.add_done_callback(
                     lambda _future: self._finish_guided_request(request_id, abort_event)
                 )
+            raise
+        except BaseException:
+            self._finish_guided_request(request_id, abort_event)
+            raise
+
+        # Best-effort streaming may transfer this identity to the ordinary
+        # scheduler when guided decoding is operationally unavailable. Retain
+        # ownership until that scheduler confirms admission, eliminating an
+        # unowned cancel/404 interval.
+        if result is None and raise_on_failure and retain_request_on_failure:
+            if abort_event.is_set():
+                self._finish_guided_request(request_id, abort_event)
+                raise GuidedGenerationCancelledError()
+            raise RuntimeError(
+                "Guided generation produced no result "
+                "(llguidance import/grammar failure — see prior log)"
+            )
+
+        # Normal completion/failure atomically observes cancellation and
+        # releases the id before the result or fallback can commit.
+        was_aborted = self._finish_guided_request(request_id, abort_event)
         # Close the worker-complete / result-commit race: unregistering and
         # checking the stop token happened under one lock, so an abort either
         # wins before commit or receives ``False`` after completion committed.

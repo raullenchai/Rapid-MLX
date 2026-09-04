@@ -5268,6 +5268,10 @@ async def _create_chat_completion_impl(
                     raw_request,
                     timeout=timeout,
                 )
+            except GuidedGenerationCancelledError as exc:
+                # Engine-owned cancellation is lifecycle control, never a
+                # guided failure eligible for unconstrained fallback.
+                raise asyncio.CancelledError() from exc
             except HTTPException:
                 raise
             except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
@@ -7766,6 +7770,27 @@ async def stream_chat_completion_guided(
         )
         _sse_suffix = "}}]}\n\n"
 
+        def _cancelled_terminal_events() -> tuple[str, str]:
+            chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="cancelled",
+                    )
+                ],
+            )
+            return (
+                f"data: {chunk.model_dump_json(exclude_none=True)}\n\n",
+                "data: [DONE]\n\n",
+            )
+
+        def _finish_guided_handoff() -> bool:
+            finish = getattr(engine, "finish_guided_handoff", None)
+            return bool(callable(finish) and finish(response_id))
+
         # Run guided generation buffered. If it raises, fall through to
         # the unconstrained streaming helper — this preserves request
         # liveness (constraints best-effort, response always emitted)
@@ -7798,6 +7823,7 @@ async def stream_chat_completion_guided(
             for k, v in kwargs.items()
             if k not in {"raise_on_failure", "request_id", "request_admitted_event"}
         }
+        _guided_kwargs["retain_guided_request_on_failure"] = True
         request_admitted_event = asyncio.Event()
         guided_task = asyncio.create_task(
             engine.generate_with_schema(
@@ -7832,19 +7858,8 @@ async def stream_chat_completion_guided(
             yield f"{_sse_prefix}{_sse_suffix}"
             output = await guided_task
         except GuidedGenerationCancelledError:
-            cancelled_chunk = ChatCompletionChunk(
-                id=response_id,
-                created=_sse_created,
-                model=_resolve_model_name(request.model),
-                choices=[
-                    ChatCompletionChunkChoice(
-                        delta=ChatCompletionChunkDelta(),
-                        finish_reason="cancelled",
-                    )
-                ],
-            )
-            yield f"data: {cancelled_chunk.model_dump_json(exclude_none=True)}\n\n"
-            yield "data: [DONE]\n\n"
+            for event in _cancelled_terminal_events():
+                yield event
             return
         except Exception as guided_err:
             # Log only the schema's top-level shape, not the full body —
@@ -7872,6 +7887,10 @@ async def stream_chat_completion_guided(
             # (mirror of the post-decode shape) + DONE, and DO NOT
             # enter the unconstrained fallback.
             if strict_mode:
+                if _finish_guided_handoff():
+                    for event in _cancelled_terminal_events():
+                        yield event
+                    return
                 incr_strict_violation()
                 logger.warning(
                     "Strict json_schema streaming guided generation "
@@ -7910,7 +7929,7 @@ async def stream_chat_completion_guided(
             # tracks the completion id across the guided→unconstrained
             # handoff sees two different ids/timestamps for what is
             # logically one request (DeepSeek pr_validate round 5).
-            async for chunk in stream_chat_completion(
+            fallback_stream = stream_chat_completion(
                 engine,
                 messages,
                 request,
@@ -7919,8 +7938,26 @@ async def stream_chat_completion_guided(
                 request_id=response_id,
                 caller_agent=caller_agent,
                 **kwargs,
-            ):
-                yield chunk
+            )
+            handoff_finished = False
+            try:
+                async for chunk in fallback_stream:
+                    if not handoff_finished:
+                        # The fallback helper publishes its first chunk only
+                        # after scheduler admission. Transfer ownership under
+                        # the guided-registry lock before exposing that chunk.
+                        was_cancelled = _finish_guided_handoff()
+                        handoff_finished = True
+                        if was_cancelled:
+                            await engine.abort_request(response_id)
+                            for event in _cancelled_terminal_events():
+                                yield event
+                            return
+                    yield chunk
+            finally:
+                if not handoff_finished:
+                    _finish_guided_handoff()
+                await fallback_stream.aclose()
             return
         finally:
             if not admission_task.done():

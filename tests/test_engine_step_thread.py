@@ -749,6 +749,42 @@ class TestGuidedGenerationStepThread:
         finally:
             executor.shutdown(wait=True)
 
+    @pytest.mark.asyncio
+    async def test_guided_failure_retains_identity_until_fallback_handoff(
+        self, monkeypatch
+    ):
+        """Best-effort SSE has no unowned id window before admission."""
+        from vllm_mlx.engine import batched as batched_mod
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._is_mllm = False
+        engine._model = MagicMock()
+        engine._tokenizer = MagicMock()
+        engine._tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+        engine._tokenizer.encode = MagicMock(return_value=[1])
+        engine._model_load_executor = None
+        engine._engine = None
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_stopping = False
+        monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
+        engine._run_guided_generation = MagicMock(return_value=None)
+
+        with pytest.raises(RuntimeError, match="produced no result"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="chatcmpl-handoff",
+                raise_on_failure=True,
+                retain_guided_request_on_failure=True,
+            )
+
+        assert engine.abort_guided_request("chatcmpl-handoff") is True
+        assert engine.finish_guided_handoff("chatcmpl-handoff") is True
+        assert engine._guided_abort_events == {}
+
 
 class TestMLLMSchedulerStepThread:
     """#170 regression: MLLMScheduler must run every step on the mllm-step

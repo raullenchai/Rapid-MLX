@@ -27,7 +27,7 @@ from collections.abc import AsyncIterator, Mapping
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from ..api.errors import RESPONSES_TEXT_FORMAT_PARAM
+from ..api.errors import RESPONSES_TEXT_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
     AssistantMessage,
     ChatCompletionChoice,
@@ -1725,6 +1725,10 @@ async def _non_stream(
                 # belongs to the route's standard cancellation
                 # path, not the strict contract.
                 raise
+            except GuidedGenerationCancelledError as exc:
+                # Engine-owned cancellation is lifecycle control, never a
+                # strict-schema failure and never eligible for fallback.
+                raise asyncio.CancelledError() from exc
             except Exception as guided_err:
                 logger.warning(
                     "Guided generation failed mid-await on /v1/responses "
