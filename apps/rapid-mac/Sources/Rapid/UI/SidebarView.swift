@@ -200,11 +200,15 @@ struct SidebarView: View {
             .accessibilityIdentifier("Sidebar.Launch")
             if communityBenchmarkEnabled {
                 row(
-                    title: "Community Benchmark",
+                    // Keep the rail readable at the app's 720 pt minimum
+                    // width. The destination itself retains the full
+                    // "Community Benchmark" page title.
+                    title: "Benchmarks",
                     systemImage: "gauge.with.dots.needle.50percent",
                     isSelected: selection == .benchmark,
                     action: { selection = .benchmark }
                 )
+                .accessibilityLabel("Community Benchmark")
                 .accessibilityIdentifier("Sidebar.CommunityBenchmark")
             }
 

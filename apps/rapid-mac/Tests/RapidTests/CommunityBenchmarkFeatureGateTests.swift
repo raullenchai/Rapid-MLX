@@ -54,6 +54,8 @@ struct CommunityBenchmarkFeatureGateTests {
         #expect(settings.contains("@AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)"))
         #expect(settings.contains("Settings.Experimental.CommunityBenchmarkToggle"))
         #expect(sidebar.contains("if communityBenchmarkEnabled"))
+        #expect(sidebar.contains("title: \"Benchmarks\""))
+        #expect(sidebar.contains(".accessibilityLabel(\"Community Benchmark\")"))
         #expect(sidebar.contains("Sidebar.CommunityBenchmark"))
         #expect(content.contains("communityBenchmarkEnabled: communityBenchmarkEnabled"))
         #expect(content.contains("if communityBenchmarkEnabled"))
