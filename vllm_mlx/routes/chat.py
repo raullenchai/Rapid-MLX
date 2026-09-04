@@ -10,8 +10,8 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncGenerator, AsyncIterator
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -7969,15 +7969,18 @@ async def stream_chat_completion_guided(
             # tracks the completion id across the guided→unconstrained
             # handoff sees two different ids/timestamps for what is
             # logically one request (DeepSeek pr_validate round 5).
-            fallback_stream = stream_chat_completion(
-                engine,
-                messages,
-                request,
-                response_id=response_id,
-                created=_sse_created,
-                request_id=response_id,
-                caller_agent=caller_agent,
-                **kwargs,
+            fallback_stream = cast(
+                AsyncGenerator[str, None],
+                stream_chat_completion(
+                    engine,
+                    messages,
+                    request,
+                    response_id=response_id,
+                    created=_sse_created,
+                    request_id=response_id,
+                    caller_agent=caller_agent,
+                    **kwargs,
+                ),
             )
             handoff_finished = False
             try:
