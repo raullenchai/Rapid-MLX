@@ -36,6 +36,18 @@ def test_resident_performance_maps_to_the_scheduler_contract():
         "enable_prefix_cache": False,
         "cache_memory_mb": 4096,
     }
+
+
+def test_legacy_capacity_error_keeps_stable_envelope():
+    error = ResidentModelCapacityError("legacy replacement rejected")
+    assert error.envelope() == {
+        "error": {
+            "message": "legacy replacement rejected",
+            "type": "insufficient_capacity_error",
+            "code": "insufficient_capacity_error",
+            "param": "model",
+        }
+    }
     assert resident_scheduler_kwargs(
         ResidentPerformanceConfig(kv_cache_turboquant="k8v4")
     ) == {
@@ -3518,6 +3530,47 @@ async def test_alignment_role_commit_finalize_is_cancellation_shielded():
     (aligned,) = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
     assert aligned["state"] == "resident"
     assert aligned["reserved_bytes"] == aligner
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_success_finalize_drains_repeated_cancellation(
+    monkeypatch,
+):
+    """Success finalization completes even if its waiter is cancelled twice."""
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+    finalize_started = asyncio.Event()
+    release_finalize = asyncio.Event()
+    original = manager._finalize_role_commit
+
+    async def delayed_finalize(**kwargs):
+        finalize_started.set()
+        await release_finalize.wait()
+        await original(**kwargs)
+
+    monkeypatch.setattr(manager, "_finalize_role_commit", delayed_finalize)
+
+    async def admit():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    task = asyncio.create_task(admit())
+    await finalize_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release_finalize.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (role,) = manager.snapshot()["roles"]
+    assert role["role"] == "alignment"
+    assert role["state"] == "resident"
 
 
 @pytest.mark.asyncio

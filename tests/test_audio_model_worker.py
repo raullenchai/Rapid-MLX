@@ -1432,6 +1432,83 @@ async def test_admitting_alignment_does_not_map_body_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_admitting_alignment_maps_existing_role_conflict(monkeypatch):
+    """An admission-entry invariant conflict is a typed 409 response."""
+    from fastapi import HTTPException
+
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_catalog_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(HTTPException) as exc_info:
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            pass
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "alignment_role_conflict"
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_drains_cancelled_rollback(monkeypatch):
+    """Cancellation while rollback waits cannot strand a loading role."""
+    from vllm_mlx.routes import audio as audio_route
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+    original = manager.admit_role
+    exit_started = asyncio.Event()
+    release_exit = asyncio.Event()
+
+    class DelayedExit:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __aenter__(self):
+            return await self._inner.__aenter__()
+
+        async def __aexit__(self, typ, exc, tb):
+            exit_started.set()
+            await release_exit.wait()
+            return await self._inner.__aexit__(typ, exc, tb)
+
+    monkeypatch.setattr(
+        manager,
+        "admit_role",
+        lambda *args, **kwargs: DelayedExit(original(*args, **kwargs)),
+    )
+
+    async def fail_during_load():
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            raise RuntimeError("load failed")
+
+    task = asyncio.create_task(fail_during_load())
+    await exit_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release_exit.set()
+    with pytest.raises(RuntimeError, match="load failed"):
+        await task
+    assert manager.snapshot()["roles"] == []
+
+
+def test_canonical_model_id_resolves_default_aligner():
+    from vllm_mlx.routes import audio as audio_route
+
+    assert (
+        audio_route._canonical_model_id("default")
+        == audio_route.STT_MODEL_ALIASES[audio_route.DEFAULT_ALIGNER_ALIAS]
+    )
+
+
+@pytest.mark.asyncio
 async def test_admitting_alignment_resolves_footprint_before_load(monkeypatch):
     """The alignment admission resolves the aligner footprint from catalog
     metadata (not blind) and is admitted through the shared ledger."""

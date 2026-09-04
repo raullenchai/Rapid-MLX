@@ -307,3 +307,35 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     assert "c/noncanonicalweightmodel" not in index
     # A SPLIT GGUF without a proven full shard set fails closed.
     assert "c/shardedggufmodel" not in index
+
+
+def test_local_cache_scan_failure_fails_closed(monkeypatch):
+    """A cache-library failure must produce no trusted footprint."""
+    import huggingface_hub
+
+    from vllm_mlx.runtime import role_capacity
+
+    def fail_scan():
+        raise RuntimeError("cache metadata unavailable")
+
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", fail_scan)
+    assert role_capacity._scan_local_cache_index() == {}
+
+
+def test_revision_rejects_corrupt_or_empty_shard_index():
+    """Unreadable and empty indexes cannot prove a complete checkpoint."""
+    from vllm_mlx.runtime import role_capacity
+
+    corrupt = _Rev(
+        refs={"main"},
+        files=(("model.safetensors.index.json", 100),),
+        index_json="not json",
+    )
+    empty = _Rev(
+        refs={"main"},
+        files=(("model.safetensors.index.json", 100),),
+        index_json='{"weight_map": {}}',
+    )
+
+    assert role_capacity._revision_is_complete(corrupt) is False
+    assert role_capacity._revision_is_complete(empty) is False
