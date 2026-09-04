@@ -873,6 +873,117 @@ class TestScheduleWaitingInsertDispatch:
         assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
         assert request._mtp_safe_logits_processors == (admitted[1],)
 
+    def test_mtp_grammar_snapshot_restores_exact_verified_boundary(self, monkeypatch):
+        """Rejected speculative suffixes never advance the persistent matcher."""
+        import mlx.core as mx
+
+        from vllm_mlx.api import tool_grammar as tg
+
+        class _Matcher:
+            def __init__(self, consumed=()):
+                self.consumed = list(consumed)
+
+            def get_error(self):
+                return None
+
+            def deep_copy(self):
+                return _Matcher(self.consumed)
+
+            def consume_token(self, token):
+                self.consumed.append(int(token))
+                return True
+
+            def is_stopped(self):
+                return False
+
+            def is_accepting(self):
+                return False
+
+            def reset(self):
+                self.consumed.clear()
+
+        class _Tokenizer:
+            vocab_size = 16
+
+        mask_states = []
+        monkeypatch.setattr(tg, "get_request_matcher", lambda *_args: _Matcher())
+        monkeypatch.setattr(tg, "allocate_token_bitmask", lambda *_args: object())
+        monkeypatch.setattr(
+            tg,
+            "fill_next_token_bitmask",
+            lambda matcher, _mask, _row: mask_states.append(tuple(matcher.consumed)),
+        )
+        monkeypatch.setattr(tg, "apply_token_bitmask", lambda logits, _mask: logits)
+
+        processor = tg.GrammarLogitsProcessor(_Tokenizer(), "grammar")
+        logits = mx.zeros((1, 16))
+        processor(mx.array([99]), logits)  # establish prompt boundary
+        root = processor.mtp_snapshot_state()
+
+        processor.mtp_apply(mx.array([99, 1]), mx.array([]), logits)
+        accepted_one = processor.mtp_snapshot_state()
+        processor.mtp_apply(mx.array([99, 1, 2]), mx.array([2]), logits)
+        assert processor._matcher.consumed == [1, 2]
+
+        # Reject token 2, commit only token 1, then explore a different token.
+        processor.mtp_restore_state(accepted_one)
+        assert processor._matcher.consumed == [1]
+        processor.mtp_apply(mx.array([99, 1, 7]), mx.array([7]), logits)
+        assert processor._matcher.consumed == [1, 7]
+
+        processor.mtp_restore_state(root)
+        assert processor._matcher.consumed == []
+        assert mask_states[-3:] == [(1,), (1, 2), (1, 7)]
+
+    def test_mtp_grammar_snapshot_restores_abort_latch(self, monkeypatch):
+        """Cancellation restores non-matcher state at the same boundary."""
+        import mlx.core as mx
+
+        from vllm_mlx.api import tool_grammar as tg
+
+        class _Matcher:
+            def __init__(self, consumed=()):
+                self.consumed = list(consumed)
+
+            def get_error(self):
+                return None
+
+            def deep_copy(self):
+                return _Matcher(self.consumed)
+
+            def consume_token(self, token):
+                self.consumed.append(int(token))
+                return False
+
+            def is_stopped(self):
+                return False
+
+            def is_accepting(self):
+                return False
+
+            def reset(self):
+                self.consumed.clear()
+
+        class _Tokenizer:
+            vocab_size = 16
+
+        monkeypatch.setattr(tg, "get_request_matcher", lambda *_args: _Matcher())
+        monkeypatch.setattr(tg, "allocate_token_bitmask", lambda *_args: object())
+        monkeypatch.setattr(tg, "fill_next_token_bitmask", lambda *_args: None)
+        monkeypatch.setattr(tg, "apply_token_bitmask", lambda logits, _mask: logits)
+
+        processor = tg.GrammarLogitsProcessor(_Tokenizer(), "grammar")
+        logits = mx.zeros((1, 16))
+        processor(mx.array([99]), logits)
+        boundary = processor.mtp_snapshot_state()
+        processor.mtp_apply(mx.array([99, 4]), mx.array([4]), logits)
+        assert processor._aborted is True
+
+        processor.mtp_restore_state(boundary)
+        assert processor._aborted is False
+        assert processor._committed == 1
+        assert processor._matcher.consumed == []
+
     def _build_dispatch_args(
         self,
         prefix_boundary: int,
