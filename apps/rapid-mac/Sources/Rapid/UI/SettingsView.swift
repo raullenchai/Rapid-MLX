@@ -47,6 +47,8 @@ struct SettingsView: View {
     @State private var restartingSetup = false
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
+    @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
+    private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -531,6 +533,17 @@ struct SettingsView: View {
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.VideoGenerationToggle")
+
+                SettingsRowDivider()
+
+                Toggle(isOn: $communityBenchmarkEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable Community Benchmark",
+                        description: "Shows the Community Benchmark tab for reproducible local model measurements. Results stay on this Mac unless you explicitly preview and share them."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.CommunityBenchmarkToggle")
             }
         }
         .accessibilityIdentifier("Settings.Experimental.Panel")
