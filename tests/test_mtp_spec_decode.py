@@ -2847,6 +2847,75 @@ def test_generator_rejection_discards_later_tool_guard_state():
     assert processor.interventions == 0
 
 
+def test_tool_guard_ordinary_decode_still_uses_committed_output():
+    """The refactored ordinary entry point retains its scheduler-owned history."""
+    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+    pattern = list(range(12))
+    processor = AgentRepetitionLogitsProcessor(pattern * 5)
+    logits = processor(mx.array([999]), mx.zeros((1, 32)))
+    mx.eval(logits)
+    assert float(logits[0, pattern[0]].item()) == float("-inf")
+
+
+def test_generator_restores_tool_guard_state_when_target_processor_raises():
+    """A verify-time processor exception restores the pre-proposal boundary."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class FusedDraftModel(_MockedQwen35Model):
+        def mtp_greedy(self, hidden, next_token_ids, mtp_cache):
+            del mtp_cache
+            batch, positions = next_token_ids.shape
+            tokens = []
+            for _ in range(positions):
+                tokens.append(self._mtp[self._mtp_cursor])
+                self._mtp_cursor += 1
+            return (
+                mx.array([tokens] * batch, dtype=mx.uint32),
+                mx.zeros((batch, positions, hidden.shape[-1])),
+            )
+
+    class RaisingTransactionalProcessor:
+        def __init__(self):
+            self.state = 0
+            self.armed = False
+
+        def __call__(self, _tokens, logits):
+            return logits
+
+        def mtp_apply(self, _tentative, logits):
+            self.state += 1
+            if self.armed:
+                raise RuntimeError("sentinel target processor failure")
+            return logits
+
+        def mtp_snapshot_state(self):
+            return self.state
+
+        def mtp_restore_state(self, state):
+            self.state = state
+
+    processor = RaisingTransactionalProcessor()
+    gen = mtp_generate_step(
+        mx.array([1], dtype=mx.uint32),
+        FusedDraftModel([7, 11, 13], [11]),
+        max_tokens=3,
+        max_k=1,
+        logits_processors=[processor],
+        initial_tokens=[1],
+        disable_auto_k=True,
+        accept_counter=MTPAcceptCounter(),
+    )
+
+    assert next(gen)[0] == 7
+    assert processor.state == 1
+    processor.armed = True
+    with pytest.raises(RuntimeError, match="sentinel target processor failure"):
+        next(gen)
+    assert processor.state == 1
+
+
 def test_quantized_argmax_matches_materialized_qlinear_logits():
     """The fused greedy kernel must select the exact qlinear argmax."""
     import mlx.nn as nn
