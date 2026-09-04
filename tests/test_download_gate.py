@@ -1974,6 +1974,64 @@ def test_is_repo_cached_rejects_ambiguous_nested_manifest_paths(
     assert gate.is_repo_cached("user/ambiguous") is False
 
 
+@pytest.mark.parametrize(
+    "weight_map",
+    (
+        {"model.weight": None},
+        {"model.weight": "model.safetensors", "helper.weight": "helper.bin"},
+    ),
+)
+def test_is_repo_cached_rejects_malformed_manifest_values(
+    tmp_path, monkeypatch, weight_map
+):
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--malformed-index"
+    snap = repo_root / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(b"model")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": weight_map})
+    )
+    _seed_refs_main(repo_root, "abc")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/malformed-index") is False
+
+
+def test_is_repo_cached_rejects_index_with_only_nested_sidecars(tmp_path, monkeypatch):
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--sidecar-only-index"
+    snap = repo_root / "snapshots" / "abc"
+    (snap / "sidecars").mkdir(parents=True)
+    (snap / "sidecars" / "helper.safetensors").write_bytes(b"helper")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"helper.weight": "sidecars/helper.safetensors"}})
+    )
+    _seed_refs_main(repo_root, "abc")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/sidecar-only-index") is False
+
+
+def test_snapshot_manifest_helpers_fail_closed_for_local_and_racing_files(
+    tmp_path, monkeypatch
+):
+    local_snapshot = tmp_path / "local-checkpoint"
+    local_snapshot.mkdir()
+    weight = local_snapshot / "model.safetensors"
+    weight.write_bytes(b"model")
+
+    assert gate._snapshot_repo_root(str(local_snapshot)) == str(local_snapshot)
+
+    monkeypatch.setattr(
+        gate.os.path, "getsize", MagicMock(side_effect=OSError("file vanished"))
+    )
+    assert (
+        gate._is_nonempty_snapshot_manifest_file(str(weight), str(local_snapshot))
+        is False
+    )
+
+
 def test_is_repo_cached_honours_resolved_revision_ref(tmp_path, monkeypatch):
     """Codex round-9 BLOCKING: an old complete snapshot must not mask
     the current incomplete one. After an interrupted ``snapshot_download``
