@@ -479,11 +479,12 @@ class BlockingStopLifecycleEngine(FakeLifecycleEngine):
     def __init__(self) -> None:
         super().__init__()
         self.stop_started = asyncio.Event()
+        self.stop_release = asyncio.Event()
 
     async def stop(self) -> None:
         self.stopped = True
         self.stop_started.set()
-        await asyncio.Event().wait()
+        await self.stop_release.wait()
 
 
 class Clock:
@@ -1233,7 +1234,12 @@ async def test_evict_first_stop_failure_finishes_handoff_as_primary_absent():
     handoff.commit.assert_called_once_with(None)
     handoff.rollback.assert_not_called()
     assert registry.default_name is None
-    assert manager.snapshot()["models"] == []
+    # The evict-first failure propagates, but the engine is NOT silently freed:
+    # it is durably tracked as cleanup-failed and its bytes stay charged.
+    snapshot_models = manager.snapshot()["models"]
+    assert [item["id"] for item in snapshot_models] == ["chat-old"]
+    assert snapshot_models[0]["state"] == "failed"
+    assert snapshot_models[0]["cleanup_failed"] == "stop failed"
 
 
 @pytest.mark.asyncio
@@ -1282,7 +1288,15 @@ async def test_evict_first_sibling_stop_failure_preserves_primary_publication():
     assert primary_engine.stopped is False
     assert primary_engine.paused is False
     assert registry.default_name == "chat-primary"
-    assert [item["id"] for item in manager.snapshot()["models"]] == ["chat-primary"]
+    # The sibling's cleanup failed and is durably tracked (bytes charged), while
+    # the healthy primary stays published and un-touched.
+    ids = {item["id"] for item in manager.snapshot()["models"]}
+    assert ids == {"chat-primary", "chat-sibling"}
+    sibling_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-sibling"
+    )
+    assert sibling_row["state"] == "failed"
+    assert sibling_row["cleanup_failed"] == "stop failed"
 
 
 @pytest.mark.asyncio
@@ -1800,8 +1814,16 @@ async def test_committed_replacement_does_not_rollback_to_stopped_sibling(caplog
     assert replacement.primary is True
     assert registry.default_name == "chat-new"
     assert [item.model_name for item in registry.list_entries()] == ["chat-new"]
-    assert {item["id"] for item in manager.snapshot()["models"]} == {"chat-new"}
-    assert "Failed to stop replaced model 'chat-sibling'" in caplog.text
+    # The failed sibling is durably tracked as cleanup-failed (not resurrected
+    # as a route, but never silently freed) with its bytes still charged.
+    ids = {item["id"] for item in manager.snapshot()["models"]}
+    assert ids == {"chat-new", "chat-sibling"}
+    sibling_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-sibling"
+    )
+    assert sibling_row["state"] == "failed"
+    assert sibling_row["cleanup_failed"] == "stop failed"
+    assert "Failed to clean up resident model 'chat-sibling'" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1839,9 +1861,19 @@ async def test_primary_stop_failure_keeps_committed_replacement_routable(
     assert replacement.primary is True
     assert registry.default_name == "chat-new"
     assert [item.model_name for item in registry.list_entries()] == ["chat-new"]
-    assert {item["id"] for item in manager.snapshot()["models"]} == {"chat-new"}
+    # The old primary's cleanup failed and is durably tracked (bytes charged),
+    # never silently freed, while the committed new route stays authoritative.
+    assert {item["id"] for item in manager.snapshot()["models"]} == {
+        "chat-new",
+        "chat-old",
+    }
+    old_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
+    )
+    assert old_row["state"] == "failed"
+    assert old_row["cleanup_failed"] == "stop failed"
     assert handoff_events == ["commit:chat-new"]
-    assert "Failed to stop replaced primary 'chat-old'" in caplog.text
+    assert "Failed to clean up resident model 'chat-old'" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1870,7 +1902,18 @@ async def test_task_cancel_after_primary_commit_preserves_new_route():
     assert registry.default_name == "chat-new"
     assert registry.get_engine("chat-new") is loaded["chat-new"]
     assert [item.model_name for item in registry.list_entries()] == ["chat-new"]
-    assert {item["id"] for item in manager.snapshot()["models"]} == {"chat-new"}
+    # The old engine's stop was suspended when the caller cancelled; it must stay
+    # durably tracked as retiring (bytes charged) until a later shutdown rejoins
+    # and drains its cleanup -- the old route is never resurrected.
+    assert {item["id"] for item in manager.snapshot()["models"]} == {
+        "chat-new",
+        "chat-old",
+    }
+    old_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
+    )
+    assert old_row["state"] == "retiring"
+    assert "cleanup_failed" in old_row and old_row["cleanup_failed"] is None
 
 
 @pytest.mark.asyncio
@@ -1947,6 +1990,293 @@ async def test_wait_replacement_retires_drained_engine_with_http_lease_finalizin
 
     assert old_engine.stopped is True
     assert registry.default_name == "chat-new"
+
+
+# --- Issue #2383: post-commit retirement is durably tracked across ------------
+# cancellation. These assert the engine stays memory-charged + snapshot-visible
+# until its stop()/allocator cleanup finishes or fails truthfully, while the lock
+# stays free during a suspended stop.
+
+
+def _accounted_bytes(manager: ResidentModelManager, model_id: str) -> int:
+    """Sum the retired/resident model's reserved bytes as snapshot would."""
+    for retirement in manager._retiring.values():
+        if retirement.record.model_id == model_id:
+            return max(
+                retirement.record.estimated_bytes, retirement.record.measured_bytes
+            )
+    record = manager._records.get(model_id)
+    if record is not None:
+        return max(record.estimated_bytes, record.measured_bytes)
+    return 0
+
+
+@pytest.mark.asyncio
+async def test_cancel_primary_replace_keeps_old_bytes_charged_until_cleanup():
+    """PRIMARY replacement: suspended old stop keeps bytes charged; cancel then
+    release the stop proves eventual cleanup with no old-route resurrection."""
+    registry = ModelRegistry()
+    old_engine = BlockingStopLifecycleEngine()
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+    loaded: dict[str, FakeEngine] = {}
+
+    async def loader(name: str, path: str | None, performance=None):
+        loaded[name] = FakeEngine()
+        return entry(name, loaded[name])
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    await old_engine.stop_started.wait()
+
+    # The new route is already authoritative before cancellation.
+    assert registry.default_name == "chat-new"
+    old_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
+    )
+    assert old_row["state"] == "retiring"
+    # During suspension the old engine's bytes are STILL charged.
+    assert _accounted_bytes(manager, "chat-old") == 4 * GIB
+    joined = _accounted_bytes(manager, "chat-old")
+    assert joined > 0
+
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+
+    # Still retiring (suspended), bytes still charged, no resurrection.
+    assert registry.default_name == "chat-new"
+    assert [item.model_name for item in registry.list_entries()] == ["chat-new"]
+    assert _accounted_bytes(manager, "chat-old") == 4 * GIB
+
+    # Release the suspended stop and drain via shutdown -> cleanup completes,
+    # bytes disappear, old engine no longer visible.
+    old_engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+    assert {item["id"] for item in manager.snapshot()["models"]} == {"chat-new"}
+    assert _accounted_bytes(manager, "chat-old") == 0
+
+
+@pytest.mark.asyncio
+async def test_cancel_secondary_replace_keeps_sibling_charged_and_cleaned():
+    """SECONDARY replacement: a non-primary replacement candidate suspended in
+    stop() keeps bytes charged, and completes cleanup on release."""
+    registry = ModelRegistry()
+    primary_engine = FakeLifecycleEngine()
+    primary = entry("chat-primary", primary_engine)
+    old_engine = BlockingStopLifecycleEngine()
+    old_secondary = entry("chat-secondary", old_engine)
+    registry.add(primary, is_default=True)
+    registry.add(old_secondary)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    manager._index_record(
+        ResidencyRecord(
+            entry=old_secondary,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    # The old PRIMARY is retired first (fast), then the suspended SECONDARY.
+    await old_engine.stop_started.wait()
+
+    # The replacement group commits: chat-new becomes the new primary; the
+    # suspended secondary candidate is retired but still reports as being
+    # cleaned up, with its bytes charged.
+    assert registry.default_name == "chat-new"
+    assert _accounted_bytes(manager, "chat-secondary") == 2 * GIB
+    secondary_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-secondary"
+    )
+    assert secondary_row["state"] == "retiring"
+
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+
+    # Sibling still retiring + charged until its stop is released.
+    assert _accounted_bytes(manager, "chat-secondary") == 2 * GIB
+
+    old_engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+    assert "chat-secondary" not in {item["id"] for item in manager.snapshot()["models"]}
+    assert _accounted_bytes(manager, "chat-secondary") == 0
+
+
+@pytest.mark.asyncio
+async def test_suspended_stop_does_not_block_snapshot_lease_or_unrelated_op():
+    """LOCK SAFETY: a suspended stop() in the background must not block a
+    snapshot, a lease on an unrelated resident model, or another op."""
+    registry = ModelRegistry()
+    primary_engine = BlockingStopLifecycleEngine()
+    primary = entry("chat-old", primary_engine)
+    unrelated_engine = FakeLifecycleEngine()
+    unrelated = entry("chat-unrelated", unrelated_engine)
+    registry.add(primary, is_default=True)
+    registry.add(unrelated)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    manager._index_record(
+        ResidencyRecord(
+            entry=unrelated,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    # Kick off a replacement that suspends the old primary's stop().
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    await primary_engine.stop_started.wait()
+
+    # Snapshot must not block.
+    manager.snapshot()
+
+    # A lease on the UNRELATED resident model must not be blocked by the
+    # suspended stop() -- it needs the manager lock, which must be free.
+    got_lease = False
+    async with asyncio.timeout(1):
+        async with manager.lease("chat-unrelated"):
+            got_lease = True
+    assert got_lease is True
+
+    # A non-conflicting set_pinned on the unrelated model must also proceed.
+    await asyncio.wait_for(manager.set_pinned("chat-unrelated", True), timeout=1)
+
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+    primary_engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_exposes_cleanup_failed_and_keeps_bytes_charged():
+    """FAILURE: stop() raises -> snapshot exposes cleanup_failed, bytes stay
+    charged, route stays retired, and retry/shutdown behaves explicitly."""
+    registry = ModelRegistry()
+    old_engine = FailingStopLifecycleEngine()
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    await manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+
+    # Route retired, failed cleanup exposed, bytes still charged.
+    assert registry.default_name == "chat-new"
+    assert [item.model_name for item in registry.list_entries()] == ["chat-new"]
+    failed_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
+    )
+    assert failed_row["state"] == "failed"
+    assert failed_row["cleanup_failed"] == "stop failed"
+    assert _accounted_bytes(manager, "chat-old") == 4 * GIB
+
+    # A later shutdown reports rather than silently claims the bytes free: the
+    # failed record remains observable.
+    await manager.shutdown()
+    assert _accounted_bytes(manager, "chat-old") == 4 * GIB
+    assert failed_row["state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_unload_shutdown_race_stops_engine_exactly_once():
+    """IDEMPOTENCY: unload + shutdown for the same engine calls stop() exactly
+    once (the second retirement joins the in-flight cleanup, never double-stops)."""
+    registry = ModelRegistry()
+    primary_engine = FakeLifecycleEngine()
+    primary = entry("chat-primary", primary_engine)
+    target_engine = BlockingStopLifecycleEngine()
+    target = entry("chat-target", target_engine)
+    registry.add(primary, is_default=True)
+    registry.add(target)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    manager._index_record(
+        ResidencyRecord(
+            entry=target,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    # Start an unload that suspends the target's stop().
+    unload_task = asyncio.create_task(manager.unload("chat-target"))
+    await target_engine.stop_started.wait()
+
+    # A concurrent shutdown must not call stop() again on the same engine; it
+    # joins the in-flight cleanup.
+    shutdown_task = asyncio.create_task(manager.shutdown())
+    await asyncio.sleep(0)
+
+    target_engine.stop_release.set()
+    await asyncio.wait_for(asyncio.gather(unload_task, shutdown_task), timeout=1)
+
+    assert target_engine.stopped is True
+    assert _accounted_bytes(manager, "chat-target") == 0
+
+
+@pytest.mark.asyncio
+async def test_suspended_stop_cancellation_latency_stays_bounded():
+    """CANCELLATION LATENCY: a cancelled caller returns promptly (not blocked on
+    the suspended stop), while cleanup continues to completion when released."""
+    registry = ModelRegistry()
+    old_engine = BlockingStopLifecycleEngine()
+    primary = entry("chat-old", old_engine)
+    registry.add(primary, is_default=True)
+
+    async def loader(name: str, path: str | None, performance=None):
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    replacement = asyncio.create_task(
+        manager.load("chat-new", replace_group="assistant", replace_mode="wait")
+    )
+    await old_engine.stop_started.wait()
+
+    # Bounded wait proves the cancellation propagates promptly even though the
+    # stop is still suspended (events + wait_for, never sleep-as-sync).
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(replacement, timeout=1)
+
+    # Cleanup is still in flight (suspended); bytes remain charged.
+    assert _accounted_bytes(manager, "chat-old") == 4 * GIB
+    # Release and drain.
+    old_engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+    assert _accounted_bytes(manager, "chat-old") == 0
 
 
 @pytest.mark.asyncio
