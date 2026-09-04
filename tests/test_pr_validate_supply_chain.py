@@ -410,6 +410,29 @@ def test_external_roster_only_is_warning_not_blocking(tmp_path):
     assert _ENROLLED in hook
 
 
+def test_external_roster_only_unreadable_workflow_stays_blocking(tmp_path, monkeypatch):
+    """Regression (codex r1 round-3): if the workflow file cannot be read
+    (missing / decode / permission), validation must NOT crash and must
+    conservatively treat the change as NOT roster-only → [BLOCKING]."""
+    real_read_text = Path.read_text
+
+    def _flaky(self, *a, **k):
+        if ".github/workflows/" in str(self).replace("\\", "/"):
+            raise OSError("denied")
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr("scripts.pr_validate.steps.supply_chain.Path.read_text", _flaky)
+    ctx = _ctx(
+        _ROSTER_ONLY_DIFF,
+        [_WORKFLOW, _ENROLLED],
+        external=True,
+        tmp_path=tmp_path,
+    )
+    result = SupplyChainStep().run(ctx)  # must not raise
+    assert result.status == "fail"
+    assert "[BLOCKING]" in " ".join(result.findings)
+
+
 def test_internal_roster_only_is_warning(tmp_path):
     """An internal author's roster-only change is already a warning (the
     default); the fix must not regress it."""

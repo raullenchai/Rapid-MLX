@@ -402,13 +402,21 @@ class SupplyChainStep(Step):
             # Build the HEAD content of each modified workflow file (the PR
             # head is checked out in the working tree) so roster-only can be
             # verified against the file's ACTUAL pytest roster, not diff hunk
-            # context (codex r1 round-3).
+            # context (codex r1 round-3). Only external authors need this
+            # (internal writers already get [warning]); a file that cannot be
+            # read is treated as NOT roster-only → BLOCKING, never a crash.
             head_content: dict[str, str] = {}
-            for wf in ctx.files_changed:
-                if wf.startswith(_WORKFLOW_PREFIX):
-                    p = ctx.repo_root / wf
-                    if p.is_file():
-                        head_content[wf] = p.read_text()
+            if ctx.is_external_author:
+                for wf in ctx.files_changed:
+                    if not wf.startswith(_WORKFLOW_PREFIX):
+                        continue
+                    try:
+                        p = ctx.repo_root / wf
+                        if p.is_file():
+                            head_content[wf] = p.read_text()
+                    except (OSError, UnicodeDecodeError):
+                        # Unreadable workflow → cannot prove roster-only.
+                        continue
             roster_only, roster_additions = _roster_only_workflows(
                 diff, set(ctx.files_changed), head_content
             )
