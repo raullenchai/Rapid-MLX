@@ -3210,7 +3210,11 @@ final class ServerManager {
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy
         }
-        guard !residency.audioLanes.contains(where: { ($0.activeRequests ?? 0) > 0 }) else {
+        let residentAudio = residency.audioLanes.filter { $0.state == "resident" }
+        guard !residentAudio.contains(where: { $0.activeRequests == nil }) else {
+            return .unavailable
+        }
+        guard !residentAudio.contains(where: { ($0.activeRequests ?? 0) > 0 }) else {
             return .busy
         }
         // This is an explicit unload, so clear the persisted auto-resume alias.

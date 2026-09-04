@@ -293,6 +293,22 @@ struct ModelResidencyTests {
         #expect(server.residency.audioLanes.first?.activeRequests == 1)
     }
 
+    @Test("Resident unload fails closed when audio request state is unavailable")
+    func residentUnloadRefusesUnknownAudioState() async {
+        var client = ServerResidencyClient()
+        client.session = UnknownAudioResidencyProtocol.session()
+        let server = ServerManager(
+            testingState: .ready(alias: "current-model"),
+            residency: .empty
+        )
+        server._testSetResidencyClient(client)
+        server._testInstallChild(ProcessGroupChild.testStub())
+
+        #expect(await server.unloadResidentModelsIfIdle() == .unavailable)
+        #expect(server.state == .ready(alias: "current-model"))
+        #expect(server.residency.audioLanes.first?.activeRequests == nil)
+    }
+
     @Test(
         "Cancelling an active-request model switch leaves the live model untouched",
         .timeLimit(.minutes(1))
@@ -1053,6 +1069,29 @@ private final class BusyAudioResidencyProtocol: URLProtocol, @unchecked Sendable
 
     override func startLoading() {
         let payload = #"{"memory_limit_bytes":10,"memory_used_bytes":1,"memory_available_bytes":9,"idle_ttl_seconds":60,"loads_total":1,"evictions_total":0,"models":[],"audio_lanes":[{"lane":"tts","model":"test/voice","state":"resident","active_requests":1}]}"#.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class UnknownAudioResidencyProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UnknownAudioResidencyProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override func startLoading() {
+        let payload = #"{"memory_limit_bytes":10,"memory_used_bytes":1,"memory_available_bytes":9,"idle_ttl_seconds":60,"loads_total":1,"evictions_total":0,"models":[],"audio_lanes":[{"lane":"tts","model":"test/voice","state":"resident"}]}"#.data(using: .utf8)!
         let response = HTTPURLResponse(
             url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
         )!
