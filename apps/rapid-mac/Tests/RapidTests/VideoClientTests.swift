@@ -77,6 +77,22 @@ struct VideoClientTests {
         #expect(value.durationPresets(for: "592x592") == [1, 2])
     }
 
+    @Test("Malformed (blank) dimension_rounding fails closed")
+    func blankRoundingFailsClosed() async {
+        // An empty/blank rounding label is a malformed payload and rejects,
+        // unlike a well-formed but unrecognized constant (covered above).
+        let client = makeClient()
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""dimension_rounding":"ceil_to_64""#,
+            with: #""dimension_rounding":""#
+        )
+        VideoStubProtocol.response = (200, Data(json.utf8))
+
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
+    }
+
     @Test("Workload uses 64-pixel rounding independently of size alignment")
     func workloadRoundingIsIndependent() throws {
         let json = Self.capabilitiesJSON

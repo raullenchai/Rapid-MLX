@@ -300,6 +300,13 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               frames.offset <= frames.maximum,
               workload.metric == "pixel_frames",
               workload.maximum > 0,
+              // dimension_rounding must be a well-formed (non-empty, non-blank)
+              // string. A blank value is malformed and fails closed; a
+              // well-formed but unrecognized constant is tolerated (see
+              // WorkloadLimit.alignmentStep).
+              !workload.dimensionRounding.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty,
               validInput else {
             throw VideoClientError.invalidResponse
         }
