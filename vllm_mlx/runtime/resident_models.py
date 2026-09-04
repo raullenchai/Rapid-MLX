@@ -1020,8 +1020,18 @@ class ResidentModelManager:
         # read the ledger under a role the lifecycle does not own.
         coerced_role = self._coerce_role(role)
         assert coerced_role is not None  # role is required for role admission
-        if release_exclusive_role is not None and release_exclusive_role != role:
-            self._coerce_role(release_exclusive_role)
+        # Store only the enum wire value.  Merely validating an accepted alias
+        # is insufficient: keeping ``speech_input`` as a dictionary key would
+        # let a later ``speech-input`` admission create a second reservation
+        # for the same logical role, and release through the other spelling
+        # would miss it.
+        role = coerced_role.value
+        coerced_exclusive_role = self._coerce_role(release_exclusive_role)
+        release_exclusive_role = (
+            coerced_exclusive_role.value
+            if coerced_exclusive_role is not None
+            else None
+        )
 
         async with self._lock:
             previous = self._roles.get(role)
@@ -1214,9 +1224,10 @@ class ResidentModelManager:
         # Gate release against the closed enum too: an unknown role must not be
         # silently popped (which would imply the lifecycle owned a lane it never
         # defined), keeping ``_roles`` consistent with the closed role set.
-        self._coerce_role(role)
+        coerced_role = self._coerce_role(role)
+        assert coerced_role is not None  # role is required for release
         async with self._lock:
-            self._roles.pop(role, None)
+            self._roles.pop(coerced_role.value, None)
 
     async def load(
         self,
