@@ -1638,24 +1638,64 @@ def _template_context_reads_for_source(template: str) -> frozenset[str]:
     return frozenset(reads)
 
 
+def _truthiness_tested_name(test, nodes) -> str | None:
+    """The variable a bare ``{% if x %}`` / ``{% if not x %}`` / ``a if x else b`` tests."""
+    if isinstance(test, nodes.Not):
+        test = test.node
+    if isinstance(test, nodes.Name) and test.ctx == "load":
+        return str(test.name)
+    return None
+
+
+@functools.lru_cache(maxsize=64)
+def _template_truthiness_tests_for_source(template: str) -> frozenset[str]:
+    """Names a template branches on as plain booleans (``if x``, ``if not x``,
+    ``... if x else ...``). ``x is defined``, ``x == "y"`` or ``x.flag`` do
+    not count: those consume ``x`` as something other than an on/off switch.
+    """
+    jinja2, nodes = _jinja_nodes()
+    env = _template_parser()
+    if jinja2 is None or env is None:
+        return frozenset()
+    try:
+        tree = env.parse(template)
+    except Exception:
+        return frozenset()
+    names: set[str] = set()
+    for node in tree.find_all((nodes.If, nodes.CondExpr)):
+        name = _truthiness_tested_name(node.test, nodes)
+        if name is not None:
+            names.add(name)
+    return frozenset(names)
+
+
+_TEMPLATE_THINKING_SWITCHES = ("reasoning",)
+
+
 def template_thinking_switch(
     template, *, tools: list[dict] | None = None
 ) -> str | None:
     """Name of a template's own on/off thinking variable when it is not
-    ``enable_thinking``.
+    ``enable_thinking``; ``None`` when the template has no such switch.
 
-    Cohere's North Mini Code template never consults ``enable_thinking``; it
-    reads a boolean ``reasoning`` (default on, also driven by
-    ``reasoning_effort == "none"``) and seeds an empty thinking block when it
-    is false. A template that reads ``enable_thinking`` keeps that switch and
-    yields ``None`` here even if it also reads ``reasoning``.
+    Recognised switches: ``reasoning`` (Cohere's convention; North Mini Code
+    never consults ``enable_thinking``, reads a boolean ``reasoning`` that
+    defaults to on or to ``reasoning_effort != "none"``, and seeds an empty
+    thinking block when it is false). A name is a switch only when the
+    template both reads it from the render context and branches on it as a
+    plain boolean somewhere; a template that renders ``{{ reasoning }}`` as
+    data or only asks ``reasoning is defined`` is left alone. A template that
+    reads ``enable_thinking`` keeps that switch and yields ``None`` even if it
+    also reads a recognised name.
     """
     for source in _chat_template_strings(template, tools=tools):
         reads = _template_context_reads_for_source(source)
         if "enable_thinking" in reads:
             return None
-        if "reasoning" in reads:
-            return "reasoning"
+        tested = _template_truthiness_tests_for_source(source)
+        for switch in _TEMPLATE_THINKING_SWITCHES:
+            if switch in reads and switch in tested:
+                return switch
     return None
 
 
@@ -1965,9 +2005,10 @@ def apply_chat_template(
     # (Cohere North Mini Code reads ``reasoning``, default on): a resolved off
     # flag becomes that switch, so Desktop's default and ``rapid-mlx chat``
     # without ``--think`` actually turn reasoning off (#3045). Detection is
-    # template-driven (the variables the template reads), not a model-name
-    # match. A client that already passed the switch or ``reasoning_effort``
-    # (the template derives ``reasoning`` from ``"none"``) keeps control.
+    # template-driven (the template reads the name from its context and
+    # branches on it as a boolean), not a model-name match. A client that
+    # already passed the switch or ``reasoning_effort`` (the template derives
+    # ``reasoning`` from ``"none"``) keeps control.
     if enable_thinking is False and "reasoning_effort" not in template_kwargs:
         switch = template_thinking_switch(
             getattr(template_applicator, "chat_template", None), tools=tools

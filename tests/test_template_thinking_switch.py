@@ -8,7 +8,8 @@ thinking block when it is false. Desktop's default (thinking off) and
 ``rapid-mlx chat`` without ``--think`` resolve ``enable_thinking=False``,
 which was silently inert for this family. ``apply_chat_template`` now maps
 that off flag onto the template's own switch, found by reading the Jinja AST
-for the variables the template actually consults.
+for the variables the template consults from its context and branches on as
+booleans.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import jinja2
 import pytest
 
 from vllm_mlx.utils.chat_template import (
+    _template_context_reads_for_source,
     apply_chat_template,
     template_thinking_switch,
 )
@@ -68,18 +70,8 @@ class _RenderingTokenizer:
 MESSAGES = [{"role": "user", "content": "hi"}]
 
 
-class TestTemplateThinkingSwitch:
-    def test_north_reads_a_reasoning_switch(self):
-        assert template_thinking_switch(NORTH_CLAUSE) == "reasoning"
-
-    def test_enable_thinking_template_keeps_its_own_switch(self):
-        assert template_thinking_switch(ENABLE_THINKING_TEMPLATE) is None
-
-    def test_reads_of_both_prefer_enable_thinking(self):
-        assert template_thinking_switch(NORTH_CLAUSE + ENABLE_THINKING_TEMPLATE) is None
-
-    def test_harmony_style_effort_only_template_has_no_switch(self):
-        assert template_thinking_switch(HARMONY_LIKE_TEMPLATE) is None
+class TestContextReads:
+    """Which names a template reads from its render context (Jinja scoping)."""
 
     @pytest.mark.parametrize(
         "template",
@@ -107,24 +99,22 @@ class TestTemplateThinkingSwitch:
             "{%- with reasoning = 1 %}{{ reasoning }}{% endwith %}",
         ],
     )
-    def test_bound_or_attribute_uses_are_not_a_switch(self, template):
-        assert template_thinking_switch(template) is None
+    def test_bound_or_attribute_uses_are_not_reads(self, template):
+        assert "reasoning" not in _template_context_reads_for_source(template)
 
     @pytest.mark.parametrize(
         "template",
         [
             # North's own line: the read happens before the binding
-            "{%- set reasoning = reasoning if reasoning is not undefined else true %}"
-            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning if reasoning is not undefined else true %}",
             # read after a loop that only shadowed it inside the body
-            "{%- for reasoning in messages %}{{ reasoning }}{%- endfor %}"
-            "{% if reasoning %}x{% endif %}",
+            "{%- for reasoning in messages %}{{ reasoning }}{%- endfor %}{{ reasoning }}",
             # read after a ``with`` block that only bound it inside
-            "{%- with reasoning = 1 %}{{ reasoning }}{% endwith %}{% if reasoning %}x{% endif %}",
+            "{%- with reasoning = 1 %}{{ reasoning }}{% endwith %}{{ reasoning }}",
             # bound in only one branch: the later read may still be the context
-            "{%- if x %}{% set reasoning = 1 %}{% endif %}{% if reasoning %}x{% endif %}",
+            "{%- if x %}{% set reasoning = 1 %}{% endif %}{{ reasoning }}",
             # read inside a macro body that does not bind it
-            "{%- macro show() %}{% if reasoning %}x{% endif %}{%- endmacro %}{{ show() }}",
+            "{%- macro show() %}{{ reasoning }}{%- endmacro %}{{ show() }}",
             # the loop's own filter clause
             "{%- for m in messages if reasoning %}{{ m }}{%- endfor %}",
             # a ``{% set %}`` whose value reads it inside a nested expression
@@ -135,18 +125,65 @@ class TestTemplateThinkingSwitch:
             "{%- with reasoning = reasoning %}{{ reasoning }}{% endwith %}",
         ],
     )
-    def test_context_reads_are_a_switch(self, template):
+    def test_context_reads(self, template):
+        assert "reasoning" in _template_context_reads_for_source(template)
+
+    def test_unparseable_source_reads_nothing(self):
+        assert _template_context_reads_for_source("{% if reasoning %}") == frozenset()
+
+
+class TestTemplateThinkingSwitch:
+    def test_north_reads_and_branches_on_reasoning(self):
+        assert template_thinking_switch(NORTH_CLAUSE) == "reasoning"
+
+    def test_enable_thinking_template_keeps_its_own_switch(self):
+        assert template_thinking_switch(ENABLE_THINKING_TEMPLATE) is None
+
+    def test_reads_of_both_prefer_enable_thinking(self):
+        assert template_thinking_switch(NORTH_CLAUSE + ENABLE_THINKING_TEMPLATE) is None
+
+    def test_harmony_style_effort_only_template_has_no_switch(self):
+        assert template_thinking_switch(HARMONY_LIKE_TEMPLATE) is None
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            # a bare truthiness test
+            "{% if reasoning %}<think>{% endif %}",
+            # its negation
+            "{% if not reasoning %}<think></think>{% endif %}",
+            # a conditional expression
+            "{{ '<think>' if reasoning else '<think></think>' }}",
+            # an elif branch
+            "{% if x %}a{% elif reasoning %}b{% endif %}",
+            # read as data somewhere else too, but branched on as a boolean
+            "{{ reasoning }}{% if reasoning %}x{% endif %}",
+        ],
+    )
+    def test_a_boolean_branch_on_a_context_read_is_a_switch(self, template):
         assert template_thinking_switch(template) == "reasoning"
 
-    def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
-        from vllm_mlx.utils import chat_template as module
-
-        module._template_context_reads_for_source.cache_clear()
-        monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
-        try:
-            assert template_thinking_switch(NORTH_CLAUSE) is None
-        finally:
-            module._template_context_reads_for_source.cache_clear()
+    @pytest.mark.parametrize(
+        "template",
+        [
+            # rendered as data, never branched on
+            "{{ reasoning }}",
+            # only a definedness check
+            "{% if reasoning is defined %}x{% endif %}",
+            # compared against a value: not an on/off switch
+            "{% if reasoning == 'high' %}x{% endif %}",
+            # combined with something else (not a plain boolean test)
+            "{% if reasoning and tools %}x{% endif %}",
+            # branched on, but as an attribute
+            "{% if reasoning.enabled %}x{% endif %}",
+            # branched on the template's own local, not the context
+            "{%- set reasoning = true %}{% if reasoning %}x{% endif %}",
+            # branched on a loop variable of that name
+            "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
+        ],
+    )
+    def test_data_definedness_or_local_uses_are_not_a_switch(self, template):
+        assert template_thinking_switch(template) is None
 
     def test_unparseable_and_missing_templates(self):
         assert template_thinking_switch("{% if reasoning %}") is None
@@ -158,6 +195,18 @@ class TestTemplateThinkingSwitch:
             )
             == "reasoning"
         )
+
+    def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
+        from vllm_mlx.utils import chat_template as module
+
+        module._template_context_reads_for_source.cache_clear()
+        module._template_truthiness_tests_for_source.cache_clear()
+        monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
+        try:
+            assert template_thinking_switch(NORTH_CLAUSE) is None
+        finally:
+            module._template_context_reads_for_source.cache_clear()
+            module._template_truthiness_tests_for_source.cache_clear()
 
 
 class TestApplyChatTemplateOnNorth:
