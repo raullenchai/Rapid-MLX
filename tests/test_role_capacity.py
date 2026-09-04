@@ -122,13 +122,27 @@ def test_local_cache_lookup_coalesces_into_one_scan_per_ttl(monkeypatch):
     assert calls == ["scan", "scan"]
 
 
+class _FakePath:
+    def __init__(self, text):
+        self._text = text
+
+    def read_text(self, encoding="utf-8"):
+        return self._text
+
+
 class _Rev:
-    def __init__(self, refs, files=()):
+    def __init__(self, refs, files=(), index_json=None):
         self.refs = frozenset(refs)
         self.files = [
             type("F", (), {"file_name": name, "size_on_disk": size})
             for name, size in files
         ]
+        if index_json is not None:
+            # Point model.safetensors.index.json at a readable fake path.
+            for f in self.files:
+                if f.file_name == "model.safetensors.index.json":
+                    f.file_path = _FakePath(index_json)
+                    f.read_text = f.file_path.read_text
 
 
 def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
@@ -168,12 +182,57 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
             _Rev(refs=(), files=(("config.json", 100),)),
         )
 
+    class _ShardedCompleteRepo:
+        repo_id = "c/ShardedCompleteModel"
+        # Multi-shard download, all shards present per the index.
+        revisions = (
+            _Rev(
+                refs={"main"},
+                files=(
+                    ("model.safetensors.index.json", 100),
+                    ("model-00001-of-00002.safetensors", 4000),
+                    ("model-00002-of-00002.safetensors", 5000),
+                ),
+                index_json=(
+                    '{"weight_map": {"a": "model-00001-of-00002.safetensors", '
+                    '"b": "model-00002-of-00002.safetensors"}}'
+                ),
+            ),
+        )
+
+    class _ShardedIncompleteRepo:
+        repo_id = "c/ShardedIncompleteModel"
+        # Multi-shard download MISSING one shard (interrupted) — the index
+        # proves the second shard is absent, so it must fail closed.
+        revisions = (
+            _Rev(
+                refs={"main"},
+                files=(
+                    ("model.safetensors.index.json", 100),
+                    ("model-00001-of-00002.safetensors", 4000),
+                ),
+                index_json=(
+                    '{"weight_map": {"a": "model-00001-of-00002.safetensors", '
+                    '"b": "model-00002-of-00002.safetensors"}}'
+                ),
+            ),
+        )
+
+    class _NonDefaultBranchRepo:
+        repo_id = "c/NonDefaultModel"
+        # Only a non-main branch is cached; the loader resolves the default
+        # (main) branch, so this cannot be trusted to charge the real load.
+        revisions = (_Rev(refs={"feature-x"}, files=(("model.safetensors", 7000),)),)
+
     class _FakeCache:
         repos = [
             _PartialRepo,
             _SelectiveNoWeightsRepo,
             _CompleteRepo,
             _OldCompletedPlusPartialRepo,
+            _ShardedCompleteRepo,
+            _ShardedIncompleteRepo,
+            _NonDefaultBranchRepo,
         ]
 
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", lambda: _FakeCache())
@@ -188,3 +247,10 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     # A repo with older completed + partial revision is charged ONLY the
     # completed snapshot's bytes (8000), not the aggregate (8100).
     assert index["c/mixedmodel"] == 8000
+    # A multi-shard download with ALL shards present (per the index) is charged
+    # its full snapshot bytes (index + shards); one with a missing shard fails
+    # closed.
+    assert index["c/shardedcompletemodel"] == 9100
+    assert "c/shardedincompletemodel" not in index
+    # A lone non-main branch is not the default the loader fetches -> fail closed.
+    assert "c/nondefaultmodel" not in index

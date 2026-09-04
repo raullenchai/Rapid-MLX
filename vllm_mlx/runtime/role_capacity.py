@@ -104,17 +104,15 @@ def _scan_local_cache_index() -> dict[str, int]:
         index: dict[str, int] = {}
         for repo in cache.repos:
             # Resolve the revision the loader would use: the one the default
-            # ``main`` ref points at (fall back to any single ref-bound rev).
+            # ``main`` ref points at.
             rev = _default_completed_revision(repo.revisions)
             if rev is None:
                 continue
-            file_names = [f.file_name for f in rev.files]
-            if not any(name.lower().endswith(_WEIGHT_SUFFIXES) for name in file_names):
+            if not _revision_is_complete(rev):
                 logger.debug(
-                    "local cache for %r is ref-bound but has no weight file "
-                    "(%d files); treating as incomplete and failing closed",
+                    "local cache for %r is not verifiably complete; "
+                    "failing closed instead of under-reserving",
                     repo.repo_id,
-                    len(file_names),
                 )
                 continue
             size = sum(int(f.size_on_disk or 0) for f in rev.files)
@@ -126,29 +124,64 @@ def _scan_local_cache_index() -> dict[str, int]:
         return {}
 
 
-def _default_completed_revision(revisions):
-    """Pick the completed revision the loader would use (default ``main`` ref).
+def _revision_is_complete(rev) -> bool:
+    """Independently verify a snapshot actually holds ALL of a checkpoint.
 
-    Returns ``None`` when there is no trustworthy completed revision (no
-    ref-bound snapshot, or ambiguous multiple refs) so the caller fails closed
-    rather than guess which snapshot to charge.
+    ``rev`` is a huggingface_hub ``CachedRevisionInfo``. A ref-bound snapshot
+    alone does not prove the weights are present — a selective download can be
+    ref-bound yet hold only config/tokenizer, and an interrupted multi-shard
+    download can hold one weight shard. We verify against the trusted shard
+    index when present, else require a single-file weight:
+
+      * if ``model.safetensors.index.json`` exists, parse it and REQUIRE every
+        shard named in ``weight_map`` to be present in the snapshot;
+      * otherwise require at least one irreducible single-file weight
+        (``*.gguf``, ``*.bin``, ``*.npz``/``*.npy``, or a non-shard
+        ``*.safetensors``), which needs no cross-file verification.
     """
-    ref_bound = [rev for rev in revisions if rev.refs]
-    if not ref_bound:
-        if revisions:
+    files = {f.file_name.lower() for f in rev.files}
+    index_name = next((n for n in files if n.endswith(".safetensors.index.json")), None)
+    if index_name is not None:
+        try:
+            idx_file = next(f for f in rev.files if f.file_name.lower() == index_name)
+            import json
+
+            data = json.loads(idx_file.file_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - a corrupt index must not admit blind
+            logger.debug("failed to read safetensors index: %s", exc)
+            return False
+        shards = set(data.get("weight_map", {}).values())
+        if not shards:
+            return False
+        missing = [s for s in shards if s.lower() not in files]
+        if missing:
             logger.debug(
-                "local cache has %d revision(s) but none ref-bound; "
-                "failing closed instead of under-reserving",
-                len(revisions),
+                "safetensors index lists shards missing from the snapshot: %s",
+                sorted(missing)[:5],
             )
-        return None
-    # Prefer the revision the ``main`` ref points at (the default from a
-    # ``snapshot_download``). If there is exactly one ref-bound revision it is
-    # unambiguous regardless of branch name.
-    for rev in ref_bound:
-        if "main" in rev.refs:
-            return rev
-    return ref_bound[0] if len(ref_bound) == 1 else None
+            return False
+        return True
+    return any(name.endswith(_WEIGHT_SUFFIXES) for name in files)
+
+
+def _default_completed_revision(revisions):
+    """Pick the completed revision the loader would use (the ``main`` ref).
+
+    The loader resolves a repo's DEFAULT branch — conventionally ``main`` (the
+    ref ``snapshot_download`` writes). A lone non-``main`` ref names some other
+    branch we may not load, so charging it could understate the weights the real
+    load fetches. Returns ``None`` unless a revision is bound to ``main``, so
+    the caller fails closed rather than guess a revision to charge.
+    """
+    default_bound = [rev for rev in revisions if "main" in rev.refs]
+    if default_bound:
+        return default_bound[0]
+    logger.debug(
+        "local cache revisions %r are ref-bound but none bound to the default "
+        "'main' branch; failing closed instead of charging an unrelated revision",
+        [tuple(rev.refs) for rev in revisions],
+    )
+    return None
 
 
 def alignment_capacity(model_id: str) -> RoleCapacity:
