@@ -1822,6 +1822,7 @@ def _evict_other_lane_sync(keep: str) -> None:
 def _load_aligner_blocking(
     model_name: str,
     on_discard_previous: Callable[[], None] | None = None,
+    on_discard_exclusive: Callable[[], None] | None = None,
 ) -> None:
     """Load (or reload) the cached aligner engine on the model worker thread.
 
@@ -1836,6 +1837,14 @@ def _load_aligner_blocking(
     not before (an import / ASR-unload failure before the drop must leave the
     old reservation restorable on rollback) and never after the new engine is
     published.
+
+    ``on_discard_exclusive`` is invoked the INSTANT the mutually-exclusive ASR
+    engine (dropped by ``_evict_other_lane_sync``) is discarded. From that
+    point the retired ``speech-input`` reservation points at a phantom engine,
+    so the caller retires it (``admission.retire_exclusive``) and it must not
+    be restored on a subsequent load failure. Before the discard the ASR
+    engine may still be resident (e.g. a 507 rejection never reached the
+    eviction), so restoration stays correct until this fires.
     """
     global _aligner_engine
 
@@ -1855,6 +1864,10 @@ def _load_aligner_blocking(
     # caller holds the lane lock, so no ASR request is mid-flight and
     # this cannot pull weights out from under one.
     _evict_other_lane_sync("aligner")
+    if on_discard_exclusive is not None:
+        # The ASR engine (if any) is gone from this point; a subsequent load
+        # failure must NOT restore the retired speech-input reservation.
+        on_discard_exclusive()
     # Also drop any PREVIOUS aligner (a different aligner alias) before
     # loading the replacement, so two multi-GB aligner models never sit
     # resident together during ``load()``. Inert under the current
@@ -2015,11 +2028,17 @@ async def _run_alignment_request(
                     # import / ASR-unload failure BEFORE that drop leaves the
                     # old reservation restorable on rollback, and a success
                     # commits the new engine with the old one retired.
+                    # ``on_discard_exclusive`` fires the instant the ASR engine
+                    # is evicted, so the speech-input reservation retired by
+                    # this admission stays retired (retire_exclusive) — a load
+                    # failure AFTER the ASR eviction must not resurrect a
+                    # reservation for an engine that no longer exists.
                     try:
                         await run_to_completion(
                             _load_aligner_blocking,
                             model_name,
                             admission.retire_previous,
+                            admission.retire_exclusive,
                         )
                     except asyncio.CancelledError:
                         # The worker loaded AND published the engine for THE

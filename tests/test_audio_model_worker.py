@@ -1497,6 +1497,70 @@ async def test_admitting_alignment_rolls_back_on_load_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aligner_load_failure_after_asr_eviction_does_not_restore_phantom_speech_input(
+    monkeypatch,
+):
+    """pr_validate codex BLOCKING (round-18): ``_load_aligner_blocking`` evicts
+    the ASR engine (fires ``retire_exclusive``) BEFORE constructing/loading the
+    aligner. If that load then FAILS before publication, the retired
+    ``speech-input`` reservation must NOT be restored — the ASR engine it
+    guarded was already discarded, so restoring would charge a phantom engine
+    that no longer exists. Drive the REAL route end-to-end."""
+    import io
+
+    from fastapi import HTTPException, UploadFile
+
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+    worker = _RecordingWorker()
+    monkeypatch.setattr(audio_route, "_aligner_engine", None)
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    bind_audio_worker(worker)
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    # A dictation speech-input reservation is resident (ASR engine present).
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert any(r["role"] == "speech-input" for r in manager.snapshot()["roles"])
+
+    def _failing_load(model_name, on_discard_previous=None, on_discard_exclusive=None):
+        # Mirror the real loader's ordering: evict the ASR sibling (fire
+        # retire_exclusive) THEN fail before the aligner ever publishes — the
+        # codex BLOCKING scenario for construction/load failure after eviction.
+        if on_discard_exclusive is not None:
+            on_discard_exclusive()
+        raise RuntimeError("aligner construction failed after ASR eviction")
+
+    monkeypatch.setattr(audio_route, "_load_aligner_blocking", _failing_load)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await audio_route._run_alignment_request(
+            UploadFile(filename="clip.wav", file=io.BytesIO(b"\x00" * 64)),
+            model="qwen3-aligner",
+            text="你好",
+            language=None,
+            response_format="json",
+        )
+    assert exc_info.value.status_code == 500
+
+    # The failed load left NO alignment reservation (rolled back) AND the
+    # evicted ASR engine means the retired speech-input reservation stays
+    # retired — no phantom charge for a discarded engine.
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "alignment" not in roles
+    assert "speech-input" not in roles
+
+
+@pytest.mark.asyncio
 async def test_admitting_alignment_rolls_back_on_cancellation(monkeypatch):
     """Cancellation inside the admission leaves no leaked reservation."""
     from vllm_mlx.routes import audio as audio_route
@@ -1627,7 +1691,9 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
 
-    def _recording_load(model_name, on_discard_previous=None):
+    def _recording_load(
+        model_name, on_discard_previous=None, on_discard_exclusive=None
+    ):
         # Mirror the real loader's idempotency: once the engine for this model
         # is published, a repeat call is a no-op (no reload, no re-load).
         if (
@@ -1636,6 +1702,10 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
         ):
             return
         operations.append("load-aligner")
+        # Mirror the real loader's ordering: evicting the ASR sibling fires
+        # retire_exclusive BEFORE the new aligner is published.
+        if on_discard_exclusive is not None:
+            on_discard_exclusive()
         audio_route._aligner_engine = _Aligner(model_name)
         if on_discard_previous is not None:
             on_discard_previous()
@@ -1704,13 +1774,17 @@ async def test_aligner_alias_and_canonical_request_reuse_same_engine(monkeypatch
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
 
-    def _recording_load(model_name, on_discard_previous=None):
+    def _recording_load(
+        model_name, on_discard_previous=None, on_discard_exclusive=None
+    ):
         if (
             audio_route._aligner_engine is not None
             and audio_route._aligner_engine.model_name == model_name
         ):
             return
         operations.append("load-aligner")
+        if on_discard_exclusive is not None:
+            on_discard_exclusive()
         audio_route._aligner_engine = _Aligner(model_name)
         if on_discard_previous is not None:
             on_discard_previous()
@@ -1874,11 +1948,15 @@ async def test_alignment_role_cancellation_keeps_published_engine_committed(
     published = threading.Event()
     release = threading.Event()
 
-    def _controlled_load_blocking(model_name: str, on_discard_previous=None) -> None:
+    def _controlled_load_blocking(
+        model_name: str, on_discard_previous=None, on_discard_exclusive=None
+    ) -> None:
         # Runs on the worker thread via run_to_completion. Publish the engine
         # (the load "succeeded"), then block until the test releases us so the
         # load is still in-flight when the request is cancelled.
         audio_route._aligner_engine = _FakeAlign()
+        if on_discard_exclusive is not None:
+            on_discard_exclusive()
         if on_discard_previous is not None:
             on_discard_previous()
         published.set()

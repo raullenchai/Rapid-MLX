@@ -292,11 +292,25 @@ class ResidentRoleAdmission:
     record: ResidentRoleReservation
     previous: ResidentRoleReservation | None = None
     previous_retired: bool = False
+    exclusive_retired: bool = False
     committed: bool = False
 
     def retire_previous(self) -> None:
         """Signal that the prior engine was dropped; do not restore on rollback."""
         self.previous_retired = True
+
+    def retire_exclusive(self) -> None:
+        """Signal that the mutually-exclusive sibling's engine was discarded.
+
+        Called by the alignment lane the INSTANT the ASR engine evicted by
+        ``_evict_other_lane_sync("aligner")`` is actually gone. After this
+        point the retired ``speech-input`` reservation points at a phantom
+        engine, so the rollback must NOT restore it — restoring would charge
+        a resident engine that no longer exists. Before the discard the
+        sibling may still be resident (a re-admission failure before the
+        eviction dropped nothing), so restoration stays correct until then.
+        """
+        self.exclusive_retired = True
 
     def commit(self) -> None:
         """Mark the new engine as resident even when the caller re-raises.
@@ -833,10 +847,11 @@ class ResidentModelManager:
                 # as this admission, no concurrent admission could have claimed
                 # its capacity in the interim; re-insert with ``setdefault`` so
                 # a GENUINELY newer reservation for the role (whose owner is
-                # authoritative) is never clobbered. The engine it guarded stays
-                # resident and accounted — finding 2's silent-abandonment path
-                # is impossible.
-                if released_exclusive is not None:
+                # authoritative) is never clobbered. UNLESS the caller signaled
+                # ``retire_exclusive`` — the instant the sibling's engine was
+                # actually discarded, restoring would charge a phantom engine
+                # that no longer exists, so it stays retired.
+                if released_exclusive is not None and not admission.exclusive_retired:
                     self._roles.setdefault(release_exclusive_role, released_exclusive)
             raise
         else:
