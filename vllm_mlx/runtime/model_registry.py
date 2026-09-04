@@ -105,6 +105,24 @@ class ModelRegistry:
         logger.info(f"Unregistered model '{canonical}'")
         return entry
 
+    def remove_if_entry(self, name: str, expected: ModelEntry) -> ModelEntry | None:
+        """Unregister ``expected`` only while it still owns its canonical slot.
+
+        Replacement publication may reuse an old model name or alias before
+        the old engine finishes retiring. Remove the hidden old canonical
+        entry by identity while preserving routes reassigned to the replacement.
+        """
+        canonical = expected.model_name
+        if canonical != name or self._entries.get(canonical) is not expected:
+            return None
+        entry = self._entries.pop(canonical)
+        for key in [key for key, value in self._index.items() if value == canonical]:
+            self._index.pop(key, None)
+        if self._default == canonical:
+            self._default = next(iter(self._entries), None)
+        logger.info("Unregistered model %r by identity", canonical)
+        return entry
+
     def get_engine(self, model_name: str | None = None) -> object:
         """Get the engine for a model name. Falls back to default.
 

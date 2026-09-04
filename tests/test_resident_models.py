@@ -480,8 +480,10 @@ class BlockingStopLifecycleEngine(FakeLifecycleEngine):
         super().__init__()
         self.stop_started = asyncio.Event()
         self.stop_release = asyncio.Event()
+        self.stop_calls = 0
 
     async def stop(self) -> None:
+        self.stop_calls += 1
         self.stopped = True
         self.stop_started.set()
         await self.stop_release.wait()
@@ -2284,9 +2286,114 @@ async def test_unload_shutdown_race_stops_engine_exactly_once():
 
     target_engine.stop_release.set()
     await asyncio.wait_for(asyncio.gather(unload_task, shutdown_task), timeout=1)
-
+    assert target_engine.stop_calls == 1
     assert target_engine.stopped is True
     assert _accounted_bytes(manager, "chat-target") == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_does_not_poison_later_retirement_join():
+    registry = ModelRegistry()
+    engine = BlockingStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    record = ResidencyRecord(
+        entry=target,
+        estimated_bytes=2 * GIB,
+        loaded_at=0,
+        last_used_at=0,
+    )
+    manager._index_record(record)
+
+    async with manager._lock:
+        first_waiter = manager._begin_evict_locked(record, reason="explicit")
+    await engine.stop_started.wait()
+    first_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_waiter
+
+    async with manager._lock:
+        second_waiter = manager._begin_evict_locked(record, reason="shutdown")
+    assert second_waiter.cancelled() is False
+
+    engine.stop_release.set()
+    await asyncio.wait_for(second_waiter, timeout=1)
+    assert engine.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_does_not_cancel_manager_owned_retirement():
+    registry = ModelRegistry()
+    engine = BlockingStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    record = ResidencyRecord(
+        entry=target,
+        estimated_bytes=2 * GIB,
+        loaded_at=0,
+        last_used_at=0,
+    )
+    manager._index_record(record)
+
+    async with manager._lock:
+        first_waiter = manager._begin_evict_locked(record, reason="explicit")
+    await engine.stop_started.wait()
+    first_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_waiter
+
+    shutdown = asyncio.create_task(manager.shutdown())
+    await asyncio.sleep(0)
+    shutdown.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+
+    retirement = manager._retiring[id(engine)]
+    assert retirement.task is not None
+    assert retirement.task.cancelled() is False
+
+    engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+    assert engine.stop_calls == 1
+    assert id(engine) not in manager._retiring
+
+
+@pytest.mark.asyncio
+async def test_retirement_does_not_remove_replacement_that_reuses_old_alias():
+    registry = ModelRegistry()
+    old_engine = BlockingStopLifecycleEngine()
+    old = entry("chat-old", old_engine)
+    registry.add(old, is_default=True)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    old_record = manager.register_primary(old, estimated_bytes=2 * GIB)
+
+    replacement = entry("chat-new")
+    replacement.aliases.add("chat-old")
+    registry.add(replacement, is_default=True)
+    replacement_record = ResidencyRecord(
+        entry=replacement,
+        estimated_bytes=2 * GIB,
+        loaded_at=1,
+        last_used_at=1,
+        pinned=True,
+        primary=True,
+    )
+    manager._index_record(replacement_record)
+
+    async with manager._lock:
+        cleanup = manager._begin_evict_locked(old_record, reason="replace_assistant")
+    await old_engine.stop_started.wait()
+
+    assert registry.get_entry("chat-old") is replacement
+    assert manager._canonical("chat-old") == "chat-new"
+
+    old_engine.stop_release.set()
+    await asyncio.wait_for(cleanup, timeout=1)
+    assert registry.get_entry("chat-old") is replacement
+    assert registry.list_entries() == [replacement]
+    assert manager._records["chat-new"] is replacement_record
 
 
 @pytest.mark.asyncio

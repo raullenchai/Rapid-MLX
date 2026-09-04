@@ -291,7 +291,6 @@ class _Retirement:
     # keeping the record + bytes charged either way.
     cleanup_error: BaseException | None = None
     task: asyncio.Task | None = None
-    shield: asyncio.Future | None = None
 
 
 def _sanitize_error(exc: Exception) -> str:
@@ -622,6 +621,13 @@ class ResidentModelManager:
             self._index.pop(key, None)
         return record
 
+    def _drop_record_if_same(self, record: ResidencyRecord) -> bool:
+        """Drop manager routing only while ``record`` still owns its key."""
+        if self._records.get(record.model_id) is not record:
+            return False
+        self._drop_record(record.model_id)
+        return True
+
     def register_primary(
         self, entry: ModelEntry, *, estimated_bytes: int | None = None
     ) -> ResidencyRecord:
@@ -711,7 +717,7 @@ class ResidentModelManager:
             # Join any retirement already in flight (spawned offline by a prior
             # cancelled or replaced operation) so shutdown drains them too.
             cleanups.extend(
-                task
+                asyncio.shield(task)
                 for task in (retirement.task for retirement in self._retiring.values())
                 if task is not None
             )
@@ -1889,22 +1895,21 @@ class ResidentModelManager:
             raise ResidentModelBusyError("model is serving an active request")
         identity = id(record.entry.engine)
         existing = self._retiring.get(identity)
-        if existing is not None and existing.shield is not None:
+        if existing is not None and existing.task is not None:
             # Idempotent retirement: an overlapping caller wants the same
             # engine gone. Unroute this (possibly sibling) record's alias, but
             # join the existing cleanup -- never double-stop the engine.
-            self.registry.remove(record.model_id)
-            self._drop_record(record.model_id)
-            return existing.shield
+            self.registry.remove_if_entry(record.model_id, record.entry)
+            self._drop_record_if_same(record)
+            return asyncio.shield(existing.task)
         record.state = "retiring"
-        self.registry.remove(record.model_id)
-        self._drop_record(record.model_id)
+        self.registry.remove_if_entry(record.model_id, record.entry)
+        self._drop_record_if_same(record)
         retirement = _Retirement(record=record, reason=reason, count=count)
         task = asyncio.create_task(self._cleanup_retired(identity, retirement))
         retirement.task = task
-        retirement.shield = asyncio.shield(task)
         self._retiring[identity] = retirement
-        return retirement.shield
+        return asyncio.shield(task)
 
     async def _evict_locked(
         self,
