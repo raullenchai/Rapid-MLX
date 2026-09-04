@@ -4451,6 +4451,41 @@ async def test_capacity_507_envelope_carries_full_role_contract():
 
 
 @pytest.mark.asyncio
+async def test_capacity_507_envelope_includes_registered_assistant_role():
+    registry = ModelRegistry()
+    assistant = entry("assistant-model")
+    registry.add(assistant, is_default=True)
+    manager = ResidentModelManager(
+        registry,
+        lambda name, path=None, perf=None: entry(name),
+        memory_limit_bytes=1 * GIB,
+        memory_reader=lambda: 0,
+    )
+    manager.register_primary(assistant, estimated_bytes=int(0.8 * GIB))
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=int(0.3 * GIB),
+            capacity_source="catalog",
+        ):
+            pass
+
+    envelope = exc_info.value.envelope()["error"]
+    assert envelope["used_bytes"] == int(0.8 * GIB)
+    assert envelope["resident_roles"] == [
+        {
+            "role": "assistant",
+            "model_id": "assistant-model",
+            "reserved_bytes": int(0.8 * GIB),
+            "state": "resident",
+        }
+    ]
+    assert envelope["recovery_actions"] == ["unload_assistant"]
+
+
+@pytest.mark.asyncio
 async def test_alignment_replace_conflict_reports_recovery_actions():
     # The capacity rejection for the alignment role must pair its
     # requested_role with the role-appropriate recovery actions.

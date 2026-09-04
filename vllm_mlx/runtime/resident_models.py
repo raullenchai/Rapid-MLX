@@ -804,22 +804,46 @@ class ResidentModelManager:
         return ResidentRole.coerce(role)
 
     def _resident_roles_snapshot(self) -> list[dict[str, object]]:
-        """Snapshot the live auxiliary-role ledger for the typed 507 envelope.
+        """Snapshot every live role charged by the typed 507 envelope.
 
-        Drawn from ``self._roles`` (the authoritative auxiliary reservation
-        ledger) with the stable fields the downstream UX renders: role,
-        model_id, reserved_bytes, state. Sorted deterministically by role so
-        the machine contract is order-stable regardless of admission order.
+        Capacity accounting combines registry-backed models in ``_records``
+        with auxiliary reservations in ``_roles``. The conflict envelope must
+        describe that same set; otherwise it can recommend unloading the
+        assistant while omitting the assistant from ``resident_roles``.
         """
-        return [
+
+        def model_role(record: ResidencyRecord) -> str:
+            group = _replacement_group(record.entry)
+            return {
+                "image-gen": ResidentRole.IMAGE_GENERATION.value,
+                "video-gen": ResidentRole.VIDEO_GENERATION.value,
+            }.get(group, group)
+
+        model_roles = [
+            {
+                "role": model_role(record),
+                "model_id": record.model_id,
+                "reserved_bytes": max(
+                    record.estimated_bytes,
+                    record.measured_bytes,
+                ),
+                "state": record.state,
+            }
+            for record in self._records.values()
+        ]
+        auxiliary_roles = [
             {
                 "role": record.role,
                 "model_id": record.model_id,
                 "reserved_bytes": record.reserved_bytes,
                 "state": record.state,
             }
-            for record in sorted(self._roles.values(), key=lambda item: item.role)
+            for record in self._roles.values()
         ]
+        return sorted(
+            [*model_roles, *auxiliary_roles],
+            key=lambda item: (str(item["role"]), str(item["model_id"])),
+        )
 
     def _recovery_actions_for(self, role: ResidentRole | None) -> list[str]:
         """Return the server-declared recovery actions for a role."""
