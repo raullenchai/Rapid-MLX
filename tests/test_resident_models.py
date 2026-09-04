@@ -4489,6 +4489,66 @@ async def test_capacity_507_envelope_includes_registered_assistant_role():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_state", ["retiring", "failed"])
+async def test_capacity_507_envelope_includes_charged_retirement(
+    cleanup_state, monkeypatch
+):
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
+    registry = ModelRegistry()
+    engine = BlockingStopLifecycleEngine()
+    assistant = entry("retiring-assistant", engine)
+    registry.add(assistant)
+    manager = ResidentModelManager(
+        registry,
+        AsyncMock(),
+        memory_limit_bytes=1 * GIB,
+        memory_reader=lambda: 0,
+    )
+    record = ResidencyRecord(
+        entry=assistant,
+        estimated_bytes=int(0.8 * GIB),
+        loaded_at=0,
+        last_used_at=0,
+    )
+    manager._index_record(record)
+
+    async with manager._lock:
+        cleanup = manager._begin_evict_locked(record, reason="explicit")
+    await engine.stop_started.wait()
+    retirement = manager._retiring[id(engine)]
+    if cleanup_state == "failed":
+        assert retirement.task is not None
+        retirement.task.cancel()
+        await cleanup
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=int(0.3 * GIB),
+            capacity_source="catalog",
+        ):
+            pass
+
+    envelope = exc_info.value.envelope()["error"]
+    assert envelope["used_bytes"] == int(0.8 * GIB)
+    assert envelope["resident_roles"] == [
+        {
+            "role": "assistant",
+            "model_id": "retiring-assistant",
+            "reserved_bytes": int(0.8 * GIB),
+            "state": cleanup_state,
+        }
+    ]
+
+    if cleanup_state == "retiring":
+        engine.stop_release.set()
+        await cleanup
+
+
+@pytest.mark.asyncio
 async def test_alignment_replace_conflict_reports_recovery_actions():
     # The capacity rejection for the alignment role must pair its
     # requested_role with the role-appropriate recovery actions.

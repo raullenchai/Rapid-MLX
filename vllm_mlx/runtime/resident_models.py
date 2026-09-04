@@ -829,6 +829,18 @@ class ResidentModelManager:
             }
             for record in self._records.values()
         ]
+        retiring_roles = [
+            {
+                "role": model_role(retirement.record),
+                "model_id": retirement.record.model_id,
+                "reserved_bytes": max(
+                    retirement.record.estimated_bytes,
+                    retirement.record.measured_bytes,
+                ),
+                "state": retirement.state,
+            }
+            for retirement in self._retiring.values()
+        ]
         auxiliary_roles = [
             {
                 "role": record.role,
@@ -839,7 +851,7 @@ class ResidentModelManager:
             for record in self._roles.values()
         ]
         return sorted(
-            [*model_roles, *auxiliary_roles],
+            [*model_roles, *retiring_roles, *auxiliary_roles],
             key=lambda item: (str(item["role"]), str(item["model_id"])),
         )
 
