@@ -87,88 +87,84 @@ def test_alignment_capacity_fails_closed_on_unknown(monkeypatch):
     assert capacity.requested_bytes is None
 
 
-def test_local_cache_lookup_is_bounded_for_hit_and_miss(monkeypatch):
-    """The verified-cache footprint (hit OR miss) is reused only for the bounded
-    TTL so a mutable cache's later download becomes discoverable after expiry,
-    while a burst of arbitrary model ids does not re-walk the whole cache each
-    time (reconciles round-3 'don't permanently memoize', round-4 'bounded TTL',
-    and round-9 'bounded negatively-cached miss' findings)."""
+def test_local_cache_lookup_coalesces_into_one_scan_per_ttl(monkeypatch):
+    """The local-cache footprint reads from a SINGLE TTL-bounded snapshot: any
+    number of distinct model ids (attacker-controlled) trigger one cache walk
+    per TTL window — no per-id scan, no unbounded per-id memory — and a fresh
+    download becomes discoverable after the TTL elapses."""
     from vllm_mlx.runtime import role_capacity
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        role_capacity,
-        "_scan_local_cache_bytes",
-        lambda hf: calls.append(hf) or 998244353,
-    )
+
+    def fake_index() -> dict[str, int]:
+        calls.append("scan")
+        return {"c/fakemodel": 998244353, "c/othermodel": 555}
+
+    monkeypatch.setattr(role_capacity, "_scan_local_cache_index", fake_index)
     monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", 60.0)
-    role_capacity._local_cache_lookups.clear()
+    monkeypatch.setattr(role_capacity, "_local_cache_snapshot", None)
 
-    # First call scans and caches the positive result.
+    # First lookup builds the snapshot (one scan).
     assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
-    assert calls == ["c/FakeModel"]
+    assert calls == ["scan"]
 
-    # A repeat inside the TTL reuses the cached footprint without re-scanning.
-    assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
-    assert calls == ["c/FakeModel"]
+    # A distinct id inside the same TTL reuses the SAME snapshot — no new scan.
+    assert role_capacity._local_cache_bytes("c/OtherModel") == 555
+    assert calls == ["scan"]
 
-    # After the TTL elapses the cache is re-scanned (mutable disk observed).
-    monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", -1.0)
-    assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
-    assert calls == ["c/FakeModel", "c/FakeModel"]
-
-    # A MISS is also cached briefly: two consecutive unknown lookups scan only
-    # once (no repeated full-cache walks for arbitrary ids), then re-scan after
-    # the TTL so a later download becomes discoverable.
-    monkeypatch.setattr(
-        role_capacity,
-        "_scan_local_cache_bytes",
-        lambda hf: calls.append(hf) or None,
-    )
-    monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", 60.0)
-    role_capacity._local_cache_lookups.clear()
+    # A miss inside the TTL is served from the same snapshot, still no scan.
     assert role_capacity._local_cache_bytes("c/NotThere") is None
-    assert role_capacity._local_cache_bytes("c/NotThere") is None
-    assert calls.count("c/NotThere") == 1
+    assert calls == ["scan"]
 
-    # After the TTL the miss is re-scanned so a fresh download is discovered.
+    # After the TTL elapses the snapshot is rebuilt (fresh download discoverable).
     monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", -1.0)
     assert role_capacity._local_cache_bytes("c/NotThere") is None
-    assert calls.count("c/NotThere") == 2
+    assert calls == ["scan", "scan"]
 
 
-def test_local_cache_rejects_partial_incomplete_download(monkeypatch):
-    """pr_validate codex BLOCKING (round-9): a partially-cached repo (tokenizer/
-    config only, no completed snapshot) must NOT be trusted as the footprint —
-    that would under-reserve and let the later load blow past the ceiling. It
-    returns unknown and fails closed under a configured ceiling."""
+class _Rev:
+    def __init__(self, refs, file_sizes=()):
+        self.refs = frozenset(refs)
+        self.files = [type("F", (), {"size_on_disk": s})() for s in file_sizes]
+
+
+def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
+    """pr_validate codex BLOCKING (round-9 + round-10): the local-cache index
+    trusts ONLY a complete (ref-bound) snapshot and charges its actual file
+    bytes — never a partial/aggregate footprint that would under-reserve."""
     import huggingface_hub
 
     from vllm_mlx.runtime import role_capacity
 
-    class _IncompleteRev:
-        refs = frozenset()
-
-    class _CompleteRev:
-        refs = frozenset({"main"})
-
     class _PartialRepo:
         repo_id = "c/PartialModel"
-        size_on_disk = 654321  # small: only config/tokenizer bytes cached
-        revisions = (_IncompleteRev(),)
+        # A repo with ONLY a partial (ref-less) revision: tokenizer/config only.
+        revisions = (_Rev(refs=()),)
 
     class _CompleteRepo:
         repo_id = "c/CompleteModel"
-        size_on_disk = 998244353
-        revisions = (_CompleteRev(),)
+        # A completed snapshot: ref points at main, weights present.
+        revisions = (_Rev(refs={"main"}, file_sizes=(1000, 9000)),)
+
+    class _OldCompletedPlusPartialRepo:
+        repo_id = "c/MixedModel"
+        # An old completed revision PLUS a fresh partial one being downloaded.
+        revisions = (
+            _Rev(refs={"main"}, file_sizes=(8000,)),
+            _Rev(refs=(), file_sizes=(100,)),
+        )
 
     class _FakeCache:
-        repos = [_PartialRepo, _CompleteRepo]
+        repos = [_PartialRepo, _CompleteRepo, _OldCompletedPlusPartialRepo]
 
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", lambda: _FakeCache())
-    role_capacity._local_cache_lookups.clear()
-    role_capacity._LOCAL_CACHE_TTL_SECONDS = -1.0  # force rescan each call
 
-    # Partial download is rejected (fails closed), full download is charged.
-    assert role_capacity._scan_local_cache_bytes("c/PartialModel") is None
-    assert role_capacity._scan_local_cache_bytes("c/CompleteModel") == 998244353
+    index = role_capacity._scan_local_cache_index()
+    # Partial (no completed snapshot) contributes nothing -> fail closed.
+    assert "c/partialmodel" not in index
+    # Completed snapshot charged by its ACTUAL file bytes (1000+9000).
+    assert index["c/completemodel"] == 10000
+    # A repo with an older completed + partial revision is charged ONLY the
+    # completed snapshot's bytes (8000), not the aggregate (8100) — so the
+    # in-progress second revision cannot understate the real load.
+    assert index["c/mixedmodel"] == 8000

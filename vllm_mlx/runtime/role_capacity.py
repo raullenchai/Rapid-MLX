@@ -17,86 +17,93 @@ class RoleCapacity:
     source: str
 
 
-# ``_LOCAL_CACHE_TTL_SECONDS`` bounds how long a local-footprint lookup (hit
-# OR miss) is reused. The HF cache is mutable — a checkpoint can be downloaded,
-# deleted or grown between requests — so a result must never be remembered
-# forever. The bounded TTL serves two goals at once:
+# ``_LOCAL_CACHE_TTL_SECONDS`` bounds how long ONE indexed snapshot of the local
+# HF cache is reused. The cache is mutable — a checkpoint can be downloaded,
+# deleted or grown between requests — so an index must never be remembered
+# forever. Two goals at once:
 #
-#   * a burst of repeated alignment requests (successful or rejected) does not
-#     re-walk the whole HF cache each time, and
-#   * a previously-missing or partially-cached checkpoint becomes discoverable
-#     (re-scanned) once the TTL elapses.
+#   * every local-footprint lookup (for any number of model ids) reads from the
+#     SAME cached ``scan_cache_dir()`` index, so a burst of arbitrary
+#     (attacker-controlled) model ids performs ONE walk per TTL window, not one
+#     per id — this also bounds memory to a single index, not one entry per id;
+#   * a previously-missing or newly-downloaded checkpoint becomes discoverable
+#     once the TTL elapses and the index is re-scanned.
 #
-# Thus a *complete* cached download is charged promptly, an absent one is
-# retried soon, and a still-in-progress download does not get trusted until it
-# finishes.
+# A *complete* cached download is charged promptly; an absent or still
+# in-progress one is not trusted until a later re-scan observes it complete.
 _LOCAL_CACHE_TTL_SECONDS = 30.0
-_local_cache_lookups: dict[str, tuple[float, int | None]] = {}
+# ``(monotonic_timestamp, {repo_id_lower: footprint_bytes})`` or ``None`` when
+# no scan has completed yet.
+_local_cache_snapshot: tuple[float, dict[str, int]] | None = None
 
 
 def _local_cache_bytes(hf_id: str) -> int | None:
     """Return the verified on-disk footprint of ``hf_id`` in the local HF cache.
 
     Satisfies the "catalog OR verified local-cache metadata" contract for a
-    checkpoint absent (or stale) in the checked-in manifest. Uses
-    ``scan_cache_dir()``'s ``size_on_disk`` (huggingface_hub's own deduped byte
-    count — exactly what ``rapid-mlx rm`` reports). ``None`` when the repo is
-    not cached, is only partially downloaded, or the scan fails, so the caller
-    fails closed rather than admitting on a partial/uncertain footprint.
-
-    Both hits and misses are cached briefly (TTL), so a burst of arbitrary
-    valid-looking model ids does not saturate the worker thread pool with full
-    cache walks, while a later download still becomes discoverable once the TTL
-    expires (cache is mutable and must be re-observed fresh).
+    checkpoint absent (or stale) in the checked-in manifest. Reads from a
+    single TTL-bounded snapshot of ``scan_cache_dir()`` (built on demand), so
+    repeated lookups coalesce into one cache walk per TTL window regardless of
+    how many distinct model ids are probed — an attacker cannot drive one
+    ``scan_cache_dir()`` traversal (or unbounded memory) per public alignment
+    request. ``None`` when the repo is not cached, only partially downloaded,
+    or the scan fails, so the caller fails closed rather than admitting on a
+    partial/uncertain footprint.
     """
-    lc = hf_id.lower()
+    global _local_cache_snapshot
     now = time.monotonic()
-    cached = _local_cache_lookups.get(lc)
-    if cached is not None and now - cached[0] < _LOCAL_CACHE_TTL_SECONDS:
-        return cached[1]
-    size = _scan_local_cache_bytes(hf_id)
-    _local_cache_lookups[lc] = (now, size)
-    return size
+    if (
+        _local_cache_snapshot is not None
+        and now - _local_cache_snapshot[0] < _LOCAL_CACHE_TTL_SECONDS
+    ):
+        return _local_cache_snapshot[1].get(hf_id.lower())
+
+    index = _scan_local_cache_index()
+    _local_cache_snapshot = (now, index)
+    return index.get(hf_id.lower())
 
 
-def _scan_local_cache_bytes(hf_id: str) -> int | None:
-    """Return a COMPLETE cached footprint for ``hf_id``, else ``None``.
+def _scan_local_cache_index() -> dict[str, int]:
+    """Return ``{repo_id_lower: completed-footprint}`` from the local HF cache.
 
-    We deliberately require a completed (ref-bound) download before trusting
-    ``size_on_disk``: huggingface_hub writes the ``refs/<branch>`` pointer only
-    after a ``snapshot_download`` finishes, so a repo whose ``size_on_disk`` we
-    read is either a full, usable checkpoint or an in-progress/partial one. A
-    partial cache reserves only its small on-disk bytes (e.g. tokenizer/config)
-    and would under-charge the residency ledger — the later ``STTEngine.load``
-    would download the remaining weights and blow past the ceiling. So a
-    partial download returns ``None`` (fail closed). ``None`` on any smash too,
-    so a cache-scan hiccup never admits blind.
+    Only repos with a COMPLETE (ref-bound) default snapshot are indexed. The
+    footprint for a repo is the byte total of its completed snapshot — the
+    revision a ``load`` would use — NOT the repo's aggregate ``size_on_disk``,
+    which would include a partially-downloaded second revision and understate
+    what the load will materialize. A repo with no completed snapshot (still
+    downloading, or only config/tokenizer cached) contributes nothing, so the
+    caller fails closed (unknown -> 507 under a ceiling) instead of reserving
+    only partial bytes and blowing past the ceiling on the real load.
     """
     try:
         from huggingface_hub import scan_cache_dir
     except Exception:  # pragma: no cover - huggingface_hub is a core dep
-        return None
+        return {}
     try:
         cache = scan_cache_dir()
-        lc = hf_id.lower()
+        index: dict[str, int] = {}
         for repo in cache.repos:
-            if repo.repo_id.lower() != lc:
+            # The loader resolves to the ref-bound (default) revision; only a
+            # snapshot that is complete (has a ref pointing at it) is trusted.
+            completed = [rev for rev in repo.revisions if rev.refs]
+            if not completed:
+                if any(rev for rev in repo.revisions):
+                    logger.debug(
+                        "local cache for %r has no completed snapshot; "
+                        "failing closed instead of under-reserving",
+                        repo.repo_id,
+                    )
                 continue
-            # A ref-bound revision is a COMPLETED download. Size_on_disk on a
-            # ref-less (in-progress) snapshot only reflects partial bytes.
-            if not any(rev.refs for rev in repo.revisions):
-                logger.debug(
-                    "local cache for %r is partial (no completed snapshot); "
-                    "failing closed instead of under-reserving",
-                    repo.repo_id,
-                )
-                return None
-            size = int(repo.size_on_disk or 0)
-            return size if size > 0 else None
+            # Sum the file bytes of the completed snapshot(s) actually present.
+            size = 0
+            for rev in completed:
+                size += sum(int(f.size_on_disk or 0) for f in rev.files)
+            if size > 0:
+                index[repo.repo_id.lower()] = size
+        return index
     except Exception as exc:  # noqa: BLE001 - a cache-scan hiccup must not admit blind
-        logger.debug("scan_cache_dir for %r failed: %s", hf_id, exc)
-        return None
-    return None
+        logger.debug("scan_cache_dir failed: %s", exc)
+        return {}
 
 
 def alignment_capacity(model_id: str) -> RoleCapacity:
@@ -111,10 +118,11 @@ def alignment_capacity(model_id: str) -> RoleCapacity:
 
     When the manifest has no entry (repo not newly mirrored / not in the size
     table), we fall back to the checkpoint's verified local-cache footprint if
-    it is already on disk AND fully downloaded. Only when BOTH the catalog and
-    the (complete) local cache are empty does ``requested_bytes=None`` with
-    ``source="unknown"``, so a configured residency ceiling fails closed
-    (``role_capacity_unknown``) instead of admitting without a typed decision.
+    it is already on disk AND fully downloaded (a complete, ref-bound
+    snapshot). Only when BOTH the catalog and the (complete) local cache are
+    empty does ``requested_bytes=None`` with ``source="unknown"``, so a
+    configured residency ceiling fails closed (``role_capacity_unknown``)
+    instead of admitting without a typed decision.
     """
     from ..audio.registry import resolve_audio_alias
     from ..model_sizes import size_bytes
