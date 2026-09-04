@@ -118,11 +118,18 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             let maximumBytes: Int
             let maximumPixels: Int?
             let formats: [String]
+            /// Legacy field from the retired contract. Absent for the current
+            /// server (which signals image-to-video support by the reference's
+            /// presence); honored here so a transitional server that still sends
+            /// `accepted: false` keeps image input disabled rather than enabling
+            /// it by ignoring the flag.
+            let accepted: Bool?
 
             enum CodingKeys: String, CodingKey {
                 case formats
                 case maximumBytes = "maximum_bytes"
                 case maximumPixels = "maximum_pixels"
+                case accepted
             }
         }
 
@@ -174,9 +181,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
 
     /// The `input_reference` limit is usable when the server advertises a
     /// positive byte budget, at least one image MIME type this client can
-    /// produce, and (when declared) a positive pixel ceiling.
+    /// produce, and (when declared) a positive pixel ceiling. A legacy
+    /// `accepted: false` (retired current-server field) explicitly disables it.
     private var usableReferenceLimits: Bool {
         guard let input = limits.inputReference,
+              input.accepted != false,
               input.maximumBytes > 0,
               !acceptedReferenceMIMETypes.isEmpty else { return false }
         return input.maximumPixels.map { $0 > 0 } ?? true
@@ -274,14 +283,19 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let fps = limits.fps
         let frames = limits.frames
         let workload = limits.workload
-        // A present but unusable input_reference fails closed: it must carry a
-        // positive byte budget, at least one image MIME type, and (when sent) a
-        // positive pixel ceiling. Absent is fine — it simply means text-to-video.
-        let validInput = limits.inputReference.map {
-            $0.maximumBytes > 0
-                && !$0.formats.isEmpty
-                && !acceptedReferenceMIMETypes.isEmpty
-                && ($0.maximumPixels.map { $0 > 0 } ?? true)
+        // A present input_reference must be either usable, or explicitly
+        // disabled by a legacy `accepted: false` (a transitional server that
+        // still sends the retired flag). Any other present-but-unusable
+        // reference misses the byte/formats/pixel limits and fails closed;
+        // absent is fine — it simply means text-to-video.
+        let validInput = limits.inputReference.map { reference in
+            reference.accepted == false
+                || (
+                    reference.maximumBytes > 0
+                        && !reference.formats.isEmpty
+                        && !acceptedReferenceMIMETypes.isEmpty
+                        && (reference.maximumPixels.map { $0 > 0 } ?? true)
+                )
         } ?? true
         guard !model.isEmpty,
               !family.isEmpty,

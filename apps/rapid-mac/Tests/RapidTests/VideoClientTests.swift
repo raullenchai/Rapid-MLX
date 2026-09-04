@@ -146,6 +146,28 @@ struct VideoClientTests {
         #expect(value.acceptedReferenceMIMETypes.isEmpty)
     }
 
+    @Test("Legacy accepted:false keeps image input disabled without rejecting the payload")
+    func legacyAcceptedFalseDisablesImageInput() async throws {
+        // A transitional server may still send the retired `accepted` boolean.
+        // `accepted: false` must disable image input (not enable it by being
+        // ignored) yet must not reject the whole payload during skew.
+        let client = makeClient()
+        let json = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""input_reference":{"maximum_bytes":20971520,"maximum_pixels":16777216,"formats":["jpeg","png","webp"]}"#,
+            with: #""input_reference":{"accepted":false,"maximum_bytes":20971520,"formats":["jpeg","png","webp"]}"#
+        )
+        let decoded = try? JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(json.utf8)
+        )
+        #expect(decoded.map { !$0.supportsImageInput } == true)
+
+        VideoStubProtocol.response = (200, Data(json.utf8))
+        let value = try await client.capabilities(port: 8123, bearer: nil)
+        #expect(!value.supportsImageInput)
+        #expect(value.referenceMaximumBytes == 0)
+        #expect(!value.sizePresets.isEmpty)
+    }
+
     @Test("Image input is disabled when reference limits are unusable")
     func imageInputDisabledWhenReferenceUnusable() async {
         // A zero byte budget leaves no usable reference limit, so image input is
