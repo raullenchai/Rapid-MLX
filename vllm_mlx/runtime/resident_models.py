@@ -978,6 +978,7 @@ class ResidentModelManager:
                         "no idle unpinned model is eligible for eviction"
                     )
                 coerced_role = self._coerce_role(requested_role)
+                assert coerced_role is not None
                 raise ResidentModelCapacityError(
                     (
                         "insufficient capacity for role "
