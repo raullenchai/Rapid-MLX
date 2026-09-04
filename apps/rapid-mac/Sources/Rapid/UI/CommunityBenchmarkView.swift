@@ -2,6 +2,10 @@ import Darwin
 import Foundation
 import SwiftUI
 
+private let communityBenchmarkLeaderboardURL = URL(
+    string: "https://rapidmlx.com/leaderboard"
+)!
+
 struct CommunityBenchmarkModel: Identifiable, Hashable {
     let entry: ModelEntry
     let task: ModelTask
@@ -112,12 +116,49 @@ private struct CommunityBenchmarkResults: Decodable {
     let receipts: [String: CommunityBenchmarkReceipt]?
 }
 
-private struct CommunityBenchmarkReceipt: Decodable {
+struct CommunityBenchmarkContributor: Decodable, Equatable {
+    let name: String
+    let tag: String
+
+    var displayName: String { "\(name) ·\(tag)" }
+
+    var profileURL: URL? {
+        // Percent-encode the identifier so an embedded "/" in a server-assigned
+        // name/tag cannot become a path separator — mirrors the CLI client's
+        // urllib `quote(f"{name}-{tag}", safe="-")`. (Nothing but ASCII
+        // alphanumerics, "_", ".", "-", "~" stays literal; everything else is
+        // percent-encoded, so the joined slug is safe to drop into a URL path.)
+        var allowed = CharacterSet.alphanumerics
+        allowed.formUnion(CharacterSet(charactersIn: "_.-~"))
+        let encoded = ("\(name)-\(tag)").addingPercentEncoding(
+            withAllowedCharacters: allowed
+        ) ?? ""
+        return URL(string: "https://rapidmlx.com/leaderboard/contributors/\(encoded)")
+    }
+}
+
+struct CommunityBenchmarkReceipt: Decodable, Identifiable {
     let submissionID: String
     let alreadyExists: Bool
     let acceptedAt: String
+    let contributor: CommunityBenchmarkContributor?
+
+    var id: String { submissionID }
+    var contributionLinkTitle: String {
+        contributor?.displayName ?? "View Community Benchmark"
+    }
+
+    var contributionURL: URL {
+        contributor?.profileURL ?? communityBenchmarkLeaderboardURL
+    }
+
+    var contributionAccessibilityLabel: String {
+        contributor.map { "View contributions by \($0.displayName)" }
+            ?? "View Community Benchmark"
+    }
 
     enum CodingKeys: String, CodingKey {
+        case contributor
         case submissionID = "submission_id"
         case alreadyExists = "already_exists"
         case acceptedAt = "accepted_at"
@@ -555,6 +596,7 @@ struct CommunityBenchmarkView: View {
     @State private var shareTask: Task<Void, Never>?
     @State private var shareCandidate: CommunityBenchmarkUploadPreview?
     @State private var sharingRunID: String?
+    @State private var shareSuccess: CommunityBenchmarkReceipt?
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
@@ -627,6 +669,52 @@ struct CommunityBenchmarkView: View {
             .padding(24)
             .frame(minWidth: 680, minHeight: 600)
         }
+        .sheet(item: $shareSuccess, content: shareSuccessSheet)
+    }
+
+    private func shareSuccessSheet(_ receipt: CommunityBenchmarkReceipt) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
+            Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
+                .font(.title2.weight(.semibold))
+            if let contributor = receipt.contributor {
+                VStack(spacing: 6) {
+                    Text("Your Community Benchmark identity")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(contributor.displayName)
+                        .font(.system(.headline, design: .monospaced))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+                }
+                if let url = contributor.profileURL {
+                    Link("View my contributions", destination: url)
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+                }
+            } else {
+                Link(
+                    "View Community Benchmark",
+                    destination: communityBenchmarkLeaderboardURL
+                )
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
+            }
+            Text("Thanks for helping other Mac users choose models with real-world evidence.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Done") { shareSuccess = nil }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+        }
+        .padding(32)
+        .frame(width: 440)
+        .frame(minHeight: 330)
+        .accessibilityIdentifier("CommunityBenchmark.Share.Success")
     }
 
     private var header: some View {
@@ -714,10 +802,19 @@ struct CommunityBenchmarkView: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 5) {
                             Text(result.duration ?? result.outcome.status.capitalized)
-                            if receipts[result.id] != nil {
+                            if let receipt = receipts[result.id] {
                                 Label("Shared", systemImage: "checkmark.circle.fill")
                                     .font(.caption)
                                     .foregroundStyle(.green)
+                                Link(
+                                    receipt.contributionLinkTitle,
+                                    destination: receipt.contributionURL
+                                )
+                                .font(.caption.monospaced())
+                                .accessibilityLabel(receipt.contributionAccessibilityLabel)
+                                .accessibilityIdentifier(
+                                    "CommunityBenchmark.Contributor.\(result.id)"
+                                )
                             } else {
                                 Button(sharingRunID == result.id ? "Sharing…" : "Share") {
                                     prepareShare(result)
@@ -836,9 +933,9 @@ struct CommunityBenchmarkView: View {
                 if response.receiptSaved {
                     receipts[preview.runID] = response.receipt
                 } else {
-                    await refreshResults()
                     errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
                 }
+                shareSuccess = response.receipt
             } catch is CancellationError {
                 // Navigation cancelled the upload command and its subprocess.
             } catch {

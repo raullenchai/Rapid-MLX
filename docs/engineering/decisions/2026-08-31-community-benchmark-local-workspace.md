@@ -129,6 +129,12 @@ run digest. The client verifies that the returned receipt digest identifies the
 exact uploaded payload before marking a result shared. Atomic rows remain
 outside the legacy public aggregation path.
 
+The receipt's server-assigned contributor `name` and `tag` close the feedback
+loop after consent: CLI prints the public identity and contributor-page URL;
+Desktop presents the identity immediately after upload and keeps the page link
+on the local result. Clients construct the website route from those two atomic
+fields rather than adding a presentation URL to the strict receipt schema.
+
 Model-identity resolution, public aggregation, campaign prompts, rewards, and
 leaderboard growth mechanics remain later work. The ingestion boundary accepts
 the current unresolved identities deliberately; it never upgrades them to

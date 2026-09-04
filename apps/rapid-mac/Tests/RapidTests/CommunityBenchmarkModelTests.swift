@@ -205,6 +205,61 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Contributor receipt produces the public profile identity")
+    func contributorProfileIdentity() throws {
+        let contributor = CommunityBenchmarkContributor(
+            name: "modest-slate-wombat",
+            tag: "545"
+        )
+
+        #expect(contributor.displayName == "modest-slate-wombat ·545")
+        #expect(
+            contributor.profileURL?.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest-slate-wombat-545"
+        )
+    }
+
+    @Test("Contributor profile URL percent-encodes embedded slashes in the identity")
+    func contributorProfileURLPercentEncodesSlash() {
+        let contributor = CommunityBenchmarkContributor(
+            name: "modest/slate+wombat",
+            tag: "5 4"
+        )
+        // Mirrors the CLI client's urllib quote(f"{name}-{tag}", safe="-"): every
+        // character outside [A-Za-z0-9_.~-] is percent-encoded, so "/" cannot be
+        // interpreted as a path separator and the lone segment round-trips.
+        #expect(
+            contributor.profileURL?.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest%2Fslate%2Bwombat-5%204"
+        )
+    }
+
+    @Test("Desktop decodes contributor identity and valid anonymous receipts")
+    func contributorReceiptDecoding() throws {
+        let full = try JSONDecoder().decode(
+            CommunityBenchmarkReceipt.self,
+            from: Data(
+                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":false,"accepted_at":"2026-09-01T20:00:00Z","contributor":{"name":"modest-slate-wombat","tag":"545"}}"#.utf8
+            )
+        )
+        #expect(full.contributor?.displayName == "modest-slate-wombat ·545")
+        #expect(
+            full.contributionURL.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest-slate-wombat-545"
+        )
+        #expect(full.contributionLinkTitle == "modest-slate-wombat ·545")
+
+        let anonymous = try JSONDecoder().decode(
+            CommunityBenchmarkReceipt.self,
+            from: Data(
+                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":true,"accepted_at":"2026-09-01T20:00:00Z","contributor":null}"#.utf8
+            )
+        )
+        #expect(anonymous.contributor == nil)
+        #expect(anonymous.contributionURL.absoluteString == "https://rapidmlx.com/leaderboard")
+        #expect(anonymous.contributionLinkTitle == "View Community Benchmark")
+    }
+
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")
     func boundedPipeCapture() throws {
         let headPipe = Pipe()

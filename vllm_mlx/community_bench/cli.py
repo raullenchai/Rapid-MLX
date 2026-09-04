@@ -6,10 +6,27 @@ from __future__ import annotations
 import json
 import sys
 from typing import Any
+from urllib.parse import quote
 
 from .atomic_upload import preview_run, upload_run
 from .local_runner import LocalBenchmarkError, run_local
 from .workspace import LocalRunArchive, benchmark_catalog, plan_for_alias
+
+_LEADERBOARD_URL = "https://rapidmlx.com/leaderboard"
+_CONTRIBUTOR_BASE_URL = f"{_LEADERBOARD_URL}/contributors"
+
+
+def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the server-assigned public identity and its board URL."""
+
+    contributor = receipt.get("contributor")
+    if not isinstance(contributor, dict):
+        return None
+    name, tag = contributor.get("name"), contributor.get("tag")
+    if not isinstance(name, str) or not name or not isinstance(tag, str) or not tag:
+        return None
+    slug = quote(f"{name}-{tag}", safe="-")
+    return f"{name} ·{tag}", f"{_CONTRIBUTOR_BASE_URL}/{slug}"
 
 
 def _print_json(value: Any) -> None:
@@ -141,6 +158,12 @@ def benchmark_command(args) -> int:
             receipt = value["receipt"]
             suffix = " (already uploaded)" if receipt["already_exists"] else ""
             print(f"Accepted benchmark {receipt['submission_id']}{suffix}.")
+            if profile := _contributor_profile(receipt):
+                identity, url = profile
+                print(f"You contributed as {identity}.")
+                print(f"View your contributions: {url}")
+            else:
+                print(f"View Community Benchmark: {_LEADERBOARD_URL}")
             if not value["receipt_saved"]:
                 print(
                     "Warning: the upload succeeded but its local receipt could not be saved."
