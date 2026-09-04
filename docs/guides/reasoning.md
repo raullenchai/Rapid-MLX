@@ -243,6 +243,8 @@ The OpenAI `reasoning_effort` knob (`none` / `minimal` / `low` / `medium` / `hig
 
 Explicit knobs on the same dimension always win: `chat_template_kwargs.reasoning_effort` over the mapped level, `reasoning_max_tokens` over the tier cap, `enable_thinking` over `none`.
 
+A chat template that never reads `enable_thinking` but has its own on/off variable (Cohere's North Mini Code reads `reasoning`, default on) still turns off: a resolved `enable_thinking=false` (Desktop's default, `rapid-mlx chat` without `--think`, `reasoning_effort: none`) is passed as that variable. The template's switch is found from the variables it reads, not from the model name, and a request that already sets the switch or `reasoning_effort` in `chat_template_kwargs` keeps control.
+
 ## Backward Compatibility
 
 When `--reasoning-parser` is not specified, the server behaves as before:

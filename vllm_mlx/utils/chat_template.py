@@ -1549,6 +1549,116 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 
 
+def _context_reads(
+    node, bound: frozenset[str], nodes, reads: set[str]
+) -> frozenset[str]:
+    """Collect the names ``node`` reads from the render context into ``reads``.
+
+    Walks in evaluation order with Jinja scoping: a ``set`` binds its target
+    only after its value is evaluated (so North's
+    ``set reasoning = reasoning if reasoning is not undefined else ...`` is a
+    context read), loop targets and macro / call-block arguments shadow the
+    context inside their body only, and a name bound in only some branches of
+    an ``if`` stays a context read afterwards. Attribute access
+    (``message.reasoning``) is never a context read. Returns the names bound
+    once ``node`` has run.
+    """
+    if isinstance(node, nodes.Name):
+        if node.ctx == "load" and node.name not in bound:
+            reads.add(node.name)
+        return bound
+    if isinstance(node, nodes.Assign):
+        _context_reads(node.node, bound, nodes, reads)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.AssignBlock):
+        _context_reads_all(node.body, bound, nodes, reads)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.For):
+        _context_reads(node.iter, bound, nodes, reads)
+        inner = bound | _bound_names(node, nodes)
+        if node.test is not None:
+            _context_reads(node.test, inner, nodes, reads)
+        _context_reads_all(node.body, inner, nodes, reads)
+        _context_reads_all(node.else_, bound, nodes, reads)
+        return bound
+    if isinstance(node, nodes.If):
+        _context_reads(node.test, bound, nodes, reads)
+        after = [_context_reads_all(node.body, bound, nodes, reads)]
+        after.extend(
+            _context_reads(branch, bound, nodes, reads) for branch in node.elif_
+        )
+        after.append(_context_reads_all(node.else_, bound, nodes, reads))
+        return frozenset.intersection(*after)
+    if isinstance(node, (nodes.Macro, nodes.CallBlock)):
+        for default in node.defaults:
+            _context_reads(default, bound, nodes, reads)
+        if isinstance(node, nodes.CallBlock):
+            _context_reads(node.call, bound, nodes, reads)
+        _context_reads_all(
+            node.body, bound | {arg.name for arg in node.args}, nodes, reads
+        )
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, (nodes.Import, nodes.FromImport)):
+        _context_reads(node.template, bound, nodes, reads)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.With):
+        for value in node.values:
+            _context_reads(value, bound, nodes, reads)
+        _context_reads_all(node.body, bound | _bound_names(node, nodes), nodes, reads)
+        return bound
+    # Anything else (output, expressions, with/filter/scope blocks): evaluate
+    # the children in order; bindings made inside stay inside.
+    inner = bound | _bound_names(node, nodes)
+    for child in node.iter_child_nodes():
+        inner = _context_reads(child, inner, nodes, reads)
+    return bound
+
+
+def _context_reads_all(
+    stmts, bound: frozenset[str], nodes, reads: set[str]
+) -> frozenset[str]:
+    for stmt in stmts:
+        bound = _context_reads(stmt, bound, nodes, reads)
+    return bound
+
+
+@functools.lru_cache(maxsize=64)
+def _template_context_reads_for_source(template: str) -> frozenset[str]:
+    """Names a template reads from its render context (see ``_context_reads``)."""
+    jinja2, nodes = _jinja_nodes()
+    env = _template_parser()
+    if jinja2 is None or env is None:
+        return frozenset()
+    try:
+        tree = env.parse(template)
+    except Exception:
+        return frozenset()
+    reads: set[str] = set()
+    _context_reads_all(tree.body, frozenset(), nodes, reads)
+    return frozenset(reads)
+
+
+def template_thinking_switch(
+    template, *, tools: list[dict] | None = None
+) -> str | None:
+    """Name of a template's own on/off thinking variable when it is not
+    ``enable_thinking``.
+
+    Cohere's North Mini Code template never consults ``enable_thinking``; it
+    reads a boolean ``reasoning`` (default on, also driven by
+    ``reasoning_effort == "none"``) and seeds an empty thinking block when it
+    is false. A template that reads ``enable_thinking`` keeps that switch and
+    yields ``None`` here even if it also reads ``reasoning``.
+    """
+    for source in _chat_template_strings(template, tools=tools):
+        reads = _template_context_reads_for_source(source)
+        if "enable_thinking" in reads:
+            return None
+        if "reasoning" in reads:
+            return "reasoning"
+    return None
+
+
 def detect_native_reasoning_effort_levels(
     template, *, tools: list[dict] | None = None
 ) -> tuple[str, ...] | None:
@@ -1850,6 +1960,20 @@ def apply_chat_template(
         )
     ):
         template_kwargs.setdefault("reasoning_effort", "low")
+
+    # Templates with their own boolean switch and no ``enable_thinking``
+    # (Cohere North Mini Code reads ``reasoning``, default on): a resolved off
+    # flag becomes that switch, so Desktop's default and ``rapid-mlx chat``
+    # without ``--think`` actually turn reasoning off (#3045). Detection is
+    # template-driven (the variables the template reads), not a model-name
+    # match. A client that already passed the switch or ``reasoning_effort``
+    # (the template derives ``reasoning`` from ``"none"``) keeps control.
+    if enable_thinking is False and "reasoning_effort" not in template_kwargs:
+        switch = template_thinking_switch(
+            getattr(template_applicator, "chat_template", None), tools=tools
+        )
+        if switch is not None:
+            template_kwargs.setdefault(switch, False)
 
     # Hy3 chat_template.jinja defaults ``reasoning_effort=no_think`` which
     # empirically returns "France" instead of "Paris" on factual-recall
