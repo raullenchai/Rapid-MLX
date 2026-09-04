@@ -215,16 +215,20 @@ def test_mtp_force_inside_a_rejected_draft_row_is_rolled_back():
     out = proc.mtp_apply([1, 10, 11], mx.array([11]), mx.random.normal((1, 128)))
     assert int(mx.argmax(out[0]).item()) == THINK_END
     assert proc._think_count == 2
+    assert proc._force_logged is True  # the one-shot line fired tentatively
     # Target rejected the drafts: the boundary restores 0/2 and the force is
-    # gone; the cached row is harmless (rebuilt / reused when spent again).
+    # gone; the cached row is harmless (rebuilt / reused when spent again),
+    # and the log latch is re-armed so the committed force still logs once.
     proc.mtp_restore_state(boundary)
     assert proc._think_count == 0
+    assert proc._force_logged is False
     assert proc._phase([1, 12]) == "free"
     out = proc([1, 12], mx.random.normal((128,)))
     assert math.isfinite(out[0].item())  # untouched logits, no force
     # Spend it for real now: the same force row serves the committed path.
     out = proc([1, 12, 13], mx.random.normal((128,)))
     assert int(mx.argmax(out).item()) == THINK_END
+    assert proc._force_logged is True
 
 
 def test_force_mask_released_when_think_end_observed():

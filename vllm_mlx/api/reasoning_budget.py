@@ -261,12 +261,15 @@ class ReasoningBudgetLogitsProcessor:
         """
         return self(token_ids, logits)
 
-    def mtp_snapshot_state(self) -> tuple[int | None, int, int, bool, bool]:
+    def mtp_snapshot_state(self) -> tuple[int | None, int, int, bool, bool, bool]:
         """Capture every phase counter speculative verification may advance.
 
-        The cached force row and the one-shot log latches are deliberately
-        left out: the row is rebuilt lazily from ``_ended``/``_think_count``
-        and the latches only de-duplicate log lines.
+        The "budget spent" log latch travels with the state: a force on a
+        draft row the target then rejects must not consume the one-shot
+        line, or the committed force would go unlogged. The cached force row
+        is rebuilt lazily from the counters, and the out-of-range latch
+        guards a static tokenizer/model mismatch that is true on every path,
+        so neither is snapshotted.
         """
         return (
             self._prompt_len,
@@ -274,9 +277,12 @@ class ReasoningBudgetLogitsProcessor:
             self._think_count,
             self._started,
             self._ended,
+            self._force_logged,
         )
 
-    def mtp_restore_state(self, state: tuple[int | None, int, int, bool, bool]) -> None:
+    def mtp_restore_state(
+        self, state: tuple[int | None, int, int, bool, bool, bool]
+    ) -> None:
         """Restore a pre-proposal or target-accepted phase boundary."""
         (
             self._prompt_len,
@@ -284,6 +290,7 @@ class ReasoningBudgetLogitsProcessor:
             self._think_count,
             self._started,
             self._ended,
+            self._force_logged,
         ) = state
 
     # ---- forced-distribution construction (cached per vocab width) ---------

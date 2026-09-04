@@ -49,6 +49,7 @@ def test_snapshot_restore_round_trips_every_phase_counter():
     assert (proc._prompt_len, proc._committed, proc._think_count) == (3, 4, 1)
     assert proc._started is True
     assert proc._ended is False
+    assert proc._force_logged is False
     assert proc.mtp_snapshot_state() == boundary
 
 
