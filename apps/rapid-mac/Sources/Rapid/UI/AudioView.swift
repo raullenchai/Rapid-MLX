@@ -27,6 +27,12 @@ struct AudioView: View {
     /// react to the user's decision (Cancel = safe default; an action is an
     /// explicit, separate choice).
     @State private var roleConflictItem: RoleConflictItem?
+    /// Stable identities of conflicts this surface has ALREADY presented, so a
+    /// dismissed/stale conflict is not re-shown when an unrelated change to
+    /// `server.residentLoadFailures` fires `.onChange` (#2306). Keyed by a
+    /// per-instance signal (alias + message + requested bytes); a genuinely NEW
+    /// conflict on the same alias has a different identity and still presents.
+    @State private var presentedConflictKeys: Set<String> = []
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
     /// One control width across the Audio tabs — same as the Dictation
@@ -191,15 +197,44 @@ struct AudioView: View {
 
     private func presentConflictIfAny(for alias: String) {
         guard roleConflictItem == nil,
+              !alias.isEmpty,
               let failure = server.residentLoadFailure(for: alias),
-              let conflict = failure.roleConflict,
-              !alias.isEmpty
+              let conflict = failure.roleConflict
         else { return }
-        roleConflictItem = RoleConflictItem(
-            id: UUID(),
-            conflict: conflict,
-            requestedModelAlias: alias
-        )
+        // A conflict the user has already seen must not re-present when an
+        // unrelated change mutates the failure dictionary. Only a NEW conflict
+        // instance (distinct identity) opens the sheet again (#2306).
+        if Self.recordNewPresentation(alias: alias, conflict: conflict, into: &presentedConflictKeys) {
+            roleConflictItem = RoleConflictItem(
+                id: UUID(),
+                conflict: conflict,
+                requestedModelAlias: alias
+            )
+        }
+    }
+
+    /// A stable per-instance identity for a role conflict, so a dismissed
+    /// conflict is distinguishable from a genuinely fresh one on the same
+    /// alias. Combines fields that change when the server re-rejects: the alias
+    /// it was requested for, the server message, and the requested bytes.
+    static func conflictIdentity(alias: String, conflict: ResidentRoleConflict) -> String {
+        "\(alias):\(conflict.message):\(conflict.requestedBytes ?? 0)"
+    }
+
+    /// Pure decision seam for the presented-conflict dedupe (#2306). Returns
+    /// true (and records the identity) only when this conflict instance has not
+    /// been presented before — so a dismissed conflict is not re-shown on
+    /// unrelated failure-dict churn, while a genuinely fresh conflict on the
+    /// same alias (distinct identity) still presents.
+    static func recordNewPresentation(
+        alias: String,
+        conflict: ResidentRoleConflict,
+        into presented: inout Set<String>
+    ) -> Bool {
+        let key = conflictIdentity(alias: alias, conflict: conflict)
+        if presented.contains(key) { return false }
+        presented.insert(key)
+        return true
     }
 
     /// A recovery action is an explicit user choice beyond the original voice

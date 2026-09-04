@@ -275,6 +275,68 @@ struct ResidentRoleConflictTests {
         #expect(conflict.scopedRecoveryActions.contains(.unloadAssistant))
     }
 
+    @Test("A dismissed conflict is NOT re-presented on unrelated failure-dict churn")
+    func dismissedConflictNotRePresented() {
+        var presented: Set<String> = []
+        let conflict = self.sampleConflict(message: "no room for whisper")
+        let alias = "whisper-large-v3"
+
+        // First observation presents and records the conflict instance.
+        #expect(AudioView.recordNewPresentation(
+            alias: alias, conflict: conflict, into: &presented
+        ))
+        // The sheet is dismissed (the failure stays in the dict). Any later
+        // unrelated change to residentLoadFailures re-fires the same instance —
+        // it must NOT present again.
+        #expect(!AudioView.recordNewPresentation(
+            alias: alias, conflict: conflict, into: &presented
+        ))
+    }
+
+    @Test("A genuinely new conflict on the same alias DOES present after dismissal")
+    func freshConflictOnSameAliasPresents() {
+        var presented: Set<String> = []
+        let alias = "whisper-large-v3"
+
+        let first = self.sampleConflict(message: "no room for whisper")
+        #expect(AudioView.recordNewPresentation(
+            alias: alias, conflict: first, into: &presented
+        ))
+        // A distinct instance (different server message/bytes) on the same
+        // alias is a fresh rejection and must still present.
+        let second = self.sampleConflict(
+            message: "insufficient capacity after releasing the speech-output lane",
+            requestedBytes: 4_000_000_000
+        )
+        #expect(AudioView.recordNewPresentation(
+            alias: alias, conflict: second, into: &presented
+        ))
+    }
+
+    @Test("Conflict identity is per-alias: distinct aliases never collide")
+    func identityIsPerAlias() {
+        let conflict = self.sampleConflict(message: "identical message")
+        let a = AudioView.conflictIdentity(alias: "whisper", conflict: conflict)
+        let b = AudioView.conflictIdentity(alias: "parakeet", conflict: conflict)
+        #expect(a != b)
+    }
+
+    private func sampleConflict(
+        message: String,
+        requestedBytes: UInt64 = 3_221_225_472
+    ) -> ResidentRoleConflict {
+        ResidentRoleConflict(
+            message: message,
+            requestedRole: "speech-input",
+            requestedBytes: requestedBytes,
+            limitBytes: 34_359_738_368,
+            usedBytes: 10_000_000_000,
+            reason: "role_capacity_speech_input",
+            residentRoles: [],
+            recoveryActions: ["unload_assistant"]
+        )
+    }
+
     @Test("A plain 507 without role fields remains a legacy rejection (#2305 additive-safe)")
     func plainRejectionPreserved() async {
         let configuration = URLSessionConfiguration.ephemeral
