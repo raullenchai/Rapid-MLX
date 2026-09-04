@@ -123,48 +123,68 @@ def test_local_cache_lookup_coalesces_into_one_scan_per_ttl(monkeypatch):
 
 
 class _Rev:
-    def __init__(self, refs, file_sizes=()):
+    def __init__(self, refs, files=()):
         self.refs = frozenset(refs)
-        self.files = [type("F", (), {"size_on_disk": s})() for s in file_sizes]
+        self.files = [
+            type("F", (), {"file_name": name, "size_on_disk": size})
+            for name, size in files
+        ]
 
 
 def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
-    """pr_validate codex BLOCKING (round-9 + round-10): the local-cache index
-    trusts ONLY a complete (ref-bound) snapshot and charges its actual file
-    bytes — never a partial/aggregate footprint that would under-reserve."""
+    """pr_validate codex BLOCKING (round-9/10/11): the local-cache index trusts
+    ONLY a COMPLETE snapshot — ref-bound AND carrying a weight file — and
+    charges its actual file bytes, never a partial/aggregate footprint."""
     import huggingface_hub
 
     from vllm_mlx.runtime import role_capacity
 
     class _PartialRepo:
         repo_id = "c/PartialModel"
-        # A repo with ONLY a partial (ref-less) revision: tokenizer/config only.
-        revisions = (_Rev(refs=()),)
+        # A ref-less partial revision: tokenizer/config only.
+        revisions = (_Rev(refs=(), files=()),)
+
+    class _SelectiveNoWeightsRepo:
+        repo_id = "c/SelectiveModel"
+        # A REF-BOUND snapshot with only config/tokenizer (a selective
+        # download) — must be treated as incomplete.
+        revisions = (_Rev(refs={"main"}, files=(("config.json", 50),)),)
 
     class _CompleteRepo:
         repo_id = "c/CompleteModel"
-        # A completed snapshot: ref points at main, weights present.
-        revisions = (_Rev(refs={"main"}, file_sizes=(1000, 9000)),)
+        # A complete download: ref points at main, weights present.
+        revisions = (
+            _Rev(
+                refs={"main"},
+                files=(("config.json", 50), ("model.safetensors", 9950)),
+            ),
+        )
 
     class _OldCompletedPlusPartialRepo:
         repo_id = "c/MixedModel"
         # An old completed revision PLUS a fresh partial one being downloaded.
         revisions = (
-            _Rev(refs={"main"}, file_sizes=(8000,)),
-            _Rev(refs=(), file_sizes=(100,)),
+            _Rev(refs={"main"}, files=(("model.safetensors", 8000),)),
+            _Rev(refs=(), files=(("config.json", 100),)),
         )
 
     class _FakeCache:
-        repos = [_PartialRepo, _CompleteRepo, _OldCompletedPlusPartialRepo]
+        repos = [
+            _PartialRepo,
+            _SelectiveNoWeightsRepo,
+            _CompleteRepo,
+            _OldCompletedPlusPartialRepo,
+        ]
 
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", lambda: _FakeCache())
 
     index = role_capacity._scan_local_cache_index()
-    # Partial (no completed snapshot) contributes nothing -> fail closed.
+    # Ref-less partial contributes nothing -> fail closed.
     assert "c/partialmodel" not in index
-    # Completed snapshot charged by its ACTUAL file bytes (1000+9000).
+    # A ref-bound snapshot WITHOUT weights (selective download) is rejected.
+    assert "c/selectivemodel" not in index
+    # Complete snapshot charged by its ACTUAL file bytes (50+9950).
     assert index["c/completemodel"] == 10000
-    # A repo with an older completed + partial revision is charged ONLY the
-    # completed snapshot's bytes (8000), not the aggregate (8100) — so the
-    # in-progress second revision cannot understate the real load.
+    # A repo with older completed + partial revision is charged ONLY the
+    # completed snapshot's bytes (8000), not the aggregate (8100).
     assert index["c/mixedmodel"] == 8000

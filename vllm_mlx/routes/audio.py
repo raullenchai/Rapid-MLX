@@ -2020,6 +2020,18 @@ async def _run_alignment_request(
                         ) == _canonical_model_id(model_name):
                             admission.commit()
                         raise
+                    else:
+                        # The load returned normally WITH the engine published
+                        # for the requested model. Commit on the SUCCESS path
+                        # too, so a cancellation arriving during the upcoming
+                        # cancellable awaits / context exit cannot roll the
+                        # reservation back after the weights are already
+                        # resident (and accounted). The cancellation branch
+                        # above remains as the safety net for the drained case.
+                        if _aligner_engine is not None and _canonical_model_id(
+                            _aligner_engine.model_name
+                        ) == _canonical_model_id(model_name):
+                            admission.commit()
             result = await run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )

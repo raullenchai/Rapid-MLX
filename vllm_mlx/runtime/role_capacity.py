@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -33,8 +34,16 @@ class RoleCapacity:
 # in-progress one is not trusted until a later re-scan observes it complete.
 _LOCAL_CACHE_TTL_SECONDS = 30.0
 # ``(monotonic_timestamp, {repo_id_lower: footprint_bytes})`` or ``None`` when
-# no scan has completed yet.
+# no scan has completed yet. Guarded by ``_local_cache_lock`` because lookups
+# run on worker threads (``asyncio.to_thread``) and may race each other.
 _local_cache_snapshot: tuple[float, dict[str, int]] | None = None
+_local_cache_lock = threading.Lock()
+
+# A completed checkpoint that only carries config/tokenizer would vastly
+# under-reserve. A weight file is the irreducible signal that the downloaded
+# snapshot can actually run a load; a ref-bound snapshot WITHOUT one is a
+# selective/partial download and must fail closed.
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".gguf", ".npz", ".npy")
 
 
 def _local_cache_bytes(hf_id: str) -> int | None:
@@ -42,38 +51,49 @@ def _local_cache_bytes(hf_id: str) -> int | None:
 
     Satisfies the "catalog OR verified local-cache metadata" contract for a
     checkpoint absent (or stale) in the checked-in manifest. Reads from a
-    single TTL-bounded snapshot of ``scan_cache_dir()`` (built on demand), so
-    repeated lookups coalesce into one cache walk per TTL window regardless of
-    how many distinct model ids are probed — an attacker cannot drive one
-    ``scan_cache_dir()`` traversal (or unbounded memory) per public alignment
-    request. ``None`` when the repo is not cached, only partially downloaded,
-    or the scan fails, so the caller fails closed rather than admitting on a
-    partial/uncertain footprint.
+    single TTL-bounded snapshot of ``scan_cache_dir()`` (built on demand, under
+    a thread lock so a burst of concurrent lookups coalesces into ONE cache
+    walk per TTL window regardless of how many model ids are probed — an attacker
+    cannot drive a traversal or unbounded memory per public alignment request,
+    nor can racing threads each trigger the walk). ``None`` when the repo is not
+    cached, only partially downloaded, or the scan fails, so the caller fails
+    closed rather than admitting on a partial/uncertain footprint.
     """
     global _local_cache_snapshot
+    lc = hf_id.lower()
     now = time.monotonic()
-    if (
-        _local_cache_snapshot is not None
-        and now - _local_cache_snapshot[0] < _LOCAL_CACHE_TTL_SECONDS
-    ):
-        return _local_cache_snapshot[1].get(hf_id.lower())
-
-    index = _scan_local_cache_index()
-    _local_cache_snapshot = (now, index)
-    return index.get(hf_id.lower())
+    with _local_cache_lock:
+        if (
+            _local_cache_snapshot is not None
+            and now - _local_cache_snapshot[0] < _LOCAL_CACHE_TTL_SECONDS
+        ):
+            return _local_cache_snapshot[1].get(lc)
+        # Under the lock we re-check freshness: the first thread to observe an
+        # expired snapshot rebuilds it; the rest wait and then read the fresh
+        # one instead of each re-walking the cache.
+        index = _scan_local_cache_index()
+        _local_cache_snapshot = (now, index)
+        return index.get(lc)
 
 
 def _scan_local_cache_index() -> dict[str, int]:
     """Return ``{repo_id_lower: completed-footprint}`` from the local HF cache.
 
-    Only repos with a COMPLETE (ref-bound) default snapshot are indexed. The
-    footprint for a repo is the byte total of its completed snapshot — the
-    revision a ``load`` would use — NOT the repo's aggregate ``size_on_disk``,
-    which would include a partially-downloaded second revision and understate
-    what the load will materialize. A repo with no completed snapshot (still
-    downloading, or only config/tokenizer cached) contributes nothing, so the
-    caller fails closed (unknown -> 507 under a ceiling) instead of reserving
-    only partial bytes and blowing past the ceiling on the real load.
+    Only repos with a COMPLETE default snapshot are indexed. "Complete" is
+    verified with two INDEPENDENT signals, so a partial/selective download
+    cannot under-reserve and later blow past the ceiling:
+
+      * the snapshot is ref-bound (a ``snapshot_download`` finished writing its
+        ``refs/<branch>`` pointer), AND
+      * the ref-bound revision actually contains a model WEIGHT file. A
+        selective download that is ref-bound yet carries only config/tokenizer
+        is NOT a usable checkpoint and fails closed (round-11).
+
+    The footprint charged is the byte total of the revision the default ref
+    resolves to (``main``), NOT the repo's aggregate ``size_on_disk`` (which
+    would include a partially-downloaded sibling revision) and NOT the sum of
+    every historical snapshot. A repo with no trustworthy snapshot contributes
+    nothing, so the caller fails closed (unknown -> 507 under a ceiling).
     """
     try:
         from huggingface_hub import scan_cache_dir
@@ -83,27 +103,52 @@ def _scan_local_cache_index() -> dict[str, int]:
         cache = scan_cache_dir()
         index: dict[str, int] = {}
         for repo in cache.repos:
-            # The loader resolves to the ref-bound (default) revision; only a
-            # snapshot that is complete (has a ref pointing at it) is trusted.
-            completed = [rev for rev in repo.revisions if rev.refs]
-            if not completed:
-                if any(rev for rev in repo.revisions):
-                    logger.debug(
-                        "local cache for %r has no completed snapshot; "
-                        "failing closed instead of under-reserving",
-                        repo.repo_id,
-                    )
+            # Resolve the revision the loader would use: the one the default
+            # ``main`` ref points at (fall back to any single ref-bound rev).
+            rev = _default_completed_revision(repo.revisions)
+            if rev is None:
                 continue
-            # Sum the file bytes of the completed snapshot(s) actually present.
-            size = 0
-            for rev in completed:
-                size += sum(int(f.size_on_disk or 0) for f in rev.files)
+            file_names = [f.file_name for f in rev.files]
+            if not any(name.lower().endswith(_WEIGHT_SUFFIXES) for name in file_names):
+                logger.debug(
+                    "local cache for %r is ref-bound but has no weight file "
+                    "(%d files); treating as incomplete and failing closed",
+                    repo.repo_id,
+                    len(file_names),
+                )
+                continue
+            size = sum(int(f.size_on_disk or 0) for f in rev.files)
             if size > 0:
                 index[repo.repo_id.lower()] = size
         return index
     except Exception as exc:  # noqa: BLE001 - a cache-scan hiccup must not admit blind
         logger.debug("scan_cache_dir failed: %s", exc)
         return {}
+
+
+def _default_completed_revision(revisions):
+    """Pick the completed revision the loader would use (default ``main`` ref).
+
+    Returns ``None`` when there is no trustworthy completed revision (no
+    ref-bound snapshot, or ambiguous multiple refs) so the caller fails closed
+    rather than guess which snapshot to charge.
+    """
+    ref_bound = [rev for rev in revisions if rev.refs]
+    if not ref_bound:
+        if revisions:
+            logger.debug(
+                "local cache has %d revision(s) but none ref-bound; "
+                "failing closed instead of under-reserving",
+                len(revisions),
+            )
+        return None
+    # Prefer the revision the ``main`` ref points at (the default from a
+    # ``snapshot_download``). If there is exactly one ref-bound revision it is
+    # unambiguous regardless of branch name.
+    for rev in ref_bound:
+        if "main" in rev.refs:
+            return rev
+    return ref_bound[0] if len(ref_bound) == 1 else None
 
 
 def alignment_capacity(model_id: str) -> RoleCapacity:
