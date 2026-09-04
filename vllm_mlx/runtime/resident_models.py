@@ -1285,12 +1285,6 @@ class ResidentModelManager:
                                 record, group, candidates
                             )
                         )
-                except _CommittedReplacementCancelled:
-                    # Routing already names the new target. Preserve that truth,
-                    # reopen any sibling engines not yet retired, and propagate
-                    # cancellation without treating the target as a failed load.
-                    await self._resume_engines(paused_engines)
-                    raise
                 except BaseException:
                     # Once the loader returns, this manager owns the engine.  A
                     # later admission/replacement failure must not leave a model

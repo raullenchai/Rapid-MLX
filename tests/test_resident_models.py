@@ -2315,6 +2315,38 @@ async def test_explicit_unload_propagates_stop_failure():
 
 
 @pytest.mark.asyncio
+async def test_explicit_unload_reports_cancelled_raw_cleanup():
+    """A cancelled manager-owned cleanup remains charged and fails explicitly."""
+    registry = ModelRegistry()
+    engine = BlockingStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    manager._index_record(
+        ResidencyRecord(
+            entry=target,
+            estimated_bytes=2 * GIB,
+            loaded_at=0,
+            last_used_at=0,
+        )
+    )
+
+    unload = asyncio.create_task(manager.unload("chat-target"))
+    await engine.stop_started.wait()
+    retirement = manager._retiring[id(engine)]
+    assert retirement.task is not None
+    retirement.task.cancel()
+
+    with pytest.raises(
+        ResidentModelError, match="retirement cleanup cancelled before completion"
+    ):
+        await unload
+
+    assert retirement.state == "failed"
+    assert _accounted_bytes(manager, "chat-target") == 2 * GIB
+
+
+@pytest.mark.asyncio
 async def test_ttl_does_not_report_failed_cleanup_as_evicted():
     registry = ModelRegistry()
     engine = FailingStopLifecycleEngine()
@@ -2369,6 +2401,26 @@ async def test_shutdown_reports_every_failed_cleanup_after_draining_all():
     assert all(
         manager._retiring[id(engine)].state == "failed" for engine in engines.values()
     )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_reports_failure_without_a_preserved_cause(monkeypatch):
+    """The aggregate error remains useful for cause-less cleanup failures."""
+    manager = ResidentModelManager(
+        ModelRegistry(), AsyncMock(), memory_reader=lambda: 0
+    )
+    monkeypatch.setattr(
+        manager,
+        "_cleanup_failures",
+        lambda _identities: [("chat-target", "cleanup interrupted", None)],
+    )
+
+    with pytest.raises(
+        ResidentModelError, match="chat-target: cleanup interrupted"
+    ) as caught:
+        await manager.shutdown()
+
+    assert caught.value.__cause__ is None
 
 
 @pytest.mark.asyncio
