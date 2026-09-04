@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Rapid
@@ -395,15 +396,25 @@ struct VideoClientTests {
         )
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let source = directory.appendingPathComponent("one-pixel.png")
-        let png = try #require(Data(base64Encoded:
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        let source = directory.appendingPathComponent("two-pixel.png")
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
         ))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: source)
 
-        #expect(try VideoReferenceLoader.load(from: source, maximumPixels: 1) == png)
+        #expect(try VideoReferenceLoader.load(from: source, maximumPixels: 2) == png)
         #expect(throws: VideoReferenceLoaderError.tooLarge) {
-            _ = try VideoReferenceLoader.load(from: source, maximumPixels: 0)
+            _ = try VideoReferenceLoader.load(from: source, maximumPixels: 1)
         }
     }
 
