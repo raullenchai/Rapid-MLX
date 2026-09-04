@@ -93,9 +93,17 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             /// Alignment step applied to generation dimensions before the
             /// pixel-workload budget is checked. Mirrors the server's
             /// `dimension_rounding` vocabulary (`none` -> raw dimensions,
-            /// `ceil_to_32`, `ceil_to_64`). An unrecognized constant falls back
-            /// to the most conservative step (ceil to 64) so a newer server
-            /// rounding label remains safe without rejecting a healthy payload.
+            /// `ceil_to_32`, `ceil_to_64`).
+            ///
+            /// An unrecognized constant is deliberately tolerated (fail-closed is
+            /// reserved for missing/malformed payloads, not for a new rounding
+            /// label) and falls back to the largest step this client currently
+            /// understands, 64. This keeps the payload valid while being
+            /// conservative with the workload estimate. A future constant larger
+            /// than 64 (e.g. `ceil_to_128`) could under-round here and admit a
+            /// preset the server rejects; that is an accepted UI-level tradeoff —
+            /// the server remains authoritative at request time, and we prefer
+            /// tolerance over dropping an otherwise healthy response.
             var alignmentStep: Int {
                 switch dimensionRounding {
                 case "none": 1
@@ -164,17 +172,20 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         })
     }
 
-    /// Image-to-video is enabled by the presence of a usable `input_reference`
-    /// limit object, not by a retired `accepted` boolean. The reference is
-    /// usable only when the server advertises a positive byte budget, at least
-    /// one image MIME type this client can produce, and (when declared) a
-    /// positive pixel ceiling.
-    var supportsImageInput: Bool {
-        guard modes.contains(.imageToVideo),
-              let input = limits.inputReference,
+    /// The `input_reference` limit is usable when the server advertises a
+    /// positive byte budget, at least one image MIME type this client can
+    /// produce, and (when declared) a positive pixel ceiling.
+    private var usableReferenceLimits: Bool {
+        guard let input = limits.inputReference,
               input.maximumBytes > 0,
               !acceptedReferenceMIMETypes.isEmpty else { return false }
         return input.maximumPixels.map { $0 > 0 } ?? true
+    }
+
+    /// Image-to-video is enabled by the presence of a usable `input_reference`
+    /// limit object, not by a retired `accepted` boolean.
+    var supportsImageInput: Bool {
+        modes.contains(.imageToVideo) && usableReferenceLimits
     }
 
     /// Conservative, familiar output shapes. The API remains authoritative:
@@ -233,10 +244,13 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             ? [limits.seconds.default] : []
     }
 
+    /// The usable byte budget for an input reference image. Returns 0 unless the
+    /// reference limit is fully usable (positive byte budget, at least one image
+    /// MIME type, and a positive pixel ceiling when declared) so a disabled or
+    /// malformed reference never exposes a positive budget to callers.
     var referenceMaximumBytes: Int {
-        guard let inputReference = limits.inputReference,
-              inputReference.maximumBytes > 0 else { return 0 }
-        return min(inputReference.maximumBytes, VideoClient.maxReferenceBytes)
+        guard let input = limits.inputReference, usableReferenceLimits else { return 0 }
+        return min(input.maximumBytes, VideoClient.maxReferenceBytes)
     }
 
     func validated() throws -> Self {

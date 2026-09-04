@@ -55,11 +55,17 @@ struct VideoClientTests {
         }
     }
 
-    @Test("Unrecognized dimension_rounding string is tolerated, not fatal")
+    @Test("Unrecognized dimension_rounding string is tolerated with a 64-pixel fallback")
     func unsupportedRoundingIsTolerated() async throws {
         // The fail-closed rule is about missing/malformed payloads, not about a
         // new rounding constant. An unknown value decodes and validates, and the
         // workload budget uses the conservative 64-pixel fallback.
+        //
+        // 592x592 is not a multiple of 64, so only the 64-pixel fallback excludes
+        // the 4 s preset: rounded up to 640x640, its 97-frame workload
+        // (39,731,200) exceeds the 38,141,952 budget. A laxer fallback
+        // (1/16/32) would leave 4 s inside the budget and yield [1, 2, 4],
+        // so asserting [1, 2] proves the 64-pixel fallback is applied.
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
             of: #""dimension_rounding":"ceil_to_64""#,
@@ -68,8 +74,7 @@ struct VideoClientTests {
         VideoStubProtocol.response = (200, Data(json.utf8))
 
         let value = try await client.capabilities(port: 8123, bearer: nil)
-        #expect(!value.sizePresets.isEmpty)
-        #expect(!value.durationPresets(for: "512x512").isEmpty)
+        #expect(value.durationPresets(for: "592x592") == [1, 2])
     }
 
     @Test("Workload uses 64-pixel rounding independently of size alignment")
