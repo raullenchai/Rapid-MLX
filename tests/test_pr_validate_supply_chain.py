@@ -440,10 +440,10 @@ def test_mid_list_no_backslash_entry_is_not_roster_only():
     assert roster_only == set()
 
 
-def test_terminal_roster_entry_without_backslash_is_enrollment():
-    """Regression (codex r1 round-4): the final roster entry of a ``run: |``
-    block may omit the shell continuation backslash; it is still a valid
-    enrollment and must be recognized by the ground-truth roster detection."""
+def test_terminal_roster_entry_without_backslash_stays_blocking():
+    """The workflow exception is fail-closed: even a genuinely terminal
+    no-backslash entry is outside the canonical roster form and stays subject
+    to maintainer review."""
     from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
 
     head = (
@@ -457,7 +457,7 @@ def test_terminal_roster_entry_without_backslash_is_enrollment():
         "            tests/test_alpha.py \\\n"
         "            tests/test_terminal.py\n"
     )
-    # A no-backslash final entry added at the same position (roster only).
+    # A no-backslash final entry added at the same position.
     diff = (
         "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
         "--- a/.github/workflows/ci.yml\n"
@@ -467,11 +467,12 @@ def test_terminal_roster_entry_without_backslash_is_enrollment():
         "+            tests/test_appended.py\n"
     )
     lines = _pytest_roster_lines(head)
-    # alpha (line 8) is continuing; terminal (line 9) has no backslash.
-    assert 9 in lines
+    # alpha (line 8) is continuing; terminal (line 9) has no backslash and is
+    # deliberately outside the narrow exception.
+    assert 9 not in lines
 
-    # End-to-end: a no-backslash added line at that terminal position is a
-    # valid roster enrollment (with a genuinely new test file).
+    # End-to-end: the no-backslash edit stays blocking even though the test is
+    # genuinely new.
     newfile = (
         "diff --git a/tests/test_appended.py b/tests/test_appended.py\n"
         "new file mode 100644\n"
@@ -486,8 +487,79 @@ def test_terminal_roster_entry_without_backslash_is_enrollment():
         {".github/workflows/ci.yml", "tests/test_appended.py"},
         {".github/workflows/ci.yml": head},
     )
-    assert roster_only == {".github/workflows/ci.yml"}
-    assert additions[".github/workflows/ci.yml"] == ["tests/test_appended.py"]
+    assert roster_only == set()
+    assert additions == {}
+
+
+def test_no_backslash_before_pytest_options_stays_blocking():
+    """Regression: a missing continuation before existing pytest options
+    terminates pytest and turns those options into shell commands.  It must
+    never receive the roster-only downgrade."""
+    from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
+
+    path = "tests/test_new_external.py"
+    head = (
+        "pytest \\\n"
+        "  tests/test_existing.py \\\n"
+        f"  {path}\n"
+        "  -v --tb=short \\\n"
+        "  --cov=rapid_mlx\n"
+    )
+    line = 3
+    assert line not in _pytest_roster_lines(head)
+
+    newfile = (
+        f"diff --git a/{path} b/{path}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{path}\n"
+        "@@ -0,0 +1 @@\n"
+        "+pass\n"
+    )
+    workflow = (
+        "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+        "--- a/.github/workflows/ci.yml\n"
+        "+++ b/.github/workflows/ci.yml\n"
+        "@@ -2 +3,2 @@\n"
+        f"+  {path}\n"
+        "   -v --tb=short \\\n"
+    )
+    roster_only, additions = _roster_only_workflows(
+        newfile + workflow,
+        {".github/workflows/ci.yml", path},
+        {".github/workflows/ci.yml": head},
+    )
+    assert roster_only == set()
+    assert additions == {}
+
+
+def test_other_workflow_pytest_roster_stays_blocking():
+    """The narrow exception belongs only to ci.yml's reviewed Apple/MLX
+    roster, not arbitrary pytest commands in other executable workflows."""
+    workflow_path = ".github/workflows/rapid-mac-ci.yml"
+    test_path = "tests/test_new_external.py"
+    head = f"pytest \\\n  {test_path} \\\n  -q\n"
+    diff = (
+        f"diff --git a/{test_path} b/{test_path}\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        f"+++ b/{test_path}\n"
+        "@@ -0,0 +1 @@\n"
+        "+pass\n"
+        f"diff --git a/{workflow_path} b/{workflow_path}\n"
+        f"--- a/{workflow_path}\n"
+        f"+++ b/{workflow_path}\n"
+        "@@ -1 +2,2 @@\n"
+        f"+  {test_path} \\\n"
+        "   -q\n"
+    )
+    roster_only, additions = _roster_only_workflows(
+        diff,
+        {workflow_path, test_path},
+        {workflow_path: head},
+    )
+    assert roster_only == set()
+    assert additions == {}
 
 
 # ---------------------------------------------------------------------------

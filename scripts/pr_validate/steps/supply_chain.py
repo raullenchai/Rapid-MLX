@@ -95,15 +95,16 @@ def _is_hook_file(path: str) -> bool:
 # The path grammar is deliberately narrower than a shell token: allowing
 # ``$()``, quotes, ``;``, ``..`` etc. would let the exception itself become
 # a workflow-code injection bypass. Only a plain ``tests/<alnum>_./-`` token
-# with an optional trailing ``\`` continuation matches.
+# with a trailing ``\`` continuation matches.  Requiring the continuation is
+# intentional: this is a fail-closed exception for executable workflow files,
+# and the repository's explicit roster uses that canonical form.
 # ---------------------------------------------------------------------------
 
 _WORKFLOW_PREFIX = ".github/workflows/"
+_ROSTER_WORKFLOWS = frozenset({".github/workflows/ci.yml"})
 
 # A single roster-enrollment content line (leading ``+`` already stripped).
-_ROSTER_ENTRY_RE = re.compile(
-    r"^\s*(?P<path>tests/[A-Za-z0-9_./-]+\.py)(?P<cont>\s*\\)?\s*$"
-)
+_ROSTER_ENTRY_RE = re.compile(r"^\s*(?P<path>tests/[A-Za-z0-9_./-]+\.py)\s*\\\s*$")
 
 
 def _roster_addition_path(content: str) -> str | None:
@@ -141,12 +142,13 @@ def _pytest_roster_lines(content: str) -> set[int]:
     """Return the (1-based) line numbers in *content* that are roster entries
     of the explicit pytest test list. This is the authoritative, ground-truth
     denominator: the contiguous ``tests/*.py \\`` continuation lines that
-    follow a ``pytest \\`` command, PLUS an optional trailing terminal
-    ``tests/*.py`` (no backslash) — the last argument of a ``run: |`` block is
-    allowed to omit the shell continuation, and must still be a valid final
-    enrollment (codex r1 round-4). Codex r1 round-3 — do not trust hunk
-    context (a long non-pytest file list would hide its opener); verify each
-    added line against the ACTUAL roster location in the file."""
+    follow a ``pytest \\`` command.  The downgrade deliberately recognizes
+    only this canonical form.  Accepting a no-backslash line requires parsing
+    the remainder of the shell command correctly; getting that wrong can turn
+    following options into separate commands while suppressing review of an
+    executable workflow change.  Codex r1 round-3 — do not trust hunk context
+    (a long non-pytest file list would hide its opener); verify each added line
+    against the ACTUAL roster location in the file."""
     roster: set[int] = set()
     lines = content.splitlines()
     i = 0
@@ -157,16 +159,6 @@ def _pytest_roster_lines(content: str) -> set[int]:
             # A run of continuing roster entries...
             while j < n and _ROSTER_CONTINUE_RE.match(lines[j]):
                 roster.add(j + 1)  # 1-based
-                j += 1
-            # ...optionally followed by one TERMINAL entry (no continuation).
-            # A no-backslash line only ends the list legitimately when it is
-            # the genuine final argument: if another continuing roster entry
-            # immediately follows, the no-backslash line would cut the pytest
-            # command short and run later paths as separate commands — that is
-            # a behavior change, not an enrollment (codex r1 round-4).
-            if j < n and _ROSTER_ENTRY_RE.match(lines[j]):
-                if j + 1 >= n or not _ROSTER_CONTINUE_RE.match(lines[j + 1]):
-                    roster.add(j + 1)
                 j += 1
             i = j
         else:
@@ -196,7 +188,15 @@ def _roster_only_workflows(
     token added outside the real roster, a file we cannot verify) is absent
     from both — it stays [BLOCKING]."""
 
-    workflow_files = {f for f in files_changed if f.startswith(_WORKFLOW_PREFIX)}
+    # This is not a general exemption for pytest commands in workflow files.
+    # It applies only to the reviewed explicit Apple/MLX roster in ci.yml.
+    # Any other workflow remains an executable hook and therefore blocking for
+    # an external author.
+    workflow_files = {
+        f
+        for f in files_changed
+        if f.startswith(_WORKFLOW_PREFIX) and f in _ROSTER_WORKFLOWS
+    }
     if not workflow_files:
         return set(), {}
 
