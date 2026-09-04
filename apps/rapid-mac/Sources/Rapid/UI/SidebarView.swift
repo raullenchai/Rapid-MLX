@@ -618,7 +618,10 @@ struct SidebarView: View {
                 set: { if !$0 { residentUnloadNotice = nil } }
             )
         ) {
-            Button("OK") { residentUnloadNotice = nil }
+            Button("OK") {
+                residentUnloadNotice = nil
+            }
+            .accessibilityIdentifier("Sidebar.Residency.UnloadNotice.OK")
         } message: {
             Text(residentUnloadNotice ?? "")
         }
