@@ -2982,12 +2982,16 @@ def _recover_bare_scalar_from_raw(
         block = text[lo:marker]
 
         last: re.Match | None = None
-        for m in re.finditer(r"\"name\"\s*:\s*\"([^\"]*)\"", block):
+        for m in re.finditer(r'"name"\s*:\s*("(?:[^"\\]|\\.)*")', block):
             last = m
         if last is None:
             return False
-        # Decode common JSON escapes for a fair comparison.
-        decoded = last.group(1).replace("\\u005f", "_")
+        # Decode the complete JSON string literal so ALL valid JSON escapes
+        # (\\, \", \uXXXX ...) compare fairly (codex NIT), not just _.
+        try:
+            decoded = json.loads(last.group(1))
+        except (ValueError, TypeError):
+            return False
         return decoded == expected_name
 
     # Scan every ``"arguments"`` marker; prefer the LAST candidate inside a
@@ -3026,6 +3030,7 @@ def _recover_bare_scalar_from_raw(
             if end >= len(rest):
                 continue
             scalar = rest[: end + 1]
+            after = end + 1
         elif ch == "{":
             continue  # object — not our concern here
         elif ch == "[":
@@ -3042,6 +3047,13 @@ def _recover_bare_scalar_from_raw(
                 scalar = token
             else:
                 continue
+            after = j
+        # Fail closed on malformed values: a bare scalar must be followed by a
+        # JSON/structural terminator (`,` `}` `]` whitespace or a wire closer),
+        # never a stray alphanumeric (`"arguments": 72oops` / `trueish`).
+        terminated = after >= len(rest) or rest[after] in " \t\r\n,}]:/>"
+        if not terminated:
+            continue
         # Ensure the scalar re-parses to a scalar (never an object/array/null).
         try:
             v = json.loads(scalar)

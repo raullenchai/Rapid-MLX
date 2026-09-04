@@ -308,6 +308,27 @@ class TestRecoverBareScalarFromRaw:
         raw = '<tool_call>{"name": "x", "arguments" garbage, "foo": 7}'
         assert _recover_bare_scalar_from_raw(raw, expected_name="x") is None
 
+    def test_rejects_malformed_value_prefixes(self):
+        # codex BLOCKING: ``72oops`` / ``trueish`` must NOT be truncated to a
+        # valid-looking scalar prefix.
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": 72oops}', expected_name="x"
+            )
+            is None
+        )
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": trueish}', expected_name="x"
+            )
+            is None
+        )
+
+    def test_name_pairing_decodes_json_escapes(self):
+        # codex NIT: any valid JSON string escape decodes for the pairing check.
+        raw = '<tool_call>{"name": "we\\u0061ther", "arguments": "SF"}'
+        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == '"SF"'
+
     def test_pairing_uses_nearest_preceding_name_in_multi_call_span(self):
         # codex BLOCKING #1: two calls in one span — the second scalar must pair
         # with the SECOND tool ("other"), not the span's first ("weather").
@@ -319,11 +340,11 @@ class TestRecoverBareScalarFromRaw:
         # a string scalar, and 1 is a number but pairs with weather... both here).
         recovered = _recover_bare_scalar_from_raw(raw, expected_name="other")
         assert recovered == '"San Francisco"'
-        # Searching for the first tool yields None (its scalar is numeric "1",
-        # which is still returned as a scalar — so pairing must gate it too).
-        # Verify pairing does NOT let the first tool's scalar attach to "other".
-        bad = _recover_bare_scalar_from_raw(raw, expected_name="weather")
-        assert bad in ("1", None)  # "weather" owns the first, numeric scalar
+        # Searching for the first tool yields ITS OWN numeric scalar "1" — the
+        # names in a multi-call span must not cross-attach.
+        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == "1"
+        # A name that is not present pairs with nothing.
+        assert _recover_bare_scalar_from_raw(raw, expected_name="nope") is None
 
 
 class TestSalvageRejectsNonFinite:
