@@ -1493,6 +1493,11 @@ async def test_admitting_alignment_drains_cancelled_rollback(monkeypatch):
     await exit_started.wait()
     task.cancel()
     await asyncio.sleep(0)
+    # A second cancellation must also be absorbed while the protected rollback
+    # is still draining; only the original load failure is observable after
+    # the ledger cleanup completes.
+    task.cancel()
+    await asyncio.sleep(0)
     release_exit.set()
     with pytest.raises(RuntimeError, match="load failed"):
         await task
