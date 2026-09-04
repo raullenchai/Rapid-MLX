@@ -9,7 +9,11 @@ struct SidebarResidentUnloadTests {
         var calls = 0
     }
 
-    private func residentSnapshot(activeRequests: Int = 0) -> ModelResidencySnapshot {
+    private func residentSnapshot(
+        activeRequests: Int = 0,
+        includeTextModel: Bool = true,
+        audioActiveRequests: Int? = nil
+    ) -> ModelResidencySnapshot {
         let gib = UInt64(1) << 30
         return ModelResidencySnapshot(
             memoryLimitBytes: 14 * gib,
@@ -18,7 +22,7 @@ struct SidebarResidentUnloadTests {
             idleTTLSeconds: 900,
             loadsTotal: 1,
             evictionsTotal: 0,
-            models: [
+            models: includeTextModel ? [
                 ResidentModelStatus(
                     id: "qwen3.5-4b-4bit",
                     modelPath: "mlx-community/qwen3.5-4b-4bit",
@@ -32,7 +36,15 @@ struct SidebarResidentUnloadTests {
                     measuredBytes: nil,
                     idleSeconds: 12
                 ),
-            ]
+            ] : [],
+            audioLanes: audioActiveRequests.map {
+                [ResidentAudioLaneStatus(
+                    lane: "tts",
+                    model: "test/voice",
+                    state: "resident",
+                    activeRequests: $0
+                )]
+            } ?? []
         )
     }
 
@@ -83,6 +95,58 @@ struct SidebarResidentUnloadTests {
             try busyStage.press("Sidebar.Residency.Unload")
         }
         #expect(probe.calls == 1)
+
+        let busyAudioServer = ServerManager(
+            testingState: .ready(alias: "qwen3.5-4b-4bit"),
+            residency: residentSnapshot(audioActiveRequests: 1)
+        )
+        let busyAudioStage = GoldenStage(
+            SidebarView(
+                selection: .constant(.chat),
+                chat: chat,
+                onNewChat: {},
+                onSelectConversation: { _ in },
+                server: busyAudioServer,
+                onUnloadResidentModels: { probe.calls += 1 }
+            )
+            .frame(width: SidebarView.columnIdealWidth, height: 640)
+        )
+
+        try await busyAudioStage.waitForIdentifier("Sidebar.Residency.Unload")
+        #expect(throws: GoldenStage.StageError.self) {
+            try busyAudioStage.press("Sidebar.Residency.Unload")
+        }
+        #expect(probe.calls == 1)
+    }
+
+    @Test("Audio-only residency stays visible and participates in busy state")
+    func audioResidencyPresentation() {
+        let idle = residentSnapshot(
+            includeTextModel: false,
+            audioActiveRequests: 0
+        )
+        let busy = residentSnapshot(
+            includeTextModel: false,
+            audioActiveRequests: 1
+        )
+
+        #expect(SidebarView.hasResidentWorkloads(idle))
+        #expect(SidebarView.residentWorkloadCount(idle) == 1)
+        #expect(!SidebarView.hasActiveResidentRequests(idle))
+        #expect(SidebarView.hasActiveResidentRequests(busy))
+    }
+
+    @Test("Unload result copy explains a refused or unavailable stop")
+    func resultCopy() {
+        #expect(SidebarView.residentUnloadMessage(for: .stopped) == nil)
+        #expect(
+            SidebarView.residentUnloadMessage(for: .busy)
+                == "A request is still using the models. Stop it, then try again."
+        )
+        #expect(
+            SidebarView.residentUnloadMessage(for: .unavailable)
+                == "Rapid couldn't confirm that the models were idle. Wait a moment, then try again."
+        )
     }
 
     @Test("Memory summary keeps one shared unit in the narrow sidebar")

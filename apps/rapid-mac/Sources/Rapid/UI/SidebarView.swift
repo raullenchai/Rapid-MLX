@@ -123,6 +123,7 @@ struct SidebarView: View {
     /// own stop state, keeping repeated eject clicks out and making that work
     /// visible instead of leaving an apparently inert button.
     @State private var isUnloadingResidentModels = false
+    @State private var residentUnloadNotice: String?
 
     /// The folder-name prompt currently on screen, if any.
     ///
@@ -238,7 +239,7 @@ struct SidebarView: View {
 
             Spacer(minLength: 0)
 
-            if let server, !server.residency.models.isEmpty {
+            if let server, Self.hasResidentWorkloads(server.residency) {
                 residencyFooter(
                     server.residency,
                     preferredAlias: server.servingAlias,
@@ -511,6 +512,27 @@ struct SidebarView: View {
                 }
                 .accessibilityIdentifier("Sidebar.ResidentModel.\(model.id)")
             }
+
+            ForEach(
+                snapshot.audioLanes.filter { $0.state == "resident" }.prefix(4),
+                id: \.lane
+            ) { lane in
+                HStack(spacing: RapidTheme.Space.xs) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text(lane.model ?? lane.lane.uppercased())
+                        .font(RapidFont.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text(lane.lane.uppercased())
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("Sidebar.ResidentAudio.\(lane.lane)")
+            }
         }
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.top, RapidTheme.Space.md)
@@ -540,14 +562,14 @@ struct SidebarView: View {
         snapshot: ModelResidencySnapshot,
         server: ServerManager
     ) -> some View {
-        let hasActiveRequests = snapshot.models.contains { $0.activeRequests > 0 }
+        let hasActiveRequests = Self.hasActiveResidentRequests(snapshot)
         let disabled = Self.residentUnloadDisabled(
             isOperating: server.isOperating || isUnloadingResidentModels,
             chatIsStreaming: chat.isStreaming,
             hasActiveRequests: hasActiveRequests
         )
         let label = Self.residentUnloadLabel(
-            modelCount: snapshot.models.count,
+            modelCount: Self.residentWorkloadCount(snapshot),
             memoryUsedBytes: snapshot.memoryUsedBytes
         )
 
@@ -559,7 +581,9 @@ struct SidebarView: View {
                 if let onUnloadResidentModels {
                     await onUnloadResidentModels()
                 } else {
-                    _ = await server.unloadResidentModelsIfIdle()
+                    residentUnloadNotice = Self.residentUnloadMessage(
+                        for: await server.unloadResidentModelsIfIdle()
+                    )
                 }
             }
         } label: {
@@ -587,6 +611,46 @@ struct SidebarView: View {
         )
         .accessibilityLabel(label)
         .accessibilityIdentifier("Sidebar.Residency.Unload")
+        .alert(
+            "Models are still loaded",
+            isPresented: Binding(
+                get: { residentUnloadNotice != nil },
+                set: { if !$0 { residentUnloadNotice = nil } }
+            )
+        ) {
+            Button("OK") { residentUnloadNotice = nil }
+        } message: {
+            Text(residentUnloadNotice ?? "")
+        }
+    }
+
+    nonisolated static func hasResidentWorkloads(_ snapshot: ModelResidencySnapshot) -> Bool {
+        residentWorkloadCount(snapshot) > 0
+    }
+
+    nonisolated static func residentWorkloadCount(_ snapshot: ModelResidencySnapshot) -> Int {
+        snapshot.models.filter { $0.state != "evicting" }.count
+            + snapshot.audioLanes.filter { $0.state == "resident" }.count
+    }
+
+    nonisolated static func hasActiveResidentRequests(
+        _ snapshot: ModelResidencySnapshot
+    ) -> Bool {
+        snapshot.models.contains { $0.activeRequests > 0 }
+            || snapshot.audioLanes.contains { ($0.activeRequests ?? 0) > 0 }
+    }
+
+    nonisolated static func residentUnloadMessage(
+        for result: ServerManager.ResidentUnloadResult
+    ) -> String? {
+        switch result {
+        case .stopped:
+            nil
+        case .busy:
+            "A request is still using the models. Stop it, then try again."
+        case .unavailable:
+            "Rapid couldn't confirm that the models were idle. Wait a moment, then try again."
+        }
     }
 
     nonisolated static func residentUnloadDisabled(

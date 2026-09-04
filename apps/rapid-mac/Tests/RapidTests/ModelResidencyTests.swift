@@ -256,12 +256,17 @@ struct ModelResidencyTests {
     }
 
     @Test("Resident unload stops after a fresh idle response")
-    func residentUnloadStopsFreshIdleServer() async {
+    func residentUnloadStopsFreshIdleServer() async throws {
         var client = ServerResidencyClient()
         client.session = IdleResidencyProtocol.session()
+        let suite = "ResidentUnloadStopsFreshIdleServer.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("current-model", forKey: SessionModelRestore.chatAliasStorageKey)
         let server = ServerManager(
             testingState: .ready(alias: "current-model"),
-            residency: .empty
+            residency: .empty,
+            sessionDefaults: defaults
         )
         server._testSetResidencyClient(client)
         server._testInstallChild(ProcessGroupChild.testStub())
@@ -269,10 +274,7 @@ struct ModelResidencyTests {
         #expect(await server.unloadResidentModelsIfIdle() == .stopped)
         #expect(server.state == .stopped)
         #expect(server.residency.activeRequests(for: "current-model") == 0)
-        #expect(ServerManager.shouldClearLastServedAlias(
-            expectedStop: true,
-            preservingLastServedAlias: false
-        ), "explicit eject must not auto-resume the model on next app launch")
+        #expect(ServerManager.lastServedAlias(defaults: defaults) == nil)
     }
 
     @Test("Resident unload also refuses a busy audio lane")
