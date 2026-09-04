@@ -292,10 +292,22 @@ class ResidentRoleAdmission:
     record: ResidentRoleReservation
     previous: ResidentRoleReservation | None = None
     previous_retired: bool = False
+    committed: bool = False
 
     def retire_previous(self) -> None:
         """Signal that the prior engine was dropped; do not restore on rollback."""
         self.previous_retired = True
+
+    def commit(self) -> None:
+        """Mark the new engine as resident even when the caller re-raises.
+
+        Used by the alignment lane when its weight load completed on the model
+        worker (the engine was published) but the async handler is being
+        cancelled: the weights are loaded, so the reservation must be kept
+        rather than rolled back into a ledger desync.
+        """
+        self.committed = True
+        self.record.state = "resident"
 
 
 Loader = Callable[..., Awaitable[ModelEntry]]
@@ -761,6 +773,10 @@ class ResidentModelManager:
         try:
             yield admission
         except BaseException:
+            if admission.committed:
+                # The engine was already published on the model worker (e.g.
+                # the load finished under cancellation); keep it accounted.
+                raise
             async with self._lock:
                 if self._roles.get(role) is record:
                     if previous is not None and not admission.previous_retired:

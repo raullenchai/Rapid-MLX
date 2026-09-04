@@ -1526,3 +1526,132 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
     assert len(roles) == 1
     assert roles[0]["state"] == "resident"
     assert roles[0]["reserved_bytes"] == _aligner_catalog_bytes()
+
+
+@pytest.mark.asyncio
+async def test_aligner_load_retires_previous_only_after_actual_discard(monkeypatch):
+    """pr_validate codex BLOCKING #1: the previous aligner's reservation must be
+    retired only when the load has actually discarded the old engine — an
+    import/ASR-unload failure BEFORE the drop must leave it restorable."""
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+    operations: list[str] = []
+    retired = []
+
+    class _Aligner:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            operations.append("load-aligner")
+
+        def align(self, path, text, **kwargs):
+            raise AssertionError("must not run after failed load")
+
+    class _OldAligner:
+        model_name = "old-aligner"
+
+        def unload(self) -> None:
+            operations.append("unload-old-aligner")
+
+    worker = _RecordingWorker()
+    previous = _OldAligner()
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr(audio_route, "_aligner_engine", previous)
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+
+    # Force the load to fail at the ASR-unload step, BEFORE the old aligner is
+    # dropped (`_aligner_engine = None`). The retire callback must not fire.
+    def boom_unload_sync(*a, **k):
+        raise RuntimeError("asr unload failed")
+
+    monkeypatch.setattr(audio_route, "_evict_other_lane_sync", boom_unload_sync)
+    bind_audio_worker(worker)
+    try:
+        with pytest.raises(RuntimeError, match="asr unload failed"):
+            audio_route._load_aligner_blocking(
+                "new-aligner", on_discard_previous=lambda: retired.append(True)
+            )
+    finally:
+        bind_audio_worker(None)
+
+    # The old aligner was never dropped and its retire callback never fired.
+    assert retired == []
+    assert audio_route._aligner_engine is previous  # old stays resident
+
+
+@pytest.mark.asyncio
+async def test_aligner_retire_fires_after_previous_discard(monkeypatch):
+    """The retire-previous callback fires only after the old aligner is
+    actually discarded (set to None), before the new load publishes."""
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+    events: list[str] = []
+
+    class _OldAligner:
+        model_name = "old-aligner"
+
+    class _Aligner:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            events.append("load")
+
+    worker = _RecordingWorker()
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr(audio_route, "_aligner_engine", _OldAligner())
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    monkeypatch.setattr(audio_route, "_evict_other_lane_sync", lambda _k: None)
+    bind_audio_worker(worker)
+
+    def on_discard():
+        events.append("retired")
+        # At this exact moment the old engine has been dropped.
+        assert audio_route._aligner_engine is None
+
+    try:
+        audio_route._load_aligner_blocking(
+            "new-aligner", on_discard_previous=on_discard
+        )
+    finally:
+        bind_audio_worker(None)
+
+    assert events == ["retired", "load"]
+    assert audio_route._aligner_engine.model_name == "new-aligner"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_cancellation_keeps_published_engine_committed(
+    monkeypatch,
+):
+    """pr_validate codex BLOCKING #2: when the aligner load completes and
+    publishes the engine but the async admission context is cancelled, the
+    reservation is committed (kept resident) rather than rolled back — no
+    unaccounted resident engine."""
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    class _FakeAlign:
+        model_name = "qwen3-aligner"
+
+    # Simulate: admission entered, engine published, then CancelledError raised
+    # inside the body (the caller's `admission.commit()` keeps the reservation).
+    with pytest.raises(asyncio.CancelledError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_catalog_bytes(),
+            capacity_source="catalog",
+        ) as admission:
+            # The load finished on the worker and published the engine.
+            admission.commit()
+            raise asyncio.CancelledError()
+
+    # The reservation is kept resident because it was committed.
+    roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert len(roles) == 1
+    assert roles[0]["state"] == "resident"

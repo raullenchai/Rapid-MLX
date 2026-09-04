@@ -12,6 +12,7 @@ import re
 import tempfile
 import threading
 import wave
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
@@ -1737,13 +1738,23 @@ def _evict_other_lane_sync(keep: str) -> None:
     _clear_other_stt_lane(keep)
 
 
-def _load_aligner_blocking(model_name: str) -> None:
+def _load_aligner_blocking(
+    model_name: str,
+    on_discard_previous: Callable[[], None] | None = None,
+) -> None:
     """Load (or reload) the cached aligner engine on the model worker thread.
 
     Extracted from :func:`_align_blocking` so the async layer can wrap the
     actual weight load in the shared ``alignment``-role admission — the
     reservation is entered BEFORE this runs, so admission can already have
     rejected an over-budget aligner without touching the disk.
+
+    ``on_discard_previous`` is invoked ONLY at the exact instant a previously
+    resident aligner (a different alias) is dropped, so the async layer can
+    retire its old reservation precisely when the old engine is truly gone —
+    not before (an import / ASR-unload failure before the drop must leave the
+    old reservation restorable on rollback) and never after the new engine is
+    published.
     """
     global _aligner_engine
 
@@ -1768,6 +1779,10 @@ def _load_aligner_blocking(model_name: str) -> None:
     # cache stays ``None`` and the next request reloads from disk, strictly
     # better than pinning a stale model.
     _aligner_engine = None
+    if on_discard_previous is not None:
+        # The old engine is gone from this point; the async admission layer
+        # must not restore its old reservation if this load subsequently fails.
+        on_discard_previous()
     # Load into a local first and publish only on success. Caching a
     # half-constructed engine would leave later requests matching on
     # ``model_name`` against an object whose weights never loaded.
@@ -1906,11 +1921,25 @@ async def _run_alignment_request(
                     model_name,
                     replace_existing=prev_aligner is not None,
                 ) as admission:
-                    if prev_aligner is not None:
-                        # The load below drops the previous aligner engine, so
-                        # a failed reload must not restore its old reservation.
-                        admission.retire_previous()
-                    await run_to_completion(_load_aligner_blocking, model_name)
+                    # ``on_discard_previous`` fires ONLY when the load actually
+                    # drops the previous aligner (a different alias), so an
+                    # import / ASR-unload failure BEFORE that drop leaves the
+                    # old reservation restorable on rollback, and a success
+                    # commits the new engine with the old one retired.
+                    try:
+                        await run_to_completion(
+                            _load_aligner_blocking,
+                            model_name,
+                            admission.retire_previous,
+                        )
+                    except asyncio.CancelledError:
+                        # The worker loaded AND published the engine before the
+                        # cancellation drained it. Keep the reservation (the
+                        # weights are accounted) instead of rolling it back into
+                        # an unaccounted-resident desync.
+                        if _aligner_engine is not None:
+                            admission.commit()
+                        raise
             result = await run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )
