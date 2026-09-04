@@ -167,7 +167,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     let modes: [VideoModelCapability]
     let limits: Limits
 
-    var acceptedReferenceMIMETypes: Set<String> {
+    /// Image MIME types advertised by the reference, independent of whether the
+    /// reference is currently usable. Kept separate from the gated
+    /// ``acceptedReferenceMIMETypes`` so the usability checks (which read this)
+    /// do not depend on a gated value.
+    private var inputReferenceFormats: Set<String> {
         guard let input = limits.inputReference else { return [] }
         return Set(input.formats.compactMap { format in
             switch format.lowercased() {
@@ -187,8 +191,16 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         guard let input = limits.inputReference,
               input.accepted != false,
               input.maximumBytes > 0,
-              !acceptedReferenceMIMETypes.isEmpty else { return false }
+              !inputReferenceFormats.isEmpty else { return false }
         return input.maximumPixels.map { $0 > 0 } ?? true
+    }
+
+    /// The image MIME types this client accepts for a reference image.
+    /// Non-empty only while the reference is present AND usable, so an
+    /// explicitly disabled (legacy `accepted: false`) or malformed reference
+    /// never advertises supported formats.
+    var acceptedReferenceMIMETypes: Set<String> {
+        usableReferenceLimits ? inputReferenceFormats : []
     }
 
     /// Image-to-video is enabled by the presence of a usable `input_reference`

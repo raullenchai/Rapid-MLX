@@ -165,23 +165,41 @@ struct VideoClientTests {
         let value = try await client.capabilities(port: 8123, bearer: nil)
         #expect(!value.supportsImageInput)
         #expect(value.referenceMaximumBytes == 0)
+        #expect(value.acceptedReferenceMIMETypes.isEmpty)
         #expect(!value.sizePresets.isEmpty)
     }
 
     @Test("Image input is disabled when reference limits are unusable")
     func imageInputDisabledWhenReferenceUnusable() async {
         // A zero byte budget leaves no usable reference limit, so image input is
-        // disabled, and the payload itself fails closed on validation.
+        // disabled (and no MIME types are advertised), and the payload itself
+        // fails closed on validation.
         let client = makeClient()
-        let json = Self.capabilitiesJSON.replacingOccurrences(
+        let zeroBytes = Self.capabilitiesJSON.replacingOccurrences(
             of: #""maximum_bytes":20971520"#,
             with: #""maximum_bytes":0"#
         )
-        let decoded = try! JSONDecoder().decode(
-            VideoCapabilities.self, from: Data(json.utf8)
+        let zeroValue = try! JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(zeroBytes.utf8)
         )
-        #expect(!decoded.supportsImageInput)
-        VideoStubProtocol.response = (200, Data(json.utf8))
+        #expect(!zeroValue.supportsImageInput)
+        #expect(zeroValue.acceptedReferenceMIMETypes.isEmpty)
+        VideoStubProtocol.response = (200, Data(zeroBytes.utf8))
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
+
+        // A non-positive pixel ceiling is likewise unusable and fails closed.
+        let zeroPixels = Self.capabilitiesJSON.replacingOccurrences(
+            of: #""maximum_pixels":16777216"#,
+            with: #""maximum_pixels":0"#
+        )
+        let pixelsValue = try! JSONDecoder().decode(
+            VideoCapabilities.self, from: Data(zeroPixels.utf8)
+        )
+        #expect(!pixelsValue.supportsImageInput)
+        #expect(pixelsValue.acceptedReferenceMIMETypes.isEmpty)
+        VideoStubProtocol.response = (200, Data(zeroPixels.utf8))
         await #expect(throws: VideoClientError.invalidResponse) {
             _ = try await client.capabilities(port: 8123, bearer: nil)
         }
