@@ -36,6 +36,9 @@ struct SidebarView: View {
     /// Video is intentionally opt-in because its models require substantially
     /// more unified memory than the app's everyday chat and media workflows.
     var videoGenerationEnabled: Bool = false
+    /// Community Benchmark is an internal-beta workspace and stays out of the
+    /// everyday navigation until the user explicitly opts in.
+    var communityBenchmarkEnabled: Bool = false
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -195,13 +198,15 @@ struct SidebarView: View {
                 action: { selection = .launch }
             )
             .accessibilityIdentifier("Sidebar.Launch")
-            row(
-                title: "Community Benchmark",
-                systemImage: "gauge.with.dots.needle.50percent",
-                isSelected: selection == .benchmark,
-                action: { selection = .benchmark }
-            )
-            .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+            if communityBenchmarkEnabled {
+                row(
+                    title: "Community Benchmark",
+                    systemImage: "gauge.with.dots.needle.50percent",
+                    isSelected: selection == .benchmark,
+                    action: { selection = .benchmark }
+                )
+                .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+            }
 
             // Folders can exist before any conversation does (create one, then
             // file into it), so an empty history no longer means an empty rail.

@@ -100,6 +100,8 @@ struct ContentView: View {
     @State private var section: SidebarSection = .chat
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
+    @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
+    private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
     @State private var showConversationSearch = false
     // Was @SceneStorage. Moved to @AppStorage so the View menu command in
@@ -565,6 +567,7 @@ struct ContentView: View {
                 SidebarView(
                     selection: $section,
                     videoGenerationEnabled: videoGenerationEnabled,
+                    communityBenchmarkEnabled: communityBenchmarkEnabled,
                     chat: chat,
                 onNewChat: {
                     chat.newConversation()
@@ -653,6 +656,14 @@ struct ContentView: View {
                     .padding(.bottom, 40)
                     .zIndex(20)
             }
+        }
+        .onChange(of: communityBenchmarkEnabled) { _, enabled in
+            // Match Video's experimental gate: closing the destination while
+            // it is selected returns to a reachable, non-experimental page.
+            section = Self.sectionAfterCommunityBenchmarkGateChange(
+                current: section,
+                enabled: enabled
+            )
         }
     }
 
@@ -1139,15 +1150,19 @@ struct ContentView: View {
                 onReadinessAction: performReadinessAction
             )
         case .benchmark:
-            CommunityBenchmarkView(
-                catalog: catalogEntries,
-                binary: server.binaryPath,
-                prepareServer: { try await server.prepareForCommunityBenchmark() },
-                releaseServer: { server.finishCommunityBenchmark($0) },
-                retainServerDuringDeferredReap: {
-                    server.retainCommunityBenchmarkDuringDeferredReap($0)
-                }
-            )
+            if communityBenchmarkEnabled {
+                CommunityBenchmarkView(
+                    catalog: catalogEntries,
+                    binary: server.binaryPath,
+                    prepareServer: { try await server.prepareForCommunityBenchmark() },
+                    releaseServer: { server.finishCommunityBenchmark($0) },
+                    retainServerDuringDeferredReap: {
+                        server.retainCommunityBenchmarkDuringDeferredReap($0)
+                    }
+                )
+            } else {
+                mainArea
+            }
         }
     }
 
@@ -1351,6 +1366,14 @@ struct ContentView: View {
         enabled: Bool
     ) -> SidebarSection {
         !enabled && current == .video ? .chat : current
+    }
+
+    /// Route recovery for the Community Benchmark experimental gate.
+    static func sectionAfterCommunityBenchmarkGateChange(
+        current: SidebarSection,
+        enabled: Bool
+    ) -> SidebarSection {
+        !enabled && current == .benchmark ? .chat : current
     }
 
     /// The chat catalog intentionally omits every media row, so aliases from

@@ -97,11 +97,17 @@ enum DevSnapshot {
         if ProcessInfo.processInfo.environment["RAPID_DEV_SIDEBAR_ONLY"] == "1" {
             let videoEnabled = ProcessInfo.processInfo.environment["RAPID_DEV_VIDEO_ENABLED"] == "1"
                 || VideoFeatureConfig.isEnabled()
+            let communityBenchmarkEnabled = ProcessInfo.processInfo.environment[
+                "RAPID_DEV_COMMUNITY_BENCHMARK_ENABLED"
+            ] == "1" || CommunityBenchmarkFeatureConfig.isEnabled()
             func sidebar() -> AnyView {
                 AnyView(
                     SidebarView(
-                        selection: .constant(.video),
+                        selection: .constant(
+                            communityBenchmarkEnabled ? .benchmark : .video
+                        ),
                         videoGenerationEnabled: videoEnabled,
+                        communityBenchmarkEnabled: communityBenchmarkEnabled,
                         chat: chat,
                         onNewChat: {},
                         onSelectConversation: { _ in }
