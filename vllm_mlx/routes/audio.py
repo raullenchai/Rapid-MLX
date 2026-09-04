@@ -193,7 +193,10 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         yield _NoopRoleAdmission()
         return
 
-    from ..runtime.resident_models import ResidentModelCapacityError
+    from ..runtime.resident_models import (
+        ResidentModelCapacityError,
+        ResidentModelError,
+    )
     from ..runtime.role_capacity import alignment_capacity
 
     # Resolve the footprint off the event loop: the catalog fast-path is
@@ -211,6 +214,20 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
             yield admission
     except ResidentModelCapacityError as exc:
         raise HTTPException(status_code=507, detail=exc.envelope()) from exc
+    except ResidentModelError as exc:
+        # A control-plane invariant (e.g. a second loading admission for the
+        # same role) must surface as a typed client error, never a raw 500.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "message": str(exc),
+                    "type": "invalid_request_error",
+                    "code": "alignment_role_conflict",
+                    "param": "model",
+                }
+            },
+        ) from exc
 
 
 async def _release_alignment_role() -> None:

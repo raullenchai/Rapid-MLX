@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,18 @@ class RoleCapacity:
     source: str
 
 
+# ``_LOCAL_CACHE_TTL_SECONDS`` bounds how long a *successful* local-footprint
+# lookup is reused. The HF cache is mutable: a checkpoint can be deleted or
+# grown between requests, so the result must never be remembered forever. The
+# TTL lets a burst of repeated rejected alignments skip re-walking the whole
+# cache, while a later download (or rm) becomes discoverable once it expires.
+# Only positive results are cached — a miss is never memoized, so a previously
+# uncached checkpoint is always retried (round-4 NIT: bounded-TTL to avoid the
+# repeated full scan; round-3: never permanently memorize a mutable footprint).
+_LOCAL_CACHE_TTL_SECONDS = 30.0
+_local_cache_hits: dict[str, tuple[float, int]] = {}
+
+
 def _local_cache_bytes(hf_id: str) -> int | None:
     """Return the verified on-disk footprint of ``hf_id`` in the local HF cache.
 
@@ -27,6 +40,23 @@ def _local_cache_bytes(hf_id: str) -> int | None:
     reports and is the same number a user would expect freeing. ``None`` when
     the repo is not cached or the lookup fails so the caller fails closed.
     """
+    lc = hf_id.lower()
+    now = time.monotonic()
+    cached = _local_cache_hits.get(lc)
+    if cached is not None and now - cached[0] < _LOCAL_CACHE_TTL_SECONDS:
+        return cached[1]
+    size = _scan_local_cache_bytes(hf_id)
+    if size is not None:
+        _local_cache_hits[lc] = (now, size)
+    else:
+        # Never memoize a miss: the checkpoint may be downloaded moments later
+        # and must become discoverable on the next admission.
+        _local_cache_hits.pop(lc, None)
+    return size
+
+
+def _scan_local_cache_bytes(hf_id: str) -> int | None:
+    """Walk huggingface_hub's deduped cache to find ``hf_id``'s footprint."""
     try:
         from huggingface_hub import scan_cache_dir
     except Exception:  # pragma: no cover - huggingface_hub is a core dep

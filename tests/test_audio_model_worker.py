@@ -1627,31 +1627,74 @@ async def test_aligner_retire_fires_after_previous_discard(monkeypatch):
 async def test_alignment_role_cancellation_keeps_published_engine_committed(
     monkeypatch,
 ):
-    """pr_validate codex BLOCKING #2: when the aligner load completes and
-    publishes the engine but the async admission context is cancelled, the
-    reservation is committed (kept resident) rather than rolled back — no
-    unaccounted resident engine."""
+    """pr_validate codex BLOCKING #2: drive cancellation through
+    ``_run_alignment_request`` end-to-end.
+
+    When the aligner load completes and publishes the engine but the request
+    is cancelled before the next await returns, ``_run_alignment_request``'s
+    ``admission.commit()`` branch must keep the (accounted) reservation
+    resident — never roll it back into an unaccounted resident desync. This
+    drives the REAL route + admission wiring (not ``admit_role`` directly), so
+    deleting the ``admission.commit()`` branch would fail the test.
+    """
+
+    import io
+
+    from fastapi import UploadFile
+
+    from vllm_mlx.routes import audio as audio_route
 
     manager = _make_role_manager(limit_gib=4.0)
     _install_role_manager(monkeypatch, manager)
 
     class _FakeAlign:
-        model_name = "qwen3-aligner"
+        model_name = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 
-    # Simulate: admission entered, engine published, then CancelledError raised
-    # inside the body (the caller's `admission.commit()` keeps the reservation).
+    published = threading.Event()
+    release = threading.Event()
+
+    def _controlled_load_blocking(model_name: str, on_discard_previous=None) -> None:
+        # Runs on the worker thread via run_to_completion. Publish the engine
+        # (the load "succeeded"), then block until the test releases us so the
+        # load is still in-flight when the request is cancelled.
+        audio_route._aligner_engine = _FakeAlign()
+        if on_discard_previous is not None:
+            on_discard_previous()
+        published.set()
+        release.wait()
+
+    monkeypatch.setattr(
+        audio_route, "_load_aligner_blocking", _controlled_load_blocking
+    )
+    monkeypatch.setattr(audio_route, "_aligner_engine", None)
+
+    req = asyncio.create_task(
+        audio_route._run_alignment_request(
+            UploadFile(filename="clip.wav", file=io.BytesIO(b"\x00" * 64)),
+            model="qwen3-aligner",
+            text="你好",
+            language=None,
+            response_format="json",
+        )
+    )
+
+    # Wait for the load worker to publish the engine, then cancel the request
+    # mid-flight (client disconnect). run_to_completion drains the worker —
+    # release it so the drain finishes.
+    await asyncio.to_thread(published.wait)
+    req.cancel()
+    release.set()
     with pytest.raises(asyncio.CancelledError):
-        async with manager.admit_role(
-            role="alignment",
-            model_id="qwen3-aligner",
-            requested_bytes=_aligner_catalog_bytes(),
-            capacity_source="catalog",
-        ) as admission:
-            # The load finished on the worker and published the engine.
-            admission.commit()
-            raise asyncio.CancelledError()
+        await req
 
-    # The reservation is kept resident because it was committed.
+    # The engine IS published (the cancelled load finished on the worker).
+    assert audio_route._aligner_engine is not None
+    assert audio_route._aligner_engine.model_name == _FakeAlign.model_name
+
+    # The admission-commit branch kept the reservation resident rather than
+    # rolling it back. This is the branch under test: delete it and the entry
+    # disappears.
     roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
     assert len(roles) == 1
     assert roles[0]["state"] == "resident"
+    assert roles[0]["model"] == _FakeAlign.model_name

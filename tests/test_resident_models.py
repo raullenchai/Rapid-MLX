@@ -3202,6 +3202,57 @@ async def test_alignment_role_replace_restores_previous_unless_retired():
 
 
 @pytest.mark.asyncio
+async def test_alignment_role_rejects_second_loading_admission():
+    """A role must never host two concurrent in-flight LOADS.
+
+    pr_validate codex BLOCKING #1: a second admission while the first is
+    still loading would overwrite the ledger entry, and a later rollback
+    could resurrect a stale ``\"loading\"`` record. The ledger layer rejects
+    the second admission instead of corrupting the reservation.
+    """
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_open():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            started.set()
+            await release.wait()
+
+    first = asyncio.create_task(hold_open())
+    await started.wait()
+
+    # While the first load is in flight ("loading"), a second admission for
+    # the same role — even with replace_existing=True — must be rejected, not
+    # overwrite the in-flight reservation.
+    with pytest.raises(ResidentModelError, match="loading admission in flight"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ):
+            pass
+
+    release.set()
+    await first
+
+    # The original (first) reservation committed resident, untouched by the
+    # rejected second admission.
+    roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert len(roles) == 1
+    assert roles[0]["model"] == "qwen3-aligner"
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
 async def test_alignment_role_unknown_capacity_fails_closed_under_ceiling():
     # Under a configured ceiling, a model with no catalog/local-cache size
     # must fail closed rather than admit blind.

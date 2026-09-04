@@ -85,3 +85,44 @@ def test_alignment_capacity_fails_closed_on_unknown(monkeypatch):
     capacity = role_capacity.alignment_capacity("some/unknown-nonaligner-checkpoint")
     assert capacity.source == "unknown"
     assert capacity.requested_bytes is None
+
+
+def test_local_cache_lookup_is_bounded_and_never_caches_a_miss(monkeypatch):
+    """The verified-cache footprint is reused only briefly (bounded TTL) so a
+    mutable cache's later download becomes discoverable, and a miss is never
+    memoized so an uncached checkpoint is always retried (reconciles the
+    round-3 'don't memoize a mutable cache' and round-4 'bounded TTL' findings).
+    """
+    from vllm_mlx.runtime import role_capacity
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        role_capacity,
+        "_scan_local_cache_bytes",
+        lambda hf: calls.append(hf) or 998244353,
+    )
+    monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", 60.0)
+    role_capacity._local_cache_hits.clear()
+
+    # First call scans and caches the positive result.
+    assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
+    assert calls == ["c/FakeModel"]
+
+    # A repeat inside the TTL reuses the cached footprint without re-scanning.
+    assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
+    assert calls == ["c/FakeModel"]
+
+    # After the TTL elapses the cache is re-scanned (mutable disk observed).
+    monkeypatch.setattr(role_capacity, "_LOCAL_CACHE_TTL_SECONDS", -1.0)
+    assert role_capacity._local_cache_bytes("c/FakeModel") == 998244353
+    assert calls == ["c/FakeModel", "c/FakeModel"]
+
+    # A miss is never cached: the next call retries the scan.
+    monkeypatch.setattr(
+        role_capacity,
+        "_scan_local_cache_bytes",
+        lambda hf: calls.append(hf) or None,
+    )
+    assert role_capacity._local_cache_bytes("c/NotThere") is None
+    assert role_capacity._local_cache_bytes("c/NotThere") is None
+    assert calls.count("c/NotThere") == 2

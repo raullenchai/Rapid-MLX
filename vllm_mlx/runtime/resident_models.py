@@ -737,6 +737,16 @@ class ResidentModelManager:
             previous = self._roles.get(role)
             if previous is not None and not replace_existing:
                 raise ResidentModelError(f"role {role!r} is already resident")
+            # A role must never host two concurrent in-flight LOADS: an
+            # overwrite here would orphan the earlier load's reservation and,
+            # if that earlier load later rolls back, could resurrect a stale
+            # ``"loading"`` record. Callers serialise per-lane (the STT lane
+            # lock), so this is a defensive invariant at the ledger layer
+            # itself — reject rather than corrupt.
+            if previous is not None and previous.state == "loading":
+                raise ResidentModelError(
+                    f"role {role!r} already has a loading admission in flight"
+                )
             usage_credit = previous.reserved_bytes if previous is not None else 0
             used = max(0, self._accounted_usage() - usage_credit)
             if self.memory_limit_bytes > 0 and requested_bytes is None:
