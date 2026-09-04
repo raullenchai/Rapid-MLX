@@ -3552,6 +3552,10 @@ final class ServerManager {
         reason: String?, cancelMonitor: Bool = true
     ) async -> pid_t? {
         guard let process = child else { return nil }
+        let clearsResumeAlias = Self.shouldClearLastServedAlias(
+            expectedStop: reason == nil,
+            preservingLastServedAlias: preservingLastServedAliasDuringStop
+        )
         let alias: String
         switch state {
         case .starting(let a), .ready(let a), .crashed(let a, _):
@@ -3620,6 +3624,11 @@ final class ServerManager {
             // ``handleChildExit`` may not get a chance to run if
             // the termination handler is starved by app teardown.
             OwnedServerRecord.clear()
+            if clearsResumeAlias {
+                (sessionDefaults ?? .standard).removeObject(
+                    forKey: Self.lastServedAliasKey
+                )
+            }
             if let message = reason {
                 state = .crashed(alias: alias, message: message)
             } else {
@@ -3715,7 +3724,7 @@ final class ServerManager {
                 expectedStop: wasExpected,
                 preservingLastServedAlias: preservedLastServedAlias
             ) {
-                UserDefaults.standard.removeObject(forKey: Self.lastServedAliasKey)
+                (sessionDefaults ?? .standard).removeObject(forKey: Self.lastServedAliasKey)
             }
             return
         }
