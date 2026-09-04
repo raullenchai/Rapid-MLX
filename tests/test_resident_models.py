@@ -2211,14 +2211,14 @@ async def test_suspended_stop_does_not_block_snapshot_lease_or_unrelated_op():
 
     # A lease on the UNRELATED resident model must not be blocked by the
     # suspended stop() -- it needs the manager lock, which must be free.
-    got_lease = False
-    async with asyncio.timeout(1):
+    async def use_unrelated_model() -> None:
         async with manager.lease("chat-unrelated"):
-            got_lease = True
-    assert got_lease is True
+            pass
 
-    # A non-conflicting set_pinned on the unrelated model must also proceed.
-    await asyncio.wait_for(manager.set_pinned("chat-unrelated", True), timeout=1)
+        # A non-conflicting set_pinned on the unrelated model must also proceed.
+        await manager.set_pinned("chat-unrelated", True)
+
+    await asyncio.wait_for(use_unrelated_model(), timeout=1)
 
     replacement.cancel()
     with pytest.raises(asyncio.CancelledError):
