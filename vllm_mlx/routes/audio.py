@@ -167,6 +167,13 @@ class _NoopRoleAdmission:
     def retire_previous(self) -> None:
         pass
 
+    def commit(self) -> None:
+        # No-op: without a residency manager there is no ledger entry to keep.
+        # Must exist so the cancellation recovery path can call
+        # ``admission.commit()`` uniformly on managed AND unmanaged servers
+        # without masking ``CancelledError`` with ``AttributeError``.
+        pass
+
 
 def _residency_manager():
     """Return the shared residency manager when this server configured one."""
@@ -259,6 +266,22 @@ async def _release_alignment_role() -> None:
 from ..audio.registry import stt_aliases as _stt_aliases_from_registry
 
 STT_MODEL_ALIASES: dict[str, str] = dict(_stt_aliases_from_registry())
+
+
+def _canonical_model_id(model_id: str) -> str:
+    """Reduce a model alias to the canonical HF repo id for identity checks.
+
+    Mirrors :func:`_resolve_stt_model`'s alias resolution (including the
+    ``"default"`` OpenAI placeholder) so a request alias and a published
+    engine's ``model_name`` compare equal even when one is the alias and
+    the other the canonical id. Used where publication identity matters
+    (cancellation-commit), not for validation — pass-through strings and
+    unknown bare names are returned as-is.
+    """
+    if model_id == "default":
+        return STT_MODEL_ALIASES[DEFAULT_ALIGNER_ALIAS]
+    return STT_MODEL_ALIASES.get(model_id, model_id)
+
 
 # F-210: model strings must canonicalize to either a bare alias name
 # (matches an entry in ``STT_MODEL_ALIASES``) or a single-slash
@@ -1962,10 +1985,14 @@ async def _run_alignment_request(
                         # resident desync. A cancelled replacement that never
                         # discarded/published model_name leaves the old engine
                         # + its reservation untouched.
-                        if (
-                            _aligner_engine is not None
-                            and _aligner_engine.model_name == model_name
-                        ):
+                        #
+                        # Compare CANONICAL ids: the route passes the resolved
+                        # HF repo id here, but a published engine may expose an
+                        # alias (or vice-versa), so raw string equality could
+                        # leave a successfully-loaded engine unaccounted.
+                        if _aligner_engine is not None and _canonical_model_id(
+                            _aligner_engine.model_name
+                        ) == _canonical_model_id(model_name):
                             admission.commit()
                         raise
             result = await run_to_completion(

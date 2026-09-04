@@ -1315,6 +1315,20 @@ def _install_role_manager(monkeypatch, manager):
 
 
 @pytest.mark.asyncio
+def test_noop_role_admission_commit_is_noop():
+    """pr_validate codex BLOCKING (round-6): ``_NoopRoleAdmission.commit()``
+    must exist and be a no-op so an unmanaged server (no residency manager)
+    that publishes an engine and then gets cancelled surfaces the real
+    ``CancelledError`` — not an ``AttributeError`` from a missing method."""
+
+    from vllm_mlx.routes.audio import _NoopRoleAdmission
+
+    admission = _NoopRoleAdmission()
+    admission.retire_previous()
+    admission.commit()  # must not raise
+
+
+@pytest.mark.asyncio
 async def test_admitting_alignment_resolves_footprint_before_load(monkeypatch):
     """The alignment admission resolves the aligner footprint from catalog
     metadata (not blind) and is admitted through the shared ledger."""
@@ -1678,7 +1692,12 @@ async def test_alignment_role_cancellation_keeps_published_engine_committed(
     _install_role_manager(monkeypatch, manager)
 
     class _FakeAlign:
-        model_name = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+        # Publish an ALIAS (not the canonical HF id) to prove the
+        # cancellation-commit comparison canonicalizes: the request is for
+        # ``qwen3-aligner`` and the route resolves it to the canonical id, but
+        # the published engine may expose the alias. The commit must match on
+        # canonical form or a successfully-published engine goes unaccounted.
+        model_name = "qwen3-aligner"
 
     published = threading.Event()
     release = threading.Event()
@@ -1727,4 +1746,5 @@ async def test_alignment_role_cancellation_keeps_published_engine_committed(
     roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
     assert len(roles) == 1
     assert roles[0]["state"] == "resident"
-    assert roles[0]["model"] == _FakeAlign.model_name
+    # The ledger records the canonical id for the ``qwen3-aligner`` alias.
+    assert roles[0]["model"] == "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
