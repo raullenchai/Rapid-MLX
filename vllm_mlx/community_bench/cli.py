@@ -12,7 +12,8 @@ from .atomic_upload import preview_run, upload_run
 from .local_runner import LocalBenchmarkError, run_local
 from .workspace import LocalRunArchive, benchmark_catalog, plan_for_alias
 
-_CONTRIBUTOR_BASE_URL = "https://rapidmlx.com/leaderboard/contributors"
+_LEADERBOARD_URL = "https://rapidmlx.com/leaderboard"
+_CONTRIBUTOR_BASE_URL = f"{_LEADERBOARD_URL}/contributors"
 
 
 def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
@@ -161,6 +162,8 @@ def benchmark_command(args) -> int:
                 identity, url = profile
                 print(f"You contributed as {identity}.")
                 print(f"View your contributions: {url}")
+            else:
+                print(f"View Community Benchmark: {_LEADERBOARD_URL}")
             if not value["receipt_saved"]:
                 print(
                     "Warning: the upload succeeded but its local receipt could not be saved."

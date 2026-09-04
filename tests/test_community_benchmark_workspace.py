@@ -913,6 +913,22 @@ def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
     )
     assert "local receipt could not be saved" in output
 
+    anonymous_receipt = {**receipt, "contributor": None}
+    anonymous_acceptance = atomic_upload.AtomicUploadAcceptance(
+        receipt=anonymous_receipt,
+        install_id="012345abcdef",
+        payload_digest=anonymous_receipt["run_digest"],
+    )
+    monkeypatch.setattr(
+        community_cli,
+        "upload_run",
+        lambda local_run, **kwargs: anonymous_acceptance,
+    )
+    assert community_cli.benchmark_command(args) == 0
+    output = capsys.readouterr().out
+    assert "You contributed as" not in output
+    assert "View Community Benchmark: https://rapidmlx.com/leaderboard" in output
+
 
 def test_unknown_run_model_returns_structured_unsaved_cli_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
