@@ -388,6 +388,25 @@ struct VideoClientTests {
         }
     }
 
+    @Test("Reference loader enforces the advertised decoded-pixel ceiling")
+    func referencePixelCeilingIsEnforced() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "rapid-video-reference-pixel-tests-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("one-pixel.png")
+        let png = try #require(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        ))
+        try png.write(to: source)
+
+        #expect(try VideoReferenceLoader.load(from: source, maximumPixels: 1) == png)
+        #expect(throws: VideoReferenceLoaderError.tooLarge) {
+            _ = try VideoReferenceLoader.load(from: source, maximumPixels: 0)
+        }
+    }
+
     @Test("Failed save leaves an existing destination untouched")
     func failedSavePreservesDestination() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(

@@ -268,6 +268,14 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         return min(input.maximumBytes, VideoClient.maxReferenceBytes)
     }
 
+    /// Optional decoded-pixel ceiling advertised by the active server. Older
+    /// compatible servers omit it, in which case the byte limit remains the
+    /// only client-side bound and the server stays authoritative.
+    var referenceMaximumPixels: Int? {
+        guard let input = limits.inputReference, usableReferenceLimits else { return nil }
+        return input.maximumPixels
+    }
+
     func validated() throws -> Self {
         let size = limits.size
         let validDimension: (Limits.Dimension) -> Bool = {

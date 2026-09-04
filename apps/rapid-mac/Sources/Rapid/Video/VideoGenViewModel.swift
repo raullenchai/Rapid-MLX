@@ -108,6 +108,7 @@ final class VideoGenViewModel {
     var sizePresets: [String] { capabilities?.sizePresets ?? [] }
     var durationPresets: [Int] { capabilities?.durationPresets(for: size) ?? [] }
     var referenceMaximumBytes: Int { capabilities?.referenceMaximumBytes ?? 0 }
+    var referenceMaximumPixels: Int? { capabilities?.referenceMaximumPixels }
     var acceptedReferenceMIMETypes: Set<String> {
         capabilities?.acceptedReferenceMIMETypes ?? []
     }

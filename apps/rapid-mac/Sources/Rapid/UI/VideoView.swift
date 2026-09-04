@@ -14,7 +14,8 @@ enum VideoReferenceLoader {
     static func load(
         from url: URL,
         fileManager: FileManager = .default,
-        maximumBytes: Int = VideoClient.maxReferenceBytes
+        maximumBytes: Int = VideoClient.maxReferenceBytes,
+        maximumPixels: Int? = nil
     ) throws -> Data {
         let (readLimit, overflowed) = maximumBytes.addingReportingOverflow(1)
         guard maximumBytes >= 0, !overflowed else {
@@ -36,6 +37,22 @@ enum VideoReferenceLoader {
         let data = try handle.read(upToCount: readLimit) ?? Data()
         guard data.count <= maximumBytes else {
             throw VideoReferenceLoaderError.tooLarge
+        }
+        if let maximumPixels {
+            guard maximumPixels > 0 else { throw VideoReferenceLoaderError.tooLarge }
+            let options = [kCGImageSourceShouldCache: false] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(data as CFData, options),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options)
+                    as? [CFString: Any],
+                  let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+                  let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+                  width > 0, height > 0 else {
+                throw VideoReferenceLoaderError.unsupportedFormat
+            }
+            let (pixelCount, overflowed) = width.multipliedReportingOverflow(by: height)
+            guard !overflowed, pixelCount <= maximumPixels else {
+                throw VideoReferenceLoaderError.tooLarge
+            }
         }
         return data
     }
@@ -591,15 +608,21 @@ struct VideoView: View {
     private func loadReference(_ url: URL) async {
         do {
             let maximumBytes = viewModel.referenceMaximumBytes
+            let maximumPixels = viewModel.referenceMaximumPixels
             let acceptedMIMETypes = viewModel.acceptedReferenceMIMETypes
             let (data, mime) = try await Task.detached(priority: .userInitiated) {
-                let data = try VideoReferenceLoader.load(from: url, maximumBytes: maximumBytes)
+                let data = try VideoReferenceLoader.load(
+                    from: url,
+                    maximumBytes: maximumBytes,
+                    maximumPixels: maximumPixels
+                )
                 guard let mime = VideoReferenceLoader.mimeType(for: data) else {
                     throw VideoReferenceLoaderError.unsupportedFormat
                 }
                 return (data, mime)
             }.value
             guard maximumBytes == viewModel.referenceMaximumBytes,
+                  maximumPixels == viewModel.referenceMaximumPixels,
                   acceptedMIMETypes == viewModel.acceptedReferenceMIMETypes else { return }
             guard acceptedMIMETypes.contains(mime) else {
                 viewModel.errorMessage = "Choose a valid JPEG, PNG, or WebP image."
