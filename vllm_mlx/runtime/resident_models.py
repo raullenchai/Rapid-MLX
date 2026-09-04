@@ -1310,7 +1310,6 @@ class ResidentModelManager:
         try:
             await self._retire_sequentially(retirement_plan)
         except asyncio.CancelledError as exc:
-            await self._resume_engines(paused_engines)
             raise _CommittedReplacementCancelled from exc
         return result
 
@@ -2003,10 +2002,29 @@ class ResidentModelManager:
         routable (its caller reopens it), while the already-enqueued cleanup
         continues shielded in the background.
         """
-        for record, reason in plan:
-            async with self._lock:
-                shield = self._begin_evict_locked(record, reason=reason)
-            await shield
+        for index, (record, reason) in enumerate(plan):
+            retirement_started = False
+            try:
+                async with self._lock:
+                    shield = self._begin_evict_locked(record, reason=reason)
+                    retirement_started = True
+                await shield
+            except asyncio.CancelledError:
+                # The current record belongs to the shielded cleanup once
+                # _begin_evict_locked succeeds; reopening it would race stop().
+                # Records not reached yet are still routable but remain paused
+                # from the group quiesce, so reopen exactly that suffix. Keeping
+                # this ownership here also covers existing-target and reload
+                # branches, which do not expose their local paused-engine list
+                # back to load().
+                first_unretired = index + 1 if retirement_started else index
+                await self._resume_engines(
+                    [
+                        pending.entry.engine
+                        for pending, _ in plan[first_unretired:]
+                    ]
+                )
+                raise
 
     @asynccontextmanager
     async def lease(self, model_name: str):

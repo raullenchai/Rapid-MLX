@@ -1962,6 +1962,54 @@ async def test_task_cancel_during_sibling_cleanup_reopens_remaining_sibling():
 
 
 @pytest.mark.asyncio
+async def test_existing_target_cancel_reopens_unretired_sibling():
+    registry = ModelRegistry()
+    primary_engine = BlockingStopLifecycleEngine()
+    primary = entry("chat-primary", primary_engine)
+    target_engine = FakeLifecycleEngine()
+    target = entry("chat-target", target_engine)
+    remaining_engine = FakeLifecycleEngine()
+    remaining = entry("chat-remaining", remaining_engine)
+    for model in (primary, target, remaining):
+        registry.add(model, is_default=model is primary)
+
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+    for model in (target, remaining):
+        manager._index_record(
+            ResidencyRecord(
+                entry=model,
+                estimated_bytes=2 * GIB,
+                loaded_at=0,
+                last_used_at=0,
+            )
+        )
+
+    replacement = asyncio.create_task(
+        manager.load("chat-target", replace_group="assistant", replace_mode="wait")
+    )
+    await primary_engine.stop_started.wait()
+
+    replacement.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+
+    # The old primary is already owned by retirement, but the later sibling
+    # stays routable and must be reopened rather than left paused indefinitely.
+    assert registry.default_name == "chat-target"
+    assert "chat-primary" not in {
+        model.model_name for model in registry.list_entries()
+    }
+    assert "chat-remaining" in {
+        model.model_name for model in registry.list_entries()
+    }
+    assert remaining_engine.paused is False
+
+    primary_engine.stop_release.set()
+    await asyncio.wait_for(manager.shutdown(), timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_wait_replacement_retires_drained_engine_with_http_lease_finalizing():
     registry = ModelRegistry()
     old_engine = FakeLifecycleEngine()
