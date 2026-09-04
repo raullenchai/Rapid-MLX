@@ -657,6 +657,14 @@ class TestDetectionRequiresAValidationBlock:
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
 
+    def test_validation_in_enabled_else_branch_counts(self):
+        clause = (
+            "{%- if enable_thinking is false %}off{%- else %}"
+            "{%- if reasoning_effort not in ['a', 'b'] %}"
+            "{{ raise_exception('z') }}{%- endif %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
     def test_bare_falsey_enable_thinking_branch_does_not_prove_elif_reachable(self):
         clause = (
             "{%- if not enable_thinking %}off"
