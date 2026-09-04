@@ -1994,7 +1994,11 @@ async def test_task_cancel_during_sibling_cleanup_reopens_remaining_sibling():
 
 
 @pytest.mark.asyncio
-async def test_existing_target_cancel_reopens_unretired_sibling():
+async def test_existing_target_cancel_reopens_unretired_sibling(monkeypatch):
+    # This contract is about cancellation ownership, not allocator latency.
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
     registry = ModelRegistry()
     primary_engine = BlockingStopLifecycleEngine()
     primary = entry("chat-primary", primary_engine)
@@ -2193,8 +2197,11 @@ async def test_cancel_secondary_replace_keeps_sibling_charged_and_cleaned():
 
 
 @pytest.mark.asyncio
-async def test_suspended_stop_does_not_block_lease_or_unrelated_op():
+async def test_suspended_stop_does_not_block_lease_or_unrelated_op(monkeypatch):
     """LOCK SAFETY: suspended stop must not block unrelated manager ops."""
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+    )
     registry = ModelRegistry()
     primary_engine = BlockingStopLifecycleEngine()
     primary = entry("chat-old", primary_engine)

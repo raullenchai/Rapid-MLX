@@ -765,7 +765,7 @@ class ResidentModelManager:
                 ),
                 key=lambda record: record.last_used_at,
             )
-            evicted = []
+            evicted: list[str] = []
             for record in expired:
                 attempted.append((record.model_id, id(record.entry.engine)))
                 cleanups.append(self._begin_evict_locked(record, reason="idle_ttl"))
