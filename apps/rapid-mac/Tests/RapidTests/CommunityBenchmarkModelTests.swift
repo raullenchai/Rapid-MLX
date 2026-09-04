@@ -234,7 +234,7 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
-    @Test("Desktop decodes contributor identity and older anonymous receipts")
+    @Test("Desktop decodes contributor identity and valid anonymous receipts")
     func contributorReceiptDecoding() throws {
         let full = try JSONDecoder().decode(
             CommunityBenchmarkReceipt.self,
@@ -249,15 +249,15 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(full.contributionLinkTitle == "modest-slate-wombat ·545")
 
-        let legacy = try JSONDecoder().decode(
+        let anonymous = try JSONDecoder().decode(
             CommunityBenchmarkReceipt.self,
             from: Data(
-                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":true,"accepted_at":"2026-09-01T20:00:00Z"}"#.utf8
+                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":true,"accepted_at":"2026-09-01T20:00:00Z","contributor":null}"#.utf8
             )
         )
-        #expect(legacy.contributor == nil)
-        #expect(legacy.contributionURL.absoluteString == "https://rapidmlx.com/leaderboard")
-        #expect(legacy.contributionLinkTitle == "View Community Benchmark")
+        #expect(anonymous.contributor == nil)
+        #expect(anonymous.contributionURL.absoluteString == "https://rapidmlx.com/leaderboard")
+        #expect(anonymous.contributionLinkTitle == "View Community Benchmark")
     }
 
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")
