@@ -8054,14 +8054,15 @@ class Scheduler:
                     frequency_context_size=4096,
                 )
                 request_processors.extend(penalty_processors)
-            # MTP may reuse only this exact ordered list.  Standard penalties
-            # are history-derived, and the tool repetition guard exposes an
-            # explicit tentative-prefix snapshot/restore contract. Identity
-            # (not processor count or type-name heuristics) keeps grammar,
+            # MTP may reuse only this exact ordered list. Standard penalties
+            # are history-derived; the built-in grammar and tool repetition
+            # guard expose explicit target-row snapshot/restore contracts.
+            # Identity (not processor count or type-name heuristics) keeps
             # reasoning, suppression, tool-bias, and unknown processors
             # fail-closed at the GenerationBatch handoff.
             request._mtp_safe_logits_processors = tuple(
-                ([_loop_breaker] if _loop_breaker is not None else [])
+                ([_glp] if _glp is not None else [])
+                + ([_loop_breaker] if _loop_breaker is not None else [])
                 + penalty_processors
             )
             # Generation-time thinking-token budget (force-close </think>).

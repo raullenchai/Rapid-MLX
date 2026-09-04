@@ -527,12 +527,18 @@ def mtp_generate_step(
             for processor in logits_processors:
                 mtp_apply = getattr(processor, "mtp_apply", None)
                 if id(processor) in transactional_processor_ids:
+                    # Transactional processors receive the same cumulative
+                    # candidate history as mlx-lm's ordinary processor
+                    # contract.  During verification that history includes
+                    # only the draft prefix preceding this row.  Generator
+                    # snapshots below decide which temporary state becomes
+                    # committed after target acceptance.
                     tentative = (
                         tentative_tokens
                         if tentative_tokens is not None
                         else mx.array([], dtype=mx.uint32)
                     )
-                    logits = mtp_apply(tentative, logits)
+                    logits = mtp_apply(tokens, tentative, logits)
                 else:
                     logits = processor(tokens, logits)
             logits = logits.squeeze(0)
@@ -681,7 +687,7 @@ def mtp_generate_step(
                     logits[:, i, :].squeeze(0),
                     draw,
                     # ``yy[0]`` is the last committed token. Positions after
-                    # it are the tentative prefix visible at verify row i.
+                    # it are the temporary draft prefix for this target row.
                     tentative_tokens=yy[1 : i + 1],
                 )
                 toks.append(tok)

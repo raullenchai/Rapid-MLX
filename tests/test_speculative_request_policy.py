@@ -17,7 +17,7 @@ def test_disabled_speculative_methods_have_no_live_policy(method):
     assert resolve_speculative_request_policy(method) is None
 
 
-def test_mtp_policy_reports_tools_as_safe_ordinary_decode_fallback():
+def test_mtp_policy_reports_default_tools_as_target_verified():
     from vllm_mlx.speculative.request_policy import (
         resolve_speculative_request_policy,
     )
@@ -25,7 +25,7 @@ def test_mtp_policy_reports_tools_as_safe_ordinary_decode_fallback():
     policy = resolve_speculative_request_policy(" MTP ")
     assert policy is not None
     assert policy.method == "mtp"
-    assert policy.request_fallback_features == ("tools",)
+    assert policy.request_fallback_features == ()
 
 
 def test_other_speculative_methods_do_not_inherit_mtp_tool_policy():
@@ -57,12 +57,12 @@ def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
     assert info.configured is True
     assert info.method == "mtp"
     assert info.runtime_state == "active"
-    assert info.request_fallback_features == ["tools"]
+    assert info.request_fallback_features == []
     assert info.model_dump() == {
         "configured": True,
         "method": "mtp",
         "runtime_state": "active",
-        "request_fallback_features": ["tools"],
+        "request_fallback_features": [],
     }
 
 

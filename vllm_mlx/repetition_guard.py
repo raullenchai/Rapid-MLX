@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
-from typing import cast
 
 import mlx.core as mx
 
@@ -171,21 +170,26 @@ class AgentRepetitionLogitsProcessor:
 
         return self._apply(self.output_token_ids, logits)
 
-    def mtp_apply(self, tentative_token_ids: mx.array, logits: mx.array) -> mx.array:
+    def mtp_apply(
+        self,
+        _token_ids: mx.array,
+        tentative_token_ids: mx.array,
+        logits: mx.array,
+    ) -> mx.array:
         """Apply against committed output plus one tentative MTP prefix.
 
-        The generator passes only draft tokens preceding the position being
-        sampled.  Keeping the committed list scheduler-owned avoids treating a
-        repeated user prompt as generated output.  The common path returns
-        before materializing MLX tokens: no supported loop can arm below 48
-        output tokens with the guard's production thresholds.
+        The cumulative candidate history is also supplied for processors that
+        need prompt-relative grammar state, but this guard deliberately uses
+        the scheduler-owned generated output plus only the tentative suffix.
+        A repeated user prompt can therefore never arm the agent-output guard.
         """
 
         tentative_count = int(tentative_token_ids.size)
         if len(self.output_token_ids) + tentative_count < 48:
             return logits
-        tentative = cast(list[int], tentative_token_ids.tolist())
-        return self._apply([*self.output_token_ids, *tentative], logits)
+        return self._apply(
+            [*self.output_token_ids, *tentative_token_ids.tolist()], logits
+        )
 
     def mtp_snapshot_state(
         self,

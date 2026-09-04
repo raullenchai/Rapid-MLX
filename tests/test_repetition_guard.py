@@ -84,7 +84,9 @@ def test_mtp_processor_state_restores_rejected_tentative_intervention():
 
     # Two tentative tokens complete the second 24-token copy, so the next
     # token would start the third copy and must be blocked on this branch.
-    processed = processor.mtp_apply(mx.array(pattern[-2:]), logits)
+    processed = processor.mtp_apply(
+        mx.array([30, 31, 30] + committed), mx.array(pattern[-2:]), logits
+    )
     mx.eval(processed)
     assert float(processed[0, pattern[0]].item()) == float("-inf")
     assert processor.interventions == 1
@@ -93,6 +95,17 @@ def test_mtp_processor_state_restores_rejected_tentative_intervention():
     assert processor.interventions == 0
     assert processor.last_match is None
     assert processor._last_intervention_length == -1
+
+
+def test_mtp_processor_never_counts_repeated_prompt_as_agent_output():
+    prompt = [7] * 256
+    processor = AgentRepetitionLogitsProcessor([])
+    logits = mx.zeros((1, 16))
+    processed = processor.mtp_apply(mx.array(prompt + [8]), mx.array([8]), logits)
+    mx.eval(processed)
+
+    assert processor.interventions == 0
+    assert float(processed[0, 7].item()) == 0.0
 
 
 def test_ignores_short_stutter_and_near_repeat():
