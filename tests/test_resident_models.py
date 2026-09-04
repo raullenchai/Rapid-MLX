@@ -3688,6 +3688,37 @@ def test_role_enum_accepts_canonical_underscore_aliases():
 
 
 @pytest.mark.asyncio
+async def test_role_aliases_share_one_canonical_ledger_key():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="speech_input",
+        model_id="asr",
+        requested_bytes=int(0.3 * GIB),
+        capacity_source="catalog",
+    ):
+        pass
+
+    roles = manager.snapshot()["roles"]
+    assert [row["role"] for row in roles] == ["speech-input"]
+
+    # The dash and underscore spellings are one logical role, not two ledger
+    # slots that could be admitted and charged independently.
+    with pytest.raises(ResidentModelError, match="already resident"):
+        async with manager.admit_role(
+            role="speech-input",
+            model_id="other-asr",
+            requested_bytes=int(0.3 * GIB),
+            capacity_source="catalog",
+        ):
+            pass
+
+    # Release accepts either spelling and removes the canonical reservation.
+    await manager.release_role("speech_input")
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
 async def test_capacity_507_envelope_carries_full_role_contract():
     # A capacity rejection must surface the stable machine fields #2306 will
     # parse: requested_role, the live resident_roles ledger, recovery_actions,
