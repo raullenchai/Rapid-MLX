@@ -395,6 +395,77 @@ def test_transcript_settler_accepts_stable_visible_tail_after_scrollbar_hides(tm
     assert completed.stdout.strip() == "3"
 
 
+def test_transcript_settler_accepts_short_reply_without_scrollbar(tmp_path):
+    """A fitting first reply can be at its tail before AppKit mounts any bar."""
+    source = HARNESS.read_text()
+    helper_body = source.split("settle_transcript_at_bottom() {", 1)[1].split("\n}", 1)[
+        0
+    ]
+    helper = f"settle_transcript_at_bottom() {{{helper_body}\n}}"
+
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "data": {
+                    "ui_elements": [
+                        {
+                            "role": "AXScrollArea",
+                            "bounds": {
+                                "x": 201,
+                                "y": 171,
+                                "width": 519,
+                                "height": 318,
+                            },
+                        },
+                        {
+                            "role": "AXButton",
+                            "identifier": "ChatView.Message.Retry.reply",
+                            "bounds": {
+                                "x": 277,
+                                "y": 383,
+                                "width": 24,
+                                "height": 24,
+                            },
+                        },
+                        {
+                            "role": "AXButton",
+                            "identifier": "ChatView.SendOrStopButton",
+                            "bounds": {
+                                "x": 658,
+                                "y": 546,
+                                "width": 28,
+                                "height": 28,
+                            },
+                        },
+                    ]
+                }
+            }
+        )
+    )
+
+    script = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        fixture={str(fixture)!r}
+        calls=0
+        see_main() {{ cp "$fixture" "$1"; calls=$((calls + 1)); }}
+        press() {{ printf 'unexpected press\n' >&2; exit 98; }}
+        die() {{ printf '%s\n' "$*" >&2; exit 97; }}
+        sleep() {{ :; }}
+        {helper}
+        settle_transcript_at_bottom "$fixture.current.json" "$fixture.press.json"
+        printf '%s\n' "$calls"
+        """
+    )
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output=True, check=False, text=True
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "3"
+
+
 def test_transcript_settler_rechecks_after_a_stale_jump_press(tmp_path):
     """A vanished stale AX element still needs the physical tail proof."""
     source = HARNESS.read_text()

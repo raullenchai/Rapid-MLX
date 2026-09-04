@@ -907,16 +907,20 @@ settle_transcript_at_bottom() {
                     and .bounds.height > .bounds.width
                     and .bounds.x > $compose_x)]
         | sort_by(.bounds.x) | .[0].bounds.x // empty' "$destination")"
-    [[ -n "$scroll_x" ]] \
-        || die "could not identify the transcript scrollbar beside the compose surface"
-    before_value="$(jq -r --argjson scroll_x "$scroll_x" '
-        [.data.ui_elements[]?
-         | select(.role == "AXScrollBar"
-                  and (.value | type) == "number"
-                  and ((.bounds.x - $scroll_x) | fabs) < 1)
-         | .value] | first // empty' "$destination")"
-    [[ -n "$before_value" ]] \
-        || die "transcript exposes no measurable scroll position before Jump to latest"
+    # AppKit does not expose an AXScrollBar when the completed transcript fits
+    # its viewport. That is a valid at-tail state, not a missing-control
+    # failure. Keep the correlated scrollbar when one exists; otherwise the
+    # stability loop below must prove the visible assistant tail twice.
+    if [[ -n "$scroll_x" ]]; then
+        before_value="$(jq -r --argjson scroll_x "$scroll_x" '
+            [.data.ui_elements[]?
+             | select(.role == "AXScrollBar"
+                      and (.value | type) == "number"
+                      and ((.bounds.x - $scroll_x) | fabs) < 1)
+             | .value] | first // empty' "$destination")"
+        [[ -n "$before_value" ]] \
+            || die "transcript exposes no measurable scroll position before Jump to latest"
+    fi
     if jq -e '.data.ui_elements[]?
               | select(.identifier == "Transcript.JumpToBottom")' \
         "$destination" >/dev/null; then
@@ -938,12 +942,15 @@ settle_transcript_at_bottom() {
     for _ in {1..60}; do
         see_main "$destination"
         local current_value tail_marker_visible tail_key=""
-        current_value="$(jq -r --argjson scroll_x "$scroll_x" '
-            [.data.ui_elements[]?
-             | select(.role == "AXScrollBar"
-                      and (.value | type) == "number"
-                      and ((.bounds.x - $scroll_x) | fabs) < 1)
-             | .value] | first // empty' "$destination")"
+        current_value=""
+        if [[ -n "$scroll_x" ]]; then
+            current_value="$(jq -r --argjson scroll_x "$scroll_x" '
+                [.data.ui_elements[]?
+                 | select(.role == "AXScrollBar"
+                          and (.value | type) == "number"
+                          and ((.bounds.x - $scroll_x) | fabs) < 1)
+                 | .value] | first // empty' "$destination")"
+        fi
         # AppKit may remove an overlay scrollbar once a short transcript fits
         # entirely inside its viewport. In that state, the last assistant
         # action row being fully visible is stronger physical evidence than a
