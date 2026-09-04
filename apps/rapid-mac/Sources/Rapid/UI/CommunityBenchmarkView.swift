@@ -123,9 +123,17 @@ struct CommunityBenchmarkContributor: Decodable, Equatable {
     var displayName: String { "\(name) ·\(tag)" }
 
     var profileURL: URL? {
-        var components = URLComponents(string: "https://rapidmlx.com")
-        components?.path = "/leaderboard/contributors/\(name)-\(tag)"
-        return components?.url
+        // Percent-encode the identifier so an embedded "/" in a server-assigned
+        // name/tag cannot become a path separator — mirrors the CLI client's
+        // urllib `quote(f"{name}-{tag}", safe="-")`. (Nothing but ASCII
+        // alphanumerics, "_", ".", "-", "~" stays literal; everything else is
+        // percent-encoded, so the joined slug is safe to drop into a URL path.)
+        var allowed = CharacterSet.alphanumerics
+        allowed.formUnion(CharacterSet(charactersIn: "_.-~"))
+        let encoded = ("\(name)-\(tag)").addingPercentEncoding(
+            withAllowedCharacters: allowed
+        ) ?? ""
+        return URL(string: "https://rapidmlx.com/leaderboard/contributors/\(encoded)")
     }
 }
 
@@ -922,11 +930,12 @@ struct CommunityBenchmarkView: View {
                         message: "The benchmark was not uploaded."
                     )
                 }
-                receipts[preview.runID] = response.receipt
-                shareSuccess = response.receipt
-                if !response.receiptSaved {
+                if response.receiptSaved {
+                    receipts[preview.runID] = response.receipt
+                } else {
                     errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
                 }
+                shareSuccess = response.receipt
             } catch is CancellationError {
                 // Navigation cancelled the upload command and its subprocess.
             } catch {

@@ -219,6 +219,21 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Contributor profile URL percent-encodes embedded slashes in the identity")
+    func contributorProfileURLPercentEncodesSlash() {
+        let contributor = CommunityBenchmarkContributor(
+            name: "modest/slate+wombat",
+            tag: "5 4"
+        )
+        // Mirrors the CLI client's urllib quote(f"{name}-{tag}", safe="-"): every
+        // character outside [A-Za-z0-9_.~-] is percent-encoded, so "/" cannot be
+        // interpreted as a path separator and the lone segment round-trips.
+        #expect(
+            contributor.profileURL?.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest%2Fslate%2Bwombat-5%204"
+        )
+    }
+
     @Test("Desktop decodes contributor identity and older anonymous receipts")
     func contributorReceiptDecoding() throws {
         let full = try JSONDecoder().decode(
