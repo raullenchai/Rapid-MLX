@@ -784,9 +784,13 @@ def _is_nonempty_snapshot_manifest_file(path: str, snap_dir: str) -> bool:
         if not os.path.isfile(path) or os.path.getsize(path) <= 0:
             return False
         snapshot_real = os.path.realpath(snap_dir)
-        blobs_real = os.path.realpath(
-            os.path.join(_snapshot_repo_root(snap_dir), "blobs")
-        )
+        repo_root_real = os.path.realpath(_snapshot_repo_root(snap_dir))
+        expected_blobs = os.path.join(repo_root_real, "blobs")
+        blobs_real = os.path.realpath(expected_blobs)
+        # The leaf may be a normal Hub symlink into ``blobs``; the blob-store
+        # anchor itself may not be rebound to another repository.
+        if blobs_real != expected_blobs:
+            return False
         target_real = os.path.realpath(path)
         return target_real.startswith(snapshot_real + os.sep) or target_real.startswith(
             blobs_real + os.sep

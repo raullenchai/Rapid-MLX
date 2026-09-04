@@ -1853,6 +1853,38 @@ def test_is_repo_cached_rejects_nested_sidecar_outside_owning_repo(
     assert gate.is_repo_cached("user/nested-escape") is False
 
 
+def test_is_repo_cached_rejects_symlinked_blob_store_anchor(tmp_path, monkeypatch):
+    """The owning repo cannot redirect its entire blob store to another repo."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--user--blob-anchor-escape"
+    snap = repo_root / "snapshots" / "abc"
+    (snap / "sidecars").mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(b"model")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.weight": "model.safetensors",
+                    "helper.weight": "sidecars/helper.safetensors",
+                }
+            }
+        )
+    )
+    foreign_blobs = cache_root / "models--other--repo" / "blobs"
+    foreign_blobs.mkdir(parents=True)
+    helper = foreign_blobs / "helper"
+    helper.write_bytes(b"helper")
+    (repo_root / "blobs").symlink_to(foreign_blobs)
+    (snap / "sidecars" / "helper.safetensors").symlink_to(
+        repo_root / "blobs" / "helper"
+    )
+    _seed_refs_main(repo_root, "abc")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("user/blob-anchor-escape") is False
+
+
 @pytest.mark.parametrize(
     "sidecar",
     (
