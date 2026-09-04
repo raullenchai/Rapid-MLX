@@ -371,6 +371,32 @@ class TestRecoverBareScalarFromRaw:
             )
             is None
         )
+        # codex round-4: a colon or stray angle-bracket is NOT a valid terminator.
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": "SF": garbage}',
+                expected_name="x",
+            )
+            is None
+        )
+        assert (
+            _recover_bare_scalar_from_raw(
+                '<tool_call>{"name": "x", "arguments": 72<junk}', expected_name="x"
+            )
+            is None
+        )
+
+    def test_multiple_matching_candidates_is_ambiguous_none(self):
+        # codex round-4: two scalar candidates pairing with the SAME target name
+        # is ambiguous — fail closed (None) rather than pick the last.
+        raw = (
+            '<tool_call>{"name": "weather", "arguments": "SF"}'
+            '{"name": "weather", "arguments": "NY"}'
+        )
+        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") is None
+        # A single candidate still resolves.
+        raw2 = '<tool_call>{"name": "weather", "arguments": "SF"}'
+        assert _recover_bare_scalar_from_raw(raw2, expected_name="weather") == '"SF"'
 
     def test_name_pairing_decodes_json_escapes(self):
         # codex NIT: any valid JSON string escape decodes for the pairing check.

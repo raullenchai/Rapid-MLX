@@ -2992,9 +2992,9 @@ def _recover_bare_scalar_from_raw(
             return False
         return decoded == expected_name
 
-    # Scan every ``"arguments"`` marker; prefer the LAST candidate inside a
-    # wire span that pairs with the expected name (or any span when unconstrained).
-    best = None
+    # Scan every ``"arguments"`` marker inside a wire span pairing with the name;
+    # a single matching candidate is returned, more than one is ambiguous (None).
+    matches: list[str] = []
     search_from = 0
     _KEY_RE = re.compile(r'"arguments"\s*:\s*')
     while True:
@@ -3048,13 +3048,19 @@ def _recover_bare_scalar_from_raw(
             after = j
         # Fail closed on malformed values: after the scalar, skip trailing
         # whitespace, then require end-of-input, a structural delimiter (`,` `}`
-        # `]`), or the start of a recognized wire closer. Trailing garbage
-        # (`72 oops`, `"SF" garbage`) must NOT be accepted (codex BLOCKING).
+        # `]`), or an EXACT recognized wire closer. Trailing garbage (`72 oops`,
+        # `"SF" garbage`, `"SF": garbage`, `72<junk`) must NOT be accepted
+        # (codex BLOCKING).
         cursor = after
         while cursor < len(rest) and rest[cursor] in " \t\r\n":
             cursor += 1
-        if cursor < len(rest) and rest[cursor] not in ",}]:</>":
-            continue
+        if cursor < len(rest):
+            tail = rest[cursor:]
+            ok_delim = tail[0] in ",}]" or any(
+                tail.startswith(cl) for cl in _WIRE_CLOSERS
+            )
+            if not ok_delim:
+                continue
         # Ensure the scalar re-parses to a scalar (never an object/array/null).
         try:
             v = json.loads(scalar)
@@ -3063,8 +3069,14 @@ def _recover_bare_scalar_from_raw(
         if isinstance(v, (str, int, float)) or v is True or v is False:
             candidate_idx = colon
             if _in_tool_span(candidate_idx) and _pairs_with_name(candidate_idx, marker):
-                best = scalar  # last matching scalar wins (most-recent intent)
-    return best
+                matches.append(scalar)
+    # Ambiguity fails closed: more than one scalar candidate pairs with the same
+    # target name → return ``None`` rather than arbitrarily picking one (codex
+    # BLOCKING). The forced-choice call sites already require a single envelope,
+    # but this keeps the standalone helper conservative too.
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _synthesize_forced_tool_call(
