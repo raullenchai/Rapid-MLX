@@ -7793,9 +7793,38 @@ async def stream_chat_completion_guided(
                 "data: [DONE]\n\n",
             )
 
-        def _finish_guided_handoff() -> bool:
+        def _model_replacement_terminal_events() -> tuple[str, str]:
+            error_data = json.dumps(
+                {
+                    "error": {
+                        "message": "Request cancelled by model replacement",
+                        "type": "server_error",
+                        "code": "model_replacement",
+                    }
+                }
+            )
+            return f"data: {error_data}\n\n", "data: [DONE]\n\n"
+
+        def _finish_guided_handoff() -> tuple[bool, object | None]:
             finish = getattr(engine, "finish_guided_handoff", None)
-            return bool(callable(finish) and finish(response_id))
+            if not callable(finish):
+                return False, None
+            outcome = finish(response_id)
+            # Compatibility for lightweight engines implementing the earlier
+            # bool-returning internal hook.
+            if isinstance(outcome, bool):
+                return outcome, None
+            return bool(getattr(outcome, "cancelled", False)), getattr(
+                outcome, "lifecycle_task", None
+            )
+
+        def _handoff_cancel_terminal_events(
+            lifecycle_task: object | None,
+        ) -> tuple[str, str]:
+            exc = GuidedGenerationCancelledError(lifecycle_task=lifecycle_task)
+            if _consume_guided_lifecycle_cancel(engine, exc):
+                return _model_replacement_terminal_events()
+            return _cancelled_terminal_events()
 
         # Run guided generation buffered. If it raises, fall through to
         # the unconstrained streaming helper — this preserves request
@@ -7865,17 +7894,8 @@ async def stream_chat_completion_guided(
             output = await guided_task
         except GuidedGenerationCancelledError as exc:
             if _consume_guided_lifecycle_cancel(engine, exc):
-                error_data = json.dumps(
-                    {
-                        "error": {
-                            "message": "Request cancelled by model replacement",
-                            "type": "server_error",
-                            "code": "model_replacement",
-                        }
-                    }
-                )
-                yield f"data: {error_data}\n\n"
-                yield "data: [DONE]\n\n"
+                for event in _model_replacement_terminal_events():
+                    yield event
                 return
             for event in _cancelled_terminal_events():
                 yield event
@@ -7906,8 +7926,9 @@ async def stream_chat_completion_guided(
             # (mirror of the post-decode shape) + DONE, and DO NOT
             # enter the unconstrained fallback.
             if strict_mode:
-                if _finish_guided_handoff():
-                    for event in _cancelled_terminal_events():
+                was_cancelled, lifecycle_task = _finish_guided_handoff()
+                if was_cancelled:
+                    for event in _handoff_cancel_terminal_events(lifecycle_task):
                         yield event
                     return
                 incr_strict_violation()
@@ -7965,11 +7986,13 @@ async def stream_chat_completion_guided(
                         # The fallback helper publishes its first chunk only
                         # after scheduler admission. Transfer ownership under
                         # the guided-registry lock before exposing that chunk.
-                        was_cancelled = _finish_guided_handoff()
+                        was_cancelled, lifecycle_task = _finish_guided_handoff()
                         handoff_finished = True
                         if was_cancelled:
                             await engine.abort_request(response_id)
-                            for event in _cancelled_terminal_events():
+                            for event in _handoff_cancel_terminal_events(
+                                lifecycle_task
+                            ):
                                 yield event
                             return
                     yield chunk

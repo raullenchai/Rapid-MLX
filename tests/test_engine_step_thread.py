@@ -767,6 +767,8 @@ class TestGuidedGenerationStepThread:
         engine._tokenizer.encode = MagicMock(return_value=[1])
         engine._model_load_executor = None
         engine._engine = None
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
         engine._guided_requests_lock = threading.Lock()
         engine._guided_abort_events = {}
         engine._guided_stopping = False
@@ -782,8 +784,13 @@ class TestGuidedGenerationStepThread:
                 retain_guided_request_on_failure=True,
             )
 
-        assert engine.abort_guided_request("chatcmpl-handoff") is True
-        assert engine.finish_guided_handoff("chatcmpl-handoff") is True
+        owner = asyncio.current_task()
+        assert owner is not None
+        engine._abort_all_guided_requests()
+        outcome = engine.finish_guided_handoff("chatcmpl-handoff")
+        assert outcome.cancelled is True
+        assert outcome.lifecycle_task is owner
+        assert engine.consume_lifecycle_task_abort(owner) is True
         assert engine._guided_abort_events == {}
 
 

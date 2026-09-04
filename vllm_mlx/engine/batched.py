@@ -21,7 +21,7 @@ import time
 import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..api.errors import GuidedGenerationCancelledError
@@ -39,6 +39,15 @@ from .base import BaseEngine, GenerationOutput
 ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _GuidedHandoffOutcome:
+    """Cancellation state retained while guided work transfers ownership."""
+
+    cancelled: bool
+    lifecycle_task: asyncio.Task | None
+
 
 # Tokenization can change across a message boundary once the following turn is
 # appended. Replay a negligible suffix so non-trimmable caches never snapshot
@@ -4132,21 +4141,24 @@ class BatchedEngine(BaseEngine):
             owner_tasks = tuple(getattr(self, "_guided_owner_tasks", {}).values())
         self._mark_lifecycle_aborted_tasks(owner_tasks)
 
-    def finish_guided_handoff(self, request_id: str) -> bool:
+    def finish_guided_handoff(self, request_id: str) -> _GuidedHandoffOutcome:
         """Transfer a retained guided identity to an admitted fallback.
 
-        Returns whether cancellation reached the guided owner before the
-        scheduler-backed fallback took ownership.
+        Returns cancellation plus the exact lifecycle owner so shutdown cannot
+        be misreported as an explicit client cancel during the transfer.
         """
 
         lock = getattr(self, "_guided_requests_lock", None)
         registry = getattr(self, "_guided_abort_events", None)
         if lock is None or registry is None:
-            return False
+            return _GuidedHandoffOutcome(cancelled=False, lifecycle_task=None)
         with lock:
             abort_event = registry.pop(request_id, None)
-            getattr(self, "_guided_owner_tasks", {}).pop(request_id, None)
-            return bool(abort_event is not None and abort_event.is_set())
+            owner_task = getattr(self, "_guided_owner_tasks", {}).pop(request_id, None)
+            return _GuidedHandoffOutcome(
+                cancelled=bool(abort_event is not None and abort_event.is_set()),
+                lifecycle_task=owner_task,
+            )
 
     async def generate_with_schema(
         self,
