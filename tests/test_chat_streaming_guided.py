@@ -301,14 +301,21 @@ async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
             super().__init__(raise_in_guided=True)
             self.handoff_calls = 0
             self.scheduler_aborts: list[str] = []
+            self.guided_owned = True
+            self.cancelled = False
+            self.fallback_started = asyncio.Event()
+            self.release_fallback = asyncio.Event()
 
         def finish_guided_handoff(self, request_id: str) -> bool:
             assert request_id == "chatcmpl-handoff"
             self.handoff_calls += 1
-            return True
+            self.guided_owned = False
+            return self.cancelled
 
         async def stream_chat(self, messages, **kwargs):
             self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+            self.fallback_started.set()
+            await self.release_fallback.wait()
             kwargs["request_id_holder"][0] = kwargs["request_id"]
             kwargs["request_admitted_event"].set()
             yield GenerationOutput(
@@ -319,10 +326,16 @@ async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
             )
 
         async def abort_request(self, request_id: str) -> bool:
+            if self.guided_owned:
+                self.cancelled = True
+                return True
             self.scheduler_aborts.append(request_id)
             return True
 
     engine = _HandoffEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
     request = ChatCompletionRequest(
         model="test-model",
         stream=True,
@@ -340,7 +353,15 @@ async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
 
     admission = json.loads((await anext(stream)).removeprefix("data: "))
     assert admission["id"] == "chatcmpl-handoff"
-    terminal = json.loads((await anext(stream)).removeprefix("data: "))
+    fallback_result = asyncio.create_task(anext(stream))
+    await engine.fallback_started.wait()
+    assert fallback_result.done() is False
+
+    response = await cancel_request("chatcmpl-handoff")
+    assert response["cancelled"] is True
+    engine.release_fallback.set()
+
+    terminal = json.loads((await fallback_result).removeprefix("data: "))
     assert terminal["choices"][0]["finish_reason"] == "cancelled"
     assert await anext(stream) == "data: [DONE]\n\n"
     with pytest.raises(StopAsyncIteration):

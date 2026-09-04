@@ -587,13 +587,15 @@ class GuidedGenerator:
                 schema_str,
                 overrides={"whitespace_flexible": True},
             )
-            return self._decode_constrained(
-                grammar=grammar,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                should_abort=should_abort,
-            )
+            decode_kwargs: dict[str, Any] = {
+                "grammar": grammar,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if should_abort is not None:
+                decode_kwargs["should_abort"] = should_abort
+            return self._decode_constrained(**decode_kwargs)
         except GuidedGenerationCancelledError:
             raise
         except GuidedSchemaCompileError:
@@ -646,13 +648,15 @@ class GuidedGenerator:
                 _JSON_OBJECT_SCHEMA,
                 overrides={"whitespace_flexible": True},
             )
-            return self._decode_constrained(
-                grammar=grammar,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                should_abort=should_abort,
-            )
+            decode_kwargs: dict[str, Any] = {
+                "grammar": grammar,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if should_abort is not None:
+                decode_kwargs["should_abort"] = should_abort
+            return self._decode_constrained(**decode_kwargs)
         except GuidedGenerationCancelledError:
             raise
         except Exception:

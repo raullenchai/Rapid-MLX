@@ -465,6 +465,33 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_LLGUIDANCE = original
 
+    def test_default_calls_preserve_legacy_decode_override_signature(self, monkeypatch):
+        """The optional cancellation callback does not break subclasses."""
+        import vllm_mlx.api.guided as guided
+
+        class _LegacyGenerator(guided.GuidedGenerator):
+            def _decode_constrained(self, *, grammar, prompt, max_tokens, temperature):
+                return "legacy-ok"
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(
+            guided.LLMatcher,
+            "grammar_from_json_schema",
+            lambda *_args, **_kwargs: object(),
+        )
+        generator = _LegacyGenerator(object(), object())
+
+        assert (
+            generator.generate_json(
+                "hi", {"type": "object"}, max_tokens=8, temperature=0.0
+            )
+            == "legacy-ok"
+        )
+        assert (
+            generator.generate_json_object("hi", max_tokens=8, temperature=0.0)
+            == "legacy-ok"
+        )
+
     def test_degrades_gracefully_without_fast_tokenizer(self):
         """A tokenizer with no underlying fast (``._tokenizer``) tokenizer
         must NOT crash — ``_get_lltokenizer`` logs and returns None, and
