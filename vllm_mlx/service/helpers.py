@@ -2103,12 +2103,21 @@ def _client_signalled_reasoning_intent(*sources) -> bool:
 def served_chat_template(engine):
     """Return the chat template ``engine`` renders prompts with, or ``None``.
 
-    Whatever the tokenizer exposes as ``chat_template`` (Jinja string,
-    ``{"default": ..., "tool_use": ...}`` dict, or nothing). Read-only
-    accessor so route code that needs template *capabilities* (native
-    reasoning-effort vocabulary, thinking-prefix shape) shares one
-    definition of "the served template" with the prompt renderer.
+    For a multimodal engine, prefer the processor template under the same
+    conditions as ``BatchedEngine._apply_chat_template``; otherwise use the
+    tokenizer template.  The value may be a Jinja string, a
+    ``{"default": ..., "tool_use": ...}`` dict, or ``None``.  Keeping this
+    selection aligned with the renderer is required before route code can use
+    template capabilities to remove a fallback reasoning cap.
     """
+    processor = getattr(engine, "_processor", None)
+    if (
+        getattr(engine, "_is_mllm", False)
+        and processor
+        and hasattr(processor, "apply_chat_template")
+        and getattr(processor, "chat_template", None)
+    ):
+        return processor.chat_template
     tokenizer = getattr(engine, "tokenizer", None)
     return getattr(tokenizer, "chat_template", None)
 

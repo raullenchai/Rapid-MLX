@@ -1324,6 +1324,56 @@ def _is_bare_raise(expr, nodes) -> bool:
     )
 
 
+def _binds_name(tree, name: str, nodes) -> bool:
+    """Whether template-local scope can shadow a trusted Jinja global."""
+    return any(name in _bound_names(node, nodes) for node in tree.find_all(nodes.Node))
+
+
+def _is_named_test(expr, variable: str, test: str, nodes) -> bool:
+    return bool(
+        isinstance(expr, nodes.Test)
+        and expr.name == test
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == variable
+    )
+
+
+def _is_thinking_enabled_guard(expr, nodes) -> bool:
+    """A narrow guard whose body is relevant only while thinking is enabled.
+
+    Qwen3.8 places its effort validation under ``enable_thinking is undefined
+    or enable_thinking is true``.  Only that checkpoint shape (plus the direct
+    truthy spellings) is transparent to the validation proof; arbitrary outer
+    conditions would make the advertised vocabulary path-dependent.
+    """
+    if isinstance(expr, nodes.Name):
+        return bool(expr.name == "enable_thinking")
+    if _is_named_test(expr, "enable_thinking", "true", nodes):
+        return True
+    if isinstance(expr, nodes.Or):
+        parts = (expr.left, expr.right)
+        return any(
+            _is_named_test(part, "enable_thinking", "undefined", nodes)
+            for part in parts
+        ) and any(
+            _is_named_test(part, "enable_thinking", "true", nodes)
+            for part in parts
+        )
+    return False
+
+
+def _is_thinking_disabled_guard(expr, nodes) -> bool:
+    """A branch whose failure proves that thinking was not disabled."""
+    return bool(
+        (
+            isinstance(expr, nodes.Not)
+            and isinstance(expr.node, nodes.Name)
+            and expr.node.name == "enable_thinking"
+        )
+        or _is_named_test(expr, "enable_thinking", "false", nodes)
+    )
+
+
 def _body_unconditionally_rejects_or_defaults(
     body, tested: str, levels: tuple[str, ...], nodes
 ) -> bool:
@@ -1413,13 +1463,23 @@ def _walk_for_validation(
         if isinstance(stmt, nodes.If):
             branches = [stmt] + list(stmt.elif_)
             effort_dependent = False
+            # A validation in the first branch is unconditional at this
+            # statement.  A validation in a later ``elif`` is equally safe
+            # only when every earlier branch was the explicit
+            # thinking-disabled path; an unrelated earlier condition could
+            # bypass validation while the template still renders reasoning.
+            branch_path_is_safe = True
             for branch in branches:
-                if not effort_dependent:
+                if not effort_dependent and branch_path_is_safe:
                     levels = _validation_levels(branch, derived, forgotten, nodes)
                     if levels:
                         return levels
                 if _references_any(branch.test, derived - forgotten, nodes):
                     effort_dependent = True
+                branch_path_is_safe = (
+                    branch_path_is_safe
+                    and _is_thinking_disabled_guard(branch.test, nodes)
+                )
             blocks = [branch.body for branch in branches] + [stmt.else_]
             if effort_dependent:
                 # Path-constrained by the effort value: not searched, but any
@@ -1427,10 +1487,30 @@ def _walk_for_validation(
                 for block in blocks:
                     _forget_assignments_in(block, forgotten, nodes)
                 continue
-            for block in blocks:
-                levels = _walk_for_validation(block, derived, forgotten, nodes)
+            prior_branches_only_disable_thinking = True
+            searched_block_ids: set[int] = set()
+            for branch in branches:
+                if prior_branches_only_disable_thinking and _is_thinking_enabled_guard(
+                    branch.test, nodes
+                ):
+                    levels = _walk_for_validation(
+                        branch.body, derived, forgotten, nodes
+                    )
+                    searched_block_ids.add(id(branch.body))
+                    if levels:
+                        return levels
+                prior_branches_only_disable_thinking = (
+                    prior_branches_only_disable_thinking
+                    and _is_thinking_disabled_guard(branch.test, nodes)
+                )
+            if prior_branches_only_disable_thinking:
+                levels = _walk_for_validation(stmt.else_, derived, forgotten, nodes)
+                searched_block_ids.add(id(stmt.else_))
                 if levels:
                     return levels
+            for block in blocks:
+                if id(block) not in searched_block_ids:
+                    _forget_assignments_in(block, forgotten, nodes)
             continue
         # Loops, macros, call blocks, with / filter blocks, imports, the parsed
         # ``generation`` span, ...: deferred or possibly-zero-iteration scopes
@@ -1471,6 +1551,11 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     try:
         tree = env.parse(template)
     except Exception:
+        return None
+    # ``raise_exception`` is trusted only as the throwing global installed by
+    # Transformers.  A local macro/import/assignment can shadow that name and
+    # turn an apparent rejection block into an ordinary successful render.
+    if _binds_name(tree, "raise_exception", nodes):
         return None
     return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 

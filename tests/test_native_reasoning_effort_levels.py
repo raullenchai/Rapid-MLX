@@ -353,11 +353,46 @@ class TestDetectionRequiresAValidationBlock:
     def test_derivation_in_an_enclosing_block_counts(self):
         clause = (
             "{%- if enable_thinking %}{%- set r = reasoning_effort %}"
-            "{%- if tools %}"
             "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
-            "{%- endif %}{%- endif %}"
+            "{%- endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a",)
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "{%- if legacy_mode %}fixed-xhigh{%- else %}"
+            "{%- if reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}{%- endif %}",
+            "{%- if legacy_mode %}fixed-xhigh"
+            "{%- elif reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}",
+            "{%- if enable_thinking %}{%- if tools %}"
+            "{%- if reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}{%- endif %}{%- endif %}",
+        ],
+    )
+    def test_path_conditional_validation_does_not_publish_globally(self, clause):
+        """A vocabulary is not global when an unrelated runtime branch can
+        skip its validation while reasoning remains enabled."""
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "binding",
+        [
+            "{%- macro raise_exception(message) %}ok{%- endmacro %}",
+            "{%- set raise_exception = harmless %}",
+            "{%- import 'helpers.jinja' as raise_exception %}",
+            "{%- from 'helpers.jinja' import harmless as raise_exception %}",
+        ],
+    )
+    def test_template_local_raise_exception_binding_fails_closed(self, binding):
+        clause = (
+            binding
+            + "{%- if reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_and_conjunct_does_not_guarantee_rejection(self):
         """Codex r4: with ``strict and …`` the branch is skipped when
@@ -819,6 +854,37 @@ class TestServedChatTemplateAccessor:
     def test_reads_tokenizer_chat_template(self):
         engine = SimpleNamespace(
             tokenizer=SimpleNamespace(chat_template=QWEN38_TEMPLATE)
+        )
+        assert served_chat_template(engine) == QWEN38_TEMPLATE
+
+    def test_reads_the_processor_template_used_by_a_multimodal_engine(self):
+        processor_template = HY3_TEMPLATE_CLAUSE
+        engine = SimpleNamespace(
+            _is_mllm=True,
+            _processor=SimpleNamespace(
+                chat_template=processor_template,
+                apply_chat_template=lambda *args, **kwargs: None,
+            ),
+            tokenizer=SimpleNamespace(chat_template=QWEN38_TEMPLATE),
+        )
+        assert served_chat_template(engine) == processor_template
+
+    @pytest.mark.parametrize(
+        "processor",
+        [
+            SimpleNamespace(chat_template=HY3_TEMPLATE_CLAUSE),
+            SimpleNamespace(apply_chat_template=lambda *args, **kwargs: None),
+            SimpleNamespace(
+                chat_template=None,
+                apply_chat_template=lambda *args, **kwargs: None,
+            ),
+        ],
+    )
+    def test_multimodal_processor_without_a_usable_template_falls_back(self, processor):
+        engine = SimpleNamespace(
+            _is_mllm=True,
+            _processor=processor,
+            tokenizer=SimpleNamespace(chat_template=QWEN38_TEMPLATE),
         )
         assert served_chat_template(engine) == QWEN38_TEMPLATE
 
