@@ -645,7 +645,9 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
     Strategy:
       1. ``model.safetensors.index.json`` present → parse ``weight_map``
          and require every referenced shard to exist with non-zero
-         size. Codex round-4 BLOCKING #1.
+         size. Primary ``model*.safetensors`` shards must stay at the root
+         consumed by mlx-lm; safe nested paths are accepted for declared
+         auxiliary weights.
       2. Without an index, numbered ``model-N-of-M`` files must form the
          complete 1...M set. This covers an interrupted pull where one shard
          lands before the index file.
@@ -676,35 +678,32 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             # know SOMETHING expects shards here; refuse to fall
             # through to the lax single-file probe.
             return False
-        shard_names = set(weight_map.values())
-        # Codex round-6 BLOCKING #2: validate the shard filenames
-        # themselves match the loader glob, not just that they exist.
-        # Codex round-7 BLOCKING #1: AND make sure the shard names
-        # don't escape ``snap_dir`` via ``..`` or an absolute path —
-        # ``mlx_lm`` only loads ``snap_dir/model*.safetensors``, so a
-        # validated basename pointing at ``../somewhere-else`` would
-        # otherwise pass while the loader sees nothing.
+        shard_values = weight_map.values()
+        if not all(isinstance(shard, str) for shard in shard_values):
+            return False
+        shard_names = set(shard_values)
+        has_root_model_shard = False
         for shard in shard_names:
-            if not isinstance(shard, str):
+            parts = _safe_safetensors_manifest_parts(shard)
+            if parts is None:
                 return False
-            # No directory traversal, no absolute paths, no nested
-            # subdirectories — the loader's glob is non-recursive on
-            # the snapshot root.
-            if (
-                os.path.isabs(shard)
-                or os.sep in shard
-                or "/" in shard
-                or ".." in shard.split("/")
-            ):
+
+            is_root_entry = len(parts) == 1
+            is_model_shard = _is_model_weight_filename(parts[-1])
+            # mlx-lm loads primary model weights only from the snapshot root.
+            # A manifest may also declare nested auxiliary safetensors (for
+            # example a quantizer-owned vision sidecar), but a nested
+            # ``model*.safetensors`` must not make an unloaded primary shard
+            # look usable.
+            if is_root_entry != is_model_shard:
                 return False
-            if not _is_model_weight_filename(shard):
+            has_root_model_shard = has_root_model_shard or is_root_entry
+
+            target = os.path.join(snap_dir, *parts)
+            if not _is_nonempty_snapshot_manifest_file(target, snap_dir):
                 return False
-            target = os.path.join(snap_dir, shard)
-            try:
-                if os.path.getsize(target) <= 0:
-                    return False
-            except OSError:
-                return False
+        if not has_root_model_shard:
+            return False
         # Codex round-7 BLOCKING #3: the loader globs every
         # ``model*.safetensors`` at the snapshot root — a stray
         # zero-byte ``model-extra.safetensors`` next to a valid
@@ -742,6 +741,70 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
     except OSError:
         pass
     return False
+
+
+def _safe_safetensors_manifest_parts(value: object) -> tuple[str, ...] | None:
+    """Return safe POSIX-relative components for an indexed weight file.
+
+    Hub manifests use ``/`` regardless of the host platform.  Reject rather
+    than normalize ambiguous paths: an index is metadata, not authority to
+    escape its snapshot or reinterpret ``.``/empty components.
+    """
+    if not isinstance(value, str) or not value.endswith(".safetensors"):
+        return None
+    if not value or value.startswith("/") or "\\" in value:
+        return None
+    parts = tuple(value.split("/"))
+    if any(part in ("", ".", "..") for part in parts):
+        return None
+    return parts
+
+
+def _snapshot_repo_root(snap_dir: str) -> str:
+    """Return the owning Hub repo root, or ``snap_dir`` for local fixtures.
+
+    A normal Hub leaf is ``<repo>/snapshots/<revision>[/checkpoint]`` and its
+    files are symlinks into ``<repo>/blobs``.  Walking ancestors instead of
+    assuming a fixed depth also covers aliases that select a checkpoint
+    subdirectory.
+    """
+    current = os.path.abspath(snap_dir)
+    while True:
+        parent = os.path.dirname(current)
+        if os.path.basename(parent) == "snapshots":
+            return os.path.dirname(parent)
+        if parent == current:
+            return os.path.abspath(snap_dir)
+        current = parent
+
+
+def _is_nonempty_snapshot_manifest_file(path: str, snap_dir: str) -> bool:
+    """Accept a real snapshot file or its normal symlink into repo blobs."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            return False
+        snapshot_real = os.path.realpath(snap_dir)
+        repo_root = _snapshot_repo_root(snap_dir)
+        repo_root_real = os.path.realpath(repo_root)
+        if os.path.abspath(repo_root) != os.path.abspath(snap_dir):
+            relative_snapshot = os.path.relpath(
+                os.path.abspath(snap_dir), os.path.abspath(repo_root)
+            )
+            expected_snapshot = os.path.join(repo_root_real, relative_snapshot)
+            if snapshot_real != expected_snapshot:
+                return False
+        expected_blobs = os.path.join(repo_root_real, "blobs")
+        blobs_real = os.path.realpath(expected_blobs)
+        # The leaf may be a normal Hub symlink into ``blobs``; the blob-store
+        # anchor itself may not be rebound to another repository.
+        if blobs_real != expected_blobs:
+            return False
+        target_real = os.path.realpath(path)
+        return target_real.startswith(snapshot_real + os.sep) or target_real.startswith(
+            blobs_real + os.sep
+        )
+    except OSError:
+        return False
 
 
 def _root_model_files_all_non_empty(snap_dir: str) -> bool:
