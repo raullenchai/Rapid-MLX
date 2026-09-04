@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -130,17 +131,29 @@ def _revision_is_complete(rev) -> bool:
     ``rev`` is a huggingface_hub ``CachedRevisionInfo``. A ref-bound snapshot
     alone does not prove the weights are present — a selective download can be
     ref-bound yet hold only config/tokenizer, and an interrupted multi-shard
-    download can hold one weight shard. We verify against the trusted shard
-    index when present, else require a single-file weight:
+    download can hold ONE weight shard. Verification:
 
-      * if ``model.safetensors.index.json`` exists, parse it and REQUIRE every
-        shard named in ``weight_map`` to be present in the snapshot;
-      * otherwise require at least one irreducible single-file weight
-        (``*.gguf``, ``*.bin``, ``*.npz``/``*.npy``, or a non-shard
-        ``*.safetensors``), which needs no cross-file verification.
+      * if a shard index exists (``*.safetensors.index.json`` or
+        ``pytorch_model.bin.index.json``), parse it and REQUIRE every shard it
+        names to be present in the snapshot;
+      * a shard-PATTERNED weight file (``*-NNNNN-of-MMMMM.safetensors`` /
+        ``*.bin``) with NO readable index is an incomplete multi-shard download
+        → fail closed, never charge a fraction;
+      * otherwise an irreducible single-file weight (``*.gguf``, a bare
+        non-shard ``*.safetensors``/``*.bin``, ``*.npz``/``*.npy``) needs no
+        cross-file verification.
     """
     files = {f.file_name.lower() for f in rev.files}
-    index_name = next((n for n in files if n.endswith(".safetensors.index.json")), None)
+
+    # Any index format present drives shard verification.
+    index_name = next(
+        (
+            n
+            for n in files
+            if n.endswith((".safetensors.index.json", "pytorch_model.bin.index.json"))
+        ),
+        None,
+    )
     if index_name is not None:
         try:
             idx_file = next(f for f in rev.files if f.file_name.lower() == index_name)
@@ -148,7 +161,7 @@ def _revision_is_complete(rev) -> bool:
 
             data = json.loads(idx_file.file_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - a corrupt index must not admit blind
-            logger.debug("failed to read safetensors index: %s", exc)
+            logger.debug("failed to read shard index: %s", exc)
             return False
         shards = set(data.get("weight_map", {}).values())
         if not shards:
@@ -156,11 +169,22 @@ def _revision_is_complete(rev) -> bool:
         missing = [s for s in shards if s.lower() not in files]
         if missing:
             logger.debug(
-                "safetensors index lists shards missing from the snapshot: %s",
+                "shard index lists shards missing from the snapshot: %s",
                 sorted(missing)[:5],
             )
             return False
         return True
+
+    # A shard-PATTERN weight without an index is an incomplete multi-shard
+    # download — never charge a single shard as the whole checkpoint.
+    shard_pat = re.compile(r".*-\d{5}-of-\d{5}\.(safetensors|bin)$")
+    if any(shard_pat.match(name) for name in files):
+        logger.debug(
+            "snapshot has sharded weight file(s) but no readable shard index; "
+            "failing closed instead of under-reserving"
+        )
+        return False
+
     return any(name.endswith(_WEIGHT_SUFFIXES) for name in files)
 
 

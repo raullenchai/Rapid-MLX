@@ -224,6 +224,17 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
         # (main) branch, so this cannot be trusted to charge the real load.
         revisions = (_Rev(refs={"feature-x"}, files=(("model.safetensors", 7000),)),)
 
+    class _ShardedNoIndexRepo:
+        repo_id = "c/ShardedNoIndexModel"
+        # A shard-PATTERNED weight with NO index is an incomplete multi-shard
+        # download (round-13) — one shard must not be charged as the whole.
+        revisions = (
+            _Rev(
+                refs={"main"},
+                files=(("model-00001-of-00002.safetensors", 4000),),
+            ),
+        )
+
     class _FakeCache:
         repos = [
             _PartialRepo,
@@ -233,6 +244,7 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
             _ShardedCompleteRepo,
             _ShardedIncompleteRepo,
             _NonDefaultBranchRepo,
+            _ShardedNoIndexRepo,
         ]
 
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", lambda: _FakeCache())
@@ -254,3 +266,5 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     assert "c/shardedincompletemodel" not in index
     # A lone non-main branch is not the default the loader fetches -> fail closed.
     assert "c/nondefaultmodel" not in index
+    # A shard-PATTERNED weight with no index is an incomplete download -> fail closed.
+    assert "c/shardednoindexmodel" not in index
