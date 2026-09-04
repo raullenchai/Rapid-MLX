@@ -36,6 +36,28 @@ class _StubSyncMllmScheduler:
 
 
 class TestBatchedEngineAbortRouting:
+    def test_guided_registry_cleanup_is_instance_safe_and_shutdown_signals_all(self):
+        """Late cleanup cannot remove a newer job reusing the same id."""
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._guided_requests_lock = threading.Lock()
+        first = threading.Event()
+        replacement = threading.Event()
+        engine._guided_abort_events = {"req-guided": replacement, "req-other": first}
+
+        engine._finish_guided_request("req-guided", first)
+        assert engine._guided_abort_events["req-guided"] is replacement
+
+        engine._abort_all_guided_requests()
+        assert first.is_set()
+        assert replacement.is_set()
+
+        with pytest.raises(RuntimeError, match="already active"):
+            engine._register_guided_request("req-guided", threading.Event())
+
     @pytest.mark.asyncio
     async def test_routes_to_mllm_scheduler_when_present(self):
         from vllm_mlx.engine.batched import BatchedEngine

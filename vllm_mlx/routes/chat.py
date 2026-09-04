@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from ..api.errors import CHAT_RESPONSE_FORMAT_PARAM
+from ..api.errors import CHAT_RESPONSE_FORMAT_PARAM, GuidedGenerationCancelledError
 from ..api.models import (
     AssistantMessage,
     ChatCompletionChoice,
@@ -7780,9 +7780,10 @@ async def stream_chat_completion_guided(
         # ``self.chat(...)`` on guided-engine failure and returns a
         # buffered unconstrained ``GenerationOutput``. From this
         # helper's POV that looks like a successful guided result and
-        # we would emit one giant content chunk at the end —
-        # defeating SSE for clients/proxies that rely on early chunks
-        # (codex Round 2 finding).
+        # we would emit one giant content chunk at the end. The admission
+        # frame below deliberately carries no role or content; after it, a
+        # successful guided result remains buffered and strict failures still
+        # occur before any assistant content (codex Round 2 finding).
         # Codex r5 BLOCKING parity: prevent a kwargs collision with
         # the explicit ``raise_on_failure=True`` below. If ``kwargs``
         # ever contained ``raise_on_failure`` it would TypeError
@@ -7792,14 +7793,59 @@ async def stream_chat_completion_guided(
         # guided-generation failure (silent fallback to unconstrained
         # streaming, which IS the case strict callers cannot
         # tolerate). Sanitize so the strict caller OWNS the value.
-        _guided_kwargs = {k: v for k, v in kwargs.items() if k != "raise_on_failure"}
-        try:
-            output = await engine.generate_with_schema(
+        _guided_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in {"raise_on_failure", "request_id", "request_admitted_event"}
+        }
+        request_admitted_event = asyncio.Event()
+        guided_task = asyncio.create_task(
+            engine.generate_with_schema(
                 messages=messages,
                 json_schema=json_schema,
                 raise_on_failure=True,
+                request_id=response_id,
+                request_admitted_event=request_admitted_event,
                 **_guided_kwargs,
             )
+        )
+        admission_task = asyncio.create_task(request_admitted_event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {guided_task, admission_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Production engines set the event immediately after registering
+            # the public id. Compatibility stubs may finish without an event;
+            # task completion is itself proof that no unaddressable live work
+            # remains, so publishing the stable id is still safe.
+            if guided_task in done and not admission_task.done():
+                admission_task.cancel()
+
+            # Publish the high-entropy identity before waiting for prefill or
+            # constrained decode. Clients can now pass this exact id to the
+            # existing /v1/requests/{id}/cancel endpoint.
+            # Admission frame: publish only the stable id with an empty delta.
+            # The role frame remains buffered until guided output has passed
+            # strict validation, preserving the existing error-before-content
+            # contract if decoding or post-validation later fails.
+            yield f"{_sse_prefix}{_sse_suffix}"
+            output = await guided_task
+        except GuidedGenerationCancelledError:
+            cancelled_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="cancelled",
+                    )
+                ],
+            )
+            yield f"data: {cancelled_chunk.model_dump_json(exclude_none=True)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         except Exception as guided_err:
             # Log only the schema's top-level shape, not the full body —
             # user-supplied schemas may embed PII (default values),
@@ -7876,6 +7922,11 @@ async def stream_chat_completion_guided(
             ):
                 yield chunk
             return
+        finally:
+            if not admission_task.done():
+                admission_task.cancel()
+            if not guided_task.done():
+                guided_task.cancel()
 
         content = output.text or ""
 

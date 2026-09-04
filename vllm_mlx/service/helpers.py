@@ -3687,6 +3687,18 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     if not request_id:
         return False
     try:
+        # Guided decoding is intentionally outside the continuous scheduler,
+        # but it still exposes the same public request identity. Give its
+        # thread-safe stop-token registry first refusal; otherwise resolving
+        # the text scheduler would return False for the guided id and prevent
+        # disconnect cleanup from reaching the actual owner.
+        abort_guided = getattr(engine, "abort_guided_request", None)
+        if callable(abort_guided) and abort_guided(request_id):
+            logger.info(
+                "[disconnect_guard] force-abort guided request %s -> True",
+                str(request_id)[:12],
+            )
+            return True
         sync_abort = _resolve_sync_scheduler_for_abort(engine)
         if sync_abort is not None:
             result = sync_abort(request_id)

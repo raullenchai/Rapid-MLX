@@ -20,10 +20,11 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from typing import Any
 
+from ..api.errors import GuidedGenerationCancelledError
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import (
     clean_output_text,
@@ -988,6 +989,12 @@ class BatchedEngine(BaseEngine):
         self._lifecycle_aborted_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
         self._generation_paused = False
         self._generation_pause_mode: str | None = None
+        # Guided decoding runs outside the continuous scheduler on the
+        # model-owning executor. Keep the same request-owned lifecycle shape:
+        # a public id maps to a thread-safe stop token, and the worker observes
+        # that token only at safe prefill/decode boundaries.
+        self._guided_requests_lock = threading.Lock()
+        self._guided_abort_events: dict[str, threading.Event] = {}
 
     @property
     def model_name(self) -> str:
@@ -2083,6 +2090,10 @@ class BatchedEngine(BaseEngine):
 
     async def stop(self) -> None:
         """Stop the engine and cleanup resources."""
+        # Scheduler shutdown queues work on the same single model executor
+        # used by guided decoding. Signal guided jobs first so a long schema
+        # request cannot hold model unload behind it.
+        self._abort_all_guided_requests()
         if self._mllm_scheduler:
             await self._mllm_scheduler.stop()
             self._mllm_scheduler = None
@@ -3925,6 +3936,8 @@ class BatchedEngine(BaseEngine):
         """
         import inspect
 
+        if self.abort_guided_request(request_id):
+            return True
         if self._mllm_scheduler is not None:
             if error_kind is None:
                 return self._mllm_scheduler.abort_request(request_id)
@@ -4020,6 +4033,62 @@ class BatchedEngine(BaseEngine):
         """Check if guided generation is available."""
         return HAS_GUIDED and not self._is_mllm
 
+    def _register_guided_request(
+        self, request_id: str, abort_event: threading.Event
+    ) -> None:
+        # A few lightweight embedding/tests construct the engine through
+        # ``__new__`` to avoid loading MLX. Production always initializes
+        # these in ``__init__``; keep that legacy construction shape usable.
+        if not hasattr(self, "_guided_requests_lock"):
+            self._guided_requests_lock = threading.Lock()
+            self._guided_abort_events = {}
+        with self._guided_requests_lock:
+            if request_id in self._guided_abort_events:
+                raise RuntimeError("guided request identity is already active")
+            self._guided_abort_events[request_id] = abort_event
+
+    def _finish_guided_request(
+        self, request_id: str, abort_event: threading.Event
+    ) -> bool:
+        """Atomically commit completion and return whether cancellation won.
+
+        Removal is identity-checked so a late worker callback cannot remove a
+        newer request that reused the same public id.
+        """
+
+        with self._guided_requests_lock:
+            if self._guided_abort_events.get(request_id) is abort_event:
+                was_aborted = abort_event.is_set()
+                self._guided_abort_events.pop(request_id, None)
+                return was_aborted
+        return abort_event.is_set()
+
+    def abort_guided_request(self, request_id: str) -> bool:
+        """Synchronously publish cancellation to a live guided worker."""
+
+        lock = getattr(self, "_guided_requests_lock", None)
+        abort_events = getattr(self, "_guided_abort_events", None)
+        if lock is None or abort_events is None:
+            return False
+        with lock:
+            abort_event = abort_events.get(request_id)
+            if abort_event is None:
+                return False
+            abort_event.set()
+            return True
+
+    def _abort_all_guided_requests(self) -> None:
+        """Unblock the model-owning executor before engine shutdown."""
+
+        lock = getattr(self, "_guided_requests_lock", None)
+        registry = getattr(self, "_guided_abort_events", None)
+        if lock is None or registry is None:
+            return
+        with lock:
+            abort_events = tuple(registry.values())
+        for abort_event in abort_events:
+            abort_event.set()
+
     async def generate_with_schema(
         self,
         messages: list[dict[str, Any]],
@@ -4092,6 +4161,19 @@ class BatchedEngine(BaseEngine):
             chat_template_kwargs=chat_template_kwargs,
         )
 
+        request_id = kwargs.pop("request_id", None) or f"guided-{uuid.uuid4().hex}"
+        request_id_holder = kwargs.pop("request_id_holder", None)
+        request_admitted_event = kwargs.pop("request_admitted_event", None)
+        abort_event = threading.Event()
+        self._register_guided_request(request_id, abort_event)
+        if request_id_holder is not None:
+            try:
+                request_id_holder[0] = request_id
+            except Exception:
+                logger.debug("[guided] request_id_holder publish failed", exc_info=True)
+        if request_admitted_event is not None:
+            request_admitted_event.set()
+
         # Run guided generation on the mlx-step worker. The model was
         # loaded on _model_load_executor (#170 fix) and every later mx.eval
         # on its weights must come from that same thread — see the third-leg
@@ -4108,27 +4190,49 @@ class BatchedEngine(BaseEngine):
         # _inject_shared_model path), and its worker thread did NOT load the
         # model — using it would just trade one Stream(gpu, N) crash for another.
         loop = asyncio.get_running_loop()
-        if self._model_load_executor is not None:
-            result = await loop.run_in_executor(
-                self._model_load_executor,
-                functools.partial(
-                    self._run_guided_generation,
-                    prompt=prompt,
-                    json_schema=json_schema,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                ),
-            )
-        else:
-            # Best-effort fallback for sync/test paths. Will hit Stream(gpu, N)
-            # if the model lives on a real worker thread.
-            result = await asyncio.to_thread(
-                self._run_guided_generation,
-                prompt=prompt,
-                json_schema=json_schema,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+        work = functools.partial(
+            self._run_guided_generation,
+            prompt=prompt,
+            json_schema=json_schema,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            should_abort=abort_event.is_set,
+        )
+        try:
+            if self._model_load_executor is not None:
+                future = loop.run_in_executor(self._model_load_executor, work)
+            else:
+                # Best-effort fallback for sync/test paths. Will hit Stream(gpu, N)
+                # if the model lives on a real worker thread.
+                future = asyncio.create_task(asyncio.to_thread(work))
+        except BaseException:
+            self._finish_guided_request(request_id, abort_event)
+            raise
+
+        # ``shield`` prevents an HTTP task cancellation from marking the
+        # executor future complete while its thread still owns MLX state.
+        was_aborted = False
+        try:
+            result = await asyncio.shield(future)
+        except asyncio.CancelledError:
+            abort_event.set()
+            raise
+        finally:
+            # Normal completion/failure atomically observes cancellation and
+            # releases the id before fallback can reuse it. If the response
+            # task exits while the shielded worker is still live, retain
+            # ownership and attach cleanup to actual worker completion.
+            if future.done():
+                was_aborted = self._finish_guided_request(request_id, abort_event)
+            else:
+                future.add_done_callback(
+                    lambda _future: self._finish_guided_request(request_id, abort_event)
+                )
+        # Close the worker-complete / result-commit race: unregistering and
+        # checking the stop token happened under one lock, so an abort either
+        # wins before commit or receives ``False`` after completion committed.
+        if was_aborted:
+            raise GuidedGenerationCancelledError()
 
         if result is None:
             # Fallback to standard generation. The streaming caller passes
@@ -4176,6 +4280,7 @@ class BatchedEngine(BaseEngine):
         json_schema: dict[str, Any],
         max_tokens: int,
         temperature: float,
+        should_abort: Callable[[], bool] | None = None,
     ) -> str | None:
         """Run guided generation synchronously (called from thread pool)."""
         try:
@@ -4189,7 +4294,10 @@ class BatchedEngine(BaseEngine):
                 json_schema=json_schema,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                should_abort=should_abort,
             )
+        except GuidedGenerationCancelledError:
+            raise
         except Exception as e:
             # ``generate_json`` already degrades every failure — compile-reject
             # (structural validity is settled at the route boundary) and

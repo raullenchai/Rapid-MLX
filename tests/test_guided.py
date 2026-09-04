@@ -629,6 +629,62 @@ class TestConstrainedDecodeWithRealLLGuidance:
             "context-dependent fake model emitted the wrong planned tokens"
         )
 
+    def test_cancellation_is_observed_between_prefill_chunks(
+        self, wrapped_tokenizer, monkeypatch
+    ):
+        """Long-prompt cancellation stops before the next model chunk."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        target = '{"a":1}'
+        plan = wrapped_tokenizer._tokenizer.encode(target)
+        prompt = "prefill boundary " * 8
+        gen, _ = self._make_generator(wrapped_tokenizer, plan, prompt=prompt)
+        monkeypatch.setattr(guided, "_PREFILL_STEP_SIZE", 4)
+        checks = 0
+
+        def should_abort():
+            nonlocal checks
+            checks += 1
+            # Initial check, then the first chunk's pre/post checks.
+            return checks >= 3
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            gen.generate_json_object(
+                prompt,
+                max_tokens=32,
+                temperature=0.0,
+                should_abort=should_abort,
+            )
+        assert checks == 3
+
+    def test_cancellation_is_observed_between_constrained_decode_steps(
+        self, wrapped_tokenizer
+    ):
+        """A committed constrained token cannot hide later cancellation."""
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        target = '{"a":1}'
+        plan = wrapped_tokenizer._tokenizer.encode(target)
+        gen, _ = self._make_generator(wrapped_tokenizer, plan)
+        checks = 0
+
+        def should_abort():
+            nonlocal checks
+            checks += 1
+            # Initial + trailing-prefill checks, first loop entry, and the
+            # post-forward check after one constrained token was consumed.
+            return checks >= 5
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            gen.generate_json_object(
+                "prompt",
+                max_tokens=32,
+                temperature=0.0,
+                should_abort=should_abort,
+            )
+        assert checks == 5
+
     def test_negative_control_first_token_mask(self, wrapped_tokenizer):
         """NEGATIVE CONTROL: under a JSON-object grammar the first-step
         allow-mask forbids a plain-text token (e.g. the word ``Sure``) and

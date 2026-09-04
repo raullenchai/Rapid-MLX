@@ -31,6 +31,30 @@ import time
 
 import pytest
 
+
+def test_force_abort_prefers_live_guided_owner_over_text_scheduler():
+    """A guided id is not present in the text scheduler it bypasses."""
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    class _Scheduler:
+        def abort_request(self, _request_id):
+            raise AssertionError("guided cancellation must not hit text scheduler")
+
+    class _Engine:
+        scheduler = _Scheduler()
+
+        def __init__(self):
+            self.aborted = []
+
+        def abort_guided_request(self, request_id):
+            self.aborted.append(request_id)
+            return True
+
+    engine = _Engine()
+    assert _force_abort_request(engine, ["chatcmpl-guided"]) is True
+    assert engine.aborted == ["chatcmpl-guided"]
+
+
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
