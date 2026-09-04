@@ -3105,7 +3105,7 @@ def _salvage_forced_scalar_arguments(
         if isinstance(value, bool):
             return json.dumps({prop: value})
         return None
-    return None
+    return None  # pragma: no cover - ptype was exhaustively restricted above
 
 
 def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str | None:

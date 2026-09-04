@@ -176,6 +176,21 @@ class TestSalvageForcedScalarArguments:
     def test_unknown_tool_never_guesses(self):
         assert _salvage_forced_scalar_arguments("other", "x", [_WEATHER]) is None
 
+    def test_dict_tool_shape_is_supported(self):
+        tool = {"type": "function", "function": _WEATHER.function}
+        assert _salvage_forced_scalar_arguments("weather", "Paris", [tool]) == (
+            '{"city": "Paris"}'
+        )
+
+    def test_exotic_property_type_never_guesses(self):
+        array_tool = _tool("collect", ["items"], ptype="array")
+        assert (
+            _salvage_forced_scalar_arguments("collect", "value", [array_tool]) is None
+        )
+
+    def test_non_string_argument_object_never_guesses(self):
+        assert _salvage_forced_scalar_arguments("weather", object(), [_WEATHER]) is None
+
     def test_malformed_schema_never_guesses_or_crashes(self):
         # codex round-8: a malformed client schema must fail closed, not crash.
         bad_props = SimpleNamespace(
@@ -212,6 +227,11 @@ class TestSalvageForcedScalarArguments:
         assert _salvage_forced_scalar_arguments("toggle", "yes", [flag]) is None
         # A bool must not be coerced to a NUMBER prop.
         assert _salvage_forced_scalar_arguments("temperature", "true", [_NUM]) is None
+        int_tool = _tool("count", ["value"], ptype="integer")
+        assert _salvage_forced_scalar_arguments("count", "true", [int_tool]) is None
+
+    def test_string_never_coerces_to_number(self):
+        assert _salvage_forced_scalar_arguments("temperature", "warm", [_NUM]) is None
 
 
 # =====================================================================
