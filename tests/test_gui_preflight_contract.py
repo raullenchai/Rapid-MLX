@@ -1484,21 +1484,26 @@ def test_audio_baseline_waits_for_residency_poll_to_settle():
     flow = (
         HARNESS.read_text().split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
     )
-    correlated_row = "any(range(1; $elements | length);"
-    resident_alias = '$elements[.].value == "fake-qwen3-tts"'
-    resident_lock = '$elements[. - 1].description == "Lock"'
+    resident_identifier = (
+        '.identifier == "Sidebar.ResidentModel.fake-qwen3-tts"'
+    )
+    resident_alias = '.value == "fake-qwen3-tts"'
+    resident_lock = '.role == "AXImage"'
+    pinned_state = '.description == "Lock"'
     settled_guard = '[[ "$speech_resident" == 1 ]]'
     launch_check = 'press "$OUT/speech-resident.json" Sidebar.Launch'
     return_to_audio = 'press "$OUT/launch-from-audio.json" Sidebar.Audio'
     switch = 'press "$OUT/audio-after-launch.json" Audio.Mode.Dictation'
-    assert correlated_row in flow
+    assert resident_identifier in flow
     assert resident_alias in flow
     assert resident_lock in flow
+    assert pinned_state in flow
     assert settled_guard in flow
     assert launch_check in flow
     assert return_to_audio in flow
     assert switch in flow
     assert flow.index(resident_alias) < flow.index(launch_check)
     assert flow.index(resident_lock) < flow.index(launch_check)
+    assert flow.index(pinned_state) < flow.index(launch_check)
     assert flow.index(settled_guard) < flow.index(launch_check)
     assert flow.index(launch_check) < flow.index(return_to_audio) < flow.index(switch)
