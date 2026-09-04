@@ -1697,9 +1697,7 @@ def test_audio_baseline_waits_for_residency_poll_to_settle():
     flow = (
         HARNESS.read_text().split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
     )
-    resident_identifier = (
-        '.identifier == "Sidebar.ResidentModel.fake-qwen3-tts"'
-    )
+    resident_identifier = '.identifier == "Sidebar.ResidentModel.fake-qwen3-tts"'
     resident_alias = '.value == "fake-qwen3-tts"'
     resident_lock = '.role == "AXImage"'
     pinned_state = '.description == "Lock"'
