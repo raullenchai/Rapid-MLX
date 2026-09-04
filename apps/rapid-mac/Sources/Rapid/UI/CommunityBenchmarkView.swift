@@ -136,6 +136,18 @@ struct CommunityBenchmarkReceipt: Decodable, Identifiable {
     let contributor: CommunityBenchmarkContributor?
 
     var id: String { submissionID }
+    var contributionLinkTitle: String {
+        contributor?.displayName ?? "View Community Benchmark"
+    }
+
+    var contributionURL: URL {
+        contributor?.profileURL ?? communityBenchmarkLeaderboardURL
+    }
+
+    var contributionAccessibilityLabel: String {
+        contributor.map { "View contributions by \($0.displayName)" }
+            ?? "View Community Benchmark"
+    }
 
     enum CodingKeys: String, CodingKey {
         case contributor
@@ -786,18 +798,15 @@ struct CommunityBenchmarkView: View {
                                 Label("Shared", systemImage: "checkmark.circle.fill")
                                     .font(.caption)
                                     .foregroundStyle(.green)
-                                if let contributor = receipt.contributor,
-                                   let url = contributor.profileURL
-                                {
-                                    Link(contributor.displayName, destination: url)
-                                        .font(.caption.monospaced())
-                                        .accessibilityLabel(
-                                            "View contributions by \(contributor.displayName)"
-                                        )
-                                        .accessibilityIdentifier(
-                                            "CommunityBenchmark.Contributor.\(result.id)"
-                                        )
-                                }
+                                Link(
+                                    receipt.contributionLinkTitle,
+                                    destination: receipt.contributionURL
+                                )
+                                .font(.caption.monospaced())
+                                .accessibilityLabel(receipt.contributionAccessibilityLabel)
+                                .accessibilityIdentifier(
+                                    "CommunityBenchmark.Contributor.\(result.id)"
+                                )
                             } else {
                                 Button(sharingRunID == result.id ? "Sharing…" : "Share") {
                                     prepareShare(result)

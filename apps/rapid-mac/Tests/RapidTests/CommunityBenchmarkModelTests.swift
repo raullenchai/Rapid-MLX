@@ -228,6 +228,11 @@ struct CommunityBenchmarkModelTests {
             )
         )
         #expect(full.contributor?.displayName == "modest-slate-wombat ·545")
+        #expect(
+            full.contributionURL.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest-slate-wombat-545"
+        )
+        #expect(full.contributionLinkTitle == "modest-slate-wombat ·545")
 
         let legacy = try JSONDecoder().decode(
             CommunityBenchmarkReceipt.self,
@@ -236,6 +241,8 @@ struct CommunityBenchmarkModelTests {
             )
         )
         #expect(legacy.contributor == nil)
+        #expect(legacy.contributionURL.absoluteString == "https://rapidmlx.com/leaderboard")
+        #expect(legacy.contributionLinkTitle == "View Community Benchmark")
     }
 
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")
