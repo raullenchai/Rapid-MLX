@@ -202,7 +202,6 @@ index 1111111..2222222 100644
 _MODE_CHANGE_DIFF = f"""\
 {_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 old mode 100644
-new mode 100755
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
@@ -224,6 +223,23 @@ index 1111111..2222222 100644
 @@ -441 +441,2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
+"""
+
+# Regression for codex r1 round-2 (non-pytest command anchor): the added
+# ``tests/foo.py \\`` sits inside a DIFFERENT multiline command (an uploader
+# receiving test-file arguments), not the pytest roster. Its continuation
+# chain traces back to ``upload-artifact \\`` — not a ``pytest \\`` opener —
+# so it must NOT be downgraded.
+_NON_PYTEST_COMMAND_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -198,4 +198,5 @@
+             upload-artifact \\
+               tests/test_asset_1.py \\
+               tests/test_asset_2.py \\
++              {_ENROLLED} \\
 """
 
 
@@ -350,6 +366,16 @@ def test_rename_with_roster_addition_not_roster_only(tmp_path):
     roster-only enrollment even combined with a roster addition."""
     roster_only, _ = _roster_only_workflows(
         _RENAME_DIFF, {_WORKFLOW, "tests/test_serving_lane_reason_contract.py"}
+    )
+    assert roster_only == set()
+
+
+def test_non_pytest_command_chain_not_roster_only(tmp_path):
+    """Regression (codex r1 round-2): an added ``tests/foo.py \\`` line whose
+    continuation chain is rooted at a NON-pytest command (an uploader) is not
+    a roster enrollment and must NOT be downgraded."""
+    roster_only, _ = _roster_only_workflows(
+        _NON_PYTEST_COMMAND_DIFF, {_WORKFLOW, _ENROLLED}
     )
     assert roster_only == set()
 

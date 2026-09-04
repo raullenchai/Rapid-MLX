@@ -137,14 +137,28 @@ _ROSTER_CONTINUE_RE = re.compile(r"^\s*tests/[A-Za-z0-9_./-]+\.py\s*\\\s*$")
 _PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest\b.*\\\s*$")
 
 
-def _roster_anchor(content: str) -> bool:
-    """True if *content* is a line that may legally sit directly above a
-    roster entry inside the explicit test list: either another roster entry
-    that CONTINUES (ends in ``\\``) or the ``pytest \\`` command that opens
-    the list."""
-    return bool(_ROSTER_CONTINUE_RE.match(content)) or bool(
-        _PYTEST_ROSTER_CMD.match(content)
-    )
+def _anchored_to_roster(lines: list[tuple[str, str, bool]], i: int) -> bool:
+    """True if the added line at index *i* sits inside the explicit pytest
+    test roster — i.e. the contiguous chain of ``tests/*.py \\`` lines above
+    it traces BACKWARD to a ``pytest \\`` opener, not to some other multiline
+    command (an uploader receiving test-file arguments, for example).
+
+    Walk backward through continuing roster entries; the chain terminates
+    correctly when it reaches a ``pytest \\`` opener, or when it runs off the
+    top of this file's visible diff while still inside roster entries (the
+    real end-of-roster append: the opener is lines above the hunk context).
+    It is rejected if the chain reaches a non-pytest, non-roster opener."""
+    j = i - 1
+    while j >= 0:
+        marker, content, first_in_hunk = lines[j]
+        if _PYTEST_ROSTER_CMD.match(content):
+            return True  # reached the `pytest \` opener
+        if not _ROSTER_CONTINUE_RE.match(content):
+            return False  # non-pytest, non-roster opener → not the roster list
+        if first_in_hunk:
+            return True  # block continues above the visible diff (the roster)
+        j -= 1
+    return False
 
 
 def _roster_only_workflows(
@@ -252,15 +266,15 @@ def _roster_only_workflows(
             if p not in new_files or p not in files_changed_set:
                 ok = False
                 break
-            # ...appended INTO the explicit roster list: the line directly
-            # above it (WITHIN the same hunk) is a roster entry or the
-            # opening ``pytest \`` command — never a top-level YAML scalar,
-            # an unrelated ``run:`` block, or a different region of the file.
+            # ...appended INTO the explicit pytest test roster: never a
+            # top-level YAML scalar, an unrelated ``run:`` block, or a
+            # different region of the file. The added line must not open its
+            # own hunk (no valid anchor), and its continuation chain must
+            # trace back to a ``pytest \`` opener.
             if first_in_hunk:
                 ok = False  # no valid in-hunk anchor; stay conservative
                 break
-            prev = block["lines"][i - 1][1]
-            if not _roster_anchor(prev):
+            if not _anchored_to_roster(block["lines"], i):
                 ok = False
                 break
             enrolled.append(p)
