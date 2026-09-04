@@ -320,16 +320,22 @@ class TestBatchedEngineAbortRouting:
         import time
 
         started = threading.Event()
+        abort_seen = threading.Event()
+        release_worker = threading.Event()
         stopped = threading.Event()
 
         def cooperate(*, should_abort, **_kwargs):
             started.set()
             while not should_abort():
                 time.sleep(0.001)
+            abort_seen.set()
+            release_worker.wait()
             stopped.set()
             return None
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        engine = None
+        task = None
         try:
             engine = _make_guided_engine(monkeypatch, cooperate, executor=executor)
             task = asyncio.create_task(
@@ -343,6 +349,10 @@ class TestBatchedEngineAbortRouting:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            assert await asyncio.to_thread(abort_seen.wait, 1)
+            assert "pending-worker" in engine._guided_abort_events
+
+            release_worker.set()
             assert await asyncio.to_thread(stopped.wait, 1)
             for _ in range(100):
                 if not engine._guided_abort_events:
@@ -350,7 +360,14 @@ class TestBatchedEngineAbortRouting:
                 await asyncio.sleep(0.001)
             assert engine._guided_abort_events == {}
         finally:
+            release_worker.set()
+            if engine is not None:
+                engine.abort_guided_request("pending-worker")
+            if task is not None and not task.done():
+                task.cancel()
             executor.shutdown(wait=True)
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_retained_guided_failure_keeps_identity_for_handoff(
