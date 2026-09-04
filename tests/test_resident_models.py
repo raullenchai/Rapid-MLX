@@ -3308,3 +3308,77 @@ async def test_alignment_role_release_removes_ledger_charge():
     await manager.release_role("alignment")
     assert manager.snapshot()["roles"] == []
     assert manager._accounted_usage() == 0
+
+
+async def test_alignment_role_release_exclusive_retires_sibling_on_success():
+    """pr_validate codex BLOCKING (round-17): alignment and dictation are
+    mutually exclusive, so a resident ``speech-input`` reservation must be
+    retired atomically WITHIN the alignment admission transaction — read from
+    the real auxiliary ``_roles`` ledger, never the ``snapshot()`` projection
+    (which mixes in synthesized ordinary-model entries a route could wrongly
+    release). On SUCCESS the sibling stays retired (the ASR engine was
+    evicted) so the ledger charges only the alignment role."""
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert any(r["role"] == "speech-input" for r in manager.snapshot()["roles"])
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+        release_exclusive_role="speech-input",
+    ):
+        pass
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "alignment" in roles
+    assert "speech-input" not in roles  # retired with the successful admission
+
+
+async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
+    """pr_validate codex BLOCKING (round-17): when the alignment admission
+    transaction rolls back (no engine evicted), the retired ``speech-input``
+    reservation MUST be restored atomically under the same lock — a
+    still-resident ASR engine can never be left silently unaccounted. There is
+    no window for a concurrent admission to claim the freed capacity, because
+    the release and the restore are the SAME manager transaction."""
+    manager, _ = role_manager_fixture(limit_gib=0.5)
+
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert any(r["role"] == "speech-input" for r in manager.snapshot()["roles"])
+
+    # The aligner (1.19 GiB) cannot fit under 0.5 GiB even after the small
+    # speech-input reservation is released -> the in-lock rollback runs and
+    # must restore speech-input before the capacity error propagates.
+    with pytest.raises(ResidentModelCapacityError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ):
+            pass
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" in roles  # restored: the ASR engine is still resident
+    assert "alignment" not in roles  # the rejected aligner left no reservation
+    # The restored reservation keeps its original footprint (accounted once).
+    (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+    assert speech["reserved_bytes"] == small

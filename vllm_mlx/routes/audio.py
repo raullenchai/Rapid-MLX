@@ -213,16 +213,15 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     capacity = await asyncio.to_thread(alignment_capacity, model_name)
 
     # Alignment and the dictation STT lane are MUTUALLY EXCLUSIVE (the aligner
-    # load evicts the ASR engine via ``_evict_other_lane_sync``). Before
-    # charging the alignment role against the ceiling we release any resident
-    # ``speech-input`` reservation — otherwise the ledger charges BOTH roles and
-    # can return a false 507 that would be impossible once the ASR engine is
-    # dropped. The reservation is RESTORED transactionally in the rollback
-    # below when the flow fails WITHOUT the ASR engine having been evicted
-    # (a 507 rejection or a pre-eviction load failure), so we never leave the
-    # still-resident ASR engine unaccounted.
-    speech_input_released = await _release_speech_input_role_for_alignment(manager)
-
+    # load evicts the ASR engine via ``_evict_other_lane_sync``). Admit the
+    # alignment role with ``release_exclusive_role="speech-input"`` so any
+    # resident ``speech-input`` reservation is retired atomically within the
+    # SAME manager transaction — otherwise the ledger would charge BOTH roles
+    # and could return a false 507 that would be impossible once the ASR engine
+    # is dropped. The manager restores the retired ``speech-input`` reservation
+    # in its rollback whenever the flow fails WITHOUT the ASR engine having
+    # been evicted, so a still-resident ASR engine is never left unaccounted.
+    #
     # Scope the typed-error mapping to ADMISSION ENTRY ONLY. Entering the
     # context manager explicitly (``__aenter__``) is where ``admit_role``
     # raises the capacity / invariant errors, so those handlers must not also
@@ -235,19 +234,19 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         requested_bytes=capacity.requested_bytes,
         capacity_source=capacity.source,
         replace_existing=replace_existing,
+        release_exclusive_role="speech-input",
     )
     try:
         admission = await ctx.__aenter__()
     except ResidentModelCapacityError as exc:
-        # The aligner was REJECTED before any load ran, so the ASR engine is
-        # still resident — restore its reservation before surfacing the 507.
-        await _restore_speech_input_role_for_alignment(manager, speech_input_released)
+        # The aligner was REJECTED before any load ran. ``admit_role``'s own
+        # rollback has already restored the retired speech-input reservation
+        # (the ASR engine is still resident), so we only surface the typed 507.
         raise HTTPException(status_code=507, detail=exc.envelope()) from exc
     except ResidentModelError as exc:
         # A control-plane invariant (e.g. a second loading admission for the
         # same role) must surface as a typed client error, never a raw 500.
-        # No load ran, so restore the ASR engine's reservation.
-        await _restore_speech_input_role_for_alignment(manager, speech_input_released)
+        # No load ran; ``admit_role``'s rollback restored speech-input already.
         raise HTTPException(
             status_code=409,
             detail={
@@ -263,77 +262,17 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         yield admission
     except BaseException:
         # Exit the admission context with the body's active exception so the
-        # ledger rollback runs, then re-raise it UNCHANGED — the capacity /
-        # invariant mapping above must never rewrite a loader/runtime failure.
+        # manager's ledger rollback runs (which also restores the released
+        # ``speech-input`` reservation if the ASR engine was NOT evicted), then
+        # re-raise it UNCHANGED — the capacity / invariant mapping above must
+        # never rewrite a loader/runtime failure.
         _typ, _exc, _tb = sys.exc_info()
         await ctx.__aexit__(_typ, _exc, _tb)
-        # If the flow failed and the ASR engine is STILL resident (the load
-        # never reached the point where `_load_aligner_blocking` evicted it),
-        # restore the speech-input reservation we released up front so the
-        # still-resident ASR engine stays accounted.
-        await _restore_speech_input_role_for_alignment(manager, speech_input_released)
         raise
     else:
         await ctx.__aexit__(None, None, None)
-        # On SUCCESS the aligner load evicted the ASR engine, so the released
+        # On SUCCESS the aligner load evicted the ASR engine, so the retired
         # speech-input reservation stays retired — nothing to restore.
-
-
-async def _release_speech_input_role_for_alignment(manager):
-    """Release a resident ``speech-input`` reservation so alignment admission
-    (mutually exclusive with the dictation lane) does not double-charge.
-
-    Returns the released reservation's ``(model_id, reserved_bytes,
-    capacity_source)`` so the caller can restore it transactionally — with its
-    original metadata — if the flow aborts before the ASR engine is actually
-    evicted, or ``None`` when no speech-input role was reserved.
-    """
-    snapshot = manager.snapshot()
-    for entry in snapshot.get("roles", []):
-        if entry.get("role") == "speech-input":
-            prev = (
-                entry.get("model"),
-                entry.get("reserved_bytes", 0),
-                entry.get("capacity_source", "catalog"),
-            )
-            await manager.release_role("speech-input")
-            return prev
-    return None
-
-
-async def _restore_speech_input_role_for_alignment(manager, prev) -> None:
-    """Restore the released speech-input reservation (if any) when the ASR
-    engine was NOT evicted, so the still-resident engine stays accounted.
-
-    ``prev`` is the ``(model_id, reserved_bytes, capacity_source)`` returned by
-    the release helper (or ``None``). No-op when nothing was captured or the
-    ASR engine was already dropped.
-    """
-    if prev is None or _stt_engine is None:
-        # Either nothing to restore, or the ASR engine was already evicted (the
-        # aligner load discarded it) so the reservation must stay retired.
-        return
-    prev_model, prev_bytes, prev_source = prev
-    from ..runtime.resident_models import ResidentModelError
-
-    try:
-        async with manager.admit_role(
-            role="speech-input",
-            model_id=prev_model,
-            requested_bytes=prev_bytes,
-            capacity_source=prev_source,
-        ):
-            pass
-    except ResidentModelError:
-        # The engine is still resident but re-admission is not possible (e.g.
-        # capacity changed); log and move on rather than masking the original
-        # failure. The engine stays resident but unaccounted is the lesser evil
-        # than a rejected alignment coroutine.
-        logger.warning(
-            "could not restore speech-input reservation after alignment "
-            "failure; ASR engine remains resident",
-            extra={"model": prev_model},
-        )
 
 
 async def _release_alignment_role() -> None:

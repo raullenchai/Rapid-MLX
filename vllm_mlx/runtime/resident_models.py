@@ -718,6 +718,7 @@ class ResidentModelManager:
         requested_bytes: int | None,
         capacity_source: str,
         replace_existing: bool = False,
+        release_exclusive_role: str | None = None,
     ):
         """Reserve a protected auxiliary role before its weights load.
 
@@ -731,55 +732,89 @@ class ResidentModelManager:
         role's reservation (crediting the previous bytes) and, on rollback,
         restores the previous reservation unless the caller retired it via
         :meth:`ResidentRoleAdmission.retire_previous`.
+
+        ``release_exclusive_role`` adds a SECOND mutually-exclusive auxiliary
+        role to the same atomic transaction. The named role's current
+        reservation (``self._roles`` — the real auxiliary ledger, never the
+        ``snapshot()`` projection) is retired up front so the new role is not
+        double-charged against the ceiling (e.g. alignment retiring the
+        dictation ``speech-input`` role whose ASR engine the aligner evicts).
+        Because the release and the new role's admission happen under the SAME
+        ``self._lock`` critical section, and rollback re-inserts the retired
+        reservation atomically in that same critical section, no concurrent
+        admission can consume the freed capacity in the window between release
+        and restore — the retired reservation's capacity is owned by this
+        transaction until commit. On failure/cancellation the retired
+        reservation is restored in full, so a still-resident engine can never
+        be left silently unaccounted; on success it stays retired.
         """
 
         async with self._lock:
             previous = self._roles.get(role)
-            if previous is not None and not replace_existing:
-                raise ResidentModelError(f"role {role!r} is already resident")
-            # A role must never host two concurrent in-flight LOADS: an
-            # overwrite here would orphan the earlier load's reservation and,
-            # if that earlier load later rolls back, could resurrect a stale
-            # ``"loading"`` record. Callers serialise per-lane (the STT lane
-            # lock), so this is a defensive invariant at the ledger layer
-            # itself — reject rather than corrupt.
-            if previous is not None and previous.state == "loading":
-                raise ResidentModelError(
-                    f"role {role!r} already has a loading admission in flight"
-                )
-            usage_credit = previous.reserved_bytes if previous is not None else 0
-            used = max(0, self._accounted_usage() - usage_credit)
-            if self.memory_limit_bytes > 0 and requested_bytes is None:
-                raise ResidentModelCapacityError(
-                    (
-                        f"insufficient capacity for role {role!r}: the requested "
-                        "model has no catalog or local-cache size metadata and "
-                        f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
-                        "refusing blind admission under a configured ceiling"
-                    ),
-                    reason="role_capacity_unknown",
-                    requested_bytes=None,
-                    limit_bytes=self.memory_limit_bytes,
-                    used_bytes=used,
+            # Retire the mutually-exclusive sibling's reservation ATOMICALLY
+            # with this admission. ``self._roles`` is the authoritative
+            # auxiliary-role ledger (in contrast to ``snapshot()["roles"]``,
+            # which mixes in synthesized projection entries for ordinary
+            # models and would let a caller release the wrong thing / a
+            # non-reservation). The retired reservation is captured here and
+            # either restored on rollback or confirmed-stale on commit.
+            released_exclusive = None
+            if release_exclusive_role is not None and release_exclusive_role != role:
+                released_exclusive = self._roles.pop(release_exclusive_role, None)
+            try:
+                if previous is not None and not replace_existing:
+                    raise ResidentModelError(f"role {role!r} is already resident")
+                # A role must never host two concurrent in-flight LOADS: an
+                # overwrite here would orphan the earlier load's reservation and,
+                # if that earlier load later rolls back, could resurrect a stale
+                # ``"loading"`` record. Callers serialise per-lane (the STT lane
+                # lock), so this is a defensive invariant at the ledger layer
+                # itself — reject rather than corrupt.
+                if previous is not None and previous.state == "loading":
+                    raise ResidentModelError(
+                        f"role {role!r} already has a loading admission in flight"
+                    )
+                usage_credit = previous.reserved_bytes if previous is not None else 0
+                used = max(0, self._accounted_usage() - usage_credit)
+                if self.memory_limit_bytes > 0 and requested_bytes is None:
+                    raise ResidentModelCapacityError(
+                        (
+                            f"insufficient capacity for role {role!r}: the requested "
+                            "model has no catalog or local-cache size metadata and "
+                            f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
+                            "refusing blind admission under a configured ceiling"
+                        ),
+                        reason="role_capacity_unknown",
+                        requested_bytes=None,
+                        limit_bytes=self.memory_limit_bytes,
+                        used_bytes=used,
+                        requested_role=role,
+                    )
+                reserved_bytes = max(0, int(requested_bytes or 0))
+                await self._evict_for_locked(
+                    reserved_bytes,
+                    exclude=set(),
                     requested_role=role,
+                    usage_credit_bytes=usage_credit,
                 )
-            reserved_bytes = max(0, int(requested_bytes or 0))
-            await self._evict_for_locked(
-                reserved_bytes,
-                exclude=set(),
-                requested_role=role,
-                usage_credit_bytes=usage_credit,
-            )
-            record = ResidentRoleReservation(
-                role=role,
-                model_id=model_id,
-                reserved_bytes=reserved_bytes,
-                capacity_source=capacity_source,
-                state="loading",
-                loaded_at=self._clock(),
-            )
-            self._roles[role] = record
-            admission = ResidentRoleAdmission(record=record, previous=previous)
+                record = ResidentRoleReservation(
+                    role=role,
+                    model_id=model_id,
+                    reserved_bytes=reserved_bytes,
+                    capacity_source=capacity_source,
+                    state="loading",
+                    loaded_at=self._clock(),
+                )
+                self._roles[role] = record
+                admission = ResidentRoleAdmission(record=record, previous=previous)
+            except BaseException:
+                # Any failure BEFORE admission is decided (capacity error,
+                # invariant conflict) must not leave the retired exclusive role
+                # unaccounted — restore it exactly as it was captured, atomically
+                # under this same lock, before the error propagates.
+                if released_exclusive is not None:
+                    self._roles[release_exclusive_role] = released_exclusive
+                raise
         try:
             yield admission
         except BaseException:
@@ -793,6 +828,16 @@ class ResidentModelManager:
                         self._roles[role] = previous
                     else:
                         self._roles.pop(role, None)
+                # Restore the retired exclusive role's reservation ATOMICALLY
+                # with this rollback. Since it was released under the same lock
+                # as this admission, no concurrent admission could have claimed
+                # its capacity in the interim; re-insert with ``setdefault`` so
+                # a GENUINELY newer reservation for the role (whose owner is
+                # authoritative) is never clobbered. The engine it guarded stays
+                # resident and accounted — finding 2's silent-abandonment path
+                # is impossible.
+                if released_exclusive is not None:
+                    self._roles.setdefault(release_exclusive_role, released_exclusive)
             raise
         else:
             async with self._lock:
