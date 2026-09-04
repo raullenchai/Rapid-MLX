@@ -25,35 +25,9 @@ from typing import Any
 
 from vllm_mlx.routes.chat import (
     _forced_synth_schema_error,
-    _recover_bare_scalar_from_raw,
     _repair_forced_call_arguments,
     _salvage_forced_scalar_arguments,
     _synthesize_forced_tool_call,
-)
-
-# DeepSeek-style tool-call wire delimiters (begin / end), matching the route's
-# ``_WIRE_OPENERS`` / ``_WIRE_CLOSERS`` byte-for-byte.
-_BEGIN_MARKER = (
-    "<"
-    + chr(0xFF5C)
-    + "tool"
-    + chr(0x2581)
-    + "calls"
-    + chr(0x2581)
-    + "begin"
-    + chr(0xFF5C)
-    + ">"
-)
-_END_MARKER = (
-    "<"
-    + chr(0xFF5C)
-    + "tool"
-    + chr(0x2581)
-    + "calls"
-    + chr(0x2581)
-    + "end"
-    + chr(0xFF5C)
-    + ">"
 )
 
 
@@ -256,10 +230,14 @@ class TestSynthesizeForcedToolCallScalar:
         call = _synthesize_forced_tool_call("weather", "San Francisco")
         assert call.function.arguments == "San Francisco"
 
-    def test_recovery_from_raw_scalar_emission(self):
+    def test_raw_text_scalar_not_guessed_in_synthesis(self):
+        # Raw-text scalar recovery is deliberately conservative (excluded) — the
+        # verified #2502 path is the parser-SURFACED scalar repair; synthesising
+        # a scalar out of free-form text risks structural-parse edge cases, so
+        # with the default ``"{}"`` arguments we keep the fallback unchanged.
         raw = '<tool_call>{"name": "weather", "arguments": "New York"}'
         call = _synthesize_forced_tool_call("weather", raw_text=raw, tools=[_WEATHER])
-        assert json.loads(call.function.arguments) == {"city": "New York"}
+        assert call.function.arguments == "{}"
 
     def test_multi_required_never_guesses_in_synthesis(self):
         # tools has multi-required → no salvage → unchanged ("{}" default).
@@ -306,132 +284,6 @@ class TestRepairForcedCallArgumentsScalar:
         err = _repair_forced_call_arguments([tc], "", "ping", [_no_required_schema()])
         assert err is None
         assert tc.function.arguments == "{}"
-
-
-# =====================================================================
-# _recover_bare_scalar_from_raw: bounded scalar recovery from response text
-# =====================================================================
-
-
-class TestRecoverBareScalarFromRaw:
-    def test_extracts_quoted_scalar_in_envelope(self):
-        raw = '<tool_call>{"name": "weather", "arguments": "San Francisco"}'
-        assert (
-            _recover_bare_scalar_from_raw(raw, expected_name="weather")
-            == '"San Francisco"'
-        )
-
-    def test_extracts_unquoted_number_in_envelope(self):
-        raw = '<tool_call>{"name": "temperature", "arguments": 72}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="temperature") == "72"
-
-    def test_ignores_object_argument(self):
-        raw = '<tool_call>{"name": "weather", "arguments": {"city": "SF"}}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") is None
-
-    def test_ignores_mismatched_name(self):
-        raw = '<tool_call>{"name": "other", "arguments": "San Francisco"}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") is None
-
-    def test_ignores_null(self):
-        raw = '<tool_call>{"name": "weather", "arguments": null}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") is None
-
-    def test_empty_or_none_returns_none(self):
-        assert _recover_bare_scalar_from_raw(None) is None
-        assert _recover_bare_scalar_from_raw("") is None
-
-    def test_begin_end_marker_wire_format_recovers_scalar(self):
-        # codex BLOCKING (round 3): the begin marker must not also be treated as
-        # a closer, or no scalar inside this wire format would recover. The begin
-        # (more) and end (尽) markers are the DeepSeek-style tool-call delimiters.
-        begin = _BEGIN_MARKER
-        end = _END_MARKER
-        raw = begin + '{"name": "weather", "arguments": "SF"}' + end
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == '"SF"'
-
-    def test_rejects_colon_with_intervening_garbage(self):
-        # codex BLOCKING #2: the key must be immediately followed by a colon.
-        raw = '<tool_call>{"name": "x", "arguments" garbage, "foo": 7}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="x") is None
-
-    def test_rejects_malformed_value_prefixes(self):
-        # codex BLOCKING: ``72oops`` / ``trueish`` must NOT be truncated to a
-        # valid-looking scalar prefix.
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": 72oops}', expected_name="x"
-            )
-            is None
-        )
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": trueish}', expected_name="x"
-            )
-            is None
-        )
-        # Trailing garbage after whitespace is also rejected.
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": 72 oops}', expected_name="x"
-            )
-            is None
-        )
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": "SF" garbage}',
-                expected_name="x",
-            )
-            is None
-        )
-        # codex round-4: a colon or stray angle-bracket is NOT a valid terminator.
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": "SF": garbage}',
-                expected_name="x",
-            )
-            is None
-        )
-        assert (
-            _recover_bare_scalar_from_raw(
-                '<tool_call>{"name": "x", "arguments": 72<junk}', expected_name="x"
-            )
-            is None
-        )
-
-    def test_multiple_matching_candidates_is_ambiguous_none(self):
-        # codex round-4: two scalar candidates pairing with the SAME target name
-        # is ambiguous — fail closed (None) rather than pick the last.
-        raw = (
-            '<tool_call>{"name": "weather", "arguments": "SF"}'
-            '{"name": "weather", "arguments": "NY"}'
-        )
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") is None
-        # A single candidate still resolves.
-        raw2 = '<tool_call>{"name": "weather", "arguments": "SF"}'
-        assert _recover_bare_scalar_from_raw(raw2, expected_name="weather") == '"SF"'
-
-    def test_name_pairing_decodes_json_escapes(self):
-        # codex NIT: any valid JSON string escape decodes for the pairing check.
-        raw = '<tool_call>{"name": "we\\u0061ther", "arguments": "SF"}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == '"SF"'
-
-    def test_pairing_uses_nearest_preceding_name_in_multi_call_span(self):
-        # codex BLOCKING #1: two calls in one span — the second scalar must pair
-        # with the SECOND tool ("other"), not the span's first ("weather").
-        raw = (
-            '<tool_call>{"name": "weather", "arguments": 1}'
-            '{"name": "other", "arguments": "San Francisco"}'
-        )
-        # Searching for the FIRST tool's scalar yields nothing (only "other" has
-        # a string scalar, and 1 is a number but pairs with weather... both here).
-        recovered = _recover_bare_scalar_from_raw(raw, expected_name="other")
-        assert recovered == '"San Francisco"'
-        # Searching for the first tool yields ITS OWN numeric scalar "1" — the
-        # names in a multi-call span must not cross-attach.
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == "1"
-        # A name that is not present pairs with nothing.
-        assert _recover_bare_scalar_from_raw(raw, expected_name="nope") is None
 
 
 class TestSalvageRejectsNonFinite:

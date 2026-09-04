@@ -2896,189 +2896,6 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
     return None
 
 
-def _recover_bare_scalar_from_raw(
-    raw_text: str | None, expected_name: str | None = None
-) -> str | None:
-    """Return a JSON-encoded bare scalar when a malformed response carries an
-    ``"arguments":`` value that is a scalar rather than an object (#2502).
-
-    Small models forced to call a single-argument object tool often emit the
-    bare VALUE: ``<tool_call>{"name": "weather", "arguments": "San Francisco"}``
-    or ``... "arguments": 7``. ``_recover_partial_tool_args`` only rescues
-    balanced JSON OBJECTS, so this scalar otherwise degrades to ``"{}"`` and the
-    #1256 gate 422s on the missing required property.
-
-    Bounded and conservative:
-      * only a JSON scalar literal (quoted string, number, ``true``/``false``)
-        immediately following an ``"arguments":`` marker qualifies — an object,
-        array, or ``null`` never does;
-      * when ``expected_name`` is given, the candidate must sit in a wire span
-        that pairs with a matching ``"name"`` literal within the same call block
-        (mirrors the #1880/codex-r4 pairing gate so an unrelated tool's scalar
-        never leaks into the forced target);
-      * ambiguity returns ``None`` — the caller keeps its ``"{}"`` fallback.
-
-    The returned text re-parses via ``json.loads`` to a scalar; the schema-aware
-    salvage (``_salvage_forced_scalar_arguments``) then maps it to the tool's
-    required property.
-    """
-    if not raw_text:
-        return None
-    text = raw_text
-
-    _WIRE_OPENERS = (
-        "<tool_call>",
-        "<function=",
-        "<function>",
-        "<｜tool▁calls▁begin｜>",
-        "[TOOL_CALLS]",
-        "<|python_tag|>",
-        "<minimax:tool_call>",
-        "<invoke",
-    )
-    _WIRE_CLOSERS = (
-        "</tool_call>",
-        "</function>",
-        "<｜tool▁calls▁end｜>",
-        "[/TOOL_CALLS]",
-        "</minimax:tool_call>",
-        "</invoke>",
-    )
-
-    def _latest_open_before(idx: int) -> int:
-        best = -1
-        for op in _WIRE_OPENERS:
-            pos = text.rfind(op, 0, idx)
-            if pos > best:
-                best = pos
-        return best
-
-    def _latest_close_before(idx: int) -> int:
-        best = -1
-        for cl in _WIRE_CLOSERS:
-            pos = text.rfind(cl, 0, idx)
-            if pos > best:
-                best = pos
-        return best
-
-    def _in_tool_span(idx: int) -> bool:
-        op = _latest_open_before(idx)
-        cl = _latest_close_before(idx)
-        return op >= 0 and op > cl
-
-    def _pairs_with_name(idx: int, marker: int) -> bool:
-        if not expected_name:
-            return True
-        # Find the NEAREST ``"name": ...`` literal PRECEDING the ``"arguments"``
-        # marker, bounded below by the nearest open wire opener OR the PREVIOUS
-        # ``"arguments"`` marker — so within a span holding multiple calls each
-        # scalar is paired with ITS OWN tool, not the span's first (codex BLOCKING).
-        op = _latest_open_before(idx)
-        start = op if op >= 0 else 0
-        prev_arg = text.rfind('"arguments"', start, marker)
-        lo = prev_arg if prev_arg > op else start
-        block = text[lo:marker]
-
-        last: re.Match | None = None
-        for m in re.finditer(r'"name"\s*:\s*("(?:[^"\\]|\\.)*")', block):
-            last = m
-        if last is None:
-            return False
-        # Decode the complete JSON string literal so ALL valid JSON escapes
-        # (\\, \", \uXXXX ...) compare fairly (codex NIT), not just _.
-        try:
-            decoded = json.loads(last.group(1))
-        except (ValueError, TypeError):
-            return False
-        return decoded == expected_name
-
-    # Scan every ``"arguments"`` marker inside a wire span pairing with the name;
-    # a single matching candidate is returned, more than one is ambiguous (None).
-    matches: list[str] = []
-    search_from = 0
-    _KEY_RE = re.compile(r'"arguments"\s*:\s*')
-    while True:
-        marker = text.find('"arguments"', search_from)
-        if marker < 0:
-            break
-        search_from = marker + 1
-        # The ``"arguments"`` key must be followed by ONLY whitespace then a
-        # colon — reject ``"arguments" garbage, "foo": 7`` (codex BLOCKING #2).
-        sep = _KEY_RE.match(text, marker)
-        if not sep:
-            continue
-        colon = text.index(":", marker, sep.end())
-        rest = text[colon + 1 :].lstrip()
-        if not rest:
-            continue
-        ch = rest[0]
-        if ch == '"':
-            # Quoted string — capture to the closing unescaped quote.
-            end = 1
-            escaped = False
-            while end < len(rest):
-                c = rest[end]
-                if escaped:
-                    escaped = False
-                elif c == "\\":
-                    escaped = True
-                elif c == '"':
-                    break
-                end += 1
-            if end >= len(rest):
-                continue
-            scalar = rest[: end + 1]
-            after = end + 1
-        elif ch == "{":
-            continue  # object — not our concern here
-        elif ch == "[":
-            continue  # array — not a salvageable scalar
-        else:
-            # Number or boolean literal: consume a run of [0-9, +, -, ., e, E, t, f].
-            j = 0
-            while j < len(rest) and rest[j] in "0123456789+-.eEtruefals":
-                j += 1
-            token = rest[:j]
-            if token in ("true", "false") or (
-                token and (token[0].isdigit() or token[0] in "+-.")
-            ):
-                scalar = token
-            else:
-                continue
-            after = j
-        # Fail closed on malformed values: after the scalar, skip trailing
-        # whitespace, then require end-of-input, a structural delimiter (`,` `}`
-        # `]`), or an EXACT recognized wire closer. Trailing garbage (`72 oops`,
-        # `"SF" garbage`, `"SF": garbage`, `72<junk`) must NOT be accepted
-        # (codex BLOCKING).
-        cursor = after
-        while cursor < len(rest) and rest[cursor] in " \t\r\n":
-            cursor += 1
-        if cursor < len(rest):
-            tail = rest[cursor:]
-            ok_delim = tail[0] in ",}]" or any(
-                tail.startswith(cl) for cl in _WIRE_CLOSERS
-            )
-            if not ok_delim:
-                continue
-        # Ensure the scalar re-parses to a scalar (never an object/array/null).
-        try:
-            v = json.loads(scalar)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(v, (str, int, float)) or v is True or v is False:
-            candidate_idx = colon
-            if _in_tool_span(candidate_idx) and _pairs_with_name(candidate_idx, marker):
-                matches.append(scalar)
-    # Ambiguity fails closed: more than one scalar candidate pairs with the same
-    # target name → return ``None`` rather than arbitrarily picking one (codex
-    # BLOCKING). The forced-choice call sites already require a single envelope,
-    # but this keeps the standalone helper conservative too.
-    if len(matches) == 1:
-        return matches[0]
-    return None
-
-
 def _synthesize_forced_tool_call(
     name: str,
     arguments: str = "{}",
@@ -3133,22 +2950,18 @@ def _synthesize_forced_tool_call(
     else:
         # #2502: the small-model habit of emitting a BARE value (``"arguments":
         # "San Francisco"`` or ``"arguments": 7``) for a single-argument object
-        # tool. Before falling back to the unadorned default (``"{}"``), recover
-        # such a scalar from the response text (or the caller-supplied
-        # ``arguments``) and — when the target tool's schema has a single
-        # required property the scalar maps onto — synth ``{prop: value}`` so
-        # the forced call is schema-valid instead of an empty object that 422s.
-        # ``tools`` makes the mapping possible; without it we keep the unchanged
-        # default. The result still runs the #1256 schema gate downstream.
-        _scalar = _recover_bare_scalar_from_raw(raw_text, expected_name=name)
-        if _scalar is not None:
-            _candidate = _scalar
-        elif arguments != "{}":
-            _candidate = arguments
-        else:
-            _candidate = None
-        if _candidate is not None:
-            _salvaged = _salvage_forced_scalar_arguments(name, _candidate, tools)
+        # tool. When the caller supplied such a scalar as ``arguments`` and the
+        # target tool's schema has a single required property the scalar maps
+        # onto, synth ``{prop: value}`` so the forced call is schema-valid
+        # instead of an empty object that 422s. ``tools`` makes the mapping
+        # possible; without it we keep the unchanged default. The result still
+        # runs the #1256 schema gate downstream. (Raw-text scalar recovery is
+        # deliberately NOT attempted here — the verified #2502 path is the
+        # parser-surfaced repair in ``_repair_forced_call_arguments``; guessing
+        # a scalar out of free-form text is how structural-parse edge cases leak
+        # in, so we stay conservative.)
+        if arguments != "{}":
+            _salvaged = _salvage_forced_scalar_arguments(name, arguments, tools)
         else:
             _salvaged = None
         final_args = _salvaged if _salvaged is not None else arguments
