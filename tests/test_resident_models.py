@@ -3518,3 +3518,52 @@ async def test_alignment_role_commit_finalize_is_cancellation_shielded():
     (aligned,) = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
     assert aligned["state"] == "resident"
     assert aligned["reserved_bytes"] == aligner
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_preserves_concurrently_replaced_sibling():
+    """pr_validate codex BLOCKING (round-24): rollback must only retire the
+    sibling reservation THIS transaction retained — never erase a NEWER
+    reservation a concurrent admission installed for that role while the
+    aligner load ran. The identity-checked pop preserves the replacement."""
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    s1 = int(0.4 * GIB)
+    s2 = int(0.25 * GIB)
+    aligner = int(0.3 * GIB)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=s1,
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ) as admission:
+            # The load evicted the ASR engine -> retire_exclusive fires.
+            admission.retire_exclusive()
+            # A concurrent admission REPLACES the speech-input reservation with
+            # a newer (still-resident engine) one while the aligner loads.
+            async with manager.admit_role(
+                role="speech-input",
+                model_id="whisper-large",
+                requested_bytes=s2,
+                capacity_source="catalog",
+                replace_existing=True,
+            ):
+                pass
+            raise RuntimeError("load failed")
+
+    # The rollback must NOT erase the newer reservation (its engine is
+    # resident); only alignment is rolled back.
+    (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+    assert speech["reserved_bytes"] == s2
+    assert "alignment" not in {r["role"] for r in manager.snapshot()["roles"]}

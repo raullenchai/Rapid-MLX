@@ -268,9 +268,20 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
         # manager's ledger rollback runs (which also restores the released
         # ``speech-input`` reservation if the ASR engine was NOT evicted), then
         # re-raise it UNCHANGED — the capacity / invariant mapping above must
-        # never rewrite a loader/runtime failure.
+        # never rewrite a loader/runtime failure. The exit must not be aborted
+        # by a SECOND cancellation while it waits on the residency lock (that
+        # would leak a permanent ``"loading"`` role), so it runs under the same
+        # uncancellable-drain shield as the success-path finalization.
         _typ, _exc, _tb = sys.exc_info()
-        await ctx.__aexit__(_typ, _exc, _tb)
+        _exit_t = asyncio.ensure_future(ctx.__aexit__(_typ, _exc, _tb))
+        try:
+            await asyncio.shield(_exit_t)
+        except asyncio.CancelledError:
+            while not _exit_t.done():
+                try:
+                    await asyncio.shield(_exit_t)
+                except asyncio.CancelledError:
+                    continue
         raise
     else:
         await ctx.__aexit__(None, None, None)

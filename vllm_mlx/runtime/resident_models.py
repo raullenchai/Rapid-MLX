@@ -849,7 +849,14 @@ class ResidentModelManager:
                 # successful load evicted the ASR engine -> drop the retained
                 # (by now phantom) sibling reservation.
                 async with self._lock:
-                    if exclusive_sibling is not None:
+                    if (
+                        exclusive_sibling is not None
+                        and self._roles.get(release_exclusive_role) is exclusive_sibling
+                    ):
+                        # Only retire the sibling WE retained — preserve any
+                        # NEWER reservation a concurrent admission installed for
+                        # this role while the aligner loaded (its engine is
+                        # authoritative and still resident).
                         self._roles.pop(release_exclusive_role, None)
                 raise
             async with self._lock:
@@ -863,8 +870,13 @@ class ResidentModelManager:
                 # (``retire_exclusive`` -> ``exclusive_retired`` — the round-18
                 # case), the reservation now guards a phantom engine and must be
                 # dropped; otherwise it stays charged, exactly matching its
-                # still-resident engine.
-                if exclusive_sibling is not None and admission.exclusive_retired:
+                # still-resident engine. Identity-check so a concurrently
+                # installed NEWER reservation for the role is never erased.
+                if (
+                    exclusive_sibling is not None
+                    and admission.exclusive_retired
+                    and self._roles.get(release_exclusive_role) is exclusive_sibling
+                ):
                     self._roles.pop(release_exclusive_role, None)
             raise
         else:
@@ -923,8 +935,14 @@ class ResidentModelManager:
                 record.state = "resident"
                 record.loaded_at = self._clock()
             # Success: the aligner loaded and evicted the ASR engine ->
-            # retire the retained sibling reservation.
-            if exclusive_sibling is not None:
+            # retire the retained sibling reservation, but ONLY if it is still
+            # the reservation WE retained — a concurrent admission may have
+            # replaced the role with a newer (authoritative) reservation while
+            # the aligner loaded, and must not be erased here.
+            if (
+                exclusive_sibling is not None
+                and self._roles.get(release_exclusive_role) is exclusive_sibling
+            ):
                 self._roles.pop(release_exclusive_role, None)
 
     async def release_role(self, role: str) -> None:
