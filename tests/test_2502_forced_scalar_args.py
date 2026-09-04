@@ -175,6 +175,33 @@ class TestSalvageForcedScalarArguments:
     def test_unknown_tool_never_guesses(self):
         assert _salvage_forced_scalar_arguments("other", "x", [_WEATHER]) is None
 
+    def test_malformed_schema_never_guesses_or_crashes(self):
+        # codex round-8: a malformed client schema must fail closed, not crash.
+        bad_props = SimpleNamespace(
+            type="function",
+            function={
+                "name": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": [],  # a list, not a dict
+                    "required": ["a"],
+                },
+            },
+        )
+        bad_required = SimpleNamespace(
+            type="function",
+            function={
+                "name": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}},
+                    "required": [["a"]],  # non-string sole entry
+                },
+            },
+        )
+        assert _salvage_forced_scalar_arguments("x", "7", [bad_props]) is None
+        assert _salvage_forced_scalar_arguments("x", "7", [bad_required]) is None
+
     def test_boolean_prop(self):
         flag = _tool("toggle", ["on"], ptype="boolean")
         assert (

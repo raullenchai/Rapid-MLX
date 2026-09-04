@@ -3024,10 +3024,16 @@ def _salvage_forced_scalar_arguments(
     if not isinstance(schema, dict) or schema.get("type") != "object":
         return None
     required = schema.get("required")
-    if not isinstance(required, list) or len(required) != 1:
-        return None  # multi/zero required → ambiguous, never guess
+    if (
+        not isinstance(required, list)
+        or len(required) != 1
+        or not isinstance(required[0], str)
+    ):
+        return None  # multi/zero required or a non-string entry → never guess
     prop = required[0]
-    props = schema.get("properties") or {}
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return None  # malformed ``"properties"`` (e.g. a list) → fail closed
     prop_schema = props.get(prop)
     if not isinstance(prop_schema, dict):
         return None
@@ -3080,13 +3086,17 @@ def _salvage_forced_scalar_arguments(
     if ptype == "integer":
         if isinstance(value, bool):
             return None  # never coerce bool → number
-        # Only a genuine JSON integer satisfies an integer property. A float
-        # (``72.0``) is NOT accepted: ``json.loads`` already parsed it as a
-        # float (possible precision loss on large values) and coercing with
-        # ``int()`` could silently corrupt it (codex BLOCKING), so fail closed.
+        # Only a genuine JSON integer (a Python ``int``) satisfies an integer
+        # property. An integral float (``72.0``) is deliberately NOT accepted:
+        # ``json.loads`` parsed it as a float, and the downstream draft-aware
+        # jsonschema validator tests ``numbers.Integral`` on the DECODED value,
+        # so a float never satisfies ``"type": "integer"`` — and ``int()``-
+        # coercing could silently corrupt a large value already rounded by the
+        # JSON parse. Failing closed is consistent with both. (Codex has argued
+        # both ways across rounds; this is the correct, non-lossy resolution.)
         if isinstance(value, int):
             return json.dumps({prop: value})
-        return None  # a non-integer float cannot satisfy an integer property
+        return None  # a non-integral float cannot satisfy an integer property
     if ptype == "number":
         if isinstance(value, bool):
             return None  # never coerce bool → number
