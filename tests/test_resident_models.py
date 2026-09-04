@@ -1938,6 +1938,16 @@ async def test_task_cancel_during_sibling_cleanup_reopens_remaining_sibling():
     blocking_engine = BlockingStopLifecycleEngine()
     blocking = entry("chat-blocking", blocking_engine)
     remaining_engine = FakeLifecycleEngine()
+    resume_started = asyncio.Event()
+    resume_release = asyncio.Event()
+
+    async def blocking_resume() -> dict:
+        resume_started.set()
+        await resume_release.wait()
+        remaining_engine.paused = False
+        return remaining_engine.lifecycle_status()
+
+    remaining_engine.resume_generation = blocking_resume
     remaining = entry("chat-remaining", remaining_engine)
     registry.add(primary, is_default=True)
     registry.add(blocking)
@@ -1964,6 +1974,14 @@ async def test_task_cancel_during_sibling_cleanup_reopens_remaining_sibling():
     await blocking_engine.stop_started.wait()
 
     replacement.cancel()
+    await resume_started.wait()
+    # A second cancellation during rollback recovery must not strand the
+    # unretired sibling paused. The original cancellation is delayed until the
+    # manager-owned recovery finishes.
+    replacement.cancel()
+    await asyncio.sleep(0)
+    assert replacement.done() is False
+    resume_release.set()
     with pytest.raises(asyncio.CancelledError):
         await replacement
 
@@ -2175,9 +2193,8 @@ async def test_cancel_secondary_replace_keeps_sibling_charged_and_cleaned():
 
 
 @pytest.mark.asyncio
-async def test_suspended_stop_does_not_block_snapshot_lease_or_unrelated_op():
-    """LOCK SAFETY: a suspended stop() in the background must not block a
-    snapshot, a lease on an unrelated resident model, or another op."""
+async def test_suspended_stop_does_not_block_lease_or_unrelated_op():
+    """LOCK SAFETY: suspended stop must not block unrelated manager ops."""
     registry = ModelRegistry()
     primary_engine = BlockingStopLifecycleEngine()
     primary = entry("chat-old", primary_engine)
@@ -2206,7 +2223,8 @@ async def test_suspended_stop_does_not_block_snapshot_lease_or_unrelated_op():
     )
     await primary_engine.stop_started.wait()
 
-    # Snapshot must not block.
+    # The synchronous snapshot remains observable during suspended cleanup;
+    # the async operations below are the assertions that the lock is free.
     manager.snapshot()
 
     # A lease on the UNRELATED resident model must not be blocked by the

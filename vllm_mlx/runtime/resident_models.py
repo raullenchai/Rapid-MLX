@@ -295,7 +295,10 @@ class _Retirement:
 
 def _sanitize_error(exc: Exception) -> str:
     """Bounded, single-line snapshot of an engine cleanup failure."""
-    text = str(exc).strip() or type(exc).__name__
+    printable = "".join(
+        character if character.isprintable() else " " for character in str(exc)
+    )
+    text = " ".join(printable.split()) or type(exc).__name__
     return text[:500]
 
 
@@ -1794,6 +1797,18 @@ class ResidentModelManager:
                         "Failed to resume a model engine after replacement rollback"
                     )
 
+    async def _resume_engines_before_cancelling(self, engines: list[object]) -> None:
+        """Finish rollback recovery even if the caller is cancelled repeatedly."""
+        recovery = asyncio.create_task(self._resume_engines(engines))
+        while not recovery.done():
+            try:
+                await asyncio.shield(recovery)
+            except asyncio.CancelledError:
+                # Preserve cancellation at the outer call site, but do not let
+                # repeated cancellation strand an unretired sibling paused.
+                continue
+        recovery.result()
+
     async def _commit_group_replacement_locked(
         self,
         target: ResidencyRecord,
@@ -2083,7 +2098,7 @@ class ResidentModelManager:
                 # branches, which do not expose their local paused-engine list
                 # back to load().
                 first_unretired = index + 1 if retirement_started else index
-                await self._resume_engines(
+                await self._resume_engines_before_cancelling(
                     [pending.entry.engine for pending, _ in plan[first_unretired:]]
                 )
                 raise
