@@ -12,6 +12,7 @@ on ``qwen3.5-9b-4bit`` doesn't have to hand-tune sliders.
 """
 
 import logging
+from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -156,7 +157,37 @@ def _resolve_speculative_decoding(
             config, "enable_suffix_decoding", False
         ):
             configured_method = "suffix"
-        policy = resolve_speculative_request_policy(configured_method)
+        default_tools_verified = False
+        if str(configured_method).strip().lower() == "mtp":
+            # The model card is necessarily coarser than the scheduler's
+            # per-request processor identity gate. Advertise tools as verified
+            # only for the live default constrained path; operator opt-out,
+            # non-grammar/unsafe parsers, and optional tool bias stay visibly
+            # fail-closed before a request is sent.
+            from .chat import (
+                _constrain_tools_opted_out,
+                _tool_parser_auto_safe,
+                _tool_parser_supports_grammar,
+            )
+
+            profile = resolve_profile(model_id)
+            tool_parser, _ = effective_parsers_for(
+                model_id,
+                getattr(profile, "tool_call_parser", None),
+                getattr(profile, "reasoning_parser", None),
+            )
+            parser_config = SimpleNamespace(tool_call_parser=tool_parser)
+            default_tools_verified = (
+                not _constrain_tools_opted_out()
+                and not bool(getattr(config, "enable_tool_logits_bias", False))
+                and not bool(getattr(scheduler, "_tool_logits_processor_factory", None))
+                and _tool_parser_supports_grammar(parser_config)
+                and _tool_parser_auto_safe(parser_config)
+            )
+        policy = resolve_speculative_request_policy(
+            configured_method,
+            default_tools_verified=default_tools_verified,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "speculative request policy probe failed for %s: %s",
