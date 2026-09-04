@@ -888,11 +888,18 @@ class ResidentModelManager:
             try:
                 await asyncio.shield(finalize)
             except asyncio.CancelledError:
-                # Drain the shielded finalize before propagating cancellation.
-                try:
-                    await asyncio.shield(finalize)
-                except asyncio.CancelledError:
-                    pass
+                # Un-cancellable drain: the shielded ``finalize`` task must run
+                # to completion BEFORE we propagate cancellation (pr_validate
+                # round-23). A second cancellation while this handler awaits is
+                # itself re-raised as ``CancelledError`` inside the loop, which
+                # we swallow and re-arm the shield until ``finalize.done()`` —
+                # so callers can never observe a stale ``"loading"`` record or
+                # a retained phantom sibling charge after cancelling here.
+                while not finalize.done():
+                    try:
+                        await asyncio.shield(finalize)
+                    except asyncio.CancelledError:
+                        continue
                 raise
 
     async def _finalize_role_commit(

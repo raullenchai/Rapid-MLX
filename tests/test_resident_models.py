@@ -3310,6 +3310,7 @@ async def test_alignment_role_release_removes_ledger_charge():
     assert manager._accounted_usage() == 0
 
 
+@pytest.mark.asyncio
 async def test_alignment_role_release_exclusive_retires_sibling_on_success():
     """pr_validate codex BLOCKING (round-17): alignment and dictation are
     mutually exclusive, so a resident ``speech-input`` reservation must be
@@ -3344,6 +3345,7 @@ async def test_alignment_role_release_exclusive_retires_sibling_on_success():
     assert "speech-input" not in roles  # retired with the successful admission
 
 
+@pytest.mark.asyncio
 async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
     """pr_validate codex BLOCKING (round-17): when the alignment admission
     transaction rolls back (no engine evicted), the retired ``speech-input``
@@ -3384,6 +3386,7 @@ async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
     assert speech["reserved_bytes"] == small
 
 
+@pytest.mark.asyncio
 async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load():
     """pr_validate codex BLOCKING (round-19/21): the manager lock is NOT held
     across the yielded aligner load, so the mutually-exclusive sibling's
@@ -3448,6 +3451,7 @@ async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load
     assert manager._accounted_usage() == other + speech
 
 
+@pytest.mark.asyncio
 async def test_alignment_role_commit_finalize_is_cancellation_shielded():
     """pr_validate codex BLOCKING (round-22): after ``admission.commit()`` the
     engine is resident, so a cancellation arriving while the success-path
