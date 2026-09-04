@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from .model_registry import ModelEntry, ModelRegistry
 from .process_memory import get_phys_footprint
@@ -27,16 +27,66 @@ class ResidentModelError(RuntimeError):
 
 
 class ResidentModelCapacityError(ResidentModelError):
-    """The configured ceiling cannot admit a model after eligible eviction."""
+    """The configured ceiling cannot admit a model/role after eligible eviction.
+
+    Two admission shapes share this error while keeping their wire contracts
+    distinct:
+
+    * **Assistant/replacement admission** keeps the legacy ``message`` +
+      ``replacement_projection`` shape so ``/v1/models/load`` can return its
+      established projection-based 507 envelope unchanged.
+    * **Protected-role admission** (``residency.admit_role``) carries the
+      typed role fields below, surfaced via :meth:`envelope` as the stable
+      ``insufficient_capacity_error`` 507 for lanes like forced alignment.
+    """
 
     def __init__(
         self,
         message: str,
         *,
         replacement_projection: ReplacementProjection | None = None,
+        reason: str | None = None,
+        requested_bytes: int | None = None,
+        limit_bytes: int | None = None,
+        used_bytes: int | None = None,
+        requested_role: str | None = None,
     ) -> None:
-        super().__init__(message)
         self.replacement_projection = replacement_projection
+        self.reason = reason
+        self.requested_bytes = requested_bytes
+        self.limit_bytes = limit_bytes
+        self.used_bytes = used_bytes
+        self.requested_role = requested_role
+        super().__init__(message)
+
+    def envelope(self) -> dict[str, object]:
+        """Return the stable machine-readable 507 role-capacity contract.
+
+        Populated only when the error was raised from ``admit_role`` (role
+        fields present). A legacy replacement/assistant capacity error has no
+        typed role envelope — its caller keeps using ``replacement_projection``.
+        """
+        if self.reason is None:
+            return {
+                "error": {
+                    "message": str(self),
+                    "type": "insufficient_capacity_error",
+                    "code": "insufficient_capacity_error",
+                    "param": "model",
+                }
+            }
+        return {
+            "error": {
+                "message": str(self),
+                "type": "insufficient_capacity_error",
+                "code": "insufficient_capacity_error",
+                "reason": self.reason,
+                "param": "model",
+                "requested_bytes": self.requested_bytes,
+                "limit_bytes": self.limit_bytes,
+                "used_bytes": self.used_bytes,
+            }
+        }
 
 
 class ResidentModelBusyError(ResidentModelError):
@@ -216,6 +266,63 @@ class ResidencyRecord:
         return self.entry.model_name
 
 
+@dataclass
+class ResidentRoleReservation:
+    """A non-registry role charged to the process residency ceiling.
+
+    Auxiliary lanes (forced alignment today; dictation speech-input under the
+    companion role work) own their MLX engine outside the model registry, so
+    their footprints cannot be ledgers through ``ResidencyRecord``. This
+    reservation charges them to the same shared ceiling so admission can
+    reject before their weights load.
+    """
+
+    role: str
+    model_id: str
+    reserved_bytes: int
+    capacity_source: str
+    state: str
+    loaded_at: float
+
+
+@dataclass
+class ResidentRoleAdmission:
+    """Transaction handle for replacing one auxiliary role reservation."""
+
+    record: ResidentRoleReservation
+    previous: ResidentRoleReservation | None = None
+    previous_retired: bool = False
+    exclusive_retired: bool = False
+    committed: bool = False
+
+    def retire_previous(self) -> None:
+        """Signal that the prior engine was dropped; do not restore on rollback."""
+        self.previous_retired = True
+
+    def retire_exclusive(self) -> None:
+        """Signal that the mutually-exclusive sibling's engine was discarded.
+
+        Called by the alignment lane the INSTANT the ASR engine evicted by
+        ``_evict_other_lane_sync("aligner")`` is actually gone. After this
+        point the retained ``speech-input`` reservation points at a phantom
+        engine, so a rollback must DROP it rather than leave a charge for an
+        engine that no longer exists. Before the discard the sibling is still
+        its engine's true reservation and stays in the ledger.
+        """
+        self.exclusive_retired = True
+
+    def commit(self) -> None:
+        """Mark the new engine as resident even when the caller re-raises.
+
+        Used by the alignment lane when its weight load completed on the model
+        worker (the engine was published) but the async handler is being
+        cancelled: the weights are loaded, so the reservation must be kept
+        rather than rolled back into a ledger desync.
+        """
+        self.committed = True
+        self.record.state = "resident"
+
+
 Loader = Callable[..., Awaitable[ModelEntry]]
 PrimaryChanged = Callable[[ModelEntry | None], None]
 
@@ -386,6 +493,33 @@ def _release_allocator_cache() -> None:
         pass
 
 
+class _SnapshotModelDict(TypedDict):
+    """Per-model row of :meth:`ResidentModelManager.snapshot`.
+
+    Typing the heterogeneous snapshot rows lets mypy check the ``max`` on
+    ``estimated_bytes``/``measured_bytes`` as real ``int`` comparisons instead
+    of joining every value type into one broad dict union.
+    """
+
+    id: str
+    model_path: str
+    aliases: list[str]
+    modality: str
+    role: str
+    serving_lane: object
+    serving_lane_reason: object
+    state: str
+    pinned: bool
+    primary: bool
+    active_requests: int
+    lifecycle: object
+    estimated_bytes: int
+    measured_bytes: int | None
+    idle_seconds: float
+    performance: dict[str, object] | None
+    replacement_projection: dict[str, object] | None
+
+
 class ResidentModelManager:
     """Own dynamic engines and enforce a process-wide residency ceiling.
 
@@ -421,6 +555,7 @@ class ResidentModelManager:
         self._on_primary_changed = on_primary_changed
         self._records: dict[str, ResidencyRecord] = {}
         self._index: dict[str, str] = {}
+        self._roles: dict[str, ResidentRoleReservation] = {}
         self._lock = asyncio.Lock()
         self._ttl_task: asyncio.Task | None = None
         self.evictions_total = 0
@@ -483,6 +618,11 @@ class ResidentModelManager:
             max(record.estimated_bytes, record.measured_bytes)
             for record in self._records.values()
             if record.state == "resident"
+        )
+        reserved += sum(
+            record.reserved_bytes
+            for record in self._roles.values()
+            if record.state in {"loading", "resident"}
         )
         # Some engines (notably mflux) construct lazy MLX arrays without
         # faulting all weight pages into the process. The footprint delta at
@@ -550,19 +690,45 @@ class ResidentModelManager:
                 await self._evict_locked(record, reason="idle_ttl")
             return evicted
 
-    async def _evict_for_locked(self, incoming_bytes: int, exclude: set[str]) -> None:
+    async def _evict_for_locked(
+        self,
+        incoming_bytes: int,
+        exclude: set[str],
+        *,
+        requested_role: str | None = None,
+        usage_credit_bytes: int = 0,
+    ) -> None:
         if self.memory_limit_bytes <= 0:
             return
-        while self._accounted_usage() + incoming_bytes > self.memory_limit_bytes:
+        while (
+            max(0, self._accounted_usage() - usage_credit_bytes) + incoming_bytes
+            > self.memory_limit_bytes
+        ):
             candidates = self._eviction_candidates_locked(exclude)
             if not candidates:
-                usage = self._accounted_usage()
+                usage = max(0, self._accounted_usage() - usage_credit_bytes)
+                if requested_role is None:
+                    raise ResidentModelCapacityError(
+                        "resident model memory ceiling exceeded: "
+                        f"usage={usage / _GIB:.2f} GiB, "
+                        f"incoming={incoming_bytes / _GIB:.2f} GiB, "
+                        f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
+                        "no idle unpinned model is eligible for eviction"
+                    )
                 raise ResidentModelCapacityError(
-                    "resident model memory ceiling exceeded: "
-                    f"usage={usage / _GIB:.2f} GiB, "
-                    f"incoming={incoming_bytes / _GIB:.2f} GiB, "
-                    f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
-                    "no idle unpinned model is eligible for eviction"
+                    (
+                        "insufficient capacity for role "
+                        f"{requested_role!r}: requested="
+                        f"{incoming_bytes / _GIB:.2f} GiB, "
+                        f"used={usage / _GIB:.2f} GiB, "
+                        f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
+                        "no idle unpinned model is eligible for eviction"
+                    ),
+                    reason=f"role_capacity_{requested_role.replace('-', '_')}",
+                    requested_bytes=incoming_bytes,
+                    limit_bytes=self.memory_limit_bytes,
+                    used_bytes=usage,
+                    requested_role=requested_role,
                 )
             await self._evict_locked(candidates[0], reason="memory_pressure")
 
@@ -582,6 +748,238 @@ class ResidentModelManager:
             ),
             key=lambda record: record.last_used_at,
         )
+
+    @asynccontextmanager
+    async def admit_role(
+        self,
+        *,
+        role: str,
+        model_id: str,
+        requested_bytes: int | None,
+        capacity_source: str,
+        replace_existing: bool = False,
+        release_exclusive_role: str | None = None,
+    ):
+        """Reserve a protected auxiliary role before its weights load.
+
+        Mirrors the shared ledger's transaction discipline: admission is
+        decided with the footprint known (``requested_bytes`` from catalog or
+        local-cache metadata), and the reservation is committed only on
+        success or rolled back on failure/cancellation so no leaked
+        reservation desyncs the ledger.
+
+        ``replace_existing=True`` charges the new footprint against the old
+        role's reservation (crediting the previous bytes) and, on rollback,
+        restores the previous reservation unless the caller retired it via
+        :meth:`ResidentRoleAdmission.retire_previous`.
+
+        ``release_exclusive_role`` adds a SECOND mutually-exclusive auxiliary
+        role to the same transaction (e.g. alignment retiring the dictation
+        ``speech-input`` role whose ASR engine the aligner evicts). The
+        sibling's reservation is RETAINED in ``self._roles`` — the real
+        auxiliary ledger, never the ``snapshot()`` projection — for the whole
+        transaction and its bytes are CREDITED against the new role's admission,
+        so the two are never double-charged (no false 507) yet no concurrent
+        admission can consume the sibling's capacity (no steal window). The new
+        role's admission and the sibling's retention happen under the SAME
+        ``self._lock`` critical section. On success (commit) — including a load
+        that finished under cancellation — the sibling is retired when the
+        aligner evicts its engine. On failure/cancellation the sibling stays in
+        the ledger (matching its still-resident engine) unless the load evicted
+        it first, in which case the caller's
+        :meth:`ResidentRoleAdmission.retire_exclusive` signal drops the now
+        phantom reservation. A still-resident engine is never left unaccounted,
+        and the configured ceiling is never breached by a restore.
+        """
+
+        async with self._lock:
+            previous = self._roles.get(role)
+            # Capture the mutually-exclusive sibling WITHOUT removing it. The
+            # sibling's reservation is RETAINED in ``_roles`` for the whole
+            # transaction — its bytes stay accounted, so NO concurrent admission
+            # can consume them and a rollback can never be forced to choose
+            # between an unaccounted engine and an over-ceiling ledger (pr_validate
+            # round-19). ``self._roles`` is the authoritative auxiliary-role
+            # ledger (in contrast to ``snapshot()["roles"]``, which mixes in
+            # synthesized projection entries for ordinary models and would let a
+            # caller release the wrong thing / a non-reservation).
+            exclusive_sibling = None
+            if release_exclusive_role is not None and release_exclusive_role != role:
+                exclusive_sibling = self._roles.get(release_exclusive_role)
+            try:
+                if previous is not None and not replace_existing:
+                    raise ResidentModelError(f"role {role!r} is already resident")
+                # A role must never host two concurrent in-flight LOADS: an
+                # overwrite here would orphan the earlier load's reservation and,
+                # if that earlier load later rolls back, could resurrect a stale
+                # ``"loading"`` record. Callers serialise per-lane (the STT lane
+                # lock), so this is a defensive invariant at the ledger layer
+                # itself — reject rather than corrupt.
+                if previous is not None and previous.state == "loading":
+                    raise ResidentModelError(
+                        f"role {role!r} already has a loading admission in flight"
+                    )
+                # Credit the new role against BOTH the same-role previous and the
+                # retained mutually-exclusive sibling: the aligner admission nets
+                # out the ASR engine bytes it will evict, so it is not falsely
+                # rejected while the ASR engine is still resident.
+                usage_credit = (
+                    previous.reserved_bytes if previous is not None else 0
+                ) + (
+                    exclusive_sibling.reserved_bytes
+                    if exclusive_sibling is not None
+                    else 0
+                )
+                used = max(0, self._accounted_usage() - usage_credit)
+                if self.memory_limit_bytes > 0 and requested_bytes is None:
+                    raise ResidentModelCapacityError(
+                        (
+                            f"insufficient capacity for role {role!r}: the requested "
+                            "model has no catalog or local-cache size metadata and "
+                            f"limit={self.memory_limit_bytes / _GIB:.2f} GiB; "
+                            "refusing blind admission under a configured ceiling"
+                        ),
+                        reason="role_capacity_unknown",
+                        requested_bytes=None,
+                        limit_bytes=self.memory_limit_bytes,
+                        used_bytes=used,
+                        requested_role=role,
+                    )
+                reserved_bytes = max(0, int(requested_bytes or 0))
+                await self._evict_for_locked(
+                    reserved_bytes,
+                    exclude=set(),
+                    requested_role=role,
+                    usage_credit_bytes=usage_credit,
+                )
+                record = ResidentRoleReservation(
+                    role=role,
+                    model_id=model_id,
+                    reserved_bytes=reserved_bytes,
+                    capacity_source=capacity_source,
+                    state="loading",
+                    loaded_at=self._clock(),
+                )
+                self._roles[role] = record
+                admission = ResidentRoleAdmission(record=record, previous=previous)
+            except BaseException:
+                # Any failure BEFORE admission is decided (capacity error,
+                # invariant conflict) leaves the retained sibling untouched in
+                # ``_roles`` — nothing to restore, nothing leaked.
+                raise
+        try:
+            yield admission
+        except BaseException:
+            if admission.committed:
+                # The engine was already published on the model worker (e.g.
+                # the load finished under cancellation); keep it accounted. The
+                # successful load evicted the ASR engine -> drop the retained
+                # (by now phantom) sibling reservation.
+                async with self._lock:
+                    if (
+                        exclusive_sibling is not None
+                        and release_exclusive_role is not None
+                        and self._roles.get(release_exclusive_role) is exclusive_sibling
+                    ):
+                        # Only retire the sibling WE retained — preserve any
+                        # NEWER reservation a concurrent admission installed for
+                        # this role while the aligner loaded (its engine is
+                        # authoritative and still resident).
+                        self._roles.pop(release_exclusive_role, None)
+                raise
+            async with self._lock:
+                if self._roles.get(role) is record:
+                    if previous is not None and not admission.previous_retired:
+                        self._roles[role] = previous
+                    else:
+                        self._roles.pop(role, None)
+                # The retained sibling was never removed, so it needs no
+                # "restore". If the load evicted its engine before failing
+                # (``retire_exclusive`` -> ``exclusive_retired`` — the round-18
+                # case), the reservation now guards a phantom engine and must be
+                # dropped; otherwise it stays charged, exactly matching its
+                # still-resident engine. Identity-check so a concurrently
+                # installed NEWER reservation for the role is never erased.
+                if (
+                    exclusive_sibling is not None
+                    and release_exclusive_role is not None
+                    and admission.exclusive_retired
+                    and self._roles.get(release_exclusive_role) is exclusive_sibling
+                ):
+                    self._roles.pop(release_exclusive_role, None)
+            raise
+        else:
+            # Success finalization runs under a cancellation SHIELD (pr_validate
+            # round-22): after the route's ``admission.commit()`` the engine is
+            # already resident, so a cancellation arriving while the success-path
+            # ``await self._lock`` is blocked must NOT skip the finalization —
+            # that would leave the committed engine's reservation stuck in
+            # ``"loading"`` and the evicted sibling (if any) charged forever.
+            # The shield lets the finalize run to completion; if the surrounding
+            # task is cancelled, we wait for the shielded finalize first and
+            # THEN re-raise, never leaking a phantom sibling charge.
+            finalize = asyncio.ensure_future(
+                self._finalize_role_commit(
+                    role=role,
+                    record=record,
+                    exclusive_sibling=exclusive_sibling,
+                    release_exclusive_role=release_exclusive_role,
+                )
+            )
+            try:
+                await asyncio.shield(finalize)
+            except asyncio.CancelledError:
+                # Un-cancellable drain: the shielded ``finalize`` task must run
+                # to completion BEFORE we propagate cancellation (pr_validate
+                # round-23). A second cancellation while this handler awaits is
+                # itself re-raised as ``CancelledError`` inside the loop, which
+                # we swallow and re-arm the shield until ``finalize.done()`` —
+                # so callers can never observe a stale ``"loading"`` record or
+                # a retained phantom sibling charge after cancelling here.
+                while not finalize.done():
+                    try:
+                        await asyncio.shield(finalize)
+                    except asyncio.CancelledError:
+                        continue
+                raise
+
+    async def _finalize_role_commit(
+        self,
+        *,
+        role: str,
+        record: ResidentRoleReservation,
+        exclusive_sibling,
+        release_exclusive_role: str | None,
+    ) -> None:
+        """Complete the success-path role commit under a shielded lock.
+
+        Marks the admitted record resident and retires the retained
+        mutually-exclusive sibling (the aligner evicted its engine). Runs inside
+        :meth:`admit_role`'s success finalization, shielded from cancellation so
+        a committed engine is never left ``"loading"`` and a phantom sibling
+        charge is never leaked when the context is cancelled mid-commit.
+        """
+        async with self._lock:
+            if self._roles.get(role) is record:
+                record.state = "resident"
+                record.loaded_at = self._clock()
+            # Success: the aligner loaded and evicted the ASR engine ->
+            # retire the retained sibling reservation, but ONLY if it is still
+            # the reservation WE retained — a concurrent admission may have
+            # replaced the role with a newer (authoritative) reservation while
+            # the aligner loaded, and must not be erased here.
+            if (
+                exclusive_sibling is not None
+                and release_exclusive_role is not None
+                and self._roles.get(release_exclusive_role) is exclusive_sibling
+            ):
+                self._roles.pop(release_exclusive_role, None)
+
+    async def release_role(self, role: str) -> None:
+        """Stop charging a role after its owning lane released the engine."""
+
+        async with self._lock:
+            self._roles.pop(role, None)
 
     async def load(
         self,
@@ -1448,7 +1846,7 @@ class ResidentModelManager:
 
     def snapshot(self) -> dict:
         now = self._clock()
-        models = []
+        models: list[_SnapshotModelDict] = []
         for record in sorted(self._records.values(), key=lambda item: item.loaded_at):
             engine = record.entry.engine
             resident = not hasattr(engine, "is_resident") or bool(engine.is_resident)
@@ -1473,6 +1871,7 @@ class ResidentModelManager:
                     "model_path": record.entry.model_path,
                     "aliases": sorted(record.entry.aliases),
                     "modality": (_modality(record.entry)),
+                    "role": _replacement_group(record.entry),
                     "serving_lane": getattr(engine, "serving_lane", None),
                     "serving_lane_reason": getattr(engine, "serving_lane_reason", None),
                     "state": record.state if resident else "registered",
@@ -1497,6 +1896,32 @@ class ResidentModelManager:
                     ),
                 }
             )
+        roles = [
+            {
+                "role": model["role"],
+                "model": model["id"],
+                "state": model["state"],
+                "pinned": model["pinned"],
+                "active_requests": model["active_requests"],
+                "reserved_bytes": max(
+                    model["estimated_bytes"], model["measured_bytes"] or 0
+                ),
+                "capacity_source": "model",
+            }
+            for model in models
+        ]
+        roles.extend(
+            {
+                "role": record.role,
+                "model": record.model_id,
+                "state": record.state,
+                "pinned": True,
+                "active_requests": 0,
+                "reserved_bytes": record.reserved_bytes,
+                "capacity_source": record.capacity_source,
+            }
+            for record in sorted(self._roles.values(), key=lambda item: item.role)
+        )
         usage = self._accounted_usage()
         return {
             "memory_limit_bytes": self.memory_limit_bytes,
@@ -1510,4 +1935,5 @@ class ResidentModelManager:
             "loads_total": self.loads_total,
             "evictions_total": self.evictions_total,
             "models": models,
+            "roles": roles,
         }

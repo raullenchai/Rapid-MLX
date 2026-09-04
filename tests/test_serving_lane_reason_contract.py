@@ -246,6 +246,10 @@ def _literal_assignments(*, exact_target: str | None = None) -> set[str]:
             if not selected:
                 continue
             value = node.value
+            if value is None:
+                # A bare annotation (for example a TypedDict field) declares
+                # a shape; it does not assign or emit a serving-lane reason.
+                continue
             if isinstance(value, ast.Constant) and value.value is None:
                 # Optional response/schema fields are initialized empty; they
                 # are not reason emitters.
@@ -408,6 +412,21 @@ def test_dynamic_reason_assignment_scanner_fails_closed(
 
     with pytest.raises(AssertionError, match="unvalidated dynamic"):
         _literal_assignments()
+
+
+def test_bare_reason_annotation_is_not_an_emission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Typed shapes may declare the field without assigning a reason value."""
+    (tmp_path / "shape.py").write_text(
+        "class Row:\n    serving_lane_reason: object\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "ENGINE", tmp_path)
+    monkeypatch.setitem(globals(), "_VALIDATED_REASON_PASSTHROUGHS", frozenset())
+
+    assert _literal_assignments() == set()
 
 
 @pytest.mark.parametrize(

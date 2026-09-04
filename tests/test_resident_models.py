@@ -36,6 +36,18 @@ def test_resident_performance_maps_to_the_scheduler_contract():
         "enable_prefix_cache": False,
         "cache_memory_mb": 4096,
     }
+
+
+def test_legacy_capacity_error_keeps_stable_envelope():
+    error = ResidentModelCapacityError("legacy replacement rejected")
+    assert error.envelope() == {
+        "error": {
+            "message": "legacy replacement rejected",
+            "type": "insufficient_capacity_error",
+            "code": "insufficient_capacity_error",
+            "param": "model",
+        }
+    }
     assert resident_scheduler_kwargs(
         ResidentPerformanceConfig(kv_cache_turboquant="k8v4")
     ) == {
@@ -3015,3 +3027,596 @@ def test_residency_route_maps_kv_unsupported_rejection_to_422(monkeypatch):
     assert response.status_code == 422
     assert "#78" not in response.json()["detail"]
     assert "kv" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Protected-role admission (forced alignment). These exercise the shared
+# residency ledger's ``admit_role``/``release_role`` transaction path with a
+# bare manager (no registry primary) so the alignment role is tested in
+# isolation — entirely MLX-free.
+# ---------------------------------------------------------------------------
+
+
+def role_manager_fixture(*, limit_gib=4.0):
+    """A manager with no primary model so role admission is tested alone."""
+
+    registry = ModelRegistry()
+    clock = Clock()
+    manager = ResidentModelManager(
+        registry,
+        lambda name, path=None, perf=None: entry(name),
+        memory_limit_bytes=limit_gib * GIB,
+        clock=clock,
+        memory_reader=lambda: 0,
+    )
+    return manager, clock
+
+
+def _aligner_bytes() -> int:
+    # The real catalog footprint of qwen3-aligner /
+    # mlx-community/Qwen3-ForcedAligner-0.6B-8bit (~1.19 GiB).
+    return 1276473392
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_admitted_under_budget_and_ledger_resident():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        # During the load the reservation is charged in the "loading" state.
+        roles = manager.snapshot()["roles"]
+        entry = next(r for r in roles if r["role"] == "alignment")
+        assert entry["state"] == "loading"
+        assert entry["reserved_bytes"] == _aligner_bytes()
+
+    # After the context succeeds the reservation is committed resident.
+    roles = manager.snapshot()["roles"]
+    entry = next(r for r in roles if r["role"] == "alignment")
+    assert entry["state"] == "resident"
+    assert entry["capacity_source"] == "catalog"
+    # The reservation is charged to the shared accounted usage.
+    assert manager._accounted_usage() >= _aligner_bytes()
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rejected_with_typed_507_when_over_ceiling():
+    # Ceiling below the aligner footprint with no eligible eviction ->
+    # the typed role_capacity envelope must be produced.
+    manager, _ = role_manager_fixture(limit_gib=0.5)  # 0.5 GiB < aligner
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    exc = exc_info.value
+    assert exc.reason == "role_capacity_alignment"
+    assert exc.requested_bytes == _aligner_bytes()
+    assert exc.limit_bytes == int(0.5 * GIB)
+    assert exc.requested_role == "alignment"
+    envelope = exc.envelope()
+    assert envelope["error"]["type"] == "insufficient_capacity_error"
+    assert envelope["error"]["code"] == "insufficient_capacity_error"
+    assert envelope["error"]["reason"] == "role_capacity_alignment"
+    assert envelope["error"]["requested_bytes"] == _aligner_bytes()
+    assert envelope["error"]["limit_bytes"] == int(0.5 * GIB)
+    # No leaked reservation on rejection.
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_on_load_failure_keeps_ledger_empty():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(RuntimeError, match="weight load failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            raise RuntimeError("weight load failed")
+
+    # A failed load leaves no leaked reservation.
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_on_cancellation_keeps_ledger_empty():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            raise asyncio.CancelledError()
+
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_replace_retires_previous_on_failure():
+    # A new aligner replaces a previous one; the load drops the old engine so
+    # its reservation must not be restored on failure (retire_previous).
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    # First aligner loads and commits.
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager.snapshot()["roles"][0]["model"] == "qwen3-aligner"
+
+    # Replace with a second aligner whose load fails after retire_previous.
+    with pytest.raises(RuntimeError, match="reload failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ) as admission:
+            admission.retire_previous()
+            raise RuntimeError("reload failed")
+
+    # The old engine is gone, so no reservation should remain.
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_replace_restores_previous_unless_retired():
+    # Without retire_previous, a failed replacement restores the previous
+    # reservation (the old engine still exists).
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+
+    try:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ):
+            raise RuntimeError("reload failed")
+    except RuntimeError:
+        pass
+
+    # Previous aligner reservation restored (old engine survives).
+    roles = manager.snapshot()["roles"]
+    assert len(roles) == 1
+    assert roles[0]["model"] == "qwen3-aligner"
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rejects_second_loading_admission():
+    """A role must never host two concurrent in-flight LOADS.
+
+    pr_validate codex BLOCKING #1: a second admission while the first is
+    still loading would overwrite the ledger entry, and a later rollback
+    could resurrect a stale ``\"loading\"`` record. The ledger layer rejects
+    the second admission instead of corrupting the reservation.
+    """
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_open():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            started.set()
+            await release.wait()
+
+    first = asyncio.create_task(hold_open())
+    await started.wait()
+
+    # While the first load is in flight ("loading"), a second admission for
+    # the same role — even with replace_existing=True — must be rejected, not
+    # overwrite the in-flight reservation.
+    with pytest.raises(ResidentModelError, match="loading admission in flight"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-forced-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            replace_existing=True,
+        ):
+            pass
+
+    release.set()
+    await first
+
+    # The original (first) reservation committed resident, untouched by the
+    # rejected second admission.
+    roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert len(roles) == 1
+    assert roles[0]["model"] == "qwen3-aligner"
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_unknown_capacity_fails_closed_under_ceiling():
+    # Under a configured ceiling, a model with no catalog/local-cache size
+    # must fail closed rather than admit blind.
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="some-unknown-aligner",
+            requested_bytes=None,
+            capacity_source="unknown",
+        ):
+            pass
+
+    assert exc_info.value.reason == "role_capacity_unknown"
+    assert exc_info.value.requested_bytes is None
+    assert exc_info.value.envelope()["error"]["reason"] == "role_capacity_unknown"
+    assert manager.snapshot()["roles"] == []
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_no_ceiling_admits_without_typed_rejection():
+    # With no configured ceiling (limit 0) admission bypasses capacity checks
+    # entirely, preserving pre-existing behavior for unmanaged servers.
+    manager, _ = role_manager_fixture(limit_gib=0.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=None,  # unknown, but no ceiling -> admitted
+        capacity_source="unknown",
+    ):
+        pass
+
+    roles = manager.snapshot()["roles"]
+    assert len(roles) == 1
+    assert roles[0]["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_release_removes_ledger_charge():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager._accounted_usage() >= _aligner_bytes()
+
+    await manager.release_role("alignment")
+    assert manager.snapshot()["roles"] == []
+    assert manager._accounted_usage() == 0
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_release_exclusive_retires_sibling_on_success():
+    """pr_validate codex BLOCKING (round-17): alignment and dictation are
+    mutually exclusive, so a resident ``speech-input`` reservation must be
+    retired atomically WITHIN the alignment admission transaction — read from
+    the real auxiliary ``_roles`` ledger, never the ``snapshot()`` projection
+    (which mixes in synthesized ordinary-model entries a route could wrongly
+    release). On SUCCESS the sibling stays retired (the ASR engine was
+    evicted) so the ledger charges only the alignment role."""
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert any(r["role"] == "speech-input" for r in manager.snapshot()["roles"])
+
+    async with manager.admit_role(
+        role="alignment",
+        model_id="qwen3-aligner",
+        requested_bytes=_aligner_bytes(),
+        capacity_source="catalog",
+        release_exclusive_role="speech-input",
+    ):
+        pass
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "alignment" in roles
+    assert "speech-input" not in roles  # retired with the successful admission
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
+    """pr_validate codex BLOCKING (round-17): when the alignment admission
+    transaction rolls back (no engine evicted), the retired ``speech-input``
+    reservation MUST be restored atomically under the same lock — a
+    still-resident ASR engine can never be left silently unaccounted. There is
+    no window for a concurrent admission to claim the freed capacity, because
+    the release and the restore are the SAME manager transaction."""
+    manager, _ = role_manager_fixture(limit_gib=0.5)
+
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert any(r["role"] == "speech-input" for r in manager.snapshot()["roles"])
+
+    # The aligner (1.19 GiB) cannot fit under 0.5 GiB even after the small
+    # speech-input reservation is released -> the in-lock rollback runs and
+    # must restore speech-input before the capacity error propagates.
+    with pytest.raises(ResidentModelCapacityError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ):
+            pass
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" in roles  # restored: the ASR engine is still resident
+    assert "alignment" not in roles  # the rejected aligner left no reservation
+    # The restored reservation keeps its original footprint (accounted once).
+    (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+    assert speech["reserved_bytes"] == small
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load():
+    """pr_validate codex BLOCKING (round-19/21): the manager lock is NOT held
+    across the yielded aligner load, so the mutually-exclusive sibling's
+    capacity could be STOLEN by a concurrent admission if it were released
+    up front. Instead the sibling reservation is RETAINED (credited against the
+    aligner, never freed), so a concurrent admission CANNOT claim its bytes:
+    it is rejected with 507 while the aligner loads, and the rollback leaves
+    the sibling's still-resident engine correctly accounted — no unaccounted
+    engine and no over-ceiling ledger."""
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    speech = int(0.4 * GIB)
+    other = int(0.2 * GIB)
+    aligner = int(0.3 * GIB)
+    concurrent = int(0.5 * GIB)
+
+    # Pre-existing roles: speech-input (0.4) + a tts-role sibling (0.2) = 0.6.
+    async with manager.admit_role(
+        role="tts",
+        model_id="some-tts",
+        requested_bytes=other,
+        capacity_source="catalog",
+    ):
+        pass
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=speech,
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager._accounted_usage() == other + speech
+
+    # Enter alignment (speech-input retained + credited, so no false 507 and
+    # no freed capacity). During the yielded LOAD a concurrent admission wants
+    # the sibling's bytes, but they are RETAINED -> it cannot fit -> 507.
+    with pytest.raises(ResidentModelCapacityError):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ):
+            async with manager.admit_role(
+                role="tts-extra",
+                model_id="other-tts",
+                requested_bytes=concurrent,
+                capacity_source="catalog",
+            ):
+                pass
+            raise RuntimeError("load failed")
+
+    # The concurrent tts-extra admission was REJECTED (sibling capacity
+    # retained), so on rollback the ledger is exactly as before the aligner:
+    # speech-input restored (its engine is still resident) + tts, alignment gone.
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "alignment" not in roles
+    assert "tts" in roles
+    assert "tts-extra" not in roles
+    assert "speech-input" in roles  # retained + credited, its engine accounted
+    assert manager._accounted_usage() == other + speech
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_commit_finalize_is_cancellation_shielded():
+    """pr_validate codex BLOCKING (round-22): after ``admission.commit()`` the
+    engine is resident, so a cancellation arriving while the success-path
+    finalization waits on the manager lock must STILL retire the evicted
+    sibling (and keep the committed record resident) — never leak a phantom
+    sibling charge. The success finalization runs under a cancel-drained
+    shield, so whether the cancellation is handled by that shield or by the
+    ``committed`` rollback branch, the invariant holds: sibling retired,
+    alignment record resident."""
+    from vllm_mlx.runtime.resident_models import ResidentRoleAdmission
+
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    speech = int(0.4 * GIB)
+    aligner = int(0.3 * GIB)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=speech,
+        capacity_source="catalog",
+    ):
+        pass
+
+    # align() commits the engine inside its body, then BLOCKS holding the
+    # manager lock so cancellation lands deterministically AFTER publication.
+    committed_in_body = asyncio.Event()
+    release_body_lock = asyncio.Event()
+
+    async def _align():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ) as admission:
+            # Engine published -> mark resident; a cancellation anywhere after
+            # this must not resurrect the evicted sibling.
+            if isinstance(admission, ResidentRoleAdmission):
+                admission.commit()
+            # Hold the manager lock and park: the body owns the lock here, so
+            # cancelling now exercises the post-commit cleanup under lock
+            # contention (either the committed-rollback branch or the shielded
+            # else-finalize) — both must retire the sibling.
+            async with manager._lock:
+                committed_in_body.set()
+                await release_body_lock.wait()
+
+    align_task = asyncio.create_task(_align())
+    await committed_in_body.wait()  # committed and holding the manager lock
+    align_task.cancel()  # cancel AFTER publication
+    release_body_lock.set()  # let the post-commit cleanup run (drains)
+
+    try:
+        await align_task
+    except asyncio.CancelledError:
+        pass
+
+    # The cancellation must not leak: sibling retired (ASR engine evicted) and
+    # the committed alignment record resident.
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" not in roles
+    (aligned,) = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert aligned["state"] == "resident"
+    assert aligned["reserved_bytes"] == aligner
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_success_finalize_drains_repeated_cancellation(
+    monkeypatch,
+):
+    """Success finalization completes even if its waiter is cancelled twice."""
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+    finalize_started = asyncio.Event()
+    release_finalize = asyncio.Event()
+    original = manager._finalize_role_commit
+
+    async def delayed_finalize(**kwargs):
+        finalize_started.set()
+        await release_finalize.wait()
+        await original(**kwargs)
+
+    monkeypatch.setattr(manager, "_finalize_role_commit", delayed_finalize)
+
+    async def admit():
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    task = asyncio.create_task(admit())
+    await finalize_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release_finalize.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (role,) = manager.snapshot()["roles"]
+    assert role["role"] == "alignment"
+    assert role["state"] == "resident"
+
+
+@pytest.mark.asyncio
+async def test_alignment_role_rollback_preserves_concurrently_replaced_sibling():
+    """pr_validate codex BLOCKING (round-24): rollback must only retire the
+    sibling reservation THIS transaction retained — never erase a NEWER
+    reservation a concurrent admission installed for that role while the
+    aligner load ran. The identity-checked pop preserves the replacement."""
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    s1 = int(0.4 * GIB)
+    s2 = int(0.25 * GIB)
+    aligner = int(0.3 * GIB)
+
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=s1,
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ) as admission:
+            # The load evicted the ASR engine -> retire_exclusive fires.
+            admission.retire_exclusive()
+            # A concurrent admission REPLACES the speech-input reservation with
+            # a newer (still-resident engine) one while the aligner loads.
+            async with manager.admit_role(
+                role="speech-input",
+                model_id="whisper-large",
+                requested_bytes=s2,
+                capacity_source="catalog",
+                replace_existing=True,
+            ):
+                pass
+            raise RuntimeError("load failed")
+
+    # The rollback must NOT erase the newer reservation (its engine is
+    # resident); only alignment is rolled back.
+    (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+    assert speech["reserved_bytes"] == s2
+    assert "alignment" not in {r["role"] for r in manager.snapshot()["roles"]}
