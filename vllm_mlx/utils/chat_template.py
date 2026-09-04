@@ -1161,27 +1161,51 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
     "xhigh",
 )
 
-# A template that *validates* ``reasoning_effort`` against a literal set,
-# e.g. Qwen3.8's
-#   ``{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}``
-# declares its native effort vocabulary. Only that shape counts as a
-# declaration: Harmony merely interpolates the value ("Reasoning: medium")
-# and North Mini Code compares against a single sentinel (``== "none"``),
-# so neither publishes a level set and both keep the token-cap fallback.
-_REASONING_EFFORT_LEVEL_SET_RE = re.compile(
-    r"reasoning_effort\s*(?:\|\s*default\([^)]*\))?\s+(?:not\s+)?in\s*"
-    r"[\(\[]([^\)\]]*)[\)\]]"
+# A template declares its native effort vocabulary only when it *validates*
+# ``reasoning_effort`` against a literal set: an ``{% if <var> not in (...) %}``
+# whose block body either rejects the value (``raise_exception(...)``, Qwen3.8)
+# or replaces it with a default (``{% set <var> = ... %}``, Hy3). Nothing else
+# counts — Harmony merely interpolates the value ("Reasoning: medium"), North
+# Mini Code compares against a single ``"none"`` sentinel, and a template that
+# just *branches* on a subset (``{% if reasoning_effort in ('high', 'xhigh') %}``)
+# says nothing about which values it accepts — so all of those keep the
+# token-cap fallback. The membership test may sit anywhere inside the ``if``
+# condition (Hy3 prefixes ``not reasoning_effort is defined or``), and the
+# tested variable may be a derived one (Qwen3.8's ``resolved_reasoning_effort``).
+_REASONING_EFFORT_VALIDATION_RE = re.compile(
+    r"\{%-?\s*if\s+(?P<cond>[^%]*?"
+    r"\b(?P<var>\w*reasoning_effort)\s*(?:\|\s*default\([^)]*\))?"
+    r"\s+not\s+in\s*[\(\[](?P<levels>[^\)\]]*)[\)\]]"
+    r"[^%]*?)%\}"
+    r"(?P<body>.*?)"
+    r"\{%-?\s*(?:elif|else|endif)\b",
+    re.DOTALL,
 )
 _REASONING_EFFORT_LITERAL_RE = re.compile(r"""['"]([A-Za-z_][A-Za-z0-9_]*)['"]""")
+_RAISE_EXCEPTION_RE = re.compile(r"\braise_exception\s*\(")
+
+
+def _validation_body_rejects_or_defaults(body: str, var: str) -> bool:
+    if _RAISE_EXCEPTION_RE.search(body):
+        return True
+    # ``{%- set reasoning_effort = 'no_think' %}`` — the template replaces an
+    # out-of-vocabulary value with one of its own, which is a validation too.
+    return re.search(r"\{%-?\s*set\s+" + re.escape(var) + r"\s*=", body) is not None
 
 
 @functools.lru_cache(maxsize=64)
 def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...] | None:
-    match = _REASONING_EFFORT_LEVEL_SET_RE.search(template)
-    if match is None:
-        return None
-    levels = tuple(dict.fromkeys(_REASONING_EFFORT_LITERAL_RE.findall(match.group(1))))
-    return levels or None
+    for match in _REASONING_EFFORT_VALIDATION_RE.finditer(template):
+        if not _validation_body_rejects_or_defaults(
+            match.group("body"), match.group("var")
+        ):
+            continue
+        levels = tuple(
+            dict.fromkeys(_REASONING_EFFORT_LITERAL_RE.findall(match.group("levels")))
+        )
+        if levels:
+            return levels
+    return None
 
 
 def detect_native_reasoning_effort_levels(

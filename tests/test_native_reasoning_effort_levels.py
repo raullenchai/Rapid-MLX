@@ -181,12 +181,87 @@ class TestDetectNativeLevels:
         ) == ("xhigh", "medium", "low")
 
     def test_default_filter_between_name_and_membership_is_tolerated(self):
-        clause = "{% if reasoning_effort|default('low') not in ['low', 'high'] %}"
+        clause = (
+            "{% if reasoning_effort|default('low') not in ['low', 'high'] %}"
+            "{{ raise_exception('x') }}{% endif %}"
+        )
         assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
 
     def test_duplicate_literals_collapse(self):
-        clause = "{% if reasoning_effort in ('low', 'low', 'high') %}"
+        clause = (
+            "{% if reasoning_effort not in ('low', 'low', 'high') %}"
+            "{{ raise_exception('x') }}{% endif %}"
+        )
         assert detect_native_reasoning_effort_levels(clause) == ("low", "high")
+
+
+class TestDetectionRequiresAValidationBlock:
+    """Codex r1 BLOCKING: a bare membership test is not a declaration. A
+    template that merely *branches* on a subset must not have that subset
+    mistaken for its accepted vocabulary (``medium`` would be upgraded and
+    lose its cap). Only ``not in (...)`` guarded by ``raise_exception`` or a
+    ``set`` of the tested variable counts."""
+
+    def test_positive_subset_branch_is_not_a_vocabulary(self):
+        clause = "{%- if reasoning_effort in ('high', 'xhigh') %}deep{%- endif %}"
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_negative_branch_without_rejection_is_not_a_vocabulary(self):
+        clause = (
+            "{%- if reasoning_effort not in ('high', 'xhigh') %}shallow{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_rejection_block_declares(self):
+        clause = (
+            "{%- if reasoning_effort not in ('a', 'b') %}"
+            "{{- raise_exception('bad') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_defaulting_block_declares(self):
+        clause = (
+            "{%- if not reasoning_effort is defined or reasoning_effort not in ['a', 'b'] %}"
+            "{%- set reasoning_effort = 'a' %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_setting_an_unrelated_variable_does_not_declare(self):
+        clause = (
+            "{%- if reasoning_effort not in ['a', 'b'] %}"
+            "{%- set other = 'a' %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_rejection_in_a_later_block_does_not_leak_backwards(self):
+        clause = (
+            "{%- if reasoning_effort not in ['a'] %}x{%- endif %}"
+            "{%- if y %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_elif_terminates_the_block_body(self):
+        clause = (
+            "{%- if reasoning_effort not in ['a'] %}x"
+            "{%- elif z %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_whitespace_control_and_derived_variable(self):
+        clause = (
+            "{%- set resolved_reasoning_effort = reasoning_effort|default('b') -%}"
+            "{%- if resolved_reasoning_effort not in ('a', 'b') -%}"
+            "{{- raise_exception('bad') -}}{%- endif -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_first_validation_block_wins_over_a_later_branch(self):
+        clause = QWEN38_TEMPLATE + "{%- if reasoning_effort in ('zzz',) %}q{%- endif %}"
+        assert detect_native_reasoning_effort_levels(clause) == (
+            "xhigh",
+            "medium",
+            "low",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +611,7 @@ class _RouteEngine:
             else None
         )
         self.chat_calls: list[dict] = []
+        self.stream_calls: list[dict] = []
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
         return "PROMPT"
@@ -551,10 +627,27 @@ class _RouteEngine:
             finish_reason="stop",
         )
 
+    async def stream_chat(self, messages=None, **kwargs):
+        self.stream_calls.append({"messages": messages, "kwargs": kwargs})
+        for i, piece in enumerate(("o", "k")):
+            yield GenerationOutput(
+                text="ok"[: i + 1],
+                new_text=piece,
+                prompt_tokens=4 if i == 0 else 0,
+                completion_tokens=i + 1,
+                finished=i == 1,
+                finish_reason="stop" if i == 1 else None,
+            )
+
     @property
     def kwargs(self) -> dict:
         assert self.chat_calls, "engine.chat was not called"
         return self.chat_calls[0]["kwargs"]
+
+    @property
+    def stream_kwargs(self) -> dict:
+        assert self.stream_calls, "engine.stream_chat was not called"
+        return self.stream_calls[0]["kwargs"]
 
 
 @pytest.fixture
@@ -817,3 +910,60 @@ class TestResponsesRouteNativeLevel:
             engine.kwargs.get("chat_template_kwargs") or {}
         )
         assert _responses_cap_probe == [2048]
+
+
+class TestStreamingRoutesNativeLevel:
+    """Codex r1 NIT: the streaming builders on both surfaces are separate
+    code paths (``/v1/responses`` had its own ``chat_kwargs`` block that
+    dropped ``chat_template_kwargs``), so exercise them through SSE."""
+
+    def test_chat_stream_forwards_native_level(
+        self, _rate_limiter_state, _chat_cap_probe
+    ):
+        engine = _RouteEngine(QWEN38_TEMPLATE)
+        with _client(engine, surface="chat").stream(
+            "POST",
+            "/v1/chat/completions",
+            json=_chat_body(reasoning_effort="high", stream=True),
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        assert "data: [DONE]" in body
+        assert engine.stream_kwargs.get("chat_template_kwargs") == {
+            "reasoning_effort": "xhigh"
+        }
+        assert "reasoning_budget_logits_processor" not in engine.stream_kwargs
+        assert _chat_cap_probe == [None]
+
+    def test_responses_stream_forwards_native_level(self, _rate_limiter_state):
+        engine = _RouteEngine(QWEN38_TEMPLATE)
+        with _client(engine, surface="responses").stream(
+            "POST",
+            "/v1/responses",
+            json=_responses_body(reasoning={"effort": "low"}, stream=True),
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        assert "response.completed" in body
+        assert engine.stream_kwargs.get("chat_template_kwargs") == {
+            "reasoning_effort": "low"
+        }
+        assert "reasoning_budget_logits_processor" not in engine.stream_kwargs
+
+    def test_responses_stream_forwards_client_template_kwargs(
+        self, _rate_limiter_state
+    ):
+        engine = _RouteEngine(ENABLE_THINKING_ONLY_TEMPLATE)
+        with _client(engine, surface="responses").stream(
+            "POST",
+            "/v1/responses",
+            json=_responses_body(
+                chat_template_kwargs={"custom_flag": True}, stream=True
+            ),
+        ) as resp:
+            assert resp.status_code == 200
+            "".join(resp.iter_text())
+        assert (
+            engine.stream_kwargs.get("chat_template_kwargs", {}).get("custom_flag")
+            is True
+        )
