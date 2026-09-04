@@ -1171,14 +1171,19 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
 #     exactly when the level matters) — and never enters loops, macros, call
 #     blocks or any other deferred / possibly-zero-iteration scope;
 #   * ``<var>`` is ``reasoning_effort`` itself or a name assigned earlier on
-#     that path from an expression referencing it (Qwen3.8's
-#     ``resolved_reasoning_effort``). A later assignment that does not
-#     reference a derived name — anywhere, including a sibling ``if`` body,
-#     which leaks in Jinja — forgets the name for good;
-#   * the test is ``{% if <var> not in ('a', 'b') %}``, possibly as a disjunct
-#     of an ``or`` (Hy3 prefixes ``not reasoning_effort is defined or``; the
-#     branch is entered whenever the membership fails) but never under
-#     ``and`` or ``not``, which would make the rejection conditional;
+#     that path *value-preservingly* from it — a bare name or a
+#     ``default`` / ``trim`` / ``lower`` / ``string`` filter chain (Qwen3.8's
+#     ``resolved_reasoning_effort = reasoning_effort|default('xhigh')``); a
+#     comparison or conditional remap moves the value into another domain.
+#     Any other assignment to the name — anywhere on the path, including a
+#     sibling ``if`` body, which leaks in Jinja — forgets it for good;
+#   * branches whose own test, or a preceding sibling test, references a
+#     derived name are path-constrained by the effort value and not searched;
+#   * the test is ``{% if <var> not in ('a', 'b') %}``, alone or ``or``-ed only
+#     with definedness guards on the same variable (Hy3's ``not
+#     reasoning_effort is defined or …``) — never under ``and`` / ``not`` and
+#     never with an unrelated disjunct that could enter the block for a valid
+#     value;
 #   * the block body — at its top level — is a bare ``{{ raise_exception(...) }}``
 #     (Qwen3.8; a conditional expression does not count) or re-assigns
 #     ``<var>`` to a literal *from that same set* (Hy3's ``'no_think'``).
@@ -1227,27 +1232,76 @@ def _references_any(expr, names: set[str], nodes) -> bool:
     return any(name.name in names for name in expr.find_all(nodes.Name))
 
 
-def _not_in_memberships(expr, nodes):
-    """Yield every ``<x> not in <y>`` Compare that, when true, guarantees the
-    branch is entered: the test itself or a disjunct of an ``or``. ``and``
-    and ``not`` are not looked through (they make the rejection conditional
-    or invert it)."""
-    if isinstance(expr, nodes.Or):
-        yield from _not_in_memberships(expr.left, nodes)
-        yield from _not_in_memberships(expr.right, nodes)
-    elif (
-        isinstance(expr, nodes.Compare)
-        and len(expr.ops) == 1
-        and expr.ops[0].op == "notin"
-    ):
-        yield expr
+#: Filters that hand the value through unchanged for our purposes (the OpenAI
+#: effort names are lowercase ASCII words): ``x|default('xhigh')`` (Qwen3.8),
+#: ``x|trim``, ``x|lower``, ``x|string``. Anything else — a comparison, a
+#: conditional remap, ``replace`` — moves the value into another domain, so a
+#: set validated against *that* says nothing about ``reasoning_effort``.
+_VALUE_PRESERVING_FILTERS = frozenset({"default", "trim", "lower", "string"})
 
 
-def _tested_name(expr, nodes) -> str | None:
-    """The variable a membership test inspects: ``x`` or ``x|default(...)``."""
-    if isinstance(expr, nodes.Filter) and expr.name == "default":
+def _value_preserving_source(expr, nodes) -> str | None:
+    """Name of the variable ``expr`` carries through unchanged, or ``None``."""
+    while isinstance(expr, nodes.Filter) and expr.name in _VALUE_PRESERVING_FILTERS:
         expr = expr.node
     return expr.name if isinstance(expr, nodes.Name) else None
+
+
+def _is_definedness_guard(expr, tested: str, nodes) -> bool:
+    """``not x is defined`` / ``x is undefined`` / ``x is none`` / ``not x`` on
+    the tested variable: a disjunct that can only be true when there is no
+    value to validate, so it never lets a *valid* value into the block."""
+    if isinstance(expr, nodes.Not):
+        inner = expr.node
+        if isinstance(inner, nodes.Name):
+            return inner.name == tested
+        return (
+            isinstance(inner, nodes.Test)
+            and inner.name == "defined"
+            and isinstance(inner.node, nodes.Name)
+            and inner.node.name == tested
+        )
+    return (
+        isinstance(expr, nodes.Test)
+        and expr.name in ("undefined", "none")
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == tested
+    )
+
+
+def _disjuncts(expr, nodes) -> list:
+    if isinstance(expr, nodes.Or):
+        return _disjuncts(expr.left, nodes) + _disjuncts(expr.right, nodes)
+    return [expr]
+
+
+def _guaranteed_membership(test, nodes):
+    """Return the single ``<x> not in <y>`` Compare whose failure alone enters
+    the block: the whole test, or one disjunct of an ``or`` whose every other
+    disjunct is a definedness guard on the same variable (Hy3's ``not
+    reasoning_effort is defined or reasoning_effort not in [...]``). ``and``,
+    ``not`` and unrelated disjuncts make the block reachable for valid values
+    or skippable for invalid ones, so they disqualify the test."""
+    parts = _disjuncts(test, nodes)
+    compares = [
+        part
+        for part in parts
+        if isinstance(part, nodes.Compare)
+        and len(part.ops) == 1
+        and part.ops[0].op == "notin"
+    ]
+    if len(compares) != 1:
+        return None
+    compare = compares[0]
+    tested = _value_preserving_source(compare.expr, nodes)
+    if tested is None:
+        return None
+    for part in parts:
+        if part is compare:
+            continue
+        if not _is_definedness_guard(part, tested, nodes):
+            return None
+    return compare, tested
 
 
 def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
@@ -1294,18 +1348,31 @@ def _body_unconditionally_rejects_or_defaults(
 def _validation_levels(
     if_node, derived: set[str], forgotten: set[str], nodes
 ) -> tuple[str, ...] | None:
-    for compare in _not_in_memberships(if_node.test, nodes):
-        tested = _tested_name(compare.expr, nodes)
-        if tested is None or tested not in derived or tested in forgotten:
-            continue
-        levels = _literal_levels(compare.ops[0].expr, nodes)
-        if levels is None:
-            continue
-        if _body_unconditionally_rejects_or_defaults(
-            if_node.body, tested, levels, nodes
-        ):
-            return levels
+    found = _guaranteed_membership(if_node.test, nodes)
+    if found is None:
+        return None
+    compare, tested = found
+    if tested not in derived or tested in forgotten:
+        return None
+    levels = _literal_levels(compare.ops[0].expr, nodes)
+    if levels is None:
+        return None
+    if _body_unconditionally_rejects_or_defaults(if_node.body, tested, levels, nodes):
+        return levels
     return None
+
+
+def _forget_assignments_in(stmts, forgotten: set[str], nodes) -> None:
+    """Names assigned anywhere inside statements the walk does not enter may
+    have been overwritten (a Jinja ``if`` body leaks): forget them."""
+    for stmt in stmts:
+        assigns = [stmt] if isinstance(stmt, (nodes.Assign, nodes.AssignBlock)) else []
+        assigns.extend(stmt.find_all((nodes.Assign, nodes.AssignBlock)))
+        for assign in assigns:
+            if isinstance(assign.target, nodes.Name):
+                forgotten.add(assign.target.name)
+            else:
+                forgotten.update(n.name for n in assign.target.find_all(nodes.Name))
 
 
 def _walk_for_validation(
@@ -1318,12 +1385,17 @@ def _walk_for_validation(
     shared for the whole walk: once a derived name is overwritten with a
     non-derived value anywhere on the path it never counts again (a Jinja
     ``if`` body leaks its assignments, so the overwrite may have happened).
+    Branches whose own test, or a preceding sibling test, references a
+    derived name are not searched: a validation reached only when
+    ``reasoning_effort`` already failed or passed some other check is a
+    path-constrained one and would misstate the accepted set.
     """
     derived = set(derived)
     for stmt in stmts:
         if isinstance(stmt, nodes.Assign):
             if isinstance(stmt.target, nodes.Name):
-                if _references_any(stmt.node, derived, nodes):
+                source = _value_preserving_source(stmt.node, nodes)
+                if source is not None and source in derived and source not in forgotten:
                     derived.add(stmt.target.name)
                 else:
                     derived.discard(stmt.target.name)
@@ -1340,11 +1412,22 @@ def _walk_for_validation(
             continue
         if isinstance(stmt, nodes.If):
             branches = [stmt] + list(stmt.elif_)
+            effort_dependent = False
             for branch in branches:
-                levels = _validation_levels(branch, derived, forgotten, nodes)
-                if levels:
-                    return levels
-            for block in [branch.body for branch in branches] + [stmt.else_]:
+                if not effort_dependent:
+                    levels = _validation_levels(branch, derived, forgotten, nodes)
+                    if levels:
+                        return levels
+                if _references_any(branch.test, derived - forgotten, nodes):
+                    effort_dependent = True
+            blocks = [branch.body for branch in branches] + [stmt.else_]
+            if effort_dependent:
+                # Path-constrained by the effort value: not searched, but any
+                # assignment inside may still have leaked.
+                for block in blocks:
+                    _forget_assignments_in(block, forgotten, nodes)
+                continue
+            for block in blocks:
                 levels = _walk_for_validation(block, derived, forgotten, nodes)
                 if levels:
                     return levels

@@ -426,13 +426,103 @@ class TestDetectionRequiresAValidationBlock:
         )
         assert detect_native_reasoning_effort_levels(clause) is None
 
-    def test_unrelated_membership_first_in_the_condition_is_skipped(self):
-        """Codex r3: every conjunct/disjunct is inspected, not just the first."""
+    def test_unrelated_disjunct_disqualifies_the_test(self):
+        """Codex r5: ``mode not in ['x'] or …`` enters the block for a valid
+        effort whenever ``mode`` is off, so the set proves nothing."""
         clause = (
             "{%- if mode not in ['x'] or reasoning_effort not in ['a', 'b'] %}"
             "{{ raise_exception('z') }}{%- endif %}"
         )
+        assert detect_native_reasoning_effort_levels(clause) is None
+        clause = (
+            "{%- if debug or reasoning_effort not in ['a', 'b'] %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "guard",
+        [
+            "not reasoning_effort is defined",
+            "reasoning_effort is undefined",
+            "reasoning_effort is none",
+            "not reasoning_effort",
+        ],
+    )
+    def test_definedness_guard_disjunct_is_allowed(self, guard):
+        clause = (
+            "{%- if " + guard + " or reasoning_effort not in ['a', 'b'] %}"
+            "{%- set reasoning_effort = 'a' %}{%- endif %}"
+        )
         assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_definedness_guard_on_another_variable_disqualifies(self):
+        clause = (
+            "{%- if not mode is defined or reasoning_effort not in ['a', 'b'] %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_elif_after_an_effort_dependent_test_is_path_constrained(self):
+        """Codex r5: reached only when ``reasoning_effort != 'x'``, so the
+        accepted set is really ``{'x'} ∪ [...]``."""
+        clause = (
+            "{%- if reasoning_effort == 'x' %}ok"
+            "{%- elif reasoning_effort not in ['a'] %}{{ raise_exception('z') }}"
+            "{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_nested_validation_under_an_effort_dependent_branch_is_skipped(self):
+        clause = (
+            "{%- if reasoning_effort == 'x' %}ok{%- else %}"
+            "{%- if reasoning_effort not in ['a'] %}{{ raise_exception('z') }}"
+            "{%- endif %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_assignment_inside_a_skipped_branch_still_forgets(self):
+        clause = (
+            "{%- set r = reasoning_effort %}"
+            "{%- if reasoning_effort == 'x' %}{%- set r = 'c' %}{%- endif %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "reasoning_effort == 'high'",
+            "'a' if reasoning_effort in ['x'] else 'b'",
+            "reasoning_effort | replace('x', 'a')",
+            "reasoning_effort | upper",
+            "reasoning_effort ~ ''",
+            "[reasoning_effort]",
+        ],
+    )
+    def test_domain_changing_derivation_does_not_count(self, expr):
+        """Codex r5: mentioning ``reasoning_effort`` is not deriving from it."""
+        clause = (
+            "{%- set r = " + expr + " %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "reasoning_effort",
+            "reasoning_effort | default('a')",
+            "reasoning_effort | trim | lower",
+            "reasoning_effort | string",
+        ],
+    )
+    def test_value_preserving_derivation_counts(self, expr):
+        clause = (
+            "{%- set r = " + expr + " %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a",)
 
     def test_conditional_raise_expression_does_not_count(self):
         """Codex r3: ``{{ raise_exception(...) if strict else '' }}`` may
