@@ -138,6 +138,7 @@ _ROSTER_CONTINUE_RE = re.compile(r"^\s*tests/[A-Za-z0-9_./-]+\.py\s*\\\s*$")
 # the line directly above it is another (continuing) roster entry or this
 # opening command.
 _PYTEST_ROSTER_CMD = re.compile(r"^\s*pytest\b.*\\\s*$")
+_PYTEST_ROSTER_STEP = "- name: Run MLX-dependent tests"
 
 
 def _pytest_roster_lines(content: str) -> set[int]:
@@ -152,8 +153,25 @@ def _pytest_roster_lines(content: str) -> set[int]:
     verify each added line against the ACTUAL roster location in the file."""
     roster: set[int] = set()
     lines = content.splitlines()
-    i = 0
-    n = len(lines)
+    # Bind the exception to the one reviewed job step, not merely to any
+    # command spelling ``pytest`` somewhere in ci.yml.
+    step_indexes = [
+        idx for idx, line in enumerate(lines) if line.strip() == _PYTEST_ROSTER_STEP
+    ]
+    if len(step_indexes) != 1:
+        return roster
+    step_start = step_indexes[0]
+    step_indent = len(lines[step_start]) - len(lines[step_start].lstrip())
+    step_end = len(lines)
+    for idx in range(step_start + 1, len(lines)):
+        stripped = lines[idx].lstrip()
+        indent = len(lines[idx]) - len(stripped)
+        if stripped.startswith("- ") and indent <= step_indent:
+            step_end = idx
+            break
+
+    i = step_start + 1
+    n = step_end
     while i < n:
         if _PYTEST_ROSTER_CMD.match(lines[i]):
             command_indent = len(lines[i]) - len(lines[i].lstrip())

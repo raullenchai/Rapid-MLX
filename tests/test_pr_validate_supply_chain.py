@@ -32,8 +32,9 @@ from scripts.pr_validate.steps.supply_chain import (
 # parser tests validate against the same ground truth the step reads at run
 # time. If the roster ever moves, these tests fail loudly and the fixtures
 # must be re-synced.
+_REPO = Path(__file__).resolve().parents[1]
 _WORKFLOW_HEAD = {
-    ".github/workflows/ci.yml": Path(".github/workflows/ci.yml").read_text(),
+    ".github/workflows/ci.yml": (_REPO / ".github/workflows/ci.yml").read_text(),
 }
 
 # The test file an external "I added a test" PR enrolls.
@@ -399,17 +400,18 @@ def test_mid_list_no_backslash_entry_is_not_roster_only():
         "  t:\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        "      - run: |\n"
+        "      - name: Run MLX-dependent tests\n"
+        "        run: |\n"
         "          pytest \\\n"
         "            tests/test_alpha.py \\\n"
         "            tests/test_mid.py\n"  # no backslash
         "            tests/test_beta.py \\\n"
     )
     lines = _pytest_roster_lines(head)
-    # line 9 (the sandwiched no-backslash entry) must NOT count as a genuine
+    # line 10 (the sandwiched no-backslash entry) must NOT count as a genuine
     # roster terminal (it would cut the pytest command and run beta as a
     # separate command).
-    assert 9 not in lines
+    assert 10 not in lines
 
     # End-to-end: adding that no-backslash line at position 9 is not a valid
     # enrollment and stays BLOCKING (the path is new, but the position is not
@@ -428,7 +430,7 @@ def test_mid_list_no_backslash_entry_is_not_roster_only():
         "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
         "--- a/.github/workflows/ci.yml\n"
         "+++ b/.github/workflows/ci.yml\n"
-        "@@ -8 +9,3 @@\n"
+        "@@ -9 +10,2 @@\n"
         "+            tests/test_mid.py\n"
         "             tests/test_beta.py \\\n"
     )
@@ -450,7 +452,8 @@ def test_terminal_roster_entry_without_backslash_is_enrollment():
         "  t:\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        "      - run: |\n"
+        "      - name: Run MLX-dependent tests\n"
+        "        run: |\n"
         "          pytest \\\n"
         "            tests/test_alpha.py \\\n"
         "            tests/test_terminal.py\n"
@@ -460,14 +463,14 @@ def test_terminal_roster_entry_without_backslash_is_enrollment():
         "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
         "--- a/.github/workflows/ci.yml\n"
         "+++ b/.github/workflows/ci.yml\n"
-        "@@ -8 +8,2 @@\n"
+        "@@ -9 +9,2 @@\n"
         "            tests/test_alpha.py \\\n"
         "+            tests/test_appended.py\n"
     )
     lines = _pytest_roster_lines(head)
-    # alpha (line 8) is continuing; terminal (line 9) has no backslash but is
+    # alpha (line 9) is continuing; terminal (line 10) has no backslash but is
     # the genuine end of the literal block.
-    assert 9 in lines
+    assert 10 in lines
 
     # End-to-end: the genuinely terminal no-backslash edit is an enrollment.
     newfile = (
@@ -496,13 +499,15 @@ def test_no_backslash_before_pytest_options_stays_blocking():
 
     path = "tests/test_new_external.py"
     head = (
-        "pytest \\\n"
-        "  tests/test_existing.py \\\n"
-        f"  {path}\n"
-        "  -v --tb=short \\\n"
-        "  --cov=rapid_mlx\n"
+        "- name: Run MLX-dependent tests\n"
+        "  run: |\n"
+        "    pytest \\\n"
+        "      tests/test_existing.py \\\n"
+        f"      {path}\n"
+        "      -v --tb=short \\\n"
+        "      --cov=rapid_mlx\n"
     )
-    line = 3
+    line = 5
     assert line not in _pytest_roster_lines(head)
 
     newfile = (
@@ -517,7 +522,7 @@ def test_no_backslash_before_pytest_options_stays_blocking():
         "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
         "--- a/.github/workflows/ci.yml\n"
         "+++ b/.github/workflows/ci.yml\n"
-        "@@ -2 +3,2 @@\n"
+        "@@ -4 +5,2 @@\n"
         f"+  {path}\n"
         "   -v --tb=short \\\n"
     )
@@ -528,6 +533,20 @@ def test_no_backslash_before_pytest_options_stays_blocking():
     )
     assert roster_only == set()
     assert additions == {}
+
+
+def test_unrelated_pytest_step_in_ci_stays_blocking():
+    """Matching command syntax elsewhere in ci.yml is not privileged."""
+    from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
+
+    head = (
+        "- name: Some other tests\n"
+        "  run: |\n"
+        "    pytest \\\n"
+        "      tests/test_unrelated.py \\\n"
+        "      -q\n"
+    )
+    assert _pytest_roster_lines(head) == set()
 
 
 def test_other_workflow_pytest_roster_stays_blocking():
