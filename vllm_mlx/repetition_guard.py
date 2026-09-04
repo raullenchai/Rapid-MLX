@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
+from typing import cast
 
 import mlx.core as mx
 
@@ -147,13 +148,13 @@ class AgentRepetitionLogitsProcessor:
         self.last_match: RepetitionIntervention | None = None
         self._last_intervention_length = -1
 
-    def __call__(self, _tokens: mx.array, logits: mx.array) -> mx.array:
+    def _apply(self, history: Sequence[int], logits: mx.array) -> mx.array:
         if self.interventions >= self.max_interventions:
             return logits
-        history_length = len(self.output_token_ids)
+        history_length = len(history)
         if history_length == self._last_intervention_length:
             return logits
-        match = predict_repeated_token_suffix(self.output_token_ids)
+        match = predict_repeated_token_suffix(history)
         if match is None:
             return logits
         token_id = match.blocked_token_id
@@ -164,3 +165,39 @@ class AgentRepetitionLogitsProcessor:
         self._last_intervention_length = history_length
         token_mask = mx.arange(logits.shape[-1]) == token_id
         return mx.where(token_mask[None, :], -mx.inf, logits)
+
+    def __call__(self, _tokens: mx.array, logits: mx.array) -> mx.array:
+        """Apply against scheduler-committed output during ordinary decode."""
+
+        return self._apply(self.output_token_ids, logits)
+
+    def mtp_apply(self, tentative_token_ids: mx.array, logits: mx.array) -> mx.array:
+        """Apply against committed output plus one tentative MTP prefix.
+
+        The generator passes only draft tokens preceding the position being
+        sampled.  Keeping the committed list scheduler-owned avoids treating a
+        repeated user prompt as generated output.  The common path returns
+        before materializing MLX tokens: no supported loop can arm below 48
+        output tokens with the guard's production thresholds.
+        """
+
+        tentative_count = int(tentative_token_ids.size)
+        if len(self.output_token_ids) + tentative_count < 48:
+            return logits
+        tentative = cast(list[int], tentative_token_ids.tolist())
+        return self._apply([*self.output_token_ids, *tentative], logits)
+
+    def mtp_snapshot_state(
+        self,
+    ) -> tuple[int, RepetitionIntervention | None, int]:
+        """Return all mutable state owned by speculative verification."""
+
+        return self.interventions, self.last_match, self._last_intervention_length
+
+    def mtp_restore_state(
+        self,
+        state: tuple[int, RepetitionIntervention | None, int],
+    ) -> None:
+        """Restore a previously captured speculative boundary."""
+
+        self.interventions, self.last_match, self._last_intervention_length = state

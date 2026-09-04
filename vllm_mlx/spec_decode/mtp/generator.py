@@ -500,11 +500,41 @@ def mtp_generate_step(
         kv_bits=kv_bits,
     )
 
-    def _process_and_sample(tokens, logits, xtc_draw=None):
+    transactional_processors = tuple(
+        processor
+        for processor in (logits_processors or ())
+        if callable(getattr(processor, "mtp_snapshot_state", None))
+        and callable(getattr(processor, "mtp_restore_state", None))
+        and callable(getattr(processor, "mtp_apply", None))
+    )
+    transactional_processor_ids = {
+        id(processor) for processor in transactional_processors
+    }
+
+    def _snapshot_processor_state():
+        return tuple(
+            (processor, processor.mtp_snapshot_state())
+            for processor in transactional_processors
+        )
+
+    def _restore_processor_state(snapshot) -> None:
+        for processor, state in snapshot:
+            processor.mtp_restore_state(state)
+
+    def _process_and_sample(tokens, logits, xtc_draw=None, *, tentative_tokens=None):
         if logits_processors:
             logits = logits[None]
             for processor in logits_processors:
-                logits = processor(tokens, logits)
+                mtp_apply = getattr(processor, "mtp_apply", None)
+                if id(processor) in transactional_processor_ids:
+                    tentative = (
+                        tentative_tokens
+                        if tentative_tokens is not None
+                        else mx.array([], dtype=mx.uint32)
+                    )
+                    logits = mtp_apply(tentative, logits)
+                else:
+                    logits = processor(tokens, logits)
             logits = logits.squeeze(0)
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         if _filter_chain:
@@ -614,8 +644,16 @@ def mtp_generate_step(
             if mc.is_trimmable():
                 mc.trim(n_to_drop)
 
-    def _step_backbone(yy, prev, n_predict=1, n_confirmed=0, xtc_draw=None):
-        """Run backbone on ``yy`` and return (tokens, logprobs, accept_lps, hidden, prev)."""
+    def _step_backbone(
+        yy,
+        prev,
+        n_predict=1,
+        n_confirmed=0,
+        xtc_draw=None,
+        *,
+        capture_processor_states=False,
+    ):
+        """Run backbone and optionally retain each processor position boundary."""
         with mx.stream(generation_stream):
             logits, hidden = model(
                 yy[None],
@@ -628,6 +666,7 @@ def mtp_generate_step(
             toks: list = []
             lps: list = []
             accept_lps: list = []
+            processor_states: list = []
             for i in range(n_predict):
                 if logits_processors:
                     prev = (
@@ -638,20 +677,36 @@ def mtp_generate_step(
                 # Shared XTC draw only for position 0 (verify position).
                 draw = xtc_draw if i == 0 else None
                 tok, lp, alp = _process_and_sample(
-                    prev, logits[:, i, :].squeeze(0), draw
+                    prev,
+                    logits[:, i, :].squeeze(0),
+                    draw,
+                    # ``yy[0]`` is the last committed token. Positions after
+                    # it are the tentative prefix visible at verify row i.
+                    tentative_tokens=yy[1 : i + 1],
                 )
                 toks.append(tok)
                 lps.append(lp)
                 accept_lps.append(alp)
+                if capture_processor_states:
+                    processor_states.append(_snapshot_processor_state())
             return (
                 mx.stack(toks),
                 mx.stack(lps),
                 mx.stack(accept_lps),
                 hidden,
                 prev,
+                processor_states,
             )
 
-    def _step_mtp(hidden_last, main_tok, prev, *, cache_commit=None, want_hidden=False):
+    def _step_mtp(
+        hidden_last,
+        main_tok,
+        prev,
+        *,
+        cache_commit=None,
+        want_hidden=False,
+        tentative_tokens=None,
+    ):
         """Run MTP head and return draft state.
 
         Returns ``(draft_tok, draft_lp, draft_accept_lp, xtc_draw, drafter_hidden_or_None)``.
@@ -704,7 +759,10 @@ def mtp_generate_step(
                 tokens_for_proc = prev
             xtc_draw = _uniform() if _xtc_cell is not None else None
             draft_tok, draft_lp, draft_accept_lp = _process_and_sample(
-                tokens_for_proc, mtp_logits, xtc_draw
+                tokens_for_proc,
+                mtp_logits,
+                xtc_draw,
+                tentative_tokens=tentative_tokens,
             )
         return draft_tok, draft_lp, draft_accept_lp, xtc_draw, drafter_hidden_last
 
@@ -764,6 +822,7 @@ def mtp_generate_step(
         # see ``prev + d2`` (omitting both), which weakens repetition/presence/
         # frequency penalties precisely when K > 1.
         chain_prev = prev
+        chain_tentative = mx.array([], dtype=mx.uint32)
         cur_hidden = hidden_last
         cur_commit = cache_commit
         for _k in range(K):
@@ -773,6 +832,7 @@ def mtp_generate_step(
                 chain_prev,
                 cache_commit=cur_commit,
                 want_hidden=_mtp_supports_hidden and K >= 2,
+                tentative_tokens=chain_tentative,
             )
             # Keep the draft chain on-device.  ``prev_tok`` is consumed as an
             # MLX array by the next head call; forcing ``mx.eval`` here adds
@@ -789,6 +849,7 @@ def mtp_generate_step(
                     if chain_prev is not None
                     else prev_tok.reshape(-1)
                 )
+                chain_tentative = mx.concatenate([chain_tentative, d_tok.reshape(-1)])
             prev_tok = d_tok
             # Drafter-hidden cascade: swap in the drafter's own
             # ``post_projection(h)`` for the next iteration's hidden
@@ -951,7 +1012,13 @@ def mtp_generate_step(
         """``_step_mtp_chain`` with its wall time held for the next round."""
         nonlocal pending_draft_ms
         _t0 = time.perf_counter()
-        result = _step_mtp_chain(*args, **kwargs)
+        boundary = _snapshot_processor_state()
+        try:
+            result = _step_mtp_chain(*args, **kwargs)
+        finally:
+            # Draft-side interventions shape q(d), but only target-verified,
+            # user-delivered positions may advance processor state.
+            _restore_processor_state(boundary)
         elapsed = time.perf_counter() - _t0
         pending_draft_ms = elapsed * 1000.0
         _timing_add("draft_seconds", elapsed)
@@ -1006,7 +1073,7 @@ def mtp_generate_step(
             # Round K=0 (either bootstrap or a park). Plain backbone
             # forward emits ONE committed token.
             # -------------------------------------------------------
-            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
+            toks, lps, accept_lps, hidden, prev_tokens, _ = _step_backbone(
                 y, prev_tokens, n_predict=1
             )
             mx.eval(toks)
@@ -1097,15 +1164,31 @@ def mtp_generate_step(
             )
             y_with_drafts = mx.concatenate([y, drafts_arr])
 
-            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
-                y_with_drafts,
-                prev_tokens,
-                n_predict=k_len + 1,
-                # Any positive value activates per-position SSM snapshots;
-                # k_len preserves the legacy K=1 boundary semantics too.
-                n_confirmed=k_len,
-                xtc_draw=first_xtc_draw,
-            )
+            processor_boundary = _snapshot_processor_state()
+            try:
+                (
+                    toks,
+                    lps,
+                    accept_lps,
+                    hidden,
+                    prev_tokens,
+                    processor_position_states,
+                ) = _step_backbone(
+                    y_with_drafts,
+                    prev_tokens,
+                    n_predict=k_len + 1,
+                    # Any positive value activates per-position SSM snapshots;
+                    # k_len preserves the legacy K=1 boundary semantics too.
+                    n_confirmed=k_len,
+                    xtc_draw=first_xtc_draw,
+                    capture_processor_states=True,
+                )
+            except BaseException:
+                _restore_processor_state(processor_boundary)
+                raise
+            # Verification computes every target row eagerly, but none is
+            # committed until its token is actually delivered below.
+            _restore_processor_state(processor_boundary)
 
             # One independent uniform per speculative position. Reusing one
             # scalar across K positions preserves each isolated acceptance
@@ -1190,6 +1273,7 @@ def mtp_generate_step(
                     _rollback_verify_round(
                         k_len - accepted_count, verify_size=k_len + 1
                     )
+                _restore_processor_state(processor_boundary)
                 raise
 
             # Bump attempts by K (one per draft position considered).
@@ -1241,6 +1325,7 @@ def mtp_generate_step(
 
             # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):
+                _restore_processor_state(processor_position_states[i])
                 accept_counter.record_accept(tokens_saved=1)
                 ntoks += 1
                 draft_id = int(draft_ids[i])
@@ -1271,6 +1356,7 @@ def mtp_generate_step(
                     _sync_prompt_lookup_history(hidden, y, drafts_arr, accepted_count)
                 ntoks += 1
                 _remember_generated(bonus_id)
+                _restore_processor_state(processor_position_states[k_len])
                 yield bonus_id, lps[k_len], False
                 if ntoks >= max_tokens:
                     return
@@ -1301,6 +1387,7 @@ def mtp_generate_step(
 
                 ntoks += 1
                 _remember_generated(verify_tok_id)
+                _restore_processor_state(processor_position_states[accepted_count])
                 # ``lps[position]`` is the full target-model logprob row, not
                 # a scalar attached to the independently pre-sampled
                 # ``toks[position]``.  Indexing this row later with the emitted

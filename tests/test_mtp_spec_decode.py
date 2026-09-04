@@ -2763,6 +2763,159 @@ def test_generator_fixed_k3_accepts_three_drafts_in_one_verify():
     assert snap.accepts == 3
 
 
+@pytest.mark.parametrize(
+    ("max_k", "committed", "drafts", "targets", "intervention_position"),
+    [
+        (2, list(range(24)) + list(range(23)), [23, 0], [23, 0, 7], 1),
+        (3, list(range(24)) + list(range(22)), [22, 23, 0], [22, 23, 0, 7], 2),
+    ],
+)
+def test_generator_commits_tool_guard_state_only_as_tokens_are_delivered(
+    max_k, committed, drafts, targets, intervention_position
+):
+    """K=2/K=3 verification cannot commit a not-yet-delivered guard hit."""
+    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    near_loop = list(range(24)) + list(range(25 - max_k))
+
+    def start():
+        history = list(committed)
+        processor = AgentRepetitionLogitsProcessor(history)
+        gen = mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, *targets], drafts),
+            max_tokens=max_k + 2,
+            max_k=max_k,
+            logits_processors=[processor],
+            initial_tokens=[1],
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+        assert next(gen)[0] == 7
+        # The first sample above is committed before the generator is resumed.
+        history[:] = near_loop
+        return gen, processor
+
+    # Cancelling before the later intervention position must leave the guard
+    # exactly at the last delivered prefix.
+    cancelled, cancelled_processor = start()
+    for position in range(intervention_position):
+        token, _lp, from_draft = next(cancelled)
+        assert token == drafts[position]
+        assert from_draft is True
+        assert cancelled_processor.interventions == 0
+    cancelled.close()
+    assert cancelled_processor.interventions == 0
+
+    # Delivering that same position commits the intervention exactly once.
+    gen, processor = start()
+    for _ in range(intervention_position):
+        next(gen)
+    token, _lp, from_draft = next(gen)
+    assert from_draft is True
+    assert token != 0  # the loop-extending target/draft token was masked
+    assert processor.interventions == 1
+
+
+def test_generator_rejection_discards_later_tool_guard_state():
+    """A guard hit on a rejected K=3 suffix never consumes its safety cap."""
+    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    pattern = list(range(24))
+    committed = pattern + pattern[:-2]
+    processor = AgentRepetitionLogitsProcessor(committed)
+    # Target rejects d1 immediately, but its batched rows still evaluate the
+    # later d1+d2 prefix that would otherwise arm the repetition guard.
+    gen = mtp_generate_step(
+        mx.array([1], dtype=mx.uint32),
+        _MockedQwen35Model([7, 9, 23, 0, 7], [22, 23, 0]),
+        max_tokens=2,
+        max_k=3,
+        logits_processors=[processor],
+        initial_tokens=[1],
+        disable_auto_k=True,
+        accept_counter=MTPAcceptCounter(),
+    )
+
+    assert next(gen)[0] == 7
+    token, _lp, from_draft = next(gen)
+    assert (token, from_draft) == (9, False)
+    assert processor.interventions == 0
+
+
+def test_tool_guard_ordinary_decode_still_uses_committed_output():
+    """The refactored ordinary entry point retains its scheduler-owned history."""
+    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+    pattern = list(range(12))
+    processor = AgentRepetitionLogitsProcessor(pattern * 5)
+    logits = processor(mx.array([999]), mx.zeros((1, 32)))
+    mx.eval(logits)
+    assert float(logits[0, pattern[0]].item()) == float("-inf")
+
+
+def test_generator_restores_tool_guard_state_when_target_processor_raises():
+    """A verify-time processor exception restores the pre-proposal boundary."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class FusedDraftModel(_MockedQwen35Model):
+        def mtp_greedy(self, hidden, next_token_ids, mtp_cache):
+            del mtp_cache
+            batch, positions = next_token_ids.shape
+            tokens = []
+            for _ in range(positions):
+                tokens.append(self._mtp[self._mtp_cursor])
+                self._mtp_cursor += 1
+            return (
+                mx.array([tokens] * batch, dtype=mx.uint32),
+                mx.zeros((batch, positions, hidden.shape[-1])),
+            )
+
+    class RaisingTransactionalProcessor:
+        def __init__(self):
+            self.state = 0
+            self.armed = False
+
+        def __call__(self, _tokens, logits):
+            return logits
+
+        def mtp_apply(self, _tentative, logits):
+            self.state += 1
+            if self.armed:
+                raise RuntimeError("sentinel target processor failure")
+            return logits
+
+        def mtp_snapshot_state(self):
+            return self.state
+
+        def mtp_restore_state(self, state):
+            self.state = state
+
+    processor = RaisingTransactionalProcessor()
+    gen = mtp_generate_step(
+        mx.array([1], dtype=mx.uint32),
+        FusedDraftModel([7, 11, 13], [11]),
+        max_tokens=3,
+        max_k=1,
+        logits_processors=[processor],
+        initial_tokens=[1],
+        disable_auto_k=True,
+        accept_counter=MTPAcceptCounter(),
+    )
+
+    assert next(gen)[0] == 7
+    assert processor.state == 1
+    processor.armed = True
+    with pytest.raises(RuntimeError, match="sentinel target processor failure"):
+        next(gen)
+    assert processor.state == 1
+
+
 def test_quantized_argmax_matches_materialized_qlinear_logits():
     """The fused greedy kernel must select the exact qlinear argmax."""
     import mlx.nn as nn

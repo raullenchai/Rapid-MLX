@@ -1275,11 +1275,12 @@ def _install_mtp_vendored(
       through because the vendored generator does not yet accept a request-
       local PRNG key.
 
-    * The standard repetition / presence / frequency penalty processors are
-      passed through with the exact mlx-lm token history at the handoff seam.
-      Custom, grammar, tool, and reasoning-budget processors still fall
-      through because their mutable state needs an explicit speculative
-      rollback contract.
+    * Standard repetition / presence / frequency penalties use the exact
+      mlx-lm token history at the handoff seam. Ordinary tool requests may
+      additionally carry Rapid's agent repetition guard: it owns an explicit
+      tentative-prefix snapshot/restore contract. Grammar, tool-bias,
+      reasoning-budget, suppression, and unknown custom processors still fall
+      through.
 
     * On the very first ``_step`` call we short-circuit and return the
       token that mlx-lm's fresh ``GenerationBatch.__init__._step()``
@@ -1516,10 +1517,9 @@ def _install_mtp_vendored(
 
         The scheduler owns the authoritative ``SamplingParams`` object and the
         exact per-row processor list installed into mlx-lm. Only processors
-        explicitly marked as the standard penalty list at request insertion
-        may cross this seam; identity comparison prevents a future custom
-        processor with the same list length from being mistaken for a safe
-        one.
+        explicitly admitted at request insertion may cross this seam; identity
+        comparison prevents a future custom processor with the same list
+        length from being mistaken for a safe one.
         """
         if uid_to_request_id is None or requests is None:
             return None, "request metadata is unavailable"
@@ -8012,6 +8012,7 @@ class Scheduler:
             # hard-stop below.  The processor is deliberately tool-request
             # only and masks a single predicted token only after the output is
             # one full copy short of the conservative abort threshold.
+            _loop_breaker = None
             if request.has_tools:
                 _loop_breaker = AgentRepetitionLogitsProcessor(request.output_token_ids)
                 request._repetition_logits_processor = _loop_breaker
@@ -8053,10 +8054,16 @@ class Scheduler:
                     frequency_context_size=4096,
                 )
                 request_processors.extend(penalty_processors)
-            # MTP may reuse only this exact standard-penalty list. Identity
-            # (not processor count or type-name heuristics) is the fail-closed
-            # contract at the GenerationBatch handoff.
-            request._mtp_safe_logits_processors = tuple(penalty_processors)
+            # MTP may reuse only this exact ordered list.  Standard penalties
+            # are history-derived, and the tool repetition guard exposes an
+            # explicit tentative-prefix snapshot/restore contract. Identity
+            # (not processor count or type-name heuristics) keeps grammar,
+            # reasoning, suppression, tool-bias, and unknown processors
+            # fail-closed at the GenerationBatch handoff.
+            request._mtp_safe_logits_processors = tuple(
+                ([_loop_breaker] if _loop_breaker is not None else [])
+                + penalty_processors
+            )
             # Generation-time thinking-token budget (force-close </think>).
             # Appended LAST so its force-close mask (all but </think> -> -inf)
             # has final say over any penalty/grammar bias in the same step;
