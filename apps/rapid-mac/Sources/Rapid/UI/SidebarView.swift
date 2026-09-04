@@ -48,6 +48,10 @@ struct SidebarView: View {
     /// Optional in isolated snapshot fixtures; the shipping ContentView passes
     /// it so residency and the enforced memory ceiling remain visible globally.
     var server: ServerManager? = nil
+    /// Test seam for driving the real accessibility control without spawning a
+    /// sidecar. Production leaves this nil and uses ServerManager's guarded
+    /// resident-pool unload path.
+    var onUnloadResidentModels: (() async -> Void)? = nil
 
     /// The "now" the date buckets are computed against. Rolled forward by
     /// ``dayBoundaryTicker`` at each midnight so an open, untouched sidebar
@@ -114,6 +118,11 @@ struct SidebarView: View {
     /// the opposite of Archived, which is collapsed by default precisely
     /// because its whole purpose is getting rows out of the way.
     @State private var collapsedFolderIDs: Set<UUID> = []
+
+    /// Covers the short fresh-residency check before ServerManager enters its
+    /// own stop state, keeping repeated eject clicks out and making that work
+    /// visible instead of leaving an apparently inert button.
+    @State private var isUnloadingResidentModels = false
 
     /// The folder-name prompt currently on screen, if any.
     ///
@@ -465,6 +474,8 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("Sidebar.Residency")
 
             HStack(spacing: RapidTheme.Space.xs) {
                 if snapshot.memoryLimitBytes > 0 {
@@ -531,7 +542,7 @@ struct SidebarView: View {
     ) -> some View {
         let hasActiveRequests = snapshot.models.contains { $0.activeRequests > 0 }
         let disabled = Self.residentUnloadDisabled(
-            isOperating: server.isOperating,
+            isOperating: server.isOperating || isUnloadingResidentModels,
             chatIsStreaming: chat.isStreaming,
             hasActiveRequests: hasActiveRequests
         )
@@ -541,10 +552,19 @@ struct SidebarView: View {
         )
 
         return Button {
-            Task { await server.stop() }
+            Task {
+                guard !isUnloadingResidentModels else { return }
+                isUnloadingResidentModels = true
+                defer { isUnloadingResidentModels = false }
+                if let onUnloadResidentModels {
+                    await onUnloadResidentModels()
+                } else {
+                    _ = await server.unloadResidentModelsIfIdle()
+                }
+            }
         } label: {
             Group {
-                if server.isOperating {
+                if server.isOperating || isUnloadingResidentModels {
                     ProgressView()
                         .controlSize(.mini)
                 } else {
@@ -560,7 +580,7 @@ struct SidebarView: View {
         .disabled(disabled)
         .help(
             Self.residentUnloadHelp(
-                isOperating: server.isOperating,
+                isOperating: server.isOperating || isUnloadingResidentModels,
                 hasActiveResponse: chat.isStreaming || hasActiveRequests,
                 enabledLabel: label
             )

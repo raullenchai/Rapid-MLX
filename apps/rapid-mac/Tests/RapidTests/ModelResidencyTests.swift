@@ -233,6 +233,38 @@ struct ModelResidencyTests {
         #expect(ModelSwitchConfirmationPreference.isEnabled(in: defaults))
     }
 
+    @Test("Resident unload refreshes request state and refuses a busy server")
+    func residentUnloadRefusesFreshBusyState() async {
+        var client = ServerResidencyClient()
+        client.session = BusyResidencyProtocol.session()
+        let server = ServerManager(
+            testingState: .ready(alias: "current-model"),
+            residency: .empty
+        )
+        server._testSetResidencyClient(client)
+        server._testInstallChild(ProcessGroupChild.testStub())
+
+        #expect(await server.unloadResidentModelsIfIdle() == .busy)
+        #expect(server.state == .ready(alias: "current-model"))
+        #expect(server.residency.activeRequests(for: "current-model") == 1)
+    }
+
+    @Test("Resident unload stops after a fresh idle response")
+    func residentUnloadStopsFreshIdleServer() async {
+        var client = ServerResidencyClient()
+        client.session = IdleResidencyProtocol.session()
+        let server = ServerManager(
+            testingState: .ready(alias: "current-model"),
+            residency: .empty
+        )
+        server._testSetResidencyClient(client)
+        server._testInstallChild(ProcessGroupChild.testStub())
+
+        #expect(await server.unloadResidentModelsIfIdle() == .stopped)
+        #expect(server.state == .stopped)
+        #expect(server.residency.activeRequests(for: "current-model") == 0)
+    }
+
     @Test(
         "Cancelling an active-request model switch leaves the live model untouched",
         .timeLimit(.minutes(1))
@@ -947,6 +979,29 @@ private final class BusyResidencyProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         let payload = #"{"memory_limit_bytes":10,"memory_used_bytes":1,"memory_available_bytes":9,"idle_ttl_seconds":60,"loads_total":1,"evictions_total":0,"models":[{"id":"current-model","model_path":"test/current-model","aliases":[],"modality":"text","state":"resident","pinned":true,"primary":true,"active_requests":1,"estimated_bytes":1,"measured_bytes":null,"idle_seconds":0}],"audio_lanes":[]}"#.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class IdleResidencyProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [IdleResidencyProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override func startLoading() {
+        let payload = #"{"memory_limit_bytes":10,"memory_used_bytes":1,"memory_available_bytes":9,"idle_ttl_seconds":60,"loads_total":1,"evictions_total":0,"models":[{"id":"current-model","model_path":"test/current-model","aliases":[],"modality":"text","state":"resident","pinned":true,"primary":true,"active_requests":0,"estimated_bytes":1,"measured_bytes":null,"idle_seconds":0}],"audio_lanes":[]}"#.data(using: .utf8)!
         let response = HTTPURLResponse(
             url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
         )!
