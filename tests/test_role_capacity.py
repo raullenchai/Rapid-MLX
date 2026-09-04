@@ -190,6 +190,17 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
         # cannot prove completeness -> fail closed.
         revisions = (_Rev(refs={"main"}, files=(("model.safetensors", 9900),)),)
 
+    class _ShardedGgufNoIndexRepo:
+        repo_id = "c/ShardedGgufModel"
+        # A SPLIT GGUF (round-16) without a readable shard set: a single
+        # split shard must not be charged as the whole checkpoint.
+        revisions = (
+            _Rev(
+                refs={"main"},
+                files=(("model-00001-of-00002.gguf", 6000),),
+            ),
+        )
+
     class _ShardedCompleteRepo:
         repo_id = "c/ShardedCompleteModel"
         # Multi-shard download, all shards present per the index.
@@ -250,6 +261,7 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
             _CompleteRepo,
             _OldCompletedPlusPartialRepo,
             _BareSafeTensorNoIndexRepo,
+            _ShardedGgufNoIndexRepo,
             _ShardedCompleteRepo,
             _ShardedIncompleteRepo,
             _NonDefaultBranchRepo,
@@ -279,3 +291,5 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     assert "c/shardednoindexmodel" not in index
     # A bare .safetensors with NO index cannot be proven complete -> fail closed.
     assert "c/baresafetensormodel" not in index
+    # A SPLIT GGUF without a proven full shard set fails closed.
+    assert "c/shardedggufmodel" not in index

@@ -283,15 +283,19 @@ async def _release_speech_input_role_for_alignment(manager):
     """Release a resident ``speech-input`` reservation so alignment admission
     (mutually exclusive with the dictation lane) does not double-charge.
 
-    Returns the released reservation's ``(model_id, reserved_bytes)`` so the
-    caller can restore it transactionally if the flow aborts before the ASR
-    engine is actually evicted, or ``None`` when no speech-input role was
-    reserved.
+    Returns the released reservation's ``(model_id, reserved_bytes,
+    capacity_source)`` so the caller can restore it transactionally — with its
+    original metadata — if the flow aborts before the ASR engine is actually
+    evicted, or ``None`` when no speech-input role was reserved.
     """
     snapshot = manager.snapshot()
     for entry in snapshot.get("roles", []):
         if entry.get("role") == "speech-input":
-            prev = (entry.get("model"), entry.get("reserved_bytes", 0))
+            prev = (
+                entry.get("model"),
+                entry.get("reserved_bytes", 0),
+                entry.get("capacity_source", "catalog"),
+            )
             await manager.release_role("speech-input")
             return prev
     return None
@@ -301,15 +305,15 @@ async def _restore_speech_input_role_for_alignment(manager, prev) -> None:
     """Restore the released speech-input reservation (if any) when the ASR
     engine was NOT evicted, so the still-resident engine stays accounted.
 
-    ``prev`` is the ``(model_id, reserved_bytes)`` returned by the release
-    helper (or ``None``). No-op when nothing was captured or the ASR engine was
-    already dropped.
+    ``prev`` is the ``(model_id, reserved_bytes, capacity_source)`` returned by
+    the release helper (or ``None``). No-op when nothing was captured or the
+    ASR engine was already dropped.
     """
     if prev is None or _stt_engine is None:
         # Either nothing to restore, or the ASR engine was already evicted (the
         # aligner load discarded it) so the reservation must stay retired.
         return
-    prev_model, prev_bytes = prev
+    prev_model, prev_bytes, prev_source = prev
     from ..runtime.resident_models import ResidentModelError
 
     try:
@@ -317,7 +321,7 @@ async def _restore_speech_input_role_for_alignment(manager, prev) -> None:
             role="speech-input",
             model_id=prev_model,
             requested_bytes=prev_bytes,
-            capacity_source="catalog",
+            capacity_source=prev_source,
         ):
             pass
     except ResidentModelError:

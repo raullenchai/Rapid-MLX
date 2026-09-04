@@ -175,9 +175,10 @@ def _revision_is_complete(rev) -> bool:
             return False
         return True
 
-    # A shard-PATTERN weight without an index is an incomplete multi-shard
-    # download — never charge a single shard as the whole checkpoint.
-    shard_pat = re.compile(r".*-\d{5}-of-\d{5}\.(safetensors|bin)$")
+    # A shard-PATTERN weight (safetensors, bin, OR split GGUF) without a readable
+    # index is an incomplete multi-shard download — never charge a single shard
+    # as the whole checkpoint.
+    shard_pat = re.compile(r".*-\d{5}-of-\d{5}\.(safetensors|bin|gguf)$")
     if any(shard_pat.match(name) for name in files):
         logger.debug(
             "snapshot has sharded weight file(s) but no readable shard index; "
@@ -186,11 +187,11 @@ def _revision_is_complete(rev) -> bool:
         return False
 
     # With NO shard index, the only layout we can charge with confidence is a
-    # single-file GGUF weight (GGUF has no sharding / companion-weight concept).
-    # A bare ``.safetensors``/``.bin``/``.npz`` -- even non-shard-pattern -- could
-    # be one ordinarily-named weight of several in a selective download, so we
-    # fail closed unless an index proves the full set (round-15).
-    return any(name.endswith((".gguf",)) for name in files)
+    # NON-SPLIT single-file GGUF weight (split GGUFs named ``-NNNNN-of-MMMMM``
+    # are excluded above). A bare ``.safetensors``/``.bin``/``.npz`` -- even
+    # non-shard-pattern -- could be one ordinarily-named weight of several in a
+    # selective download, so we fail closed unless an index proves the full set.
+    return any(name.endswith(".gguf") for name in files)
 
 
 def _default_completed_revision(revisions):
