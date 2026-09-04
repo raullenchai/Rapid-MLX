@@ -2019,10 +2019,7 @@ class ResidentModelManager:
                 # back to load().
                 first_unretired = index + 1 if retirement_started else index
                 await self._resume_engines(
-                    [
-                        pending.entry.engine
-                        for pending, _ in plan[first_unretired:]
-                    ]
+                    [pending.entry.engine for pending, _ in plan[first_unretired:]]
                 )
                 raise
 

@@ -1997,12 +1997,8 @@ async def test_existing_target_cancel_reopens_unretired_sibling():
     # The old primary is already owned by retirement, but the later sibling
     # stays routable and must be reopened rather than left paused indefinitely.
     assert registry.default_name == "chat-target"
-    assert "chat-primary" not in {
-        model.model_name for model in registry.list_entries()
-    }
-    assert "chat-remaining" in {
-        model.model_name for model in registry.list_entries()
-    }
+    assert "chat-primary" not in {model.model_name for model in registry.list_entries()}
+    assert "chat-remaining" in {model.model_name for model in registry.list_entries()}
     assert remaining_engine.paused is False
 
     primary_engine.stop_release.set()
