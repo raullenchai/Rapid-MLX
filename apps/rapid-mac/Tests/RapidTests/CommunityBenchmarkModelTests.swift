@@ -205,6 +205,39 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Contributor receipt produces the public profile identity")
+    func contributorProfileIdentity() throws {
+        let contributor = CommunityBenchmarkContributor(
+            name: "modest-slate-wombat",
+            tag: "545"
+        )
+
+        #expect(contributor.displayName == "modest-slate-wombat ·545")
+        #expect(
+            contributor.profileURL?.absoluteString
+                == "https://rapidmlx.com/leaderboard/contributors/modest-slate-wombat-545"
+        )
+    }
+
+    @Test("Desktop decodes contributor identity and older anonymous receipts")
+    func contributorReceiptDecoding() throws {
+        let full = try JSONDecoder().decode(
+            CommunityBenchmarkReceipt.self,
+            from: Data(
+                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":false,"accepted_at":"2026-09-01T20:00:00Z","contributor":{"name":"modest-slate-wombat","tag":"545"}}"#.utf8
+            )
+        )
+        #expect(full.contributor?.displayName == "modest-slate-wombat ·545")
+
+        let legacy = try JSONDecoder().decode(
+            CommunityBenchmarkReceipt.self,
+            from: Data(
+                #"{"submission_id":"00000000-0000-4000-8000-000000000001","already_exists":true,"accepted_at":"2026-09-01T20:00:00Z"}"#.utf8
+            )
+        )
+        #expect(legacy.contributor == nil)
+    }
+
     @Test("Benchmark pipe capture bounds stdout heads and stderr tails")
     func boundedPipeCapture() throws {
         let headPipe = Pipe()

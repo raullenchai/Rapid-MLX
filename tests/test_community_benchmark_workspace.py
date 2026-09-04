@@ -907,6 +907,11 @@ def test_share_cli_text_reports_cancel_and_unsaved_existing_acceptance(
     assert community_cli.benchmark_command(args) == 0
     output = capsys.readouterr().out
     assert "already uploaded" in output
+    assert "You contributed as rapid-silver-otter ·abc." in output
+    assert (
+        "https://rapidmlx.com/leaderboard/contributors/rapid-silver-otter-abc"
+        in output
+    )
     assert "local receipt could not be saved" in output
 
 

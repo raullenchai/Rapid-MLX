@@ -112,12 +112,29 @@ private struct CommunityBenchmarkResults: Decodable {
     let receipts: [String: CommunityBenchmarkReceipt]?
 }
 
-private struct CommunityBenchmarkReceipt: Decodable {
+struct CommunityBenchmarkContributor: Decodable, Equatable {
+    let name: String
+    let tag: String
+
+    var displayName: String { "\(name) ·\(tag)" }
+
+    var profileURL: URL? {
+        var components = URLComponents(string: "https://rapidmlx.com")
+        components?.path = "/leaderboard/contributors/\(name)-\(tag)"
+        return components?.url
+    }
+}
+
+struct CommunityBenchmarkReceipt: Decodable, Identifiable {
     let submissionID: String
     let alreadyExists: Bool
     let acceptedAt: String
+    let contributor: CommunityBenchmarkContributor?
+
+    var id: String { submissionID }
 
     enum CodingKeys: String, CodingKey {
+        case contributor
         case submissionID = "submission_id"
         case alreadyExists = "already_exists"
         case acceptedAt = "accepted_at"
@@ -555,6 +572,7 @@ struct CommunityBenchmarkView: View {
     @State private var shareTask: Task<Void, Never>?
     @State private var shareCandidate: CommunityBenchmarkUploadPreview?
     @State private var sharingRunID: String?
+    @State private var shareSuccess: CommunityBenchmarkReceipt?
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
@@ -627,6 +645,51 @@ struct CommunityBenchmarkView: View {
             .padding(24)
             .frame(minWidth: 680, minHeight: 600)
         }
+        .sheet(item: $shareSuccess, content: shareSuccessSheet)
+    }
+
+    private func shareSuccessSheet(_ receipt: CommunityBenchmarkReceipt) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
+            Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
+                .font(.title2.weight(.semibold))
+            if let contributor = receipt.contributor {
+                VStack(spacing: 6) {
+                    Text("Your Community Benchmark identity")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(contributor.displayName)
+                        .font(.system(.headline, design: .monospaced))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+                }
+                if let url = contributor.profileURL {
+                    Link("View my contributions", destination: url)
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+                }
+            } else {
+                Link(
+                    "View Community Benchmark",
+                    destination: URL(string: "https://rapidmlx.com/leaderboard")!
+                )
+                .buttonStyle(.borderedProminent)
+            }
+            Text("Thanks for helping other Mac users choose models with real-world evidence.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Done") { shareSuccess = nil }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+        }
+        .padding(32)
+        .frame(width: 440)
+        .frame(minHeight: 330)
+        .accessibilityIdentifier("CommunityBenchmark.Share.Success")
     }
 
     private var header: some View {
@@ -714,10 +777,22 @@ struct CommunityBenchmarkView: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 5) {
                             Text(result.duration ?? result.outcome.status.capitalized)
-                            if receipts[result.id] != nil {
+                            if let receipt = receipts[result.id] {
                                 Label("Shared", systemImage: "checkmark.circle.fill")
                                     .font(.caption)
                                     .foregroundStyle(.green)
+                                if let contributor = receipt.contributor,
+                                   let url = contributor.profileURL
+                                {
+                                    Link(contributor.displayName, destination: url)
+                                        .font(.caption.monospaced())
+                                        .accessibilityLabel(
+                                            "View contributions by \(contributor.displayName)"
+                                        )
+                                        .accessibilityIdentifier(
+                                            "CommunityBenchmark.Contributor.\(result.id)"
+                                        )
+                                }
                             } else {
                                 Button(sharingRunID == result.id ? "Sharing…" : "Share") {
                                     prepareShare(result)
@@ -833,10 +908,9 @@ struct CommunityBenchmarkView: View {
                         message: "The benchmark was not uploaded."
                     )
                 }
-                if response.receiptSaved {
-                    receipts[preview.runID] = response.receipt
-                } else {
-                    await refreshResults()
+                receipts[preview.runID] = response.receipt
+                shareSuccess = response.receipt
+                if !response.receiptSaved {
                     errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
                 }
             } catch is CancellationError {
