@@ -2850,12 +2850,28 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
     # NEXT TO valid ones the recovery would lift a VALID call's
     # arguments into the broken one (codex r3). Ambiguous cases repair
     # to "{}".
-    recovered = (
+    retrieved = (
         _recover_partial_tool_args(raw_text, expected_name=target)
         if len(broken) == 1 and len(tool_calls or []) == 1
         else None
     )
-    repaired = recovered if recovered is not None else "{}"
+    # #2502: when no object is recoverable from the raw text, the broken call's
+    # ORIGINAL ``arguments`` may itself be a bare scalar the model intended as
+    # the single required argument of the target's object schema (e.g. hermes
+    # emits ``"arguments": "San Francisco"`` for a ``{"city"}: required`` tool).
+    # The scalar-schema salvage maps it onto the required property so a concrete
+    # forced named call yields a valid object instead of collapsing to ``"{}"``
+    # and 422ing. Only unambiguous single-broken-call turns participate.
+    scalar_salvaged = None
+    if retrieved is None and len(broken) == 1:
+        scalar_salvaged = _salvage_forced_scalar_arguments(
+            target, broken[0].function.arguments, tools
+        )
+    repaired = (
+        retrieved
+        if retrieved is not None
+        else (scalar_salvaged if scalar_salvaged is not None else "{}")
+    )
     for tc in broken:
         # Log shape only — tool arguments can carry user data / secrets
         # and must not persist in production logs (codex r2).
@@ -2868,7 +2884,9 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
             len(tc.function.arguments)
             if isinstance(tc.function.arguments, str)
             else "-",
-            "recovered object" if recovered is not None else '"{}"',
+            "recovered object"
+            if retrieved is not None
+            else ("salvaged scalar" if scalar_salvaged is not None else '"{}"'),
         )
         tc.function.arguments = repaired
         err = _forced_synth_schema_error(target, repaired, tools)
@@ -2877,8 +2895,160 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
     return None
 
 
+def _recover_bare_scalar_from_raw(
+    raw_text: str | None, expected_name: str | None = None
+) -> str | None:
+    """Return a JSON-encoded bare scalar when a malformed response carries an
+    ``"arguments":`` value that is a scalar rather than an object (#2502).
+
+    Small models forced to call a single-argument object tool often emit the
+    bare VALUE: ``<tool_call>{"name": "weather", "arguments": "San Francisco"}``
+    or ``... "arguments": 7``. ``_recover_partial_tool_args`` only rescues
+    balanced JSON OBJECTS, so this scalar otherwise degrades to ``"{}"`` and the
+    #1256 gate 422s on the missing required property.
+
+    Bounded and conservative:
+      * only a JSON scalar literal (quoted string, number, ``true``/``false``)
+        immediately following an ``"arguments":`` marker qualifies — an object,
+        array, or ``null`` never does;
+      * when ``expected_name`` is given, the candidate must sit in a wire span
+        that pairs with a matching ``"name"`` literal within the same call block
+        (mirrors the #1880/codex-r4 pairing gate so an unrelated tool's scalar
+        never leaks into the forced target);
+      * ambiguity returns ``None`` — the caller keeps its ``"{}"`` fallback.
+
+    The returned text re-parses via ``json.loads`` to a scalar; the schema-aware
+    salvage (``_salvage_forced_scalar_arguments``) then maps it to the tool's
+    required property.
+    """
+    if not raw_text:
+        return None
+    text = raw_text
+
+    _WIRE_OPENERS = (
+        "<tool_call>",
+        "<function=",
+        "<function>",
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁calls▁end｜>",
+        "[TOOL_CALLS]",
+        "<|python_tag|>",
+        "<minimax:tool_call>",
+        "<invoke",
+    )
+    _WIRE_CLOSERS = (
+        "</tool_call>",
+        "</function>",
+        "<｜tool▁calls▁end｜>",
+        "<｜tool▁calls▁begin｜>",
+        "[/TOOL_CALLS]",
+        "</minimax:tool_call>",
+        "</invoke>",
+    )
+
+    def _latest_open_before(idx: int) -> int:
+        best = -1
+        for op in _WIRE_OPENERS:
+            pos = text.rfind(op, 0, idx)
+            if pos > best:
+                best = pos
+        return best
+
+    def _latest_close_before(idx: int) -> int:
+        best = -1
+        for cl in _WIRE_CLOSERS:
+            pos = text.rfind(cl, 0, idx)
+            if pos > best:
+                best = pos
+        return best
+
+    def _in_tool_span(idx: int) -> bool:
+        op = _latest_open_before(idx)
+        cl = _latest_close_before(idx)
+        return op >= 0 and op > cl
+
+    def _pairs_with_name(idx: int) -> bool:
+        if not expected_name:
+            return True
+        # Search backward from the ``"arguments"`` marker for a name literal in
+        # the same wire block (bounded: not before the nearest open wire opener).
+        op = _latest_open_before(idx)
+        start = op if op >= 0 else 0
+        block = text[start:idx]
+
+        m = re.search(r'\"name\"\s*:\s*\"([^\"]*)\"', block)
+        if not m:
+            return False
+        # Decode common JSON escapes for a fair comparison.
+        decoded = m.group(1).replace("\\u005f", "_")
+        return decoded == expected_name
+
+    # Scan every ``"arguments":`` marker; prefer the LAST candidate inside a
+    # wire span that pairs with the expected name (or any span when unconstrained).
+    best = None
+    search_from = 0
+    while True:
+        marker = text.find('"arguments"', search_from)
+        if marker < 0:
+            break
+        search_from = marker + 1
+        colon = text.find(":", marker)
+        if colon < 0:
+            continue
+        rest = text[colon + 1 :].lstrip()
+        if not rest:
+            continue
+        ch = rest[0]
+        if ch == '"':
+            # Quoted string — capture to the closing unescaped quote.
+            end = 1
+            escaped = False
+            while end < len(rest):
+                c = rest[end]
+                if escaped:
+                    escaped = False
+                elif c == "\\":
+                    escaped = True
+                elif c == '"':
+                    break
+                end += 1
+            if end >= len(rest):
+                continue
+            scalar = rest[: end + 1]
+        elif ch == "{":
+            continue  # object — not our concern here
+        elif ch == "[":
+            continue  # array — not a salvageable scalar
+        else:
+            # Number or boolean literal: consume a run of [0-9, +, -, ., e, E, t, f].
+            j = 0
+            while j < len(rest) and rest[j] in "0123456789+-.eEtruefals":
+                j += 1
+            token = rest[:j]
+            if token in ("true", "false") or (
+                token and (token[0].isdigit() or token[0] in "+-.")
+            ):
+                scalar = token
+            else:
+                continue
+        # Ensure the scalar re-parses to a scalar (never an object/array/null).
+        try:
+            v = json.loads(scalar)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(v, (str, int, float)) or v is True or v is False:
+            candidate_idx = colon
+            if _in_tool_span(candidate_idx) and _pairs_with_name(candidate_idx):
+                best = scalar  # last matching scalar wins (most-recent intent)
+    return best
+
+
 def _synthesize_forced_tool_call(
-    name: str, arguments: str = "{}", *, raw_text: str | None = None
+    name: str,
+    arguments: str = "{}",
+    *,
+    raw_text: str | None = None,
+    tools=None,
 ):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
@@ -2922,13 +3092,143 @@ def _synthesize_forced_tool_call(
     # ``"arguments"`` candidates paired with a DIFFERENT tool's
     # ``"name"`` literal (codex r4 BLOCKING #1).
     recovered = _recover_partial_tool_args(raw_text, expected_name=name)
-    final_args = recovered if recovered is not None else arguments
+    if recovered is not None:
+        final_args = recovered
+    else:
+        # #2502: the small-model habit of emitting a BARE value (``"arguments":
+        # "San Francisco"`` or ``"arguments": 7``) for a single-argument object
+        # tool. Before falling back to the unadorned default (``"{}"``), recover
+        # such a scalar from the response text (or the caller-supplied
+        # ``arguments``) and — when the target tool's schema has a single
+        # required property the scalar maps onto — synth ``{prop: value}`` so
+        # the forced call is schema-valid instead of an empty object that 422s.
+        # ``tools`` makes the mapping possible; without it we keep the unchanged
+        # default. The result still runs the #1256 schema gate downstream.
+        _scalar = _recover_bare_scalar_from_raw(raw_text, expected_name=name)
+        if _scalar is not None:
+            _candidate = _scalar
+        elif arguments != "{}":
+            _candidate = arguments
+        else:
+            _candidate = None
+        if _candidate is not None:
+            _salvaged = _salvage_forced_scalar_arguments(name, _candidate, tools)
+        else:
+            _salvaged = None
+        final_args = _salvaged if _salvaged is not None else arguments
 
     return ToolCall(
         id=f"call_{uuid.uuid4().hex[:8]}",
         type="function",
         function=FunctionCall(name=name, arguments=final_args),
     )
+
+
+def _salvage_forced_scalar_arguments(
+    name: str, arguments: str | None, tools
+) -> str | None:
+    """Return a schema-valid ``{prop: value}`` arguments string when a forced
+    tool choice produced a bare scalar, else ``None`` (#2502).
+
+    Small parsers (hermes / qwen3_coder / …) pushed to call a function with an
+    OBJECT parameter schema whose single argument is required often emit just
+    the VALUE — ``"arguments": "San Francisco"`` or a bare ``7`` — instead of
+    the full ``{"city": "San Francisco"}`` wrapper. The generic forced-call
+    repair has no schema to map that scalar onto, so it collapses to ``"{}"``
+    and the #1256 schema gate then 422s on the missing required property.
+
+    This is the schema-aware bridge: when the target tool is an OBJECT-schema
+    tool with EXACTLY ONE required property and the recovered ``arguments`` is a
+    bare scalar whose type matches that property's declared type, synthesise
+    ``{<prop>: <value>}`` so a forced named call reliably yields schema-valid
+    arguments instead of a wording-retry 422.
+
+    Gated tightly (never guess):
+      * only an object-schema tool whose ``required`` is a single property;
+      * only a bare scalar (string / number / boolean) — an object, array, or
+        explicit JSON ``null`` never salvages (those take the normal validation
+        path, including failing closed);
+      * only when the scalar's type matches the required property's ``type``;
+      * any ambiguity — multiple required props, no required props, a missing/
+        unmatched property type, a ``$ref``-only schema we can't resolve — stays
+        ``None`` so the caller's existing fail-closed 422 is preserved (#1256).
+
+    Returns the reparsed JSON object as a string, or ``None`` when not
+    applicable. The returned value still runs the full draft-aware
+    ``jsonschema`` validation downstream — salvage never short-circuits the
+    safety gate, it only upgrades a would-be ``{}`` into the object the model
+    actually intended.
+    """
+    if not arguments:
+        return None
+    # Resolve the target tool's parameter schema (mirrors
+    # ``_forced_synth_schema_error``'s lookup).
+    schema = None
+    for tool in tools or []:
+        fn = getattr(tool, "function", None)
+        if not isinstance(fn, dict) and isinstance(tool, dict):
+            fn = tool.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != name:
+            continue
+        schema = fn.get("parameters")
+        break
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return None
+    required = schema.get("required")
+    if not isinstance(required, list) or len(required) != 1:
+        return None  # multi/zero required → ambiguous, never guess
+    prop = required[0]
+    props = schema.get("properties") or {}
+    prop_schema = props.get(prop)
+    if not isinstance(prop_schema, dict):
+        return None
+    ptype = prop_schema.get("type")
+    if ptype not in ("string", "integer", "number", "boolean"):
+        return None  # untyped / exotic → don't guess
+
+    # Decode the scalar. A bare non-JSON string (e.g. ``San Francisco``) is a
+    # legitimately intended string value; a valid JSON scalar decodes to its
+    # typed value. Objects, arrays, and an explicit JSON ``null`` never salvage
+    # (``null`` is a real decoded value, not a parse failure — codex r3).
+    try:
+        decoded = json.loads(arguments)
+        parsed = True
+    except (ValueError, TypeError):
+        decoded = None
+        parsed = False
+    if not parsed:
+        # Bare unquoted text that wouldn't parse as JSON — only meaningful as a
+        # string scalar. An empty string offers nothing to salvage. Reject text
+        # that looks like a broken JSON OBJECT (contains structural characters)
+        # so we never mis-map a fragment of an intended structure onto a string
+        # property — those stay ``{}`` and fail closed exactly as before.
+        if not isinstance(arguments, str) or not arguments.strip():
+            return None
+        if any(c in arguments for c in "{}[]:\""):
+            return None
+        value = arguments
+    elif isinstance(decoded, (str, int, float, bool)):
+        value = decoded
+    else:
+        # A JSON object / array / explicit ``null`` never salvages.
+        return None
+
+    # Type-match gate: the scalar must fit the single required property's type.
+    if ptype == "string":
+        if isinstance(value, (str,)) and not isinstance(value, bool):
+            return json.dumps({prop: value})
+        return None
+    if ptype in ("integer", "number"):
+        if isinstance(value, bool):
+            return None  # never coerce bool → number
+        if isinstance(value, (int, float)):
+            return json.dumps({prop: value})
+        return None
+    if ptype == "boolean":
+        if isinstance(value, bool):
+            return json.dumps({prop: value})
+        return None
+    return None
 
 
 def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str | None:
@@ -2975,8 +3275,21 @@ def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str |
     else:
         try:
             instance = json.loads(arguments)
+            _parsed = True
         except (ValueError, TypeError):
             instance = {}
+            _parsed = False
+        # #2502: a bare-scalar ``arguments`` value (the small-model habit of
+        # emitting ``"arguments": "San Francisco"`` or ``7`` for a single-arg
+        # object tool) is not a dict. Salvage it onto the tool's single required
+        # property BEFORE validating, so a concrete forced named call yields
+        # schema-valid args instead of a false 422. Non-dict scalars that do not
+        # map a single required property stay as-is and fail closed below; an
+        # explicit JSON ``null`` is a real value and is never coerced.
+        if not _parsed or not isinstance(instance, dict):
+            _saved = _salvage_forced_scalar_arguments(name, arguments, tools)
+            if _saved is not None:
+                instance = json.loads(_saved)
 
     # Validate the synthesised arguments against the tool's parameter schema
     # with a DRAFT-AWARE ``jsonschema`` validator — the single source of truth,
@@ -5752,6 +6065,7 @@ async def _create_chat_completion_impl(
                         _synthesize_forced_tool_call(
                             _solo_name,
                             raw_text=output.raw_text or output.text,
+                            tools=request.tools,
                         )
                     ]
                     # #1256: never report a successful forced call whose
@@ -5829,6 +6143,7 @@ async def _create_chat_completion_impl(
                         _synthesize_forced_tool_call(
                             _target,
                             raw_text=output.raw_text or output.text,
+                            tools=request.tools,
                         )
                     ]
                     # #1256: refuse a synthesised pinned call whose arguments
@@ -7024,7 +7339,9 @@ async def stream_chat_completion(
                     _synth_target = None
             if _synth_target:
                 _synth_call = _synthesize_forced_tool_call(
-                    _synth_target, raw_text=_raw_text
+                    _synth_target,
+                    raw_text=_raw_text,
+                    tools=request.tools,
                 )
                 # #1256: on the streaming surface headers are already on the
                 # wire so we cannot 422 mid-flight. If the synthesised call's
