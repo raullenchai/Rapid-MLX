@@ -183,6 +183,10 @@ def _roster_only_workflows(
     per_file: dict[str, dict[str, list[tuple[str, str, bool]]]] = {
         f: {"lines": [], "added": [], "removed": []} for f in workflow_files
     }
+    # Workflow diffs carrying extended metadata (rename/copy/mode change) are
+    # structural, not roster enrollments — a roster-only ``+tests/x.py \``
+    # cannot accompany a rename or a mode change of the workflow file itself.
+    metadata_files: set[str] = set()
     cur_path = ""
     in_hunk = False
     first_in_hunk = False
@@ -191,11 +195,26 @@ def _roster_only_workflows(
             cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
             in_hunk = False
             continue
+        if cur_path not in per_file:
+            continue
         if line.startswith("@@"):
             in_hunk = True  # everything after this is file content, not headers
             first_in_hunk = True
             continue
-        if cur_path not in per_file:
+        # Extended diff metadata lines (no + / - / space marker): a rename,
+        # copy, or mode change of the workflow file itself is disqualifying.
+        if line[:1] not in (" ", "+", "-"):
+            if line.startswith(
+                (
+                    "rename from ",
+                    "rename to ",
+                    "copy from ",
+                    "copy to ",
+                    "old mode ",
+                    "new mode ",
+                )
+            ):
+                metadata_files.add(cur_path)
             continue
         # ``--- /path`` and ``+++ /path`` are file headers ONLY before the
         # first hunk. Inside a hunk a content line may itself begin with
@@ -204,19 +223,19 @@ def _roster_only_workflows(
         if not in_hunk and line.startswith(("--- ", "+++ ")):
             continue
         marker = line[:1]
-        if marker in (" ", "+", "-"):
-            per_file[cur_path]["lines"].append((marker, line[1:], first_in_hunk))
-            first_in_hunk = False
-            if marker == "+":
-                per_file[cur_path]["added"].append(line[1:])
-            elif marker == "-":
-                per_file[cur_path]["removed"].append(line[1:])
+        per_file[cur_path]["lines"].append((marker, line[1:], first_in_hunk))
+        first_in_hunk = False
+        if marker == "+":
+            per_file[cur_path]["added"].append(line[1:])
+        elif marker == "-":
+            per_file[cur_path]["removed"].append(line[1:])
 
     roster_only: set[str] = set()
     roster_additions: dict[str, list[str]] = {}
     for path, block in per_file.items():
-        # Anything deleted from a workflow file is NOT roster-only (#2522).
-        if block["removed"]:
+        # Anything deleted from (or structurally altered with) a workflow file
+        # is NOT roster-only (#2522).
+        if block["removed"] or path in metadata_files:
             continue
         if not block["added"]:
             continue  # no tracked change; stay conservative

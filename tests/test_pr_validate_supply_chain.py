@@ -196,6 +196,36 @@ index 1111111..2222222 100644
 +            {_ENROLLED} \\
 """
 
+# Regression for codex r1 round-2: extended diff metadata on the workflow
+# (here a mode change) is structural and disqualifies a file even when it also
+# carries a valid roster addition.
+_MODE_CHANGE_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+old mode 100644
+new mode 100755
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -441 +441,2 @@
+             tests/test_mllm_hybrid_probe.py \\
++            {_ENROLLED} \\
+"""
+
+# Regression for codex r1 round-2: a rename of the workflow file, even with a
+# roster addition, is not a roster-only enrollment.
+_RENAME_DIFF = f"""\
+{_NEW_TEST_DIFF}diff --git a/.github/workflows/ci.yml b/.github/workflows/renamed.yml
+similarity index 99%
+rename from .github/workflows/ci.yml
+rename to .github/workflows/renamed.yml
+index 1111111..2222222 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/renamed.yml
+@@ -441 +441,2 @@
+             tests/test_mllm_hybrid_probe.py \\
++            {_ENROLLED} \\
+"""
+
 
 def _ctx(
     diff: str,
@@ -303,6 +333,23 @@ def test_terminal_anchor_entry_not_roster_only(tmp_path):
     separate shell command, so it is not a pytest argument / enrollment."""
     roster_only, _ = _roster_only_workflows(
         _TERMINAL_ANCHOR_DIFF, {_WORKFLOW, _ENROLLED}
+    )
+    assert roster_only == set()
+
+
+def test_mode_change_with_roster_addition_not_roster_only(tmp_path):
+    """Regression (codex r1 round-2): a mode change on the workflow file is
+    structural, so even with a valid-looking roster addition the file must
+    not be downgraded."""
+    roster_only, _ = _roster_only_workflows(_MODE_CHANGE_DIFF, {_WORKFLOW, _ENROLLED})
+    assert roster_only == set()
+
+
+def test_rename_with_roster_addition_not_roster_only(tmp_path):
+    """Regression (codex r1 round-2): renaming the workflow file is not a
+    roster-only enrollment even combined with a roster addition."""
+    roster_only, _ = _roster_only_workflows(
+        _RENAME_DIFF, {_WORKFLOW, "tests/test_serving_lane_reason_contract.py"}
     )
     assert roster_only == set()
 
