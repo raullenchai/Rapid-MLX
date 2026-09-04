@@ -968,7 +968,7 @@ class ResidentModelManager:
         ):
             candidates = self._eviction_candidates_locked(exclude)
             if not candidates:
-                usage = max(0, self._accounted_usage() - usage_credit_bytes)
+                usage = self._accounted_usage()
                 if requested_role is None:
                     raise ResidentModelCapacityError(
                         "resident model memory ceiling exceeded: "
@@ -1111,7 +1111,7 @@ class ResidentModelManager:
                     if exclusive_sibling is not None
                     else 0
                 )
-                used = max(0, self._accounted_usage() - usage_credit)
+                used = self._accounted_usage()
                 if self.memory_limit_bytes > 0 and requested_bytes is None:
                     raise ResidentModelCapacityError(
                         (

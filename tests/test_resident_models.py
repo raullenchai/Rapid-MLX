@@ -4549,6 +4549,53 @@ async def test_capacity_507_envelope_includes_charged_retirement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resident_role", "requested_role", "admission_options"),
+    [
+        ("speech-output", "speech-output", {"replace_existing": True}),
+        (
+            "speech-input",
+            "alignment",
+            {"release_exclusive_role": "speech-input"},
+        ),
+    ],
+)
+async def test_capacity_507_used_bytes_remain_actual_when_role_is_credited(
+    resident_role, requested_role, admission_options
+):
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    resident_bytes = int(0.8 * GIB)
+    async with manager.admit_role(
+        role=resident_role,
+        model_id="resident-model",
+        requested_bytes=resident_bytes,
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role=requested_role,
+            model_id="oversized-replacement",
+            requested_bytes=int(1.1 * GIB),
+            capacity_source="catalog",
+            **admission_options,
+        ):
+            pass
+
+    envelope = exc_info.value.envelope()["error"]
+    assert envelope["used_bytes"] == resident_bytes
+    assert envelope["resident_roles"] == [
+        {
+            "role": resident_role,
+            "model_id": "resident-model",
+            "reserved_bytes": resident_bytes,
+            "state": "resident",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_alignment_replace_conflict_reports_recovery_actions():
     # The capacity rejection for the alignment role must pair its
     # requested_role with the role-appropriate recovery actions.
