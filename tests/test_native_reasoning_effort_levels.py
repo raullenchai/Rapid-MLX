@@ -352,7 +352,8 @@ class TestDetectionRequiresAValidationBlock:
 
     def test_derivation_in_an_enclosing_block_counts(self):
         clause = (
-            "{%- if enable_thinking %}{%- set r = reasoning_effort %}"
+            "{%- if enable_thinking is undefined or enable_thinking is true %}"
+            "{%- set r = reasoning_effort %}"
             "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
             "{%- endif %}"
         )
@@ -370,6 +371,12 @@ class TestDetectionRequiresAValidationBlock:
             "{%- if enable_thinking %}{%- if tools %}"
             "{%- if reasoning_effort not in ['low', 'high'] %}"
             "{{ raise_exception('bad') }}{%- endif %}{%- endif %}{%- endif %}",
+            "{%- if enable_thinking %}"
+            "{%- if reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}{%- endif %}",
+            "{%- if enable_thinking is true %}"
+            "{%- if reasoning_effort not in ['low', 'high'] %}"
+            "{{ raise_exception('bad') }}{%- endif %}{%- endif %}",
         ],
     )
     def test_path_conditional_validation_does_not_publish_globally(self, clause):
@@ -388,8 +395,7 @@ class TestDetectionRequiresAValidationBlock:
     )
     def test_template_local_raise_exception_binding_fails_closed(self, binding):
         clause = (
-            binding
-            + "{%- if reasoning_effort not in ['low', 'high'] %}"
+            binding + "{%- if reasoning_effort not in ['low', 'high'] %}"
             "{{ raise_exception('bad') }}{%- endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) is None
@@ -645,11 +651,19 @@ class TestDetectionRequiresAValidationBlock:
 
     def test_validation_in_an_elif_test_counts(self):
         clause = (
-            "{%- if not enable_thinking %}off"
+            "{%- if enable_thinking is false %}off"
             "{%- elif reasoning_effort not in ['a', 'b'] %}{{ raise_exception('z') }}"
             "{%- endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_bare_falsey_enable_thinking_branch_does_not_prove_elif_reachable(self):
+        clause = (
+            "{%- if not enable_thinking %}off"
+            "{%- elif reasoning_effort not in ['a', 'b'] %}{{ raise_exception('z') }}"
+            "{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_first_validation_block_wins_over_a_later_branch(self):
         clause = QWEN38_TEMPLATE + "{%- if reasoning_effort in ('zzz',) %}q{%- endif %}"

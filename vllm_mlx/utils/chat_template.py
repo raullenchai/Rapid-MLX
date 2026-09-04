@@ -1342,36 +1342,25 @@ def _is_thinking_enabled_guard(expr, nodes) -> bool:
     """A narrow guard whose body is relevant only while thinking is enabled.
 
     Qwen3.8 places its effort validation under ``enable_thinking is undefined
-    or enable_thinking is true``.  Only that checkpoint shape (plus the direct
-    truthy spellings) is transparent to the validation proof; arbitrary outer
-    conditions would make the advertised vocabulary path-dependent.
+    or enable_thinking is true``.  Only that checkpoint shape is transparent
+    to the validation proof: a bare/truthy guard skips its body when the kwarg
+    is undefined, while arbitrary outer conditions make the advertised
+    vocabulary path-dependent.
     """
-    if isinstance(expr, nodes.Name):
-        return bool(expr.name == "enable_thinking")
-    if _is_named_test(expr, "enable_thinking", "true", nodes):
-        return True
     if isinstance(expr, nodes.Or):
         parts = (expr.left, expr.right)
         return any(
             _is_named_test(part, "enable_thinking", "undefined", nodes)
             for part in parts
         ) and any(
-            _is_named_test(part, "enable_thinking", "true", nodes)
-            for part in parts
+            _is_named_test(part, "enable_thinking", "true", nodes) for part in parts
         )
     return False
 
 
 def _is_thinking_disabled_guard(expr, nodes) -> bool:
     """A branch whose failure proves that thinking was not disabled."""
-    return bool(
-        (
-            isinstance(expr, nodes.Not)
-            and isinstance(expr.node, nodes.Name)
-            and expr.node.name == "enable_thinking"
-        )
-        or _is_named_test(expr, "enable_thinking", "false", nodes)
-    )
+    return _is_named_test(expr, "enable_thinking", "false", nodes)
 
 
 def _body_unconditionally_rejects_or_defaults(
