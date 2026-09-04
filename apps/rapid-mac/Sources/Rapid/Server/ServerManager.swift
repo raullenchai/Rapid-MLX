@@ -3210,6 +3210,13 @@ final class ServerManager {
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy
         }
+        guard !residency.audioLanes.contains(where: { ($0.activeRequests ?? 0) > 0 }) else {
+            return .busy
+        }
+        // This is an explicit unload, so clear the persisted auto-resume alias.
+        // ContentView owns the current picker selection independently; keeping
+        // that in-memory selection supplies the immediate Start recovery action
+        // without surprising the user by reloading on their next app launch.
         _ = await stop(preservingLastServedAlias: false)
         guard case .stopped = state else { return .unavailable }
         return .stopped
