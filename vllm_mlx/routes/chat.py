@@ -5,6 +5,7 @@ import asyncio
 import gc
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -2967,34 +2968,44 @@ def _recover_bare_scalar_from_raw(
         cl = _latest_close_before(idx)
         return op >= 0 and op > cl
 
-    def _pairs_with_name(idx: int) -> bool:
+    def _pairs_with_name(idx: int, marker: int) -> bool:
         if not expected_name:
             return True
-        # Search backward from the ``"arguments"`` marker for a name literal in
-        # the same wire block (bounded: not before the nearest open wire opener).
+        # Find the NEAREST ``"name": ...`` literal PRECEDING the ``"arguments"``
+        # marker, bounded below by the nearest open wire opener OR the PREVIOUS
+        # ``"arguments"`` marker — so within a span holding multiple calls each
+        # scalar is paired with ITS OWN tool, not the span's first (codex BLOCKING).
         op = _latest_open_before(idx)
         start = op if op >= 0 else 0
-        block = text[start:idx]
+        prev_arg = text.rfind('"arguments"', start, marker)
+        lo = prev_arg if prev_arg > op else start
+        block = text[lo:marker]
 
-        m = re.search(r'\"name\"\s*:\s*\"([^\"]*)\"', block)
-        if not m:
+        last: re.Match | None = None
+        for m in re.finditer(r"\"name\"\s*:\s*\"([^\"]*)\"", block):
+            last = m
+        if last is None:
             return False
         # Decode common JSON escapes for a fair comparison.
-        decoded = m.group(1).replace("\\u005f", "_")
+        decoded = last.group(1).replace("\\u005f", "_")
         return decoded == expected_name
 
-    # Scan every ``"arguments":`` marker; prefer the LAST candidate inside a
+    # Scan every ``"arguments"`` marker; prefer the LAST candidate inside a
     # wire span that pairs with the expected name (or any span when unconstrained).
     best = None
     search_from = 0
+    _KEY_RE = re.compile(r'"arguments"\s*:\s*')
     while True:
         marker = text.find('"arguments"', search_from)
         if marker < 0:
             break
         search_from = marker + 1
-        colon = text.find(":", marker)
-        if colon < 0:
+        # The ``"arguments"`` key must be followed by ONLY whitespace then a
+        # colon — reject ``"arguments" garbage, "foo": 7`` (codex BLOCKING #2).
+        sep = _KEY_RE.match(text, marker)
+        if not sep:
             continue
+        colon = text.index(":", marker, sep.end())
         rest = text[colon + 1 :].lstrip()
         if not rest:
             continue
@@ -3038,7 +3049,7 @@ def _recover_bare_scalar_from_raw(
             continue
         if isinstance(v, (str, int, float)) or v is True or v is False:
             candidate_idx = colon
-            if _in_tool_span(candidate_idx) and _pairs_with_name(candidate_idx):
+            if _in_tool_span(candidate_idx) and _pairs_with_name(candidate_idx, marker):
                 best = scalar  # last matching scalar wins (most-recent intent)
     return best
 
@@ -3204,13 +3215,19 @@ def _salvage_forced_scalar_arguments(
         # property — those stay ``{}`` and fail closed exactly as before.
         if not isinstance(arguments, str) or not arguments.strip():
             return None
-        if any(c in arguments for c in "{}[]:\""):
+        if any(c in arguments for c in '{}[]:"'):
             return None
         value = arguments
     elif isinstance(decoded, (str, int, float, bool)):
         value = decoded
     else:
         # A JSON object / array / explicit ``null`` never salvages.
+        return None
+
+    # Reject non-finite numbers (``NaN`` / ``Infinity`` are not strict JSON —
+    # ``json.loads`` accepts them, ``json.loads(json.dumps(x))`` breaks). Never
+    # ship a value a strict JSON client cannot round-trip (codex BLOCKING #3).
+    if isinstance(value, float) and not math.isfinite(value):
         return None
 
     # Type-match gate: the scalar must fit the single required property's type.

@@ -101,7 +101,10 @@ class TestSalvageForcedScalarArguments:
         assert _salvage_forced_scalar_arguments("add", "7", [_ADD]) is None
 
     def test_no_required_never_guesses(self):
-        assert _salvage_forced_scalar_arguments("ping", "x", [_no_required_schema()]) is None
+        assert (
+            _salvage_forced_scalar_arguments("ping", "x", [_no_required_schema()])
+            is None
+        )
 
     def test_type_mismatch_never_guesses(self):
         # Number scalar cannot satisfy a required STRING property.
@@ -117,9 +120,7 @@ class TestSalvageForcedScalarArguments:
     def test_object_value_never_guesses(self):
         assert _salvage_forced_scalar_arguments("weather", "{}", [_WEATHER]) is None
         assert (
-            _salvage_forced_scalar_arguments(
-                "weather", '{"city": "SF"}', [_WEATHER]
-            )
+            _salvage_forced_scalar_arguments("weather", '{"city": "SF"}', [_WEATHER])
             is None
         )
 
@@ -131,21 +132,19 @@ class TestSalvageForcedScalarArguments:
         # A fragment that was clearly aiming at a JSON object must not be mapped
         # onto a string property — it fails closed instead.
         assert (
-            _salvage_forced_scalar_arguments(
-                "weather", '{"unbalanced": ', [_WEATHER]
-            )
+            _salvage_forced_scalar_arguments("weather", '{"unbalanced": ', [_WEATHER])
             is None
         )
-        assert (
-            _salvage_forced_scalar_arguments("weather", "[bad", [_WEATHER]) is None
-        )
+        assert _salvage_forced_scalar_arguments("weather", "[bad", [_WEATHER]) is None
 
     def test_unknown_tool_never_guesses(self):
         assert _salvage_forced_scalar_arguments("other", "x", [_WEATHER]) is None
 
     def test_boolean_prop(self):
         flag = _tool("toggle", ["on"], ptype="boolean")
-        assert _salvage_forced_scalar_arguments("toggle", "true", [flag]) == '{"on": true}'
+        assert (
+            _salvage_forced_scalar_arguments("toggle", "true", [flag]) == '{"on": true}'
+        )
         # A string cannot satisfy a boolean prop.
         assert _salvage_forced_scalar_arguments("toggle", "yes", [flag]) is None
         # A bool must not be coerced to a NUMBER prop.
@@ -162,8 +161,7 @@ class TestForcedSynthSchemaErrorWithSalvage:
     def test_bare_string_now_valid_for_single_required_string_prop(self):
         # NEW: no longer a false 422.
         assert (
-            _forced_synth_schema_error("weather", "San Francisco", [_WEATHER])
-            is None
+            _forced_synth_schema_error("weather", "San Francisco", [_WEATHER]) is None
         )
 
     def test_json_string_now_valid_for_single_required_string_prop(self):
@@ -197,7 +195,9 @@ class TestForcedSynthSchemaErrorWithSalvage:
         )
 
     def test_valid_object_unchanged(self):
-        assert _forced_synth_schema_error("weather", '{"city": "SF"}', [_WEATHER]) is None
+        assert (
+            _forced_synth_schema_error("weather", '{"city": "SF"}', [_WEATHER]) is None
+        )
 
 
 # =====================================================================
@@ -278,7 +278,10 @@ class TestRepairForcedCallArgumentsScalar:
 class TestRecoverBareScalarFromRaw:
     def test_extracts_quoted_scalar_in_envelope(self):
         raw = '<tool_call>{"name": "weather", "arguments": "San Francisco"}'
-        assert _recover_bare_scalar_from_raw(raw, expected_name="weather") == '"San Francisco"'
+        assert (
+            _recover_bare_scalar_from_raw(raw, expected_name="weather")
+            == '"San Francisco"'
+        )
 
     def test_extracts_unquoted_number_in_envelope(self):
         raw = '<tool_call>{"name": "temperature", "arguments": 72}'
@@ -299,3 +302,38 @@ class TestRecoverBareScalarFromRaw:
     def test_empty_or_none_returns_none(self):
         assert _recover_bare_scalar_from_raw(None) is None
         assert _recover_bare_scalar_from_raw("") is None
+
+    def test_rejects_colon_with_intervening_garbage(self):
+        # codex BLOCKING #2: the key must be immediately followed by a colon.
+        raw = '<tool_call>{"name": "x", "arguments" garbage, "foo": 7}'
+        assert _recover_bare_scalar_from_raw(raw, expected_name="x") is None
+
+    def test_pairing_uses_nearest_preceding_name_in_multi_call_span(self):
+        # codex BLOCKING #1: two calls in one span — the second scalar must pair
+        # with the SECOND tool ("other"), not the span's first ("weather").
+        raw = (
+            '<tool_call>{"name": "weather", "arguments": 1}'
+            '{"name": "other", "arguments": "San Francisco"}'
+        )
+        # Searching for the FIRST tool's scalar yields nothing (only "other" has
+        # a string scalar, and 1 is a number but pairs with weather... both here).
+        recovered = _recover_bare_scalar_from_raw(raw, expected_name="other")
+        assert recovered == '"San Francisco"'
+        # Searching for the first tool yields None (its scalar is numeric "1",
+        # which is still returned as a scalar — so pairing must gate it too).
+        # Verify pairing does NOT let the first tool's scalar attach to "other".
+        bad = _recover_bare_scalar_from_raw(raw, expected_name="weather")
+        assert bad in ("1", None)  # "weather" owns the first, numeric scalar
+
+
+class TestSalvageRejectsNonFinite:
+    def test_non_finite_float_never_salvages(self):
+        # codex BLOCKING #3: NaN/Infinity are not strict JSON — never emit them.
+        assert _salvage_forced_scalar_arguments("temperature", "NaN", [_NUM]) is None
+        assert (
+            _salvage_forced_scalar_arguments("temperature", "Infinity", [_NUM]) is None
+        )
+        assert (
+            _salvage_forced_scalar_arguments("temperature", "72.5", [_NUM])
+            == '{"degrees": 72.5}'
+        )
