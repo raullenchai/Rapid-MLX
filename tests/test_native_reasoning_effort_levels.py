@@ -353,11 +353,78 @@ class TestDetectionRequiresAValidationBlock:
     def test_derivation_in_an_enclosing_block_counts(self):
         clause = (
             "{%- if enable_thinking %}{%- set r = reasoning_effort %}"
-            "{%- for m in messages %}"
+            "{%- if tools %}"
             "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
-            "{%- endfor %}{%- endif %}"
+            "{%- endif %}{%- endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a",)
+
+    def test_and_conjunct_does_not_guarantee_rejection(self):
+        """Codex r4: with ``strict and …`` the branch is skipped when
+        ``strict`` is false, so the membership test proves nothing."""
+        clause = (
+            "{%- if strict and reasoning_effort not in ('a', 'b') %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_overwritten_derivation_is_forgotten(self):
+        """Codex r4: ``set r = reasoning_effort`` then ``set r = 'c'``."""
+        clause = (
+            "{%- set r = reasoning_effort %}{%- set r = 'c' %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_conditionally_overwritten_derivation_is_forgotten(self):
+        """A Jinja ``if`` body leaks its assignments, so the overwrite may
+        have happened."""
+        clause = (
+            "{%- set r = reasoning_effort %}"
+            "{%- if x %}{%- set r = 'c' %}{%- endif %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_block_assignment_overwrite_is_forgotten(self):
+        clause = (
+            "{%- set r = reasoning_effort %}{%- set r %}c{%- endset %}"
+            "{%- if r not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_loop_variable_shadowing_is_forgotten(self):
+        clause = (
+            "{%- for reasoning_effort in efforts %}{%- endfor %}"
+            "{%- if reasoning_effort not in ['a'] %}{{ raise_exception('z') }}"
+            "{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_macro_body_is_not_searched(self):
+        """Codex r4: a macro that is never invoked proves nothing."""
+        clause = (
+            "{%- macro check() %}{%- if reasoning_effort not in ['a'] %}"
+            "{{ raise_exception('z') }}{%- endif %}{%- endmacro %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_call_block_body_is_not_searched(self):
+        clause = (
+            "{%- macro wrap() %}{{ caller() }}{%- endmacro %}"
+            "{%- call wrap() %}{%- if reasoning_effort not in ['a'] %}"
+            "{{ raise_exception('z') }}{%- endif %}{%- endcall %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_loop_body_is_not_searched(self):
+        """A loop may run zero times, so a validation inside it may never
+        execute."""
+        clause = (
+            "{%- for m in messages %}{%- if reasoning_effort not in ['a'] %}"
+            "{{ raise_exception('z') }}{%- endif %}{%- endfor %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
 
     def test_unrelated_membership_first_in_the_condition_is_skipped(self):
         """Codex r3: every conjunct/disjunct is inspected, not just the first."""

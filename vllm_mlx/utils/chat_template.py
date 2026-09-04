@@ -1163,20 +1163,25 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
 
 # A template declares its native effort vocabulary only when it *validates*
 # ``reasoning_effort`` against a literal set. Proven on the Jinja AST by a
-# forward, scope-aware walk (codex #3048 r1–r3), never by pattern matching:
+# forward, scope-aware walk (codex #3048 r1–r4), never by pattern matching:
 #
-#   * an ``{% if <var> not in ('a', 'b') %}`` test where ``<var>`` is
-#     ``reasoning_effort`` itself or a variable assigned — earlier in the
-#     same or an enclosing block, so it is guaranteed to have run — from an
-#     expression that references it (Qwen3.8's ``resolved_reasoning_effort``).
-#     An assignment inside a sibling ``if`` / ``for`` body, or one that comes
-#     later, does not count. The membership test may be any conjunct or
-#     disjunct of the condition (Hy3 prefixes ``not reasoning_effort is
-#     defined or``) but never sits under ``not``;
-#   * whose block body — at its top level, not inside a nested statement or a
-#     conditional expression — either is a bare ``{{ raise_exception(...) }}``
-#     (Qwen3.8) or re-assigns ``<var>`` to a *literal from that same set*
-#     (Hy3's ``{% set reasoning_effort = 'no_think' %}``).
+#   * the walk follows the render path from the template root through
+#     ``if`` / ``elif`` / ``else`` branches only — a branch may be gated on
+#     unrelated state (Qwen3.8 validates only while thinking is on, which is
+#     exactly when the level matters) — and never enters loops, macros, call
+#     blocks or any other deferred / possibly-zero-iteration scope;
+#   * ``<var>`` is ``reasoning_effort`` itself or a name assigned earlier on
+#     that path from an expression referencing it (Qwen3.8's
+#     ``resolved_reasoning_effort``). A later assignment that does not
+#     reference a derived name — anywhere, including a sibling ``if`` body,
+#     which leaks in Jinja — forgets the name for good;
+#   * the test is ``{% if <var> not in ('a', 'b') %}``, possibly as a disjunct
+#     of an ``or`` (Hy3 prefixes ``not reasoning_effort is defined or``; the
+#     branch is entered whenever the membership fails) but never under
+#     ``and`` or ``not``, which would make the rejection conditional;
+#   * the block body — at its top level — is a bare ``{{ raise_exception(...) }}``
+#     (Qwen3.8; a conditional expression does not count) or re-assigns
+#     ``<var>`` to a literal *from that same set* (Hy3's ``'no_think'``).
 #
 # Nothing else counts: Harmony merely interpolates the value, North Mini Code
 # compares against a single ``"none"`` sentinel, a template that just
@@ -1223,9 +1228,11 @@ def _references_any(expr, names: set[str], nodes) -> bool:
 
 
 def _not_in_memberships(expr, nodes):
-    """Yield every ``<x> not in <y>`` Compare inside ``expr``, looking through
-    ``and`` / ``or`` only (never ``not``, which inverts it)."""
-    if isinstance(expr, (nodes.And, nodes.Or)):
+    """Yield every ``<x> not in <y>`` Compare that, when true, guarantees the
+    branch is entered: the test itself or a disjunct of an ``or``. ``and``
+    and ``not`` are not looked through (they make the rejection conditional
+    or invert it)."""
+    if isinstance(expr, nodes.Or):
         yield from _not_in_memberships(expr.left, nodes)
         yield from _not_in_memberships(expr.right, nodes)
     elif (
@@ -1284,10 +1291,12 @@ def _body_unconditionally_rejects_or_defaults(
     return False
 
 
-def _validation_levels(if_node, derived: set[str], nodes) -> tuple[str, ...] | None:
+def _validation_levels(
+    if_node, derived: set[str], forgotten: set[str], nodes
+) -> tuple[str, ...] | None:
     for compare in _not_in_memberships(if_node.test, nodes):
         tested = _tested_name(compare.expr, nodes)
-        if tested is None or tested not in derived:
+        if tested is None or tested not in derived or tested in forgotten:
             continue
         levels = _literal_levels(compare.ops[0].expr, nodes)
         if levels is None:
@@ -1299,41 +1308,75 @@ def _validation_levels(if_node, derived: set[str], nodes) -> tuple[str, ...] | N
     return None
 
 
-def _walk_for_validation(stmts, derived: set[str], nodes) -> tuple[str, ...] | None:
-    """Forward walk of one statement list. ``derived`` is copied per block so
-    an assignment only counts for statements that follow it in the same or a
-    nested block — never for siblings of the block it sits in."""
+def _walk_for_validation(
+    stmts, derived: set[str], forgotten: set[str], nodes
+) -> tuple[str, ...] | None:
+    """Forward walk of one statement list along the render path.
+
+    ``derived`` is copied per block, so a name derived inside a branch only
+    counts for statements that follow it in that branch. ``forgotten`` is
+    shared for the whole walk: once a derived name is overwritten with a
+    non-derived value anywhere on the path it never counts again (a Jinja
+    ``if`` body leaks its assignments, so the overwrite may have happened).
+    """
     derived = set(derived)
     for stmt in stmts:
         if isinstance(stmt, nodes.Assign):
-            if isinstance(stmt.target, nodes.Name) and _references_any(
-                stmt.node, derived, nodes
-            ):
-                derived.add(stmt.target.name)
+            if isinstance(stmt.target, nodes.Name):
+                if _references_any(stmt.node, derived, nodes):
+                    derived.add(stmt.target.name)
+                else:
+                    derived.discard(stmt.target.name)
+                    forgotten.add(stmt.target.name)
+            else:
+                for name in stmt.target.find_all(nodes.Name):
+                    derived.discard(name.name)
+                    forgotten.add(name.name)
+            continue
+        if isinstance(stmt, nodes.AssignBlock):
+            if isinstance(stmt.target, nodes.Name):
+                derived.discard(stmt.target.name)
+                forgotten.add(stmt.target.name)
             continue
         if isinstance(stmt, nodes.If):
             branches = [stmt] + list(stmt.elif_)
             for branch in branches:
-                levels = _validation_levels(branch, derived, nodes)
+                levels = _validation_levels(branch, derived, forgotten, nodes)
                 if levels:
                     return levels
             for block in [branch.body for branch in branches] + [stmt.else_]:
-                levels = _walk_for_validation(block, derived, nodes)
+                levels = _walk_for_validation(block, derived, forgotten, nodes)
                 if levels:
                     return levels
             continue
-        # Any other statement with nested statement lists (for / with /
-        # filter / macro / call blocks, the parsed ``generation`` span, ...).
-        for _field, value in stmt.iter_fields():
-            if (
-                isinstance(value, list)
-                and value
-                and all(isinstance(item, nodes.Stmt) for item in value)
-            ):
-                levels = _walk_for_validation(value, derived, nodes)
-                if levels:
-                    return levels
+        # Loops, macros, call blocks, with / filter blocks, imports, the parsed
+        # ``generation`` span, ...: deferred or possibly-zero-iteration scopes
+        # are neither searched nor trusted to keep ``derived`` accurate —
+        # every name such a statement binds is forgotten.
+        for name in _bound_names(stmt, nodes):
+            derived.discard(name)
+            forgotten.add(name)
     return None
+
+
+def _bound_names(stmt, nodes) -> set[str]:
+    names: set[str] = set()
+    for field in ("target", "targets", "names"):
+        value = getattr(stmt, field, None)
+        if value is None:
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, nodes.Name):
+                names.add(item.name)
+            elif isinstance(item, str):
+                names.add(item)
+            elif isinstance(item, tuple):
+                names.update(part for part in item if isinstance(part, str))
+            elif isinstance(item, nodes.Node):
+                names.update(n.name for n in item.find_all(nodes.Name))
+    if isinstance(stmt, nodes.Macro):
+        names.add(stmt.name)
+    return names
 
 
 @functools.lru_cache(maxsize=64)
@@ -1346,7 +1389,7 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
         tree = env.parse(template)
     except Exception:
         return None
-    return _walk_for_validation(tree.body, {"reasoning_effort"}, nodes)
+    return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 
 
 def detect_native_reasoning_effort_levels(
