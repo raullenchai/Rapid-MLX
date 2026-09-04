@@ -148,6 +148,21 @@ struct ResidentAudioLaneStatus: Codable, Sendable, Equatable {
     let lane: String
     let model: String?
     let state: String
+    let activeRequests: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case lane
+        case model
+        case state
+        case activeRequests = "active_requests"
+    }
+
+    init(lane: String, model: String?, state: String, activeRequests: Int? = nil) {
+        self.lane = lane
+        self.model = model
+        self.state = state
+        self.activeRequests = activeRequests
+    }
 
     func matches(modelPath: String) -> Bool {
         model == modelPath && state == "resident"
