@@ -47,6 +47,7 @@ class TestBatchedEngineAbortRouting:
         first = threading.Event()
         replacement = threading.Event()
         engine._guided_abort_events = {"req-guided": replacement, "req-other": first}
+        engine._guided_owner_tasks = {}
 
         engine._finish_guided_request("req-guided", first)
         assert engine._guided_abort_events["req-guided"] is replacement
@@ -74,8 +75,11 @@ class TestBatchedEngineAbortRouting:
         from vllm_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
         engine._guided_requests_lock = threading.Lock()
         engine._guided_abort_events = {}
+        engine._guided_owner_tasks = {}
         engine._guided_stopping = False
         late = threading.Event()
         started = threading.Event()
@@ -98,6 +102,32 @@ class TestBatchedEngineAbortRouting:
         assert outcome == [GuidedGenerationCancelledError]
         assert late.is_set()
         assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_guided_owner_in_real_lifecycle_ledger(self):
+        """Guided shutdown cancellation reaches the standard route 503 ledger."""
+        import asyncio
+        import threading
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._admission_lock = threading.Lock()
+        engine._lifecycle_aborted_tasks = set()
+        engine._guided_requests_lock = threading.Lock()
+        engine._guided_abort_events = {}
+        engine._guided_owner_tasks = {}
+        engine._guided_stopping = False
+        owner = asyncio.current_task()
+        assert owner is not None
+        abort_event = threading.Event()
+
+        engine._register_guided_request("req-guided", abort_event, owner)
+        engine._abort_all_guided_requests()
+
+        assert abort_event.is_set()
+        assert engine.consume_lifecycle_task_abort(owner) is True
+        assert engine.consume_lifecycle_task_abort(owner) is False
 
     @pytest.mark.asyncio
     async def test_routes_to_mllm_scheduler_when_present(self):

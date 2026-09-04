@@ -995,6 +995,7 @@ class BatchedEngine(BaseEngine):
         # that token only at safe prefill/decode boundaries.
         self._guided_requests_lock = threading.Lock()
         self._guided_abort_events: dict[str, threading.Event] = {}
+        self._guided_owner_tasks: dict[str, asyncio.Task] = {}
         self._guided_stopping = False
 
     @property
@@ -4037,7 +4038,10 @@ class BatchedEngine(BaseEngine):
         return HAS_GUIDED and not self._is_mllm
 
     def _register_guided_request(
-        self, request_id: str, abort_event: threading.Event
+        self,
+        request_id: str,
+        abort_event: threading.Event,
+        owner_task: asyncio.Task | None = None,
     ) -> None:
         # A few lightweight embedding/tests construct the engine through
         # ``__new__`` to avoid loading MLX. Production always initializes
@@ -4045,14 +4049,43 @@ class BatchedEngine(BaseEngine):
         if not hasattr(self, "_guided_requests_lock"):
             self._guided_requests_lock = threading.Lock()
             self._guided_abort_events = {}
+            self._guided_owner_tasks = {}
             self._guided_stopping = False
+        elif not hasattr(self, "_guided_owner_tasks"):
+            self._guided_owner_tasks = {}
         with self._guided_requests_lock:
             if getattr(self, "_guided_stopping", False):
                 abort_event.set()
-                raise GuidedGenerationCancelledError()
-            if request_id in self._guided_abort_events:
+                stopped = True
+            else:
+                stopped = False
+            if not stopped and request_id in self._guided_abort_events:
                 raise RuntimeError("guided request identity is already active")
-            self._guided_abort_events[request_id] = abort_event
+            if not stopped:
+                self._guided_abort_events[request_id] = abort_event
+                if owner_task is not None:
+                    self._guided_owner_tasks[request_id] = owner_task
+        if stopped:
+            self._mark_lifecycle_aborted_tasks((owner_task,))
+            raise GuidedGenerationCancelledError()
+
+    def _mark_lifecycle_aborted_tasks(
+        self, tasks: tuple[asyncio.Task | None, ...]
+    ) -> None:
+        """Publish engine-owned cancellation through the route lifecycle ledger."""
+
+        owners = tuple(task for task in tasks if task is not None)
+        if not owners:
+            return
+        lock = getattr(self, "_admission_lock", None)
+        if lock is None:
+            return
+        with lock:
+            aborted_tasks = getattr(self, "_lifecycle_aborted_tasks", None)
+            if aborted_tasks is None:
+                aborted_tasks = weakref.WeakSet()
+                self._lifecycle_aborted_tasks = aborted_tasks
+            aborted_tasks.update(owners)
 
     def _finish_guided_request(
         self, request_id: str, abort_event: threading.Event
@@ -4067,6 +4100,7 @@ class BatchedEngine(BaseEngine):
             if self._guided_abort_events.get(request_id) is abort_event:
                 was_aborted = abort_event.is_set()
                 self._guided_abort_events.pop(request_id, None)
+                getattr(self, "_guided_owner_tasks", {}).pop(request_id, None)
                 return was_aborted
         return abort_event.is_set()
 
@@ -4095,6 +4129,8 @@ class BatchedEngine(BaseEngine):
             self._guided_stopping = True
             for abort_event in registry.values():
                 abort_event.set()
+            owner_tasks = tuple(getattr(self, "_guided_owner_tasks", {}).values())
+        self._mark_lifecycle_aborted_tasks(owner_tasks)
 
     def finish_guided_handoff(self, request_id: str) -> bool:
         """Transfer a retained guided identity to an admitted fallback.
@@ -4109,6 +4145,7 @@ class BatchedEngine(BaseEngine):
             return False
         with lock:
             abort_event = registry.pop(request_id, None)
+            getattr(self, "_guided_owner_tasks", {}).pop(request_id, None)
             return bool(abort_event is not None and abort_event.is_set())
 
     async def generate_with_schema(
@@ -4190,7 +4227,11 @@ class BatchedEngine(BaseEngine):
             kwargs.pop("retain_guided_request_on_failure", False)
         )
         abort_event = threading.Event()
-        self._register_guided_request(request_id, abort_event)
+        self._register_guided_request(
+            request_id,
+            abort_event,
+            owner_task=asyncio.current_task(),
+        )
         if request_id_holder is not None:
             try:
                 request_id_holder[0] = request_id
