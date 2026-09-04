@@ -16,6 +16,7 @@ from vllm_mlx.runtime.resident_models import (
     ResidentModelError,
     ResidentModelManager,
     ResidentPerformanceConfig,
+    ResidentRole,
     resident_scheduler_kwargs,
 )
 
@@ -4099,9 +4100,9 @@ async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load
     aligner = int(0.3 * GIB)
     concurrent = int(0.5 * GIB)
 
-    # Pre-existing roles: speech-input (0.4) + a tts-role sibling (0.2) = 0.6.
+    # Pre-existing roles: speech-input (0.4) + a speech-output sibling (0.2) = 0.6.
     async with manager.admit_role(
-        role="tts",
+        role="speech-output",
         model_id="some-tts",
         requested_bytes=other,
         capacity_source="catalog",
@@ -4128,21 +4129,22 @@ async def test_alignment_role_exclusive_sibling_capacity_is_retained_during_load
             release_exclusive_role="speech-input",
         ):
             async with manager.admit_role(
-                role="tts-extra",
-                model_id="other-tts",
+                role="image-generation",
+                model_id="other-gen",
                 requested_bytes=concurrent,
                 capacity_source="catalog",
             ):
                 pass
             raise RuntimeError("load failed")
 
-    # The concurrent tts-extra admission was REJECTED (sibling capacity
+    # The concurrent image-generation admission was REJECTED (sibling capacity
     # retained), so on rollback the ledger is exactly as before the aligner:
-    # speech-input restored (its engine is still resident) + tts, alignment gone.
+    # speech-input restored (its engine is still resident) + speech-output,
+    # alignment gone.
     roles = {r["role"] for r in manager.snapshot()["roles"]}
     assert "alignment" not in roles
-    assert "tts" in roles
-    assert "tts-extra" not in roles
+    assert "speech-output" in roles
+    assert "image-generation" not in roles
     assert "speech-input" in roles  # retained + credited, its engine accounted
     assert manager._accounted_usage() == other + speech
 
@@ -4304,3 +4306,231 @@ async def test_alignment_role_rollback_preserves_concurrently_replaced_sibling()
     (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
     assert speech["reserved_bytes"] == s2
     assert "alignment" not in {r["role"] for r in manager.snapshot()["roles"]}
+
+
+# ---------------------------------------------------------------------------
+# Engine-layer contract for #2305: closed role enum + typed capacity envelope.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_closed_role_enum_rejects_unknown_and_admits_all_six():
+    # The six roles the shared residency lifecycle owns are all admissible.
+    manager, _ = role_manager_fixture(limit_gib=16.0)
+    for role in (
+        "assistant",
+        "speech-input",
+        "speech-output",
+        "alignment",
+        "image-generation",
+        "video-generation",
+    ):
+        async with manager.admit_role(
+            role=role,
+            model_id=f"model-{role}",
+            requested_bytes=int(0.1 * GIB),
+            capacity_source="catalog",
+        ):
+            pass
+    resident = {r["role"] for r in manager.snapshot()["roles"]}
+    assert resident == {
+        "assistant",
+        "speech-input",
+        "speech-output",
+        "alignment",
+        "image-generation",
+        "video-generation",
+    }
+
+    # An arbitrary/unknown role string must be rejected at the ledger gate with
+    # a clear error — never silently admitted into the closed set.
+    with pytest.raises(ResidentModelError, match="unknown resident role"):
+        async with manager.admit_role(
+            role="tts-extra",
+            model_id="whatever",
+            requested_bytes=int(0.1 * GIB),
+            capacity_source="catalog",
+        ):
+            pass
+
+    # release_role is gated by the same closed set.
+    with pytest.raises(ResidentModelError, match="unknown resident role"):
+        await manager.release_role("no-such-role")
+
+
+def test_role_enum_accepts_canonical_underscore_aliases():
+    # Callers may use the snake_case canonical names (speech_input,
+    # speech_output, image_generation, video_generation) and the closed enum
+    # coerces them to the authoritative dash-form wire values.
+    for role, wire in (
+        ("speech_input", "speech-input"),
+        ("speech_output", "speech-output"),
+        ("image_generation", "image-generation"),
+        ("video_generation", "video-generation"),
+    ):
+        assert ResidentRole.coerce(role).value == wire
+
+
+@pytest.mark.asyncio
+async def test_capacity_507_envelope_carries_full_role_contract():
+    # A capacity rejection must surface the stable machine fields #2306 will
+    # parse: requested_role, the live resident_roles ledger, recovery_actions,
+    # and the requested/used/limit bytes.
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    small = int(0.2 * GIB)
+
+    # Seed a resident speech-output role so the ledger is non-empty.
+    async with manager.admit_role(
+        role="speech-output",
+        model_id="some-tts",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    exc = exc_info.value
+    assert exc.requested_role == "alignment"
+    envelope = exc.envelope()["error"]
+    assert envelope["type"] == "insufficient_capacity_error"
+    assert envelope["requested_role"] == "alignment"
+    assert envelope["requested_bytes"] == _aligner_bytes()
+    assert envelope["limit_bytes"] == int(1.0 * GIB)
+    assert envelope["used_bytes"] > 0
+    # The live ledger is reflected in the envelope (speech-output resident).
+    resident = envelope["resident_roles"]
+    assert resident == [
+        {
+            "role": "speech-output",
+            "model_id": "some-tts",
+            "reserved_bytes": small,
+            "state": "resident",
+        }
+    ]
+    # Alignment's server-declared recovery actions.
+    assert envelope["recovery_actions"] == ["unload_assistant"]
+
+
+@pytest.mark.asyncio
+async def test_alignment_replace_conflict_reports_recovery_actions():
+    # The capacity rejection for the alignment role must pair its
+    # requested_role with the role-appropriate recovery actions.
+    manager, _ = role_manager_fixture(limit_gib=0.5)
+
+    with pytest.raises(ResidentModelCapacityError) as exc_info:
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=_aligner_bytes(),
+            capacity_source="catalog",
+        ):
+            pass
+
+    envelope = exc_info.value.envelope()["error"]
+    assert envelope["requested_role"] == "alignment"
+    assert envelope["recovery_actions"] == ["unload_assistant"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_actions_are_role_appropriate():
+    # recovery_actions is data-driven per role: speech-input gets the three
+    # actions; speech-output only stop_speech_output; assistant none.
+    async def envelope_for_role(role):
+        manager, _ = role_manager_fixture(limit_gib=0.1)
+        with pytest.raises(ResidentModelCapacityError) as exc_info:
+            async with manager.admit_role(
+                role=role,
+                model_id=f"model-{role}",
+                requested_bytes=int(1.0 * GIB),  # far over the tiny ceiling
+                capacity_source="catalog",
+            ):
+                pass
+        return exc_info.value.envelope()["error"]
+
+    assert (await envelope_for_role("speech-input"))["recovery_actions"] == [
+        "select_smaller_speech_input",
+        "stop_speech_output",
+        "unload_assistant",
+    ]
+    assert (await envelope_for_role("speech-output"))["recovery_actions"] == [
+        "stop_speech_output"
+    ]
+    assert (await envelope_for_role("alignment"))["recovery_actions"] == [
+        "unload_assistant"
+    ]
+    # Assistant has no server-declared recovery actions.
+    assert (await envelope_for_role("assistant"))["recovery_actions"] == []
+
+
+@pytest.mark.asyncio
+async def test_role_telemetry_consistent_across_success_rollback_cancel():
+    # The role ledger stays consistent across the full lifecycle: an admitted
+    # role commits resident; a failed load rolls back to empty; a cancellation
+    # also leaves no leaked reservation (all deterministic — no real sleeps).
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+
+    # Success: commits to resident.
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper",
+        requested_bytes=int(0.3 * GIB),
+        capacity_source="catalog",
+    ):
+        pass
+    (entry,) = [
+        r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"
+    ]
+    assert entry["state"] == "resident"
+    assert entry["reserved_bytes"] == int(0.3 * GIB)
+
+    # Rollback on failure: the new role is not left in the ledger.
+    with pytest.raises(RuntimeError, match="boom"):
+        async with manager.admit_role(
+            role="speech-output",
+            model_id="tts",
+            requested_bytes=int(0.3 * GIB),
+            capacity_source="catalog",
+        ):
+            raise RuntimeError("boom")
+    assert "speech-output" not in {r["role"] for r in manager.snapshot()["roles"]}
+
+    # Cancellation: no leaked reservation.
+    with pytest.raises(asyncio.CancelledError):
+        async with manager.admit_role(
+            role="speech-output",
+            model_id="tts",
+            requested_bytes=int(0.3 * GIB),
+            capacity_source="catalog",
+        ):
+            raise asyncio.CancelledError()
+    assert "speech-output" not in {r["role"] for r in manager.snapshot()["roles"]}
+
+    # release_role drops a committed reservation so the snapshot is consistent.
+    await manager.release_role("speech-input")
+    assert "speech-input" not in {r["role"] for r in manager.snapshot()["roles"]}
+
+
+@pytest.mark.asyncio
+async def test_release_role_unknown_rejected_after_valid_release_works():
+    manager, _ = role_manager_fixture(limit_gib=4.0)
+    async with manager.admit_role(
+        role="speech-output",
+        model_id="tts",
+        requested_bytes=int(0.3 * GIB),
+        capacity_source="catalog",
+    ):
+        pass
+    # Valid release succeeds.
+    await manager.release_role("speech-output")
+    assert "speech-output" not in {r["role"] for r in manager.snapshot()["roles"]}
+    # Unknown release is gated by the closed enum.
+    with pytest.raises(ResidentModelError, match="unknown resident role"):
+        await manager.release_role("speech-output-extra")
