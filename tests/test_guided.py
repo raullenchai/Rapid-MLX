@@ -473,12 +473,13 @@ class TestGuidedGenerator:
             def _decode_constrained(self, *, grammar, prompt, max_tokens, temperature):
                 return "legacy-ok"
 
+        class _MatcherStub:
+            @staticmethod
+            def grammar_from_json_schema(*_args, **_kwargs):
+                return object()
+
         monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
-        monkeypatch.setattr(
-            guided.LLMatcher,
-            "grammar_from_json_schema",
-            lambda *_args, **_kwargs: object(),
-        )
+        monkeypatch.setattr(guided, "LLMatcher", _MatcherStub)
         generator = _LegacyGenerator(object(), object())
 
         assert (

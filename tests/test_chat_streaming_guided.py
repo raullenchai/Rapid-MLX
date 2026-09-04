@@ -363,7 +363,11 @@ async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
 
     terminal = json.loads((await fallback_result).removeprefix("data: "))
     assert terminal["choices"][0]["finish_reason"] == "cancelled"
-    assert await anext(stream) == "data: [DONE]\n\n"
+    assert terminal["choices"][0]["delta"] == {}
+    assert "FALLBACK-MUST-NOT-LEAK" not in json.dumps(terminal)
+    done = await anext(stream)
+    assert done == "data: [DONE]\n\n"
+    assert "FALLBACK-MUST-NOT-LEAK" not in done
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
     assert engine.handoff_calls == 1
