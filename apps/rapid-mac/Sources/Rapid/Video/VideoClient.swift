@@ -95,21 +95,15 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             /// `dimension_rounding` vocabulary (`none` -> raw dimensions,
             /// `ceil_to_32`, `ceil_to_64`).
             ///
-            /// An unrecognized constant is deliberately tolerated (fail-closed is
-            /// reserved for missing/malformed payloads, not for a new rounding
-            /// label) and falls back to the largest step this client currently
-            /// understands, 64. This keeps the payload valid while being
-            /// conservative with the workload estimate. A future constant larger
-            /// than 64 (e.g. `ceil_to_128`) could under-round here and admit a
-            /// preset the server rejects; that is an accepted UI-level tradeoff —
-            /// the server remains authoritative at request time, and we prefer
-            /// tolerance over dropping an otherwise healthy response.
-            var alignmentStep: Int {
+            /// Unknown values have no safe fallback: treating a future larger
+            /// alignment as 64 could under-count workload and expose a preset the
+            /// server must reject. Callers therefore fail closed on `nil`.
+            var alignmentStep: Int? {
                 switch dimensionRounding {
                 case "none": 1
                 case "ceil_to_32": 32
                 case "ceil_to_64": 64
-                default: 64
+                default: nil
                 }
             }
         }
@@ -326,13 +320,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
               frames.offset <= frames.maximum,
               workload.metric == "pixel_frames",
               workload.maximum > 0,
-              // dimension_rounding must be a well-formed (non-empty, non-blank)
-              // string. A blank value is malformed and fails closed; a
-              // well-formed but unrecognized constant is tolerated (see
-              // WorkloadLimit.alignmentStep).
-              !workload.dimensionRounding.trimmingCharacters(
-                  in: .whitespacesAndNewlines
-              ).isEmpty,
+              workload.alignmentStep != nil,
               validInput else {
             throw VideoClientError.invalidResponse
         }
@@ -347,7 +335,7 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         // Workload normalization is a separate server contract from the
         // request-size alignment. The rounding step is taken from the
         // server-advertised dimension_rounding vocabulary (see WorkloadLimit).
-        let step = limits.workload.alignmentStep
+        guard let step = limits.workload.alignmentStep else { return false }
         guard let width = Self.roundUp(dimensions.width, to: step),
               let height = Self.roundUp(dimensions.height, to: step) else { return false }
         let frameStep = max(1, limits.frames.step)

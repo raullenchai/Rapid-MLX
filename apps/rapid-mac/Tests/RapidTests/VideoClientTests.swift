@@ -55,32 +55,26 @@ struct VideoClientTests {
         }
     }
 
-    @Test("Unrecognized dimension_rounding string is tolerated with a 64-pixel fallback")
-    func unsupportedRoundingIsTolerated() async throws {
-        // The fail-closed rule is about missing/malformed payloads, not about a
-        // new rounding constant. An unknown value decodes and validates, and the
-        // workload budget uses the conservative 64-pixel fallback.
-        //
-        // 592x592 is not a multiple of 64, so only the 64-pixel fallback excludes
-        // the 4 s preset: rounded up to 640x640, its 97-frame workload
-        // (39,731,200) exceeds the 38,141,952 budget. A laxer fallback
-        // (1/16/32) would leave 4 s inside the budget and yield [1, 2, 4],
-        // so asserting [1, 2] proves the 64-pixel fallback is applied.
+    @Test("Unrecognized dimension_rounding fails closed")
+    func unsupportedRoundingFailsClosed() async {
+        // A future alignment can be larger than the values this client knows.
+        // Guessing 64 would under-count workload for e.g. ceil_to_128, so an
+        // unknown value must reject the capabilities payload.
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
             of: #""dimension_rounding":"ceil_to_64""#,
-            with: #""dimension_rounding":"floor""#
+            with: #""dimension_rounding":"ceil_to_128""#
         )
         VideoStubProtocol.response = (200, Data(json.utf8))
 
-        let value = try await client.capabilities(port: 8123, bearer: nil)
-        #expect(value.durationPresets(for: "592x592") == [1, 2])
+        await #expect(throws: VideoClientError.invalidResponse) {
+            _ = try await client.capabilities(port: 8123, bearer: nil)
+        }
     }
 
     @Test("Malformed (blank) dimension_rounding fails closed")
     func blankRoundingFailsClosed() async {
-        // An empty/blank rounding label is a malformed payload and rejects,
-        // unlike a well-formed but unrecognized constant (covered above).
+        // An empty/blank rounding label is malformed and rejects too.
         let client = makeClient()
         let json = Self.capabilitiesJSON.replacingOccurrences(
             of: #""dimension_rounding":"ceil_to_64""#,
