@@ -386,6 +386,56 @@ def test_new_files_detects_created_file():
     assert _ENROLLED in new
 
 
+def test_terminal_roster_entry_without_backslash_is_enrollment():
+    """Regression (codex r1 round-4): the final roster entry of a ``run: |``
+    block may omit the shell continuation backslash; it is still a valid
+    enrollment and must be recognized by the ground-truth roster detection."""
+    from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
+
+    head = (
+        "name: CI\n"
+        "jobs:\n"
+        "  t:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          pytest \\\n"
+        "            tests/test_alpha.py \\\n"
+        "            tests/test_terminal.py\n"
+    )
+    # A no-backslash final entry added at the same position (roster only).
+    diff = (
+        "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
+        "--- a/.github/workflows/ci.yml\n"
+        "+++ b/.github/workflows/ci.yml\n"
+        "@@ -8 +8,2 @@\n"
+        "            tests/test_alpha.py \\\n"
+        "+            tests/test_appended.py\n"
+    )
+    lines = _pytest_roster_lines(head)
+    # alpha (line 8) is continuing; terminal (line 9) has no backslash.
+    assert 9 in lines
+
+    # End-to-end: a no-backslash added line at that terminal position is a
+    # valid roster enrollment (with a genuinely new test file).
+    newfile = (
+        "diff --git a/tests/test_appended.py b/tests/test_appended.py\n"
+        "new file mode 100644\n"
+        "index 0000000..1111111\n"
+        "--- /dev/null\n"
+        "+++ b/tests/test_appended.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+pass\n"
+    )
+    roster_only, additions = _roster_only_workflows(
+        newfile + diff,
+        {".github/workflows/ci.yml", "tests/test_appended.py"},
+        {".github/workflows/ci.yml": head},
+    )
+    assert roster_only == {".github/workflows/ci.yml"}
+    assert additions[".github/workflows/ci.yml"] == ["tests/test_appended.py"]
+
+
 # ---------------------------------------------------------------------------
 # SupplyChainStep.run — the gate behavior
 # ---------------------------------------------------------------------------

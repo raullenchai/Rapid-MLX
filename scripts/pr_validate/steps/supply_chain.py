@@ -141,9 +141,12 @@ def _pytest_roster_lines(content: str) -> set[int]:
     """Return the (1-based) line numbers in *content* that are roster entries
     of the explicit pytest test list. This is the authoritative, ground-truth
     denominator: the contiguous ``tests/*.py \\`` continuation lines that
-    immediately follow a ``pytest \\`` command. Codex r1 round-3 — do not
-    trust hunk context (a long non-pytest file list would hide its opener);
-    verify each added line against the ACTUAL roster location in the file."""
+    follow a ``pytest \\`` command, PLUS an optional trailing terminal
+    ``tests/*.py`` (no backslash) — the last argument of a ``run: |`` block is
+    allowed to omit the shell continuation, and must still be a valid final
+    enrollment (codex r1 round-4). Codex r1 round-3 — do not trust hunk
+    context (a long non-pytest file list would hide its opener); verify each
+    added line against the ACTUAL roster location in the file."""
     roster: set[int] = set()
     lines = content.splitlines()
     i = 0
@@ -151,8 +154,13 @@ def _pytest_roster_lines(content: str) -> set[int]:
     while i < n:
         if _PYTEST_ROSTER_CMD.match(lines[i]):
             j = i + 1
+            # A run of continuing roster entries...
             while j < n and _ROSTER_CONTINUE_RE.match(lines[j]):
                 roster.add(j + 1)  # 1-based
+                j += 1
+            # ...optionally followed by one terminal entry (no continuation).
+            if j < n and _ROSTER_ENTRY_RE.match(lines[j]):
+                roster.add(j + 1)
                 j += 1
             i = j
         else:
