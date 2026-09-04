@@ -535,15 +535,19 @@ def _validate_seed(v) -> int | None:
 # was added Aug 2025 alongside ``low``/``medium``/``high``; ``none`` is
 # the rapid-mlx-specific "suppress thinking entirely" alias that the
 # desktop UI surfaces, kept here so SDK clients that learned it don't
-# 400. Anthropic Claude's ``thinking.type`` enum is intentionally NOT
-# included — that's a different surface (the Anthropic adapter handles
-# its own translation).
+# 400. ``xhigh`` (#3043) is the ceiling Qwen3.8's chat template ships as
+# its default and Anthropic's ``output_config.effort`` already accepts;
+# without it an OpenAI-SDK client could never ask that model for the
+# level it advertises. Anthropic Claude's ``thinking.type`` enum is
+# intentionally NOT included — that's a different surface (the
+# Anthropic adapter handles its own translation).
 _VALID_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "minimal",
     "low",
     "medium",
     "high",
+    "xhigh",
 )
 
 #: Route-layer translation of the graded OpenAI ``reasoning_effort`` values
@@ -554,13 +558,20 @@ _VALID_REASONING_EFFORTS: tuple[str, ...] = (
 #: the Anthropic surface's ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` tiers
 #: (low=512, medium=2048, high=8192) so the same effort name yields the same
 #: reasoning budget regardless of which API dialect it arrived on; ``minimal``
-#: (OpenAI-only, gpt-5 era) sits one tier below ``low``. Module-scoped so
-#: tests import + assert against the same table the helper uses.
+#: (OpenAI-only, gpt-5 era) sits one tier below ``low`` and ``xhigh`` reuses
+#: the Anthropic 24000 tier. This table is the FALLBACK for templates that
+#: expose no native effort vocabulary; a template that validates
+#: ``reasoning_effort`` against a literal set (Qwen3.8) gets the graded value
+#: mapped onto that set instead — see
+#: ``utils.chat_template.detect_native_reasoning_effort_levels`` (#3043).
+#: Module-scoped so tests import + assert against the same table the helper
+#: uses.
 OPENAI_REASONING_EFFORT_TO_MAX_TOKENS: dict[str, int] = {
     "minimal": 256,
     "low": 512,
     "medium": 2048,
     "high": 8192,
+    "xhigh": 24000,
 }
 
 

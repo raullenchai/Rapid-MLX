@@ -6,6 +6,7 @@ Handles enable_thinking, tools, and fallback logic for chat template rendering.
 """
 
 import copy
+import functools
 import json
 import logging
 import re
@@ -1147,6 +1148,89 @@ def _template_uses_reasoning_effort_without_enable_thinking(
         )
         for template in templates
     )
+
+
+#: OpenAI-shaped ``reasoning_effort`` ladder, weakest to strongest. Shared
+#: by :func:`map_reasoning_effort_to_native` so a graded name keeps its
+#: ordering no matter which subset a template happens to accept.
+REASONING_EFFORT_LADDER: tuple[str, ...] = (
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+
+# A template that *validates* ``reasoning_effort`` against a literal set,
+# e.g. Qwen3.8's
+#   ``{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}``
+# declares its native effort vocabulary. Only that shape counts as a
+# declaration: Harmony merely interpolates the value ("Reasoning: medium")
+# and North Mini Code compares against a single sentinel (``== "none"``),
+# so neither publishes a level set and both keep the token-cap fallback.
+_REASONING_EFFORT_LEVEL_SET_RE = re.compile(
+    r"reasoning_effort\s*(?:\|\s*default\([^)]*\))?\s+(?:not\s+)?in\s*"
+    r"[\(\[]([^\)\]]*)[\)\]]"
+)
+_REASONING_EFFORT_LITERAL_RE = re.compile(r"""['"]([A-Za-z_][A-Za-z0-9_]*)['"]""")
+
+
+@functools.lru_cache(maxsize=64)
+def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...] | None:
+    match = _REASONING_EFFORT_LEVEL_SET_RE.search(template)
+    if match is None:
+        return None
+    levels = tuple(dict.fromkeys(_REASONING_EFFORT_LITERAL_RE.findall(match.group(1))))
+    return levels or None
+
+
+def detect_native_reasoning_effort_levels(
+    template, *, tools: list[dict] | None = None
+) -> tuple[str, ...] | None:
+    """Return the effort vocabulary a chat template validates against.
+
+    ``template`` is whatever the tokenizer exposes as ``chat_template`` (a
+    Jinja string, a ``{"default": ..., "tool_use": ...}`` dict, or ``None``).
+    Returns the literal level set in template order (Qwen3.8 →
+    ``("xhigh", "medium", "low")``) or ``None`` when the template does not
+    declare one — the caller then falls back to the ``reasoning_max_tokens``
+    tier translation, exactly as before this detection existed.
+    """
+    for source in _chat_template_strings(template, tools=tools):
+        levels = _native_reasoning_effort_levels_for_source(source)
+        if levels:
+            return levels
+    return None
+
+
+def map_reasoning_effort_to_native(
+    effort: str, levels: tuple[str, ...] | list[str]
+) -> str | None:
+    """Pick the template-native level that best matches an OpenAI effort.
+
+    * A value the template already accepts is used verbatim.
+    * Otherwise both sides are ranked on :data:`REASONING_EFFORT_LADDER` and
+      the nearest native rank wins; ties round *up* (``high`` on a template
+      whose ceiling is ``xhigh`` means "as much as you have", not "medium").
+    * ``None`` when nothing can be ranked (unknown effort name, or a template
+      whose vocabulary shares no name with the ladder) — the caller keeps
+      the token-cap path. Non-ladder names inside an otherwise rankable set
+      (Hy3's ``no_think``) are simply ignored.
+    """
+    if effort in levels:
+        return effort
+    if effort not in REASONING_EFFORT_LADDER:
+        return None
+    ranked = [
+        (REASONING_EFFORT_LADDER.index(level), level)
+        for level in levels
+        if level in REASONING_EFFORT_LADDER
+    ]
+    if not ranked:
+        return None
+    target = REASONING_EFFORT_LADDER.index(effort)
+    _rank, native = min(ranked, key=lambda pair: (abs(pair[0] - target), -pair[0]))
+    return native
 
 
 def _is_gpt_oss_harmony_template(

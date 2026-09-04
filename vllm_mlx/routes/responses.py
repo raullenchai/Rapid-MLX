@@ -116,6 +116,7 @@ from ..service.helpers import (
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
+    served_chat_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -1239,13 +1240,17 @@ async def create_response(request: Request):
         # its enable_thinking preference first (the tool auto-disable then
         # no-ops on it) and a graded value lands its reasoning_max_tokens
         # cap from one source. Explicit client knobs always win.
-        if maybe_apply_reasoning_effort(openai_request):
+        if maybe_apply_reasoning_effort(
+            openai_request, chat_template=served_chat_template(engine)
+        ):
             logger.info(
-                "#448 reasoning_effort=%s translated on /v1/responses "
-                "(none→enable_thinking=False; minimal/low/medium/high→"
-                "reasoning_max_tokens tier). Explicit client enable_thinking "
-                "/ reasoning_max_tokens always wins.",
+                "#448/#3043 reasoning_effort=%s translated on /v1/responses "
+                "(template reasoning_effort=%s, reasoning_max_tokens=%s). "
+                "Explicit client enable_thinking / chat_template_kwargs."
+                "reasoning_effort / reasoning_max_tokens always wins.",
                 openai_request.reasoning_effort,
+                (openai_request.chat_template_kwargs or {}).get("reasoning_effort"),
+                openai_request.reasoning_max_tokens,
             )
 
         # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking
@@ -1351,12 +1356,17 @@ async def create_response(request: Request):
             openai_request.max_tokens is None
             and not get_config().default_max_tokens_is_explicit
         )
+        # Count the prompt with the same template variables the engine will
+        # render with (parity with the chat route's guard; #3043 may have just
+        # merged a native ``reasoning_effort`` level into the dict).
+        _resp_ctk = getattr(openai_request, "chat_template_kwargs", None) or None
         _resp_ctx_prompt_tokens = enforce_context_length_for_messages(
             engine,
             _ctx_messages,
             tools=openai_request.tools,
             max_tokens=None if _resp_implicit_max_tokens else _resp_resolved_max_tokens,
             enable_thinking=_resp_resolved_thinking,
+            chat_template_kwargs=_resp_ctk,
         )
         if _resp_implicit_max_tokens:
             if _resp_ctx_prompt_tokens is None:
@@ -1370,6 +1380,7 @@ async def create_response(request: Request):
                     tools=openai_request.tools,
                     max_tokens=_resp_resolved_max_tokens,
                     enable_thinking=_resp_resolved_thinking,
+                    chat_template_kwargs=_resp_ctk,
                 )
             else:
                 _resp_resolved_max_tokens = (
@@ -1574,6 +1585,14 @@ async def _non_stream(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+    # Forward client ``chat_template_kwargs`` to the engine (#2474 wired only
+    # the chat surface; here the dict was dropped, so the native
+    # ``reasoning_effort`` level #3043 merges in never reached the template).
+    # ``enable_thinking`` is resolved above; the engine-side merge never
+    # overwrites server-resolved keys.
+    ctk = getattr(openai_request, "chat_template_kwargs", None)
+    if isinstance(ctk, dict) and ctk:
+        chat_kwargs["chat_template_kwargs"] = ctk
     _attach_deepseek_no_think_suppression(
         engine,
         cfg,
@@ -2812,6 +2831,14 @@ async def _stream_responses(
         resolved_thinking = _resolve_enable_thinking(openai_request)
         if resolved_thinking is not None:
             chat_kwargs["enable_thinking"] = resolved_thinking
+        # Forward client ``chat_template_kwargs`` to the engine (#2474 wired only
+        # the chat surface; here the dict was dropped, so the native
+        # ``reasoning_effort`` level #3043 merges in never reached the template).
+        # ``enable_thinking`` is resolved above; the engine-side merge never
+        # overwrites server-resolved keys.
+        ctk = getattr(openai_request, "chat_template_kwargs", None)
+        if isinstance(ctk, dict) and ctk:
+            chat_kwargs["chat_template_kwargs"] = ctk
         _attach_deepseek_no_think_suppression(
             engine,
             cfg,
