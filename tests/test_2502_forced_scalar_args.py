@@ -97,15 +97,19 @@ class TestSalvageForcedScalarArguments:
         assert json.loads(out) == {"degrees": 72}
 
     def test_fractional_float_rejected_for_integer_prop(self):
-        # codex NIT round-5: a non-integer float would fail integer validation;
-        # refuse to salvage it (fail closed).
+        # A non-integer float would fail integer validation → refuse to salvage.
         int_tool = _tool("temperature", ["degrees"], ptype="integer")
         assert (
             _salvage_forced_scalar_arguments("temperature", "72.5", [int_tool]) is None
         )
-        # An integral float is fine.
+        # An integral float is still a FLOAT, whose json.loads parse may have
+        # already lost precision on large values — fail closed rather than
+        # int()-coerce (codex BLOCKING). Only a genuine JSON integer salvages.
         assert (
-            _salvage_forced_scalar_arguments("temperature", "72.0", [int_tool])
+            _salvage_forced_scalar_arguments("temperature", "72.0", [int_tool]) is None
+        )
+        assert (
+            _salvage_forced_scalar_arguments("temperature", "72", [int_tool])
             == '{"degrees": 72}'
         )
 
@@ -148,6 +152,17 @@ class TestSalvageForcedScalarArguments:
             is None
         )
         assert _salvage_forced_scalar_arguments("weather", "[bad", [_WEATHER]) is None
+
+    def test_legit_string_with_colon_is_accepted(self):
+        # codex round-6: a bare string containing ':' is not necessarily a broken
+        # object — e.g. a URL. Only STRUCTURAL-LED text is rejected.
+        url_tool = _tool("lookup", ["url"], ptype="string")
+        assert (
+            _salvage_forced_scalar_arguments(
+                "lookup", "https://example.com", [url_tool]
+            )
+            == '{"url": "https://example.com"}'
+        )
 
     def test_unknown_tool_never_guesses(self):
         assert _salvage_forced_scalar_arguments("other", "x", [_WEATHER]) is None

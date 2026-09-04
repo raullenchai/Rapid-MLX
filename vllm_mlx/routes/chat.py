@@ -3048,12 +3048,14 @@ def _salvage_forced_scalar_arguments(
     if not parsed:
         # Bare unquoted text that wouldn't parse as JSON — only meaningful as a
         # string scalar. An empty string offers nothing to salvage. Reject text
-        # that looks like a broken JSON OBJECT (contains structural characters)
-        # so we never mis-map a fragment of an intended structure onto a string
-        # property — those stay ``{}`` and fail closed exactly as before.
+        # that STARTS with structural characters — i.e. was clearly aiming at a
+        # JSON object/array — so we never mis-map a fragment of an intended
+        # structure onto a string property. A legitimate scalar like
+        # ``https://example.com`` (contains ``:``) is NOT structural-led and is
+        # accepted (codex); ``{"unbalanced": ...`` / ``["bad`` are rejected.
         if not isinstance(arguments, str) or not arguments.strip():
             return None
-        if any(c in arguments for c in '{}[]:"'):
+        if arguments[0] in '{}["':
             return None
         value = arguments
     elif isinstance(decoded, (str, int, float, bool)):
@@ -3076,8 +3078,12 @@ def _salvage_forced_scalar_arguments(
     if ptype == "integer":
         if isinstance(value, bool):
             return None  # never coerce bool → number
-        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
-            return json.dumps({prop: int(value)})
+        # Only a genuine JSON integer satisfies an integer property. A float
+        # (``72.0``) is NOT accepted: ``json.loads`` already parsed it as a
+        # float (possible precision loss on large values) and coercing with
+        # ``int()`` could silently corrupt it (codex BLOCKING), so fail closed.
+        if isinstance(value, int):
+            return json.dumps({prop: value})
         return None  # a non-integer float cannot satisfy an integer property
     if ptype == "number":
         if isinstance(value, bool):
