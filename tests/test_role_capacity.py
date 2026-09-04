@@ -166,21 +166,29 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
 
     class _CompleteRepo:
         repo_id = "c/CompleteModel"
-        # A complete download: ref points at main, weights present.
+        # A complete SINGLE-FILE download (GGUF): ref points at main, weights
+        # present, no sharding possibility.
         revisions = (
             _Rev(
                 refs={"main"},
-                files=(("config.json", 50), ("model.safetensors", 9950)),
+                files=(("config.json", 50), ("model.gguf", 9950)),
             ),
         )
 
     class _OldCompletedPlusPartialRepo:
         repo_id = "c/MixedModel"
-        # An old completed revision PLUS a fresh partial one being downloaded.
+        # An old completed GGUF revision PLUS a fresh partial one downloading.
         revisions = (
-            _Rev(refs={"main"}, files=(("model.safetensors", 8000),)),
+            _Rev(refs={"main"}, files=(("model.gguf", 8000),)),
             _Rev(refs=(), files=(("config.json", 100),)),
         )
+
+    class _BareSafeTensorNoIndexRepo:
+        repo_id = "c/BareSafeTensorModel"
+        # A single, ordinarily-named .safetensors with NO index (round-15):
+        # it could be one weight of several in a selective download, so we
+        # cannot prove completeness -> fail closed.
+        revisions = (_Rev(refs={"main"}, files=(("model.safetensors", 9900),)),)
 
     class _ShardedCompleteRepo:
         repo_id = "c/ShardedCompleteModel"
@@ -241,6 +249,7 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
             _SelectiveNoWeightsRepo,
             _CompleteRepo,
             _OldCompletedPlusPartialRepo,
+            _BareSafeTensorNoIndexRepo,
             _ShardedCompleteRepo,
             _ShardedIncompleteRepo,
             _NonDefaultBranchRepo,
@@ -268,3 +277,5 @@ def test_local_cache_rejects_partial_and_uses_completed_snapshot(monkeypatch):
     assert "c/nondefaultmodel" not in index
     # A shard-PATTERNED weight with no index is an incomplete download -> fail closed.
     assert "c/shardednoindexmodel" not in index
+    # A bare .safetensors with NO index cannot be proven complete -> fail closed.
+    assert "c/baresafetensormodel" not in index

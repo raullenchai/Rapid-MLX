@@ -185,7 +185,12 @@ def _revision_is_complete(rev) -> bool:
         )
         return False
 
-    return any(name.endswith(_WEIGHT_SUFFIXES) for name in files)
+    # With NO shard index, the only layout we can charge with confidence is a
+    # single-file GGUF weight (GGUF has no sharding / companion-weight concept).
+    # A bare ``.safetensors``/``.bin``/``.npz`` -- even non-shard-pattern -- could
+    # be one ordinarily-named weight of several in a selective download, so we
+    # fail closed unless an index proves the full set (round-15).
+    return any(name.endswith((".gguf",)) for name in files)
 
 
 def _default_completed_revision(revisions):

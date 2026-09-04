@@ -1330,7 +1330,6 @@ def test_noop_role_admission_commit_is_noop():
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_admitting_alignment_releases_resident_speech_input_role(
     monkeypatch,
 ):
@@ -1362,6 +1361,50 @@ async def test_admitting_alignment_releases_resident_speech_input_role(
         assert "speech-input" not in roles
         assert "alignment" in roles
         assert admission is not None
+
+
+@pytest.mark.asyncio
+async def test_admitting_alignment_restores_speech_input_on_507(monkeypatch):
+    """pr_validate codex BLOCKING (round-15): when alignment admission is
+    REJECTED (507) before any load runs, the ASR engine is still resident, so
+    the speech-input reservation released up front must be RESTORED — never
+    leave the still-resident ASR engine unaccounted."""
+
+    from fastapi import HTTPException
+
+    from vllm_mlx.routes import audio as audio_route
+
+    class _ResidentStt:
+        model_name = "whisper-large"
+
+    monkeypatch.setattr(audio_route, "_stt_engine", _ResidentStt())
+
+    # Tight ceiling: fits the small speech-input reservation, but NOT the
+    # large aligner footprint even after speech-input is released.
+    manager = _make_role_manager(limit_gib=0.5)
+    _install_role_manager(monkeypatch, manager)
+
+    # Dictation role resident + ASR engine resident (small footprint).
+    small = int(0.05 * 1024**3)
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=small,
+        capacity_source="catalog",
+    ):
+        pass
+    assert [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
+
+    # Alignment admission is rejected with 507 (over ceiling even after the
+    # speech-input release) -> the speech-input reservation must be restored.
+    with pytest.raises(HTTPException) as exc_info:
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            pass
+    assert exc_info.value.status_code == 507
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "speech-input" in roles  # restored: the ASR engine is still resident
+    assert "alignment" not in roles  # the rejected aligner left no reservation
 
 
 @pytest.mark.asyncio
