@@ -4516,9 +4516,7 @@ async def test_role_telemetry_consistent_across_success_rollback_cancel():
         capacity_source="catalog",
     ):
         pass
-    (entry,) = [
-        r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"
-    ]
+    (entry,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
     assert entry["state"] == "resident"
     assert entry["reserved_bytes"] == int(0.3 * GIB)
 

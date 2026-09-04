@@ -67,7 +67,11 @@ class ResidentRole(str, enum.Enum):
                 f"invalid role {value!r}: expected one of "
                 f"{sorted(member.value for member in cls)}"
             )
-        member = cls(value) if value in cls._value2member_map_ else _ROLE_INPUT_ALIASES.get(value)
+        member = (
+            cls(value)
+            if value in cls._value2member_map_
+            else _ROLE_INPUT_ALIASES.get(value)
+        )
         if member is None:
             raise ResidentModelError(
                 f"unknown resident role {value!r}: must be one of "
@@ -184,8 +188,12 @@ class ResidentModelCapacityError(ResidentModelError):
             "limit_bytes": self.limit_bytes,
             "used_bytes": self.used_bytes,
             "requested_role": self.requested_role,
-            "resident_roles": self.resident_roles if self.resident_roles is not None else [],
-            "recovery_actions": self.recovery_actions if self.recovery_actions is not None else [],
+            "resident_roles": self.resident_roles
+            if self.resident_roles is not None
+            else [],
+            "recovery_actions": self.recovery_actions
+            if self.recovery_actions is not None
+            else [],
         }
         return {"error": envelope}
 
@@ -1028,9 +1036,7 @@ class ResidentModelManager:
         role = coerced_role.value
         coerced_exclusive_role = self._coerce_role(release_exclusive_role)
         release_exclusive_role = (
-            coerced_exclusive_role.value
-            if coerced_exclusive_role is not None
-            else None
+            coerced_exclusive_role.value if coerced_exclusive_role is not None else None
         )
 
         async with self._lock:
