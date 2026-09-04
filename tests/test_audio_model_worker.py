@@ -1326,6 +1326,7 @@ def test_noop_role_admission_commit_is_noop():
 
     admission = _NoopRoleAdmission()
     admission.retire_previous()
+    admission.retire_exclusive()  # must exist so unmanaged servers don't AttributeError
     admission.commit()  # must not raise
 
 

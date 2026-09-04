@@ -168,6 +168,9 @@ class _NoopRoleAdmission:
     def retire_previous(self) -> None:
         pass
 
+    def retire_exclusive(self) -> None:
+        pass
+
     def commit(self) -> None:
         # No-op: without a residency manager there is no ledger entry to keep.
         # Must exist so the cancellation recovery path can call

@@ -753,14 +753,16 @@ class ResidentModelManager:
         ``snapshot()`` projection) is retired up front so the new role is not
         double-charged against the ceiling (e.g. alignment retiring the
         dictation ``speech-input`` role whose ASR engine the aligner evicts).
-        Because the release and the new role's admission happen under the SAME
-        ``self._lock`` critical section, and rollback re-inserts the retired
-        reservation atomically in that same critical section, no concurrent
-        admission can consume the freed capacity in the window between release
-        and restore — the retired reservation's capacity is owned by this
-        transaction until commit. On failure/cancellation the retired
-        reservation is restored in full, so a still-resident engine can never
-        be left silently unaccounted; on success it stays retired.
+        The release and the new role's admission happen under the SAME
+        ``self._lock`` critical section. The manager lock is NOT held across
+        the yielded load (a seconds-long weight load), so a concurrent
+        admission may consume the freed capacity in that window; on
+        failure/cancellation the rollback therefore re-runs capacity
+        enforcement ATOMICALLY under the lock before restoring the retired
+        reservation — restoration is skipped if it would exceed the ceiling
+        (or if the caller signaled :meth:`ResidentRoleAdmission.retire_exclusive`,
+        meaning the sibling's engine was already discarded). On success the
+        retired reservation stays retired.
         """
 
         async with self._lock:
@@ -843,15 +845,30 @@ class ResidentModelManager:
                     else:
                         self._roles.pop(role, None)
                 # Restore the retired exclusive role's reservation ATOMICALLY
-                # with this rollback. Since it was released under the same lock
-                # as this admission, no concurrent admission could have claimed
-                # its capacity in the interim; re-insert with ``setdefault`` so
-                # a GENUINELY newer reservation for the role (whose owner is
-                # authoritative) is never clobbered. UNLESS the caller signaled
+                # with this rollback — but ONLY within the configured ceiling.
+                # The sibling's bytes were freed for the duration of the yielded
+                # load (to avoid a false 507 while the aligner would evict the
+                # ASR engine), and the manager lock is NOT held across that
+                # load, so a concurrent admission may legitimately have consumed
+                # the freed capacity. Re-running capacity enforcement here
+                # (under the lock, after the alignment record above is removed)
+                # means restoration cannot push the ledger past ``memory_limit``:
+                # if it would, the sibling stays retired and its engine is left
+                # unaccounted rather than exceeding the hard ceiling. ``setdefault``
+                # also never clobbers a GENUINELY newer reservation for the role
+                # (whose owner is authoritative). And if the caller signaled
                 # ``retire_exclusive`` — the instant the sibling's engine was
                 # actually discarded, restoring would charge a phantom engine
-                # that no longer exists, so it stays retired.
-                if released_exclusive is not None and not admission.exclusive_retired:
+                # that no longer exists — it stays retired regardless.
+                if (
+                    released_exclusive is not None
+                    and not admission.exclusive_retired
+                    and (
+                        self.memory_limit_bytes <= 0
+                        or self._accounted_usage() + released_exclusive.reserved_bytes
+                        <= self.memory_limit_bytes
+                    )
+                ):
                     self._roles.setdefault(release_exclusive_role, released_exclusive)
             raise
         else:

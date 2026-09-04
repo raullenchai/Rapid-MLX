@@ -3382,3 +3382,63 @@ async def test_alignment_role_release_exclusive_restores_sibling_on_rollback():
     # The restored reservation keeps its original footprint (accounted once).
     (speech,) = [r for r in manager.snapshot()["roles"] if r["role"] == "speech-input"]
     assert speech["reserved_bytes"] == small
+
+
+async def test_alignment_role_release_exclusive_restore_is_capacity_enforced():
+    """pr_validate codex BLOCKING (round-19): the manager lock is NOT held
+    across the yielded aligner load, so a CONCURRENT admission can consume the
+    capacity freed by retiring ``speech-input``. On rollback the retired
+    reservation is restored only within the configured ceiling — if re-adding
+    it would exceed ``memory_limit`` (because another model legitimately took
+    the freed headroom), it stays retired rather than violating the ceiling."""
+    manager, _ = role_manager_fixture(limit_gib=1.0)
+    GIB = 1024**3
+    speech = int(0.4 * GIB)
+    other = int(0.2 * GIB)
+    aligner = int(0.3 * GIB)
+    concurrent = int(0.5 * GIB)
+
+    # Pre-existing roles: speech-input (0.4) + a tts-role sibling (0.2) = 0.6.
+    async with manager.admit_role(
+        role="tts",
+        model_id="some-tts",
+        requested_bytes=other,
+        capacity_source="catalog",
+    ):
+        pass
+    async with manager.admit_role(
+        role="speech-input",
+        model_id="whisper-large",
+        requested_bytes=speech,
+        capacity_source="catalog",
+    ):
+        pass
+    assert manager._accounted_usage() == other + speech
+
+    # Enter alignment (retires speech-input -> frees 0.4; aligner 0.3 fits).
+    # During the yielded LOAD (lock released) a concurrent admission claims the
+    # freed headroom: a second role consuming almost all remaining capacity.
+    with pytest.raises(RuntimeError, match="load failed"):
+        async with manager.admit_role(
+            role="alignment",
+            model_id="qwen3-aligner",
+            requested_bytes=aligner,
+            capacity_source="catalog",
+            release_exclusive_role="speech-input",
+        ):
+            async with manager.admit_role(
+                role="tts-extra",
+                model_id="other-tts",
+                requested_bytes=concurrent,
+                capacity_source="catalog",
+            ):
+                pass
+            raise RuntimeError("load failed")
+
+    roles = {r["role"] for r in manager.snapshot()["roles"]}
+    assert "alignment" not in roles
+    assert "tts" in roles and "tts-extra" in roles
+    # speech-input was NOT restored: its freed capacity was consumed by the
+    # concurrent tts-extra admission, so restoring it would breach the ceiling.
+    assert "speech-input" not in roles
+    assert manager._accounted_usage() == other + concurrent
