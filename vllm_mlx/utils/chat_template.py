@@ -1549,95 +1549,6 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 
 
-def _context_reads(
-    node, bound: frozenset[str], nodes, reads: set[str]
-) -> frozenset[str]:
-    """Collect the names ``node`` reads from the render context into ``reads``.
-
-    Walks in evaluation order with Jinja scoping: a ``set`` binds its target
-    only after its value is evaluated (so North's
-    ``set reasoning = reasoning if reasoning is not undefined else ...`` is a
-    context read), loop targets and macro / call-block arguments shadow the
-    context inside their body only, and a name bound in only some branches of
-    an ``if`` stays a context read afterwards. Attribute access
-    (``message.reasoning``) is never a context read. Returns the names bound
-    once ``node`` has run.
-    """
-    if isinstance(node, nodes.Name):
-        if node.ctx == "load" and node.name not in bound:
-            reads.add(node.name)
-        return bound
-    if isinstance(node, nodes.Assign):
-        _context_reads(node.node, bound, nodes, reads)
-        return bound | _bound_names(node, nodes)
-    if isinstance(node, nodes.AssignBlock):
-        _context_reads_all(node.body, bound, nodes, reads)
-        return bound | _bound_names(node, nodes)
-    if isinstance(node, nodes.For):
-        _context_reads(node.iter, bound, nodes, reads)
-        inner = bound | _bound_names(node, nodes)
-        if node.test is not None:
-            _context_reads(node.test, inner, nodes, reads)
-        _context_reads_all(node.body, inner, nodes, reads)
-        _context_reads_all(node.else_, bound, nodes, reads)
-        return bound
-    if isinstance(node, nodes.If):
-        _context_reads(node.test, bound, nodes, reads)
-        after = [_context_reads_all(node.body, bound, nodes, reads)]
-        after.extend(
-            _context_reads(branch, bound, nodes, reads) for branch in node.elif_
-        )
-        after.append(_context_reads_all(node.else_, bound, nodes, reads))
-        return frozenset.intersection(*after)
-    if isinstance(node, (nodes.Macro, nodes.CallBlock)):
-        for default in node.defaults:
-            _context_reads(default, bound, nodes, reads)
-        if isinstance(node, nodes.CallBlock):
-            _context_reads(node.call, bound, nodes, reads)
-        _context_reads_all(
-            node.body, bound | {arg.name for arg in node.args}, nodes, reads
-        )
-        return bound | _bound_names(node, nodes)
-    if isinstance(node, (nodes.Import, nodes.FromImport)):
-        _context_reads(node.template, bound, nodes, reads)
-        return bound | _bound_names(node, nodes)
-    if isinstance(node, nodes.With):
-        for value in node.values:
-            _context_reads(value, bound, nodes, reads)
-        _context_reads_all(node.body, bound | _bound_names(node, nodes), nodes, reads)
-        return bound
-    # Anything else (output, expressions, with/filter/scope blocks): evaluate
-    # the children in order; bindings made inside stay inside.
-    inner = bound | _bound_names(node, nodes)
-    for child in node.iter_child_nodes():
-        inner = _context_reads(child, inner, nodes, reads)
-    return bound
-
-
-def _context_reads_all(
-    stmts, bound: frozenset[str], nodes, reads: set[str]
-) -> frozenset[str]:
-    for stmt in stmts:
-        bound = _context_reads(stmt, bound, nodes, reads)
-    return bound
-
-
-@functools.lru_cache(maxsize=64)
-def _template_context_reads_for_source(template: str) -> frozenset[str]:
-    """Names a template reads from its render context (see ``_context_reads``)."""
-    jinja2, nodes = _jinja_nodes()
-    env = _template_parser()
-    if jinja2 is None or env is None:
-        return frozenset()
-    try:
-        tree = env.parse(template)
-    except Exception:
-        return frozenset()
-    reads: set[str] = set()
-    _context_reads_all(tree.body, frozenset(), nodes, reads)
-    return frozenset(reads)
-
-
 def _truthiness_tested_name(test, nodes) -> str | None:
     """The variable a bare ``{% if x %}`` / ``{% if not x %}`` / ``a if x else b`` tests."""
     if isinstance(test, nodes.Not):
@@ -1647,26 +1558,152 @@ def _truthiness_tested_name(test, nodes) -> str | None:
     return None
 
 
+def _is_definedness_test(expr, name: str, nodes) -> bool:
+    if isinstance(expr, nodes.Not):
+        expr = expr.node
+    return bool(
+        isinstance(expr, nodes.Test)
+        and expr.name in ("defined", "undefined", "none")
+        and isinstance(expr.node, nodes.Name)
+        and expr.node.name == name
+    )
+
+
+def _carries_context_value(expr, name: str, nodes) -> bool:
+    """Whether ``{% set name = expr %}`` keeps the context value of ``name``.
+
+    True for the idioms templates use to give a context variable a default:
+    ``name``, ``name | default(...)`` and ``name if name is (not) defined /
+    undefined else ...`` (either arm). Any other value is a fresh local.
+    """
+    if isinstance(expr, nodes.Name):
+        return bool(expr.ctx == "load" and expr.name == name)
+    if isinstance(expr, nodes.Filter) and expr.name == "default":
+        return _carries_context_value(expr.node, name, nodes)
+    if isinstance(expr, nodes.CondExpr) and _is_definedness_test(
+        expr.test, name, nodes
+    ):
+        return _carries_context_value(expr.expr1, name, nodes) or (
+            expr.expr2 is not None and _carries_context_value(expr.expr2, name, nodes)
+        )
+    return False
+
+
+def _context_reads(
+    node, bound: frozenset[str], nodes, reads: set[str], tests: set[str]
+) -> frozenset[str]:
+    """Collect the names ``node`` reads from the render context into ``reads``
+    and the ones it branches on as plain booleans while unbound into ``tests``.
+
+    Walks in evaluation order with Jinja scoping: a ``set`` binds its target
+    only after its value is evaluated, loop targets and macro / call-block
+    arguments shadow the context inside their body only, and a name bound
+    in only some branches of an ``if`` stays a context read afterwards. A
+    value-preserving self-rebinding (``set x = x | default(...)``, North's
+    ``set reasoning = reasoning if reasoning is not undefined else ...``)
+    does not shadow: the local still carries the context value, so a later
+    ``{% if reasoning %}`` is a test of the context knob. Attribute access
+    (``message.reasoning``) is never a context read. Returns the names bound
+    once ``node`` has run.
+    """
+    if isinstance(node, nodes.Name):
+        if node.ctx == "load" and node.name not in bound:
+            reads.add(node.name)
+        return bound
+    if isinstance(node, nodes.Assign):
+        _context_reads(node.node, bound, nodes, reads, tests)
+        target = node.target
+        if (
+            isinstance(target, nodes.Name)
+            and target.name not in bound
+            and _carries_context_value(node.node, target.name, nodes)
+        ):
+            return bound
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.AssignBlock):
+        _context_reads_all(node.body, bound, nodes, reads, tests)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.For):
+        _context_reads(node.iter, bound, nodes, reads, tests)
+        inner = bound | _bound_names(node, nodes)
+        if node.test is not None:
+            _context_reads(node.test, inner, nodes, reads, tests)
+        _context_reads_all(node.body, inner, nodes, reads, tests)
+        _context_reads_all(node.else_, bound, nodes, reads, tests)
+        return bound
+    if isinstance(node, nodes.If):
+        _record_truthiness_test(node.test, bound, nodes, tests)
+        _context_reads(node.test, bound, nodes, reads, tests)
+        after = [_context_reads_all(node.body, bound, nodes, reads, tests)]
+        after.extend(
+            _context_reads(branch, bound, nodes, reads, tests) for branch in node.elif_
+        )
+        after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
+        return frozenset.intersection(*after)
+    if isinstance(node, (nodes.Macro, nodes.CallBlock)):
+        for default in node.defaults:
+            _context_reads(default, bound, nodes, reads, tests)
+        if isinstance(node, nodes.CallBlock):
+            _context_reads(node.call, bound, nodes, reads, tests)
+        _context_reads_all(
+            node.body, bound | {arg.name for arg in node.args}, nodes, reads, tests
+        )
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, (nodes.Import, nodes.FromImport)):
+        _context_reads(node.template, bound, nodes, reads, tests)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.With):
+        for value in node.values:
+            _context_reads(value, bound, nodes, reads, tests)
+        _context_reads_all(
+            node.body, bound | _bound_names(node, nodes), nodes, reads, tests
+        )
+        return bound
+    if isinstance(node, nodes.CondExpr):
+        _record_truthiness_test(node.test, bound, nodes, tests)
+    # Anything else (output, expressions, filter/scope blocks): evaluate the
+    # children in order; bindings made inside stay inside.
+    inner = bound | _bound_names(node, nodes)
+    for child in node.iter_child_nodes():
+        inner = _context_reads(child, inner, nodes, reads, tests)
+    return bound
+
+
+def _record_truthiness_test(
+    test, bound: frozenset[str], nodes, tests: set[str]
+) -> None:
+    name = _truthiness_tested_name(test, nodes)
+    if name is not None and name not in bound:
+        tests.add(name)
+
+
+def _context_reads_all(
+    stmts, bound: frozenset[str], nodes, reads: set[str], tests: set[str]
+) -> frozenset[str]:
+    for stmt in stmts:
+        bound = _context_reads(stmt, bound, nodes, reads, tests)
+    return bound
+
+
 @functools.lru_cache(maxsize=64)
-def _template_truthiness_tests_for_source(template: str) -> frozenset[str]:
-    """Names a template branches on as plain booleans (``if x``, ``if not x``,
-    ``... if x else ...``). ``x is defined``, ``x == "y"`` or ``x.flag`` do
-    not count: those consume ``x`` as something other than an on/off switch.
+def _template_context_facts_for_source(
+    template: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """``(names read from the render context, names branched on as plain
+    booleans while carrying the context value)``; see ``_context_reads``.
     """
     jinja2, nodes = _jinja_nodes()
     env = _template_parser()
     if jinja2 is None or env is None:
-        return frozenset()
+        return frozenset(), frozenset()
     try:
         tree = env.parse(template)
     except Exception:
-        return frozenset()
-    names: set[str] = set()
-    for node in tree.find_all((nodes.If, nodes.CondExpr)):
-        name = _truthiness_tested_name(node.test, nodes)
-        if name is not None:
-            names.add(name)
-    return frozenset(names)
+        return frozenset(), frozenset()
+    reads: set[str] = set()
+    tests: set[str] = set()
+    _context_reads_all(tree.body, frozenset(), nodes, reads, tests)
+    return frozenset(reads), frozenset(tests)
 
 
 _TEMPLATE_THINKING_SWITCHES = ("reasoning",)
@@ -1682,17 +1719,19 @@ def template_thinking_switch(
     never consults ``enable_thinking``, reads a boolean ``reasoning`` that
     defaults to on or to ``reasoning_effort != "none"``, and seeds an empty
     thinking block when it is false). A name is a switch only when the
-    template both reads it from the render context and branches on it as a
-    plain boolean somewhere; a template that renders ``{{ reasoning }}`` as
-    data or only asks ``reasoning is defined`` is left alone. A template that
-    reads ``enable_thinking`` keeps that switch and yields ``None`` even if it
-    also reads a recognised name.
+    template reads it from the render context and branches on it as a plain
+    boolean while it still carries the context value (a value-preserving
+    ``set reasoning = reasoning if reasoning is not undefined else ...``
+    keeps it; ``set reasoning = true`` makes the later branch a local one).
+    A template that renders ``{{ reasoning }}`` as data or only asks
+    ``reasoning is defined`` is left alone. A template that reads
+    ``enable_thinking`` keeps that switch and yields ``None`` even if it also
+    reads a recognised name.
     """
     for source in _chat_template_strings(template, tools=tools):
-        reads = _template_context_reads_for_source(source)
+        reads, tested = _template_context_facts_for_source(source)
         if "enable_thinking" in reads:
             return None
-        tested = _template_truthiness_tests_for_source(source)
         for switch in _TEMPLATE_THINKING_SWITCHES:
             if switch in reads and switch in tested:
                 return switch

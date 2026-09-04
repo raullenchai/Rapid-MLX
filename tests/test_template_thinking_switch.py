@@ -18,7 +18,7 @@ import jinja2
 import pytest
 
 from vllm_mlx.utils.chat_template import (
-    _template_context_reads_for_source,
+    _template_context_facts_for_source,
     apply_chat_template,
     template_thinking_switch,
 )
@@ -100,7 +100,7 @@ class TestContextReads:
         ],
     )
     def test_bound_or_attribute_uses_are_not_reads(self, template):
-        assert "reasoning" not in _template_context_reads_for_source(template)
+        assert "reasoning" not in _template_context_facts_for_source(template)[0]
 
     @pytest.mark.parametrize(
         "template",
@@ -126,10 +126,13 @@ class TestContextReads:
         ],
     )
     def test_context_reads(self, template):
-        assert "reasoning" in _template_context_reads_for_source(template)
+        assert "reasoning" in _template_context_facts_for_source(template)[0]
 
     def test_unparseable_source_reads_nothing(self):
-        assert _template_context_reads_for_source("{% if reasoning %}") == frozenset()
+        assert _template_context_facts_for_source("{% if reasoning %}") == (
+            frozenset(),
+            frozenset(),
+        )
 
 
 class TestTemplateThinkingSwitch:
@@ -158,6 +161,16 @@ class TestTemplateThinkingSwitch:
             "{% if x %}a{% elif reasoning %}b{% endif %}",
             # read as data somewhere else too, but branched on as a boolean
             "{{ reasoning }}{% if reasoning %}x{% endif %}",
+            # North's shape: a definedness-guarded self-rebinding keeps the
+            # context value, so the later branch is on the knob
+            "{%- set reasoning = reasoning if reasoning is not undefined else true %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning if reasoning is defined else true %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = true if reasoning is undefined else reasoning %}"
+            "{% if reasoning %}x{% endif %}",
+            # the ``default`` filter idiom likewise
+            "{%- set reasoning = reasoning | default(true) %}{% if reasoning %}x{% endif %}",
         ],
     )
     def test_a_boolean_branch_on_a_context_read_is_a_switch(self, template):
@@ -178,6 +191,17 @@ class TestTemplateThinkingSwitch:
             "{% if reasoning.enabled %}x{% endif %}",
             # branched on the template's own local, not the context
             "{%- set reasoning = true %}{% if reasoning %}x{% endif %}",
+            # read as data, then shadowed by a local before the branch
+            "{{ reasoning }}{% set reasoning = true %}{% if reasoning %}x{% endif %}",
+            # a rebinding that does not preserve the value is a fresh local
+            "{%- set reasoning = reasoning if tools else true %}{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning | lower %}{% if reasoning %}x{% endif %}",
+            # a preserving rebinding of a name already shadowed stays shadowed
+            "{%- for reasoning in messages %}{% set reasoning = reasoning | default(1) %}"
+            "{% if reasoning %}x{% endif %}{%- endfor %}",
+            # the branch is inside a macro that binds the name
+            "{%- macro show(reasoning) %}{% if reasoning %}x{% endif %}{%- endmacro %}"
+            "{{ show(reasoning) }}",
             # branched on a loop variable of that name
             "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
         ],
@@ -199,14 +223,12 @@ class TestTemplateThinkingSwitch:
     def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
         from vllm_mlx.utils import chat_template as module
 
-        module._template_context_reads_for_source.cache_clear()
-        module._template_truthiness_tests_for_source.cache_clear()
+        module._template_context_facts_for_source.cache_clear()
         monkeypatch.setattr(module, "_jinja_nodes", lambda: (None, None))
         try:
             assert template_thinking_switch(NORTH_CLAUSE) is None
         finally:
-            module._template_context_reads_for_source.cache_clear()
-            module._template_truthiness_tests_for_source.cache_clear()
+            module._template_context_facts_for_source.cache_clear()
 
 
 class TestApplyChatTemplateOnNorth:
