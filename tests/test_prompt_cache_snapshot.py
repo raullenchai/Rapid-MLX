@@ -788,15 +788,16 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_registers_builtin_grammar_as_transactional_mtp_safe(self):
         """The exact request grammar and guard share MTP's admitted row."""
+        from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
         from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
         scheduler = _make_scheduler_with_cache()
         scheduler.config.hybrid_cache_entries = 8
         scheduler.config.non_trimmable_exact_prefix_reuse = True
-        grammar = MagicMock()
-        grammar.mtp_apply = MagicMock()
-        grammar.mtp_snapshot_state = MagicMock()
-        grammar.mtp_restore_state = MagicMock()
+        # Scheduling does not execute the matcher. Bypass its heavyweight
+        # llguidance construction while retaining the exact production type
+        # and its real transaction methods for this admission contract.
+        grammar = object.__new__(GrammarLogitsProcessor)
         request = Request(
             request_id="req-constrained-tool-mtp-admission",
             prompt="ignored",
@@ -823,6 +824,54 @@ class TestScheduleWaitingInsertDispatch:
         assert admitted[0] is grammar
         assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
         assert tuple(admitted) == request._mtp_safe_logits_processors
+
+    def test_real_schedule_rejects_transactional_grammar_lookalike_from_mtp(self):
+        """Named methods do not make an unknown stateful processor MTP-safe."""
+        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+        class CustomGrammarProcessor:
+            def __call__(self, _tokens, logits):
+                return logits
+
+            def mtp_apply(self, _tokens, _tentative, logits):
+                return logits
+
+            def mtp_snapshot_state(self):
+                return None
+
+            def mtp_restore_state(self, _state):
+                return None
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        grammar = CustomGrammarProcessor()
+        request = Request(
+            request_id="req-custom-grammar-mtp-rejected",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.has_tools = True
+        request.grammar_logits_processor = grammar
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [104]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted[0] is grammar
+        assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
+        assert request._mtp_safe_logits_processors == (admitted[1],)
 
     def _build_dispatch_args(
         self,

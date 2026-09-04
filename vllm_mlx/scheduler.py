@@ -8008,6 +8008,18 @@ class Scheduler:
             _glp = getattr(request, "grammar_logits_processor", None)
             if _glp is not None:
                 request_processors.append(_glp)
+            _mtp_grammar = None
+            if _glp is not None:
+                # Request attributes are an internal seam today, but treating
+                # any lookalike object as a transactional grammar would turn a
+                # future/custom processor into speculative mutable state.  The
+                # verifier supports this exact built-in implementation only;
+                # subclasses can override the transaction methods, so keep the
+                # type check exact and fail closed to ordinary decode.
+                from .api.tool_grammar import GrammarLogitsProcessor
+
+                if type(_glp) is GrammarLogitsProcessor:
+                    _mtp_grammar = _glp
             # Prevent an exact agent loop before it reaches the streaming
             # hard-stop below.  The processor is deliberately tool-request
             # only and masks a single predicted token only after the output is
@@ -8061,7 +8073,7 @@ class Scheduler:
             # reasoning, suppression, tool-bias, and unknown processors
             # fail-closed at the GenerationBatch handoff.
             request._mtp_safe_logits_processors = tuple(
-                ([_glp] if _glp is not None else [])
+                ([_mtp_grammar] if _mtp_grammar is not None else [])
                 + ([_loop_breaker] if _loop_breaker is not None else [])
                 + penalty_processors
             )
