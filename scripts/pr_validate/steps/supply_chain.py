@@ -95,16 +95,18 @@ def _is_hook_file(path: str) -> bool:
 # The path grammar is deliberately narrower than a shell token: allowing
 # ``$()``, quotes, ``;``, ``..`` etc. would let the exception itself become
 # a workflow-code injection bypass. Only a plain ``tests/<alnum>_./-`` token
-# with a trailing ``\`` continuation matches.  Requiring the continuation is
-# intentional: this is a fail-closed exception for executable workflow files,
-# and the repository's explicit roster uses that canonical form.
+# with an optional trailing ``\`` continuation matches. A no-continuation
+# entry is accepted only when it is proven to be the final command argument at
+# the end of its YAML literal block; see ``_pytest_roster_lines``.
 # ---------------------------------------------------------------------------
 
 _WORKFLOW_PREFIX = ".github/workflows/"
 _ROSTER_WORKFLOWS = frozenset({".github/workflows/ci.yml"})
 
 # A single roster-enrollment content line (leading ``+`` already stripped).
-_ROSTER_ENTRY_RE = re.compile(r"^\s*(?P<path>tests/[A-Za-z0-9_./-]+\.py)\s*\\\s*$")
+_ROSTER_ENTRY_RE = re.compile(
+    r"^\s*(?P<path>tests/[A-Za-z0-9_./-]+\.py)(?P<cont>\s*\\)?\s*$"
+)
 
 
 def _roster_addition_path(content: str) -> str | None:
@@ -142,23 +144,37 @@ def _pytest_roster_lines(content: str) -> set[int]:
     """Return the (1-based) line numbers in *content* that are roster entries
     of the explicit pytest test list. This is the authoritative, ground-truth
     denominator: the contiguous ``tests/*.py \\`` continuation lines that
-    follow a ``pytest \\`` command.  The downgrade deliberately recognizes
-    only this canonical form.  Accepting a no-backslash line requires parsing
-    the remainder of the shell command correctly; getting that wrong can turn
-    following options into separate commands while suppressing review of an
-    executable workflow change.  Codex r1 round-3 — do not trust hunk context
-    (a long non-pytest file list would hide its opener); verify each added line
-    against the ACTUAL roster location in the file."""
+    follow a ``pytest \\`` command, plus a no-backslash final test only when
+    the next nonblank source line has left that YAML literal block (or EOF was
+    reached). Looking merely for another test is unsafe: following pytest
+    options would become separate shell commands. Codex r1 round-3 — do not
+    trust hunk context (a long non-pytest file list would hide its opener);
+    verify each added line against the ACTUAL roster location in the file."""
     roster: set[int] = set()
     lines = content.splitlines()
     i = 0
     n = len(lines)
     while i < n:
         if _PYTEST_ROSTER_CMD.match(lines[i]):
+            command_indent = len(lines[i]) - len(lines[i].lstrip())
             j = i + 1
             # A run of continuing roster entries...
             while j < n and _ROSTER_CONTINUE_RE.match(lines[j]):
                 roster.add(j + 1)  # 1-based
+                j += 1
+            # A final test may omit ``\`` only when it genuinely ends the
+            # literal shell block. Any later nonblank line at the command's
+            # indentation or deeper is another command/argument in that block.
+            if j < n and _ROSTER_ENTRY_RE.match(lines[j]):
+                next_nonblank = j + 1
+                while next_nonblank < n and not lines[next_nonblank].strip():
+                    next_nonblank += 1
+                left_literal_block = next_nonblank >= n or (
+                    len(lines[next_nonblank]) - len(lines[next_nonblank].lstrip())
+                    < command_indent
+                )
+                if left_literal_block:
+                    roster.add(j + 1)
                 j += 1
             i = j
         else:

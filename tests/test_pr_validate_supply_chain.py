@@ -440,10 +440,8 @@ def test_mid_list_no_backslash_entry_is_not_roster_only():
     assert roster_only == set()
 
 
-def test_terminal_roster_entry_without_backslash_stays_blocking():
-    """The workflow exception is fail-closed: even a genuinely terminal
-    no-backslash entry is outside the canonical roster form and stays subject
-    to maintainer review."""
+def test_terminal_roster_entry_without_backslash_is_enrollment():
+    """A genuine final argument at the end of the literal block is safe."""
     from scripts.pr_validate.steps.supply_chain import _pytest_roster_lines
 
     head = (
@@ -467,12 +465,11 @@ def test_terminal_roster_entry_without_backslash_stays_blocking():
         "+            tests/test_appended.py\n"
     )
     lines = _pytest_roster_lines(head)
-    # alpha (line 8) is continuing; terminal (line 9) has no backslash and is
-    # deliberately outside the narrow exception.
-    assert 9 not in lines
+    # alpha (line 8) is continuing; terminal (line 9) has no backslash but is
+    # the genuine end of the literal block.
+    assert 9 in lines
 
-    # End-to-end: the no-backslash edit stays blocking even though the test is
-    # genuinely new.
+    # End-to-end: the genuinely terminal no-backslash edit is an enrollment.
     newfile = (
         "diff --git a/tests/test_appended.py b/tests/test_appended.py\n"
         "new file mode 100644\n"
@@ -487,8 +484,8 @@ def test_terminal_roster_entry_without_backslash_stays_blocking():
         {".github/workflows/ci.yml", "tests/test_appended.py"},
         {".github/workflows/ci.yml": head},
     )
-    assert roster_only == set()
-    assert additions == {}
+    assert roster_only == {".github/workflows/ci.yml"}
+    assert additions[".github/workflows/ci.yml"] == ["tests/test_appended.py"]
 
 
 def test_no_backslash_before_pytest_options_stays_blocking():
