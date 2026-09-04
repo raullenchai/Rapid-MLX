@@ -475,6 +475,18 @@ class FailingStopLifecycleEngine(FakeLifecycleEngine):
         raise RuntimeError("stop failed")
 
 
+class FailOnceStopLifecycleEngine(FakeLifecycleEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_calls = 0
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        if self.stop_calls == 1:
+            raise RuntimeError("transient stop failure")
+        self.stopped = True
+
+
 class BlockingStopLifecycleEngine(FakeLifecycleEngine):
     def __init__(self) -> None:
         super().__init__()
@@ -2246,7 +2258,40 @@ async def test_failed_stop_exposes_cleanup_failed_and_keeps_bytes_charged():
     # failed record remains observable.
     await manager.shutdown()
     assert _accounted_bytes(manager, "chat-old") == 4 * GIB
-    assert failed_row["state"] == "failed"
+    current_row = next(
+        item for item in manager.snapshot()["models"] if item["id"] == "chat-old"
+    )
+    assert current_row["state"] == "failed"
+    assert current_row["cleanup_failed"] == "stop failed"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retries_a_completed_failed_retirement():
+    registry = ModelRegistry()
+    engine = FailOnceStopLifecycleEngine()
+    target = entry("chat-target", engine)
+    registry.add(target)
+    manager = ResidentModelManager(registry, AsyncMock(), memory_reader=lambda: 0)
+    record = ResidencyRecord(
+        entry=target,
+        estimated_bytes=2 * GIB,
+        loaded_at=0,
+        last_used_at=0,
+    )
+    manager._index_record(record)
+
+    async with manager._lock:
+        first_attempt = manager._begin_evict_locked(record, reason="explicit")
+    await first_attempt
+    assert engine.stop_calls == 1
+    assert manager._retiring[id(engine)].state == "failed"
+    assert _accounted_bytes(manager, "chat-target") == 2 * GIB
+
+    await manager.shutdown()
+    assert engine.stop_calls == 2
+    assert engine.stopped is True
+    assert id(engine) not in manager._retiring
+    assert _accounted_bytes(manager, "chat-target") == 0
 
 
 @pytest.mark.asyncio

@@ -717,9 +717,12 @@ class ResidentModelManager:
             # Join any retirement already in flight (spawned offline by a prior
             # cancelled or replaced operation) so shutdown drains them too.
             cleanups.extend(
-                asyncio.shield(task)
-                for task in (retirement.task for retirement in self._retiring.values())
-                if task is not None
+                self._begin_evict_locked(
+                    retirement.record,
+                    reason="shutdown",
+                    count=False,
+                )
+                for retirement in list(self._retiring.values())
             )
         # Drain every retirement OUTSIDE the lock: a suspended stop must never
         # hold self._lock while unrelated residency operations are waiting.
@@ -1895,12 +1898,27 @@ class ResidentModelManager:
             raise ResidentModelBusyError("model is serving an active request")
         identity = id(record.entry.engine)
         existing = self._retiring.get(identity)
-        if existing is not None and existing.task is not None:
+        if existing is not None:
             # Idempotent retirement: an overlapping caller wants the same
             # engine gone. Unroute this (possibly sibling) record's alias, but
             # join the existing cleanup -- never double-stop the engine.
             self.registry.remove_if_entry(record.model_id, record.entry)
             self._drop_record_if_same(record)
+            if (
+                existing.state == "failed"
+                and existing.task is not None
+                and existing.task.done()
+            ):
+                # A completed failed attempt owns no running cleanup. Explicit
+                # retry/shutdown may safely start one new attempt while keeping
+                # the same retirement record and byte charge authoritative.
+                existing.state = "retiring"
+                existing.cleanup_failed = None
+                existing.cleanup_error = None
+                existing.task = asyncio.create_task(
+                    self._cleanup_retired(identity, existing)
+                )
+            assert existing.task is not None
             return asyncio.shield(existing.task)
         record.state = "retiring"
         self.registry.remove_if_entry(record.model_id, record.entry)
