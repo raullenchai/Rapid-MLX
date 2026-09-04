@@ -376,6 +376,118 @@ async def test_cancel_during_guided_to_scheduler_handoff_never_leaks_fallback():
     assert engine.guided_calls[0]["kwargs"]["retain_guided_request_on_failure"] is True
 
 
+@pytest.mark.asyncio
+async def test_closing_after_admission_cancels_unfinished_guided_task():
+    """Disconnect after ID publication cannot leave buffered work alive."""
+
+    class _BlockedGuidedEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__()
+            self.cancelled = asyncio.Event()
+
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            kwargs["request_admitted_event"].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled.set()
+
+    engine = _BlockedGuidedEngine()
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-close-after-admission",
+    )
+
+    await anext(stream)
+    await stream.aclose()
+    await asyncio.wait_for(engine.cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_fallback_await_finishes_retained_handoff():
+    """A disconnect before fallback admission releases the guided identity."""
+
+    class _BlockedFallbackEngine(_GuidedEngine):
+        def __init__(self):
+            super().__init__(raise_in_guided=True)
+            self.fallback_started = asyncio.Event()
+            self.handoffs = 0
+
+        async def stream_chat(self, messages, **kwargs):
+            self.fallback_started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover - establishes the async-generator shape
+
+        def finish_guided_handoff(self, request_id: str):
+            assert request_id == "chatcmpl-cancel-fallback"
+            self.handoffs += 1
+            return False
+
+    engine = _BlockedFallbackEngine()
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "emit json"}],
+    )
+    stream = stream_chat_completion_guided(
+        engine,
+        request.messages,
+        request,
+        {"type": "object"},
+        response_id="chatcmpl-cancel-fallback",
+    )
+
+    await anext(stream)
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.wait_for(engine.fallback_started.wait(), timeout=1)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert engine.handoffs == 1
+
+
+def test_nonstream_guided_user_cancel_is_not_model_replacement():
+    """An explicit cancel propagates through the ordinary cancellation path."""
+    import concurrent.futures
+
+    class _CancelledEngine(_GuidedEngine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise GuidedGenerationCancelledError()
+
+    cfg = reset_config()
+    cfg.engine = _CancelledEngine()
+    cfg.model_name = "test-model"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    with pytest.raises(concurrent.futures.CancelledError):
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "emit json"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "result",
+                        "schema": {"type": "object"},
+                        "strict": False,
+                    },
+                },
+            },
+        )
+
+
 _SCHEMA = {
     "type": "object",
     "$defs": {

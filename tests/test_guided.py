@@ -493,6 +493,64 @@ class TestGuidedGenerator:
             == "legacy-ok"
         )
 
+    def test_generate_json_forwards_and_preserves_cancellation(self, monkeypatch):
+        """The public callback reaches decode and cancellation is never degraded."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        callback = lambda: True
+
+        class _MatcherStub:
+            @staticmethod
+            def grammar_from_json_schema(*_args, **_kwargs):
+                return object()
+
+        class _CancelledGenerator(guided.GuidedGenerator):
+            def _decode_constrained(self, **kwargs):
+                assert kwargs["should_abort"] is callback
+                raise GuidedGenerationCancelledError()
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(guided, "LLMatcher", _MatcherStub)
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            _CancelledGenerator(object(), object()).generate_json(
+                "hi",
+                {"type": "object"},
+                max_tokens=8,
+                temperature=0.0,
+                should_abort=callback,
+            )
+
+    def test_module_helper_forwards_and_preserves_cancellation(self, monkeypatch):
+        """The convenience helper keeps the same cooperative-cancel contract."""
+        import vllm_mlx.api.guided as guided
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        callback = lambda: True
+
+        class _CancelledGenerator:
+            def __init__(self, _model, _tokenizer):
+                pass
+
+            def generate_json(self, **kwargs):
+                assert kwargs["should_abort"] is callback
+                raise GuidedGenerationCancelledError()
+
+        monkeypatch.setattr(guided, "HAS_LLGUIDANCE", True)
+        monkeypatch.setattr(guided, "GuidedGenerator", _CancelledGenerator)
+
+        with pytest.raises(GuidedGenerationCancelledError):
+            guided.generate_with_schema(
+                object(),
+                object(),
+                "hi",
+                {"type": "object"},
+                max_tokens=8,
+                temperature=0.0,
+                should_abort=callback,
+            )
+
     def test_degrades_gracefully_without_fast_tokenizer(self):
         """A tokenizer with no underlying fast (``._tokenizer``) tokenizer
         must NOT crash — ``_get_lltokenizer`` logs and returns None, and
