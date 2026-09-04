@@ -1557,8 +1557,10 @@ def _install_mtp_vendored(
         #
         # Keep the positional fallback for standalone/benchmark callers that
         # do not own scheduler admission state. Production always passes the
-        # uid map; custom, grammar, tool, and reasoning processors remain in
-        # that authoritative list and therefore still fail closed below.
+        # uid map; every processor on the row is in that authoritative list,
+        # so anything the scheduler did not vet by identity (custom, tool-bias,
+        # suppression, unknown) still fails closed below, while the built-in
+        # grammar, tool guard and thinking budget (#3044) pass as themselves.
         row_processors: list[Any] = []
         if uid_to_request_processors is not None:
             row_processors = list(uid_to_request_processors.get(uid, ()))
@@ -8066,25 +8068,36 @@ class Scheduler:
                     frequency_context_size=4096,
                 )
                 request_processors.extend(penalty_processors)
-            # MTP may reuse only this exact ordered list. Standard penalties
-            # are history-derived; the built-in grammar and tool repetition
-            # guard expose explicit target-row snapshot/restore contracts.
-            # Identity (not processor count or type-name heuristics) keeps
-            # reasoning, suppression, tool-bias, and unknown processors
-            # fail-closed at the GenerationBatch handoff.
-            request._mtp_safe_logits_processors = tuple(
-                ([_mtp_grammar] if _mtp_grammar is not None else [])
-                + ([_loop_breaker] if _loop_breaker is not None else [])
-                + penalty_processors
-            )
             # Generation-time thinking-token budget (force-close </think>).
             # Appended LAST so its force-close mask (all but </think> -> -inf)
             # has final say over any penalty/grammar bias in the same step;
             # it is inert (returns logits unchanged) once thinking has ended,
             # so a chained grammar processor owns the generation phase.
             _rblp = getattr(request, "reasoning_budget_logits_processor", None)
+            _mtp_budget = None
             if _rblp is not None:
                 request_processors.append(_rblp)
+                # Same exact-type rule as the grammar above (#3044): the
+                # built-in budget implements the verifier's snapshot/restore/
+                # apply transaction; a subclass could override it, so a
+                # lookalike fails closed to ordinary decode.
+                from .api.reasoning_budget import ReasoningBudgetLogitsProcessor
+
+                if type(_rblp) is ReasoningBudgetLogitsProcessor:
+                    _mtp_budget = _rblp
+            # MTP may reuse only this exact ordered list. Standard penalties
+            # are history-derived; the built-in grammar, the tool repetition
+            # guard and the built-in thinking budget expose explicit
+            # target-row snapshot/restore contracts. Identity (not processor
+            # count or type-name heuristics) keeps suppression, tool-bias,
+            # and unknown processors fail-closed at the GenerationBatch
+            # handoff. Order mirrors ``request_processors`` exactly.
+            request._mtp_safe_logits_processors = tuple(
+                ([_mtp_grammar] if _mtp_grammar is not None else [])
+                + ([_loop_breaker] if _loop_breaker is not None else [])
+                + penalty_processors
+                + ([_mtp_budget] if _mtp_budget is not None else [])
+            )
             _stlp = getattr(request, "suppressed_tokens_logits_processor", None)
             if _stlp is not None:
                 request_processors.append(_stlp)

@@ -2916,6 +2916,60 @@ def test_generator_restores_tool_guard_state_when_target_processor_raises():
     assert processor.state == 1
 
 
+def test_generator_budget_forces_think_end_on_the_verify_row_and_rolls_back_drafts():
+    """#3044: the thinking budget is a transactional MTP processor.
+
+    Budget of one think token, prompt seeded ``<think>``. The cold-start step
+    emits token 7 (1/1 spent). On the verify step the budget forces
+    ``</think>`` on row 0, so the draft (11) is rejected and ``</think>`` is
+    resampled; row 1 had tentatively counted the draft, and the generator's
+    restore to the accepted row-0 boundary must drop that count again.
+    """
+    from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    think_end = 5
+
+    class FusedDraftModel(_MockedQwen35Model):
+        def mtp_greedy(self, hidden, next_token_ids, mtp_cache):
+            del mtp_cache
+            batch, positions = next_token_ids.shape
+            tokens = []
+            for _ in range(positions):
+                tokens.append(self._mtp[self._mtp_cursor])
+                self._mtp_cursor += 1
+            return (
+                mx.array([tokens] * batch, dtype=mx.uint32),
+                mx.zeros((batch, positions, hidden.shape[-1])),
+            )
+
+    budget = ReasoningBudgetLogitsProcessor(think_end, 1, seeded_thinking=True)
+    gen = mtp_generate_step(
+        mx.array([1], dtype=mx.uint32),
+        FusedDraftModel([7, 11, 13, 20, 21], [11, 12, 14]),
+        max_tokens=3,
+        max_k=1,
+        logits_processors=[budget],
+        initial_tokens=[1],
+        disable_auto_k=True,
+        accept_counter=MTPAcceptCounter(),
+    )
+
+    emitted = [next(gen)[0], next(gen)[0]]
+    assert emitted == [7, think_end]
+    # Row 0's boundary (prompt + token 7 committed, 1/1 spent) is what
+    # survives; the rejected draft's tentative count (2/1) is gone.
+    assert budget._committed == budget._prompt_len + 1
+    assert budget._think_count == 1
+    assert budget._ended is False
+    # The delivered ``</think>`` is committed on the next step: generation
+    # phase, no further counting, the script's next target (20) passes.
+    assert next(gen)[0] == 20
+    assert budget._ended is True
+    assert budget._think_count == 1
+
+
 def test_quantized_argmax_matches_materialized_qlinear_logits():
     """The fused greedy kernel must select the exact qlinear argmax."""
     import mlx.nn as nn
