@@ -4802,6 +4802,85 @@ flow_resident_load_rejected() {
     log "  resident-load-rejected OK"
 }
 
+# #2306 role-aware memory conflict journey (ci_tier: local — see journeys.yaml).
+#
+# Drive the Audio tab to request a speech-input admission that the sidecar
+# rejects with the typed `insufficient_capacity_error` 507 (resident_roles +
+# recovery_actions), then assert the conflict sheet (#2306):
+#   1. shows the requested + conflicting runtime roles in user-readable units,
+#   2. Cancel has no side effects (safe default),
+#   3. ONE valid recovery action resolves the conflict,
+#   4. the retry path then admits successfully.
+#
+# PREREQUISITE (must be validated on the Mac mini first): fake-rapid-mlx.sh must
+# answer `/v1/models/load` for a speech-input alias with the typed 507 envelope
+# (a `FAKE_ROLE_CONFLICT_SIDECAR=1` persona). Without that the resolver here
+# dies deterministically rather than asserting a stale UI. This flow is NOT in
+# the `all` list so an un-validated sidecar fixture cannot break CI.
+flow_role_conflict() {
+    log "flow: role-conflict"
+    start_persona role-conflict FAKE_ROLE_CONFLICT_SIDECAR=1
+    dismiss_first_run
+
+    # 1. Bring the CHAT model up so the sidecar is resident (mirrors the
+    #    resident-load-rejected precondition) — the conflict only reaches the
+    #    wire through the in-process `/v1/models/load` path.
+    wait_identifier Readiness.Action "$OUT/rc-readiness.json" \
+        || die "no chat readiness action to bring the resident chat model up"
+    press "$OUT/rc-readiness.json" Readiness.Action "$OUT/rc-start.json" \
+        || die "chat Readiness.Action is not pressable"
+    wait_send_idle "$OUT/rc-chat-ready.json"
+
+    # 2. Open the Audio tab and ask it to load the speech-input model.
+    see_main "$OUT/rc-main.json"
+    press "$OUT/rc-main.json" Sidebar.Audio "$OUT/rc-audio-open.json" \
+        || die "Sidebar.Audio is not pressable"
+    wait_identifier Audio.Mode "$OUT/rc-audio.json"
+
+    # 3. The conflict sheet must present the requested + conflicting roles.
+    wait_identifier RoleConflict.Cancel "$OUT/rc-conflict.json" 120 \
+        || die "the role-conflict sheet never appeared"
+    jq -e '.data.ui_elements[]? | select(.identifier == "RoleConflict.Cancel")' \
+        "$OUT/rc-conflict.json" >/dev/null \
+        || die "the conflict sheet offered no safe Cancel"
+    # The typed envelope surfaces the requested role label (Speech Input) and at
+    # least one resident role (Conversation = the assistant).
+    local conflict_text
+    conflict_text="$(jq '[.data.ui_elements[]?]
+                        | map(((.title // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
+                        | join(" ") | ascii_downcase' "$OUT/rc-conflict.json")"
+    [[ "$conflict_text" == *"speech input"* ]] \
+        || die "conflict sheet did not name the requested speech-input role"
+    [[ "$conflict_text" == *"conversation"* ]] \
+        || die "conflict sheet did not surface the conflicting resident conversation role"
+
+    # 4. Cancel must be non-mutating: nothing loads, the chat model stays up.
+    press "$OUT/rc-conflict.json" RoleConflict.Cancel "$OUT/rc-cancel.json" \
+        || die "RoleConflict.Cancel is not pressable"
+    sleep 1
+    see_main "$OUT/rc-after-cancel.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "RoleConflict.Cancel")' \
+        "$OUT/rc-after-cancel.json" >/dev/null 2>&1 \
+        && die "Cancel did not dismiss the conflict sheet"
+
+    # 5. Re-trigger, then take exactly ONE valid recovery action (unload the
+    #    conversation model) and assert the retry then admits successfully.
+    local i
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/rc-audio2.json"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "RoleConflict.Action.unload_assistant")' \
+               "$OUT/rc-audio2.json" >/dev/null 2>&1; then break; fi
+        sleep 0.25
+    done
+    press "$OUT/rc-audio2.json" RoleConflict.Action.unload_assistant "$OUT/rc-unload.json" \
+        || die "the single valid recovery action is not pressable"
+    # After the assistant unload, the retry path admits the speech-input model.
+    wait_identifier Audio.Mode "$OUT/rc-admitted.json" 120 \
+        || die "the voice workflow did not admit after the recovery action"
+
+    log "  role-conflict OK"
+}
+
 flow_launch_integrations() {
     log "flow: launch-integrations"
     start_persona launch-integrations
@@ -5717,6 +5796,7 @@ case "$FLOW" in
     dictation-rc2-upgrade) flow_dictation_rc2_upgrade ;;
     audio-readiness) flow_audio_readiness ;;
     resident-load-rejected) flow_resident_load_rejected ;;
+    role-conflict) flow_role_conflict ;;
     launch-integrations) flow_launch_integrations ;;
     all)
         flow_fresh_install

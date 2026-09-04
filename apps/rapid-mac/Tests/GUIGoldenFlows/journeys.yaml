@@ -258,6 +258,19 @@ journeys:
     fixtures: [fake-sidecar, resident-model, low-memory, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Server/, apps/rapid-mac/Sources/Rapid/Audio/]
     owns_baseline: false
+  # #2306 role-aware memory conflict. `ci_tier: local` because the fake sidecar
+  # must first be extended to answer `/v1/models/load` with the typed 507
+  # `insufficient_capacity_error` (resident_roles + recovery_actions), which is
+  # only exercised on the operator/local release Mac. Unit coverage of the
+  # decode + serving-state filter lives in RapidTests/ResidentRoleConflictTests.
+  - name: role-conflict
+    group: audio
+    risk: high
+    driver: ax
+    ci_tier: local
+    fixtures: [fake-sidecar, resident-model, audio-models, isolated-home]
+    source_paths: [apps/rapid-mac/Sources/Rapid/UI/AudioView.swift, apps/rapid-mac/Sources/Rapid/UI/ResidentRoleConflictSheet.swift, apps/rapid-mac/Sources/Rapid/Server/ServerResidency.swift, apps/rapid-mac/scripts/fake-rapid-mlx.sh]
+    owns_baseline: false
   - name: launch-integrations
     group: app-lifecycle
     risk: medium

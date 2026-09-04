@@ -1922,6 +1922,16 @@ final class ServerManager {
                 return true
             case .unsupported:
                 break
+            case .conflicted(let conflict):
+                appendLogLines(["Resident role-capacity conflict: \(conflict.message)"])
+                if residentLoadAttemptTokens[trimmed] == attemptToken {
+                    residentLoadFailures[trimmed] = ResidentLoadFailure(
+                        alias: trimmed,
+                        message: LogScrubber.scrub(conflict.message),
+                        roleConflict: conflict
+                    )
+                }
+                return false
             case .rejected(let message):
                 appendLogLines(["Resident model load declined: \(message)"])
                 // Mirror the same redaction the log pane applies so a

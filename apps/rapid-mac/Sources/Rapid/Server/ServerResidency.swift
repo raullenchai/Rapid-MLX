@@ -103,6 +103,98 @@ struct ResidentReplacementProjection: Codable, Sendable, Equatable {
     }
 }
 
+/// One resident auxiliary role drawn from the typed 507 capacity envelope
+/// (#2305). Desktop consumes the server-declared fields as-is; it never derives
+/// a role from a model alias or re-estimates memory. Decoding is defensive so a
+/// brand-new/unknown field cannot crash the surface reading the conflict.
+struct ResidentRoleStatus: Codable, Sendable, Equatable, Identifiable {
+    let role: String
+    let modelID: String?
+    let reservedBytes: UInt64?
+    let state: String?
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case modelID = "model_id"
+        case reservedBytes = "reserved_bytes"
+        case state
+    }
+
+    var id: String { "\(role):\(modelID ?? "")" }
+
+    /// User-readable reservation size (GiB), or nil when the server reported
+    /// none for this role. Desktop shows only what the engine declares.
+    var reservedGib: Double? {
+        guard let reservedBytes else { return nil }
+        return Double(reservedBytes) / Double(UInt64(1) << 30)
+    }
+}
+
+/// The typed `insufficient_capacity_error` role-capacity conflict (#2305).
+///
+/// Presents the conflicting runtime roles, the requested role, the server's
+/// memory quantities, and ONLY the `recovery_actions` the server declared valid.
+/// Unknown/new envelope fields and unrecognized recovery-action strings are
+/// ignored (fail safe) rather than surfaced as buttons or crashing the decode.
+struct ResidentRoleConflict: Sendable, Equatable {
+    let message: String
+    let requestedRole: String?
+    let requestedBytes: UInt64?
+    let limitBytes: UInt64?
+    let usedBytes: UInt64?
+    let reason: String?
+    let residentRoles: [ResidentRoleStatus]
+    let recoveryActions: [String]
+
+    /// User-readable sizes in GiB (nil when the server reported none).
+    var requestedGib: Double? {
+        guard let requestedBytes else { return nil }
+        return Double(requestedBytes) / Double(UInt64(1) << 30)
+    }
+    var limitGib: Double? {
+        guard let limitBytes else { return nil }
+        return Double(limitBytes) / Double(UInt64(1) << 30)
+    }
+    var usedGib: Double? {
+        guard let usedBytes else { return nil }
+        return Double(usedBytes) / Double(UInt64(1) << 30)
+    }
+
+    /// Recovery actions the server declared valid for this conflict. Desktop
+    /// only ever offers these; an unknown server value is ignored (never a
+    /// button). Order follows the server contract's declaration order.
+    var scopedRecoveryActions: [ResidentRecoveryAction] {
+        recoveryActions.compactMap(ResidentRecoveryAction.init(rawValue:))
+    }
+}
+
+/// The closed set of server-declared recovery actions Desktop knows how to
+/// perform. An action string outside this set is never presented as a button.
+enum ResidentRecoveryAction: String, Sendable, Hashable, CaseIterable {
+    case selectSmallerSpeechInput = "select_smaller_speech_input"
+    case stopSpeechOutput = "stop_speech_output"
+    case unloadAssistant = "unload_assistant"
+
+    var title: String {
+        switch self {
+        case .selectSmallerSpeechInput: return "Choose a Smaller Speech Input Model"
+        case .stopSpeechOutput: return "Stop Speech Output"
+        case .unloadAssistant: return "Unload the Conversation Model"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .selectSmallerSpeechInput:
+            return "Pick a smaller speech-to-text model that fits the current memory budget."
+        case .stopSpeechOutput:
+            return "Release the spoken-response engine so the requested model can fit."
+        case .unloadAssistant:
+            return "Free the conversation model so this voice workflow can proceed. You can reload it later."
+        }
+    }
+}
+
 struct ResidentPerformanceStatus: Codable, Sendable, Equatable {
     let kvCacheDtype: String?
     let kvCacheTurboquant: String?
@@ -152,6 +244,18 @@ struct ResidentAudioLaneStatus: Codable, Sendable, Equatable {
     func matches(modelPath: String) -> Bool {
         model == modelPath && state == "resident"
     }
+}
+
+/// A snapshot state that means the model is genuinely serving requests.
+///
+/// The shared residency lifecycle reports the fetch-completion states
+/// ``"resident"`` (serving) and the non-serving lifecycle states ``"evicting"``
+/// (being freed), ``"retiring"`` (being replaced/rolled back), and ``"failed"``
+/// (admission or runtime failure). Only ``"resident"`` is serving; everything
+/// else — including any unknown/future state — fails closed to "not serving" so
+/// a brand-new lifecycle state can never be mislabelled as available.
+func isServingState(_ state: String) -> Bool {
+    state == "resident"
 }
 
 struct ModelResidencySnapshot: Codable, Sendable, Equatable {
@@ -222,7 +326,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     )
 
     func contains(_ alias: String) -> Bool {
-        models.contains { $0.matches(alias) && $0.state != "evicting" }
+        models.contains { $0.matches(alias) && isServingState($0.state) }
     }
 
     func containsResidentAudioLane(modelPath: String) -> Bool {
@@ -234,7 +338,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     /// visits Speech, even while a text engine is resident in that process.
     func preferredTextAlias(fallback: String?) -> String? {
         let textModels = models.filter {
-            $0.modality == "text" && $0.state != "evicting"
+            $0.modality == "text" && isServingState($0.state)
         }
         guard let model = textModels.first(where: { $0.primary }) ?? textModels.first else {
             return fallback
@@ -252,14 +356,14 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     /// as vision — accurate enough for "might accept an image", far too broad
     /// for "is this the serialised one-at-a-time lane".
     func modality(for alias: String) -> String? {
-        models.first { $0.matches(alias) && $0.state != "evicting" }?.modality
+        models.first { $0.matches(alias) && isServingState($0.state) }?.modality
     }
 
     /// Requests the engine currently has in flight on `alias`. On the
     /// serialised `--mllm` lane a non-zero value means anything we send now
     /// queues behind real work.
     func activeRequests(for alias: String) -> Int? {
-        models.first { $0.matches(alias) && $0.state != "evicting" }?.activeRequests
+        models.first { $0.matches(alias) && isServingState($0.state) }?.activeRequests
     }
 }
 
@@ -278,7 +382,7 @@ struct ModelSwitchRisk: Equatable, Sendable {
     ) -> ModelSwitchRisk? {
         guard currentAlias != targetAlias else { return nil }
         let activeRequests = residency?.models.first {
-            $0.matches(currentAlias) && $0.state != "evicting"
+            $0.matches(currentAlias) && isServingState($0.state)
         }?.activeRequests ?? 0
         guard activeRequests > 0 else { return nil }
         return ModelSwitchRisk(
@@ -337,6 +441,12 @@ enum ResidentModelLoadResult: Sendable, Equatable {
     case loaded(ResidentModelStatus)
     case unsupported
     case rejected(String)
+    /// A typed role-capacity conflict (#2305/#2306): the model was not admitted
+    /// because the requested role cannot coexist with the resident roles.
+    /// ``ResidentRoleConflict`` carries the message, structured resident roles,
+    /// and server-declared recovery actions the UI presents in the conflict
+    /// sheet.
+    case conflicted(ResidentRoleConflict)
 }
 
 /// A resident-model load that the engine rejected, kept long enough for the
@@ -348,6 +458,10 @@ enum ResidentModelLoadResult: Sendable, Equatable {
 struct ResidentLoadFailure: Sendable, Equatable {
     let alias: String
     let message: String
+    /// The typed role-capacity conflict (#2305/#2306), when this rejection was
+    /// an ``insufficient_capacity_error`` carrying the structured role fields.
+    /// Nil for a plain rejection (image-extra missing, HTTP failure, etc.).
+    var roleConflict: ResidentRoleConflict? = nil
 }
 
 enum ResidentModelReplacementGroup: String, Sendable {
@@ -379,8 +493,30 @@ struct ServerResidencyClient {
 
     private struct ErrorEnvelope: Decodable {
         struct StructuredDetail: Decodable {
+            /// The typed `insufficient_capacity_error` body (#2305). All role
+            /// capacity fields are siblings of ``message`` at the error level.
+            /// Defensive: each field is optional so a missing/unknown shape is
+            /// still decodable (Swift already ignores unknown keys).
             struct Error: Decodable {
                 let message: String?
+                let requestedRole: String?
+                let requestedBytes: UInt64?
+                let limitBytes: UInt64?
+                let usedBytes: UInt64?
+                let reason: String?
+                let residentRoles: [ResidentRoleStatus]?
+                let recoveryActions: [String]?
+
+                enum CodingKeys: String, CodingKey {
+                    case message
+                    case requestedRole = "requested_role"
+                    case requestedBytes = "requested_bytes"
+                    case limitBytes = "limit_bytes"
+                    case usedBytes = "used_bytes"
+                    case reason
+                    case residentRoles = "resident_roles"
+                    case recoveryActions = "recovery_actions"
+                }
             }
 
             let error: Error?
@@ -403,6 +539,14 @@ struct ServerResidencyClient {
                 } else {
                     self = .structured(try container.decode(StructuredDetail.self))
                 }
+            }
+
+            /// The structured error nested under ``detail``, when present.
+            var structuredError: StructuredDetail.Error? {
+                if case .structured(let structured) = self {
+                    return structured.error
+                }
+                return nil
             }
         }
 
@@ -497,9 +641,59 @@ struct ServerResidencyClient {
             let detail = envelope?.replacementProjection?.rejectionMessage(alias: alias)
                 ?? envelope?.error?.message
                 ?? nestedDetail
+
+            // A typed role-capacity conflict (#2305/#2306) surfaces the
+            // structured `resident_roles` + server-declared `recovery_actions`
+            // that the conflict sheet needs. Decode it additively: if the
+            // envelope lacks a typed conflict (a plain rejection), fall through
+            // to the existing `.rejected` path unchanged.
+            if let roleConflict = Self.roleConflict(
+                in: envelope,
+                fallbackMessage: detail ?? ""
+            ) {
+                return .conflicted(roleConflict)
+            }
             return .rejected(detail ?? "The model could not be kept resident (HTTP \(http.statusCode)).")
         } catch {
             return .rejected("The model server could not load another resident model.")
         }
+    }
+
+    /// Build a ``ResidentRoleConflict`` from a decoded 507 ``ErrorEnvelope``,
+    /// or return nil when the envelope lacks the typed role-capacity fields
+    /// (`requested_role` / `resident_roles` / `recovery_actions`). Nil keeps a
+    /// plain rejection on the legacy `.rejected` path. Additive-safe: a missing
+    /// or unknown role field never prevents the conflict from being surfaced.
+    private static func roleConflict(
+        in envelope: ErrorEnvelope?,
+        fallbackMessage: String
+    ) -> ResidentRoleConflict? {
+        // Role fields live on `detail.error` (the typed envelope from
+        // `admit_role` / `residency.admit_role`) AND on the top-level
+        // `error` for the projection-shaped envelope. Check both, preferring
+        // whichever actually carries `resident_roles`.
+        let candidates = [envelope?.detail?.structuredError, envelope?.error]
+            .compactMap { $0 }
+        guard let error = candidates.first(where: { $0.requestedRole != nil || $0.reason != nil }) else {
+            return nil
+        }
+        let residentRoles = (error.residentRoles ?? [])
+            .filter { !$0.role.isEmpty }
+        let recoveryActions = error.recoveryActions ?? []
+        // Only surface a conflict when the envelope actually names a role; a
+        // legacy projection-only 507 stays a plain rejection.
+        guard error.requestedRole != nil || error.reason?.hasPrefix("role_capacity_") == true else {
+            return nil
+        }
+        return ResidentRoleConflict(
+            message: error.message ?? fallbackMessage,
+            requestedRole: error.requestedRole,
+            requestedBytes: error.requestedBytes,
+            limitBytes: error.limitBytes,
+            usedBytes: error.usedBytes,
+            reason: error.reason,
+            residentRoles: residentRoles,
+            recoveryActions: recoveryActions
+        )
     }
 }

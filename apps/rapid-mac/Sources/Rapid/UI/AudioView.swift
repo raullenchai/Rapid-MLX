@@ -22,6 +22,11 @@ struct AudioView: View {
     @State private var voicePreviewTask: Task<Void, Never>?
     @State private var voicePreviewRequestID: UUID?
     @State private var modelLoadsInFlight: Set<String> = []
+    /// A typed role-capacity conflict (#2306) to present when a voice workflow
+    /// cannot be admitted. Presenting here keeps the chosen surface able to
+    /// react to the user's decision (Cancel = safe default; an action is an
+    /// explicit, separate choice).
+    @State private var roleConflictItem: RoleConflictItem?
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
     /// One control width across the Audio tabs — same as the Dictation
@@ -151,6 +156,64 @@ struct AudioView: View {
         }
         .onChange(of: viewModel.mode) { _, _ in cancelVoicePreview() }
         .onDisappear { cancelVoicePreview() }
+        // Present a typed role-capacity conflict the moment the initiating
+        // surface records it for the current model (#2306). Cancel is the safe
+        // default; an action is an explicit, separate user choice.
+        .onChange(of: watchingAlias) { _, newValue in
+            presentConflictIfAny(for: newValue)
+        }
+        .onChange(of: server.residentLoadFailures) { _, _ in
+            presentConflictIfAny(for: watchingAlias)
+        }
+        .sheet(item: $roleConflictItem) { item in
+            ResidentRoleConflictSheet(
+                conflict: item.conflict,
+                requestedModelAlias: item.requestedModelAlias,
+                onAction: { action in
+                    roleConflictItem = nil
+                    handleRecoveryAction(action)
+                },
+                onCancel: {
+                    roleConflictItem = nil
+                }
+            )
+        }
+    }
+
+    /// The alias whose conflict this surface presents — the selected voice
+    /// engine across both Audio tabs.
+    private var watchingAlias: String {
+        switch viewModel.mode {
+        case .speech: return viewModel.selectedSpeechAlias
+        case .dictation: return viewModel.selectedTranscriptionAlias
+        }
+    }
+
+    private func presentConflictIfAny(for alias: String) {
+        guard roleConflictItem == nil,
+              let failure = server.residentLoadFailure(for: alias),
+              let conflict = failure.roleConflict,
+              !alias.isEmpty
+        else { return }
+        roleConflictItem = RoleConflictItem(
+            id: UUID(),
+            conflict: conflict,
+            requestedModelAlias: alias
+        )
+    }
+
+    /// A recovery action is an explicit user choice beyond the original voice
+    /// workflow — never an implicit side effect. The specific execution (stop
+    /// the TTS lane, present the STT picker, unload the assistant via the
+    /// server route) is delivered by the voice-matrix journey in #2306; here
+    /// the choice is surfaced and non-mutating by default.
+    private func handleRecoveryAction(_ action: ResidentRecoveryAction) {
+        switch action {
+        case .selectSmallerSpeechInput:
+            openModelManagement()
+        case .stopSpeechOutput, .unloadAssistant:
+            break // execution wired by the full voice-matrix journey (#2306)
+        }
     }
 
     private var header: some View {
@@ -715,6 +778,14 @@ struct AudioView: View {
         playback.stop()
         playingPreviewVoice = nil
     }
+}
+
+/// Identifiable wrapper for presenting a ``ResidentRoleConflict`` in a
+/// SwiftUI sheet (the conflict model itself is not Identifiable).
+private struct RoleConflictItem: Identifiable {
+    let id: UUID
+    let conflict: ResidentRoleConflict
+    let requestedModelAlias: String
 }
 
 private struct VoiceOptionRow: View {
