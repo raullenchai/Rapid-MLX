@@ -196,11 +196,13 @@ class TestDetectNativeLevels:
 
 
 class TestDetectionRequiresAValidationBlock:
-    """Codex r1 BLOCKING: a bare membership test is not a declaration. A
+    """Codex r1/r2 BLOCKING: a bare membership test is not a declaration. A
     template that merely *branches* on a subset must not have that subset
     mistaken for its accepted vocabulary (``medium`` would be upgraded and
-    lose its cap). Only ``not in (...)`` guarded by ``raise_exception`` or a
-    ``set`` of the tested variable counts."""
+    lose its cap). The proof is made on the Jinja AST: ``<var> not in
+    (...)`` where ``<var>`` derives from ``reasoning_effort``, with an
+    unconditional ``raise_exception`` or ``set <var>`` at the top level of
+    the block body."""
 
     def test_positive_subset_branch_is_not_a_vocabulary(self):
         clause = "{%- if reasoning_effort in ('high', 'xhigh') %}deep{%- endif %}"
@@ -252,6 +254,77 @@ class TestDetectionRequiresAValidationBlock:
             "{%- set resolved_reasoning_effort = reasoning_effort|default('b') -%}"
             "{%- if resolved_reasoning_effort not in ('a', 'b') -%}"
             "{{- raise_exception('bad') -}}{%- endif -%}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
+
+    def test_rejection_nested_under_an_inner_condition_is_not_unconditional(self):
+        """Codex r2: a ``raise_exception`` that only fires under a further
+        ``if`` inside the block may never fire, so the set is not proven."""
+        clause = (
+            "{%- if reasoning_effort not in ['a'] %}"
+            "{%- if strict %}{{ raise_exception('z') }}{%- endif %}"
+            "{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_unrelated_variable_with_a_similar_name_does_not_count(self):
+        """Codex r2: ``my_reasoning_effort`` is not derived from the request
+        knob, so validating it says nothing about ``reasoning_effort``."""
+        clause = (
+            "{%- set my_reasoning_effort = 'a' %}"
+            "{%- if my_reasoning_effort not in ['a', 'b'] %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_variable_derived_through_a_chain_counts(self):
+        clause = (
+            "{%- set r1 = reasoning_effort %}{%- set r2 = r1 | lower %}"
+            "{%- if r2 not in ['a'] %}{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == ("a",)
+
+    def test_negated_positive_membership_is_left_alone(self):
+        clause = (
+            "{%- if not (reasoning_effort in ['a', 'b']) %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_non_literal_set_is_not_a_vocabulary(self):
+        clause = (
+            "{%- if reasoning_effort not in allowed %}"
+            "{{ raise_exception('z') }}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_validation_nested_under_enable_thinking_counts(self):
+        """Qwen3.8 validates only while thinking is on; the vocabulary still
+        applies whenever the level matters."""
+        clause = (
+            "{%- if enable_thinking is undefined or enable_thinking is true %}"
+            "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}"
+            "{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
+            "{{- raise_exception('bad') }}{%- endif %}{%- endif %}"
+        )
+        assert detect_native_reasoning_effort_levels(clause) == (
+            "xhigh",
+            "medium",
+            "low",
+        )
+
+    def test_unparseable_template_publishes_nothing(self):
+        clause = "{% if reasoning_effort not in ['a'] %}{{ raise_exception('x') }}"
+        assert detect_native_reasoning_effort_levels(clause) is None
+
+    def test_transformers_generation_tag_is_parsed(self):
+        """HF templates may wrap assistant turns in ``{% generation %}``
+        (transformers' assistant-mask extension); the detector must not
+        choke on it."""
+        clause = (
+            "{%- for m in messages %}{% generation %}{{ m.content }}{% endgeneration %}"
+            "{%- endfor %}{%- if reasoning_effort not in ('a', 'b') %}"
+            "{{ raise_exception('x') }}{%- endif %}"
         )
         assert detect_native_reasoning_effort_levels(clause) == ("a", "b")
 

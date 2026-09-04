@@ -1162,48 +1162,153 @@ REASONING_EFFORT_LADDER: tuple[str, ...] = (
 )
 
 # A template declares its native effort vocabulary only when it *validates*
-# ``reasoning_effort`` against a literal set: an ``{% if <var> not in (...) %}``
-# whose block body either rejects the value (``raise_exception(...)``, Qwen3.8)
-# or replaces it with a default (``{% set <var> = ... %}``, Hy3). Nothing else
-# counts — Harmony merely interpolates the value ("Reasoning: medium"), North
-# Mini Code compares against a single ``"none"`` sentinel, and a template that
-# just *branches* on a subset (``{% if reasoning_effort in ('high', 'xhigh') %}``)
-# says nothing about which values it accepts — so all of those keep the
-# token-cap fallback. The membership test may sit anywhere inside the ``if``
-# condition (Hy3 prefixes ``not reasoning_effort is defined or``), and the
-# tested variable may be a derived one (Qwen3.8's ``resolved_reasoning_effort``).
-_REASONING_EFFORT_VALIDATION_RE = re.compile(
-    r"\{%-?\s*if\s+(?P<cond>[^%]*?"
-    r"\b(?P<var>\w*reasoning_effort)\s*(?:\|\s*default\([^)]*\))?"
-    r"\s+not\s+in\s*[\(\[](?P<levels>[^\)\]]*)[\)\]]"
-    r"[^%]*?)%\}"
-    r"(?P<body>.*?)"
-    r"\{%-?\s*(?:elif|else|endif)\b",
-    re.DOTALL,
-)
-_REASONING_EFFORT_LITERAL_RE = re.compile(r"""['"]([A-Za-z_][A-Za-z0-9_]*)['"]""")
-_RAISE_EXCEPTION_RE = re.compile(r"\braise_exception\s*\(")
+# ``reasoning_effort`` against a literal set. Proven on the Jinja AST, not by
+# pattern matching (codex #3048 r1/r2):
+#
+#   * an ``{% if <var> not in ('a', 'b') %}`` test where ``<var>`` is
+#     ``reasoning_effort`` itself or a variable assigned from an expression
+#     that references it (Qwen3.8's ``resolved_reasoning_effort``); the test
+#     may be one disjunct/conjunct of a larger condition (Hy3 prefixes
+#     ``not reasoning_effort is defined or``) but never sits under ``not``;
+#   * whose block body — at its top level, not inside a nested ``if``/``for`` —
+#     either rejects (``{{ raise_exception(...) }}``, Qwen3.8) or replaces the
+#     value with a default (``{% set <var> = ... %}``, Hy3).
+#
+# Nothing else counts: Harmony merely interpolates the value, North Mini Code
+# compares against a single ``"none"`` sentinel, a template that just
+# *branches* on a subset (``{% if reasoning_effort in ('high', 'xhigh') %}``)
+# says nothing about which values it accepts, and a rejection that is itself
+# conditional inside the block may never fire. All of those keep the
+# token-cap fallback, as does a template jinja2 cannot parse.
 
 
-def _validation_body_rejects_or_defaults(body: str, var: str) -> bool:
-    if _RAISE_EXCEPTION_RE.search(body):
-        return True
-    # ``{%- set reasoning_effort = 'no_think' %}`` — the template replaces an
-    # out-of-vocabulary value with one of its own, which is a validation too.
-    return re.search(r"\{%-?\s*set\s+" + re.escape(var) + r"\s*=", body) is not None
+def _jinja_nodes():
+    try:
+        import jinja2
+        from jinja2 import nodes
+    except ImportError:  # pragma: no cover - jinja2 ships with transformers
+        return None, None
+    return jinja2, nodes
+
+
+@functools.lru_cache(maxsize=1)
+def _template_parser():
+    """A parse-only Jinja environment that accepts the tags HF chat templates
+    use: ``break`` / ``continue`` and transformers' ``{% generation %}``
+    span marker (parsed as a plain block; nothing is ever rendered here)."""
+    jinja2, nodes = _jinja_nodes()
+    if jinja2 is None:
+        return None
+    from jinja2.ext import Extension
+
+    class _GenerationBlock(Extension):
+        tags = {"generation"}
+
+        def parse(self, parser):
+            lineno = next(parser.stream).lineno
+            body = parser.parse_statements(("name:endgeneration",), drop_needle=True)
+            return nodes.Scope(body).set_lineno(lineno)
+
+    return jinja2.Environment(extensions=["jinja2.ext.loopcontrols", _GenerationBlock])
+
+
+def _names_derived_from_reasoning_effort(tree, nodes) -> set[str]:
+    """``reasoning_effort`` plus every name ``{% set %}`` from an expression
+    that (transitively) references it, in document order."""
+    derived = {"reasoning_effort"}
+    assignments = [
+        (assign.target.name, assign.node)
+        for assign in tree.find_all(nodes.Assign)
+        if isinstance(assign.target, nodes.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for target, expr in assignments:
+            if target in derived:
+                continue
+            referenced = [expr] if isinstance(expr, nodes.Name) else []
+            referenced.extend(expr.find_all(nodes.Name))
+            if any(name.name in derived for name in referenced):
+                derived.add(target)
+                changed = True
+    return derived
+
+
+def _not_in_membership(expr, nodes):
+    """Return the ``<x> not in <literal set>`` Compare inside ``expr``, looking
+    through ``and`` / ``or`` only (never ``not``, which inverts it)."""
+    if isinstance(expr, (nodes.And, nodes.Or)):
+        return _not_in_membership(expr.left, nodes) or _not_in_membership(
+            expr.right, nodes
+        )
+    if (
+        isinstance(expr, nodes.Compare)
+        and len(expr.ops) == 1
+        and expr.ops[0].op == "notin"
+    ):
+        return expr
+    return None
+
+
+def _tested_name(expr, nodes) -> str | None:
+    """The variable a membership test inspects: ``x`` or ``x|default(...)``."""
+    if isinstance(expr, nodes.Filter) and expr.name == "default":
+        expr = expr.node
+    return expr.name if isinstance(expr, nodes.Name) else None
+
+
+def _literal_levels(expr, nodes) -> tuple[str, ...] | None:
+    if not isinstance(expr, (nodes.Tuple, nodes.List)):
+        return None
+    if not all(
+        isinstance(item, nodes.Const) and isinstance(item.value, str)
+        for item in expr.items
+    ):
+        return None
+    levels = tuple(dict.fromkeys(item.value for item in expr.items))
+    return levels or None
+
+
+def _body_unconditionally_rejects_or_defaults(body, tested: str, nodes) -> bool:
+    for stmt in body:
+        if isinstance(stmt, nodes.Output) and any(
+            isinstance(call.node, nodes.Name) and call.node.name == "raise_exception"
+            for call in stmt.find_all(nodes.Call)
+        ):
+            return True
+        if (
+            isinstance(stmt, nodes.Assign)
+            and isinstance(stmt.target, nodes.Name)
+            and stmt.target.name == tested
+        ):
+            return True
+        # Anything nested (``if`` / ``for`` / ...) is conditional: skip it.
+    return False
 
 
 @functools.lru_cache(maxsize=64)
 def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...] | None:
-    for match in _REASONING_EFFORT_VALIDATION_RE.finditer(template):
-        if not _validation_body_rejects_or_defaults(
-            match.group("body"), match.group("var")
-        ):
+    jinja2, nodes = _jinja_nodes()
+    env = _template_parser()
+    if jinja2 is None or env is None:
+        return None
+    try:
+        tree = env.parse(template)
+    except Exception:
+        return None
+    derived = _names_derived_from_reasoning_effort(tree, nodes)
+    for if_node in tree.find_all(nodes.If):
+        compare = _not_in_membership(if_node.test, nodes)
+        if compare is None:
             continue
-        levels = tuple(
-            dict.fromkeys(_REASONING_EFFORT_LITERAL_RE.findall(match.group("levels")))
-        )
-        if levels:
+        tested = _tested_name(compare.expr, nodes)
+        if tested is None or tested not in derived:
+            continue
+        levels = _literal_levels(compare.ops[0].expr, nodes)
+        if levels is None:
+            continue
+        if _body_unconditionally_rejects_or_defaults(if_node.body, tested, nodes):
             return levels
     return None
 
