@@ -5,6 +5,7 @@ import asyncio
 import gc
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -2850,12 +2851,28 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
     # NEXT TO valid ones the recovery would lift a VALID call's
     # arguments into the broken one (codex r3). Ambiguous cases repair
     # to "{}".
-    recovered = (
+    retrieved = (
         _recover_partial_tool_args(raw_text, expected_name=target)
         if len(broken) == 1 and len(tool_calls or []) == 1
         else None
     )
-    repaired = recovered if recovered is not None else "{}"
+    # #2502: when no object is recoverable from the raw text, the broken call's
+    # ORIGINAL ``arguments`` may itself be a bare scalar the model intended as
+    # the single required argument of the target's object schema (e.g. hermes
+    # emits ``"arguments": "San Francisco"`` for a ``{"city"}: required`` tool).
+    # The scalar-schema salvage maps it onto the required property so a concrete
+    # forced named call yields a valid object instead of collapsing to ``"{}"``
+    # and 422ing. Only unambiguous single-broken-call turns participate.
+    scalar_salvaged = None
+    if retrieved is None and len(broken) == 1:
+        scalar_salvaged = _salvage_forced_scalar_arguments(
+            target, broken[0].function.arguments, tools
+        )
+    repaired = (
+        retrieved
+        if retrieved is not None
+        else (scalar_salvaged if scalar_salvaged is not None else "{}")
+    )
     for tc in broken:
         # Log shape only — tool arguments can carry user data / secrets
         # and must not persist in production logs (codex r2).
@@ -2868,7 +2885,9 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
             len(tc.function.arguments)
             if isinstance(tc.function.arguments, str)
             else "-",
-            "recovered object" if recovered is not None else '"{}"',
+            "recovered object"
+            if retrieved is not None
+            else ("salvaged scalar" if scalar_salvaged is not None else '"{}"'),
         )
         tc.function.arguments = repaired
         err = _forced_synth_schema_error(target, repaired, tools)
@@ -2878,7 +2897,11 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
 
 
 def _synthesize_forced_tool_call(
-    name: str, arguments: str = "{}", *, raw_text: str | None = None
+    name: str,
+    arguments: str = "{}",
+    *,
+    raw_text: str | None = None,
+    tools=None,
 ):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
@@ -2922,13 +2945,167 @@ def _synthesize_forced_tool_call(
     # ``"arguments"`` candidates paired with a DIFFERENT tool's
     # ``"name"`` literal (codex r4 BLOCKING #1).
     recovered = _recover_partial_tool_args(raw_text, expected_name=name)
-    final_args = recovered if recovered is not None else arguments
+    if recovered is not None:
+        final_args = recovered
+    else:
+        # #2502: the small-model habit of emitting a BARE value (``"arguments":
+        # "San Francisco"`` or ``"arguments": 7``) for a single-argument object
+        # tool. When the caller supplied such a scalar as ``arguments`` and the
+        # target tool's schema has a single required property the scalar maps
+        # onto, synth ``{prop: value}`` so the forced call is schema-valid
+        # instead of an empty object that 422s. ``tools`` makes the mapping
+        # possible; without it we keep the unchanged default. The result still
+        # runs the #1256 schema gate downstream. (Raw-text scalar recovery is
+        # deliberately NOT attempted here — the verified #2502 path is the
+        # parser-surfaced repair in ``_repair_forced_call_arguments``; guessing
+        # a scalar out of free-form text is how structural-parse edge cases leak
+        # in, so we stay conservative.)
+        if arguments != "{}":
+            _salvaged = _salvage_forced_scalar_arguments(name, arguments, tools)
+        else:
+            _salvaged = None
+        final_args = _salvaged if _salvaged is not None else arguments
 
     return ToolCall(
         id=f"call_{uuid.uuid4().hex[:8]}",
         type="function",
         function=FunctionCall(name=name, arguments=final_args),
     )
+
+
+def _salvage_forced_scalar_arguments(
+    name: str, arguments: str | None, tools
+) -> str | None:
+    """Return a schema-valid ``{prop: value}`` arguments string when a forced
+    tool choice produced a bare scalar, else ``None`` (#2502).
+
+    Small parsers (hermes / qwen3_coder / …) pushed to call a function with an
+    OBJECT parameter schema whose single argument is required often emit just
+    the VALUE — ``"arguments": "San Francisco"`` or a bare ``7`` — instead of
+    the full ``{"city": "San Francisco"}`` wrapper. The generic forced-call
+    repair has no schema to map that scalar onto, so it collapses to ``"{}"``
+    and the #1256 schema gate then 422s on the missing required property.
+
+    This is the schema-aware bridge: when the target tool is an OBJECT-schema
+    tool with EXACTLY ONE required property and the recovered ``arguments`` is a
+    bare scalar whose type matches that property's declared type, synthesise
+    ``{<prop>: <value>}`` so a forced named call reliably yields schema-valid
+    arguments instead of a wording-retry 422.
+
+    Gated tightly (never guess):
+      * only an object-schema tool whose ``required`` is a single property;
+      * only a bare scalar (string / number / boolean) — an object, array, or
+        explicit JSON ``null`` never salvages (those take the normal validation
+        path, including failing closed);
+      * only when the scalar's type matches the required property's ``type``;
+      * any ambiguity — multiple required props, no required props, a missing/
+        unmatched property type, a ``$ref``-only schema we can't resolve — stays
+        ``None`` so the caller's existing fail-closed 422 is preserved (#1256).
+
+    Returns the reparsed JSON object as a string, or ``None`` when not
+    applicable. The returned value still runs the full draft-aware
+    ``jsonschema`` validation downstream — salvage never short-circuits the
+    safety gate, it only upgrades a would-be ``{}`` into the object the model
+    actually intended.
+    """
+    if not arguments:
+        return None
+    # Resolve the target tool's parameter schema (mirrors
+    # ``_forced_synth_schema_error``'s lookup).
+    schema = None
+    for tool in tools or []:
+        fn = getattr(tool, "function", None)
+        if not isinstance(fn, dict) and isinstance(tool, dict):
+            fn = tool.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != name:
+            continue
+        schema = fn.get("parameters")
+        break
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return None
+    required = schema.get("required")
+    if (
+        not isinstance(required, list)
+        or len(required) != 1
+        or not isinstance(required[0], str)
+    ):
+        return None  # multi/zero required or a non-string entry → never guess
+    prop = required[0]
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return None  # malformed ``"properties"`` (e.g. a list) → fail closed
+    prop_schema = props.get(prop)
+    if not isinstance(prop_schema, dict):
+        return None
+    ptype = prop_schema.get("type")
+    if ptype not in ("string", "integer", "number", "boolean"):
+        return None  # untyped / exotic → don't guess
+
+    # Decode the scalar. A bare non-JSON string (e.g. ``San Francisco``) is a
+    # legitimately intended string value; a valid JSON scalar decodes to its
+    # typed value. Objects, arrays, and an explicit JSON ``null`` never salvage
+    # (``null`` is a real decoded value, not a parse failure — codex r3).
+    try:
+        decoded = json.loads(arguments)
+        parsed = True
+    except (ValueError, TypeError):
+        decoded = None
+        parsed = False
+    if not parsed:
+        # Bare unquoted text that wouldn't parse as JSON — only meaningful as a
+        # string scalar. An empty string offers nothing to salvage. Reject text
+        # that STARTS with structural characters — i.e. was clearly aiming at a
+        # JSON object/array — so we never mis-map a fragment of an intended
+        # structure onto a string property. A legitimate scalar like
+        # ``https://example.com`` (contains ``:``) is NOT structural-led and is
+        # accepted (codex); ``{"unbalanced": ...`` / ``["bad`` are rejected.
+        if not isinstance(arguments, str) or not arguments.strip():
+            return None
+        # Inspect the first NON-WHITESPACE char so a whitespace-prefixed broken
+        # object/array fragment (`  {"unbalanced": ...`) still fails closed.
+        if arguments.lstrip()[0] in '{}["':
+            return None
+        value: str | int | float | bool = arguments
+    elif isinstance(decoded, (str, int, float, bool)):
+        value = decoded
+    else:
+        # A JSON object / array / explicit ``null`` never salvages.
+        return None
+
+    # Reject non-finite numbers (``NaN`` / ``Infinity`` are not strict JSON —
+    # ``json.loads`` accepts them, ``json.loads(json.dumps(x))`` breaks). Never
+    # ship a value a strict JSON client cannot round-trip (codex BLOCKING #3).
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+
+    # Type-match gate: the scalar must fit the single required property's type.
+    if ptype == "string":
+        if isinstance(value, (str,)) and not isinstance(value, bool):
+            return json.dumps({prop: value})
+        return None
+    if ptype == "integer":
+        if isinstance(value, bool):
+            return None  # never coerce bool → number
+        # JSON Schema defines a number with a zero fractional part (``72.0``,
+        # ``1e3``) as a valid integer, and the downstream draft-aware jsonschema
+        # validator accepts it (verified empirically). Accept genuine ints and
+        # INTEGRAL floats; serialize a float VERBATIM (never ``int()``-coerce —
+        # that could silently corrupt a large value already rounded by
+        # json.loads), so the downstream validator sees the exact parsed number.
+        if isinstance(value, int) or (isinstance(value, float) and value.is_integer()):
+            return json.dumps({prop: value})
+        return None  # a non-integral float cannot satisfy an integer property
+    if ptype == "number":
+        if isinstance(value, bool):
+            return None  # never coerce bool → number
+        if isinstance(value, (int, float)):
+            return json.dumps({prop: value})
+        return None
+    if ptype == "boolean":
+        if isinstance(value, bool):
+            return json.dumps({prop: value})
+        return None
+    return None  # pragma: no cover - ptype was exhaustively restricted above
 
 
 def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str | None:
@@ -2975,8 +3152,21 @@ def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str |
     else:
         try:
             instance = json.loads(arguments)
+            _parsed = True
         except (ValueError, TypeError):
             instance = {}
+            _parsed = False
+        # #2502: a bare-scalar ``arguments`` value (the small-model habit of
+        # emitting ``"arguments": "San Francisco"`` or ``7`` for a single-arg
+        # object tool) is not a dict. Salvage it onto the tool's single required
+        # property BEFORE validating, so a concrete forced named call yields
+        # schema-valid args instead of a false 422. Non-dict scalars that do not
+        # map a single required property stay as-is and fail closed below; an
+        # explicit JSON ``null`` is a real value and is never coerced.
+        if not _parsed or not isinstance(instance, dict):
+            _saved = _salvage_forced_scalar_arguments(name, arguments, tools)
+            if _saved is not None:
+                instance = json.loads(_saved)
 
     # Validate the synthesised arguments against the tool's parameter schema
     # with a DRAFT-AWARE ``jsonschema`` validator — the single source of truth,
@@ -5752,6 +5942,7 @@ async def _create_chat_completion_impl(
                         _synthesize_forced_tool_call(
                             _solo_name,
                             raw_text=output.raw_text or output.text,
+                            tools=request.tools,
                         )
                     ]
                     # #1256: never report a successful forced call whose
@@ -5829,6 +6020,7 @@ async def _create_chat_completion_impl(
                         _synthesize_forced_tool_call(
                             _target,
                             raw_text=output.raw_text or output.text,
+                            tools=request.tools,
                         )
                     ]
                     # #1256: refuse a synthesised pinned call whose arguments
@@ -7024,7 +7216,9 @@ async def stream_chat_completion(
                     _synth_target = None
             if _synth_target:
                 _synth_call = _synthesize_forced_tool_call(
-                    _synth_target, raw_text=_raw_text
+                    _synth_target,
+                    raw_text=_raw_text,
+                    tools=request.tools,
                 )
                 # #1256: on the streaming surface headers are already on the
                 # wire so we cannot 422 mid-flight. If the synthesised call's
