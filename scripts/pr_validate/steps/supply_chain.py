@@ -72,6 +72,116 @@ def _is_hook_file(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in HOOK_PATHS)
 
 
+# ---------------------------------------------------------------------------
+# Issue #2522 — the "roster-only workflow edit" exception.
+#
+# The explicit CI test roster in ``.github/workflows/ci.yml`` is a long
+# ``tests/test_*.py \`` (shell line-continuation) list. Enrolling a NEW test
+# in that list — ``+            tests/test_foo.py \`` and nothing else in any
+# workflow file — is the expected shape of "I added a test". Blocking it for
+# an external contributor is self-defeating: the gate blocks the exact
+# contribution it asks for.
+#
+# We therefore detect "roster-only" workflow edits: a workflow file counts
+# as roster-only when EVERY change in its diff is a pure ADDITION of a
+# ``tests/<name>.py`` roster entry (no removed lines, no other added or
+# modified lines). The overall hook finding is downgraded from [BLOCKING] to
+# [warning] ONLY when EVERY workflow file the PR touches is roster-only and
+# there are no other ``.github/workflows/`` edits of any other kind. Any
+# other workflow edit — a ``runs-on`` / ``step.run:`` change, a removed
+# line, a structural edit — or any non-workflow hook file (conftest.py,
+# Makefile, a dep file) keeps [BLOCKING] for external authors.
+#
+# The path grammar is deliberately narrower than a shell token: allowing
+# ``$()``, quotes, ``;``, ``..`` etc. would let the exception itself become
+# a workflow-code injection bypass. Only a plain ``tests/<alnum>_./-`` token
+# with an optional trailing ``\`` continuation matches.
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_PREFIX = ".github/workflows/"
+
+# A single roster-enrollment content line (leading ``+`` already stripped).
+_ROSTER_ENTRY_RE = re.compile(
+    r"^\s*(?P<path>tests/[A-Za-z0-9_./-]+\.py)(?P<cont>\s*\\)?\s*$"
+)
+
+
+def _roster_addition_path(content: str) -> str | None:
+    """If *content* (a ``+`` line with the marker stripped) is a roster
+    enrollment of the form ``tests/<name>.py \\``, return the test path,
+    else ``None``. Rejects anything with traversal (``..``) — that would
+    be an injection, not an enrollment."""
+    m = _ROSTER_ENTRY_RE.match(content)
+    if m is None:
+        return None
+    path = m.group("path")
+    if ".." in Path(path).parts:
+        return None
+    return path
+
+
+def _roster_only_workflows(
+    diff: str, files_changed: set[str]
+) -> tuple[set[str], dict[str, list[str]]]:
+    """Classify every workflow file touched by the PR.
+
+    Returns ``(roster_only, roster_additions)``:
+
+    * ``roster_only`` — the set of workflow files whose ENTIRE diff is a
+      pure roster enrollment (only ``tests/<name>.py \\`` lines added, no
+      removed lines, no other change).
+    * ``roster_additions`` — ``{workflow_file: [test paths enrolled]}`` for
+      those roster-only files, so the human gets the exact added lines.
+
+    A workflow file in ``files_changed`` that fails any of those checks is
+    simply absent from both — it stays [BLOCKING]."""
+
+    workflow_files = {f for f in files_changed if f.startswith(_WORKFLOW_PREFIX)}
+    if not workflow_files:
+        return set(), {}
+
+    # Group added/removed content lines per workflow file.
+    per_file: dict[str, dict[str, list[str]]] = {
+        f: {"added": [], "removed": []} for f in workflow_files
+    }
+    cur_path = ""
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            cur_path = line.split(" b/", 1)[-1] if " b/" in line else ""
+            continue
+        if cur_path not in per_file:
+            continue
+        if line.startswith(("+++ ", "--- ", "@@")):
+            continue  # hunk / file headers
+        marker = line[:1]
+        if marker == "+":
+            per_file[cur_path]["added"].append(line[1:])
+        elif marker == "-":
+            per_file[cur_path]["removed"].append(line[1:])
+
+    roster_only: set[str] = set()
+    roster_additions: dict[str, list[str]] = {}
+    for path, block in per_file.items():
+        # Anything deleted from a workflow file is NOT roster-only (#2522).
+        if block["removed"]:
+            continue
+        if not block["added"]:
+            continue  # no tracked change; stay conservative
+        enrolled: list[str] = []
+        ok = True
+        for content in block["added"]:
+            p = _roster_addition_path(content)
+            # Must be a real roster token AND a test the PR itself adds.
+            if p is None or p not in files_changed:
+                ok = False
+                break
+            enrolled.append(p)
+        if ok:
+            roster_only.add(path)
+            roster_additions[path] = enrolled
+    return roster_only, roster_additions
+
+
 # Backwards-compatibility alias — the dep-declaration matcher now
 # lives in ``_test_env.is_dep_declaration_file`` (shared with
 # ``test_env_check``); kept as a constant here so existing call
@@ -152,10 +262,44 @@ class SupplyChainStep(Step):
         if hook_files:
             # Even an "innocent-looking" hook change is worth surfacing.
             # External-author + hook change = strong reason to read.
-            severity = "BLOCKING" if ctx.is_external_author else "warning"
+            #
+            # Issue #2522 exception: an external PR that ONLY enrolls a new
+            # test into the explicit CI roster (pure ``tests/<name>.py \``
+            # additions, no removed lines, no other workflow edit) is the
+            # expected shape of a "I added a test" contribution. Downgrade
+            # that to a WARNING (still surfaced, with the added lines) so it
+            # doesn't BLOCK the behavior the gate is meant to encourage. Any
+            # other workflow edit, or any non-workflow hook file modified
+            # alongside, keeps [BLOCKING] for external authors.
+            roster_only, roster_additions = _roster_only_workflows(
+                diff, set(ctx.files_changed)
+            )
+            roster_downgrade = bool(
+                ctx.is_external_author
+                and hook_files
+                and all(f.startswith(_WORKFLOW_PREFIX) for f in hook_files)
+                and all(f in roster_only for f in hook_files)
+            )
+            severity = (
+                "warning"
+                if roster_downgrade
+                else ("BLOCKING" if ctx.is_external_author else "warning")
+            )
+            detail = ""
+            if roster_downgrade:
+                # Include the exact enrolled test paths (diff hunk) so the
+                # human still inspects what was added (issue #2522).
+                added = sorted(
+                    {  # flatten, dedupe, sort for a stable message
+                        p for paths in roster_additions.values() for p in paths
+                    }
+                )
+                detail = " Roster-only test enrollment: " + ", ".join(
+                    f"`{p}`" for p in added
+                )
             findings.append(
                 f"[{severity}] modifies install/CI hook(s): {hook_files}. "
-                "These run unattended; review every line."
+                "These run unattended; review every line." + detail
             )
 
         # 2. Suspicious patterns in ADDED lines (not removed — removed
