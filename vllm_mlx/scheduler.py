@@ -8012,6 +8012,7 @@ class Scheduler:
             # hard-stop below.  The processor is deliberately tool-request
             # only and masks a single predicted token only after the output is
             # one full copy short of the conservative abort threshold.
+            _loop_breaker = None
             if request.has_tools:
                 _loop_breaker = AgentRepetitionLogitsProcessor(request.output_token_ids)
                 request._repetition_logits_processor = _loop_breaker
@@ -8060,7 +8061,7 @@ class Scheduler:
             # reasoning, suppression, tool-bias, and unknown processors
             # fail-closed at the GenerationBatch handoff.
             request._mtp_safe_logits_processors = tuple(
-                ([request._repetition_logits_processor] if request.has_tools else [])
+                ([_loop_breaker] if _loop_breaker is not None else [])
                 + penalty_processors
             )
             # Generation-time thinking-token budget (force-close </think>).

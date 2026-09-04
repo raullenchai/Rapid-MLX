@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
+from typing import cast
 
 import mlx.core as mx
 
@@ -183,7 +184,7 @@ class AgentRepetitionLogitsProcessor:
         tentative_count = int(tentative_token_ids.size)
         if len(self.output_token_ids) + tentative_count < 48:
             return logits
-        tentative = [int(token) for token in tentative_token_ids.tolist()]
+        tentative = cast(list[int], tentative_token_ids.tolist())
         return self._apply([*self.output_token_ids, *tentative], logits)
 
     def mtp_snapshot_state(
