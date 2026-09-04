@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import sys
 import tempfile
 import threading
 import wave
@@ -210,15 +211,22 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
     # in-memory, but the verified-local-cache fallback walks the HF cache and
     # must not stall unrelated requests (the call is per-load, not per-token).
     capacity = await asyncio.to_thread(alignment_capacity, model_name)
+
+    # Scope the typed-error mapping to ADMISSION ENTRY ONLY. Entering the
+    # context manager explicitly (``__aenter__``) is where ``admit_role``
+    # raises the capacity / invariant errors, so those handlers must not also
+    # swallow errors thrown by the CALLER's yielded load body (a loader or
+    # runtime failure of the same classes would otherwise be misreported as a
+    # 507 / 409 capacity decision).
+    ctx = manager.admit_role(
+        role="alignment",
+        model_id=model_name,
+        requested_bytes=capacity.requested_bytes,
+        capacity_source=capacity.source,
+        replace_existing=replace_existing,
+    )
     try:
-        async with manager.admit_role(
-            role="alignment",
-            model_id=model_name,
-            requested_bytes=capacity.requested_bytes,
-            capacity_source=capacity.source,
-            replace_existing=replace_existing,
-        ) as admission:
-            yield admission
+        admission = await ctx.__aenter__()
     except ResidentModelCapacityError as exc:
         raise HTTPException(status_code=507, detail=exc.envelope()) from exc
     except ResidentModelError as exc:
@@ -235,6 +243,17 @@ async def _admitting_alignment(model_name: str, *, replace_existing: bool = Fals
                 }
             },
         ) from exc
+    try:
+        yield admission
+    except BaseException:
+        # Exit the admission context with the body's active exception so the
+        # ledger rollback runs, then re-raise it UNCHANGED — the capacity /
+        # invariant mapping above must never rewrite a loader/runtime failure.
+        _typ, _exc, _tb = sys.exc_info()
+        await ctx.__aexit__(_typ, _exc, _tb)
+        raise
+    else:
+        await ctx.__aexit__(None, None, None)
 
 
 async def _release_alignment_role() -> None:
@@ -1801,7 +1820,12 @@ def _load_aligner_blocking(
     """
     global _aligner_engine
 
-    if _aligner_engine is not None and _aligner_engine.model_name == model_name:
+    # Idempotency compares CANONICAL ids: an alias and its canonical HF repo id
+    # name the same checkpoint, so re-resolving must not needlessly discard and
+    # reload an already-resident aligner.
+    if _aligner_engine is not None and _canonical_model_id(
+        _aligner_engine.model_name
+    ) == _canonical_model_id(model_name):
         return
     from ..audio.stt import STTEngine
 
@@ -1956,7 +1980,8 @@ async def _run_alignment_request(
             # is wrapped: an inference failure on a successfully-loaded
             # aligner must not release a resident engine's reservation.
             needs_load = _aligner_engine is None or (
-                _aligner_engine.model_name != model_name
+                _canonical_model_id(_aligner_engine.model_name)
+                != _canonical_model_id(model_name)
             )
             if needs_load:
                 # A pending load ALWAYS (re)establishes the alignment role, even

@@ -1329,6 +1329,23 @@ def test_noop_role_admission_commit_is_noop():
 
 
 @pytest.mark.asyncio
+async def test_admitting_alignment_does_not_map_body_errors(monkeypatch):
+    """pr_validate codex BLOCKING (round-7): the ``_admitting_alignment``
+    exception mapping covers only ADMISSION ENTRY. A ``ResidentModelError``
+    raised by the yielded LOAD BODY must propagate unchanged (a loader/runtime
+    failure), never be rewritten as a 409 ``alignment_role_conflict``."""
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.resident_models import ResidentModelError
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    with pytest.raises(ResidentModelError, match="loader blew up"):
+        async with audio_route._admitting_alignment("qwen3-aligner"):
+            raise ResidentModelError("loader blew up")
+
+
+@pytest.mark.asyncio
 async def test_admitting_alignment_resolves_footprint_before_load(monkeypatch):
     """The alignment admission resolves the aligner footprint from catalog
     metadata (not blind) and is admitted through the shared ledger."""
@@ -1570,6 +1587,82 @@ async def test_cached_model_alignment_loads_once_and_stays_resident(monkeypatch)
     assert len(roles) == 1
     assert roles[0]["state"] == "resident"
     assert roles[0]["reserved_bytes"] == _aligner_catalog_bytes()
+
+
+@pytest.mark.asyncio
+async def test_aligner_alias_and_canonical_request_reuse_same_engine(monkeypatch):
+    """pr_validate codex BLOCKING (round-7): an alias and its canonical HF id
+    name the same checkpoint, so alternating alias / canonical requests across
+    the real ``_run_alignment_request`` must NOT reload or re-admit — the
+    alignment stays loaded once and one role reservation stays resident."""
+
+    import io
+
+    from fastapi import UploadFile
+
+    from vllm_mlx.routes import audio as audio_route
+    from vllm_mlx.runtime.audio_worker import bind_audio_worker
+
+    operations: list[str] = []
+
+    class _Aligner:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def load(self) -> None:
+            operations.append("load-aligner")
+
+        def align(self, path: str, text: str, **kwargs):
+            operations.append("infer-aligner")
+            return "aligned"
+
+    worker = _RecordingWorker()
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Aligner)
+    monkeypatch.setattr(audio_route, "_aligner_engine", None)
+    monkeypatch.setattr(audio_route, "_stt_engine", None)
+    bind_audio_worker(worker)
+
+    manager = _make_role_manager(limit_gib=4.0)
+    _install_role_manager(monkeypatch, manager)
+
+    def _recording_load(model_name, on_discard_previous=None):
+        if (
+            audio_route._aligner_engine is not None
+            and audio_route._aligner_engine.model_name == model_name
+        ):
+            return
+        operations.append("load-aligner")
+        audio_route._aligner_engine = _Aligner(model_name)
+        if on_discard_previous is not None:
+            on_discard_previous()
+
+    monkeypatch.setattr(audio_route, "_load_aligner_blocking", _recording_load)
+
+    def _request(i: int, model: str):
+        return audio_route._run_alignment_request(
+            UploadFile(filename=f"clip{i}.wav", file=io.BytesIO(b"\x00" * 64)),
+            model=model,
+            text="你好",
+            language=None,
+            response_format="json",
+        )
+
+    try:
+        # Alternate alias and canonical id across requests; both resolve to the
+        # same canonical checkpoint and must share one load.
+        await _request(0, "qwen3-aligner")
+        await _request(1, "mlx-community/Qwen3-ForcedAligner-0.6B-8bit")
+        await _request(2, "qwen3-forced-aligner")
+    finally:
+        bind_audio_worker(None)
+
+    # Exactly one load across three requests (alias + canonical + long alias).
+    assert operations.count("load-aligner") == 1
+    assert operations.count("infer-aligner") == 3
+    roles = [r for r in manager.snapshot()["roles"] if r["role"] == "alignment"]
+    assert len(roles) == 1
+    assert roles[0]["state"] == "resident"
+    assert roles[0]["model"] == "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 
 
 @pytest.mark.asyncio
