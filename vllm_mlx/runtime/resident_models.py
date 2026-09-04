@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from .model_registry import ModelEntry, ModelRegistry
 from .process_memory import get_phys_footprint
@@ -493,6 +493,33 @@ def _release_allocator_cache() -> None:
         pass
 
 
+class _SnapshotModelDict(TypedDict):
+    """Per-model row of :meth:`ResidentModelManager.snapshot`.
+
+    Typing the heterogeneous snapshot rows lets mypy check the ``max`` on
+    ``estimated_bytes``/``measured_bytes`` as real ``int`` comparisons instead
+    of joining every value type into one broad dict union.
+    """
+
+    id: str
+    model_path: str
+    aliases: list[str]
+    modality: str
+    role: str
+    serving_lane: object
+    serving_lane_reason: object
+    state: str
+    pinned: bool
+    primary: bool
+    active_requests: int
+    lifecycle: object
+    estimated_bytes: int
+    measured_bytes: int | None
+    idle_seconds: float
+    performance: dict[str, object] | None
+    replacement_projection: dict[str, object] | None
+
+
 class ResidentModelManager:
     """Own dynamic engines and enforce a process-wide residency ceiling.
 
@@ -851,6 +878,7 @@ class ResidentModelManager:
                 async with self._lock:
                     if (
                         exclusive_sibling is not None
+                        and release_exclusive_role is not None
                         and self._roles.get(release_exclusive_role) is exclusive_sibling
                     ):
                         # Only retire the sibling WE retained — preserve any
@@ -874,6 +902,7 @@ class ResidentModelManager:
                 # installed NEWER reservation for the role is never erased.
                 if (
                     exclusive_sibling is not None
+                    and release_exclusive_role is not None
                     and admission.exclusive_retired
                     and self._roles.get(release_exclusive_role) is exclusive_sibling
                 ):
@@ -918,7 +947,7 @@ class ResidentModelManager:
         self,
         *,
         role: str,
-        record,
+        record: ResidentRoleReservation,
         exclusive_sibling,
         release_exclusive_role: str | None,
     ) -> None:
@@ -941,6 +970,7 @@ class ResidentModelManager:
             # the aligner loaded, and must not be erased here.
             if (
                 exclusive_sibling is not None
+                and release_exclusive_role is not None
                 and self._roles.get(release_exclusive_role) is exclusive_sibling
             ):
                 self._roles.pop(release_exclusive_role, None)
@@ -1816,7 +1846,7 @@ class ResidentModelManager:
 
     def snapshot(self) -> dict:
         now = self._clock()
-        models = []
+        models: list[_SnapshotModelDict] = []
         for record in sorted(self._records.values(), key=lambda item: item.loaded_at):
             engine = record.entry.engine
             resident = not hasattr(engine, "is_resident") or bool(engine.is_resident)
