@@ -312,6 +312,86 @@ class TestBatchedEngineAbortRouting:
         assert engine._guided_abort_events == {}
 
     @pytest.mark.asyncio
+    async def test_task_cancel_defers_cleanup_until_worker_finishes(self, monkeypatch):
+        """A live executor future owns the registry until its callback runs."""
+        import asyncio
+        import concurrent.futures
+        import threading
+        import time
+
+        started = threading.Event()
+        stopped = threading.Event()
+
+        def cooperate(*, should_abort, **_kwargs):
+            started.set()
+            while not should_abort():
+                time.sleep(0.001)
+            stopped.set()
+            return None
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            engine = _make_guided_engine(monkeypatch, cooperate, executor=executor)
+            task = asyncio.create_task(
+                engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    request_id="pending-worker",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert await asyncio.to_thread(stopped.wait, 1)
+            for _ in range(100):
+                if not engine._guided_abort_events:
+                    break
+                await asyncio.sleep(0.001)
+            assert engine._guided_abort_events == {}
+        finally:
+            executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_retained_guided_failure_keeps_identity_for_handoff(
+        self, monkeypatch
+    ):
+        engine = _make_guided_engine(monkeypatch, lambda **_kwargs: None)
+
+        with pytest.raises(RuntimeError, match="produced no result"):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="retained-failure",
+                raise_on_failure=True,
+                retain_guided_request_on_failure=True,
+            )
+        assert "retained-failure" in engine._guided_abort_events
+        outcome = engine.finish_guided_handoff("retained-failure")
+        assert outcome.cancelled is False
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
+    async def test_abort_after_worker_result_suppresses_commit(self, monkeypatch):
+        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+
+        engine = None
+
+        def abort_then_return(**_kwargs):
+            assert engine is not None
+            assert engine.abort_guided_request("result-race") is True
+            return '{"must_not_commit": true}'
+
+        engine = _make_guided_engine(monkeypatch, abort_then_return)
+        with pytest.raises(GuidedGenerationCancelledError):
+            await engine.generate_with_schema(
+                messages=[{"role": "user", "content": "hi"}],
+                json_schema={"type": "object"},
+                request_id="result-race",
+            )
+        assert engine._guided_abort_events == {}
+
+    @pytest.mark.asyncio
     async def test_retained_guided_failure_honors_accepted_abort(self, monkeypatch):
         from vllm_mlx.api.errors import GuidedGenerationCancelledError
 
