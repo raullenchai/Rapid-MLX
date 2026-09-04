@@ -2884,7 +2884,7 @@ def test_generator_restores_tool_guard_state_when_target_processor_raises():
         def __call__(self, _tokens, logits):
             return logits
 
-        def mtp_apply(self, _tentative, logits):
+        def mtp_apply(self, _tokens, _tentative, logits):
             self.state += 1
             if self.armed:
                 raise RuntimeError("sentinel target processor failure")

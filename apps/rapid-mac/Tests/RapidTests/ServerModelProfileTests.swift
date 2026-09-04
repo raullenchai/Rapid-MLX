@@ -127,8 +127,8 @@ final class ServerModelProfileTests {
         #expect(availability?.label().contains("MTP") == true)
     }
 
-    @Test("MTP says it is paused before a tools request")
-    func speculativeStatusPausedByTools() {
+    @Test("MTP stays ready when the engine verifies constrained tools")
+    func speculativeStatusReadyWithVerifiedTools() {
         let availability = SpeculativeDecodingAvailability.resolve(
             profile: ServerModelProfile(
                 id: "model",
@@ -136,12 +136,12 @@ final class ServerModelProfileTests {
                     configured: true,
                     method: "mtp",
                     runtimeState: .active,
-                    requestFallbackFeatures: ["tools"]
+                    requestFallbackFeatures: []
                 )
             ),
             sendsTools: true
         )
-        #expect(availability?.state == .pausedByTools)
+        #expect(availability?.state == .ready)
         #expect(availability?.help().isEmpty == false)
     }
 

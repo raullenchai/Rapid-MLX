@@ -2576,6 +2576,45 @@ class GrammarLogitsProcessor:
             out = apply_token_bitmask(logits, self._bitmask)
         return self._readmit_stop_tokens_if_accepting(out, logits)
 
+    def mtp_apply(self, token_ids: Any, _tentative_token_ids: Any, logits: Any) -> Any:
+        """Apply the grammar to one cumulative speculative candidate row.
+
+        The MTP verifier supplies the same cumulative history as ordinary
+        decode.  ``__call__`` temporarily advances the private matcher through
+        that row's draft prefix before producing its target mask; generator-
+        owned snapshots then retain only the target-accepted boundary.
+        """
+
+        return self(token_ids, logits)
+
+    def mtp_snapshot_state(self) -> tuple[Any, int | None, int, bool, bool]:
+        """Capture every mutable grammar boundary used by MTP verification."""
+
+        return (
+            self._matcher.deep_copy(),
+            self._prompt_len,
+            self._committed,
+            self._reasoning_ended,
+            self._aborted,
+        )
+
+    def mtp_restore_state(
+        self,
+        state: tuple[Any, int | None, int, bool, bool],
+    ) -> None:
+        """Restore a pre-proposal or target-accepted grammar boundary."""
+
+        matcher, prompt_len, committed, reasoning_ended, aborted = state
+        # Treat snapshots as immutable values.  Some generator boundaries are
+        # restored before yielding and can remain live until cancellation; a
+        # fresh private matcher prevents later mutation from aliasing a saved
+        # boundary.
+        self._matcher = matcher.deep_copy()
+        self._prompt_len = prompt_len
+        self._committed = committed
+        self._reasoning_ended = reasoning_ended
+        self._aborted = aborted
+
     def _readmit_stop_tokens_if_accepting(self, out: Any, logits: Any) -> Any:
         """Un-mask the model's stop/eos tokens when the grammar could terminate.
 

@@ -786,6 +786,204 @@ class TestScheduleWaitingInsertDispatch:
         assert isinstance(admitted[0], AgentRepetitionLogitsProcessor)
         assert tuple(admitted) == request._mtp_safe_logits_processors
 
+    def test_real_schedule_registers_builtin_grammar_as_transactional_mtp_safe(self):
+        """The exact request grammar and guard share MTP's admitted row."""
+        from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        # Scheduling does not execute the matcher. Bypass its heavyweight
+        # llguidance construction while retaining the exact production type
+        # and its real transaction methods for this admission contract.
+        grammar = object.__new__(GrammarLogitsProcessor)
+        request = Request(
+            request_id="req-constrained-tool-mtp-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.has_tools = True
+        request.grammar_logits_processor = grammar
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [104]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted[0] is grammar
+        assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
+        assert tuple(admitted) == request._mtp_safe_logits_processors
+
+    def test_real_schedule_rejects_transactional_grammar_lookalike_from_mtp(self):
+        """Named methods do not make an unknown stateful processor MTP-safe."""
+        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+        class CustomGrammarProcessor:
+            def __call__(self, _tokens, logits):
+                return logits
+
+            def mtp_apply(self, _tokens, _tentative, logits):
+                return logits
+
+            def mtp_snapshot_state(self):
+                return None
+
+            def mtp_restore_state(self, _state):
+                return None
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        grammar = CustomGrammarProcessor()
+        request = Request(
+            request_id="req-custom-grammar-mtp-rejected",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.has_tools = True
+        request.grammar_logits_processor = grammar
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [104]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted[0] is grammar
+        assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
+        assert request._mtp_safe_logits_processors == (admitted[1],)
+
+    def test_mtp_grammar_snapshot_restores_exact_verified_boundary(self, monkeypatch):
+        """Rejected speculative suffixes never advance the persistent matcher."""
+        import mlx.core as mx
+
+        from vllm_mlx.api import tool_grammar as tg
+
+        class _Matcher:
+            def __init__(self, consumed=()):
+                self.consumed = list(consumed)
+
+            def get_error(self):
+                return None
+
+            def deep_copy(self):
+                return _Matcher(self.consumed)
+
+            def consume_token(self, token):
+                self.consumed.append(int(token))
+                return True
+
+            def is_stopped(self):
+                return False
+
+            def is_accepting(self):
+                return False
+
+            def reset(self):
+                self.consumed.clear()
+
+        class _Tokenizer:
+            vocab_size = 16
+
+        mask_states = []
+        monkeypatch.setattr(tg, "get_request_matcher", lambda *_args: _Matcher())
+        monkeypatch.setattr(tg, "allocate_token_bitmask", lambda *_args: object())
+        monkeypatch.setattr(
+            tg,
+            "fill_next_token_bitmask",
+            lambda matcher, _mask, _row: mask_states.append(tuple(matcher.consumed)),
+        )
+        monkeypatch.setattr(tg, "apply_token_bitmask", lambda logits, _mask: logits)
+
+        processor = tg.GrammarLogitsProcessor(_Tokenizer(), "grammar")
+        logits = mx.zeros((1, 16))
+        processor(mx.array([99]), logits)  # establish prompt boundary
+        root = processor.mtp_snapshot_state()
+
+        processor.mtp_apply(mx.array([99, 1]), mx.array([]), logits)
+        accepted_one = processor.mtp_snapshot_state()
+        processor.mtp_apply(mx.array([99, 1, 2]), mx.array([2]), logits)
+        assert processor._matcher.consumed == [1, 2]
+
+        # Reject token 2, commit only token 1, then explore a different token.
+        processor.mtp_restore_state(accepted_one)
+        assert processor._matcher.consumed == [1]
+        processor.mtp_apply(mx.array([99, 1, 7]), mx.array([7]), logits)
+        assert processor._matcher.consumed == [1, 7]
+
+        processor.mtp_restore_state(root)
+        assert processor._matcher.consumed == []
+        assert mask_states[-3:] == [(1,), (1, 2), (1, 7)]
+
+    def test_mtp_grammar_snapshot_restores_abort_latch(self, monkeypatch):
+        """Cancellation restores non-matcher state at the same boundary."""
+        import mlx.core as mx
+
+        from vllm_mlx.api import tool_grammar as tg
+
+        class _Matcher:
+            def __init__(self, consumed=()):
+                self.consumed = list(consumed)
+
+            def get_error(self):
+                return None
+
+            def deep_copy(self):
+                return _Matcher(self.consumed)
+
+            def consume_token(self, token):
+                self.consumed.append(int(token))
+                return False
+
+            def is_stopped(self):
+                return False
+
+            def is_accepting(self):
+                return False
+
+            def reset(self):
+                self.consumed.clear()
+
+        class _Tokenizer:
+            vocab_size = 16
+
+        monkeypatch.setattr(tg, "get_request_matcher", lambda *_args: _Matcher())
+        monkeypatch.setattr(tg, "allocate_token_bitmask", lambda *_args: object())
+        monkeypatch.setattr(tg, "fill_next_token_bitmask", lambda *_args: None)
+        monkeypatch.setattr(tg, "apply_token_bitmask", lambda logits, _mask: logits)
+
+        processor = tg.GrammarLogitsProcessor(_Tokenizer(), "grammar")
+        logits = mx.zeros((1, 16))
+        processor(mx.array([99]), logits)
+        boundary = processor.mtp_snapshot_state()
+        processor.mtp_apply(mx.array([99, 4]), mx.array([4]), logits)
+        assert processor._aborted is True
+
+        processor.mtp_restore_state(boundary)
+        assert processor._aborted is False
+        assert processor._committed == 1
+        assert processor._matcher.consumed == []
+
     def _build_dispatch_args(
         self,
         prefix_boundary: int,

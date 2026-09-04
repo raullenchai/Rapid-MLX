@@ -25,15 +25,16 @@ class SpeculativeRequestPolicy:
 
 def resolve_speculative_request_policy(
     method: object,
+    *,
+    default_tools_verified: bool = False,
 ) -> SpeculativeRequestPolicy | None:
     """Return the policy for one configured method, or ``None`` when off.
 
-    MTP verifies tokens through the target model, but its current request-local
-    sampler contract admits only the scheduler's standard penalty processors.
-    Tool requests add grammar and agent-loop processors, so the scheduler
-    deliberately keeps those requests on ordinary decoding.  Advertising that
-    fact is additive; it does not weaken the fail-closed processor identity
-    check in the decode loop.
+    The scheduler remains the final authority: it admits only the exact built-in
+    processors with a verified target-row transaction contract.  A caller may
+    remove the categorical tools fallback only after proving that the live
+    server configuration uses the default constrained grammar path. Optional or
+    unknown processors still fail closed at the decode-loop identity gate.
     """
 
     if not isinstance(method, str):
@@ -42,7 +43,7 @@ def resolve_speculative_request_policy(
     if normalized in ("", "none"):
         return None
     fallback_features: tuple[SpeculativeRequestFallbackFeature, ...] = (
-        ("tools",) if normalized == "mtp" else ()
+        ("tools",) if normalized == "mtp" and not default_tools_verified else ()
     )
     return SpeculativeRequestPolicy(
         method=normalized,
