@@ -699,6 +699,7 @@ class DiffusionEngine(BaseEngine):
         """
         try:
             import mlx.core as mx
+
             # ``is_diffusion_model`` first appears in mlx-vlm 0.6.17, which is
             # the ONLY version this runtime supports: rapid-mlx pins
             # ``mlx-vlm==0.6.17`` in every vision extra (pyproject.toml), the
