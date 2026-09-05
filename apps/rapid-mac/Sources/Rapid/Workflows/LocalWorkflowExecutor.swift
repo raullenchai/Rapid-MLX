@@ -35,10 +35,13 @@ protocol LocalWorkflowFallbackResolving: Sendable {
 }
 
 protocol LocalWorkflowApproving: Sendable {
-    /// Implementations must return promptly when their task is cancelled so
-    /// the executor's structured timeout can drain without retaining approval
-    /// requests or their dependencies.
-    func requestApproval(_ request: WorkflowApprovalRequest) async -> WorkflowApprovalDecision
+    /// The adapter owns its UI continuation and must enforce this deadline
+    /// without leaving an orphan waiter. It must also return promptly when its
+    /// task is cancelled.
+    func requestApproval(
+        _ request: WorkflowApprovalRequest,
+        timeoutNanoseconds: UInt64
+    ) async -> WorkflowApprovalDecision
 }
 
 protocol LocalWorkflowLedgerWriting: Sendable {
@@ -174,6 +177,13 @@ actor LocalWorkflowExecutor {
             switch result {
             case .completed:
                 run.nextStepIndex += 1
+                if Task.isCancelled {
+                    return await cancel(
+                        run,
+                        stepID: step.id,
+                        actionMayHaveOccurred: true
+                    )
+                }
                 run.status = .running
             case .paused(let reason, let code, let actionMayHaveOccurred):
                 return await pause(
@@ -192,6 +202,13 @@ actor LocalWorkflowExecutor {
             }
         }
 
+        if Task.isCancelled {
+            return await cancel(
+                run,
+                stepID: nil,
+                actionMayHaveOccurred: run.nextStepIndex > 0
+            )
+        }
         run.status = .completed
         do {
             try await record(
@@ -618,24 +635,10 @@ actor LocalWorkflowExecutor {
     }
 
     private func requestApproval(_ request: WorkflowApprovalRequest) async -> WorkflowApprovalDecision {
-        let approver = approver
-        let timeoutNanoseconds = approvalTimeoutNanoseconds
-        return await withTaskGroup(of: WorkflowApprovalDecision.self) { group in
-            group.addTask {
-                await approver.requestApproval(request)
-            }
-            group.addTask {
-                do {
-                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                } catch {
-                    return .unavailable
-                }
-                return .unavailable
-            }
-            let decision = await group.next() ?? .unavailable
-            group.cancelAll()
-            return decision
-        }
+        await approver.requestApproval(
+            request,
+            timeoutNanoseconds: approvalTimeoutNanoseconds
+        )
     }
 
     /// Model text shown in an approval prompt is untrusted display data. Make

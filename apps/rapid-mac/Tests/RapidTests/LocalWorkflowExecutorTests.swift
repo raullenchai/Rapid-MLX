@@ -589,6 +589,38 @@ struct LocalWorkflowExecutorTests {
         #expect((await ledger.events).last?.kind == .runCancelled)
     }
 
+    @Test("cancellation during final verification audit cannot become completed")
+    func cancellationDuringFinalVerificationAuditIsObserved() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step(maxAttempts: 1)])
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "menu"),
+            observation(revision: "menu"),
+            observation(revision: "selected"),
+        ])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Choose meal"
+        )
+        let ledger = CancellingOnEventWorkflowLedger(kind: .verificationPassed)
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: RecordingWorkflowActuator(),
+            verifier: ScriptedWorkflowVerifier([.satisfied]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: ScriptedWorkflowApprover([]),
+            ledger: ledger
+        )
+
+        let execution = Task { await executor.execute(workflow) }
+        let run = await execution.value
+        let eventKinds = await ledger.events.map(\.kind)
+
+        #expect(run.status == .cancelled(stepID: "choose", actionMayHaveOccurred: true))
+        #expect(!eventKinds.contains(.runCompleted))
+        #expect(eventKinds.last == .runCancelled)
+    }
+
     @Test("audit events have no field capable of persisting action text or workflow instructions")
     func auditLedgerRedactsPayloads() async throws {
         let secret = "4111-1111-1111-1111"
@@ -806,7 +838,10 @@ private actor ScriptedWorkflowApprover: LocalWorkflowApproving {
 
     init(_ decisions: [WorkflowApprovalDecision]) { self.decisions = decisions }
 
-    func requestApproval(_ request: WorkflowApprovalRequest) async -> WorkflowApprovalDecision {
+    func requestApproval(
+        _ request: WorkflowApprovalRequest,
+        timeoutNanoseconds _: UInt64
+    ) async -> WorkflowApprovalDecision {
         requests.append(request)
         guard !decisions.isEmpty else { return .unavailable }
         return decisions.removeFirst()
@@ -816,14 +851,17 @@ private actor ScriptedWorkflowApprover: LocalWorkflowApproving {
 private actor SlowWorkflowApprover: LocalWorkflowApproving {
     private(set) var count = 0
 
-    func requestApproval(_: WorkflowApprovalRequest) async -> WorkflowApprovalDecision {
+    func requestApproval(
+        _: WorkflowApprovalRequest,
+        timeoutNanoseconds: UInt64
+    ) async -> WorkflowApprovalDecision {
         count += 1
         do {
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
         } catch {
             return .unavailable
         }
-        return .approved
+        return .unavailable
     }
 }
 
@@ -842,6 +880,20 @@ private actor FailingWorkflowLedger: LocalWorkflowLedgerWriting {
     func append(_: WorkflowLedgerEvent) async throws {
         appendCount += 1
         if appendCount == failAtAppend { throw TestDependencyError.exhausted }
+    }
+}
+
+private actor CancellingOnEventWorkflowLedger: LocalWorkflowLedgerWriting {
+    private let kind: WorkflowLedgerEventKind
+    private(set) var events: [WorkflowLedgerEvent] = []
+
+    init(kind: WorkflowLedgerEventKind) { self.kind = kind }
+
+    func append(_ event: WorkflowLedgerEvent) async throws {
+        events.append(event)
+        if event.kind == kind {
+            withUnsafeCurrentTask { task in task?.cancel() }
+        }
     }
 }
 
