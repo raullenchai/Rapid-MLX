@@ -157,6 +157,10 @@ class TestTemplateThinkingSwitch:
             "{% if not reasoning %}<think></think>{% endif %}",
             # a conditional expression
             "{{ '<think>' if reasoning else '<think></think>' }}",
+            # a statically non-empty, unfiltered loop proves its body runs
+            "{% for x in [1] %}{% if reasoning %}x{% endif %}{% endfor %}",
+            # a statically empty, unfiltered loop proves its else arm runs
+            "{% for x in [] %}x{% else %}{% if reasoning %}y{% endif %}{% endfor %}",
             # an elif branch
             "{% if x %}a{% elif reasoning %}b{% endif %}",
             # read as data somewhere else too, but branched on as a boolean
@@ -257,6 +261,8 @@ class TestTemplateThinkingSwitch:
             "{{ ('R' if reasoning else 'N') if false else '' }}",
             "{{ reasoning | default('unset') }}"
             "{% for x in [1] %}{% break %}{% if reasoning %}R{% endif %}{% endfor %}",
+            "{{ reasoning | default('unset') }}"
+            "{% for x in items %}x{% else %}{% if reasoning %}R{% endif %}{% endfor %}",
             # branched on a loop variable of that name
             "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
         ],
@@ -444,11 +450,22 @@ class TestOtherTemplatesUnaffected:
                 "{% if reasoning %}R{% endif %}{% endfor %}",
                 "unset",
             ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% for x in items %}x{% else %}"
+                "{% if reasoning %}R{% endif %}{% endfor %}",
+                "unsetx",
+            ),
         ],
     )
     def test_dead_branch_does_not_make_rendered_data_a_switch(self, template, expected):
         tok = _RenderingTokenizer(template)
-        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        prompt = apply_chat_template(
+            tok,
+            MESSAGES,
+            enable_thinking=False,
+            chat_template_kwargs={"items": [1]},
+        )
         assert "reasoning" not in tok.received_kwargs
         assert prompt == expected
 

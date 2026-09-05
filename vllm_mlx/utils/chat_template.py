@@ -1659,28 +1659,37 @@ def _context_reads(
         inner = bound | _bound_names(node, nodes)
         body_tests: set[str] = set()
         body_proven_nonempty = False
+        else_proven = False
         if node.test is None:
             try:
-                body_proven_nonempty = bool(node.iter.as_const())
+                iterator_nonempty = bool(node.iter.as_const())
+                body_proven_nonempty = iterator_nonempty
+                else_proven = not iterator_nonempty
             except Exception:
                 pass
         if node.test is not None:
             _context_reads(node.test, inner, nodes, reads, body_tests)
+        has_loop_control = any(
+            isinstance(stmt, (nodes.Break, nodes.Continue))
+            or any(stmt.find_all((nodes.Break, nodes.Continue)))
+            for stmt in node.body
+        )
         _context_reads_all(
             node.body,
             inner,
             nodes,
             reads,
-            body_tests,
+            tests if body_proven_nonempty and not has_loop_control else body_tests,
         )
-        # A loop ``else`` is dead only when an unfiltered iterable is
-        # statically known to contain at least one item.
+        # A loop ``else`` can establish a switch only when an unfiltered
+        # iterable is statically known to be empty.  Dynamic iteration may
+        # skip the else path for the current render.
         _context_reads_all(
             node.else_,
             bound,
             nodes,
             reads,
-            body_tests if body_proven_nonempty else tests,
+            tests if else_proven else body_tests,
         )
         return bound
     if isinstance(node, nodes.If):
