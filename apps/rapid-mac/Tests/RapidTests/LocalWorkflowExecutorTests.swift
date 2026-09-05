@@ -311,7 +311,20 @@ struct LocalWorkflowExecutorTests {
     func typedTextIsBoundedBeforeInputInjection() async throws {
         let workflow = LocalWorkflow(title: "Compose", steps: [step(maxAttempts: 1)])
         let limit = WorkflowActionPayload.maximumTypedTextBytes
-        #expect(WorkflowActionPayload.typeText(String(repeating: "a", count: limit)).isStructurallyValid)
+        let validBoundary = Dependencies(
+            observer: ScriptedWorkflowObserver([
+                observation(revision: "editor"),
+                observation(revision: "editor"),
+                observation(revision: "typed"),
+            ]),
+            verifications: [.satisfied],
+            payload: .typeText(String(repeating: "a", count: limit))
+        )
+
+        let completed = await validBoundary.executor.execute(workflow)
+
+        #expect(completed.status == .completed)
+        #expect(await validBoundary.actuator.count == 1)
 
         for payload in [
             WorkflowActionPayload.typeText(""),
