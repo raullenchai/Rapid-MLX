@@ -58,6 +58,14 @@ def test_explicit_precision_rejects_local_checkpoint(tmp_path):
         resolve_image_weight_precision(str(tmp_path), "bf16")
 
 
+def test_explicit_precision_preserves_local_path_precedence(monkeypatch, tmp_path):
+    (tmp_path / FLUX2_KLEIN_Q4_ALIAS).mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="not local checkpoints"):
+        resolve_image_weight_precision(FLUX2_KLEIN_Q4_ALIAS, "bf16")
+
+
 def test_cli_precision_is_explicit_and_defaults_to_no_override():
     parser = build_parser()
     default = parser.parse_args(["serve", FLUX2_KLEIN_Q4_ALIAS])

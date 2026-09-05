@@ -37,6 +37,9 @@ def resolve_image_weight_precision(model_name: str, precision: str) -> str:
             "image weight precision must be one of: "
             f"{', '.join(IMAGE_WEIGHT_PRECISIONS)}"
         )
+    # Match ``resolve_model``'s repository-wide local-path precedence. A
+    # same-named directory is user-owned checkpoint input, not permission to
+    # discard it and silently select a remote curated checkpoint instead.
     if not model_name or Path(model_name).expanduser().is_dir():
         raise ValueError(
             "--image-weight-precision currently supports the curated "
