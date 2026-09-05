@@ -106,5 +106,6 @@ struct ImageGenerationPhaseTests {
         #expect(ImageGenViewModel.seedSteps(for: "hidream-o1-dev") == 28)
         #expect(ImageGenViewModel.seedSteps(for: "sd35-large-4bit") == 28)
         #expect(ImageGenViewModel.seedSteps(for: "sdxl-base") == 30)
+        #expect(ImageGenViewModel.seedSteps(for: "flux-schnell") == 4)
     }
 }
