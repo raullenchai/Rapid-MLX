@@ -292,7 +292,7 @@ class TestFailures:
 
 # --- Regressions from pr_validate codex_review (#2347) ----------------------
 class TestCodexRegressionFixes:
-    """Lock in fixes for the five blocker findings from pr_validate codex_review."""
+    """Lock in fixes for the 10 blocker findings from pr_validate codex_review."""
 
     def test_incompatible_explicit_unit_does_not_satisfy_number(self, g):
         # An explicitly '%'-qualified value must never satisfy a °C fact even
@@ -339,6 +339,54 @@ class TestCodexRegressionFixes:
         rep = _grade(g, [rh], "RH is 62% right now")
         assert rep.facts[0].status == "present"
         assert rep.overall is True
+
+    def test_relation_uses_candidate_position_not_first_match(self, g):
+        # A stale textual twin ("55% was yesterday") must not shadow the "humidity
+        # is 55%" that actually grounds the fact -- compare the candidate's OWN
+        # offset against the anchor window, not the first identical match.
+        rep = _grade(g, [HUMIDITY], "55% was yesterday; humidity is 55%")
+        assert rep.facts[0].status == "present"
+        assert rep.overall is True
+
+    def test_bare_number_near_anchor_needs_own_position(self, g):
+        # The substring "21" inside "210" near the anchor must not satisfy a bare
+        # 21 when the real 21 is far away in a later clause.
+        rep = _grade(
+            g,
+            [TEMP21C],
+            "The temperature probe reads 210, and later the feeling is 21.",
+        )
+        assert rep.facts[0].status == "missing"
+        # Control: a bare 21 genuinely near the anchor still passes.
+        assert _grade(g, [TEMP21C], "The temperature is about 21.").overall is True
+
+    def test_malformed_fact_fails_visibly_not_via_key_match(self, g):
+        # An unparseable fact must surface as a visible miss -- its key must not
+        # become an affirmative match term that lets a bogus entry pass.
+        rep = _grade(g, [{"type": "bogus", "key": "sunny"}], "It is sunny today")
+        assert rep.overall is False
+        assert "sunny" in rep.missing
+
+    def test_fact_overflow_forces_failure(self, g):
+        # Silently dropping facts beyond MAX_FACTS must not let a run pass while a
+        # required fact went ungraded -- overflow forces overall False.
+        facts = [{"type": "string", "key": f"k{i}", "value": "v"} for i in range(52)]
+        rep = _grade(g, facts, "v")
+        assert rep.overall is False
+        assert any("MAX_FACTS" in m for m in rep.missing)
+
+    def test_short_relation_alias_does_not_anchor_in_word(self, g):
+        # The single-word alias "rh" must not anchor inside "through".
+        rh = {
+            "type": "relation",
+            "key": "humidity",
+            "value": 62.0,
+            "unit": "%",
+            "tolerance": 2.0,
+            "aliases": ["rh", "humidity"],
+        }
+        rep = _grade(g, [rh], "we go through 62 pages of notes")
+        assert rep.facts[0].status == "missing"
 
 
 # --- Tool output is DATA, not instructions ---------------------------------

@@ -234,12 +234,19 @@ class StringFact:
 
     @property
     def normalized_value(self) -> str:
-        return _norm(self.value or self.key)
+        return _norm(self.value)
 
     @property
     def search_terms(self) -> tuple[str, ...]:
-        """Normalized positive phrases that affirmatively report the fact."""
-        terms = {self.normalized_value}
+        """Normalized positive phrases that affirmatively report the fact.
+
+        Only the VALUE and its aliases are treated as affirmative evidence --
+        never the bare key, so a malformed/empty-value fact (e.g. a fallback
+        created for an unparseable input) can't pass on the key alone.
+        """
+        terms = set()
+        if self.value:
+            terms.add(_norm(self.value))
         terms.update(_norm(a) for a in self.aliases)
         return tuple(sorted(t for t in terms if t))
 
@@ -375,30 +382,49 @@ def fact_from_dict(d: dict) -> Fact:
 # ---------------------------------------------------------------------------
 
 
-def _numbered_in(text: str) -> list[tuple[float, str | None]]:
-    """Yield ``(value, canonical_unit_or_None)`` candidates in ``text``.
+def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
+    """Yield ``(value, canonical_unit_or_None, start)`` candidates in ``text``.
 
     ``text`` is the NFC+casefolded answer. Values with a resolvable unit yield
-    that unit; values without a unit yield ``None`` (a bare number). This is a
-    typed, bounded extraction -- it never grants meaning to free-text.
+    that unit; values without a unit yield ``None`` (a bare number). ``start``
+    is the candidate's actual character offset, so callers can check whether
+    THIS occurrence (not the first textually-identical one) sits inside an
+    anchor window. Typed, bounded extraction -- it never grants meaning to
+    free-text.
     """
-    out: list[tuple[float, str | None]] = []
+    out: list[tuple[float, str | None, int]] = []
     for match in _UNIT_RE.finditer(text):
         num = match.group("num")
         token = match.group("unit")
         if num is None:
             continue
         value = float(num)
+        start = match.start()
         if not token:
-            out.append((value, None))
+            out.append((value, None, start))
             continue
         unit = _resolve_unit(token.strip())
         if unit is None:
             # A unit-ish suffix we don't recognize -- treat as bare for safety.
-            out.append((value, None))
+            out.append((value, None, start))
         else:
-            out.append((value, unit))
+            out.append((value, unit, start))
     return out
+
+
+def _term_occurrences(term: str, text: str) -> list[int]:
+    """Starting indices of whole-word occurrences of ``term`` in ``text``.
+
+    Single-word anchors are matched on word boundaries (so the alias ``rh``
+    does not anchor inside ``through``); multi-word / punctuated phrases match
+    as plain substrings, matching how string-alias matching and deny markers
+    are bounded.
+    """
+    if not term:
+        return []
+    if " " in term or not term.isalnum():
+        return _occurrences(text, term)
+    return [m.start() for m in re.finditer(rf"\b{re.escape(term)}\b", text)]
 
 
 def _occurrences(text: str, term: str) -> list[int]:
@@ -425,7 +451,7 @@ def _salient_spans(text: str, terms: tuple[str, ...]) -> list[tuple[int, int]]:
     """
     spans: list[tuple[int, int]] = []
     for term in terms:
-        for pos in _occurrences(text, term):
+        for pos in _term_occurrences(term, text):
             spans.append(
                 (max(0, pos - SALIENT_WINDOW), pos + len(term) + SALIENT_WINDOW)
             )
@@ -494,7 +520,7 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
             and abs(converted - fact.value) <= fact.tolerance + 1e-9
         )
 
-    for value, unit in candidates:
+    for value, unit, start in candidates:
         if unit is not None:
             # Explicitly unit-qualified -- valid anywhere in the answer.
             if _within(value, unit):
@@ -505,22 +531,27 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
         else:
             # Bare number -- only counts if near a salient anchor, so "21
             # dollars" or "wind 8 km/h" doesn't pass for a temperature fact.
-            if _within(value, None) and _near_anchor(norm_answer, value, anchors):
+            if _within(value, None) and _near_anchor(norm_answer, anchors, start):
                 return True, f"matched bare {value} near {fact.key!r}"
     return False, f"no value within ±{fact.tolerance} {fact.unit} of {fact.value} found"
 
 
-def _near_anchor(norm_answer: str, value: float, anchors: tuple[str, ...]) -> bool:
-    """True if the bare number ``value`` sits within a salient anchor window."""
-    textual = _format_number(value)
+def _near_anchor(norm_answer: str, anchors: tuple[str, ...], start: int) -> bool:
+    """True if a number at ``start`` sits within a salient anchor window.
+
+    Compares THIS occurrence's exact offset against each anchor window -- never
+    a textual-substring search -- so a bare "21" cannot be satisfied by the
+    "21" embedded inside "210" elsewhere.
+    """
     for anchor in anchors:
         if not anchor:
             continue
-        for pos in _occurrences(norm_answer, anchor):
+        for pos in _term_occurrences(anchor, norm_answer):
             window = norm_answer[
                 max(0, pos - SALIENT_WINDOW) : pos + len(anchor) + SALIENT_WINDOW
             ]
-            if textual in window:
+            # The candidate's actual span must start inside the window.
+            if pos - SALIENT_WINDOW <= start < pos + len(anchor) + SALIENT_WINDOW:
                 return True
     return False
 
@@ -539,27 +570,23 @@ def _relation_coverage(fact: RelationFact, norm_answer: str) -> tuple[bool, str]
     a bare number) must sit within a salient window of that key.
     """
     anchors = fact.anchor_terms
-    if not anchors or not any(a in norm_answer for a in anchors):
+    if not anchors or not any(_term_matches(a, norm_answer) for a in anchors):
         return False, f"entity {fact.key!r} not mentioned"
     key_spans = _salient_spans(norm_answer, anchors)
     candidates = _numbered_in(norm_answer)
-    for value, unit in candidates:
+    for value, unit, start in candidates:
         converted = _to_unit(value, unit if unit is not None else fact.unit, fact.unit)
         if converted is None or abs(converted - fact.value) > fact.tolerance + 1e-9:
             continue
-        idx = norm_answer.find(fact_unit_forms(fact, value))
-        pos = idx if idx != -1 else norm_answer.find(_format_number(value))
-        if pos != -1 and any(s <= pos < e for s, e in key_spans):
+        # Compare THIS candidate's actual offset against the anchor window --
+        # not the first textually-identical occurrence (a stale "55% was
+        # yesterday" must not shadow the "humidity is 55%" that grounds it).
+        if any(s <= start < e for s, e in key_spans):
             return True, f"matched {value}{fact.unit} for {fact.key!r}"
     return (
         False,
         f"no value near {fact.key!r} within ±{fact.tolerance}{fact.unit} of {fact.value}",
     )
-
-
-def fact_unit_forms(fact: RelationFact, value: float) -> str:
-    """Best-effort textual form of ``value`` plus the fact's unit token."""
-    return f"{_format_number(value)}{fact.unit}"
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +710,11 @@ def grade_answer(
         versioned machine-readable ``to_dict()``.
     """
     # Normalize fact inputs (tolerant of raw dicts for ergonomics).
+    # ``overflow`` counts facts beyond MAX_FACTS: silently dropping them would
+    # let "all facts present" pass while an ungraded required fact was omitted,
+    # so any overflow forces a visible failure instead (see report below).
+    total = len(facts or [])
+    overflow = max(0, total - MAX_FACTS)
     normalized: list[Fact] = []
     for f in facts[:MAX_FACTS]:
         try:
@@ -694,9 +726,13 @@ def grade_answer(
         except (ValueError, TypeError, KeyError):
             # A malformed fact should not take down the whole report; record it
             # as missing so the failure is visible rather than silent/scored.
+            # The empty value (and empty aliases -- see StringFact.search_terms)
+            # guarantee it can never pass affirmation, so it fails as missing.
             normalized.append(
                 StringFact(
-                    key=str(getattr(f, "get", lambda k: "")("key", "?")), value=""
+                    key=str(getattr(f, "get", lambda k: "")("key", "?")),
+                    value="",
+                    aliases=(),
                 )
             )
 
@@ -719,13 +755,19 @@ def grade_answer(
         elif ev.status == "contradicted":
             contradicted.append(ev.key or "?")
 
+    if overflow:
+        missing.append(
+            f"__{overflow} fact(s) beyond MAX_FACTS={MAX_FACTS} not graded__"
+        )
     report = GroundingReport(
         version=SCORE_FORMAT,
-        # ``overall`` is the strict AND: every salable fact affirmatively
+        # ``overall`` is the strict AND: every salient fact affirmatively
         # reported AND none negated/hedged. ``coverage`` is the INDEPENDENT
         # affirmative aggregate (all facts present), deliberately kept separate
         # from ``contradicted`` so consumers can distinguish "missing" from
-        # "contradicted" without re-deriving from the per-fact rows.
+        # "contradicted" without re-deriving from the per-fact rows. An
+        # ungraded overflow (or any missing/contradicted fact) fails ``overall``
+        # -- a scenario must never pass while a required fact went unchecked.
         overall=not missing and not contradicted,
         coverage=not missing,
         missing=missing,
