@@ -779,6 +779,42 @@ class TestCodexRegressionFixes:
         assert rep2.facts[0].status == "missing"
         assert rep2.contradicted == []
 
+    def test_wrong_value_drops_aggregate_coverage(self, g):
+        # Round-12 F1: aggregate coverage is derived from the per-fact coverage
+        # (all(f.coverage)), so a wrong-value CONTRADICTED fact -- which already
+        # has per-fact coverage False -- drops the top-level coverage too. This
+        # distinguishes a hallucinated wrong report from a value merely reported
+        # in the negative (negated-correct keeps coverage True).
+        rep = _grade(g, [TEMP21C], "the temperature is 5°C")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.facts[0].coverage is False
+        assert rep.coverage is False
+        # A negated-correct answer keeps per-fact AND aggregate coverage True;
+        # only `overall` fails (the contradiction).
+        rep2 = _grade(g, [TEMP21C], "the temperature is not 21°C")
+        assert rep2.facts[0].coverage is True
+        assert rep2.coverage is True
+        assert rep2.overall is False
+
+    def test_ordinal_suffix_does_not_emit_bare_value(self, g):
+        # Round-12 F2: a bare number immediately followed by an attached
+        # alphabetic continuation is an ORDINAL or affixed token, not a bare
+        # value. "21st percentile" must not satisfy a 21 °C fact as a bare 21.
+        for phrase in [
+            "the temperature ranks in the 21st percentile",
+            "ranked 3rd overall",
+            "came 2nd in the list",
+            "it was the 5th reading",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].coverage is False, phrase
+            assert rep.overall is False, phrase
+        # Attached unit chars (no space) still parse -- the guard only rejects
+        # ALPHABETIC continuations, and "21c" is a legitimate compact unit.
+        rep = _grade(g, [TEMP21C], "21c at the moment")
+        assert rep.overall is True
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:

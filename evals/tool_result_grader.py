@@ -546,6 +546,13 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
             # satisfy a fact of a different unit (e.g. humidity 55%).
             if _adjacent_unit_suffix(text, match.end()):
                 continue
+            # An attached ALPHABETIC continuation with no space is an ordinal or
+            # other affixed token, not a bare value: "21st", "3rd", "2nd", "5th".
+            # "21st percentile" must not yield a bare 21 for a 21 °C fact.
+            # Punctuation ("21.", "21,") is not an attached-token continuation.
+            end = match.end("num")
+            if end < len(text) and text[end].isalpha():
+                continue
             out.append((value, None, start))
             continue
         unit = _resolve_unit(token.strip())
@@ -1088,11 +1095,13 @@ def grade_answer(
         # overflow, a truncated answer, an oversized/clamped fact (evidence was
         # altered), or any missing/contradicted fact fails ``overall`` -- a
         # scenario must never pass while some of the evidence was not examined
-        # or was rewritten. A clamped fact also fails ``coverage``: its evidence
-        # was rewritten, so "all facts present" is no longer sound (only the
-        # truncated prefix may have been matched).
+        # or was rewritten. ``coverage`` is the true affirmative aggregate: every
+        # fact's affirmative coverage must be true AND nothing was clamped. This
+        # keeps a NEGATED-correct answer ("21°C but I can't confirm", coverage
+        # true per-fact) at coverage=True while a WRONG-VALUE answer
+        # ("temperature is 5", coverage false per-fact) drops to coverage=False.
         overall=not truncated and not fact_clamped and not missing and not contradicted,
-        coverage=not missing and not fact_clamped,
+        coverage=all(f.coverage for f in facts_out) and not fact_clamped,
         missing=missing,
         contradicted=contradicted,
         facts=facts_out,
