@@ -246,7 +246,12 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
 
     from vllm_mlx.agents import adapter as ad
 
-    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "qwen3.5-9b-4bit"}])
+    fetched = []
+    monkeypatch.setattr(
+        ad,
+        "_fetch_models",
+        lambda base: fetched.append(base) or [{"id": "qwen3.5-9b-4bit"}],
+    )
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
     monkeypatch.setattr(
         run_cli,
@@ -259,6 +264,7 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
     )
     assert result == 0
     assert toggles["attached"] is True
+    assert fetched == ["http://127.0.0.1:8000/v1"]
     assert "Reusing" in capsys.readouterr().out
 
 
@@ -905,10 +911,36 @@ def test_attach_generic_writer_success(monkeypatch, capsys):
 
     from vllm_mlx.agents import adapter as ad
 
-    monkeypatch.setattr(ad, "setup_agent_config", lambda *a, **k: "wrote config")
+    called = {}
+    monkeypatch.setattr(
+        ad,
+        "setup_agent_config",
+        lambda profile, base_url, model, **kwargs: called.update(
+            base_url=base_url, model=model
+        )
+        or "wrote config",
+    )
     rc = run_cli._attach_and_configure("http://b", "m", prof, args)
     assert rc == 0
+    assert called == {"base_url": "http://b/v1", "model": "m"}
     assert "configured!" in capsys.readouterr().out
+
+
+def test_start_command_renders_ipv6_base_url(monkeypatch):
+    """IPv6 bind hosts use a valid bracketed URL for readiness checks."""
+    args = _make_args(host="::1")
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda h, p: True)
+    reused = {}
+    monkeypatch.setattr(
+        run_cli,
+        "_reuse_or_refuse",
+        lambda base_url, *rest: reused.update(base_url=base_url) or 0,
+    )
+
+    assert run_cli.start_command(args) == 0
+    assert reused["base_url"] == "http://[::1]:8000"
 
 
 def test_attach_generic_writer_cannot(monkeypatch, capsys):

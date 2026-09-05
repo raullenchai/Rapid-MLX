@@ -143,7 +143,13 @@ def start_command(args) -> int:
     if model is None:
         return 1
 
-    base_url = f"http://{args.host}:{args.port}"
+    # Render the authority through the endpoint SSOT so IPv6 literals are
+    # bracketed correctly.  Keep the server root separate from the OpenAI
+    # API base: readiness lives at ``/health/ready``, while model discovery
+    # and agent configs consume ``/v1``.
+    from vllm_mlx.connect import ServerEndpoints
+
+    base_url = ServerEndpoints(args.host, args.port, model=model).base_url
 
     # Port already occupied: reuse a compatible healthy server, else refuse.
     if _port_is_busy(args.host, args.port):
@@ -456,7 +462,10 @@ def _reuse_or_refuse(base_url: str, model: str, profile, args) -> int:
         )
         return 0
 
-    served = {str(m.get("id")) for m in _fetch_models(base_url) if m.get("id")}
+    api_base_url = f"{base_url.rstrip('/')}/v1"
+    served = {
+        str(m.get("id")) for m in _fetch_models(api_base_url) if m.get("id")
+    }
     if not served:
         print(
             f"  Port {args.port} is occupied but not a healthy rapid-mlx "
@@ -481,8 +490,13 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     the first-class profiles (claude-code / continue / deepseek-harness) and
     the generic writer otherwise. Never kills the server. Returns 0.
     """
-    if args.dry_run or args.no_setup or profile is None:
+    if profile is None:
         _print_instructions(profile, base_url, model)
+        return 0
+
+    api_base_url = f"{base_url.rstrip('/')}/v1"
+    if args.dry_run or args.no_setup:
+        _print_instructions(profile, api_base_url, model)
         return 0
 
     cfg = profile.get_config_for_version(None)
@@ -490,7 +504,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         from vllm_mlx.agents.adapter import fetch_context_window
 
         try:
-            context_length = fetch_context_window(base_url, model)
+            context_length = fetch_context_window(api_base_url, model)
         except Exception:
             context_length = None
     else:
@@ -506,11 +520,11 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
         try:
             plan = build_setup_plan(
-                profile.name, base_url, model, context_length=context_length
+                profile.name, api_base_url, model, context_length=context_length
             )
         except (OSError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
-            _print_instructions(profile, base_url, model)
+            _print_instructions(profile, api_base_url, model)
             return 0
 
         print(f"  {profile.display_name} configuration: {plan.path}")
@@ -534,7 +548,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
         summary = setup_agent_config(
             profile,
-            base_url,
+            api_base_url,
             model,
             dry_run=False,
             context_length=context_length,
@@ -542,11 +556,11 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         if summary.startswith("Cannot"):
             print(f"  {profile.display_name} setup failed.")
             print(f"  {summary}")
-            _print_instructions(profile, base_url, model)
+            _print_instructions(profile, api_base_url, model)
             return 0
         print(f"  {profile.display_name} configured! {summary}")
 
-    _print_next_steps(profile.name, base_url, model)
+    _print_next_steps(profile.name, api_base_url, model)
     return 0
 
 
