@@ -23,24 +23,26 @@ struct ImageCatalogTests {
       ────────────────────────────
       ltx-2.3-mlx-q4        24.0 GiB   [video:gen] notapalindrome/ltx23-mlx-av-q4
 
-      Image models (3 aliases)
+      Image models (4 aliases)
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
       flux2-klein-4b        4.3 GiB    [image:both] Runpod/FLUX.2-klein-4B-mflux-4bit
       z-image-turbo         5.5 GiB    [image:gen] filipstrand/Z-Image-Turbo-mflux-4bit
       hidream-o1-dev       16.4 GiB    [image:gen] mlx-community/HiDream-O1-Image-Dev-mlx-bf16
+      sdxl-base             6.5 GiB     [image:gen] stabilityai/stable-diffusion-xl-base-1.0
     """
 
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 3)
+        #expect(rows.count == 4)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
         #expect(aliases.contains("z-image-turbo"))
         #expect(aliases.contains("hidream-o1-dev"))
+        #expect(aliases.contains("sdxl-base"))
         // No chat / video alias leaks in.
         #expect(!aliases.contains("qwen3.6-27b-4bit"))
         #expect(!aliases.contains("ltx-2.3-mlx-q4"))
@@ -52,6 +54,10 @@ struct ImageCatalogTests {
         let hidream = rows.first { $0.alias == "hidream-o1-dev" }
         #expect(hidream?.hfRepo == "mlx-community/HiDream-O1-Image-Dev-mlx-bf16")
         #expect(hidream?.capability == .generation)
+        let sdxl = rows.first { $0.alias == "sdxl-base" }
+        #expect(sdxl?.hfRepo == "stabilityai/stable-diffusion-xl-base-1.0")
+        #expect(sdxl?.size == "6.5 GiB")
+        #expect(sdxl?.capability == .generation)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -63,6 +69,7 @@ struct ImageCatalogTests {
                 "Runpod/FLUX.2-klein-4B-mflux-4bit",
                 "filipstrand/Z-Image-Turbo-mflux-4bit",
                 "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
+                "stabilityai/stable-diffusion-xl-base-1.0",
             ]
         )
 
@@ -71,6 +78,7 @@ struct ImageCatalogTests {
         #expect(klein?.imageCapability == .generationAndEditing)
         #expect(cached.first { $0.alias == "z-image-turbo" }?.cached == true)
         #expect(cached.first { $0.alias == "hidream-o1-dev" }?.cached == true)
+        #expect(cached.first { $0.alias == "sdxl-base" }?.cached == true)
     }
 
     @Test("Image capability rows are excluded from the chat catalog")
@@ -89,5 +97,6 @@ struct ImageCatalogTests {
         #expect(excluded.contains("flux2-klein-4b"))
         #expect(excluded.contains("z-image-turbo"))
         #expect(excluded.contains("hidream-o1-dev"))
+        #expect(excluded.contains("sdxl-base"))
     }
 }

@@ -1342,11 +1342,40 @@ HIDREAM_O1_DATA_FILES = (
     "merges.txt",
     "vocab.json",
 )
+SDXL_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
+SDXL_REVISION = "462165984030d82259a11f4367a4eed129e94a7b"
+SDXL_DATA_FILES = (
+    "LICENSE.md",
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/vocab.json",
+    "tokenizer_2/merges.txt",
+    "tokenizer_2/special_tokens_map.json",
+    "tokenizer_2/tokenizer_config.json",
+    "tokenizer_2/vocab.json",
+    "text_encoder/config.json",
+    "text_encoder/model.fp16.safetensors",
+    "text_encoder_2/config.json",
+    "text_encoder_2/model.fp16.safetensors",
+    "unet/config.json",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
+)
+
+IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
+    HIDREAM_O1_REPO: HIDREAM_O1_DATA_FILES,
+    SDXL_REPO: SDXL_DATA_FILES,
+}
 
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
+    SDXL_REPO: SDXL_REVISION,
 }
 
 
@@ -1503,14 +1532,14 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
 
     missing: list[str] = []
 
-    if repo_id == HIDREAM_O1_REPO:
-        # HiDream is a single root MLX checkpoint plus three custom diffusion
-        # heads, not an mflux component tree. Validate every data file reached
-        # by mlx-vlm/the adapter; lab scripts and samples are deliberately not
-        # downloaded or executed.
+    runtime_data_files = IMAGE_MODEL_DATA_FILES.get(repo_id)
+    if runtime_data_files is not None:
+        # Vendored backends have an explicit, revision-pinned data contract
+        # rather than an mflux component index. Validate every consumed file;
+        # repository scripts and samples are deliberately never downloaded.
         return [
             relative
-            for relative in HIDREAM_O1_DATA_FILES
+            for relative in runtime_data_files
             if not _is_nonempty_repo_file(os.path.join(snap_dir, *relative.split("/")))
         ]
 

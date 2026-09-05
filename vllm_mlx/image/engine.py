@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""mflux-backed image generation engine.
+"""MLX-native image generation engine.
 
 Thin wrapper over `mflux <https://github.com/filipstrand/mflux>`_ — an
 MLX-native, line-by-line port of the FLUX / Qwen-Image model families with
@@ -20,6 +20,8 @@ stays commercially clean:
 * ``qwen-image-edit``  — instruction edit (``Qwen/Qwen-Image-Edit-2509``)
 * ``hidream-o1-dev``   — text→image (``HiDream-O1-Image-Dev``), 28-step,
   VAE-free unified pixel transformer (MIT)
+* ``sdxl-base``        — text→image (``Stable Diffusion XL Base 1.0``),
+  30-step, dual-CLIP + UNet + VAE pipeline (OpenRAIL++)
 
 ``flux2-klein`` and ``z-image`` supersede the older/larger families for the
 interactive tab: Klein is ~3× faster than schnell/z-image at the same
@@ -111,6 +113,8 @@ def _detect_family(model_name: str) -> str:
     name = (model_name or "").casefold()
     if "hidream-o1" in name or "hidream_o1" in name:
         return "hidream-o1-dev"
+    if "stable-diffusion-xl" in name or "sdxl" in name:
+        return "sdxl-base"
     # Klein first — its repos ("FLUX.2-klein-4B-mflux-4bit") also contain
     # "flux", so the distinctive "klein" / "flux2" token must win before the
     # generic FLUX.1 checks below.
@@ -129,7 +133,7 @@ def _detect_family(model_name: str) -> str:
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
         "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
-        "hidream-o1-dev."
+        "hidream-o1-dev, sdxl-base."
     )
 
 
@@ -148,6 +152,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "qwen-image": 20,  # non-distilled 20B
     "qwen-image-edit": 20,
     "hidream-o1-dev": 28,
+    "sdxl-base": 30,
 }
 
 
@@ -187,11 +192,14 @@ class ImageGenerationEngine:
         self.default_edit_steps = 4 if self.family == "flux2-klein" else 20
         self.default_edit_guidance = None if self.family == "flux2-klein" else 4.0
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
-        self._prequantized = (
-            self.family == "hidream-o1-dev" or _looks_like_prequantized(model_name)
-        )
-        # ``None`` when the repo is already quantized — passing a quantize width
-        # for a pre-quantized checkpoint makes mflux re-quantize and error.
+        self._prequantized = self.family in {
+            "hidream-o1-dev",
+            "sdxl-base",
+        } or _looks_like_prequantized(model_name)
+        # ``None`` when a backend owns its local checkpoint conversion, or when
+        # the repo is already quantized. Passing a width for pre-quantized
+        # mflux weights would re-quantize and fail; SDXL quantizes its UNet
+        # inside the vendored loader instead.
         self._quantize = None if self._prequantized else quantize
         self._model = None
         self._prompt_tokenizer = None
@@ -248,7 +256,7 @@ class ImageGenerationEngine:
         if not self._prequantized:
             return None
         from .._download_gate import (
-            HIDREAM_O1_DATA_FILES,
+            IMAGE_MODEL_DATA_FILES,
             IMAGE_MODEL_REVISIONS,
             mflux_local_snapshot,
         )
@@ -262,10 +270,11 @@ class ImageGenerationEngine:
         from huggingface_hub import snapshot_download
 
         kwargs = {}
-        if self.family == "hidream-o1-dev":
-            # The weights repo also contains executable lab scripts and sample
-            # images. The runtime is vendored+reviewed here; fetch only data.
-            kwargs["allow_patterns"] = list(HIDREAM_O1_DATA_FILES)
+        allow_patterns = IMAGE_MODEL_DATA_FILES.get(self.model_name)
+        if allow_patterns is not None:
+            # Vendored runtimes execute only reviewed local code. Fetch the
+            # pinned model data they consume, never repository scripts.
+            kwargs["allow_patterns"] = list(allow_patterns)
         downloaded = snapshot_download(
             self.model_name, revision=pinned_revision, **kwargs
         )
@@ -288,6 +297,14 @@ class ImageGenerationEngine:
             if model_path is None:
                 raise ImageRuntimeError("HiDream-O1 requires a local model snapshot.")
             return HiDreamO1(model_path, on_step=self._report_hidream_step)
+
+        if self.family == "sdxl-base":
+            from .sdxl_runtime import SDXL
+
+            model_path = self._model_path_for_mflux()
+            if model_path is None:
+                raise ImageRuntimeError("SDXL requires a local model snapshot.")
+            return SDXL(model_path, on_step=self._report_native_step)
 
         from mflux.models.common.config.model_config import ModelConfig
 
@@ -329,13 +346,17 @@ class ImageGenerationEngine:
             quantize=self._quantize, model_path=model_path, model_config=config
         )
 
-    def _report_hidream_step(self, step: int, total: int) -> None:
-        """Bridge HiDream's loop into the shared progress/cancel contract."""
+    def _report_native_step(self, step: int, total: int) -> None:
+        """Bridge a vendored runtime into the shared progress/cancel contract."""
         self._progress["running"] = True
         self._progress["step"] = int(step)
         self._progress["total"] = int(total)
         if self._is_cancelled():
             raise ImageGenerationCancelled("Generation cancelled.")
+
+    def _report_hidream_step(self, step: int, total: int) -> None:
+        """Backward-compatible HiDream callback name used by existing tests."""
+        self._report_native_step(step, total)
 
     def _validate_hidream_prompt_tokens(self, prompt: str) -> None:
         """Reject token-dense prompts before constructing the 17 GB model."""
@@ -747,6 +768,18 @@ class ImageGenerationEngine:
                 raise ImageRuntimeError(
                     "HiDream-O1 Dev does not support negative_prompt."
                 )
+        elif self.family == "sdxl-base":
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRuntimeError(
+                    "SDXL dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 8 or height % 8:
+                raise ImageRuntimeError("SDXL dimensions must be multiples of 8.")
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel

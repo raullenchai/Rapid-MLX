@@ -546,6 +546,11 @@ def estimate_model_bytes(model_name: str) -> int:
         # output headroom (docs/engineering/performance/2026-09-04-hidream-o1-dev-dogfood.md).
         "hidream-o1": 18.0,
         "hidream_o1": 18.0,
+        # Official fp16 checkpoint converted to an 8-bit UNet at load. Real
+        # 1024² / 30-step dogfood measured up to 12.49 GiB MLX peak; retain
+        # allocator/output headroom while the catalog keeps a 16 GiB minimum.
+        "sdxl-base": 14.0,
+        "stable-diffusion-xl": 14.0,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
         # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
         # the API/GUI default resolution; `/usr/bin/time -l`): ~55.7 GiB.
