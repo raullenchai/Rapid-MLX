@@ -104,10 +104,19 @@ nothing more.
 - `max_output_tokens` → `max_tokens`
 - `reasoning.effort` (or the top-level `reasoning_effort` shorthand) →
   rapid-mlx's thinking controls: `"none"` disables thinking
-  (`chat_template_kwargs.enable_thinking=false`); `minimal` / `low` /
-  `medium` / `high` set the matching `reasoning_max_tokens` tier cap.
-  Explicit client knobs on the same dimension always win. Values are
-  validated against the OpenAI closed set (garbage → 400).
+  (`chat_template_kwargs.enable_thinking=false`). A graded value
+  (`minimal` / `low` / `medium` / `high` / `xhigh`) is translated one of
+  two ways, chosen from the served chat template:
+  - templates that publish their own effort vocabulary (Qwen3.8 accepts
+    `low` / `medium` / `xhigh`) get the nearest native level written into
+    the prompt — `low` → `low`, `medium` → `medium`, `high` → `xhigh`,
+    `minimal` → `low` — and no token cap;
+  - every other thinking model gets the matching `reasoning_max_tokens`
+    tier cap (256 / 512 / 2048 / 8192 / 24000).
+  Explicit client knobs on the same dimension always win
+  (`chat_template_kwargs.reasoning_effort`, `reasoning_max_tokens`,
+  `enable_thinking`). Values are validated against the closed set
+  (garbage → 400).
 - `input_image` content blocks → Chat `image_url` parts (needs a
   multimodal model to do anything useful)
 - SSE: the streaming lifecycle events Codex parses

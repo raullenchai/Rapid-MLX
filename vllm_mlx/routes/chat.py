@@ -121,6 +121,7 @@ from ..service.helpers import (
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
+    served_chat_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -4387,13 +4388,17 @@ async def _create_chat_completion_impl(
     # ``reasoning_effort="none"`` request registers its enable_thinking
     # preference first (the tool auto-disable then no-ops on it) and a
     # graded value lands its ``reasoning_max_tokens`` cap from one source.
-    if maybe_apply_reasoning_effort(request):
+    if maybe_apply_reasoning_effort(
+        request, chat_template=served_chat_template(engine)
+    ):
         logger.info(
-            "#448 reasoning_effort=%s translated on /v1/chat/completions "
-            "(none→enable_thinking=False; minimal/low/medium/high→"
-            "reasoning_max_tokens tier). Explicit client enable_thinking / "
-            "reasoning_max_tokens always wins.",
+            "#448/#3043 reasoning_effort=%s translated on /v1/chat/completions "
+            "(template reasoning_effort=%s, reasoning_max_tokens=%s). "
+            "Explicit client enable_thinking / chat_template_kwargs."
+            "reasoning_effort / reasoning_max_tokens always wins.",
             request.reasoning_effort,
+            (request.chat_template_kwargs or {}).get("reasoning_effort"),
+            request.reasoning_max_tokens,
         )
 
     # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking when

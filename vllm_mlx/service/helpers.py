@@ -57,6 +57,10 @@ from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..errors import BackpressureError
 from ..tool_parsers import ToolParserManager
+from ..utils.chat_template import (
+    detect_native_reasoning_effort_levels,
+    map_reasoning_effort_to_native,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2096,9 +2100,31 @@ def _client_signalled_reasoning_intent(*sources) -> bool:
     return False
 
 
-def maybe_apply_reasoning_effort(request) -> bool:
+def served_chat_template(engine):
+    """Return the chat template ``engine`` renders prompts with, or ``None``.
+
+    For a multimodal engine, prefer the processor template under the same
+    conditions as ``BatchedEngine._apply_chat_template``; otherwise use the
+    tokenizer template.  The value may be a Jinja string, a
+    ``{"default": ..., "tool_use": ...}`` dict, or ``None``.  Keeping this
+    selection aligned with the renderer is required before route code can use
+    template capabilities to remove a fallback reasoning cap.
+    """
+    processor = getattr(engine, "_processor", None)
+    if (
+        getattr(engine, "_is_mllm", False)
+        and processor
+        and hasattr(processor, "apply_chat_template")
+        and getattr(processor, "chat_template", None)
+    ):
+        return processor.chat_template
+    tokenizer = getattr(engine, "tokenizer", None)
+    return getattr(tokenizer, "chat_template", None)
+
+
+def maybe_apply_reasoning_effort(request, *, chat_template=None) -> bool:
     """Translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
-    native reasoning controls at the route layer (issue #448).
+    native reasoning controls at the route layer (issue #448, #3043).
 
     The schema layer (``_validate_reasoning_effort_field`` on
     ``ChatCompletionRequest`` / ``ResponsesRequest``) only *validates*
@@ -2118,7 +2144,18 @@ def maybe_apply_reasoning_effort(request) -> bool:
         ``REASONING_CUTOFF_SENTINEL`` injected into ``content`` — corrupting
         the field it re-feeds verbatim into the next turn. Suppressing the
         reasoning at the source means the truncation scenario never arises.
-      * ``reasoning_effort in {minimal, low, medium, high}`` → set
+      * graded ``reasoning_effort`` on a template that publishes its own
+        effort vocabulary (Qwen3.8 validates ``reasoning_effort`` against
+        ``('xhigh', 'medium', 'low')``) → merge the nearest native level into
+        ``chat_template_kwargs["reasoning_effort"]`` so the *prompt* carries
+        the request (``low`` → "keep your thinking brief", ``high`` →
+        ``xhigh``). No token cap is layered on top: before #3043 a
+        ``low`` request rendered the template's ``xhigh`` instruction and
+        was then force-closed at 512 thinking tokens — the instruction and
+        the budget contradicted each other. ``chat_template`` is the served
+        template (see :func:`served_chat_template`); pass ``None`` and this
+        branch is skipped.
+      * graded ``reasoning_effort`` on any other template → set
         ``request.reasoning_max_tokens`` to the matching tier from
         ``OPENAI_REASONING_EFFORT_TO_MAX_TOKENS`` (a subtractive cap on how
         long the model may think before answering).
@@ -2134,8 +2171,11 @@ def maybe_apply_reasoning_effort(request) -> bool:
         wins. A ``reasoning_max_tokens`` cap is orthogonal to ``none``:
         thinking-off makes the cap moot, so ``none`` still applies (it does
         NOT yield to a cap).
-      * the graded path controls the budget dimension, so it yields to an
-        explicit ``reasoning_max_tokens`` cap and does not touch
+      * the native-level path controls the prompt dimension, so it yields
+        to an explicit ``chat_template_kwargs.reasoning_effort`` and does
+        not touch ``enable_thinking`` or ``reasoning_max_tokens``.
+      * the graded cap path controls the budget dimension, so it yields to
+        an explicit ``reasoning_max_tokens`` cap and does not touch
         ``enable_thinking``.
 
     MUST run BEFORE ``maybe_auto_disable_thinking_for_tools`` so a
@@ -2166,7 +2206,33 @@ def maybe_apply_reasoning_effort(request) -> bool:
         _mark_thinking_auto_disabled(request)
         return True
 
-    # Graded effort (minimal/low/medium/high) → ``reasoning_max_tokens``
+    # Graded effort on a template with a native effort vocabulary → the
+    # nearest native level travels in ``chat_template_kwargs`` (#3043).
+    # ``enable_thinking`` / ``tools`` are server-resolved keys the renderer
+    # never lets a client override, so merging only ``reasoning_effort``
+    # here cannot clobber anything the route resolves later.
+    levels = (
+        detect_native_reasoning_effort_levels(
+            chat_template, tools=getattr(request, "tools", None)
+        )
+        if chat_template
+        else None
+    )
+    if levels:
+        native = map_reasoning_effort_to_native(effort, levels)
+        if native is not None:
+            ctk = getattr(request, "chat_template_kwargs", None)
+            merged_ctk = dict(ctk) if isinstance(ctk, dict) else {}
+            if "reasoning_effort" in merged_ctk:
+                # The client already drives the template variable directly
+                # (#2474 passthrough) — same dimension, the explicit value
+                # wins and no cap is layered on top.
+                return False
+            merged_ctk["reasoning_effort"] = native
+            request.chat_template_kwargs = merged_ctk
+            return True
+
+    # Graded effort (minimal/low/medium/high/xhigh) → ``reasoning_max_tokens``
     # tier (a subtractive cap on how long the model may think), unless the
     # client already set an explicit cap (which wins). Graded effort does
     # NOT force ``enable_thinking`` on — it is itself a reasoning-intent
