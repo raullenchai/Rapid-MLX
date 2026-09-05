@@ -1702,11 +1702,11 @@ def _context_reads(
         # terminal paths and constant-dead arms cannot prove a live switch.
         after: list[frozenset[str]] = []
         fallthrough_possible = True
-        deferred_tests: set[str] = set()
-        dead_reads: set[str] = set()
+        if_deferred_tests: set[str] = set()
+        if_dead_reads: set[str] = set()
         for branch in [node, *node.elif_]:
-            branch_tests = tests if fallthrough_possible else deferred_tests
-            branch_reads = reads if fallthrough_possible else dead_reads
+            branch_tests = tests if fallthrough_possible else if_deferred_tests
+            branch_reads = reads if fallthrough_possible else if_dead_reads
             _record_truthiness_test(branch.test, bound, nodes, branch_tests)
             _context_reads(branch.test, bound, nodes, branch_reads, branch_tests)
             truth = _constant_truthiness(branch.test, nodes)
@@ -1716,14 +1716,16 @@ def _context_reads(
                 )
             else:
                 _context_reads_all(
-                    branch.body, bound, nodes, dead_reads, deferred_tests
+                    branch.body, bound, nodes, if_dead_reads, if_deferred_tests
                 )
             if fallthrough_possible and truth is True:
                 fallthrough_possible = False
         if fallthrough_possible:
             after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
         else:
-            _context_reads_all(node.else_, bound, nodes, dead_reads, deferred_tests)
+            _context_reads_all(
+                node.else_, bound, nodes, if_dead_reads, if_deferred_tests
+            )
         return frozenset.intersection(*after)
     if isinstance(node, nodes.Macro):
         # A macro body is deferred until a call executes it.  Counting a
@@ -1732,21 +1734,21 @@ def _context_reads(
         # would require a Jinja call graph, so fail closed: retain its possible
         # context reads (notably an ``enable_thinking`` read must still veto an
         # adapter), but do not infer a live boolean switch from its body.
-        deferred_tests: set[str] = set()
+        macro_deferred_tests: set[str] = set()
         for default in node.defaults:
-            _context_reads(default, bound, nodes, reads, deferred_tests)
+            _context_reads(default, bound, nodes, reads, macro_deferred_tests)
         _context_reads_all(
             node.body,
             bound | {arg.name for arg in node.args},
             nodes,
             reads,
-            deferred_tests,
+            macro_deferred_tests,
         )
         return bound | _bound_names(node, nodes)
     if isinstance(node, nodes.CallBlock):
-        deferred_tests: set[str] = set()
+        call_deferred_tests: set[str] = set()
         for default in node.defaults:
-            _context_reads(default, bound, nodes, reads, deferred_tests)
+            _context_reads(default, bound, nodes, reads, call_deferred_tests)
         _context_reads(node.call, bound, nodes, reads, tests)
         # Whether the callee invokes ``caller`` is likewise not statically
         # proven here.  Its body therefore cannot establish a live switch,
@@ -1756,7 +1758,7 @@ def _context_reads(
             bound | {arg.name for arg in node.args},
             nodes,
             reads,
-            deferred_tests,
+            call_deferred_tests,
         )
         return bound | _bound_names(node, nodes)
     if isinstance(node, (nodes.Import, nodes.FromImport)):
@@ -1773,22 +1775,22 @@ def _context_reads(
         _record_truthiness_test(node.test, bound, nodes, tests)
         _context_reads(node.test, bound, nodes, reads, tests)
         truth = _constant_truthiness(node.test, nodes)
-        deferred_tests: set[str] = set()
-        dead_reads: set[str] = set()
+        cond_deferred_tests: set[str] = set()
+        cond_dead_reads: set[str] = set()
         _context_reads(
             node.expr1,
             bound,
             nodes,
-            reads if truth is not False else dead_reads,
-            tests if truth is not False else deferred_tests,
+            reads if truth is not False else cond_dead_reads,
+            tests if truth is not False else cond_deferred_tests,
         )
         if node.expr2 is not None:
             _context_reads(
                 node.expr2,
                 bound,
                 nodes,
-                reads if truth is not True else dead_reads,
-                tests if truth is not True else deferred_tests,
+                reads if truth is not True else cond_dead_reads,
+                tests if truth is not True else cond_deferred_tests,
             )
         return bound
     # Anything else (output, expressions, filter/scope blocks): evaluate the
