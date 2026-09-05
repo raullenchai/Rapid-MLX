@@ -1360,7 +1360,8 @@ def _check_alias_min_memory(user_typed: str) -> None:
     can still opt in. Silent no-op when:
       - The alias has no ``min_memory_gb`` metadata (every model we
         ship under 100 GB weights).
-      - The user typed an HF path directly instead of an alias.
+      - The model has no built-in alias profile (direct HF paths that match a
+        built-in profile inherit its floor through reverse-path resolution).
       - psutil is unavailable / raises.
     """
     try:

@@ -120,13 +120,32 @@ def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
     }
 
 
-def test_bf16_alias_is_image_generation_and_32gb_gated():
-    profile = resolve_profile(FLUX2_KLEIN_BF16_ALIAS)
+@pytest.mark.parametrize(
+    "model_name",
+    [FLUX2_KLEIN_BF16_ALIAS, FLUX2_KLEIN_BF16_REPO],
+)
+def test_bf16_alias_and_repo_are_image_generation_and_32gb_gated(model_name):
+    profile = resolve_profile(model_name)
     assert profile is not None
     assert profile.modality == "image-gen"
     assert profile.min_memory_gb == 32
     assert resolve_model(FLUX2_KLEIN_BF16_ALIAS) == FLUX2_KLEIN_BF16_REPO
     assert model_sizes.size_bytes(FLUX2_KLEIN_BF16_REPO) == 15_975_684_703
+
+
+def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys):
+    from vllm_mlx import cli
+
+    monkeypatch.setattr(
+        "psutil.virtual_memory",
+        lambda: SimpleNamespace(total=24 * 1024**3),
+    )
+
+    cli._check_alias_min_memory(FLUX2_KLEIN_BF16_REPO)
+
+    warning = capsys.readouterr().out
+    assert FLUX2_KLEIN_BF16_REPO in warning
+    assert "32 GB unified-memory floor" in warning
 
 
 def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
