@@ -666,6 +666,30 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("cohere2_moe")
 
+    if "mlx_lm.models.sarvam_mla" not in sys.modules:
+        # Keep the adapter only until mlx-lm provides a native module; then
+        # defer to upstream while retaining the tokenizer-fallback route for
+        # Transformers versions that do not recognize ``sarvam_mla``.
+        import importlib.util as _importlib_util
+
+        _native_spec = None
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.sarvam_mla")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import sarvam_mla as _sarvam_mla
+
+                sys.modules.setdefault("mlx_lm.models.sarvam_mla", _sarvam_mla)
+            except Exception as e:
+                logger.warning("sarvam_mla vendored module failed to register: %s", e)
+            else:
+                _VENDORED_MODEL_TYPES.add("sarvam_mla")
+        else:
+            _VENDORED_MODEL_TYPES.add("sarvam_mla")
+
     if "mlx_lm.models.hy_v3" not in sys.modules:
         # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
         # merges into 0.32+), defer to their copy so we don't shadow real
