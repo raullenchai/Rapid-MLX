@@ -1558,34 +1558,65 @@ def _truthiness_tested_name(test, nodes) -> str | None:
     return None
 
 
-def _is_definedness_test(expr, name: str, nodes) -> bool:
-    if isinstance(expr, nodes.Not):
-        expr = expr.node
-    return bool(
-        isinstance(expr, nodes.Test)
-        and expr.name in ("defined", "undefined", "none")
-        and isinstance(expr.node, nodes.Name)
-        and expr.node.name == name
+# Truth value of ``name is <test>`` when ``name`` holds a defined, non-None
+# value such as ``False``.
+_DEFINEDNESS_TESTS = {"defined": True, "undefined": False, "none": False}
+
+
+def _arm_taken_when_defined(test, name: str, nodes) -> str | None:
+    """Which arm of ``a if <test> else b`` runs when ``name`` is defined.
+
+    ``"expr1"`` / ``"expr2"`` for a definedness test on ``name`` (``defined``,
+    ``undefined``, ``none`` and their negations), ``None`` for any other
+    condition.
+    """
+    negated = isinstance(test, nodes.Not)
+    if negated:
+        test = test.node
+    if (
+        not isinstance(test, nodes.Test)
+        or test.name not in _DEFINEDNESS_TESTS
+        or not isinstance(test.node, nodes.Name)
+        or test.node.name != name
+    ):
+        return None
+    return "expr1" if _DEFINEDNESS_TESTS[test.name] != negated else "expr2"
+
+
+def _default_filter_keeps_false(expr, nodes) -> bool:
+    """``x | default(d)`` keeps a defined ``False``; ``default(d, true)`` or
+    ``default(d, boolean=true)`` replaces it."""
+    boolean = expr.args[1] if len(expr.args) > 1 else None
+    for kw in expr.kwargs:
+        if kw.key == "boolean":
+            boolean = kw.value
+    return boolean is None or bool(
+        isinstance(boolean, nodes.Const) and boolean.value is False
     )
 
 
 def _carries_context_value(expr, name: str, nodes) -> bool:
-    """Whether ``{% set name = expr %}`` keeps the context value of ``name``.
+    """Whether ``{% set name = expr %}`` keeps a defined context value of
+    ``name`` (including ``False``, the value the off switch injects).
 
     True for the idioms templates use to give a context variable a default:
-    ``name``, ``name | default(...)`` and ``name if name is (not) defined /
-    undefined else ...`` (either arm). Any other value is a fresh local.
+    ``name``, ``name | default(...)`` without the ``boolean`` flag, and
+    ``... if name is (not) defined / undefined / none else ...`` when the arm
+    taken for a defined value carries ``name``. Any other value is a fresh
+    local.
     """
     if isinstance(expr, nodes.Name):
         return bool(expr.ctx == "load" and expr.name == name)
     if isinstance(expr, nodes.Filter) and expr.name == "default":
-        return _carries_context_value(expr.node, name, nodes)
-    if isinstance(expr, nodes.CondExpr) and _is_definedness_test(
-        expr.test, name, nodes
-    ):
-        return _carries_context_value(expr.expr1, name, nodes) or (
-            expr.expr2 is not None and _carries_context_value(expr.expr2, name, nodes)
+        return _default_filter_keeps_false(expr, nodes) and _carries_context_value(
+            expr.node, name, nodes
         )
+    if isinstance(expr, nodes.CondExpr):
+        arm = _arm_taken_when_defined(expr.test, name, nodes)
+        if arm == "expr1":
+            return _carries_context_value(expr.expr1, name, nodes)
+        if arm == "expr2" and expr.expr2 is not None:
+            return _carries_context_value(expr.expr2, name, nodes)
     return False
 
 

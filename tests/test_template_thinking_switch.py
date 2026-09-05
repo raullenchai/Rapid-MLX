@@ -169,8 +169,16 @@ class TestTemplateThinkingSwitch:
             "{% if reasoning %}x{% endif %}",
             "{%- set reasoning = true if reasoning is undefined else reasoning %}"
             "{% if reasoning %}x{% endif %}",
-            # the ``default`` filter idiom likewise
+            "{%- set reasoning = reasoning if reasoning is not none else true %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = true if reasoning is not defined else reasoning %}"
+            "{% if reasoning %}x{% endif %}",
+            # the ``default`` filter idiom likewise (a defined False survives)
             "{%- set reasoning = reasoning | default(true) %}{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning | default(true, false) %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning | default(true, boolean=false) %}"
+            "{% if reasoning %}x{% endif %}",
         ],
     )
     def test_a_boolean_branch_on_a_context_read_is_a_switch(self, template):
@@ -196,6 +204,20 @@ class TestTemplateThinkingSwitch:
             # a rebinding that does not preserve the value is a fresh local
             "{%- set reasoning = reasoning if tools else true %}{% if reasoning %}x{% endif %}",
             "{%- set reasoning = reasoning | lower %}{% if reasoning %}x{% endif %}",
+            # the arm taken for a defined value does not carry the name
+            "{%- set reasoning = reasoning if reasoning is undefined else true %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = true if reasoning is defined else reasoning %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning if reasoning is none else true %}"
+            "{% if reasoning %}x{% endif %}",
+            # ``default`` with the boolean flag replaces a defined False
+            "{%- set reasoning = reasoning | default(true, true) %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning | default(true, boolean=true) %}"
+            "{% if reasoning %}x{% endif %}",
+            "{%- set reasoning = reasoning | default(true, boolean=flag) %}"
+            "{% if reasoning %}x{% endif %}",
             # a preserving rebinding of a name already shadowed stays shadowed
             "{%- for reasoning in messages %}{% set reasoning = reasoning | default(1) %}"
             "{% if reasoning %}x{% endif %}{%- endfor %}",
