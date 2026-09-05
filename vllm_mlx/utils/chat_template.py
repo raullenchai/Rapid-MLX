@@ -1669,17 +1669,12 @@ def _context_reads(
                 pass
         if node.test is not None:
             _context_reads(node.test, inner, nodes, reads, body_tests)
-        has_loop_control = any(
-            isinstance(stmt, (nodes.Break, nodes.Continue))
-            or any(stmt.find_all((nodes.Break, nodes.Continue)))
-            for stmt in node.body
-        )
         _context_reads_all(
             node.body,
             inner,
             nodes,
             reads,
-            tests if body_proven_nonempty and not has_loop_control else body_tests,
+            tests if body_proven_nonempty else body_tests,
         )
         # A loop ``else`` can establish a switch only when an unfiltered
         # iterable is statically known to be empty.  Dynamic iteration may
@@ -1811,11 +1806,43 @@ def _constant_truthiness(expr, nodes) -> bool | None:
         return None
 
 
+def _block_guarantees_loop_exit(stmts, nodes) -> bool:
+    """Whether sequential statements must reach a break or continue."""
+    return any(_stmt_guarantees_loop_exit(stmt, nodes) for stmt in stmts)
+
+
+def _stmt_guarantees_loop_exit(stmt, nodes) -> bool:
+    """Whether a statement exits its containing loop on every live path."""
+    if isinstance(stmt, (nodes.Break, nodes.Continue)):
+        return True
+    if isinstance(stmt, nodes.If):
+        exits: list[bool] = []
+        fallthrough_possible = True
+        for branch in [stmt, *stmt.elif_]:
+            if not fallthrough_possible:
+                break
+            truth = _constant_truthiness(branch.test, nodes)
+            if truth is not False:
+                exits.append(_block_guarantees_loop_exit(branch.body, nodes))
+            if truth is True:
+                fallthrough_possible = False
+        if fallthrough_possible:
+            exits.append(_block_guarantees_loop_exit(stmt.else_, nodes))
+        return bool(exits) and all(exits)
+    if isinstance(stmt, nodes.With):
+        return _block_guarantees_loop_exit(stmt.body, nodes)
+    return False
+
+
 def _context_reads_all(
     stmts, bound: frozenset[str], nodes, reads: set[str], tests: set[str]
 ) -> frozenset[str]:
+    active_tests = tests
+    deferred_tests: set[str] = set()
     for stmt in stmts:
-        bound = _context_reads(stmt, bound, nodes, reads, tests)
+        bound = _context_reads(stmt, bound, nodes, reads, active_tests)
+        if _stmt_guarantees_loop_exit(stmt, nodes):
+            active_tests = deferred_tests
     return bound
 
 

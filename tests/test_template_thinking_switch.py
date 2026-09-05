@@ -159,6 +159,8 @@ class TestTemplateThinkingSwitch:
             "{{ '<think>' if reasoning else '<think></think>' }}",
             # a statically non-empty, unfiltered loop proves its body runs
             "{% for x in [1] %}{% if reasoning %}x{% endif %}{% endfor %}",
+            # tests reached before unconditional loop control remain live
+            "{% for x in [1] %}{% if reasoning %}x{% endif %}{% break %}{% endfor %}",
             # a statically empty, unfiltered loop proves its else arm runs
             "{% for x in [] %}x{% else %}{% if reasoning %}y{% endif %}{% endfor %}",
             # an elif branch
@@ -261,6 +263,9 @@ class TestTemplateThinkingSwitch:
             "{{ ('R' if reasoning else 'N') if false else '' }}",
             "{{ reasoning | default('unset') }}"
             "{% for x in [1] %}{% break %}{% if reasoning %}R{% endif %}{% endfor %}",
+            "{{ reasoning | default('unset') }}"
+            "{% for x in [1] %}{% if true %}{% break %}{% endif %}"
+            "{% if reasoning %}R{% endif %}{% endfor %}",
             "{{ reasoning | default('unset') }}"
             "{% for x in items %}x{% else %}{% if reasoning %}R{% endif %}{% endfor %}",
             # branched on a loop variable of that name
@@ -447,6 +452,12 @@ class TestOtherTemplatesUnaffected:
             (
                 "{{ reasoning | default('unset') }}"
                 "{% for x in [1] %}{% break %}"
+                "{% if reasoning %}R{% endif %}{% endfor %}",
+                "unset",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% for x in [1] %}{% if true %}{% break %}{% endif %}"
                 "{% if reasoning %}R{% endif %}{% endfor %}",
                 "unset",
             ),
