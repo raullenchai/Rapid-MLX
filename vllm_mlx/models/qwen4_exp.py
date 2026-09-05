@@ -670,9 +670,11 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
             stats["fallback_reasons"][reason] = (
                 stats["fallback_reasons"].get(reason, 0) + count
             )
-        reason = module.fused_gdn_decode_last_fallback
-        if reason is not None:
-            stats["last_fallbacks"][reason] = stats["last_fallbacks"].get(reason, 0) + 1
+        last_reason = module.fused_gdn_decode_last_fallback
+        if last_reason is not None:
+            stats["last_fallbacks"][last_reason] = (
+                stats["last_fallbacks"].get(last_reason, 0) + 1
+            )
     return stats
 
 
