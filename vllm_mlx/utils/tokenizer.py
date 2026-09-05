@@ -666,6 +666,28 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("cohere2_moe")
 
+    if "mlx_lm.models.granitemoe_swa" not in sys.modules:
+        import importlib.util as _importlib_util
+
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.granitemoe_swa")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import granitemoe_swa as _granitemoe_swa
+
+                sys.modules.setdefault("mlx_lm.models.granitemoe_swa", _granitemoe_swa)
+            except Exception as e:
+                logger.warning(
+                    "granitemoe_swa vendored module failed to register: %s", e
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("granitemoe_swa")
+        else:
+            _VENDORED_MODEL_TYPES.add("granitemoe_swa")
+
     if "mlx_lm.models.hy_v3" not in sys.modules:
         # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
         # merges into 0.32+), defer to their copy so we don't shadow real

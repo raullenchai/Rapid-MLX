@@ -1154,6 +1154,22 @@ def _template_uses_parameterized_xml_tools(template: str | None) -> bool:
     )
 
 
+def _template_emits_granite_tool_calls(template: str | None) -> bool:
+    """Recognise Granite's ``<|tool_call|>`` JSON tool contract.
+
+    The template — not the architecture — is the authoritative wire contract
+    for a repackage, so the marker must actually be rendered by the checked-in
+    template before the granite parser is advertised. Path-aware on purpose:
+    a marker that exists only inside an uncalled macro or a ``{% set %}``
+    capture is never rendered and must not count as wire evidence.
+    """
+    result = _template_output_paths(template)
+    if result is None:
+        return False
+    paths, variables = result
+    return "tools" in variables and any("<|tool_call|>" in path for path in paths)
+
+
 def _template_injects_qwen_thinking(template: str | None) -> bool:
     """Recognise Qwen's ``enable_thinking`` / ``<think>`` template contract."""
     contract = _template_output_contract(template)
@@ -1233,6 +1249,25 @@ def _detect_metadata_config(
             supports_spec_decode=False,
         )
         reasons.append("linear/recurrent attention architecture")
+    elif "granitemoe_swa" in model_types:
+        # Granite Swash is pure attention but sparse MoE with mixed
+        # full/sliding KV caches. Keep spec decode disabled until the
+        # mixed-cache server path has a real-weight run. The architecture
+        # facts are config-derived, but the tool parser is only advertised
+        # when the checkpoint's own template emits the Granite
+        # ``<|tool_call|>`` JSON protocol — a repackage's template is the
+        # authoritative wire contract.
+        settings.update(
+            is_moe=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("GraniteMoE SWA architecture")
+        if _template_emits_granite_tool_calls(metadata.chat_template):
+            settings.update(
+                tool_call_parser="granite",
+                reasoning_parser=None,
+            )
+            reasons.append("Granite tool template")
 
     if _template_uses_parameterized_xml_tools(metadata.chat_template):
         settings["tool_call_parser"] = "hermes"

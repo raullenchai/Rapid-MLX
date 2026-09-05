@@ -423,6 +423,7 @@ class TestSkipList:
             ("mlx-community/gemma3-9b", SKIP_REASON_SLIDING),
             ("openai/gpt-oss-120b", SKIP_REASON_SLIDING),
             ("gpt_oss_20b", SKIP_REASON_SLIDING),
+            ("ibm-granite/granite-swash-3b-a600m", SKIP_REASON_SLIDING),
             ("deepseek-ai/deepseek-v3", SKIP_REASON_MLA),
             ("deepseek_v4_lite", SKIP_REASON_MLA),
             ("kimi-k2.5-flash", SKIP_REASON_MLA),
