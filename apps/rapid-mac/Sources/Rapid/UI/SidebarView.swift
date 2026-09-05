@@ -48,6 +48,10 @@ struct SidebarView: View {
     /// Optional in isolated snapshot fixtures; the shipping ContentView passes
     /// it so residency and the enforced memory ceiling remain visible globally.
     var server: ServerManager? = nil
+    /// Test seam for driving the real accessibility control without spawning a
+    /// sidecar. Production leaves this nil and uses ServerManager's guarded
+    /// resident-pool unload path.
+    var onUnloadResidentModels: (() async -> Void)? = nil
 
     /// The "now" the date buckets are computed against. Rolled forward by
     /// ``dayBoundaryTicker`` at each midnight so an open, untouched sidebar
@@ -114,6 +118,12 @@ struct SidebarView: View {
     /// the opposite of Archived, which is collapsed by default precisely
     /// because its whole purpose is getting rows out of the way.
     @State private var collapsedFolderIDs: Set<UUID> = []
+
+    /// Covers the short fresh-residency check before ServerManager enters its
+    /// own stop state, keeping repeated eject clicks out and making that work
+    /// visible instead of leaving an apparently inert button.
+    @State private var isUnloadingResidentModels = false
+    @State private var residentUnloadNotice: String?
 
     /// The folder-name prompt currently on screen, if any.
     ///
@@ -229,10 +239,11 @@ struct SidebarView: View {
 
             Spacer(minLength: 0)
 
-            if let server, !server.residency.models.isEmpty {
+            if let server, Self.hasResidentWorkloads(server.residency) {
                 residencyFooter(
                     server.residency,
-                    preferredAlias: server.servingAlias
+                    preferredAlias: server.servingAlias,
+                    server: server
                 )
             }
         }
@@ -442,7 +453,8 @@ struct SidebarView: View {
 
     private func residencyFooter(
         _ snapshot: ModelResidencySnapshot,
-        preferredAlias: String?
+        preferredAlias: String?,
+        server: ServerManager
     ) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
             HStack(spacing: RapidTheme.Space.xs) {
@@ -453,18 +465,34 @@ struct SidebarView: View {
                     .font(RapidFont.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
-                Text(memorySummary(snapshot))
+                Text(
+                    Self.memorySummary(
+                        usedBytes: snapshot.memoryUsedBytes,
+                        limitBytes: snapshot.memoryLimitBytes
+                    )
+                )
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("Sidebar.Residency")
 
-            if snapshot.memoryLimitBytes > 0 {
-                ProgressView(
-                    value: min(1, Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes))
-                )
-                .controlSize(.mini)
-                .tint(RapidTheme.brandAmber)
+            HStack(spacing: RapidTheme.Space.xs) {
+                if snapshot.memoryLimitBytes > 0 {
+                    ProgressView(
+                        value: min(
+                            1,
+                            Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes)
+                        )
+                    )
+                    .controlSize(.mini)
+                    .tint(RapidTheme.brandAmber)
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                residentUnloadButton(snapshot: snapshot, server: server)
             }
 
             ForEach(snapshot.models.prefix(4)) { model in
@@ -484,6 +512,27 @@ struct SidebarView: View {
                 }
                 .accessibilityIdentifier("Sidebar.ResidentModel.\(model.id)")
             }
+
+            ForEach(
+                snapshot.audioLanes.filter { $0.state == "resident" }.prefix(4),
+                id: \.lane
+            ) { lane in
+                HStack(spacing: RapidTheme.Space.xs) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text(lane.model ?? lane.lane.uppercased())
+                        .font(RapidFont.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text(lane.lane.uppercased())
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("Sidebar.ResidentAudio.\(lane.lane)")
+            }
         }
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.top, RapidTheme.Space.md)
@@ -498,13 +547,152 @@ struct SidebarView: View {
                 .fill(RapidTheme.hairline)
                 .frame(height: 1)
         }
-        .accessibilityIdentifier("Sidebar.Residency")
+        // Deliberately no accessibility modifier on this container: SwiftUI
+        // propagates container metadata and would mask the eject button and
+        // model-row semantics. The visible "Resident" heading names the group.
     }
 
-    private func memorySummary(_ snapshot: ModelResidencySnapshot) -> String {
-        let used = Self.formatBytes(snapshot.memoryUsedBytes)
-        guard snapshot.memoryLimitBytes > 0 else { return used }
-        return "\(used) / \(Self.formatBytes(snapshot.memoryLimitBytes))"
+    /// One visible release valve for the whole resident-memory pool. The
+    /// startup model is intentionally pinned by the engine, so presenting a
+    /// per-row eject action would be dishonest: ejecting that row means
+    /// stopping the resident runtime and therefore releasing every model it
+    /// owns. Keeping the control beside the aggregate memory bar makes that
+    /// scope clear and avoids shortening model names in the narrow rail.
+    private func residentUnloadButton(
+        snapshot: ModelResidencySnapshot,
+        server: ServerManager
+    ) -> some View {
+        let hasActiveRequests = Self.hasActiveResidentRequests(snapshot)
+        let disabled = Self.residentUnloadDisabled(
+            isOperating: server.isOperating || isUnloadingResidentModels,
+            chatIsStreaming: chat.isStreaming,
+            hasActiveRequests: hasActiveRequests
+        )
+        let label = Self.residentUnloadLabel(
+            modelCount: Self.residentWorkloadCount(snapshot),
+            memoryUsedBytes: snapshot.memoryUsedBytes
+        )
+
+        return Button {
+            Task {
+                guard !isUnloadingResidentModels else { return }
+                isUnloadingResidentModels = true
+                defer { isUnloadingResidentModels = false }
+                if let onUnloadResidentModels {
+                    await onUnloadResidentModels()
+                } else {
+                    residentUnloadNotice = Self.residentUnloadMessage(
+                        for: await server.unloadResidentModelsIfIdle()
+                    )
+                }
+            }
+        } label: {
+            Group {
+                if server.isOperating || isUnloadingResidentModels {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "eject.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(disabled ? .tertiary : .secondary)
+        .disabled(disabled)
+        .help(
+            Self.residentUnloadHelp(
+                isOperating: server.isOperating || isUnloadingResidentModels,
+                hasActiveResponse: chat.isStreaming || hasActiveRequests,
+                enabledLabel: label
+            )
+        )
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("Sidebar.Residency.Unload")
+        .alert(
+            "Models are still loaded",
+            isPresented: Binding(
+                get: { residentUnloadNotice != nil },
+                set: { if !$0 { residentUnloadNotice = nil } }
+            )
+        ) {
+            Button("OK") {
+                residentUnloadNotice = nil
+            }
+            .accessibilityIdentifier("Sidebar.Residency.UnloadNotice.OK")
+        } message: {
+            Text(residentUnloadNotice ?? "")
+        }
+    }
+
+    nonisolated static func hasResidentWorkloads(_ snapshot: ModelResidencySnapshot) -> Bool {
+        residentWorkloadCount(snapshot) > 0
+    }
+
+    nonisolated static func residentWorkloadCount(_ snapshot: ModelResidencySnapshot) -> Int {
+        snapshot.models.filter { $0.state != "evicting" }.count
+            + snapshot.audioLanes.filter { $0.state == "resident" }.count
+    }
+
+    nonisolated static func hasActiveResidentRequests(
+        _ snapshot: ModelResidencySnapshot
+    ) -> Bool {
+        snapshot.models.contains { $0.activeRequests > 0 }
+            || snapshot.audioLanes.contains { ($0.activeRequests ?? 0) > 0 }
+    }
+
+    nonisolated static func residentUnloadMessage(
+        for result: ServerManager.ResidentUnloadResult
+    ) -> String? {
+        switch result {
+        case .stopped:
+            nil
+        case .busy:
+            "A request is still using the models. Stop it, then try again."
+        case .unavailable:
+            "Rapid couldn't confirm that the models were idle. Wait a moment, then try again."
+        }
+    }
+
+    nonisolated static func residentUnloadDisabled(
+        isOperating: Bool,
+        chatIsStreaming: Bool,
+        hasActiveRequests: Bool
+    ) -> Bool {
+        isOperating || chatIsStreaming || hasActiveRequests
+    }
+
+    nonisolated static func residentUnloadHelp(
+        isOperating: Bool,
+        hasActiveResponse: Bool,
+        enabledLabel: String
+    ) -> String {
+        if isOperating { return "Unloading models…" }
+        if hasActiveResponse {
+            return "Stop the active response before unloading models"
+        }
+        return enabledLabel
+    }
+
+    nonisolated static func residentUnloadLabel(
+        modelCount: Int,
+        memoryUsedBytes: UInt64
+    ) -> String {
+        let subject = modelCount == 1 ? "model" : "all models"
+        return "Unload \(subject) and free \(formatBytes(memoryUsedBytes))"
+    }
+
+    nonisolated static func memorySummary(usedBytes: UInt64, limitBytes: UInt64) -> String {
+        let used = Self.formatBytes(usedBytes)
+        guard limitBytes > 0 else { return used }
+        let limit = Self.formatBytes(limitBytes)
+        if let unit = used.split(separator: " ").last,
+           limit.hasSuffix(" \(unit)") {
+            return "\(used.dropLast(unit.count + 1)) / \(limit)"
+        }
+        return "\(used) / \(limit)"
     }
 
     nonisolated private static func formatBytes(_ bytes: UInt64) -> String {

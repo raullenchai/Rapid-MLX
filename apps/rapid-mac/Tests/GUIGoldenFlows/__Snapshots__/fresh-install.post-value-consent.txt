@@ -21,13 +21,12 @@ AXApplication title="Rapid-MLX"
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="Say hello in one short sentence." enabled=true
-          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
-          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator value=number enabled=true
+          AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
+          AXImage id="Sidebar.ResidentModel.lfm2.5-1b-4bit" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.ResidentModel.lfm2.5-1b-4bit" value=text enabled=true
+          AXStaticText id="Sidebar.ResidentModel.lfm2.5-1b-4bit" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXScrollArea
