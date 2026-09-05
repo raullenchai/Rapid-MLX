@@ -594,7 +594,7 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
 # over-reject ordinary prose ("5 m" could be "5 minutes", "8 l" a digit+letter).
 _ADJACENT_UNIT_RE = re.compile(
     r"\s{0,3}(?:(?:[a-z]{1,5}(?:/[a-z]{1,5})+)"
-    r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
+    r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|ft|yd|mi|px|em|rem|pt|"
     r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
     r"meters|metres|miles|feet|yards|inches|liters|litres|kilograms|"
     r"watts|watt|volts|volt|amps|amp|amperes|ampere|ohms|ohm|"
@@ -720,17 +720,13 @@ def _salient_spans(text: str, terms: tuple[str, ...]) -> list[tuple[int, int]]:
     return [(s, e) for s, e in merged]
 
 
-# A "no"/"not" that is the leading token of an inclusive comparative
-# ("no more than X", "not less than X", "no fewer than X") is NOT a denial --
-# it states a bound, not a negation of the fact. The deny scan skips such hits.
-_NOT_THAN_RE = re.compile(r"\b(?:no|not)\s+\w+\s+than\b")
-
-
 def _has_deny_marker(text: str, spans: list[tuple[int, int]]) -> bool:
     """True if any deny marker falls inside any salient span.
 
-    A matching ``no``/``not`` that starts an inclusive comparative phrase
-    ("no more than 64%") is skipped -- it is a bound comparator, not a denial.
+    A matching ``no``/``not`` that starts one of the RECOGNIZED inclusive
+    comparators ("no more than 64%", "not less than 60%") is skipped -- it is a
+    bound comparator, not a denial. An unsupported "no colder than X" is still a
+    denial (its `no` is not suppressed).
     """
     if not spans:
         return False
@@ -739,9 +735,16 @@ def _has_deny_marker(text: str, spans: list[tuple[int, int]]) -> bool:
             pos = m.start()
             if not any(s <= pos < e for s, e in spans):
                 continue
-            # Skip a no/not that heads a "… than …" comparative (its denial role
-            # is a bound, handled below by _comparative_at, not a negation).
-            if m.group(0) in ("no", "not") and _NOT_THAN_RE.match(text, pos):
+            # Skip a no/not OR a copular deny ("is not", "was not") when it
+            # introduces a recognized comparator -- "is not more than 64%" is an
+            # inclusive bound, not a negation. A marker followed by a plain
+            # value ("is not 21°C") is a real denial; an unsupported "no colder
+            # than" is a real denial.
+            if _COMPARATOR_START_RE.match(text, m.end()):
+                continue
+            if m.group(0) in ("no", "not") and any(
+                r.match(text, pos) for r in _NO_COMPARATOR_RES
+            ):
                 continue
             return True
     return False
@@ -834,6 +837,24 @@ _COMPARATIVES = (
     ("at least", ">="),
     ("no more than", "<="),
     ("no less than", ">="),
+    ("not more than", "<="),
+    ("not less than", ">="),
+)
+
+# Regexes for the no/not-prefixed INCLUSIVE comparators ("no more than",
+# "not less than", …). `_has_deny_marker` skips such a `no`/`not` (it is a
+# bound, not a denial); ALL other "no/not X than" phrases keep their denial.
+_NO_COMPARATOR_RES = tuple(
+    re.compile(rf"\b(?:{re.escape(s)})\b")
+    for s, _ in _COMPARATIVES
+    if s.split(" ")[0] in ("no", "not")
+)
+
+# Any comparator surface, matched when it FOLLOWS a deny marker ("is not more
+# than 64%"): then the deny marker is the copula introducing an inclusive
+# bound, not a negation.
+_COMPARATOR_START_RE = re.compile(
+    "|".join(rf"\s*(?:{re.escape(s)})\b" for s, _ in _COMPARATIVES if " " in s)
 )
 
 

@@ -952,6 +952,51 @@ class TestCodexRegressionFixes:
         # An approximate CORRECT value still passes.
         assert _grade(g, [TEMP21C], "the temperature is around 21").overall is True
 
+    def test_in_as_preposition_is_not_inches(self, g):
+        # Round-18 F1: bare "in" is the common English preposition (Paris,
+        # morning), not the inches abbreviation -- "21 in Paris" is a valid
+        # temperature report, not a 21-inch length.
+        for phrase in [
+            "temperature is 21 in Paris",
+            "the temperature is 21 in the morning",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "present", phrase
+            assert rep.overall is True, phrase
+        # The full "inches" word is still a non-temperature unit.
+        for phrase in ["temperature reads 21 inches", "the temp is 21 inches"]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+
+    def test_deny_marker_introducing_comparator_is_a_bound(self, g):
+        # Round-18 F2: a deny marker that introduces a RECOGNIZED comparator
+        # ("is not more than 64%", "is no more than 64%") is an inclusive BOUND,
+        # not a negation of the fact. An unsupported comparative ("is no colder
+        # than 21°C") or a plain negation ("is not 21°C") is still a denial.
+        humidity = {
+            "type": "relation",
+            "key": "humidity",
+            "value": 62.0,
+            "unit": "%",
+            "tolerance": 2.0,
+            "aliases": ["humidity"],
+        }
+        # Compatible inclusive bound -> not a denial (missing, not contradicted).
+        for phrase in [
+            "humidity is not more than 64%",
+            "humidity is no more than 64%",
+            "humidity is not less than 60%",
+        ]:
+            rep = _grade(g, [humidity], phrase)
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        # Unsupported comparative -> still a denial.
+        rep = _grade(g, [TEMP21C], "temperature is no colder than 21°C")
+        assert rep.facts[0].status == "contradicted"
+        # Plain negation -> still a denial.
+        rep = _grade(g, [TEMP21C], "the temperature is not 21°C")
+        assert rep.facts[0].status == "contradicted"
+
     def test_malformed_string_value_fails_fast(self, g):
         # Round-15 F3 (nit hardened): a string fact's value must be a non-empty
         # str -- a list/number/empty value is a CONFIG error, not silently
