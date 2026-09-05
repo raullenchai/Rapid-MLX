@@ -506,9 +506,19 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
         # the real value is huge, not 21). Either way the scalar is not cleanly
         # parseable, so drop it rather than leak a prefix/suffix fragment.
         start0 = match.start("num")
-        end0 = match.end("num")
-        if match.end("num") < len(text) and text[match.end("num")] in ",eE":
-            continue
+        if match.end("num") < len(text):
+            nxt = text[match.end("num")]
+            # Trailing continuation disambiguates: ",eE" are always part of a
+            # malformed/incomplete numeric ("1,000", "1e2"). A "." is ambiguous
+            # -- a second decimal point is malformed ("21.0.5") but a
+            # sentence-ending period is legitimate ("about 21."). So "." counts
+            # only when a digit follows (a split decimal), never at sentence end.
+            if nxt in ",eE" or (
+                nxt == "."
+                and match.end("num") + 1 < len(text)
+                and text[match.end("num") + 1].isdigit()
+            ):
+                continue
         if start0 > 0 and text[start0 - 1] in "0123456789.,eE":
             continue
         value = float(num)

@@ -570,6 +570,14 @@ class TestCodexRegressionFixes:
         assert _grade(g, [one], "temperature is 1").overall is True
         assert _grade(g, [one], "temperature is 1.0").overall is True
 
+    def test_split_decimal_point_rejected(self, g):
+        # "21.0.5" is a malformed numeric -- the second "." begins a spurious
+        # fraction, so its leading "21.0" must not satisfy a 21 °C fact. A
+        # sentence-ending period after a value ("about 21.") is NOT a malformed
+        # continuation and stays valid.
+        assert _grade(g, [TEMP21C], "temperature is 21.0.5").overall is False
+        assert _grade(g, [TEMP21C], "the temperature is about 21.").overall is True
+
     def test_non_str_alias_rejected_not_coerced(self, g):
         # A malformed numeric alias must be rejected, not silently str()-coerced
         # into a matching term.
