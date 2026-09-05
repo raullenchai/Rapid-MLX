@@ -1432,6 +1432,7 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
 
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
+    "mflux-community/flux-1-schnell-mflux-q4": "bcdbe817ad51175959b2e691e64eca626db30558",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
@@ -1502,6 +1503,17 @@ def pinned_image_snapshot(repo_id: str) -> str | None:
         except OSError:
             return None
     return snapshot
+
+
+# Most mflux checkpoints have one tokenizer and one text encoder. FLUX.1
+# schnell carries a second of each; validating only the common subset would
+# let an interrupted first download reach the runtime and fail much later.
+_MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
+    "mflux-community/flux-1-schnell-mflux-q4": ("tokenizer_2",),
+}
+_MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "mflux-community/flux-1-schnell-mflux-q4": ("text_encoder_2",),
+}
 
 
 def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
@@ -1672,15 +1684,19 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
                 missing.append(f"{asset_repo}@{revision}")
         return missing
 
-    # All currently supported mflux families use these three components and a
-    # local tokenizer. Requiring the full set prevents an interrupted pull with
-    # only one component index from looking runnable.
-    if not _is_nonempty_repo_file(
-        os.path.join(snap_dir, "tokenizer", "tokenizer.json")
-    ):
-        missing.append("tokenizer/tokenizer.json")
+    # All supported mflux families use these common components. Some
+    # checkpoints add family-specific encoders/tokenizers, which are part of
+    # the same completeness contract.
+    tokenizers = ("tokenizer",) + _MFLUX_EXTRA_TOKENIZERS.get(repo_id, ())
+    for tokenizer in tokenizers:
+        tokenizer_rel = f"{tokenizer}/tokenizer.json"
+        if not _is_nonempty_repo_file(os.path.join(snap_dir, tokenizer_rel)):
+            missing.append(tokenizer_rel)
 
-    for component in ("transformer", "text_encoder", "vae"):
+    components = ("transformer", "text_encoder", "vae") + _MFLUX_EXTRA_COMPONENTS.get(
+        repo_id, ()
+    )
+    for component in components:
         component_dir = os.path.join(snap_dir, component)
         index_rel = f"{component}/model.safetensors.index.json"
         index_path = os.path.join(component_dir, "model.safetensors.index.json")

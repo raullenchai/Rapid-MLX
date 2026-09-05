@@ -546,6 +546,11 @@ def estimate_model_bytes(model_name: str) -> int:
         # dogfood records the measured allocator peak before landing.
         "bonsai-image": 7.0,
         "bonsai_image": 7.0,
+        # mflux-community/flux-1-schnell-mflux-q4, measured after a real
+        # 1024x1024 4-step generation (`/usr/bin/time -l`): 9.46 GiB peak RSS.
+        # Keep one decimal place and round up so alias-only admission never
+        # falls through to the generic 4 GiB estimate.
+        "flux-schnell": 9.5,
         "z-image-turbo": 5.9,
         # BF16 unified backbone + custom diffusion heads. Rapid's 1024² server
         # dogfood measured 17.43 GiB max RSS; round up to retain allocator and

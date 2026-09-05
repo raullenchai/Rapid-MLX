@@ -194,6 +194,8 @@ def test_models_command_sections_image_aliases_out_of_the_text_table():
     assert "qwen-image-edit-4bit" not in image_section
     klein_row = next(ln for ln in image_section.splitlines() if "flux2-klein-4b" in ln)
     assert "[image:both]" in klein_row
+    schnell_row = next(ln for ln in image_section.splitlines() if "flux-schnell" in ln)
+    assert "[image:gen]" in schnell_row
 
 
 def test_models_command_shows_capability_columns():
