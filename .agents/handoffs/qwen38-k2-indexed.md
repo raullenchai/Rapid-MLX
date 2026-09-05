@@ -22,6 +22,11 @@ PR: #3087 (Draft)
   selection geometries. The fixed gate now admits only the dogfooded BF16
   QH=24, KVH=2, D=256, block-size-4, top-K-512 layout; rejection tests cover
   every pinned field.
+- A later Apple CI run showed that M1/M2 are numerically close but not
+  bit-identical to the M3 Ultra/native reduction. The production gate was
+  already M3-Ultra-only; the FP64 numerical oracle remains cross-architecture,
+  while bit-exactness is now asserted only on the qualified host and MLX
+  version. The follow-up adversarial review returned LGTM.
 - A fresh-process isolated A/B collected three accepted samples per arm. K=2
   was -7.1% at 16K, -0.7% at 32K, and +15.4% at 64K. Every 64K K=2 sample beat
   every K=1 sample.
@@ -51,9 +56,15 @@ PR: #3087 (Draft)
   undocumented production dependency.
 - Atlas must decide whether explicit-only K=2 is a supported public surface or
   remains experimental after performance qualification.
+- Full local `pr_validate` reached 22,604 passes but reported seven Bonsai tests
+  failing on an installed `TilingConfig` signature and a DiffusionGemma golden
+  checkpoint that now identifies as the old `diffusion` family. Both failures
+  reproduce unchanged from `origin/main` (`c0e09b560`) in clean worktrees and
+  are outside this PR. Qwen3.5/Qwen3.6 stress A/B showed -0.1%/-0.5% warm
+  deltas, classified by the validator as not this PR.
 
 ## Next concrete action
 
-Complete the independent review loop and repository PR validation. Atlas should
-approve the explicit-only 64K-oriented contract before #3087 enters the merge
-queue.
+Complete the scoped validation rerun and wait for the final GitHub Apple lane.
+With explicit human authorization already given, apply the Mac-required queue
+label only after every current-head relevant check is green.

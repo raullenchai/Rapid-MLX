@@ -54,6 +54,13 @@ version/architecture gates, exact production layout/selection admission,
 malformed int32 indices, empty selections, route priority/receipts, and graph
 identity when both sparse routes are disabled.
 
+The GitHub M1/M2 lane confirmed why bit identity is part of the qualification
+boundary rather than a cross-architecture property: its direct comparison to
+native attention differed in 7,824 of 18,432 BF16 elements, with maximum
+absolute difference 9.7656e-4. Those devices remain production-ineligible;
+their independent FP64-oracle test stays enabled, while the bit-exact assertion
+now runs only on the qualified MLX 0.32.2 M3 Ultra combination.
+
 The final stride-aware implementation was measured with K/V sliced from a
 larger capacity buffer, matching the non-row-contiguous decode-cache layout:
 
