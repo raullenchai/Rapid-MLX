@@ -1264,6 +1264,43 @@ class TestInputIsDataNotInstructions:
         assert rep.facts[0].status == "missing"
         assert rep.facts[0].contradicted is False
 
+    def test_trailing_currency_symbol_is_not_a_temperature(self, g):
+        # Round-24 F1: a trailing CURRENCY SYMBOL ("21$", "21€", "21£") is the
+        # postfix money form -- symmetric to the leading "$21" already rejected
+        # by _leading_currency_symbol. "costs 21$" must not satisfy a 21 °C fact.
+        for phrase in [
+            "temperature costs 21$",
+            "temperature costs 21€",
+            "temperature costs 21£",
+            "temperature costs 21 ¥",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.overall is False, phrase
+        # Real temperature reports + word/leading currency forms unaffected.
+        assert _grade(g, [TEMP21C], "temperature is 21°C").overall is True
+        assert _grade(g, [TEMP21C], "temperature costs 21 dollars").overall is False
+        assert _grade(g, [TEMP21C], "temperature sensor costs $21").overall is False
+
+    def test_kelvin_unit_is_not_degrees_celsius(self, g):
+        # Round-24 F2: "kelvin"/"kelvins" is a temperature scale distinct from
+        # the fact's °C surface -- "temperature is 21 kelvin" must not ground a
+        # "temperature = 21°C" fact as a bare 21. (The single-letter "K"
+        # abbreviation is deliberately not rejected: single-letter standalone
+        # units are excluded to avoid over-rejecting prose, per the bounded
+        # design -- kelvin/kelvins are the realistic multi-letter surfaces.)
+        for phrase in [
+            "temperature is 21 kelvin",
+            "temperature is 21 kelvins",
+            "the temperature reads 21 kelvin",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.overall is False, phrase
+        # A genuine "21 °C" report and the fact's OWN unit still ground.
+        assert _grade(g, [TEMP21C], "temperature is 21°C").overall is True
+        assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C

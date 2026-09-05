@@ -626,7 +626,7 @@ _ADJACENT_UNIT_RE = re.compile(
     r"hertz|hz|joules|joule|newtons|newton|pascals|pascal|lumens|lumen|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
     r"points|point|percentile|percentiles|grade|marks|"
-    r"batteries|battery))"
+    r"batteries|battery|kelvin|kelvins))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
     # common English surface for the fact's OWN temperature unit ("temperature
     # is 21 degrees" is a natural affirmative report of temperature=21°C), so
@@ -643,13 +643,29 @@ def _adjacent_unit_suffix(text: str, pos: int) -> bool:
 
     A slash-form compound (``km/h``), percent, or one of the mapped physical
     units directly after a number means the number is unit-qualified in a unit
-    we do not model; it must not be read as a bare value. Plain prose words
-    (``outside``, ``points``) are deliberately not matched.
+    we do not model; it must not be read as a bare value. A trailing CURRENCY
+    symbol ("21$", "21€") is likewise money, not a temperature/percentage.
+    Plain prose words (``outside``, ``points``) are deliberately not matched.
     """
     if pos >= len(text):
         return False
+    if _trailing_currency_symbol(text, pos):
+        return True
     m = _ADJACENT_UNIT_RE.match(text, pos)
     return bool(m)
+
+
+def _trailing_currency_symbol(text: str, pos: int) -> bool:
+    """True if a currency symbol immediately follows ``text[pos:]``.
+
+    The postfix form ("21$", "21€", "21£") is money, symmetric to the
+    ``_leading_currency_symbol`` prefix rejection ("$21"). A small whitespace
+    gap is allowed, matching ``_ADJACENT_UNIT_RE``'s ``\\s{0,3}`` allowance.
+    """
+    i = pos
+    while i < len(text) and i < pos + 3 and text[i].isspace():
+        i += 1
+    return i < len(text) and text[i] in _CURRENCY_PREFIXES
 
 
 # Currency symbols that, as a prefix, unambiguously mark a following number as
