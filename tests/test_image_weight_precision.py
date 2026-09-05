@@ -48,6 +48,16 @@ def test_explicit_precision_rejects_unqualified_diffusion_families(source):
         resolve_image_weight_precision(source, "bf16")
 
 
+def test_explicit_precision_rejects_unknown_precision():
+    with pytest.raises(ValueError, match="must be one of: q4, bf16"):
+        resolve_image_weight_precision(FLUX2_KLEIN_Q4_ALIAS, "fp8")
+
+
+def test_explicit_precision_rejects_local_checkpoint(tmp_path):
+    with pytest.raises(ValueError, match="not local checkpoints"):
+        resolve_image_weight_precision(str(tmp_path), "bf16")
+
+
 def test_cli_precision_is_explicit_and_defaults_to_no_override():
     parser = build_parser()
     default = parser.parse_args(["serve", FLUX2_KLEIN_Q4_ALIAS])
@@ -59,44 +69,18 @@ def test_cli_precision_is_explicit_and_defaults_to_no_override():
     assert bf16.image_weight_precision == "bf16"
 
 
-@pytest.mark.requires_mlx
-def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
-    """Drive main far enough to prove the flag changes the actual source."""
+def test_real_cli_selects_bf16_before_serve_dispatch(monkeypatch):
+    """Drive main through selection and alias resolution without MLX imports."""
 
-    from vllm_mlx import cli, server
+    from vllm_mlx import cli
 
     captured = {}
 
-    def _load_model(model_name, **kwargs):
-        captured["model_name"] = model_name
-        captured["alias"] = server._model_alias
+    def _serve_command(args):
+        captured["model_name"] = args.model
+        captured["alias"] = args._original_alias
 
-    def _ensure_model_downloaded(model_name, **_kwargs):
-        captured.setdefault("download_models", []).append(model_name)
-
-    monkeypatch.setattr(server, "load_model", _load_model)
-    # ``serve_command`` normally installs middleware on the process-global
-    # Starlette app. That is outside this ordering contract and makes the test
-    # depend on whether another full-suite test has already started the app.
-    monkeypatch.setattr(server, "configure_cors_from_env", lambda _origins: [])
-    monkeypatch.setattr(server, "configure_trusted_hosts", lambda _hosts: None)
-    monkeypatch.setattr(
-        "vllm_mlx.middleware.request_logging.install_request_logging_middleware",
-        lambda _app: None,
-    )
-    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", _ensure_model_downloaded)
-    monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
-    monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
-    )
-    monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
-        lambda **_kwargs: None,
-    )
+    monkeypatch.setattr(cli, "serve_command", _serve_command)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     monkeypatch.setattr(
         sys,
@@ -117,8 +101,29 @@ def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
     assert captured == {
         "model_name": FLUX2_KLEIN_BF16_REPO,
         "alias": FLUX2_KLEIN_BF16_ALIAS,
-        "download_models": [FLUX2_KLEIN_BF16_REPO],
     }
+
+
+def test_real_cli_reports_unsupported_precision_family(monkeypatch, capsys):
+    from vllm_mlx import cli
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "z-image-turbo",
+            "--image-weight-precision",
+            "bf16",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert "FLUX.2 Klein only" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
