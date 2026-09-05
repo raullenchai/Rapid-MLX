@@ -118,6 +118,10 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
         "text_to_image",
         "image_to_image",
     ]
+    assert aliases["flux-schnell"]["capabilities"]["runtime_adapter"] == "mflux"
+    assert aliases["flux-schnell"]["capabilities"]["operation_modes"] == [
+        "text_to_image"
+    ]
     assert aliases["qwen3-aligner"]["capabilities"]["task_types"] == [
         "speech_recognition"
     ]
