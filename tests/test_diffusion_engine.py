@@ -122,10 +122,24 @@ class FakeModel:
     config = FakeModelConfig()
 
 
+# A generic text-diffusion checkpoint (masked-LM style) that satisfies the
+# generic ``is_diffusion_model`` predicate but has NO block-canvas trait. This
+# mirrors the boundary the lane must REJECT: DiffusionEngine only serves the
+# DiffusionGemma block-canvas family (canvas_length), not any diffusion model.
+class FakeMaskedLmDiffusionConfig:
+    eos_token_id = 7
+    mask_token_id = 32000
+
+
+class FakeMaskedLmDiffusionModel:
+    config = FakeMaskedLmDiffusionConfig()
+
+
 def _install_mlx_vlm_mock(
     monkeypatch: pytest.MonkeyPatch,
     *,
     is_diffusion: bool = True,
+    model: FakeModel | FakeMaskedLmDiffusionModel = FakeModel(),
     stream_yields: list[FakeGenerationResult] | None = None,
 ) -> None:
     """Wire stub modules into ``sys.modules`` so the real mlx-vlm
@@ -143,8 +157,8 @@ def _install_mlx_vlm_mock(
     mlx_vlm_pkg = sys.modules.get("mlx_vlm") or types.ModuleType("mlx_vlm")
     mlx_vlm_utils = types.ModuleType("mlx_vlm.utils")
 
-    def _load(hf_path: str) -> tuple[FakeModel, FakeProcessor]:
-        return FakeModel(), FakeProcessor()
+    def _load(hf_path: str) -> tuple[Any, FakeProcessor]:
+        return model, FakeProcessor()
 
     mlx_vlm_utils.load = _load  # type: ignore[attr-defined]
 
@@ -230,6 +244,25 @@ class TestLoadAndIntrospection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install_mlx_vlm_mock(monkeypatch, is_diffusion=False)
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(model_name="x/y")
+        with pytest.raises(RuntimeError, match="not a block-diffusion model"):
+            engine._load_blocking()
+
+    def test_load_rejects_diffusion_without_block_canvas(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Boundary case codex flagged: a checkpoint that satisfies the
+        # GENERIC diffusion predicate (mask_token_id → is_diffusion_model
+        # True) but has NO block-canvas canvas_length trait (e.g. a
+        # masked-LM diffusion model) must still be rejected — DiffusionEngine
+        # serves ONLY the DiffusionGemma block-canvas family.
+        _install_mlx_vlm_mock(
+            monkeypatch,
+            is_diffusion=True,
+            model=FakeMaskedLmDiffusionModel(),
+        )
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")

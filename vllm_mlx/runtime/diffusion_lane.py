@@ -723,16 +723,25 @@ class DiffusionEngine(BaseEngine):
             # ``is_diffusion_model`` (the deprecated
             # ``diffusion_generation_family`` now returns a generic
             # ``"diffusion"`` and never the block-canvas family name this
-            # lane used to match). Gate on the modern predicate, which is
-            # True for DiffusionGemma-family block-diffusion checkpoints
-            # (language_model.generate + canvas config), so the lane still
-            # rejects non-text-diffusion models while accepting the one
-            # family it is built to serve.
-            if not is_diffusion_model(model):
+            # lane used to match). Gate on the modern predicate AND the
+            # block-canvas capability trait this lane actually serves.
+            # ``is_diffusion_model`` alone is a generic text-diffusion
+            # predicate (True for any ``language_model.generate`` +
+            # ``canvas_length``/``mask_token_id`` checkpoint) — it would
+            # admit e.g. a masked-LM diffusion model. DiffusionEngine is
+            # built for the DiffusionGemma block-canvas family only, whose
+            # engine-driven denoising loop operates on ``config.canvas_length``
+            # (the same trait mlx-vlm's shared engine gates its canvas
+            # streaming on). So require BOTH: a diffusion model AND the
+            # block-canvas canvas trait.
+            config = getattr(model, "config", None)
+            is_block_canvas = getattr(config, "canvas_length", None) is not None
+            if not (is_diffusion_model(model) and is_block_canvas):
                 raise RuntimeError(
                     f"{self._model_name!r} is not a block-diffusion model "
-                    f"(diffusion_generation_family returned "
-                    f"{diffusion_generation_family(model)!r}). "
+                    f"(is_diffusion_model="
+                    f"{is_diffusion_model(model)}, canvas_length="
+                    f"{getattr(config, 'canvas_length', None)!r}). "
                     "DiffusionEngine only supports DiffusionGemma-family "
                     "block-canvas checkpoints."
                 )
