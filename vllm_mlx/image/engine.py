@@ -38,6 +38,8 @@ import threading
 import time
 from pathlib import Path
 
+from .precision import is_packaged_bf16_model
+
 # A pre-quantized mflux repo carries a quant tag in its id — either the
 # ``<n>bit`` / ``<n>-bit`` convention (``FLUX.1-schnell-mflux-4bit``) or the
 # ``q<n>`` convention (``Qwen-Image-Edit-mflux-q4``). Anchored to a separator
@@ -159,6 +161,19 @@ def _looks_like_prequantized(model_name: str) -> bool:
     return bool(_QUANT_TAG_RE.search(model_name or ""))
 
 
+def _looks_like_packaged_checkpoint(model_name: str) -> bool:
+    """Whether mflux should load this repository through ``model_path``.
+
+    Quantized community repositories and the curated Klein bf16 repository
+    already use mflux's component layout. The latter is not quantized, but it
+    must follow the same ``model_path`` + ``quantize=None`` load contract;
+    otherwise ModelConfig ignores the requested repository and downloads BFL's
+    canonical source instead.
+    """
+
+    return _looks_like_prequantized(model_name) or is_packaged_bf16_model(model_name)
+
+
 class ImageGenerationEngine:
     """Adapter over a single mflux model family.
 
@@ -182,9 +197,12 @@ class ImageGenerationEngine:
         self.default_edit_guidance = None if self.family == "flux2-klein" else 4.0
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
         self._prequantized = _looks_like_prequantized(model_name)
+        self._packaged_checkpoint = _looks_like_packaged_checkpoint(model_name)
         # ``None`` when the repo is already quantized — passing a quantize width
-        # for a pre-quantized checkpoint makes mflux re-quantize and error.
-        self._quantize = None if self._prequantized else quantize
+        # for a pre-quantized checkpoint makes mflux re-quantize and error. The
+        # packaged bf16 source also pins ``None`` so its full-precision weights
+        # stay full precision.
+        self._quantize = None if self._packaged_checkpoint else quantize
         self._model = None
         # FLUX.2 uses distinct mflux classes for generation and editing. Only
         # one stays resident at a time so switching modes does not duplicate
@@ -221,7 +239,7 @@ class ImageGenerationEngine:
     def _model_path_for_mflux(self) -> str | None:
         """``model_path`` to hand mflux: a local directory whenever we have one.
 
-        A pre-quantized repo / local dir is handed to mflux verbatim; a canonical
+        A packaged mflux repo / local dir is handed to mflux verbatim; a canonical
         repo is selected through ``ModelConfig`` instead (``None``) so mflux
         downloads the official weights and quantizes on load.
 
@@ -236,7 +254,7 @@ class ImageGenerationEngine:
         ourselves at the exact verified commit rather than let mflux resolve
         and download whatever ``main`` currently points to.
         """
-        if not self._prequantized:
+        if not self._packaged_checkpoint:
             return None
         from .._download_gate import IMAGE_MODEL_REVISIONS, mflux_local_snapshot
 
