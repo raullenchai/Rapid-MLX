@@ -1688,6 +1688,7 @@ def _try_mirror_prefetch(
     model_name: str,
     on_pull_start: Callable[[], None] | None = None,
     *,
+    revision: str | None = None,
     allow_patterns: list[str] | None = None,
     out: dict | None = None,
 ) -> bool:
@@ -1734,6 +1735,7 @@ def _try_mirror_prefetch(
         return False
     return download_with_mirror_fallback(
         model_name,
+        revision=revision,
         on_pull_start=on_pull_start,
         allow_patterns=allow_patterns,
         out=out,
@@ -1802,7 +1804,10 @@ def _refuse_offline_uncached(model_name: str) -> None:
 
 
 def _ensure_model_downloaded(
-    model_name: str, *, force_disk_check: bool = False
+    model_name: str,
+    *,
+    force_disk_check: bool = False,
+    revision: str | None = None,
 ) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
 
@@ -1813,12 +1818,16 @@ def _ensure_model_downloaded(
     surfaces the standard HF progress bars on the user's terminal, then
     the spawned server starts as a cache hit.
 
-    No-op when the model is already cached, when ``model_name`` is a local
-    path, or when the HF lookup fails (let the loader's own error paths
-    handle it).
+    ``revision`` pins every network fallback to an exact commit. No-op when the
+    requested snapshot is already cached, when ``model_name`` is a local path,
+    or when the HF lookup fails (let the loader's own error paths handle it).
     """
     if os.path.exists(model_name):
         return
+    if revision is None:
+        from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+        revision = IMAGE_MODEL_REVISIONS.get(model_name)
     # Reuse the cache inventory's single runnability probe core
     # (``_cache_runnability``, the same source ``models --cached`` uses) so
     # what counts as "already cached" is identical everywhere and spans every
@@ -1841,6 +1850,7 @@ def _ensure_model_downloaded(
 
     if (
         _offline_hub_mode_active()
+        and revision is None
         and _offline_complete_cached_snapshot(model_name) is not None
     ):
         return
@@ -1883,7 +1893,11 @@ def _ensure_model_downloaded(
         # serves every file the repo declares, populate the HF cache layout
         # ourselves and skip snapshot_download. On any miss we fall through
         # to the normal HuggingFace download below.
-        mirror_ok = _try_mirror_prefetch(model_name, on_pull_start=spinner.stop)
+        mirror_ok = _try_mirror_prefetch(
+            model_name,
+            on_pull_start=spinner.stop,
+            revision=revision,
+        )
     if mirror_ok:
         return
 
@@ -1917,15 +1931,17 @@ def _ensure_model_downloaded(
         # huggingface_hub does not write refs/main for an explicit SHA, so we
         # publish that ref ourselves, atomically, only after the download wins.
         size_gb = 0.0
-        resolved_sha: str | None = None
+        resolved_sha: str | None = revision
         try:
+            info_kwargs = {"revision": revision} if revision is not None else {}
             info = call_with_deadline(
                 model_info,
                 _HF_RESOLVE_TIMEOUT_SECONDS,
                 model_name,
                 files_metadata=True,
+                **info_kwargs,
             )
-            resolved_sha = getattr(info, "sha", None)
+            resolved_sha = getattr(info, "sha", None) or revision
             if not resolved_sha:
                 raise RuntimeError("HuggingFace metadata did not include a revision")
             size_bytes = sum(
@@ -1983,7 +1999,7 @@ def _ensure_model_downloaded(
             )
         else:
             snapshot_download(model_name, **download_kwargs)
-        if resolved_sha:
+        if resolved_sha and revision is None:
             pin_main_ref(model_name, resolved_sha)
         print()
     except SystemExit:
@@ -6153,6 +6169,7 @@ def _cache_runnability(repo: str) -> bool | None:
     """
     try:
         from vllm_mlx._download_gate import (
+            IMAGE_MODEL_REVISIONS,
             _snapshot_is_complete_audio_model,
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
@@ -6182,6 +6199,11 @@ def _cache_runnability(repo: str) -> bool | None:
             # matches a lone ``model.safetensors``) must NOT mark an incomplete
             # Wan snapshot runnable. Complete -> runnable; incomplete -> not.
             return _snapshot_is_complete_wan_model(repo)
+        if repo in IMAGE_MODEL_REVISIONS:
+            # A pinned image alias is runnable only at its declared commit.
+            # The generic probes below accept any complete cached snapshot,
+            # which would let a stale or moved upstream HEAD bypass the pin.
+            return _snapshot_is_complete_mflux_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
