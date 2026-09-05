@@ -141,6 +141,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--force-disk-check` | Proceed even when the pre-flight disk-space check fails — the check still runs and prints its numbers, but a shortfall becomes a warning instead of an abort (the download will likely fail mid-way) | off |
+| `--image-weight-precision` | Explicit FLUX.2 Klein weight source: `q4` selects the compact default checkpoint; `bf16` selects the full-precision checkpoint measured faster on an M2 Pro large-matrix image workload. Other diffusion families are rejected until qualified. | None (alias default) |
 | `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; only architectures registered in `vllm_mlx.registry`) | off |
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache; only used with `--disk-stream` | 1.0 |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; loading another model evicts the least-recently-used idle unpinned model first. 0 disables. | 0 (disabled) |

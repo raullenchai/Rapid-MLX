@@ -10703,6 +10703,17 @@ Examples:
             "on a different filesystem (e.g. external drive via HF_HOME)."
         ),
     )
+    serve_parser.add_argument(
+        "--image-weight-precision",
+        choices=("q4", "bf16"),
+        default=None,
+        help=(
+            "Explicit FLUX.2 Klein weight precision. q4 keeps the compact "
+            "default checkpoint; bf16 selects the full-precision checkpoint "
+            "measured faster on an M2 Pro large-matrix image workload. "
+            "Currently limited to FLUX.2 Klein; no automatic hardware switch."
+        ),
+    )
     # Disk-streaming MoE weight loading (PRD-rapid-mlx-integration.md).
     # Strictly opt-in: default behavior for every existing invocation is
     # unchanged. When set, the model loads lazily (routed-expert weights
@@ -12969,6 +12980,23 @@ def main():
         # (CI / pipe): no notice (it is TTY-only); ``main()`` sets the starter
         # and falls through to the same gate a bare ``rapid-mlx chat`` always
         # used, so scripted callers are unchanged (no new exit-1 path).
+
+    # An explicit image precision selects a concrete curated alias BEFORE the
+    # ordinary alias/download gates run. That ordering makes the 15.98 GB bf16
+    # download visible to the existing confirmation and disk-space checks; a
+    # late engine-only switch would silently gate the 4.6 GB q4 source and then
+    # download a much larger checkpoint on first generation.
+    _image_weight_precision = getattr(args, "image_weight_precision", None)
+    if _image_weight_precision is not None:
+        from vllm_mlx.image.precision import resolve_image_weight_precision
+
+        try:
+            args.model = resolve_image_weight_precision(
+                getattr(args, "model", ""), _image_weight_precision
+            )
+        except ValueError as exc:
+            print(f"\n  Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
 
     # Resolve model aliases before dispatch.
     #
