@@ -16,7 +16,7 @@ PR: #3087 (Draft)
   `main`; prerequisite PR #3055 is merged.
 - Qwen3.8 keeps implicit MTP at K=1, admits only explicit K=2, and rejects K=3.
 - Existing generic chain-of-K and Qwen-specific rollback logic is unchanged.
-- Focused MTP, Qwen4, indexed-QSA, and CLI suites pass (349 tests); changed
+- Focused MTP, Qwen4, indexed-QSA, and CLI suites pass (357 tests); changed
   Python files pass Ruff.
 - Adversarial review found that the initial gate admitted unmeasured tensor and
   selection geometries. The fixed gate now admits only the dogfooded BF16

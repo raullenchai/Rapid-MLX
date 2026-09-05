@@ -55,6 +55,12 @@ def test_indexed_splitk_gate_is_opt_in_version_and_shape_qualified(monkeypatch):
     monkeypatch.setenv(qsa_indexed_splitk.ENABLE_ENV, "1")
     assert (
         qsa_indexed_splitk.indexed_splitk_decline_reason(
+            3, 16_384, batch_size=1, training=True, mlx_version="0.32.2"
+        )
+        == "training"
+    )
+    assert (
+        qsa_indexed_splitk.indexed_splitk_decline_reason(
             3, 16_384, batch_size=2, mlx_version="0.32.2"
         )
         == "batch size is not qualified"
@@ -83,6 +89,13 @@ def test_indexed_splitk_gate_is_opt_in_version_and_shape_qualified(monkeypatch):
         )
         == "unqualified MLX version 0.32.1"
     )
+    monkeypatch.setattr(qsa_indexed_splitk.mx.metal, "is_available", lambda: False)
+    assert (
+        qsa_indexed_splitk.indexed_splitk_decline_reason(
+            3, 16_384, batch_size=1, mlx_version="0.32.2"
+        )
+        == "Metal runtime unavailable"
+    )
     monkeypatch.setattr(qsa_indexed_splitk.mx.metal, "is_available", lambda: True)
     assert (
         qsa_indexed_splitk.indexed_splitk_decline_reason(
@@ -104,6 +117,22 @@ def test_indexed_splitk_gate_is_opt_in_version_and_shape_qualified(monkeypatch):
         )
         == "unqualified Metal architecture applegpu_g16s"
     )
+
+
+def test_indexed_splitk_runtime_metadata_fails_closed(monkeypatch):
+    qsa_indexed_splitk._mlx_version.cache_clear()
+    monkeypatch.setattr(
+        qsa_indexed_splitk,
+        "version",
+        lambda _package: (_ for _ in ()).throw(qsa_indexed_splitk.PackageNotFoundError),
+    )
+    assert qsa_indexed_splitk._mlx_version() == "unknown"
+    qsa_indexed_splitk._mlx_version.cache_clear()
+
+    qsa_indexed_splitk._metal_architecture.cache_clear()
+    monkeypatch.setattr(qsa_indexed_splitk.mx, "device_info", lambda: {})
+    assert qsa_indexed_splitk._metal_architecture() == "unknown"
+    qsa_indexed_splitk._metal_architecture.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -130,6 +159,67 @@ def test_indexed_splitk_layout_gate_is_exactly_production_qualified(override, ex
     }
     layout.update(override)
     assert qsa_indexed_splitk.indexed_splitk_layout_supported(**layout) is expected
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"query_heads": 2, "kv_heads": 0, "head_dim": 32, "dtype": mx.float16},
+        {"query_heads": 0, "kv_heads": 1, "head_dim": 32, "dtype": mx.float16},
+        {"query_heads": 33, "kv_heads": 1, "head_dim": 32, "dtype": mx.float16},
+        {"query_heads": 2, "kv_heads": 1, "head_dim": 33, "dtype": mx.float16},
+    ],
+)
+def test_indexed_splitk_kernel_layout_rejects_unrepresentable_shapes(layout):
+    assert not qsa_indexed_splitk._kernel_layout_supported(**layout)
+
+
+def test_indexed_splitk_production_split_schedule():
+    assert qsa_indexed_splitk._split_count(65_536, 1) == 128
+
+
+def test_indexed_splitk_input_validation_fails_before_kernel_dispatch():
+    defaults = {
+        "queries": mx.zeros((1, 2, 1, 32), dtype=mx.float16),
+        "keys": mx.zeros((1, 1, 8, 32), dtype=mx.float16),
+        "values": mx.zeros((1, 1, 8, 32), dtype=mx.float16),
+        "block_starts": mx.zeros((1, 1, 1), dtype=mx.int32),
+        "block_counts": mx.ones((1, 1), dtype=mx.int32),
+        "tail_indices": mx.zeros((1, 1, 2), dtype=mx.int32),
+        "tail_counts": mx.ones((1, 1), dtype=mx.int32),
+        "block_size": 2,
+        "scale": 32**-0.5,
+        "splits": 32,
+    }
+
+    def invoke(**overrides):
+        arguments = defaults | overrides
+        return qsa_indexed_splitk.indexed_splitk_attention(**arguments)
+
+    with pytest.raises(ValueError, match="rank four"):
+        invoke(queries=defaults["queries"].squeeze(0))
+    with pytest.raises(ValueError, match="batch size one"):
+        invoke(queries=mx.zeros((2, 2, 1, 32), dtype=mx.float16))
+    with pytest.raises(ValueError, match="one to three query tokens"):
+        invoke(queries=mx.zeros((1, 2, 4, 32), dtype=mx.float16))
+    with pytest.raises(ValueError, match="shapes are inconsistent"):
+        invoke(values=mx.zeros((1, 1, 7, 32), dtype=mx.float16))
+    with pytest.raises(ValueError, match="same dtype"):
+        invoke(values=defaults["values"].astype(mx.float32))
+    with pytest.raises(ValueError, match="block geometry"):
+        invoke(block_counts=mx.ones((1, 2), dtype=mx.int32))
+    with pytest.raises(ValueError, match="block starts"):
+        invoke(block_starts=mx.zeros((1, 1), dtype=mx.int32))
+    with pytest.raises(ValueError, match="tail indices"):
+        invoke(tail_indices=mx.zeros((1, 1, 3), dtype=mx.int32))
+    with pytest.raises(ValueError, match="tail counts"):
+        invoke(tail_counts=mx.ones((1, 2), dtype=mx.int32))
+    with pytest.raises(ValueError, match="must use int32"):
+        invoke(block_starts=defaults["block_starts"].astype(mx.float32))
+    with pytest.raises(ValueError, match="layout is unsupported"):
+        invoke(queries=mx.zeros((1, 33, 1, 32), dtype=mx.float16))
+    with pytest.raises(ValueError, match="positive multiple of 32"):
+        invoke(splits=1)
 
 
 @pytest.mark.skipif(
@@ -390,6 +480,33 @@ def test_qsa_attention_routes_narrow_selection_and_records_receipt(monkeypatch):
         "route_constructions": 1,
         "declines": 0,
         "decline_reasons": {},
+    }
+
+
+def test_qsa_attention_unqualified_layout_falls_back_and_records_reason(monkeypatch):
+    args = _args()
+    attention = QSAAttention(args)
+    attention.eval()
+    attention.indexer = _FakeIndexer(args)
+    monkeypatch.setattr(
+        qwen4_exp, "indexed_splitk_decline_reason", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        qwen4_exp,
+        "scaled_dot_product_attention",
+        lambda queries, *a, **k: mx.zeros_like(queries),
+    )
+    output = attention(
+        mx.zeros((1, 3, args.hidden_size)),
+        [_FakeKVCache(), object()],
+        mask="causal",
+    )
+    mx.eval(output)
+    assert output.shape == (1, 3, args.hidden_size)
+    assert qwen4_exp.qwen4_qsa_indexed_splitk_stats(attention) == {
+        "route_constructions": 0,
+        "declines": 1,
+        "decline_reasons": {"unsupported layout": 1},
     }
 
 

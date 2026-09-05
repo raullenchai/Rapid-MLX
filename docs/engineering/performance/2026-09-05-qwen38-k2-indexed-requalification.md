@@ -119,7 +119,7 @@ Focused suites passed before real-model dogfood:
 ```text
 tests/test_mtp_spec_decode.py                         132 passed
 tests/test_qwen4_exp_vendored.py                     101 passed
-tests/test_qsa_indexed_splitk.py + CLI wiring        107 passed
+tests/test_qsa_indexed_splitk.py + CLI wiring        123 passed
 ruff on all changed Python files                     passed
 ```
 
