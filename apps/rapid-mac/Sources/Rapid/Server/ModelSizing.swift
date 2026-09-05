@@ -146,6 +146,24 @@ enum ModelSizing {
         return max(heuristic, diskGiB * 1.25 + 0.5)
     }
 
+    /// Image catalog memory is a whole-machine support floor. Convert it to
+    /// the same 80%-usable process budget used by the existing live-pressure
+    /// admission guard, while retaining artifact sizing as the lower bound.
+    static func imageResidentEstimateGB(
+        alias: String,
+        sizeText: String? = nil,
+        minimumMemoryGB: Double? = nil
+    ) -> Double {
+        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText)
+        guard let minimumMemoryGB,
+              minimumMemoryGB.isFinite,
+              minimumMemoryGB > 0 else { return artifactEstimate }
+        return max(
+            artifactEstimate,
+            minimumMemoryGB * MacHardware.modelUsableMemoryFraction
+        )
+    }
+
     /// Pick a KV-reserve target proportional to model size — bigger
     /// models have bigger per-token cache cost. The picker is mostly
     /// concerned with order-of-magnitude, not precision.
