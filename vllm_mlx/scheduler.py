@@ -360,8 +360,8 @@ class SchedulerConfig:
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
     # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter
-    # cost. Pure-attention only; the architecture allowlist is enforced
-    # via ``ModelConfig.supports_spec_decode`` at install time.
+    # cost. Pure-attention only by default; the hybrid (recurrent)
+    # path is additionally gated behind ``suffix_hybrid`` (see below).
     enable_suffix_decoding: bool = False
     suffix_max_draft: int = 8  # Max draft tokens per step (verify cost ∝ this)
     suffix_max_suffix_len: int = 4  # Longest k-gram indexed for matching
@@ -372,6 +372,37 @@ class SchedulerConfig:
     # win. Default 2 keeps chat near regression-floor while still
     # accepting most useful drafts on tool/JSON workloads.
     suffix_min_draft_len: int = 2
+    # Opt-in hybrid (recurrent / GatedDeltaNet / PLE / QSA) suffix
+    # decoding. Off by default: SUFFIX_POC_REPORT.md shows multi-token
+    # verify can drift from step-update on recurrent layers. When enabled,
+    # the scheduler runs the verify in cache-scratch (the Qwen4 recurrent /
+    # conv / PLE state is snapshotted by the model forward) and commits
+    # only the accepted positions, so a rejected tail is dropped without
+    # corrupting persistent state. A bit-exactness guard refuses to draft
+    # if the quantized hybrid verify drifts from greedy (see
+    # ``_hybrid_scratch_verify_drift_free``).
+    suffix_hybrid: bool = False
+    # Tunnel-verify probe length for the hybrid bit-exactness guard (how
+    # many committed positions the guard replays to detect drift from
+    # greedy). A small pod value is enough to catch a quantized-hybrid
+    # drift signature without paying a long replay on every fallthrough.
+    suffix_hybrid_probe_len: int = 4
+    # Bit-exactness guard for the hybrid path (issue #2561). A quantized
+    # hybrid can DRIFT from greedy because the chunked-batched verify
+    # forward is not step-update-equivalent on recurrent layers; even with
+    # commit-only-accepted scratch replay, accepted tokens can be wrong.
+    # When enabled, the guard replays the committed path stepwise and
+    # compares greedy predictions to the chunked verify; on any mismatch it
+    # refuses to draft (falls through) rather than silently corrupting.
+    # Default OFF (it costs a replay per verify — it is a correctness net /
+    # eval tool, not a free lunch).
+    suffix_hybrid_bit_exact: bool = False
+    # Hybrid minimum-match floor. A draft shorter than this falls through
+    # without paying the (multi-token) hybrid verify cost at all, so novel
+    # text never touches the tentative-verify path. Mirrors the issue's
+    # 24-token figure; see design note gap-1. Pure-attention path keeps its
+    # own ``suffix_min_draft_len`` (default 2) for chat-economy.
+    suffix_min_match_len: int = 24
 
     # Admission control: hard cap on concurrent in-flight requests
     # (queued + running). A buggy client (or simple fork bomb) used to
@@ -2274,6 +2305,72 @@ def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
     return model_type in {"qwen3_5", "qwen3_5_moe", "hy_v3", "qwen4_exp"}
 
 
+def _verify_scratch(
+    model: Any,
+    live_cache: list[Any],
+    verify_input: mx.array,
+    draft: list[int],
+    commit_head: list[Any],
+) -> dict:
+    """Scratch-verify a hybrid draft WITHOUT touching persistent state.
+
+    Mirrors SGLang NGRAMWorker: the persistent recurrent/conv/PLE/QSA state
+    (``live_cache``) stays untouched during the tentative multi-token verify.
+    ``commit_head`` is a deepcopy of ``live_cache`` taken by the caller and
+    used ONLY as the scratch buffer for the verify forward. Returns
+    ``{"n_accepted", "verify_logits", "preds_list"}``; the caller decides
+    whether to commit (replay the accepted prefix) and how, so a bit-exactness
+    guard can gate the commit.
+
+    ``verify_input`` is the ``(1, K+1)`` [X, d_0..d_{K-1}] batch whose
+    greedy predictions gate acceptance.
+    """
+    verify_logits = model(verify_input, cache=commit_head)
+    preds = mx.argmax(verify_logits, axis=-1)
+    mx.eval(preds)
+    preds_list = preds.tolist()[0]
+    n_accepted = 0
+    for i, tok in enumerate(draft):
+        if preds_list[i] == tok:
+            n_accepted += 1
+        else:
+            break
+    return {
+        "n_accepted": n_accepted,
+        "verify_logits": verify_logits,
+        "preds_list": preds_list,
+    }
+
+
+def _commit_scratch_accepted(
+    model: Any,
+    live_cache: list[Any],
+    committed_input: mx.array,
+    n_accepted: int,
+) -> None:
+    """Commit only the accepted prefix of a scratch verify onto live cache.
+
+    ``committed_input = [X, d_0..d_{K-1}]``; the accepted prefix
+    ``[X, d_0..d_{n_accepted-1}]`` is replayed one step at a time onto a
+    FRESH copy of the pre-verify state, which then replaces ``live_cache``.
+    The rejected tail is dropped (never replayed), so the persistent
+    recurrent/conv/PLE/QSA state holds exactly the greedy-committed prefix.
+    """
+    import copy
+
+    commit_head = copy.deepcopy(live_cache)
+    # The committed prefix is [X, d_0..d_{n_accepted-1}] = the first
+    # ``n_accepted + 1`` tokens of ``committed_input``. ``live_cache`` is the
+    # PRE-verify state and does NOT contain X yet (X is fed during the verify
+    # forward in production), so ALL ``n_accepted + 1`` tokens are replayed —
+    # X plus the accepted drafts. The rejected tail (tokens past
+    # ``n_accepted``) is dropped by never being replayed, which is what makes
+    # the commit-only-accepted scratch verify lossless.
+    for token in committed_input[0, 0 : n_accepted + 1].tolist():
+        mx.eval(model(mx.array([[token]]), cache=commit_head))
+    live_cache[:] = commit_head
+
+
 def _replay_dspark_committed(
     model: Any,
     cache_snapshot: list[Any],
@@ -2841,6 +2938,10 @@ def _install_suffix_decoding(
     requests: dict[str, Any],
     uid_to_request_id: dict[int, str],
     min_draft_len: int = 2,
+    suffix_hybrid: bool = False,
+    suffix_min_match_len: int = 24,
+    suffix_hybrid_bit_exact: bool = False,
+    suffix_hybrid_probe_len: int = 4,
 ) -> bool:
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
@@ -2873,18 +2974,24 @@ def _install_suffix_decoding(
     The architecture allowlist is enforced upstream via
     ``ModelConfig.supports_spec_decode``: hybrid linear-attention models
     (Qwen3.5/3.6 GatedDeltaNet, Granite 4 Mamba2) skip install entirely
-    because chunked-batched verify isn't numerically equivalent to
-    step-update on recurrent layers — see SUFFIX_POC_REPORT.md.
+    by default because chunked-batched verify isn't numerically equivalent
+    to step-update on recurrent layers — see SUFFIX_POC_REPORT.md. When the
+    operator explicitly opts into the hybrid path (``suffix_hybrid=True``),
+    the verify runs against cache scratch (the Qwen4 recurrent/conv/PLE/QSA
+    state is snapshotted in the tentative forward) and only accepted
+    positions are committed, mirroring SGLang's NGRAMWorker.
     """
     from .speculative.suffix_counter import get_global_counter as _suffix_counter
     from .speculative.suffix_decoding import SuffixDecodingDrafter
 
-    if profile is not None and not profile.supports_spec_decode:
+    hybrid = bool(suffix_hybrid) and profile is not None and profile.is_hybrid
+    if profile is not None and not profile.supports_spec_decode and not hybrid:
         logger.warning(
             "[SuffixDecoding] disabled: model is hybrid (linear-attention/"
             "Mamba). Multi-token verify path is not numerically equivalent "
             "to step-update on recurrent layers. See "
-            "evals/results/SUFFIX_POC_REPORT.md."
+            "evals/results/SUFFIX_POC_REPORT.md. Pass suffix_hybrid=True to "
+            "opt into the scratch-verify hybrid path."
         )
         return False
 
@@ -2932,6 +3039,8 @@ def _install_suffix_decoding(
         "ft_no_draft": 0,
         "ft_cooldown": 0,
         "ft_non_trimmable_cache": 0,
+        "ft_short_match": 0,
+        "ft_hybrid_drift": 0,
         # Error fallbacks are fallthroughs too. Without this key the
         # breakdown stops summing to ``fallthrough_steps`` exactly when
         # something is going wrong — which is when the breakdown is being
@@ -2946,6 +3055,15 @@ def _install_suffix_decoding(
         "cooldown_level": 0,
         # Current adaptive draft width (see _current_k).
         "k_current": 0,
+        # Hybrid-path bookkeeping (only populated when suffix_hybrid installs).
+        "suffix_hybrid": hybrid,
+        "suffix_min_match_len": suffix_min_match_len,
+        # Evidence: how many drift refusals the bit-exactness guard recorded.
+        # Kept as an additive locally-scoped counter (new key), NOT a new
+        # exported metric name — the shared counter surface (verify_steps /
+        # fallthrough_steps / draft_tokens_proposed / tokens_accepted) is
+        # unchanged. Short-match fallthroughs surface via ``ft_short_match``.
+        "hybrid_drifts": 0,
     }
 
     # Per-UID drafting state. MUST be keyed by request: the drafter itself
@@ -2963,6 +3081,72 @@ def _install_suffix_decoding(
     #
     # Cleared alongside ``_drafters`` when the request finishes.
     _uid_state: dict[int, dict] = {}
+
+    # Hybrid scratch-verify is opt-in and only meaningful for hybrid models.
+    # ``_hybrid_active`` is False on the pure-attention path so the existing
+    # (attention-tuned) verify flow is untouched.
+    _hybrid_active = bool(hybrid)
+    _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
+
+    def _hybrid_scratch_verify(
+        verify_input: mx.array, committed_input: mx.array, draft: list[int]
+    ) -> dict:
+        """Scratch-verify a hybrid draft against the live cache.
+
+        Runs the tentative forward on a *copied* commit head so the persistent
+        recurrent/conv/PLE/QSA state stays untouched, and (when the optional
+        bit-exactness guard is disabled) replays only the accepted prefix back
+        onto the live cache — the SGLang NGRAMWorker commit-only-accepted,
+        drop-the-tail pattern, which is step-equivalent. When the guard IS
+        enabled the commit is deferred to the caller via the ``commit_head``
+        it shares, so a drift refusal never mutates the live cache.
+        """
+        import copy
+
+        committed_head = copy.deepcopy(gb.prompt_cache)
+        result = _verify_scratch(
+            gb.model,
+            gb.prompt_cache,
+            verify_input,
+            draft,
+            committed_head,
+        )
+        n_accepted = result["n_accepted"]
+        if n_accepted > 0:
+            if _hybrid_bit_exact:
+                # Bit-exactness guard: replay the committed prefix stepwise on
+                # a fresh pre-verify copy and compare each step's greedy pred
+                # to the chunked verify's pred at that position. Any mismatch
+                # means the chunked-batched forward DRIFTED from step-update
+                # on the recurrent layers (quantized-hybrid signature) — refuse
+                # to commit rather than surface silently-wrong accepted tokens.
+                # Nothing has been committed yet, so a refusal is a clean
+                # fall-through.
+                probe_head = copy.deepcopy(gb.prompt_cache)
+                probe_len = min(len(verify_input[0]), suffix_hybrid_probe_len)
+                drift = False
+                # The chunked verify predict at ``preds_list[j]`` is the model's
+                # greedy prediction AFTER consuming ``verify_input[:, :j+1]``.
+                # The stepwise probe feeds token ``j`` at iteration ``j`` (so X
+                # at j=0, then d_0, ...) and compares each stepwise pred to the
+                # corresponding chunk row.
+                for j in range(probe_len):
+                    step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
+                    step_pred = mx.argmax(step_logits, axis=-1)
+                    mx.eval(step_pred)
+                    if int(step_pred[0, 0].item()) != result["preds_list"][j]:
+                        drift = True
+                        break
+                if drift:
+                    result["drift"] = True
+                    return result
+            _commit_scratch_accepted(
+                gb.model,
+                gb.prompt_cache,
+                committed_input,
+                n_accepted,
+            )
+        return result
 
     def _reset_state_gauges_if_idle() -> None:
         """Return the state gauges to their at-rest values when no request
@@ -3202,56 +3386,118 @@ def _install_suffix_decoding(
 
         K = len(draft)
 
-        # Defense-in-depth: even though ``profile.supports_spec_decode``
-        # already gates installation on hybrid arches, verify that EVERY
-        # cache layer is trimmable before paying the verify-forward cost.
-        # If any layer can't trim and we end up needing to roll back, the
-        # cache state would silently diverge — better to fall through.
-        # Preflight the maximum possible rollback amount before the verify
-        # forward mutates anything. Composite caches are checked recursively,
-        # so one side-cache cannot refuse after its sibling already trimmed.
-        from .cache_rollback import can_advance
+        n_rejected_to_trim = 0
+        if _hybrid_active:
+            # Hybrid path. The 24-token minimum-match floor (issue #2561)
+            # means a draft shorter than the floor falls through WITHOUT
+            # paying the multi-token verify cost at all — novel text (which
+            # the suffix drafter proposes short drafts for) is the common
+            # case and must never touch the tentative-verify path.
+            if suffix_min_match_len > K:
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_short_match"] += 1
+                _counter.record_fallthrough("short_match")
+                return _orig_step()
 
-        if not all(can_advance(c, K) for c in gb.prompt_cache):
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_non_trimmable_cache"] += 1
-            _counter.record_fallthrough("non_trimmable_cache")
-            return _orig_step()
+            _stats["verify_steps"] += 1
+            _stats["draft_tokens_proposed"] += K
 
-        _stats["verify_steps"] += 1
-        _stats["draft_tokens_proposed"] += K
+            # Scratch-verify: run the tentative forward on a COPY of the
+            # committed cache so the persistent recurrent/conv/PLE/QSA state
+            # stays untouched, then commit ONLY accepted positions. This
+            # sidesteps the attention-only ``can_advance`` preflight below
+            # (which the Qwen4 recurrent budget cannot satisfy anyway —
+            # trim_all on Qwen4ExpStateCache cannot roll a rejection back).
+            try:
+                draft_arr = mx.array([draft], dtype=inputs.dtype)
+                verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
+                # ``committed_input`` == ``verify_input`` here: the accepted
+                # prefix is a prefix of the verify batch, so the same tensor
+                # is replayed on the commit head (the helper slices it by
+                # ``n_accepted``).
+                committed_input = verify_input
+                result = _hybrid_scratch_verify(verify_input, committed_input, draft)
+                n_accepted = result["n_accepted"]
+                verify_logits = result["verify_logits"]
+                preds_list = result["preds_list"]
+                n_rejected_to_trim = 0
+                if result.get("drift"):
+                    # Bit-exactness guard fired: the chunked-batched verify
+                    # drifted from greedy on the recurrent layers. Refuse to
+                    # draft this step (nothing was committed) rather than
+                    # surface silently-wrong accepted tokens.
+                    _stats["hybrid_drifts"] += 1
+                    _stats["fallthrough_steps"] += 1
+                    _stats["ft_hybrid_drift"] += 1
+                    _counter.record_verify(K, 0)
+                    _counter.record_fallthrough("hybrid_drift")
+                    return _orig_step()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
+                _stats["errors"] += 1
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                _counter.record_verify(K, 0)
+                _counter.record_error()
+                # On failure the scratch head was not installed (the raised
+                # forward predates the ``live_cache[:] = committed_head`` in
+                # ``_verify_accept_and_commit_scratch``), so the live cache
+                # is still the pre-verify state — safe to fall through.
+                return _orig_step()
 
-        # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
-        try:
-            draft_arr = mx.array([draft], dtype=inputs.dtype)
-            verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
-            verify_logits = gb.model(verify_input, cache=gb.prompt_cache)
-            # logits shape (1, K+1, V); greedy verify.
-            preds = mx.argmax(verify_logits, axis=-1)
-            mx.eval(preds)
-            preds_list = preds.tolist()[0]
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
-            _stats["errors"] += 1
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_error"] += 1
-            # The attempt happened — ``_stats`` counted it above the forward
-            # and the exported totals must agree, or a model that fails
-            # verification repeatedly shows an attempt rate that quietly
-            # understates the work being done.
-            _counter.record_verify(K, 0)
-            _counter.record_error()
-            # Cache was not advanced because the forward raised; safe to
-            # retry via vanilla path below.
-            return _orig_step()
+        else:
+            # Pure-attention path (unchanged).
+            # Defense-in-depth: even though ``profile.supports_spec_decode``
+            # already gates installation on hybrid arches, verify that EVERY
+            # cache layer is trimmable before paying the verify-forward cost.
+            # If any layer can't trim and we end up needing to roll back, the
+            # cache state would silently diverge — better to fall through.
+            # Preflight the maximum possible rollback amount before the verify
+            # forward mutates anything. Composite caches are checked
+            # recursively, so one side-cache cannot refuse after its sibling
+            # already trimmed.
+            from .cache_rollback import can_advance
 
-        # Accept up to first mismatch (greedy).
-        n_accepted = 0
-        for i in range(K):
-            if preds_list[i] == draft[i]:
-                n_accepted += 1
-            else:
-                break
+            if not all(can_advance(c, K) for c in gb.prompt_cache):
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_non_trimmable_cache"] += 1
+                _counter.record_fallthrough("non_trimmable_cache")
+                return _orig_step()
+
+            _stats["verify_steps"] += 1
+            _stats["draft_tokens_proposed"] += K
+
+            # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
+            try:
+                draft_arr = mx.array([draft], dtype=inputs.dtype)
+                verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
+                verify_logits = gb.model(verify_input, cache=gb.prompt_cache)
+                # logits shape (1, K+1, V); greedy verify.
+                preds = mx.argmax(verify_logits, axis=-1)
+                mx.eval(preds)
+                preds_list = preds.tolist()[0]
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
+                _stats["errors"] += 1
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                # The attempt happened — ``_stats`` counted it above the
+                # forward and the exported totals must agree, or a model that
+                # fails verification repeatedly shows an attempt rate that
+                # quietly understates the work being done.
+                _counter.record_verify(K, 0)
+                _counter.record_error()
+                # Cache was not advanced because the forward raised; safe to
+                # retry via vanilla path below.
+                return _orig_step()
+
+            # Accept up to first mismatch (greedy).
+            n_accepted = 0
+            for i in range(K):
+                if preds_list[i] == draft[i]:
+                    n_accepted += 1
+                else:
+                    break
 
         # Cooldown bookkeeping: track consecutive zero-accept verifies
         # so workloads with weak drafter signal (e.g., free-form chat)
@@ -3332,10 +3578,17 @@ def _install_suffix_decoding(
         _counter.set_state(st["k"], st["level"])
 
         n_rejected = K - n_accepted
-        if n_rejected > 0:
+        if _hybrid_active:
+            # Hybrid commit-only path: the rejected tail was never advanced
+            # onto the live cache (scratch verify), so there is nothing to
+            # roll back. ``n_rejected_to_trim`` stays 0.
+            n_rejected_for_rollback = n_rejected_to_trim
+        else:
+            n_rejected_for_rollback = n_rejected
+        if n_rejected_for_rollback > 0:
             from .cache_rollback import trim_all
 
-            if not trim_all(gb.prompt_cache, n_rejected):
+            if not trim_all(gb.prompt_cache, n_rejected_for_rollback):
                 raise RuntimeError(
                     "suffix verification cache rollback violated its preflight"
                 )
@@ -4785,6 +5038,14 @@ class Scheduler:
                 max_suffix_len=self.config.suffix_max_suffix_len,
                 min_confidence=self.config.suffix_min_confidence,
                 min_draft_len=self.config.suffix_min_draft_len,
+                suffix_hybrid=getattr(self.config, "suffix_hybrid", False),
+                suffix_min_match_len=getattr(self.config, "suffix_min_match_len", 24),
+                suffix_hybrid_bit_exact=getattr(
+                    self.config, "suffix_hybrid_bit_exact", False
+                ),
+                suffix_hybrid_probe_len=getattr(
+                    self.config, "suffix_hybrid_probe_len", 4
+                ),
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
             ):
