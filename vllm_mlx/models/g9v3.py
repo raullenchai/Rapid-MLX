@@ -141,20 +141,27 @@ class ModelArgs(BaseModelArgs):
     tie_word_embeddings: bool = False
 
     def __post_init__(self):
+        for name in (
+            "hidden_size",
+            "num_hidden_layers",
+            "intermediate_size",
+            "vocab_size",
+            "num_attention_heads",
+            "num_key_value_heads",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} ({getattr(self, name)}) must be positive")
         if self.head_dim is None:
             # Remote ``G9v3Config``: ``hidden_size // num_attention_heads``.
             self.head_dim = self.hidden_size // self.num_attention_heads
+        if self.head_dim < 1:
+            raise ValueError(f"head_dim ({self.head_dim}) must be positive")
         if self.hidden_act != "silu":
             # The remote code routes ``hidden_act`` through ACT2FN; only the
             # released SwiGLU variant is ported, so refuse anything else
             # instead of silently running the wrong non-linearity.
             raise ValueError(
                 f"unsupported hidden_act {self.hidden_act!r} (expected 'silu')"
-            )
-        if self.num_attention_heads < 1 or self.num_key_value_heads < 1:
-            raise ValueError(
-                f"num_attention_heads ({self.num_attention_heads}) and "
-                f"num_key_value_heads ({self.num_key_value_heads}) must be positive"
             )
         if self.num_attention_heads % self.num_key_value_heads != 0:
             raise ValueError(
@@ -167,6 +174,14 @@ class ModelArgs(BaseModelArgs):
                 f"within [0, num_hidden_layers={self.num_hidden_layers}]"
             )
         if self.first_k_dense_replace < self.num_hidden_layers:
+            if self.moe_intermediate_size < 1:
+                raise ValueError(
+                    f"moe_intermediate_size ({self.moe_intermediate_size}) must be positive"
+                )
+            if self.n_shared_experts < 0:
+                raise ValueError(
+                    f"n_shared_experts ({self.n_shared_experts}) must be >= 0"
+                )
             if not 1 <= self.num_experts_per_tok <= self.n_routed_experts:
                 raise ValueError(
                     f"num_experts_per_tok ({self.num_experts_per_tok}) must be "

@@ -228,8 +228,16 @@ def test_head_dim_derived_like_remote_config():
     [
         (dict(hidden_act="gelu"), "hidden_act"),
         (dict(num_key_value_heads=3), "num_attention_heads"),
-        (dict(num_key_value_heads=0), "must be positive"),
-        (dict(num_attention_heads=0, num_key_value_heads=0), "must be positive"),
+        (dict(num_key_value_heads=0), "num_key_value_heads .* must be positive"),
+        (dict(num_attention_heads=0, head_dim=None), "num_attention_heads .* positive"),
+        (dict(hidden_size=0), "hidden_size .* positive"),
+        (dict(num_hidden_layers=0), "num_hidden_layers .* positive"),
+        (dict(intermediate_size=-1), "intermediate_size .* positive"),
+        (dict(vocab_size=0), "vocab_size .* positive"),
+        (dict(head_dim=0), "head_dim .* positive"),
+        (dict(hidden_size=2, head_dim=None), "head_dim .* positive"),
+        (dict(moe_intermediate_size=0), "moe_intermediate_size .* positive"),
+        (dict(n_shared_experts=-1), "n_shared_experts .* >= 0"),
         # 8 experts in 2 groups, 1 group kept -> only 4 experts selectable.
         (dict(n_group=2, topk_group=1, num_experts_per_tok=8), "selectable"),
         (dict(num_experts_per_tok=9), "num_experts_per_tok"),
