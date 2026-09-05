@@ -578,6 +578,62 @@ class TestCodexRegressionFixes:
         assert _grade(g, [TEMP21C], "temperature is 21.0.5").overall is False
         assert _grade(g, [TEMP21C], "the temperature is about 21.").overall is True
 
+    def test_prose_comma_is_punctuation_not_grouping(self, g):
+        # A comma is thousands-grouping ONLY when followed by a digit
+        # ("21,000"); in prose it is punctuation ("21, with clear skies") and a
+        # bare value must still satisfy the fact.
+        assert (
+            _grade(g, [TEMP21C], "temperature is 21, with clear skies").overall is True
+        )
+        assert (
+            _grade(
+                g,
+                [{"type": "number", "key": "temperature", "value": 1, "unit": "c"}],
+                "temperature is 1,000",
+            ).overall
+            is False
+        )
+
+    def test_in_tolerance_range_is_not_a_conflict(self, g):
+        # "ranges from 20°C to 22°C" against a 21±1 °C fact: both values are
+        # within the accepted interval (a valid range), so it must NOT be a
+        # two-value contradiction. A genuinely wrong value alongside a correct
+        # one ("18°C and 30°C" vs 18±1) still contradicts.
+        assert (
+            "temperature"
+            not in _grade(
+                g, [TEMP21C], "temperature ranges from 20°C to 22°C"
+            ).contradicted
+        )
+        rep = _grade(
+            g,
+            [
+                {
+                    "type": "number",
+                    "key": "temperature",
+                    "value": 18,
+                    "unit": "c",
+                    "tolerance": 1,
+                }
+            ],
+            "temperature is 18°C and 30°C",
+        )
+        assert rep.overall is False
+
+    def test_clamped_fact_fails_coverage_contract(self, g):
+        # An oversized fact is clamped (evidence rewritten); failing closed must
+        # drop BOTH overall and the "all facts present" coverage, so a truncated
+        # prefix match can't claim full coverage.
+        big = {
+            "type": "string",
+            "key": "cond",
+            "value": "s" * 5000,
+            "aliases": ["sunny"],
+        }
+        rep = _grade(g, [big], "it is sunny")
+        assert rep.overall is False
+        assert rep.coverage is False
+
     def test_non_str_alias_rejected_not_coerced(self, g):
         # A malformed numeric alias must be rejected, not silently str()-coerced
         # into a matching term.

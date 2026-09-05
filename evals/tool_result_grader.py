@@ -508,13 +508,15 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
         start0 = match.start("num")
         if match.end("num") < len(text):
             nxt = text[match.end("num")]
-            # Trailing continuation disambiguates: ",eE" are always part of a
-            # malformed/incomplete numeric ("1,000", "1e2"). A "." is ambiguous
-            # -- a second decimal point is malformed ("21.0.5") but a
-            # sentence-ending period is legitimate ("about 21."). So "." counts
-            # only when a digit follows (a split decimal), never at sentence end.
-            if nxt in ",eE" or (
-                nxt == "."
+            # Trailing continuation: only reject when the following char is
+            # clearly INSIDE a malformed/incomplete numeric. "e"/"E" is always
+            # an exponent start ("1e2"). "," and "." are ambiguous tokens --
+            # they are thousands/decimal separators when followed by a digit
+            # ("21,000", "21.0.5") but ordinary punctuation in prose ("21, with
+            # clear skies", "about 21."). So "," and "." count as continuation
+            # ONLY when a digit follows.
+            if nxt in "eE" or (
+                nxt in ",."
                 and match.end("num") + 1 < len(text)
                 and text[match.end("num") + 1].isdigit()
             ):
@@ -740,6 +742,7 @@ def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
         return False
     key_spans = _salient_spans(norm_answer, anchors)
     seen: set[float] = set()
+    has_out_of_tol = False
     for value, unit, start in _numbered_in(norm_answer):
         if unit is None:  # bare numbers are ambiguous metadata -- never a 2nd value
             continue
@@ -749,11 +752,17 @@ def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
         if converted is None:
             continue
         rounded = round(converted, 9)
-        if all(abs(rounded - s) > fact.tolerance + 1e-9 for s in seen):
-            seen.add(rounded)
-            if len(seen) >= 2:
-                return True
-    return False
+        seen.add(rounded)
+        # A candidate only counts as "wrong" when it is OUTSIDE the accepted
+        # interval. A value within the fact's tolerance (e.g. both 20°C and
+        # 22°C for a 21±1 °C fact -- a valid range) is a correct report, not a
+        # conflicting second value.
+        if abs(rounded - fact.value) > fact.tolerance + 1e-9:
+            has_out_of_tol = True
+    # Incoherence = at least two distinct reported values, at least one of them
+    # outside the accepted interval (the model gave a correct value AND a wrong
+    # one, or two mutually-exclusive wrong ones).
+    return len(seen) >= 2 and has_out_of_tol
 
 
 def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> bool:
@@ -1051,9 +1060,11 @@ def grade_answer(
         # overflow, a truncated answer, an oversized/clamped fact (evidence was
         # altered), or any missing/contradicted fact fails ``overall`` -- a
         # scenario must never pass while some of the evidence was not examined
-        # or was rewritten.
+        # or was rewritten. A clamped fact also fails ``coverage``: its evidence
+        # was rewritten, so "all facts present" is no longer sound (only the
+        # truncated prefix may have been matched).
         overall=not truncated and not fact_clamped and not missing and not contradicted,
-        coverage=not missing,
+        coverage=not missing and not fact_clamped,
         missing=missing,
         contradicted=contradicted,
         facts=facts_out,
