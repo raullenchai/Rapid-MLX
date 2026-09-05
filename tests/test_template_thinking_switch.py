@@ -145,6 +145,10 @@ class TestTemplateThinkingSwitch:
     def test_reads_of_both_prefer_enable_thinking(self):
         assert template_thinking_switch(NORTH_CLAUSE + ENABLE_THINKING_TEMPLATE) is None
 
+    def test_dead_enable_thinking_read_does_not_veto_live_switch(self):
+        template = NORTH_CLAUSE + "{% if false %}{{ enable_thinking }}{% endif %}"
+        assert template_thinking_switch(template) == "reasoning"
+
     def test_harmony_style_effort_only_template_has_no_switch(self):
         assert template_thinking_switch(HARMONY_LIKE_TEMPLATE) is None
 

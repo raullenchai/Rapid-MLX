@@ -1658,22 +1658,30 @@ def _context_reads(
         _context_reads(node.iter, bound, nodes, reads, tests)
         inner = bound | _bound_names(node, nodes)
         body_tests: set[str] = set()
+        dead_reads: set[str] = set()
+        iterator_known = False
         body_proven_nonempty = False
         else_proven = False
-        if node.test is None:
-            try:
-                iterator_nonempty = bool(node.iter.as_const())
-                body_proven_nonempty = iterator_nonempty
-                else_proven = not iterator_nonempty
-            except Exception:
-                pass
+        try:
+            iterator_nonempty = bool(node.iter.as_const())
+            iterator_known = True
+            body_proven_nonempty = iterator_nonempty and node.test is None
+            else_proven = not iterator_nonempty
+        except Exception:
+            pass
         if node.test is not None:
-            _context_reads(node.test, inner, nodes, reads, body_tests)
+            _context_reads(
+                node.test,
+                inner,
+                nodes,
+                dead_reads if iterator_known and not iterator_nonempty else reads,
+                body_tests,
+            )
         _context_reads_all(
             node.body,
             inner,
             nodes,
-            reads,
+            dead_reads if iterator_known and not iterator_nonempty else reads,
             tests if body_proven_nonempty else body_tests,
         )
         # A loop ``else`` can establish a switch only when an unfiltered
@@ -1683,7 +1691,7 @@ def _context_reads(
             node.else_,
             bound,
             nodes,
-            reads,
+            dead_reads if body_proven_nonempty else reads,
             tests if else_proven else body_tests,
         )
         return bound
@@ -1695,23 +1703,27 @@ def _context_reads(
         after: list[frozenset[str]] = []
         fallthrough_possible = True
         deferred_tests: set[str] = set()
+        dead_reads: set[str] = set()
         for branch in [node, *node.elif_]:
             branch_tests = tests if fallthrough_possible else deferred_tests
+            branch_reads = reads if fallthrough_possible else dead_reads
             _record_truthiness_test(branch.test, bound, nodes, branch_tests)
-            _context_reads(branch.test, bound, nodes, reads, branch_tests)
+            _context_reads(branch.test, bound, nodes, branch_reads, branch_tests)
             truth = _constant_truthiness(branch.test, nodes)
             if fallthrough_possible and truth is not False:
                 after.append(
                     _context_reads_all(branch.body, bound, nodes, reads, tests)
                 )
             else:
-                _context_reads_all(branch.body, bound, nodes, reads, deferred_tests)
+                _context_reads_all(
+                    branch.body, bound, nodes, dead_reads, deferred_tests
+                )
             if fallthrough_possible and truth is True:
                 fallthrough_possible = False
         if fallthrough_possible:
             after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
         else:
-            _context_reads_all(node.else_, bound, nodes, reads, deferred_tests)
+            _context_reads_all(node.else_, bound, nodes, dead_reads, deferred_tests)
         return frozenset.intersection(*after)
     if isinstance(node, nodes.Macro):
         # A macro body is deferred until a call executes it.  Counting a
@@ -1762,11 +1774,12 @@ def _context_reads(
         _context_reads(node.test, bound, nodes, reads, tests)
         truth = _constant_truthiness(node.test, nodes)
         deferred_tests: set[str] = set()
+        dead_reads: set[str] = set()
         _context_reads(
             node.expr1,
             bound,
             nodes,
-            reads,
+            reads if truth is not False else dead_reads,
             tests if truth is not False else deferred_tests,
         )
         if node.expr2 is not None:
@@ -1774,7 +1787,7 @@ def _context_reads(
                 node.expr2,
                 bound,
                 nodes,
-                reads,
+                reads if truth is not True else dead_reads,
                 tests if truth is not True else deferred_tests,
             )
         return bound
@@ -1839,10 +1852,13 @@ def _context_reads_all(
 ) -> frozenset[str]:
     active_tests = tests
     deferred_tests: set[str] = set()
+    active_reads = reads
+    dead_reads: set[str] = set()
     for stmt in stmts:
-        bound = _context_reads(stmt, bound, nodes, reads, active_tests)
+        bound = _context_reads(stmt, bound, nodes, active_reads, active_tests)
         if _stmt_guarantees_loop_exit(stmt, nodes):
             active_tests = deferred_tests
+            active_reads = dead_reads
     return bound
 
 
