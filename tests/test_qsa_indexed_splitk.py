@@ -208,6 +208,13 @@ def test_indexed_splitk_production_layout_matches_fp64_with_distinct_rows():
     not mx.metal.is_available(), reason="QSA indexed split-K kernel requires Metal"
 )
 def test_indexed_splitk_is_bit_exact_with_native_gather_path():
+    if (
+        qsa_indexed_splitk._mlx_version()
+        not in qsa_indexed_splitk.QUALIFIED_MLX_VERSIONS
+        or qsa_indexed_splitk._metal_architecture()
+        not in qsa_indexed_splitk.QUALIFIED_METAL_ARCHITECTURES
+    ):
+        pytest.skip("bit-exact production schedule is qualified only on M3 Ultra")
     mx.random.seed(3058)
     rng = np.random.default_rng(8)
     batch, query_heads, kv_heads = 1, 24, 2
