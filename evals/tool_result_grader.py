@@ -92,6 +92,9 @@ DENY_MARKERS = (
     "are not",
     "wasn't",
     "was not",
+    "won't",
+    "wouldn't",
+    "shouldn't",
     "not available",
     "no result",
     "unable to",
@@ -618,17 +621,37 @@ def _adjacent_unit_suffix(text: str, pos: int) -> bool:
 # enough that a bare number after one is never a temperature-degree value.
 _CURRENCY_PREFIXES = frozenset("$€£¥₹₩¢")
 
+# Currency CODES / WORDS that, as a prefix token, mark a following number as
+# money ("USD 21", "21 CAD" handled on the suffix side). Mirrors the trailing
+# currency nouns the adjacent-unit suffix rejects ("dollars", "usd", "euro").
+_CURRENCY_WORD_RE = re.compile(
+    r"(?:\b(?:usd|cad|eur|jpy|gbp|aud|nzd|chf|cny|hkd|sgd|krw|inr|"
+    r"rupee|rupees|dollar|dollars|euro|euros|yen|yuan|won|pound|pounds|"
+    r"franc|francs|baht|ringgit|real|reals|zloty|zlotys))$"
+)
+
 
 def _leading_currency_symbol(text: str, num_start: int) -> bool:
-    """True if a currency symbol immediately precedes ``text[num_start:]``.
+    """True if a currency symbol or currency-code word precedes ``text[num_start:]``.
 
-    Walks back over optional whitespace so both "$21" and "$ 21" are caught,
-    matching the adjacent-unit suffix rejection for the trailing-symbol side.
+    Walks back over optional whitespace so both "$21"/"$ 21" and
+    "USD 21"/"USD21" are caught, mirroring the trailing currency-unit
+    rejection for the trailing-symbol / trailing-word side.
     """
     i = num_start
     while i > 0 and text[i - 1].isspace():
         i -= 1
-    return i > 0 and text[i - 1] in _CURRENCY_PREFIXES
+    if i <= 0:
+        return False
+    if text[i - 1] in _CURRENCY_PREFIXES:
+        return True
+    # A bounded alphabetic token immediately before the number: match the tail
+    # of the preceding word (trim to the nearest non-alpha) against currency
+    # codes/words. "33 USD 21" -> the token before 21 is "USD".
+    j = i
+    while j > 0 and text[j - 1].isalpha():
+        j -= 1
+    return j < i and bool(_CURRENCY_WORD_RE.match(text[j:i]))
 
 
 def _term_occurrences(term: str, text: str) -> list[int]:
@@ -724,6 +747,45 @@ def _term_matches(term: str, norm_answer: str) -> bool:
     if " " in term or not term.isalnum():
         return term in norm_answer
     return bool(re.search(rf"\b{re.escape(term)}\b", norm_answer))
+
+
+# Temporal prepositions that, directly before a lone bare number near an
+# anchor, introduce a YEAR / time rather than the fact's asserted value
+# ("updated in 2026", "as of 2024"). A bare number after one of these is not a
+# confident wrong-value temperature report -- it reads as a timestamp.
+_TEMPORAL_PREPS = frozenset(
+    {"in", "on", "at", "as of", "since", "from", "during", "around", "by", "for"}
+)
+
+
+def _temporal_preposition_before(text: str, start: int) -> bool:
+    """True if a temporal preposition immediately precedes ``text[start:]``.
+
+    Walks back over optional whitespace and reads the bounded preceding token
+    (single word, or the two-word "as of"), returning True on a match so the
+    following bare number is treated as a year/time, not a reported value.
+    """
+    i = start
+    while i > 0 and text[i - 1].isspace():
+        i -= 1
+    j = i
+    while j > 0 and text[j - 1].isalpha():
+        j -= 1
+    token = text[j:i]
+    if not token:
+        return False
+    if token in _TEMPORAL_PREPS:
+        return True
+    # two-word "as of" / "as at": walk one more word back.
+    k = j
+    while k > 0 and text[k - 1].isspace():
+        k -= 1
+    m = k
+    while m > 0 and text[m - 1].isalpha():
+        m -= 1
+    if text[m:k] + " " + token in ("as of", "as at"):
+        return True
+    return False
 
 
 def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
@@ -841,8 +903,14 @@ def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> b
             continue
         if unit is None:
             # Bare: only a lone value right at the anchor is a confident wrong
-            # report; otherwise it's ambiguous metadata and not attributed.
+            # report; otherwise it's ambiguous metadata and not attributed. A
+            # lone value introduced by a TEMPORAL preposition is a year/time,
+            # not the fact's reported value ("updated in 2026" -> missing, not a
+            # wrong temperature) -- a bare wrong-value needs a value-introducing
+            # verb ("temperature is 5").
             if not sole_candidate:
+                continue
+            if _temporal_preposition_before(norm_answer, start):
                 continue
             converted = float(value)
         else:
