@@ -820,9 +820,18 @@ def test_qwen4_state_cache_implements_cache_rollback_contract():
     # ``rollback_state[position] = [slot0, slot1]``; ``cache`` is the flattened
     # slot list, so restoring boundary ``keep-1`` must restore exactly
     # ``[slot0(keep-1), slot1(keep-1)]``.
-    b0 = [mx.array([[1.0, 2.0]], dtype=mx.float32), mx.array([[3.0, 4.0]], dtype=mx.float32)]
-    b1 = [mx.array([[5.0, 6.0]], dtype=mx.float32), mx.array([[7.0, 8.0]], dtype=mx.float32)]
-    b2 = [mx.array([[9.0, 10.0]], dtype=mx.float32), mx.array([[11.0, 12.0]], dtype=mx.float32)]
+    b0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    b1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    b2 = [
+        mx.array([[9.0, 10.0]], dtype=mx.float32),
+        mx.array([[11.0, 12.0]], dtype=mx.float32),
+    ]
     recurrent.record_slot_snapshots(0, [b0[0], b1[0], b2[0]])
     recurrent.record_slot_snapshots(1, [b0[1], b1[1], b2[1]], finalize=True)
 
@@ -846,9 +855,18 @@ def test_qwen4_state_cache_rollback_full_rejection():
     from vllm_mlx.cache_rollback import trim_all
 
     recurrent = Qwen4ExpStateCache(size=2)
-    b0 = [mx.array([[1.0, 2.0]], dtype=mx.float32), mx.array([[3.0, 4.0]], dtype=mx.float32)]
-    b1 = [mx.array([[5.0, 6.0]], dtype=mx.float32), mx.array([[7.0, 8.0]], dtype=mx.float32)]
-    b2 = [mx.array([[9.0, 10.0]], dtype=mx.float32), mx.array([[11.0, 12.0]], dtype=mx.float32)]
+    b0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    b1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    b2 = [
+        mx.array([[9.0, 10.0]], dtype=mx.float32),
+        mx.array([[11.0, 12.0]], dtype=mx.float32),
+    ]
     recurrent.record_slot_snapshots(0, [b0[0], b1[0], b2[0]])
     recurrent.record_slot_snapshots(1, [b0[1], b1[1], b2[1]], finalize=True)
 
@@ -880,36 +898,46 @@ def test_qwen4_state_cache_rollback_via_composite_cache_list():
     qsa.update(initial, transform)
     # Verify forward of [base, d_0, d_1] with rollback captured.
     qsa.update(verify, transform, record_rollback=True)
+    # The first rollback boundary is the committed prefix a rejected verify must
+    # return to; capture it (as its own (offsets, counts, pending, raw_ring)
+    # tuple) so the post-trim state can be compared against it exactly.
+    qbase = qsa.rollback_state[0]
 
     recurrent = Qwen4ExpStateCache(size=2)
     # The QSA verify above published 2 boundaries (from a 2-token verify that
     # completed one extra compressed group), which supports dropping 1. The
-    # recurrent cache publishes a matching undo record so BOTH leaves roll back
-    # to the same committed boundary.
-    recurrent.record_slot_snapshots(
-        0,
-        [
-            mx.ones((1, 1, 2), dtype=mx.float32),
-            mx.ones((1, 1, 2), dtype=mx.float32),
-        ],
-    )
-    recurrent.record_slot_snapshots(
-        1,
-        [
-            mx.ones((1, 1, 2), dtype=mx.float32),
-            mx.ones((1, 1, 2), dtype=mx.float32),
-        ],
-        finalize=True,
-    )
+    # recurrent cache publishes a matching undo record with DISTINCT per-boundary
+    # values so BOTH leaves roll back to the same committed base boundary and a
+    # wrong restore cannot slip through.
+    rb0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    rb1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    recurrent.record_slot_snapshots(0, [rb0[0], rb1[0]])
+    recurrent.record_slot_snapshots(1, [rb0[1], rb1[1]], finalize=True)
 
     composite = CacheList(qsa, recurrent)
 
     # Multi-token verify admissible now that BOTH leaves are trimmable.
     assert can_advance(composite, 1)
-    # Reject the last draft → roll back both leaves by one.
+    # Reject the last draft → roll back both leaves by one to the base boundary.
     assert trim_all([composite], 1)
     assert qsa.rollback_state is None
     assert recurrent.rollback_state is None
+    # QSA restored its committed-prefix (offsets, counts, pending, raw_ring)
+    # boundary exactly, matching the rollback snapshot it was recorded from.
+    (q_offsets, q_counts, q_pending, q_raw) = qbase
+    assert qsa._offsets == list(q_offsets)
+    assert qsa._compressed_counts == list(q_counts)
+    assert qsa._pending_left_padding == list(q_pending)
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.array(q_raw))
+    # …and the recurrent cache restored the base boundary's slot values.
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(rb0[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(rb0[1]))
 
 
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
