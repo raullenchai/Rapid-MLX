@@ -1504,6 +1504,7 @@ def pinned_image_snapshot(repo_id: str) -> str | None:
             return None
     return snapshot
 
+
 # Most mflux checkpoints have one tokenizer and one text encoder. FLUX.1
 # schnell carries a second of each; validating only the common subset would
 # let an interrupted first download reach the runtime and fail much later.
@@ -1513,6 +1514,7 @@ _MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
 _MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
     "mflux-community/flux-1-schnell-mflux-q4": ("text_encoder_2",),
 }
+
 
 def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
     """``(repo_root, snapshot_dir)`` for a registered image-gen repo, or ``None``.
