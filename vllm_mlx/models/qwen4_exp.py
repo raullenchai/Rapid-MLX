@@ -36,6 +36,11 @@ from mlx_lm.models.gated_delta import gated_delta_update  # noqa: E402
 from mlx_lm.models.rope_utils import initialize_rope  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
+from ..kernels.qsa_block_sparse import (  # noqa: E402
+    block_sparse_attention,
+    block_sparse_decline_reason,
+    block_sparse_layout_supported,
+)
 from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
     admit_qwen4_fused_gdn_decode,
     fused_gdn_runtime_supported,
@@ -404,6 +409,7 @@ class GatedDeltaNet(nn.Module):
         self.fused_gdn_decode_calls = 0
         self.fused_gdn_decode_fallbacks = 0
         self.fused_gdn_decode_last_fallback: str | None = None
+        self.fused_gdn_decode_fallback_reasons: dict[str, int] = {}
 
     def set_fused_gdn_decode_mode(self, mode: str) -> None:
         """Select the decode path without replacing resident weights."""
@@ -417,6 +423,9 @@ class GatedDeltaNet(nn.Module):
     def _fused_gdn_fallback(self, reason: str):
         self.fused_gdn_decode_fallbacks += 1
         self.fused_gdn_decode_last_fallback = reason
+        self.fused_gdn_decode_fallback_reasons[reason] = (
+            self.fused_gdn_decode_fallback_reasons.get(reason, 0) + 1
+        )
         return None
 
     def _try_fused_decode(
@@ -649,6 +658,7 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "fused_calls": 0,
         "fallbacks": 0,
+        "fallback_reasons": {},
         "last_fallbacks": {},
     }
     for _, module in model.named_modules():
@@ -656,6 +666,10 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
             continue
         stats["fused_calls"] += module.fused_gdn_decode_calls
         stats["fallbacks"] += module.fused_gdn_decode_fallbacks
+        for reason, count in module.fused_gdn_decode_fallback_reasons.items():
+            stats["fallback_reasons"][reason] = (
+                stats["fallback_reasons"].get(reason, 0) + count
+            )
         reason = module.fused_gdn_decode_last_fallback
         if reason is not None:
             stats["last_fallbacks"][reason] = stats["last_fallbacks"].get(reason, 0) + 1
@@ -850,7 +864,7 @@ class QSAIndexer(nn.Module):
         *,
         physical_kv_length: int,
         record_rollback: bool = False,
-    ) -> mx.array | None:
+    ) -> _QSASelection | None:
         batch, length, _ = hidden_states.shape
         cache._ensure_batch(batch)
         offsets = list(cache._offsets)
@@ -1001,7 +1015,7 @@ class QSAIndexer(nn.Module):
             valid=mx.stack(compact_valid),
             physical_kv_length=physical_kv_length,
         )
-        return selection.dense_mask()
+        return selection
 
 
 class QSAAttention(nn.Module):
@@ -1044,6 +1058,15 @@ class QSAAttention(nn.Module):
             max_position_embeddings=args.max_position_embeddings,
         )
         self.indexer = QSAIndexer(args)
+        self.block_sparse_calls = 0
+        self.block_sparse_declines = 0
+        self.block_sparse_decline_reasons: dict[str, int] = {}
+
+    def _record_block_sparse_decline(self, reason: str) -> None:
+        self.block_sparse_declines += 1
+        self.block_sparse_decline_reasons[reason] = (
+            self.block_sparse_decline_reasons.get(reason, 0) + 1
+        )
 
     def __call__(
         self,
@@ -1112,25 +1135,94 @@ class QSAAttention(nn.Module):
         )
         if kv_cache is not None:
             keys, values = kv_cache.update_and_fetch(keys, values)
-        additive_mask = (
-            mask
-            if selected is None
-            else mx.where(
-                selected,
-                mx.array(0.0, dtype=queries.dtype),
-                mx.array(-1e9, dtype=queries.dtype),
+        output = None
+        if isinstance(selected, _QSASelection):
+            decline_reason = block_sparse_decline_reason(
+                length,
+                physical_length,
+                training=bool(self.training),
             )
-        )
-        output = scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            cache=kv_cache,
-            scale=self.scale,
-            mask=additive_mask,
-        )
+            if decline_reason is None and not block_sparse_layout_supported(
+                query_heads=self.num_attention_heads,
+                kv_heads=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                block_size=self.indexer.compress_ratio,
+                dtype=queries.dtype,
+            ):
+                decline_reason = "unsupported layout"
+            if decline_reason is None:
+                block_slots = slice(
+                    0, self.indexer.token_budget, self.indexer.compress_ratio
+                )
+                tail_slots = slice(self.indexer.token_budget, None)
+                block_starts = mx.sort(
+                    selected.token_indices[..., block_slots], axis=-1
+                )
+                block_valid = selected.valid[..., block_slots]
+                tail_indices = selected.token_indices[..., tail_slots]
+                tail_valid = selected.valid[..., tail_slots]
+                try:
+                    output = block_sparse_attention(
+                        queries,
+                        keys,
+                        values,
+                        block_starts,
+                        mx.sum(block_valid, axis=-1).astype(mx.int32),
+                        tail_indices,
+                        mx.sum(tail_valid, axis=-1).astype(mx.int32),
+                        block_size=self.indexer.compress_ratio,
+                    )
+                except Exception as exc:  # noqa: BLE001 - optional path fails closed
+                    decline_reason = f"kernel dispatch failed: {type(exc).__name__}"
+                else:
+                    self.block_sparse_calls += 1
+            if decline_reason is not None:
+                self._record_block_sparse_decline(decline_reason)
+
+        if output is None:
+            dense_selection = (
+                selected.dense_mask()
+                if isinstance(selected, _QSASelection)
+                else selected
+            )
+            additive_mask = (
+                mask
+                if dense_selection is None
+                else mx.where(
+                    dense_selection,
+                    mx.array(0.0, dtype=queries.dtype),
+                    mx.array(-1e9, dtype=queries.dtype),
+                )
+            )
+            output = scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                cache=kv_cache,
+                scale=self.scale,
+                mask=additive_mask,
+            )
         output = output.transpose(0, 2, 1, 3).reshape(batch, length, -1)
         return self.o_proj(output * mx.sigmoid(gate))
+
+
+def qwen4_qsa_block_sparse_stats(model: nn.Module) -> dict[str, Any]:
+    """Aggregate QSA sparse-kernel calls and every dense fallback reason."""
+    stats: dict[str, Any] = {
+        "kernel_calls": 0,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, QSAAttention):
+            continue
+        stats["kernel_calls"] += module.block_sparse_calls
+        stats["declines"] += module.block_sparse_declines
+        for reason, count in module.block_sparse_decline_reasons.items():
+            stats["decline_reasons"][reason] = (
+                stats["decline_reasons"].get(reason, 0) + count
+            )
+    return stats
 
 
 def _splitmix64(value: int) -> int:
