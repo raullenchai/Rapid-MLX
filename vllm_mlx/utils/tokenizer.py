@@ -777,6 +777,11 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("g9v3")
         else:
             _VENDORED_MODEL_TYPES.add("g9v3")
+    elif sys.modules.get("mlx_lm.models.g9v3") is not None:
+        # A caller may import future native mlx-lm support before our
+        # registration hook runs. It still needs the tokenizer fallback mark:
+        # transformers AutoConfig cannot resolve this custom model type.
+        _VENDORED_MODEL_TYPES.add("g9v3")
 
     if "mlx_lm.models.bailing_hybrid" not in sys.modules:
         # inclusionAI Ling 3.0 family (tiny/flash) + Ling 2.6 — vendored

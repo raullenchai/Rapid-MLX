@@ -37,6 +37,7 @@ import importlib
 import json
 import logging
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -146,6 +147,18 @@ def test_registration_defers_to_native_mlx_lm(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
     tok._register_vendored_archs()
     assert "mlx_lm.models.g9v3" not in sys.modules
+    assert "g9v3" in tok._VENDORED_MODEL_TYPES
+
+
+def test_registration_marks_preimported_native_module(monkeypatch):
+    """A native module imported before the hook still gets tokenizer fallback."""
+    tok = _reset_g9v3_registration(monkeypatch)
+    native = types.ModuleType("mlx_lm.models.g9v3")
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.g9v3", native)
+
+    tok._register_vendored_archs()
+
+    assert sys.modules["mlx_lm.models.g9v3"] is native
     assert "g9v3" in tok._VENDORED_MODEL_TYPES
 
 
