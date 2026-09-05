@@ -1,0 +1,7 @@
+SDXL runtime source derived from mlx_diffuser at commit
+a26b42aee4e31999dbb4429226b66d896d49e1d8:
+https://github.com/amirhossein-razlighi/mlx_diffuser
+
+Original work by Amirhossein Razlighi and contributors, released under CC0 1.0.
+Rapid-MLX modifications narrow the runtime to SDXL, add an in-loop progress and
+cancellation hook, and adapt image results to Rapid-MLX's image engine contract.

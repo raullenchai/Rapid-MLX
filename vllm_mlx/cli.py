@@ -1428,7 +1428,22 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     # Resolve model size in bytes — local path, then HF cache, then HF API.
     model_size_bytes = 0
     try:
-        if os.path.isdir(model_name):
+        from vllm_mlx._download_gate import IMAGE_MODEL_DATA_FILES
+
+        if model_name in IMAGE_MODEL_DATA_FILES:
+            # A vendored image backend downloads an audited allowlist, not the
+            # whole Hub repository. SDXL's repository also carries fp32,
+            # refiner, ONNX, and ancillary artifacts (~72 GB total) while the
+            # runtime consumes only the checked-in 6.46 GB fp16 footprint.
+            # Querying repo metadata here therefore creates a false memory
+            # emergency before an otherwise-safe 16 GB launch.
+            from vllm_mlx.model_sizes import size_bytes
+            from vllm_mlx.runtime.resident_models import estimate_model_bytes
+
+            model_size_bytes = size_bytes(model_name) or 0
+            if catalog_working_gb is None:
+                catalog_working_gb = estimate_model_bytes(model_name) / (1024**3)
+        elif os.path.isdir(model_name):
             for root, _dirs, files in os.walk(model_name):
                 for f in files:
                     try:
@@ -3184,9 +3199,10 @@ def serve_command(args):
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
     _is_wan_video = False
-    _is_hidream_o1 = bool(
-        _serve_profile is not None
-        and _serve_profile.hf_path == "mlx-community/HiDream-O1-Image-Dev-mlx-bf16"
+    from ._download_gate import IMAGE_MODEL_DATA_FILES
+
+    _owns_pinned_image_download = bool(
+        _serve_profile is not None and _serve_profile.hf_path in IMAGE_MODEL_DATA_FILES
     )
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
@@ -3408,14 +3424,15 @@ def serve_command(args):
     # revision (or uses RAPID_MLX_WAN_MODEL_DIR). The generic prefetch has no
     # revision parameter and could otherwise download repository HEAD first,
     # duplicating tens of gigabytes before the pinned snapshot is loaded.
-    # HiDream owns a revision-pinned, data-file-only pull in ImageEngine. The
+    # Vendored image backends own a revision-pinned, data-file-only pull in
+    # ImageEngine. The
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
-    if _is_hidream_o1:
+    if _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
-        # a warm no-op; cold/partial caches are checked before the 17 GB pull
-        # begins inside ImageEngine.
+        # a warm no-op; cold/partial caches are checked before the multi-GB
+        # pull begins inside ImageEngine.
         from ._download_gate import mflux_missing_weights as _image_missing
 
         if _image_missing(args.model) != []:
@@ -7696,9 +7713,8 @@ def pull_command(args):
     import copy
 
     from vllm_mlx._download_gate import (
-        HIDREAM_O1_DATA_FILES,
-        HIDREAM_O1_REPO,
-        HIDREAM_O1_REVISION,
+        IMAGE_MODEL_DATA_FILES,
+        IMAGE_MODEL_REVISIONS,
     )
     from vllm_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
     from vllm_mlx.audio.runtime_requirements import (
@@ -7708,24 +7724,24 @@ def pull_command(args):
 
     primary_repo = args.model
     primary_args = args
-    if primary_repo != HIDREAM_O1_REPO:
-        # ``main()`` normally resolves aliases before dispatch, but keep this
-        # security boundary fail-closed for direct/internal pull_command calls.
-        from vllm_mlx.model_aliases import resolve_model
+    # ``main()`` normally resolves aliases before dispatch, but keep this
+    # data-only security boundary fail-closed for direct/internal calls too.
+    from vllm_mlx.model_aliases import resolve_model
 
-        if resolve_model(primary_repo) == HIDREAM_O1_REPO:
-            primary_args = copy.copy(args)
-            primary_args._original_alias = (
-                getattr(args, "_original_alias", None) or primary_repo
-            )
-            primary_args.model = HIDREAM_O1_REPO
-            primary_repo = HIDREAM_O1_REPO
+    resolved_primary = resolve_model(primary_repo)
+    if resolved_primary in IMAGE_MODEL_DATA_FILES and resolved_primary != primary_repo:
+        primary_args = copy.copy(args)
+        primary_args._original_alias = (
+            getattr(args, "_original_alias", None) or primary_repo
+        )
+        primary_args.model = resolved_primary
+        primary_repo = resolved_primary
 
-    if primary_repo == HIDREAM_O1_REPO:
+    if primary_repo in IMAGE_MODEL_DATA_FILES:
         _pull_repository(
             primary_args,
-            allow_patterns_override=list(HIDREAM_O1_DATA_FILES),
-            revision_override=HIDREAM_O1_REVISION,
+            allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
+            revision_override=IMAGE_MODEL_REVISIONS[primary_repo],
         )
     else:
         _pull_repository(primary_args)

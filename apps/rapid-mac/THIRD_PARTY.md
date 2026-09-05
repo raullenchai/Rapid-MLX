@@ -24,6 +24,11 @@ credits"** link opens.
   Its license and provenance notice ship inside the Python sidecar package.
   https://huggingface.co/mlx-community/HiDream-O1-Image-Dev-mlx-bf16
 
+* **SDXL MLX runtime** — Amirhossein Razlighi and contributors — CC0 1.0
+  Rapid adapts the pinned text-to-image path for the local Images backend.
+  Its license and provenance notice ship inside the Python sidecar package.
+  https://github.com/amirhossein-razlighi/mlx_diffuser
+
 **Scope.** Components this project declares directly: the Swift packages
 in `Package.swift` (plus the transitive ones actually linked into the
 binary), the engine requirements in the monorepo's root `pyproject.toml`,

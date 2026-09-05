@@ -58,6 +58,13 @@ repository. Each keeps its upstream license text alongside the code.
   MIT License — Copyright (c) 2026 mrbizarro and contributors.
   See vllm_mlx/image/hidream_runtime/LICENSE and NOTICE.
 
+* vllm_mlx/image/sdxl_runtime/
+  Stable Diffusion XL MLX text-to-image runtime adapted from
+  https://github.com/amirhossein-razlighi/mlx_diffuser at commit
+  a26b42aee4e31999dbb4429226b66d896d49e1d8.
+  CC0 1.0 Universal — original work by Amirhossein Razlighi and contributors.
+  See vllm_mlx/image/sdxl_runtime/LICENSE and NOTICE.
+
 * apps/rapid-mac/Vendor/SwiftMath/
   Vendored from https://github.com/mgriebling/SwiftMath at 1.7.3
   (fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7) with a resource-resolution patch.

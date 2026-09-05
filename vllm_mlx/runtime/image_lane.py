@@ -3,7 +3,7 @@
 
 Mirrors the video lane's split: this module is the thin, duck-typed engine
 adapter that ``server.load_model`` dispatches to for ``modality=image-gen``
-aliases; ``vllm_mlx/image/engine.py`` owns the mflux pipeline and the
+aliases; ``vllm_mlx/image/engine.py`` owns the backend pipeline and the
 ``vllm_mlx/routes/images.py`` router owns the OpenAI-compatible transport.
 """
 
@@ -29,7 +29,8 @@ __all__ = [
 
 def require_image_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional image stack is absent."""
-    if sys.version_info < (3, 11):
+    family = _detect_family(model_name) if model_name else ""
+    if sys.version_info < (3, 11) and family != "sdxl-base":
         print(
             "\n  Error: image generation requires Python 3.11 or newer "
             f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
@@ -38,8 +39,13 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
-    family = _detect_family(model_name) if model_name else ""
-    runtime_module = "mlx_vlm" if family == "hidream-o1-dev" else "mflux"
+    runtime_module = (
+        "mlx_vlm"
+        if family == "hidream-o1-dev"
+        else "PIL"
+        if family == "sdxl-base"
+        else "mflux"
+    )
     if importlib.util.find_spec(runtime_module) is None:
         print(
             "\n  Error: image generation requires the `rapid-mlx[image]` "
@@ -50,11 +56,11 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
 
 
 class ImageEngine:
-    """Thin adapter over the mflux image backend.
+    """Thin adapter over the selected MLX image backend.
 
     Duck-typed like ``VideoEngine`` (``is_image_gen`` / ``_loaded``) so the
     router and ``/v1/models`` probes can recognise the lane. The underlying
-    mflux model loads lazily on the first ``generate`` call.
+    model loads lazily on the first ``generate`` call.
     """
 
     is_image_gen = True
@@ -67,11 +73,11 @@ class ImageEngine:
 
     @property
     def is_resident(self) -> bool:
-        """Whether mflux weights, rather than only the adapter, are loaded."""
+        """Whether model weights, rather than only the adapter, are loaded."""
         return self._engine._model is not None  # noqa: SLF001
 
     def ensure_resident(self, *, mode: str | None = None) -> None:
-        """Eagerly materialize lazy mflux weights for budgeted residency."""
+        """Eagerly materialize lazy image weights for budgeted residency."""
         if mode not in (None, "generation", "editing"):
             raise ValueError(f"unsupported image residency mode: {mode!r}")
         # ``None`` preserves the engine's family-aware default. In particular,

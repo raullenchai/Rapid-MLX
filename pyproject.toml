@@ -531,6 +531,9 @@ image = [
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
     "mlx-vlm==0.6.17; platform_system == 'Darwin' and python_version >= '3.11'",
+    # The vendored SDXL backend needs Pillow for PNG encoding. Keep this direct
+    # because SDXL also works on Rapid's Python 3.10 floor without mflux.
+    "pillow>=10.0.0; platform_system == 'Darwin'",
 ]
 
 [project.urls]
@@ -580,6 +583,9 @@ vllm_mlx = [
     # Desktop sidecar alongside the redistributed MIT source.
     "image/hidream_runtime/LICENSE",
     "image/hidream_runtime/NOTICE",
+    # Vendored SDXL MLX runtime attribution must ship beside the CC0 source.
+    "image/sdxl_runtime/LICENSE",
+    "image/sdxl_runtime/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
@@ -662,6 +668,10 @@ ignore = [
 # Adapted from the pinned upstream HiDream-O1 MLX runtime. Keep source-shape
 # lint exceptions local so the Rapid-owned engine integration stays strict.
 "vllm_mlx/image/hidream_runtime/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
+# Vendored SDXL implementation. Rapid-owned adapter/runtime.py remains linted;
+# upstream-shaped model, converter, scheduler, and pipeline files stay syncable.
+"vllm_mlx/image/sdxl_runtime/{caching,configuration,hub,modeling,quantization,utils}.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
+"vllm_mlx/image/sdxl_runtime/{converters,models,pipelines,schedulers}/**/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]

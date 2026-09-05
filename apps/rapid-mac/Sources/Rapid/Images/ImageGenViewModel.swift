@@ -204,6 +204,7 @@ final class ImageGenViewModel {
         // that is actually a 20-step one.
         if alias.localizedCaseInsensitiveContains("qwen-image") { return 20 }
         if alias.localizedCaseInsensitiveContains("hidream-o1") { return 28 }
+        if alias.localizedCaseInsensitiveContains("sdxl") { return 30 }
         return alias.localizedCaseInsensitiveContains("z-image") ? 8 : 4
     }
 

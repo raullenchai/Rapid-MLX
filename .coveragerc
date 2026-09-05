@@ -1,3 +1,17 @@
 [run]
 relative_files = True
 source = vllm_mlx
+omit =
+    # Third-party numerical implementation retained close to its pinned source.
+    # Rapid-owned runtime.py stays measured; the adapter, engine, download, and
+    # catalog contracts must still reach 100% changed-line coverage.
+    vllm_mlx/image/sdxl_runtime/caching.py
+    vllm_mlx/image/sdxl_runtime/configuration.py
+    vllm_mlx/image/sdxl_runtime/converters/*
+    vllm_mlx/image/sdxl_runtime/hub.py
+    vllm_mlx/image/sdxl_runtime/modeling.py
+    vllm_mlx/image/sdxl_runtime/models/*
+    vllm_mlx/image/sdxl_runtime/pipelines/sdxl.py
+    vllm_mlx/image/sdxl_runtime/quantization.py
+    vllm_mlx/image/sdxl_runtime/schedulers/*
+    vllm_mlx/image/sdxl_runtime/utils.py
