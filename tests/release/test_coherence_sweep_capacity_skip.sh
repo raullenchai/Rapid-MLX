@@ -74,7 +74,7 @@ if [ "$1" = "-m" ] && [ "$3" = "serve" ]; then
       case ":${PASSING_ALIASES:-}:" in
         *":$model:"*)
           trap 'rm -f "$FAKE_READY"; exit 0' INT TERM EXIT
-          : > "$FAKE_READY"
+          printf '%s' "$model" > "$FAKE_READY"
           while :; do sleep 1; done
           ;;
         *) printf '%s\n' 'RuntimeError: fake engine died before load' ;;
@@ -84,7 +84,13 @@ if [ "$1" = "-m" ] && [ "$3" = "serve" ]; then
   exit 1
 fi
 # release_fleet.py is-reasoning-distill / forces-text-lane -> not that family.
-if [ "$1" = "evals/coherence_gate.py" ]; then exit 0; fi
+if [ "$1" = "evals/coherence_gate.py" ]; then
+  model="$(cat "$FAKE_READY")"
+  case ":${FAILING_ALIASES:-}:" in
+    *":$model:"*) exit 1 ;;
+    *) exit 0 ;;
+  esac
+fi
 exit 1
 EOF
   cat > "$fake_dir/curl" <<'EOF'
@@ -190,14 +196,13 @@ fi
 
 echo "── a real model failure is still a model failure, skips are still noted"
 
-# Not directly runnable hermetically (a booting server + gate are needed), but
-# the summary wiring must still attribute a capacity-skip next to a model
-# failure rather than dropping it. The query of the script text guards that the
-# "CAPACITY-SKIPPED" line sits in the model-failure branch.
-if grep -q 'CAPACITY-SKIPPED —\$skipped' "$SWEEP"; then
-  ok "model-failure summary still attributes any capacity-skips"
+st=0; out="$(run_sweep "bad-answer qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "bad-answer" FAILING_ALIASES=bad-answer)" || st=$?
+if [ "$st" = 1 ] \
+   && printf '%s' "$out" | grep -q 'SWEEP FAILED' \
+   && printf '%s' "$out" | grep -q 'CAPACITY-SKIPPED'; then
+  ok "model failure plus capacity-skip stays a model failure and reports both"
 else
-  bad "model-failure exit path no longer surfaces capacity-skips"
+  bad "mixed model failure/capacity-skip was misclassified:\n$out"
 fi
 
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -247,7 +247,7 @@ strict_skipped=""
 if [ -n "$skipped" ] && [ "$REQUIRE_ALL" = 1 ]; then
   strict_skipped="$skipped"
 fi
-if [ -n "$infra_failed" ] || [ -n "$strict_skipped" ] || { [ -n "$skipped" ] && [ -z "$passed" ]; }; then
+if [ -n "$infra_failed" ] || [ -n "$strict_skipped" ] || { [ -n "$skipped" ] && [ -z "$passed" ] && [ -z "$failed" ]; }; then
   echo "  SWEEP INFRASTRUCTURE FAILURE" >&2
   if [ -n "$infra_failed" ]; then echo "  INFRASTRUCTURE FAILURES —$infra_failed" >&2; fi
   if [ -n "$strict_skipped" ]; then
