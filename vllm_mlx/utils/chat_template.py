@@ -1671,13 +1671,38 @@ def _context_reads(
         )
         after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
         return frozenset.intersection(*after)
-    if isinstance(node, (nodes.Macro, nodes.CallBlock)):
+    if isinstance(node, nodes.Macro):
+        # A macro body is deferred until a call executes it.  Counting a
+        # branch in an uncalled macro as a live template switch can inject a
+        # context value that changes unrelated output.  Proving reachability
+        # would require a Jinja call graph, so fail closed: retain its possible
+        # context reads (notably an ``enable_thinking`` read must still veto an
+        # adapter), but do not infer a live boolean switch from its body.
+        deferred_tests: set[str] = set()
         for default in node.defaults:
-            _context_reads(default, bound, nodes, reads, tests)
-        if isinstance(node, nodes.CallBlock):
-            _context_reads(node.call, bound, nodes, reads, tests)
+            _context_reads(default, bound, nodes, reads, deferred_tests)
         _context_reads_all(
-            node.body, bound | {arg.name for arg in node.args}, nodes, reads, tests
+            node.body,
+            bound | {arg.name for arg in node.args},
+            nodes,
+            reads,
+            deferred_tests,
+        )
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.CallBlock):
+        deferred_tests: set[str] = set()
+        for default in node.defaults:
+            _context_reads(default, bound, nodes, reads, deferred_tests)
+        _context_reads(node.call, bound, nodes, reads, tests)
+        # Whether the callee invokes ``caller`` is likewise not statically
+        # proven here.  Its body therefore cannot establish a live switch,
+        # though possible reads still participate in conservative vetoes.
+        _context_reads_all(
+            node.body,
+            bound | {arg.name for arg in node.args},
+            nodes,
+            reads,
+            deferred_tests,
         )
         return bound | _bound_names(node, nodes)
     if isinstance(node, (nodes.Import, nodes.FromImport)):
@@ -1751,9 +1776,12 @@ def template_thinking_switch(
     defaults to on or to ``reasoning_effort != "none"``, and seeds an empty
     thinking block when it is false). A name is a switch only when the
     template reads it from the render context and branches on it as a plain
-    boolean while it still carries the context value (a value-preserving
+    boolean while it still carries the context value in an eagerly evaluated
+    scope (a value-preserving
     ``set reasoning = reasoning if reasoning is not undefined else ...``
     keeps it; ``set reasoning = true`` makes the later branch a local one).
+    Deferred macro and call-block bodies are ignored unless a future detector
+    can prove their execution.
     A template that renders ``{{ reasoning }}`` as data or only asks
     ``reasoning is defined`` is left alone. A template that reads
     ``enable_thinking`` keeps that switch and yields ``None`` even if it also

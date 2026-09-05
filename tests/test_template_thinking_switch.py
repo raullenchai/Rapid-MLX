@@ -224,6 +224,15 @@ class TestTemplateThinkingSwitch:
             # the branch is inside a macro that binds the name
             "{%- macro show(reasoning) %}{% if reasoning %}x{% endif %}{%- endmacro %}"
             "{{ show(reasoning) }}",
+            # macro bodies are deferred; an uncalled macro cannot prove that
+            # the template exposes a live switch
+            "{%- macro unused() %}{% if reasoning %}x{% endif %}{%- endmacro %}"
+            "{{ reasoning | default('unset') }}",
+            # call-block argument defaults are evaluated only if the callee
+            # invokes ``caller``; this callee deliberately never does
+            "{%- macro never() %}{% if false %}{{ caller() }}{% endif %}ok{% endmacro %}"
+            "{{ reasoning | default('unset') }}"
+            "{% call(x=('a' if reasoning else 'b')) never() %}{{ x }}{% endcall %}",
             # branched on a loop variable of that name
             "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
         ],
@@ -338,6 +347,27 @@ class TestApplyChatTemplateOnNorth:
 
 
 class TestOtherTemplatesUnaffected:
+    def test_uncalled_macro_does_not_make_rendered_data_a_switch(self):
+        template = (
+            "{% macro unused() %}{% if reasoning %}x{% endif %}{% endmacro %}"
+            "{{ reasoning | default('unset') }}"
+        )
+        tok = _RenderingTokenizer(template)
+        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        assert "reasoning" not in tok.received_kwargs
+        assert prompt == "unset"
+
+    def test_uninvoked_call_block_default_does_not_make_data_a_switch(self):
+        template = (
+            "{% macro never() %}{% if false %}{{ caller() }}{% endif %}ok{% endmacro %}"
+            "{{ reasoning | default('unset') }}"
+            "{% call(x=('a' if reasoning else 'b')) never() %}{{ x }}{% endcall %}"
+        )
+        tok = _RenderingTokenizer(template)
+        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        assert "reasoning" not in tok.received_kwargs
+        assert prompt == "unsetok"
+
     def test_enable_thinking_template_gets_no_reasoning_kwarg(self):
         tok = _RenderingTokenizer(ENABLE_THINKING_TEMPLATE)
         prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
