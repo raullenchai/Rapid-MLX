@@ -69,7 +69,68 @@ The dispatch floor is about 12% of the sparse call at this smallest admitted
 production geometry. This supports a coarse long-context gate and rejects a
 design that would split the same work into many launches.
 
-## Existing end-to-end evidence and limits
+## Exact-head served dogfood
+
+A follow-up campaign exercised the OpenAI-compatible streaming route against the
+immutable 98 GB `rapid-mlx/Qwen3.8-Flash-Next-4bit` snapshot at revision
+`dcf657e4acda2aae72da99cde65b6c491cd96998`. The baseline was
+`d6c50526a85d50346af4126c1dca9f149aaa9fbe`; the candidate was the exact PR
+head `c7371139ad4aa0edf5eacc3922243e9c0db91e03`. Both arms used the same M3
+Ultra, dependency environment, prompt bytes, three-run order, cold prefix
+cache, 16-token decode budget, and Metal command-buffer settings.
+
+The 98 GB parameter materialization intermittently tripped the macOS Metal
+watchdog, including on some launches with conservative command-buffer limits.
+The retained pair set both `MLX_MAX_OPS_PER_BUFFER=10` and
+`MLX_MAX_MB_PER_BUFFER=10`; these are qualification controls applied equally to
+both arms, not product defaults or a proven general watchdog workaround.
+Contended attempts and one run invalidated by an unrelated concurrent MLX job
+and GPU recovery were discarded before the clean pair below. Each retained arm
+completed without a new GPU recovery.
+
+| Prompt target | Baseline TTFT | Sparse TTFT | TTFT change | Baseline prefill | Sparse prefill | Prefill change | Decode change | Peak RSS baseline / sparse |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16K | 20.125 s | 20.321 s | -0.98% | 812.3 tok/s | 804.5 tok/s | -0.97% | +0.58% | 54.080 / 54.085 GiB |
+| 32K | 45.684 s | 39.159 s | +14.28% | 716.5 tok/s | 835.9 tok/s | +16.66% | -0.56% | 54.091 / 54.096 GiB |
+| 64K | 116.040 s | 79.950 s | +31.10% | 564.5 tok/s | 819.3 tok/s | +45.14% | +0.86% | 54.113 / 54.111 GiB |
+
+Values are medians except peak RSS, which is the maximum. The 32K and 64K
+TTFT improvements are large and settled across all three observations. The 16K
+result is effectively flat but slightly negative, supporting the conservative
+opt-in status rather than automatic promotion at the current 16K boundary. Any
+future default-on policy should re-measure and select a higher crossover if the
+16K result remains negative. Decode stayed within one percent and peak RSS
+within 0.005 GiB.
+
+The result artifacts were written outside the repository and hashed before the
+server was shut down:
+
+- baseline: `/private/tmp/qsa-served-base-d6c50526-caps10-clean.json`, SHA-256
+  `bf76f01400241dabdb3a658963cb0e257af52c7ac77f2171e5cffcdc19df14c0`
+- candidate: `/private/tmp/qsa-served-candidate-c7371139-caps10.json`, SHA-256
+  `2af75b3c2b7389705ecbe945fa3fa0b81c1d0b0b6e71eb5de465ed1f066d99a9`
+
+The served harness uses exact tokenizer-counted prompts, clears the prefix
+cache before each request, records first-visible-delta TTFT and server-reported
+token counts, and samples the recursive server-process RSS every 50 ms. Run
+each arm from its own worktree with the environment above, then invoke:
+
+```bash
+.venv/bin/python .orca/flash-next-eval/benchmark.py \
+  --url http://127.0.0.1:8465/v1 \
+  --model rapid-mlx/Qwen3.8-Flash-Next-4bit \
+  --tokenizer-path "$SNAPSHOT" --server-pid "$SERVER_PID" \
+  --label "$ARM" --runs 3 --decode-tokens 16 \
+  --prompt-tokens 16384,32768,65536 \
+  --artifact-revision dcf657e4acda2aae72da99cde65b6c491cd96998 \
+  --rapid-sha "$RAPID_SHA" --output "$RESULT_JSON" --timeout 240
+```
+
+This campaign is a performance and memory receipt, not a new model-quality
+gate. The earlier five-path output comparison and the focused fp64/Metal tests
+remain the correctness evidence for this default-off path.
+
+## Earlier end-to-end evidence and remaining limit
 
 The repository's earlier M3 Ultra full-model campaign measured a 32K prompt at
 523.4 to 579.2 prefill tokens/s (+10.7%) and 62.539 to 56.516 seconds TTFT,
@@ -78,8 +139,8 @@ paths. That campaign used the same kernel design but predates this rebased
 integration and its complete path receipts, so it is supporting evidence rather
 than an exact-head promotion gate.
 
-Before automatic enablement, rerun the full served route at 16K, 32K, and 64K
-on the pinned release dependency build. Require three or more settled paired
-observations, stable stock output, the expected nonzero kernel-call count, no
-unexpected decline reasons, peak-memory evidence, and the model-scale
-correctness gate. Keep the feature opt-in if any requirement is missing.
+The exact-head served campaign now supplies settled wall-time and peak-memory
+evidence at 16K, 32K, and 64K. Before automatic enablement, still require a
+fresh model-scale correctness comparison on the pinned release dependency
+build, the expected nonzero kernel-call count, and no unexpected decline
+reasons. Keep the feature opt-in while any of those requirements is missing.
