@@ -479,6 +479,7 @@ jobs:
             tests/test_qwen4_exp_vendored.py \
             tests/test_qwen4_fused_gdn_decode.py \
             tests/test_qsa_block_sparse.py \
+            tests/test_qsa_indexed_splitk.py \
             tests/test_mtp_cli_wiring.py \
             tests/test_continuous_mtp_routing.py \
             tests/test_continuous_self_mtp_mlx_backend.py \
