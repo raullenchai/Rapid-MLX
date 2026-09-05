@@ -41,6 +41,11 @@ from ..kernels.qsa_block_sparse import (  # noqa: E402
     block_sparse_decline_reason,
     block_sparse_layout_supported,
 )
+from ..kernels.qsa_indexed_splitk import (  # noqa: E402
+    indexed_splitk_attention,
+    indexed_splitk_decline_reason,
+    indexed_splitk_layout_supported,
+)
 from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
     admit_qwen4_fused_gdn_decode,
     fused_gdn_runtime_supported,
@@ -1096,11 +1101,20 @@ class QSAAttention(nn.Module):
         self.block_sparse_route_constructions = 0
         self.block_sparse_declines = 0
         self.block_sparse_decline_reasons: dict[str, int] = {}
+        self.indexed_splitk_route_constructions = 0
+        self.indexed_splitk_declines = 0
+        self.indexed_splitk_decline_reasons: dict[str, int] = {}
 
     def _record_block_sparse_decline(self, reason: str) -> None:
         self.block_sparse_declines += 1
         self.block_sparse_decline_reasons[reason] = (
             self.block_sparse_decline_reasons.get(reason, 0) + 1
+        )
+
+    def _record_indexed_splitk_decline(self, reason: str) -> None:
+        self.indexed_splitk_declines += 1
+        self.indexed_splitk_decline_reasons[reason] = (
+            self.indexed_splitk_decline_reasons.get(reason, 0) + 1
         )
 
     def __call__(
@@ -1172,6 +1186,21 @@ class QSAAttention(nn.Module):
             keys, values = kv_cache.update_and_fetch(keys, values)
         output = None
         if isinstance(selected, _QSASelection):
+            indexed_decline = indexed_splitk_decline_reason(
+                length,
+                physical_length,
+                batch_size=batch,
+                training=bool(self.training),
+            )
+            if indexed_decline is None and not indexed_splitk_layout_supported(
+                query_heads=self.num_attention_heads,
+                kv_heads=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                block_size=self.indexer.compress_ratio,
+                block_topk=self.indexer.block_topk,
+                dtype=queries.dtype,
+            ):
+                indexed_decline = "unsupported layout"
             decline_reason = block_sparse_decline_reason(
                 length,
                 physical_length,
@@ -1185,7 +1214,11 @@ class QSAAttention(nn.Module):
                 dtype=queries.dtype,
             ):
                 decline_reason = "unsupported layout"
-            if decline_reason is None:
+
+            # Keep the default dense path graph-identical: sorting and
+            # compact-count construction happen only when a sparse consumer
+            # is actually eligible.
+            if indexed_decline is None or decline_reason is None:
                 block_slots = slice(
                     0, self.indexer.token_budget, self.indexer.compress_ratio
                 )
@@ -1202,6 +1235,7 @@ class QSAAttention(nn.Module):
                     ),
                     axis=-1,
                 )
+                block_counts = mx.sum(block_valid, axis=-1).astype(mx.int32)
                 tail_valid = selected.tail_valid
                 tail_indices = mx.sort(
                     mx.where(
@@ -1211,22 +1245,38 @@ class QSAAttention(nn.Module):
                     ),
                     axis=-1,
                 )
-                output = block_sparse_attention(
-                    queries,
-                    keys,
-                    values,
-                    block_starts,
-                    mx.sum(block_valid, axis=-1).astype(mx.int32),
-                    tail_indices,
-                    mx.sum(tail_valid, axis=-1).astype(mx.int32),
-                    block_size=self.indexer.compress_ratio,
-                )
-                # MLX evaluates lazily. Do not add a per-layer synchronization
-                # in an attempt to catch later Metal failures here: eligibility
-                # declines fall back to dense, while execution failures surface
-                # through the engine's normal generation-error path.
-                self.block_sparse_route_constructions += 1
-            if decline_reason is not None:
+                tail_counts = mx.sum(tail_valid, axis=-1).astype(mx.int32)
+
+                if indexed_decline is None:
+                    output = indexed_splitk_attention(
+                        queries,
+                        keys,
+                        values,
+                        block_starts,
+                        block_counts,
+                        tail_indices,
+                        tail_counts,
+                        block_size=self.indexer.compress_ratio,
+                        scale=self.scale,
+                    )
+                    self.indexed_splitk_route_constructions += 1
+                elif decline_reason is None:
+                    output = block_sparse_attention(
+                        queries,
+                        keys,
+                        values,
+                        block_starts,
+                        block_counts,
+                        tail_indices,
+                        tail_counts,
+                        block_size=self.indexer.compress_ratio,
+                    )
+                    # MLX evaluates lazily. Do not add a per-layer sync here.
+                    self.block_sparse_route_constructions += 1
+
+            if indexed_decline is not None:
+                self._record_indexed_splitk_decline(indexed_decline)
+            if output is None and decline_reason is not None:
                 self._record_block_sparse_decline(decline_reason)
 
         if output is None:
@@ -1269,6 +1319,25 @@ def qwen4_qsa_block_sparse_stats(model: nn.Module) -> dict[str, Any]:
         stats["route_constructions"] += module.block_sparse_route_constructions
         stats["declines"] += module.block_sparse_declines
         for reason, count in module.block_sparse_decline_reasons.items():
+            stats["decline_reasons"][reason] = (
+                stats["decline_reasons"].get(reason, 0) + count
+            )
+    return stats
+
+
+def qwen4_qsa_indexed_splitk_stats(model: nn.Module) -> dict[str, Any]:
+    """Aggregate indexed split-K constructions and fail-closed reasons."""
+    stats: dict[str, Any] = {
+        "route_constructions": 0,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, QSAAttention):
+            continue
+        stats["route_constructions"] += module.indexed_splitk_route_constructions
+        stats["declines"] += module.indexed_splitk_declines
+        for reason, count in module.indexed_splitk_decline_reasons.items():
             stats["decline_reasons"][reason] = (
                 stats["decline_reasons"].get(reason, 0) + count
             )
