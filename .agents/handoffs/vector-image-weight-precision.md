@@ -1,7 +1,7 @@
 # Vector → Atlas: FLUX.2 Klein explicit bf16 path
 
 - Branch: `perf/3058-image-weight-precision`
-- PR: not opened yet
+- PR: `#3065`
 - Owner/host: Vector / Studio (M3 Ultra)
 - Issue: `raullenchai/Rapid-MLX#3058`
 
