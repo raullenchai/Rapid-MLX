@@ -8,7 +8,7 @@ Host: Mac Studio, Apple M3 Ultra 256 GB
 
 Branch: `vector/qwen38-mtp-k2-indexed`
 
-PR: none; this branch is not ready for production validation
+PR: #3087 (Draft)
 
 ## Verified facts
 
@@ -18,21 +18,27 @@ PR: none; this branch is not ready for production validation
 - Existing generic chain-of-K and Qwen-specific rollback logic is unchanged.
 - Focused MTP, Qwen4, indexed-QSA, and CLI suites pass; changed Python files
   pass Ruff.
-- On the released Qwen3.8 Flash-Next 4-bit artifact, three isolated 32K K=2
-  samples had a 35.64 tok/s median. The only clean same-code K=1 comparator was
-  34.29 tok/s, a provisional +3.9% signal.
-- A clean 64K K=2 request reached 37.80 tok/s, so the old gathered-K/V K=2
-  long-context collapse was not reproduced.
+- A fresh-process isolated A/B collected three accepted samples per arm. K=2
+  was -7.1% at 16K, -0.7% at 32K, and +16.0% at 64K. Every 64K K=2 sample beat
+  every K=1 sample.
+- The old gathered-K/V K=2 long-context collapse was not reproduced. The value
+  is specifically an ultra-long-context crossover, not a universal speedup.
+- The K=2 real-model release battery retained the established K=1 vector at
+  42/45 with exactly the same three known failures and no new regressions.
+- Real-service sampled decoding completed twice at temperature 0.8/top-p 0.9.
+  A client-disconnected stream was removed from the running batch, and the
+  immediate recovery request returned the expected output.
 - Full commands, environment, exclusions, and raw result summary are recorded
   in `docs/engineering/performance/2026-09-05-qwen38-k2-indexed-requalification.md`.
 
 ## Unresolved questions and risks
 
-- Host contention left only one clean K=1 comparator and one clean 64K K=2
-  sample. The measured delta is not yet statistically actionable.
+- K=2 regresses 16K throughput and is only neutral at 32K. It must remain an
+  explicit operator choice; these results do not justify a default change.
 - Real K=1 and K=2 greedy captures can diverge at near-tied logits because the
   target block uses a different Metal accumulation shape. Both continuations
-  were coherent, but the release correctness battery has not been rerun.
+  were coherent. The release battery, sampled decoding, and cancellation
+  recovery found no new failure.
 - The local chunked model-load launcher worked around a pre-inference Metal
   watchdog timeout. It is not part of the branch and must not become an
   undocumented production dependency.
@@ -41,7 +47,6 @@ PR: none; this branch is not ready for production validation
 
 ## Next concrete action
 
-Reserve an isolated M3 Ultra window, collect at least three fresh-process K=1
-and K=2 samples at 16K, 32K, and 64K, then run the 45-case Flash-Next release
-battery plus cancellation, EOS, and sampled-decoding coverage. Open and enqueue
-a production PR only if K=2 wins beyond run-to-run noise and correctness passes.
+Complete the independent review loop and repository PR validation. Atlas should
+approve the explicit-only 64K-oriented contract before #3087 enters the merge
+queue.
