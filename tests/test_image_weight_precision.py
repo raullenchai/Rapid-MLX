@@ -131,9 +131,20 @@ def test_bf16_alias_is_image_generation_and_32gb_gated():
 
 def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
     engine = ImageGenerationEngine(FLUX2_KLEIN_BF16_REPO)
+    constructor_kwargs = {}
+    built_model = object()
+
+    def _build_flux2_klein(**kwargs):
+        constructor_kwargs.update(kwargs)
+        return built_model
+
     monkeypatch.setattr(
         "vllm_mlx._download_gate.mflux_local_snapshot",
         lambda repo: "/cache/snapshots/bf16",
+    )
+    monkeypatch.setattr(
+        "mflux.models.flux2.variants.txt2img.flux2_klein.Flux2Klein",
+        _build_flux2_klein,
     )
 
     assert engine.family == "flux2-klein"
@@ -141,6 +152,9 @@ def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
     assert engine._packaged_checkpoint is True
     assert engine._quantize is None
     assert engine._model_path_for_mflux() == "/cache/snapshots/bf16"
+    assert engine._build_model() is built_model
+    assert constructor_kwargs["model_path"] == "/cache/snapshots/bf16"
+    assert constructor_kwargs["quantize"] is None
 
 
 def test_bf16_residency_charge_does_not_fall_through_to_q4():
@@ -175,7 +189,10 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
         observed["download"] = (model_name, kwargs.get("revision"))
         return "/cache/snapshot"
 
-    monkeypatch.setattr(cli, "_try_mirror_prefetch", _mirror)
+    monkeypatch.setattr(
+        "vllm_mlx._mirror.download_with_mirror_fallback",
+        _mirror,
+    )
     monkeypatch.setattr("huggingface_hub.model_info", _model_info)
     monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
     monkeypatch.setattr(
