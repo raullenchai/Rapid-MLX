@@ -22,6 +22,22 @@ Memory-efficient caching for production / shared system prompts:
 rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 ```
 
+### FLUX.2 Klein full-precision weights
+
+On a Mac with at least 32 GB unified memory, explicitly select the bf16 image
+checkpoint with either spelling below. The existing `flux2-klein-4b` alias
+remains q4 and no hardware-based switch happens automatically.
+
+```bash
+rapid-mlx serve flux2-klein-4b --image-weight-precision bf16
+# Equivalent:
+rapid-mlx serve flux2-klein-4b-bf16
+```
+
+Use `--image-weight-precision q4` to force the compact checkpoint. The option
+currently rejects Z-Image, DiffusionGemma, and other diffusion families because
+their q4/bf16 end-to-end paths have not completed the same qualification.
+
 ## Server Options
 
 The most consequential `rapid-mlx serve` flags. The exhaustive list — every
@@ -47,6 +63,7 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--completion-batch-size` | Completion batch size | 32 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing | 2048 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0); advanced override of the automatic per-model budget | auto |
+| `--image-weight-precision` | Explicit FLUX.2 Klein weight source (`q4` or `bf16`); no automatic hardware switch | alias default |
 | `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`); int8/int4 shrink the KV cache 2x/4x at a long-context decode cost. See the [CLI reference](../reference/cli.md#kv-cache-dtype-and-quantization) for the full quantization family (`--kv-cache-quantization*`, `--kv-cache-turboquant*`). | bf16 |
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching for repeated prompts | enabled |
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy) | radix |
