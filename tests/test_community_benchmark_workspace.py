@@ -2779,9 +2779,39 @@ def test_cli_results_prints_empty_hint_then_rows(
         }
     )
     assert community_cli.benchmark_command(args) == 0
-    assert "00000000-0000-4000-8000-000000000002  image_generation" in (
-        capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert (
+        "00000000-0000-4000-8000-000000000002  image_generation   failed"
+        "     2026-09-01T00:00:01Z  -\n"
+    ) in out
+
+    # The primary component wins even when an auxiliary component (e.g. a
+    # draft model) is listed first.
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000003",
+            "workload": {"task_type": "text_generation"},
+            "outcome": {"status": "completed"},
+            "completed_at": "2026-09-01T00:00:02Z",
+            "model": {
+                "components": [
+                    {
+                        "role": "draft",
+                        "source": {"kind": "huggingface", "repo_id": "org/draft"},
+                    },
+                    {
+                        "role": "primary",
+                        "artifact": {"path": "/models/primary"},
+                    },
+                ]
+            },
+        }
     )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "00000000-0000-4000-8000-000000000003" in out
+    assert "  /models/primary" in out
+    assert "org/draft" not in out
 
 
 def test_cli_inspect_prints_full_json_without_flag(

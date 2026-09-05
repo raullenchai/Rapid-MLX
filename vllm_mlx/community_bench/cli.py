@@ -36,20 +36,32 @@ def _print_json(value: Any) -> None:
 
 
 def _run_model_label(run: dict[str, Any]) -> str:
-    """Human label for an archived run: the primary component's repo id."""
+    """Human label for an archived run: the primary component's repo id.
+
+    Prefers the component whose ``role`` is ``primary`` regardless of its
+    position; falls back to the first component with a source only when no
+    component is marked primary.
+    """
 
     model = run.get("model")
     components = model.get("components") if isinstance(model, dict) else None
-    if isinstance(components, list):
-        for component in components:
-            if not isinstance(component, dict):
-                continue
-            source = component.get("source")
-            if isinstance(source, dict) and isinstance(source.get("repo_id"), str):
-                return source["repo_id"]
-            manifest = component.get("artifact")
-            if isinstance(manifest, dict) and isinstance(manifest.get("path"), str):
-                return manifest["path"]
+    if not isinstance(components, list):
+        return "-"
+    typed = [component for component in components if isinstance(component, dict)]
+    ordered = [c for c in typed if c.get("role") == "primary"] + [
+        c for c in typed if c.get("role") != "primary"
+    ]
+    for component in ordered:
+        source = component.get("source")
+        if isinstance(source, dict):
+            repo_id = source.get("repo_id")
+            if isinstance(repo_id, str):
+                return repo_id
+        manifest = component.get("artifact")
+        if isinstance(manifest, dict):
+            path = manifest.get("path")
+            if isinstance(path, str):
+                return path
     return "-"
 
 
