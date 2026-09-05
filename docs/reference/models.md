@@ -22,6 +22,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
 | Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
+| G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
 
 ### Recommended Models
 
@@ -105,6 +106,31 @@ config declares `tool_parser_type: qwen3_coder`), so the aliases pin the
 uses the reasoning-token budget; to send the template's own
 `{reasoning effort: low}` marker instead, pass
 `chat_template_kwargs: {"reasoning_effort": "low"}`.
+
+### G9v3 (AI9Stars) 39B-A5B MoE
+
+`ai9stars/G9v3-39A5B` is a 39B-parameter Mixture-of-Experts model with 5B
+parameters active per token (32 of 320 routed experts plus one shared
+expert), gated GQA attention and a 128K context. The architecture ships
+only as `trust_remote_code` transformers code, so rapid-mlx vendors the MLX
+backbone (`vllm_mlx/models/g9v3.py`) and publishes its own conversion.
+The 4-bit export keeps the routed experts at 4-bit and everything else
+(attention, dense/shared MLP, embeddings) at 8-bit: uniform 4-bit was
+measured to hurt this architecture's attention projections badly.
+
+| Alias | HF path | Weights | Hardware |
+|-------|---------|---------|----------|
+| `g9v3-39a5b-4bit` | `rapid-mlx/G9v3-39A5B-MLX-4bit` | ~21 GB | 32 GB+ unified memory |
+
+```bash
+rapid-mlx serve g9v3-39a5b-4bit
+```
+
+The chat template is ChatML with Qwen3-style `<think>` blocks and
+MiniCPM-style XML tool calls, so the alias pins the `qwen3` reasoning parser
+and the `minicpm` tool-call parser; `enable_thinking` toggles reasoning the
+same way it does for the Qwen family. Speculative decoding is not enabled
+for this alias (the checkpoint has no draft model or MTP head).
 
 ## Multimodal Models (via mlx-vlm)
 

@@ -1418,6 +1418,15 @@
     "supports_spec_decode": true,
     "min_memory_gb": 192
   },
+  "g9v3-39a5b-4bit": {
+    "hf_path": "rapid-mlx/G9v3-39A5B-MLX-4bit",
+    "tool_call_parser": "minicpm",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "min_memory_gb": 32
+  },
   "muse-glimmer-30b-4bit": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-4bit",
     "is_text_only": true,

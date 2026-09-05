@@ -748,6 +748,36 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("muse_glimmer")
 
+    if "mlx_lm.models.g9v3" not in sys.modules:
+        # AI9Stars G9v3-39A5B — vendored MoE text backbone (see
+        # ``vllm_mlx/models/g9v3.py`` for the why + sync policy). Defers
+        # to native mlx-lm support the moment upstream ships it, same
+        # probe as ``hy_v3`` above.
+        import importlib.util as _importlib_util
+
+        _g9v3_native_spec = None
+        try:
+            _g9v3_native_spec = _importlib_util.find_spec("mlx_lm.models.g9v3")
+        except (ImportError, ValueError):
+            _g9v3_native_spec = None
+
+        if _g9v3_native_spec is None:
+            try:
+                from ..models import g9v3 as _g9v3
+
+                sys.modules.setdefault("mlx_lm.models.g9v3", _g9v3)
+            except Exception as e:
+                logger.warning(
+                    "g9v3 vendored module failed to register — "
+                    "ai9stars/G9v3-39A5B conversions will not load until "
+                    "resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("g9v3")
+        else:
+            _VENDORED_MODEL_TYPES.add("g9v3")
+
     if "mlx_lm.models.bailing_hybrid" not in sys.modules:
         # inclusionAI Ling 3.0 family (tiny/flash) + Ling 2.6 — vendored
         # KDA+MLA hybrid backbone (see ``vllm_mlx/models/bailing_hybrid.py``
