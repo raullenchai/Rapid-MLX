@@ -95,6 +95,7 @@ DENY_MARKERS = (
     "won't",
     "wouldn't",
     "shouldn't",
+    "never",
     "not available",
     "no result",
     "unable to",
@@ -450,9 +451,16 @@ def fact_from_dict(d: dict) -> Fact:
 
     aliases = _clean_aliases(d.get("aliases"), str(key))
     if ftype == "string":
+        raw_str = d["value"]
+        # A string fact's value is the affirmative CONTENT -- it must be a
+        # non-empty str, never str()-coerced. A malformed value (list, number)
+        # would silently become matching text instead of surfacing a config
+        # error, so it fails fast for visibility.
+        if not isinstance(raw_str, str) or not raw_str.strip():
+            raise ValueError(f"string fact '{key}' requires a non-empty string 'value'")
         return StringFact(
             key=str(key),
-            value=str(d["value"]),
+            value=raw_str,
             aliases=aliases,
         )
     raw_value = d["value"]
@@ -788,6 +796,90 @@ def _temporal_preposition_before(text: str, start: int) -> bool:
     return False
 
 
+# Strict relational comparators that, immediately before a value, assert an
+# INEQUALITY rather than affirming the exact fact value ("humidity is below
+# 62%"). Each maps to a comparison operator applied to the candidate threshold
+# vs the fact's exact value; an irreconcilable comparison is neither coverage
+# nor a silent miss -- it is a CONTRADICTION (an incompatible relational report).
+_COMPARATIVES = (
+    ("below", "<"),
+    ("under", "<"),
+    ("beneath", "<"),
+    ("less than", "<"),
+    ("lower than", "<"),
+    ("above", ">"),
+    ("over", ">"),
+    ("greater than", ">"),
+    ("higher than", ">"),
+    ("at most", "<="),
+    ("at least", ">="),
+    ("no more than", "<="),
+    ("no less than", ">="),
+)
+
+
+def _comparative_at(text: str, start: int) -> tuple[str, str] | None:
+    """Return (operator, matched surface) if ``text[start:]`` is immediately
+    preceded by a strict comparative, else None.
+
+    Walks back over optional whitespace and reads the preceding token (or the
+    two-word forms "less than"/"at least"/…), matching the bounded comparator
+    list. Returns e.g. ("<", "below") for "humidity is below 62%".
+    """
+    i = start
+    while i > 0 and text[i - 1].isspace():
+        i -= 1
+    j = i
+    while j > 0 and text[j - 1].isalpha():
+        j -= 1
+    token = text[j:i]
+    for surface, op in _COMPARATIVES:
+        if " " in surface:
+            # two-word surface: need the word before ``token`` to complete it.
+            k = j
+            while k > 0 and text[k - 1].isspace():
+                k -= 1
+            m = k
+            while m > 0 and text[m - 1].isalpha():
+                m -= 1
+            if text[m:k] + " " + token == surface or token == surface:
+                return op, surface
+        elif token == surface:
+            return op, surface
+    return None
+
+
+def _incompatible_comparison(
+    fact: FactEvidence | object, norm_answer: str, start: int, value: float
+) -> bool:
+    """True if the value at ``start`` is a strict comparison irreconcilable with
+    the fact's exact value (e.g. "below 62%" for an expected 62).
+
+    "above/over/…" is compatible when the exact accepted value actually lies on
+    the asserted side of the threshold; only an assertion the fact's value
+    contradicts is flagged. Approximation words ("about", "approximately",
+    "around") are NOT comparatives and never trip this.
+    """
+    got = _comparative_at(norm_answer, start)
+    if got is None:
+        return False
+    op, _surface = got
+    # An inequality is compatible with the fact only when the fact's OWN value
+    # lies on the asserted side of the threshold. Tolerance applies to roughly
+    # matching an approximate VALUE, not to relocating a strict relational
+    # threshold: "below 62%" still excludes the reported 62 regardless of ±2.
+    v = fact.value
+    if op == "<":
+        return not (v < value)
+    if op == ">":
+        return not (v > value)
+    if op == "<=":
+        return not (v <= value)
+    if op == ">=":
+        return not (v >= value)
+    return False
+
+
 def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
     """Affirmative coverage for a number fact (unit conversion + tolerance)."""
     candidates = _numbered_in(norm_answer)
@@ -814,6 +906,10 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
         )
 
     for value, unit, start in candidates:
+        # A strict relational comparison ("below 62%", "above 62%") is not an
+        # affirmative report of the exact value -- never count it as coverage.
+        if _incompatible_comparison(fact, norm_answer, start, value):
+            continue
         if unit is not None:
             # Explicitly unit-qualified -- accepted anywhere ONLY when no anchor
             # label exists to pin the fact; otherwise it must sit near an anchor.
@@ -901,6 +997,11 @@ def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> b
     for value, unit, start in candidates:
         if not any(s <= start < e for s, e in key_spans):
             continue
+        # A strict relational comparison irreconcilable with the expected value
+        # ("humidity is below 62%" for humidity=62, "temperature above 30°C")
+        # is a CONTRADICTION: the model reported an incompatible inequality.
+        if _incompatible_comparison(fact, norm_answer, start, value):
+            return True
         if unit is None:
             # Bare: only a lone value right at the anchor is a confident wrong
             # report; otherwise it's ambiguous metadata and not attributed. A
@@ -955,6 +1056,10 @@ def _relation_coverage(fact: RelationFact, norm_answer: str) -> tuple[bool, str]
     key_spans = _salient_spans(norm_answer, anchors)
     candidates = _numbered_in(norm_answer)
     for value, unit, start in candidates:
+        # A strict relational comparison is not an affirmation of the exact
+        # value -- "humidity is below 62%" must not cover a humidity=62 fact.
+        if _incompatible_comparison(fact, norm_answer, start, value):
+            continue
         converted = _to_unit(value, unit if unit is not None else fact.unit, fact.unit)
         if converted is None or abs(converted - fact.value) > fact.tolerance + 1e-9:
             continue

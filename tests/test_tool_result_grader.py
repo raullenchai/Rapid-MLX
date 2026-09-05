@@ -894,6 +894,62 @@ class TestCodexRegressionFixes:
         # A plain affirmative unchanged.
         assert _grade(g, [TEMP21C], "the temperature is 21°C").overall is True
 
+    def test_never_denies_a_correct_value(self, g):
+        # Round-15 F1: "never" is an explicit negation with no "not" token; it
+        # must deny the fact, not pass as affirmative coverage.
+        rep = _grade(g, [TEMP21C], "the temperature is never 21°C")
+        assert rep.facts[0].status == "contradicted"
+        assert "temperature" in rep.contradicted
+        assert rep.overall is False
+        # A plain affirmative unchanged.
+        assert _grade(g, [TEMP21C], "the temperature is 21°C").overall is True
+
+    def test_strict_comparison_is_not_exact_coverage(self, g):
+        # Round-15 F2: "humidity is below 62%" asserts an inequality that
+        # excludes the expected exact 62 -- it is a CONTRADICTION, not coverage.
+        humidity = {
+            "type": "relation",
+            "key": "humidity",
+            "value": 62.0,
+            "unit": "%",
+            "tolerance": 2.0,
+            "aliases": ["humidity"],
+        }
+        for phrase in [
+            "humidity is below 62%",
+            "humidity is under 62%",
+            "humidity is above 62%",
+            "humidity is over 62%",
+        ]:
+            rep = _grade(g, [humidity], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert "humidity" in rep.contradicted, phrase
+            assert rep.overall is False, phrase
+        # Exact / approximate / in-range values still PASS.
+        for phrase in ["humidity is 62%", "humidity is about 62%", "humidity is 61%"]:
+            assert _grade(g, [humidity], phrase).overall is True, phrase
+        # A comparison whose threshold includes the fact value is COMPATIBLE.
+        assert _grade(g, [humidity], "humidity is below 64%").overall is True
+        assert _grade(g, [humidity], "humidity is above 60%").overall is True
+        # Number facts: below/above the temperature value likewise contradict.
+        rep = _grade(g, [TEMP21C], "the temperature is below 21°C")
+        assert rep.facts[0].status == "contradicted"
+
+    def test_malformed_string_value_fails_fast(self, g):
+        # Round-15 F3 (nit hardened): a string fact's value must be a non-empty
+        # str -- a list/number/empty value is a CONFIG error, not silently
+        # coerced into matching text.
+        for bad in (
+            {"type": "string", "key": "cond", "value": ["Sunny"]},
+            {"type": "string", "key": "cond", "value": 123},
+            {"type": "string", "key": "cond", "value": ""},
+        ):
+            with pytest.raises(ValueError):
+                g.fact_from_dict(bad)
+        # A normal string fact still constructs.
+        f = g.fact_from_dict({"type": "string", "key": "condition", "value": "Sunny"})
+        assert f.value == "Sunny"
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:
