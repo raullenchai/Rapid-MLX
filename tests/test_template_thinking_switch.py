@@ -242,6 +242,20 @@ class TestTemplateThinkingSwitch:
             == "reasoning"
         )
 
+    @pytest.mark.parametrize("order", ["switch-first", "enable-thinking-first"])
+    def test_enable_thinking_in_any_selected_source_wins(self, monkeypatch, order):
+        """``_chat_template_strings`` selects one source today; should it ever
+        return several, a read of ``enable_thinking`` anywhere still wins."""
+        from vllm_mlx.utils import chat_template as module
+
+        sources = [NORTH_CLAUSE, ENABLE_THINKING_TEMPLATE]
+        if order == "enable-thinking-first":
+            sources.reverse()
+        monkeypatch.setattr(
+            module, "_chat_template_strings", lambda template, *, tools: sources
+        )
+        assert template_thinking_switch({"default": "x"}) is None
+
     def test_without_jinja2_no_switch_is_reported(self, monkeypatch):
         from vllm_mlx.utils import chat_template as module
 

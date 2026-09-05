@@ -1759,13 +1759,17 @@ def template_thinking_switch(
     ``enable_thinking`` keeps that switch and yields ``None`` even if it also
     reads a recognised name.
     """
+    reads: set[str] = set()
+    tested: set[str] = set()
     for source in _chat_template_strings(template, tools=tools):
-        reads, tested = _template_context_facts_for_source(source)
-        if "enable_thinking" in reads:
-            return None
-        for switch in _TEMPLATE_THINKING_SWITCHES:
-            if switch in reads and switch in tested:
-                return switch
+        source_reads, source_tests = _template_context_facts_for_source(source)
+        reads |= source_reads
+        tested |= source_tests
+    if "enable_thinking" in reads:
+        return None
+    for switch in _TEMPLATE_THINKING_SWITCHES:
+        if switch in reads and switch in tested:
+            return switch
     return None
 
 
