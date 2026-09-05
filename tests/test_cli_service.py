@@ -1264,6 +1264,34 @@ def test_is_admin_user_membership_false(monkeypatch):
     assert ins_mod.is_admin_user("serveuser") is False
 
 
+def test_is_admin_user_checks_effective_group_list(monkeypatch):
+    import grp
+    import pwd
+
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: types.SimpleNamespace(gr_gid=80, gr_mem=[])
+    )
+    monkeypatch.setattr(pwd, "getpwnam", lambda _u: types.SimpleNamespace(pw_gid=20))
+    monkeypatch.setattr(ins_mod.os, "getgrouplist", lambda _u, _gid: [20, 80])
+    assert ins_mod.is_admin_user("serveuser") is True
+
+
+def test_is_admin_user_group_lookup_fallback(monkeypatch):
+    import grp
+    import pwd
+
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: types.SimpleNamespace(gr_gid=80, gr_mem=[])
+    )
+    monkeypatch.setattr(pwd, "getpwnam", lambda _u: types.SimpleNamespace(pw_gid=80))
+    monkeypatch.setattr(
+        ins_mod.os,
+        "getgrouplist",
+        lambda *_args: (_ for _ in ()).throw(OSError("directory unavailable")),
+    )
+    assert ins_mod.is_admin_user("serveuser") is True
+
+
 def test_validate_service_account_empty_user():
     with pytest.raises(ins_mod.ServiceInstallError, match="required"):
         ins_mod.validate_service_account("")
@@ -1325,6 +1353,41 @@ def test_endpoint_health_live_200(monkeypatch):
     live, ready = st._endpoint_health("127.0.0.1", 8000)
     assert live is True
     assert ready is True
+
+
+def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    seen = []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def settimeout(self, *a):
+            pass
+
+        def sendall(self, *a):
+            pass
+
+        def recv(self, n):
+            return b"HTTP/1.1 200 OK\r\n\r\n"
+
+    def _connect(address, **_kwargs):
+        seen.append(address)
+        return _Conn()
+
+    monkeypatch.setattr(socket, "create_connection", _connect)
+    monkeypatch.setattr(
+        ins_mod,
+        "_readyz_ready",
+        lambda host, port: seen.append((host, port)) or True,
+    )
+    assert st._endpoint_health("0.0.0.0", 8000) == (True, True)
+    assert seen == [("127.0.0.1", 8000), ("127.0.0.1", 8000)]
 
 
 def test_logs_follow_keyboard_interrupt(monkeypatch, tmp_path, capsys):
@@ -1523,3 +1586,91 @@ def test_stage_plist_uses_private_unpredictable_file(tmp_path, monkeypatch):
     finally:
         first.unlink()
         second.unlink()
+
+
+@pytest.mark.parametrize("unlink_fails", [False, True])
+def test_stage_plist_write_failure_closes_and_cleans(
+    tmp_path, monkeypatch, unlink_fails
+):
+    import os
+
+    import vllm_mlx.headless_service.install as ins
+
+    raw_path = tmp_path / "staged.plist"
+    fd = os.open(raw_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    monkeypatch.setattr(ins.tempfile, "mkstemp", lambda **_kwargs: (fd, str(raw_path)))
+
+    class _BadHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            os.close(fd)
+
+        def write(self, _data):
+            raise RuntimeError("write failed")
+
+    monkeypatch.setattr(ins.os, "fdopen", lambda *_args, **_kwargs: _BadHandle())
+    real_unlink = ins.os.unlink
+    if unlink_fails:
+        monkeypatch.setattr(
+            ins.os, "unlink", lambda _path: (_ for _ in ()).throw(OSError("busy"))
+        )
+    with pytest.raises(RuntimeError, match="write failed"):
+        ins._stage_plist(b"data")
+    if unlink_fails:
+        monkeypatch.setattr(ins.os, "unlink", real_unlink)
+        raw_path.unlink()
+    else:
+        assert not raw_path.exists()
+
+
+def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsys):
+    import shutil
+
+    import vllm_mlx.headless_service.install as ins
+
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
+    monkeypatch.setattr(ins, "is_root", lambda: True)
+    monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
+    monkeypatch.setattr(ins, "_wait_ready", lambda _h, _p, **_k: True)
+    monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
+
+    def _fake_run(argv, check=True):
+        if argv[0] == "install":
+            shutil.copyfile(argv[-2], argv[-1])
+        return _FakeResult()
+
+    monkeypatch.setattr(ins, "_run", _fake_run)
+    code = ins.install_command(
+        _ns(dry_run=False, serve_args=["--", "--max-num-seqs", "4"])
+    )
+    assert code == 0
+    assert "Installed and running" in capsys.readouterr().out
+    assert not list(tmp_path.glob("rapid-mlx-service-*.plist"))
+
+
+def test_install_success_tolerates_staging_cleanup_failure(monkeypatch, tmp_path):
+    import vllm_mlx.headless_service.install as ins
+
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
+    monkeypatch.setattr(ins, "is_root", lambda: True)
+    monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
+    monkeypatch.setattr(ins, "_wait_ready", lambda _h, _p, **_k: True)
+    monkeypatch.setattr(ins, "_run", lambda *_a, **_k: _FakeResult())
+    staged = tmp_path / "private-stage.plist"
+    staged.write_bytes(b"plist")
+    monkeypatch.setattr(ins, "_stage_plist", lambda _buf: staged)
+    real_unlink = Path.unlink
+
+    def _fail_only_for_stage(self, *args, **kwargs):
+        if self == staged:
+            raise OSError("busy")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _fail_only_for_stage)
+    assert ins.install_command(_ns(dry_run=False)) == 0
+    assert staged.exists()
+    real_unlink(staged)
