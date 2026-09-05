@@ -1365,6 +1365,33 @@ SDXL_DATA_FILES = (
     "vae/config.json",
     "vae/diffusion_pytorch_model.fp16.safetensors",
 )
+SD35_REPO = "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized"
+SD35_REVISION = "0f92f6c2a9f9e1abc6738209e87ac22b049a7d26"
+SD35_DATA_FILES = (
+    "config.json",
+    "sd3.5_large_4bit_quantized.safetensors",
+)
+SD35_SHARED_REPO = "argmaxinc/stable-diffusion"
+SD35_SHARED_REVISION = "7b7a9946015fe6ae602464dfc026c19f6b6306f9"
+SD35_SHARED_DATA_FILES = (
+    "clip_l/config.json",
+    "clip_l/model.fp16.safetensors",
+    "clip_g/config.json",
+    "clip_g/model.fp16.safetensors",
+    "tokenizer_l/vocab.json",
+    "tokenizer_l/merges.txt",
+    "tokenizer_g/vocab.json",
+    "tokenizer_g/merges.txt",
+    "t5/t5xxl.safetensors",
+)
+SD35_T5_TOKENIZER_REPO = "google/t5-v1_1-xxl"
+SD35_T5_TOKENIZER_REVISION = "3db67ab1af984cf10548a73467f0e5bca2aaaeb2"
+SD35_T5_TOKENIZER_DATA_FILES = (
+    "config.json",
+    "special_tokens_map.json",
+    "spiece.model",
+    "tokenizer_config.json",
+)
 
 BONSAI_IMAGE_REPO = "prism-ml/bonsai-image-ternary-4B-mlx-2bit"
 BONSAI_IMAGE_REVISION = "2c24c81b934a658ba5590cf39088ba929985b4a8"
@@ -1400,6 +1427,7 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
     HIDREAM_O1_REPO: HIDREAM_O1_DATA_FILES,
     SDXL_REPO: SDXL_DATA_FILES,
     BONSAI_IMAGE_REPO: BONSAI_IMAGE_DATA_FILES,
+    SD35_REPO: SD35_DATA_FILES,
 }
 
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
@@ -1408,7 +1436,72 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
     BONSAI_IMAGE_REPO: BONSAI_IMAGE_REVISION,
+    SD35_REPO: SD35_REVISION,
 }
+
+# Some native image checkpoints intentionally reuse separately published text
+# assets. Each dependency is pinned and allowlisted exactly like the primary;
+# runtime code receives only verified local snapshot directories.
+IMAGE_MODEL_RUNTIME_ASSETS: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
+    SD35_REPO: (
+        (SD35_SHARED_REPO, SD35_SHARED_REVISION, SD35_SHARED_DATA_FILES),
+        (
+            SD35_T5_TOKENIZER_REPO,
+            SD35_T5_TOKENIZER_REVISION,
+            SD35_T5_TOKENIZER_DATA_FILES,
+        ),
+    )
+}
+
+
+def image_runtime_assets_for(
+    repo_id: str,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Pinned auxiliary data repositories required by an image checkpoint."""
+
+    return IMAGE_MODEL_RUNTIME_ASSETS.get(repo_id, ())
+
+
+def pinned_image_snapshot(repo_id: str) -> str | None:
+    """Return a complete exact-revision image-data snapshot, else ``None``."""
+
+    revision = IMAGE_MODEL_REVISIONS.get(repo_id)
+    files = IMAGE_MODEL_DATA_FILES.get(repo_id)
+    if revision is None or files is None:
+        # Auxiliary repos intentionally stay OUT of IMAGE_MODEL_DATA_FILES:
+        # registering them as primary models would make a direct
+        # ``rapid-mlx pull <aux-repo>`` silently fetch only this backend's
+        # subset instead of preserving the generic whole-repository behavior.
+        for assets in IMAGE_MODEL_RUNTIME_ASSETS.values():
+            for asset_repo, asset_revision, asset_files in assets:
+                if asset_repo == repo_id:
+                    revision, files = asset_revision, asset_files
+                    break
+            if revision is not None and files is not None:
+                break
+    if revision is None or files is None:
+        return None
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except ImportError:
+        return None
+    repo_root = os.path.realpath(
+        os.path.join(HF_HUB_CACHE, f"models--{repo_id.replace('/', '--')}")
+    )
+    snapshot = os.path.join(repo_root, "snapshots", revision)
+    if not os.path.isdir(snapshot):
+        return None
+    for relative in files:
+        candidate = os.path.join(snapshot, *relative.split("/"))
+        real = os.path.realpath(candidate)
+        if real != repo_root and not real.startswith(repo_root + os.sep):
+            return None
+        try:
+            if not os.path.isfile(candidate) or os.path.getsize(candidate) <= 0:
+                return None
+        except OSError:
+            return None
+    return snapshot
 
 
 def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
@@ -1569,11 +1662,15 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
         # Vendored backends have an explicit, revision-pinned data contract
         # rather than an mflux component index. Validate every consumed file;
         # repository scripts and samples are deliberately never downloaded.
-        return [
+        missing = [
             relative
             for relative in runtime_data_files
             if not _is_nonempty_repo_file(os.path.join(snap_dir, *relative.split("/")))
         ]
+        for asset_repo, revision, _files in image_runtime_assets_for(repo_id):
+            if pinned_image_snapshot(asset_repo) is None:
+                missing.append(f"{asset_repo}@{revision}")
+        return missing
 
     # All currently supported mflux families use these three components and a
     # local tokenizer. Requiring the full set prevents an interrupted pull with

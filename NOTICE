@@ -65,6 +65,12 @@ repository. Each keeps its upstream license text alongside the code.
   CC0 1.0 Universal — original work by Amirhossein Razlighi and contributors.
   See vllm_mlx/image/sdxl_runtime/LICENSE and NOTICE.
 
+* vllm_mlx/image/sd35_runtime/
+  Stable Diffusion 3.5 Large MLX runtime adapted from DiffusionKit at commit
+  498e5dba5fb48b0f01cb6b5c2292a6dbea67a317.
+  MIT License — Copyright (c) 2024 Argmax, Inc.
+  See vllm_mlx/image/sd35_runtime/LICENSE and NOTICE.
+
 * apps/rapid-mac/Vendor/SwiftMath/
   Vendored from https://github.com/mgriebling/SwiftMath at 1.7.3
   (fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7) with a resource-resolution patch.

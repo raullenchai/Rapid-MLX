@@ -36,6 +36,8 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
         folded_hf_path = profile.hf_path.casefold()
         if "hidream-o1" in folded_hf_path:
             adapter = "rapid_mlx/hidream_o1"
+        elif "stable-diffusion-3.5" in folded_hf_path:
+            adapter = "rapid_mlx/sd35"
         elif "stable-diffusion-xl" in folded_hf_path:
             adapter = "rapid_mlx/sdxl"
         elif "bonsai-image" in folded_hf_path:

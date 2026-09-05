@@ -489,7 +489,7 @@ echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader p
 # Pin exactly, for the same reason as mlx-vlm above: with --no-deps a range
 # would let the desktop float onto an mflux release whose loader wants a
 # dependency this bundle does not carry.
-echo "==> bundling mflux --no-deps + platformdirs/piexif/toml (Images tab image-gen lane)"
+echo "==> bundling mflux --no-deps + image runtime dependencies (Images tab image-gen lane)"
 "$STAGE/python/bin/python3.12" -m pip install \
     --target "$STAGE/site-packages" \
     --no-warn-script-location \
@@ -499,7 +499,8 @@ echo "==> bundling mflux --no-deps + platformdirs/piexif/toml (Images tab image-
     'mflux' \
     'platformdirs>=4.0,<5.0' \
     'piexif>=1.1.3,<2.0' \
-    'toml>=0.10.2,<1.0'
+    'toml>=0.10.2,<1.0' \
+    'sentencepiece>=0.2.0,<1.0'
 
 # Defer mflux's module-level torch imports into the three functions that
 # use them. Fails the build when the expected lines are gone: an mflux bump
@@ -1194,16 +1195,18 @@ else
         'import importlib.metadata
 import importlib.util
 import mlx_vlm
+import sentencepiece
 from mlx_vlm.models import (
     diffusion_gemma, gemma3, gemma3n, gemma4, gemma4_unified,
     qwen3_5, qwen3_5_moe, qwen3_vl, qwen3_vl_moe,
 )
 from vllm_mlx.image.hidream_runtime import HiDreamO1
+from vllm_mlx.image.sd35_runtime import SD35Large
 from vllm_mlx.image.sdxl_runtime import SDXL
 assert importlib.util.find_spec("cv2") is None
 assert importlib.util.find_spec("torch") is None
 assert importlib.util.find_spec("torchvision") is None
-print("mlx_vlm", mlx_vlm.__version__, "desktop Qwen/Gemma/HiDream/SDXL architectures OK")' 2>&1)" || {
+print("mlx_vlm", mlx_vlm.__version__, "sentencepiece", sentencepiece.__version__, "desktop Qwen/Gemma/HiDream/SDXL/SD3.5 architectures OK")' 2>&1)" || {
         echo "ERR: bundled mlx_vlm desktop architecture smoke failed:" >&2
         echo "$VLM_OUT" >&2
         echo "ERR: usually means a new mlx-vlm release added an eager top-level import" >&2

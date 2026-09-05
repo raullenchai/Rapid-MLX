@@ -240,6 +240,7 @@ The largest and most self-contained components:
 | Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `vllm_mlx/models/gemma4_vendored/` |
 | Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `vllm_mlx/models/hy_v3.py` |
 | DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `vllm_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |
+| Stable Diffusion 3.5 Large MLX runtime | https://github.com/argmaxinc/DiffusionKit (`498e5db`) | MIT | `vllm_mlx/image/sd35_runtime/` (`LICENSE`, `NOTICE`) |
 | MTP speculative-decoding head + generator | https://github.com/ml-explore/mlx-lm (PR #990) | MIT | `vllm_mlx/spec_decode/mtp/head.py`, `generator.py` |
 | Request/status model, adapted | https://github.com/vllm-project/vllm | Apache-2.0 | `vllm_mlx/request.py` |
 | Several tool parsers, ported | https://github.com/vllm-project/vllm, https://github.com/sgl-project/sglang | Apache-2.0 | `vllm_mlx/tool_parsers/` |
