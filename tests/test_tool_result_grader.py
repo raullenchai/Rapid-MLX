@@ -1120,6 +1120,33 @@ class TestInputIsDataNotInstructions:
         assert len(rep.facts) == 1
         assert rep.facts[0].status == "missing"
 
+    def test_identifier_prefix_number_is_not_a_value(self, g):
+        # Round-20 F1: a number immediately preceded by an identifier character
+        # (letter or underscore) is a token/LABEL suffix, not a standalone value
+        # -- "sensor ABC21°C" / "model_x21" must not leak a bare 21 that
+        # satisfies a 21 °C fact. (Signs/exponents were already covered; this
+        # closes the letter/underscore prefix gap.)
+        for phrase in [
+            "sensor ABC21°C",
+            "model_x21°C",
+            "temperature is sensor ABC21°C",
+            "temp-21°C",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        # Real values, signed values and approximate values still ground.
+        for phrase in [
+            "temperature is 21°C",
+            "temperature is +21°C",
+            "temperature is about 21",
+        ]:
+            assert _grade(g, [TEMP21C], phrase).overall is True, phrase
+        # Signed-exponent / exponent fragments stay rejected (no regression).
+        for phrase in ["temperature 1e21°C", "temperature 1e+21°C"]:
+            assert _grade(g, [TEMP21C], phrase).overall is False, phrase
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C

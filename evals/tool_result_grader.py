@@ -546,8 +546,21 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
                 and text[match.end("num") + 1].isdigit()
             ):
                 continue
-        if start0 > 0 and text[start0 - 1] in "0123456789.,eE+-":
-            continue
+        if start0 > 0:
+            prev = text[start0 - 1]
+            # Numeric-punctuation continuation ("1e21", "1,000", "21.0.5") means
+            # this match is a SUFFIX of a larger numeric token.
+            if prev in "0123456789.,eE+-":
+                continue
+            # An IDENTIFIER prefix ("sensor ABC21°C", "model_x21", "temp-21°C")
+            # means the number is part of a token/label, not a standalone value
+            # -- an identifier suffix must not satisfy a fact as the bare 21.
+            # The captured leading sign (if any) is part of the match, so this
+            # boundary is the char before the whole signed numeric; standalone
+            # signed values ("-21°C", "+21°C") are preceded by whitespace/start
+            # and unaffected.
+            if prev.isalpha() or prev == "_":
+                continue
         value = float(num)
         start = match.start()
         if not token:
