@@ -1,0 +1,7 @@
+# apps/rapid-web/rmlx_web/static/ is the BUILD OUTPUT of
+# apps/rapid-web/frontend/, committed because the Python package ships it as
+# package data. Marking it generated collapses it in PR review and keeps it
+# out of language statistics — a 700 KB minified bundle would otherwise
+# report this repository as mostly JavaScript.
+apps/rapid-web/rmlx_web/static/index.html linguist-generated=true -diff
+apps/rapid-web/rmlx_web/static/assets/** linguist-generated=true -diff

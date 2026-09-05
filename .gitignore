@@ -119,6 +119,30 @@ gsm8k_*.json
 *.jinja
 !vllm_mlx/templates/*.jinja
 
+# `lib/` above is a Python packaging pattern but matches at any depth, which
+# silently swallows the frontend's source directory of the same name.
+!apps/rapid-web/frontend/src/lib/
+
+# Node — only apps/rapid-web/frontend/ has a package.json, but a stray npx or
+# a tool run from the wrong directory creates node_modules elsewhere, so the
+# bare pattern matches at any depth.
+node_modules/
+apps/rapid-web/frontend/dist/
+apps/rapid-web/frontend/test-results/
+apps/rapid-web/frontend/playwright-report/
+# `tsc -b` incremental cache. Machine-local and regenerated on every run.
+apps/rapid-web/frontend/tsconfig.tsbuildinfo
+
+# The frontend is pnpm-only (see apps/rapid-web/frontend/.npmrc). A stray
+# `npm install` writing a package-lock.json is the failure worth catching:
+# nothing reads it, but it resolves versions pnpm-lock.yaml never agreed to,
+# and CI gates the committed build artifact on every machine producing an
+# identical dependency tree. Ignoring it keeps one from being committed by
+# accident.
+apps/rapid-web/frontend/package-lock.json
+apps/rapid-web/frontend/bun.lock
+apps/rapid-web/frontend/yarn.lock
+
 # Aider
 .aider*
 

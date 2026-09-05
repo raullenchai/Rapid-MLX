@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rmlx-web"
+version = "0.1.0"
+description = "Mobile-friendly web UI for Rapid-MLX: chat and manage models from a phone"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    # FastAPI + uvicorn are already core dependencies of rapid-mlx itself, so
+    # installing this alongside it pulls in nothing new. They are declared
+    # here anyway because this package deliberately does NOT depend on
+    # rapid-mlx as a Python distribution — it drives the `rapid-mlx` command
+    # as a subprocess, so it must be installable on its own.
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    # httpx, not requests: the chat proxy streams server-sent events and has
+    # to propagate client disconnects back to the child. `requests` is
+    # synchronous and would tie up a worker per in-flight generation.
+    "httpx>=0.25.0",
+    # Multipart is used for bounded binary image/audio uploads. Sending the
+    # bytes directly avoids the ~33% Base64 expansion and several full-size
+    # browser/server memory copies.
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+# `rmlx-web`, matching the main package's short `rmlx` command (root
+# pyproject.toml:465). The distribution renamed from `rapid-mlx-web` at the
+# same time, so an existing editable install keeps the OLD command on PATH
+# until it is uninstalled by its old name — `pip uninstall rapid-mlx-web`
+# first, or the two entry points coexist and shadow each other.
+rmlx-web = "rmlx_web.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[tool.setuptools.packages.find]
+include = ["rmlx_web*"]
+
+[tool.setuptools.package-data]
+# The whole built tree: the shell plus the hashed JS/CSS it references. A
+# glob for *.html alone would ship a page whose assets 404.
+rmlx_web = ["static/*.html", "static/assets/*"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
