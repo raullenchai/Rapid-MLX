@@ -49,6 +49,7 @@ def test_available_payload_shape() -> None:
         "modality",
         "video_modes",
         "min_memory_gb",
+        "default_steps",
         "is_builtin",
         "is_text_only",
     ):
@@ -89,6 +90,16 @@ def test_available_sections_are_split_by_modality() -> None:
     assert all(e["modality"] == "video-gen" for e in payload["video"])
     assert all(e["modality"] == "image-gen" for e in payload["image"])
     assert all(e["modality"] == "audio" for e in payload["audio"])
+
+
+def test_image_entries_expose_runtime_default_steps() -> None:
+    payload = _available_models_json_payload()
+    by_alias = {entry["alias"]: entry for entry in payload["image"]}
+
+    assert by_alias["bonsai-image-4b-2bit"]["default_steps"] == 4
+    assert by_alias["hidream-o1-dev"]["default_steps"] == 28
+    assert by_alias["sdxl-base"]["default_steps"] == 30
+    assert all(entry["default_steps"] is None for entry in payload["text"])
 
 
 def test_video_entries_expose_pre_serve_modes_and_memory_floor() -> None:

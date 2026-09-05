@@ -197,7 +197,7 @@ final class ImageGenViewModel {
         progress?.total ?? Self.seedSteps(for: inFlightAlias ?? selectedAlias)
     }
 
-    static func seedSteps(for alias: String) -> Int {
+    nonisolated static func seedSteps(for alias: String) -> Int {
         // Non-distilled Qwen-Image denoises for ~20 steps (both the base
         // text-to-image model and the edit variant) — matching the engine's
         // per-family default, so the bar isn't scaled for a 4-step turbo run
@@ -519,9 +519,10 @@ final class ImageGenViewModel {
         return RequestTarget(
             alias: selected.alias,
             hfPath: selected.hfRepo,
-            estimatedMemoryGB: ModelSizing.residentEstimateGB(
+            estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: selected.alias,
-                sizeText: selected.sizeOnDisk
+                sizeText: selected.sizeOnDisk,
+                minimumMemoryGB: selected.minimumMemoryGB
             )
         )
     }

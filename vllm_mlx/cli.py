@@ -6642,6 +6642,12 @@ def _available_models_json_payload() -> dict:
             raw = size_bytes(p.hf_path)
         except Exception:
             raw = None
+        modality = _modality(p)
+        default_steps = None
+        if modality == "image-gen":
+            from vllm_mlx.image.engine import default_steps_for_model
+
+            default_steps = default_steps_for_model(p.hf_path)
         return {
             "alias": alias,
             "hf_path": p.hf_path,
@@ -6657,9 +6663,10 @@ def _available_models_json_payload() -> dict:
             "mtp_continuous_batching_tier": getattr(
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
-            "modality": _modality(p),
+            "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
+            "default_steps": default_steps,
             # Desktop consumes these as a launch-safety contract. Only
             # curated aliases may opt into eager MLLM loading, and an
             # explicit text-only pin always wins over name inference.

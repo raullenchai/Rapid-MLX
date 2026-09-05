@@ -104,6 +104,36 @@ struct ImageCatalogTests {
         #expect(cached.first { $0.alias == "flux-schnell" }?.cached == true)
     }
 
+    @Test("image JSON exposes validated minimum-memory floors")
+    func parsesImageMemoryFloors() {
+        let payload = #"{"image":[{"alias":"sdxl-base","min_memory_gb":16,"default_steps":30},{"alias":"bad","min_memory_gb":true,"default_steps":4},{"alias":"missing","min_memory_gb":12,"default_steps":null}]}"#
+        let readiness = ModelCatalog.parseImageReadinessJSON(payload)
+        #expect(readiness == [
+            "sdxl-base": ModelCatalog.ImageReadiness(
+                minimumMemoryGB: 16, defaultSteps: 30
+            )
+        ])
+    }
+
+    @Test("image picker summarizes load readiness before selection")
+    func imageReadinessSummary() {
+        let entry = ModelEntry(
+            alias: "sdxl-base",
+            hfRepo: "stabilityai/stable-diffusion-xl-base-1.0",
+            sizeOnDisk: "6.5 GiB",
+            cached: true,
+            kind: .image,
+            imageCapability: .generation,
+            imageDefaultSteps: 30,
+            minimumMemoryGB: 16,
+            runtimeAdapter: "rapid_mlx/sdxl"
+        )
+        #expect(
+            ImageReadinessPresentation.rowTitle(entry)
+                == "sdxl-base · 6.5 GiB · ≥16 GB RAM · 512² default · 30 steps · Rapid MLX"
+        )
+    }
+
     @Test("Image capability rows are excluded from the chat catalog")
     func imageRowsExcludedFromChat() {
         // hasNonChatKindTag now drops image alongside audio/video.

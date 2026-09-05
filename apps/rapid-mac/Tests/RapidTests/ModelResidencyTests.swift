@@ -893,6 +893,16 @@ struct ModelResidencyTests {
         #expect(estimate > ModelSizing.residentEstimateGB(alias: "z-image-turbo"))
     }
 
+    @Test("Image residency estimate honors the catalog hardware floor")
+    func imageEstimateHonorsCatalogFloor() {
+        let estimate = ModelSizing.imageResidentEstimateGB(
+            alias: "sdxl-base",
+            sizeText: "6.5 GiB",
+            minimumMemoryGB: 16
+        )
+        #expect(abs(estimate - 12.8) < 0.001)
+    }
+
     @Test("Selecting a chat model does not retain the legacy server restart flow")
     func selectionDoesNotRestartServer() throws {
         let rapidMacRoot = URL(fileURLWithPath: #filePath)
