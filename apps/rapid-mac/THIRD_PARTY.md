@@ -232,6 +232,7 @@ The largest and most self-contained components:
 | Component | Upstream | Upstream license | In-tree |
 | --- | --- | --- | --- |
 | MLX Stable Audio 3 | https://github.com/Stability-AI/stable-audio-3 | MIT | `vllm_mlx/audio/sa3/` (`LICENSE`, `NOTICE`) |
+| Bonsai Image low-bit FLUX.2 core | https://github.com/PrismML-Eng/mflux-prism (`bcd13e8`) | MIT | `vllm_mlx/image/bonsai_runtime/_vendor/` (`LICENSE`, `NOTICE`) |
 | CogVideoX-Fun MLX | https://github.com/dgrauet/VideoX-Fun-mlx | Apache-2.0 | `videox_fun_mlx/` (`LICENSE`, `NOTICE`) |
 | TurboQuant Metal kernels | https://github.com/arozanov/turboquant-mlx | Apache-2.0 | `vllm_mlx/kernels/turboquant_fused.metal` |
 | GLM-5 Next image processor | https://github.com/jundot/omlx (`c520d7e`) | Apache-2.0 | `vllm_mlx/patches/glm5_next_processor.py` |

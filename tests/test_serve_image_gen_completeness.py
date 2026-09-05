@@ -148,3 +148,22 @@ def test_hidream_skips_unpinned_generic_prefetch(monkeypatch):
 
     assert excinfo.value.code == 1
     assert calls == []
+
+
+def test_bonsai_skips_unpinned_generic_prefetch(monkeypatch):
+    """Bonsai's ImageEngine owns the exact-revision, data-only cold pull."""
+    calls = []
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_missing_weights",
+        lambda _repo: ["transformer-packed-mflux/diffusion_pytorch_model.safetensors"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _drive_serve(
+            monkeypatch,
+            alias="bonsai-image-4b-2bit",
+            download_hook=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert excinfo.value.code == 1
+    assert calls == []

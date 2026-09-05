@@ -23,11 +23,12 @@ struct ImageCatalogTests {
       ────────────────────────────
       ltx-2.3-mlx-q4        24.0 GiB   [video:gen] notapalindrome/ltx23-mlx-av-q4
 
-      Image models (4 aliases)
+      Image models (5 aliases)
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
       flux2-klein-4b        4.3 GiB    [image:both] Runpod/FLUX.2-klein-4B-mflux-4bit
+      bonsai-image-4b-2bit   3.6 GiB    [image:gen] prism-ml/bonsai-image-ternary-4B-mlx-2bit
       z-image-turbo         5.5 GiB    [image:gen] filipstrand/Z-Image-Turbo-mflux-4bit
       hidream-o1-dev       16.4 GiB    [image:gen] mlx-community/HiDream-O1-Image-Dev-mlx-bf16
       sdxl-base             6.5 GiB     [image:gen] stabilityai/stable-diffusion-xl-base-1.0
@@ -36,10 +37,11 @@ struct ImageCatalogTests {
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 4)
+        #expect(rows.count == 5)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
+        #expect(aliases.contains("bonsai-image-4b-2bit"))
         #expect(aliases.contains("z-image-turbo"))
         #expect(aliases.contains("hidream-o1-dev"))
         #expect(aliases.contains("sdxl-base"))
@@ -58,6 +60,10 @@ struct ImageCatalogTests {
         #expect(sdxl?.hfRepo == "stabilityai/stable-diffusion-xl-base-1.0")
         #expect(sdxl?.size == "6.5 GiB")
         #expect(sdxl?.capability == .generation)
+        let bonsai = rows.first { $0.alias == "bonsai-image-4b-2bit" }
+        #expect(bonsai?.hfRepo == "prism-ml/bonsai-image-ternary-4B-mlx-2bit")
+        #expect(bonsai?.size == "3.6 GiB")
+        #expect(bonsai?.capability == .generation)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -67,6 +73,7 @@ struct ImageCatalogTests {
             rows,
             cachedRepos: [
                 "Runpod/FLUX.2-klein-4B-mflux-4bit",
+                "prism-ml/bonsai-image-ternary-4B-mlx-2bit",
                 "filipstrand/Z-Image-Turbo-mflux-4bit",
                 "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
                 "stabilityai/stable-diffusion-xl-base-1.0",
@@ -76,6 +83,7 @@ struct ImageCatalogTests {
         let klein = cached.first { $0.alias == "flux2-klein-4b" }
         #expect(klein?.cached == true)
         #expect(klein?.imageCapability == .generationAndEditing)
+        #expect(cached.first { $0.alias == "bonsai-image-4b-2bit" }?.cached == true)
         #expect(cached.first { $0.alias == "z-image-turbo" }?.cached == true)
         #expect(cached.first { $0.alias == "hidream-o1-dev" }?.cached == true)
         #expect(cached.first { $0.alias == "sdxl-base" }?.cached == true)
@@ -95,6 +103,7 @@ struct ImageCatalogTests {
         // The chat parser drops the image alias entirely.
         let excluded = ModelCatalog.parseExcludedAliases(Self.sample)
         #expect(excluded.contains("flux2-klein-4b"))
+        #expect(excluded.contains("bonsai-image-4b-2bit"))
         #expect(excluded.contains("z-image-turbo"))
         #expect(excluded.contains("hidream-o1-dev"))
         #expect(excluded.contains("sdxl-base"))

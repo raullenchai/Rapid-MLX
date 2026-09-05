@@ -540,6 +540,12 @@ def estimate_model_bytes(model_name: str) -> int:
     folded = model_name.casefold()
     known_image_gib = {
         "flux2-klein-4b": 5.9,
+        # Published 3.62 GiB fixed payload (2-bit transformer, 4-bit text
+        # encoder, FP16 VAE). Keep 7 GiB of admission room for 1024²
+        # activations, Metal compilation, tiled decode, and output encoding;
+        # dogfood records the measured allocator peak before landing.
+        "bonsai-image": 7.0,
+        "bonsai_image": 7.0,
         "z-image-turbo": 5.9,
         # BF16 unified backbone + custom diffusion heads. Rapid's 1024² server
         # dogfood measured 17.43 GiB max RSS; round up to retain allocator and

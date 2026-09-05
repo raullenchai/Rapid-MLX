@@ -1,0 +1,8 @@
+The low-bit FLUX.2 Klein runtime in _vendor/ is adapted from
+PrismML-Eng/mflux-prism commit bcd13e83b7fcfd76186c98ef322dd9cf28e996c1,
+which is derived from mflux and distributed under the accompanying MIT license.
+
+Rapid-MLX modifications place the code under its own package namespace and add
+a fail-closed adapter for the fixed Bonsai Image checkpoint. Model weights are
+not redistributed; their upstream Apache-2.0 LICENSE and NOTICE remain in the
+downloaded Hugging Face snapshot.

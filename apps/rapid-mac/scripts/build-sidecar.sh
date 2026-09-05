@@ -570,16 +570,19 @@ PY
 
 # Fail closed: with no torch in the stage, importing mflux's weight loader
 # is itself the proof that the image lane no longer needs a 363 MB
-# dependency. A regression here means every Images-tab generation 500s.
+# dependency. Import the Rapid-owned Bonsai adapter too: it is separately
+# advertised in Desktop and reaches additional FLUX.2 modules. A regression
+# here means the corresponding Images-tab generation fails at startup.
 PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - <<'PY'
 import importlib
 import sys
 
 importlib.import_module("mflux.models.common.weights.loading.weight_loader")
 importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")
+importlib.import_module("vllm_mlx.image.bonsai_runtime")
 if "torch" in sys.modules:
     raise SystemExit("ERR: mflux still pulls torch at import time")
-print("==> mflux image lane imports without torch: OK")
+print("==> mflux and Bonsai image lanes import without torch: OK")
 PY
 
 # ----- step 2.7: bundle minimal video runtime --no-deps ---------------

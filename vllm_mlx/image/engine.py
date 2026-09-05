@@ -22,6 +22,8 @@ stays commercially clean:
   VAE-free unified pixel transformer (MIT)
 * ``sdxl-base``        — text→image (``Stable Diffusion XL Base 1.0``),
   30-step, dual-CLIP + UNet + VAE pipeline (OpenRAIL++)
+* ``bonsai-image``     — text→image (ternary ``FLUX.2-klein-4B``), 4-step,
+  prepacked MLX 2-bit transformer with a 4-bit Qwen3 encoder (Apache-2.0)
 
 ``flux2-klein`` and ``z-image`` supersede the older/larger families for the
 interactive tab: Klein is ~3× faster than schnell/z-image at the same
@@ -111,6 +113,8 @@ class _ProgressReporter:
 def _detect_family(model_name: str) -> str:
     """Map an alias hf_path (or local dir) to a supported mflux family."""
     name = (model_name or "").casefold()
+    if "bonsai-image" in name or "bonsai_image" in name:
+        return "bonsai-image"
     if "hidream-o1" in name or "hidream_o1" in name:
         return "hidream-o1-dev"
     if "stable-diffusion-xl" in name or "sdxl" in name:
@@ -133,14 +137,16 @@ def _detect_family(model_name: str) -> str:
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
         "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
-        "hidream-o1-dev, sdxl-base."
+        "hidream-o1-dev, sdxl-base, bonsai-image."
     )
 
 
 # Families whose ``generate_image`` takes NO ``negative_prompt`` parameter.
 # FLUX.2 Klein omits it (Flux1 / Qwen-Image / Z-Image all accept it), and
 # passing an unknown kwarg raises — so the engine drops it for these.
-_NO_NEGATIVE_PROMPT_FAMILIES = frozenset({"flux2-klein", "hidream-o1-dev"})
+_NO_NEGATIVE_PROMPT_FAMILIES = frozenset(
+    {"flux2-klein", "hidream-o1-dev", "bonsai-image"}
+)
 
 # Per-family default denoise steps when the request pins none. Distilled/turbo
 # models converge in a handful of steps; a non-distilled model needs many more.
@@ -153,6 +159,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "qwen-image-edit": 20,
     "hidream-o1-dev": 28,
     "sdxl-base": 30,
+    "bonsai-image": 4,
 }
 
 
@@ -195,6 +202,7 @@ class ImageGenerationEngine:
         self._prequantized = self.family in {
             "hidream-o1-dev",
             "sdxl-base",
+            "bonsai-image",
         } or _looks_like_prequantized(model_name)
         # ``None`` when a backend owns its local checkpoint conversion, or when
         # the repo is already quantized. Passing a width for pre-quantized
@@ -290,6 +298,18 @@ class ImageGenerationEngine:
 
     def _build_model(self):
         """Instantiate the backing mflux model (import-lazy)."""
+        if self.family == "bonsai-image":
+            from .bonsai_runtime import BONSAI_IMAGE_REPO, BonsaiImage
+
+            if self.model_name != BONSAI_IMAGE_REPO:
+                raise ImageRuntimeError(
+                    "Bonsai Image currently supports only the pinned official "
+                    f"checkpoint '{BONSAI_IMAGE_REPO}'."
+                )
+            model_path = self._model_path_for_mflux()
+            if model_path is None:
+                raise ImageRuntimeError("Bonsai Image requires a local model snapshot.")
+            return BonsaiImage(model_path)
         if self.family == "hidream-o1-dev":
             from .hidream_runtime import HiDreamO1
 
@@ -780,6 +800,36 @@ class ImageGenerationEngine:
                 )
             if width % 8 or height % 8:
                 raise ImageRuntimeError("SDXL dimensions must be multiples of 8.")
+        elif self.family == "bonsai-image":
+            if len(prompt) > 4096:
+                raise ImageRuntimeError(
+                    "Bonsai Image prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 4:
+                raise ImageRuntimeError(
+                    "Bonsai Image supports its published 4-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRuntimeError(
+                    "Bonsai Image dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 32 or height % 32:
+                raise ImageRuntimeError(
+                    "Bonsai Image dimensions must be multiples of 32."
+                )
+            if guidance not in (None, 1.0):
+                raise ImageRuntimeError(
+                    "Bonsai Image uses guidance 1.0; omit guidance or set it to 1.0."
+                )
+            if negative_prompt is not None:
+                raise ImageRuntimeError(
+                    "Bonsai Image does not support negative_prompt."
+                )
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel
