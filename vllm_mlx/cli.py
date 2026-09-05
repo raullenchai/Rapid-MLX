@@ -2175,6 +2175,7 @@ def _normalize_speculative_config_or_exit(args):
             "enable_dflash": False,
             "spec_decode": "none",
             "dflash_drafter_path": "",
+            "dflash_runtime": "mlx-vlm",
             "enable_mtp": False,
             "mtp_num_draft_tokens": 1,
             "mtp_optimistic": False,
@@ -2461,6 +2462,7 @@ def _normalize_speculative_config_or_exit(args):
         args.enable_ddtree = True
     elif config.method == "dflash":
         args.enable_dflash = True
+        args.dflash_runtime = config.runtime or "mlx-vlm"
         if config.model:
             args.dflash_drafter_path = config.model
     elif config.method == "dspark":
@@ -4134,6 +4136,7 @@ def serve_command(args):
             expected_algorithm=(
                 _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
             ),
+            runtime_backend=getattr(args, "dflash_runtime", "mlx-vlm"),
         )
         return
 

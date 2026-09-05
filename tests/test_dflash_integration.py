@@ -158,6 +158,19 @@ def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
     assert _resolve_dflash_drafter_repo(args, profile) == "z-lab/Qwen3.5-27B-DFlash"
 
 
+def test_speculative_config_dflash_normalizes_explicit_runtime() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _dflash_cli_args(
+        speculative_config='{"method":"dflash","runtime":"dflash-mlx"}'
+    )
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.enable_dflash is True
+    assert args.dflash_runtime == "dflash-mlx"
+
+
 def test_unverified_dflash_profile_cannot_inherit_residual_drafter() -> None:
     from vllm_mlx.cli import _resolve_dflash_drafter_repo
 
@@ -244,6 +257,83 @@ def test_programmatic_dflash2_identity_cannot_bypass_registry_qualification(
             cors_origins=[],
             uvicorn_log_level="error",
         )
+
+
+def test_optimized_runtime_cannot_bypass_registry_qualification(monkeypatch) -> None:
+    from vllm_mlx.speculative.dflash.eligibility import DFlashUnavailable
+    from vllm_mlx.speculative.dflash.server import run_dflash_server
+
+    monkeypatch.setattr("vllm_mlx.speculative.dflash.server.have_runtime", lambda: True)
+    with pytest.raises(DFlashUnavailable, match="exact immutable target/drafter pair"):
+        run_dflash_server(
+            main_model_repo="user/target-4bit",
+            main_model_revision="a" * 40,
+            drafter_repo="user/dflash2",
+            drafter_revision="b" * 40,
+            expected_algorithm="dflash2",
+            runtime_backend="dflash-mlx",
+            experimental_opt_in=True,
+            host="127.0.0.1",
+            port=8000,
+            served_model_name="target",
+            default_max_tokens=32,
+            cors_origins=[],
+            uvicorn_log_level="error",
+        )
+
+
+def test_optimized_runtime_loads_qualified_pair_on_dflash_executor(monkeypatch) -> None:
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash import eligibility, upstream_runtime
+    from vllm_mlx.speculative.dflash import server as srv
+
+    receipt: dict[str, object] = {}
+    loaded = SimpleNamespace(
+        model=MagicMock(), processor=MagicMock(), drafter=MagicMock()
+    )
+
+    def _load_upstream_runtime(**kwargs):
+        receipt["load"] = kwargs
+        receipt["thread"] = threading.current_thread().name
+        return loaded
+
+    monkeypatch.setattr(eligibility, "is_registry_verified_pair", lambda *_args: True)
+    monkeypatch.setattr(
+        upstream_runtime, "load_upstream_runtime", _load_upstream_runtime
+    )
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, **_kwargs: receipt.update(app=app))
+    srv.run_dflash_server(
+        main_model_repo="rapid-mlx/target-4bit",
+        main_model_revision="a" * 40,
+        drafter_repo="z-lab/dflash2",
+        drafter_revision="b" * 40,
+        expected_algorithm="dflash2",
+        runtime_backend="dflash-mlx",
+        host="127.0.0.1",
+        port=8000,
+        served_model_name="target",
+        default_max_tokens=32,
+        cors_origins=[],
+        uvicorn_log_level="error",
+    )
+
+    assert receipt["load"] == {
+        "main_model_repo": "rapid-mlx/target-4bit",
+        "main_model_revision": "a" * 40,
+        "drafter_repo": "z-lab/dflash2",
+        "drafter_revision": "b" * 40,
+    }
+    assert str(receipt["thread"]).startswith("dflash-worker")
+    health = TestClient(receipt["app"]).get("/healthz")
+    assert health.status_code == 200
+    assert health.json()["runtime"] == "dflash-mlx"
+    assert health.json()["algorithm"] == "dflash2"
 
 
 def test_programmatic_experimental_4bit_logs_unverified_pair(
@@ -677,6 +767,7 @@ def test_dflash_cli_forwards_security_and_resource_limits() -> None:
             "args.tool_call_parser if args.enable_auto_tool_choice else None"
         ),
         "reasoning_parser_name": "args.reasoning_parser",
+        "runtime_backend": "getattr(args, 'dflash_runtime', 'mlx-vlm')",
     }
     assert {name: ast.unparse(keywords[name]) for name in expected} == expected
 

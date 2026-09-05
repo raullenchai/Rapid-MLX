@@ -56,6 +56,14 @@ def test_parse_dflash_speculative_config_accepts_drafter_model() -> None:
     assert cfg.tree_budget is None
 
 
+def test_parse_dflash_speculative_config_accepts_explicit_runtime() -> None:
+    cfg = parse_speculative_config('{"method":"dflash","runtime":"dflash-mlx"}')
+
+    assert cfg is not None
+    assert cfg.method == "dflash"
+    assert cfg.runtime == "dflash-mlx"
+
+
 def test_parse_dspark_speculative_config_accepts_native_depth() -> None:
     cfg = parse_speculative_config('{"method":"dspark","num_speculative_tokens":5}')
 
@@ -115,6 +123,8 @@ def test_parse_suffix_speculative_config_accepts_existing_knobs() -> None:
             "unsupported speculative-config",
         ),
         ('{"method":"dflash","tree_budget":24}', "unsupported speculative-config"),
+        ('{"method":"dflash","runtime":"custom"}', "must be 'mlx-vlm'"),
+        ('{"method":"mtp","runtime":"dflash-mlx"}', "unsupported speculative-config"),
         ('{"method":"unknown"}', "unsupported speculative decoding method"),
     ],
 )
@@ -228,6 +238,7 @@ def _spec_config_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "dflash_drafter_path": "",
+        "dflash_runtime": "mlx-vlm",
         "mtp_num_draft_tokens": 1,
         "mtp_optimistic": False,
         "mtp_sidecar": None,
