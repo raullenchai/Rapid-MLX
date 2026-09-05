@@ -125,7 +125,7 @@ class FakeModel:
 def _install_mlx_vlm_mock(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    family: str = "block",
+    is_diffusion: bool = True,
     stream_yields: list[FakeGenerationResult] | None = None,
 ) -> None:
     """Wire stub modules into ``sys.modules`` so the real mlx-vlm
@@ -153,7 +153,13 @@ def _install_mlx_vlm_mock(
     mlx_vlm_diffusion = types.ModuleType("mlx_vlm.generate.diffusion")
 
     def _family(_model: Any) -> str:
-        return family
+        # mllib still exposes the deprecated router; it now returns a
+        # generic family string and never the old "block" marker. Feed it
+        # back for the error message path only.
+        return "diffusion" if is_diffusion else "other"
+
+    def _is_diffusion(_model: Any) -> bool:
+        return is_diffusion
 
     captured_calls: dict[str, Any] = {}
 
@@ -175,6 +181,7 @@ def _install_mlx_vlm_mock(
         yield from (stream_yields or [])
 
     mlx_vlm_diffusion.diffusion_generation_family = _family  # type: ignore[attr-defined]
+    mlx_vlm_diffusion.is_diffusion_model = _is_diffusion  # type: ignore[attr-defined]
     mlx_vlm_diffusion.stream_diffusion_generate = _stream  # type: ignore[attr-defined]
     mlx_vlm_diffusion.__captured__ = captured_calls  # type: ignore[attr-defined]
 
@@ -219,10 +226,10 @@ class TestLoadAndIntrospection:
         assert engine.is_mllm is False
         assert engine.tokenizer is not None
 
-    def test_load_rejects_non_block_family(
+    def test_load_rejects_non_diffusion_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_mlx_vlm_mock(monkeypatch, family="masked")
+        _install_mlx_vlm_mock(monkeypatch, is_diffusion=False)
         from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")

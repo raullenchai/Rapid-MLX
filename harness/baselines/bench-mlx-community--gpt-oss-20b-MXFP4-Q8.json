@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "captured_at": "2026-08-06T05:26:06Z",
+  "captured_at": "2026-09-05T09:15:00Z",
   "family": "harmony",
-  "sample_runs": 3,
+  "sample_runs": 5,
   "regression_threshold_pct": {
     "cold_request_ms_median": 20,
     "warm_request_ms_median": 5
@@ -14,21 +14,24 @@
     "engine": "batched"
   },
   "environment": {
-    "hardware": {"chip": "Apple M3 Ultra", "memory_gb": 256},
+    "hardware": {
+      "chip": "Apple M3 Ultra",
+      "memory_gb": 256
+    },
     "software": {
-      "rapid_mlx_version": "0.12.4",
-      "rapid_mlx_commit": "f2097169ce0fd294e96a889a9e31615b32141dd5",
-      "python": "3.12.13",
+      "rapid_mlx_version": "0.13.4",
+      "rapid_mlx_commit": "c5f98f8fbf9f0ff56df2b79456422bba834ddcb4",
+      "python": "3.12.14",
       "macos": "26.5.2 (25F84)",
-      "mlx": "0.31.2",
+      "mlx": "0.32.2",
       "mlx_lm": "0.31.3",
-      "mlx_vlm": "0.6.4",
-      "mlx_audio": "0.4.6"
+      "mlx_vlm": "0.6.17",
+      "mlx_audio": "0.4.3"
     }
   },
   "metrics": {
-    "cold_request_ms_median": 256.8378448486328,
-    "warm_request_ms_median": 348.24109077453613,
-    "speedup_x": 0.7375288317567295
+    "cold_request_ms_median": 288.348,
+    "warm_request_ms_median": 346.362,
+    "speedup_x": 0.8325
   }
 }

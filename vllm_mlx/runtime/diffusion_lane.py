@@ -701,6 +701,7 @@ class DiffusionEngine(BaseEngine):
             import mlx.core as mx
             from mlx_vlm.generate.diffusion import (
                 diffusion_generation_family,
+                is_diffusion_model,
             )
             from mlx_vlm.utils import load
         except BaseException as e:  # noqa: BLE001 — propagate to caller
@@ -718,11 +719,20 @@ class DiffusionEngine(BaseEngine):
         try:
             logger.info(f"Loading DiffusionEngine model: {self._model_name}")
             model, processor = load(self._model_name)
-            family = diffusion_generation_family(model)
-            if family != "block":
+            # mlx-vlm >= 0.6.17 routes diffusion detection through
+            # ``is_diffusion_model`` (the deprecated
+            # ``diffusion_generation_family`` now returns a generic
+            # ``"diffusion"`` and never the block-canvas family name this
+            # lane used to match). Gate on the modern predicate, which is
+            # True for DiffusionGemma-family block-diffusion checkpoints
+            # (language_model.generate + canvas config), so the lane still
+            # rejects non-text-diffusion models while accepting the one
+            # family it is built to serve.
+            if not is_diffusion_model(model):
                 raise RuntimeError(
                     f"{self._model_name!r} is not a block-diffusion model "
-                    f"(diffusion_generation_family returned {family!r}). "
+                    f"(diffusion_generation_family returned "
+                    f"{diffusion_generation_family(model)!r}). "
                     "DiffusionEngine only supports DiffusionGemma-family "
                     "block-canvas checkpoints."
                 )
