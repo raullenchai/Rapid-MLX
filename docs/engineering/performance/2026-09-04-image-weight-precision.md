@@ -27,10 +27,10 @@ The implementation at commit `4d280191d` was then dogfooded through the real
 - two independent server processes per checkpoint, each with one discarded
   warm-up, followed by five measured requests combined across both processes.
 
-| Weight path | Warm-up | Measured requests | Median |
-|---|---:|---:|---:|
-| Pinned pre-quantized q4 alias | 52.431 / 52.085 s | 54.643 / 60.425 / 51.882 / 52.463 / 52.703 s | 52.703 s |
-| Pinned packaged bf16 alias | 43.287 / 44.036 s | 46.065 / 41.820 / 40.538 / 42.805 / 40.844 s | 41.820 s |
+| Weight path | Warm-up | Measured requests | Median | p95 (nearest rank) |
+|---|---:|---:|---:|---:|
+| Pinned pre-quantized q4 alias | 52.431 / 52.085 s | 54.643 / 60.425 / 51.882 / 52.463 / 52.703 s | 52.703 s | 60.425 s |
+| Pinned packaged bf16 alias | 43.287 / 44.036 s | 46.065 / 41.820 / 40.538 / 42.805 / 40.844 s | 41.820 s | 46.065 s |
 
 The packaged bf16 path reduced median end-to-end wall time by 20.6%, or 1.26×
 throughput. Every repeat within a precision produced the same PNG SHA-256;
