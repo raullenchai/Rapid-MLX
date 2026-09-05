@@ -95,6 +95,10 @@ DENY_MARKERS = (
     "won't",
     "wouldn't",
     "shouldn't",
+    "didn't",
+    "doesn't",
+    "hasn't",
+    "haven't",
     "never",
     "not available",
     "no result",
@@ -621,7 +625,8 @@ _ADJACENT_UNIT_RE = re.compile(
     r"watts|watt|volts|volt|amps|amp|amperes|ampere|ohms|ohm|"
     r"hertz|hz|joules|joule|newtons|newton|pascals|pascal|lumens|lumen|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
-    r"points|point|percentile|percentiles|grade|marks))"
+    r"points|point|percentile|percentiles|grade|marks|"
+    r"batteries|battery))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
     # common English surface for the fact's OWN temperature unit ("temperature
     # is 21 degrees" is a natural affirmative report of temperature=21°C), so
@@ -864,6 +869,10 @@ _COMPARATIVES = (
     ("no less than", ">="),
     ("not more than", "<="),
     ("not less than", ">="),
+    ("not warmer than", "<="),  # not (warmer than X) == <= X
+    ("not hotter than", "<="),
+    ("not colder than", ">="),  # not (colder than X) == >= X
+    ("not cooler than", ">="),
 )
 
 # Regexes for the no/not-prefixed INCLUSIVE comparators ("no more than",

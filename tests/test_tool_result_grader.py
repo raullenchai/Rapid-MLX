@@ -1176,6 +1176,66 @@ class TestInputIsDataNotInstructions:
         assert rep.facts[0].contradicted is True
         assert rep.overall is False
 
+    def test_deny_contractions_didnt_doesnt_hasnt_havent(self, g):
+        # Round-22 F70: DENY_MARKERS had won't/wouldn't/shouldn't/never but not
+        # didn't/doesn't/hasn't/haven't, so "the tool didn't report the
+        # temperature as 18°C" passed as affirmative coverage. The four
+        # contractions are now deny markers and each denies the correct value
+        # (contradicted, not a silent present) when the fact's anchor is present.
+        for phrase in [
+            "the tool didn't report the temperature as 18°C",
+            "the tool doesn't say the temperature is 18°C",
+            "the model hasn't confirmed the temperature is 18°C",
+            "they haven't measured the temperature as 18°C",
+        ]:
+            rep = _grade(g, [TEMP18C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert "temperature" in rep.contradicted, phrase
+            assert rep.overall is False, phrase
+        # A plain affirmative unchanged.
+        assert _grade(g, [TEMP18C], "the temperature is 18°C").overall is True
+
+    def test_count_noun_suffix_is_not_a_temperature(self, g):
+        # Round-22 F71: a count noun immediately after an anchored number
+        # ("has 18 batteries") is not a temperature reading -- "batteries" joins
+        # the count-noun reject list so a bare 18 must not satisfy an 18 °C fact.
+        rep = _grade(g, [TEMP18C], "the temperature sensor has 18 batteries")
+        assert rep.facts[0].status == "missing"
+        assert rep.overall is False
+        # A genuine temperature report is unaffected.
+        assert _grade(g, [TEMP18C], "the temperature is 18°C").overall is True
+
+    def test_negated_directional_comparator_is_inverse_inclusive(self, g):
+        # Round-22 F72: "not warmer than X" is the negation of "warmer than X"
+        # == <= X, and "not colder than X" == >= X (matching the round-18
+        # not-more/not-less inclusive bound). For a 21 °C fact, a COMPATIBLE
+        # negated bound grounds nothing exactly (missing); an INCOMPATIBLE one
+        # is a contradiction.
+        for phrase in [
+            "temperature is not warmer than 30°C",  # 21 <= 30 -> compatible bound
+            "temperature is not colder than 15°C",  # 21 >= 15 -> compatible bound
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        for phrase in [
+            "temperature is not warmer than 15°C",  # 21 <= 15 is false -> contradicted
+            "temperature is not colder than 30°C",  # 21 >= 30 is false -> contradicted
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert rep.overall is False, phrase
+        # Un-negated directional comparators still behave (compatible -> present,
+        # incompatible -> contradicted), and a plain negation still denies.
+        assert (
+            _grade(g, [TEMP21C], "temperature is not warmer than 30°C").overall is False
+        )
+        assert (
+            _grade(g, [TEMP21C], "temperature is warmer than 30°C").facts[0].status
+            == "contradicted"
+        )
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C
