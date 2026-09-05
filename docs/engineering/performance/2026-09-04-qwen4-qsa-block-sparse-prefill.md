@@ -77,13 +77,13 @@ The dispatch floor is about 12% of the sparse call at this smallest admitted
 production geometry. This supports a coarse long-context gate and rejects a
 design that would split the same work into many launches.
 
-## Exact-head served dogfood
+## Served dogfood
 
 A follow-up campaign exercised the OpenAI-compatible streaming route against the
 immutable 98 GB `rapid-mlx/Qwen3.8-Flash-Next-4bit` snapshot at revision
 `dcf657e4acda2aae72da99cde65b6c491cd96998`. The baseline was
-`d6c50526a85d50346af4126c1dca9f149aaa9fbe`; the candidate was the exact PR
-head `c7371139ad4aa0edf5eacc3922243e9c0db91e03`. Both arms used the same M3
+`d6c50526a85d50346af4126c1dca9f149aaa9fbe`; the candidate was the reviewed
+kernel head `c7371139ad4aa0edf5eacc3922243e9c0db91e03`. Both arms used the same M3
 Ultra, dependency environment, prompt bytes, three-run order, cold prefix
 cache, 16-token decode budget, and Metal command-buffer settings.
 
@@ -138,6 +138,18 @@ This campaign is a performance and memory receipt, not a new model-quality
 gate. The earlier five-path output comparison and the focused fp64/Metal tests
 remain the correctness evidence for this default-off path.
 
+The subsequent adversarial review added only device-side malformed-input
+guards and removed a synchronous exception fallback that could not catch MLX's
+lazy execution errors. On the resulting code head
+`f1ec82bbf3ad0f478e2ad59d0960c3a07f8f9b6e`, the same isolated production
+geometry measured 1.487 ms sparse versus 3.348 ms dense (2.25x), with the exact
+same numerical errors reported above. The artifact is
+`/private/tmp/qsa-qualification-safety-guards.json`, SHA-256
+`15d6354b039801c39c1e155c72a16ef9e43da6b4f6f793a2bd7d74a4c0fbeab5`.
+A final served rerun completed three 16K samples and one 32K sample at the
+expected rates before a Metal recovery invalidated the remaining process state;
+those partial samples are not merged into the complete table.
+
 ## Earlier end-to-end evidence and remaining limit
 
 The repository's earlier M3 Ultra full-model campaign measured a 32K prompt at
@@ -147,7 +159,7 @@ paths. That campaign used the same kernel design but predates this rebased
 integration and its complete path receipts, so it is supporting evidence rather
 than an exact-head promotion gate.
 
-The exact-head served campaign now supplies settled wall-time and peak-memory
+The served campaign now supplies settled wall-time and peak-memory
 evidence at 16K, 32K, and 64K. Before automatic enablement, still require a
 fresh model-scale correctness comparison on the pinned release dependency
 build, the expected nonzero kernel-call count, and no unexpected decline
