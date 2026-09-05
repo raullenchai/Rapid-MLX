@@ -1549,6 +1549,381 @@ def _native_reasoning_effort_levels_for_source(template: str) -> tuple[str, ...]
     return _walk_for_validation(tree.body, {"reasoning_effort"}, set(), nodes)
 
 
+def _truthiness_tested_name(test, nodes) -> str | None:
+    """The variable a bare ``{% if x %}`` / ``{% if not x %}`` / ``a if x else b`` tests."""
+    if isinstance(test, nodes.Not):
+        test = test.node
+    if isinstance(test, nodes.Name) and test.ctx == "load":
+        return str(test.name)
+    return None
+
+
+# Truth value of ``name is <test>`` when ``name`` holds a defined, non-None
+# value such as ``False``.
+_DEFINEDNESS_TESTS = {"defined": True, "undefined": False, "none": False}
+
+
+def _arm_taken_when_defined(test, name: str, nodes) -> str | None:
+    """Which arm of ``a if <test> else b`` runs when ``name`` is defined.
+
+    ``"expr1"`` / ``"expr2"`` for a definedness test on ``name`` (``defined``,
+    ``undefined``, ``none`` and their negations), ``None`` for any other
+    condition.
+    """
+    negated = isinstance(test, nodes.Not)
+    if negated:
+        test = test.node
+    if (
+        not isinstance(test, nodes.Test)
+        or test.name not in _DEFINEDNESS_TESTS
+        or not isinstance(test.node, nodes.Name)
+        or test.node.name != name
+    ):
+        return None
+    return "expr1" if _DEFINEDNESS_TESTS[test.name] != negated else "expr2"
+
+
+def _default_filter_keeps_false(expr, nodes) -> bool:
+    """``x | default(d)`` keeps a defined ``False``; ``default(d, true)`` or
+    ``default(d, boolean=true)`` replaces it."""
+    boolean = expr.args[1] if len(expr.args) > 1 else None
+    for kw in expr.kwargs:
+        if kw.key == "boolean":
+            boolean = kw.value
+    return boolean is None or bool(
+        isinstance(boolean, nodes.Const) and boolean.value is False
+    )
+
+
+def _carries_context_value(expr, name: str, nodes) -> bool:
+    """Whether ``{% set name = expr %}`` keeps a defined context value of
+    ``name`` (including ``False``, the value the off switch injects).
+
+    True for the idioms templates use to give a context variable a default:
+    ``name``, ``name | default(...)`` without the ``boolean`` flag, and
+    ``... if name is (not) defined / undefined / none else ...`` when the arm
+    taken for a defined value carries ``name``. Any other value is a fresh
+    local.
+    """
+    if isinstance(expr, nodes.Name):
+        return bool(expr.ctx == "load" and expr.name == name)
+    if isinstance(expr, nodes.Filter) and expr.name == "default":
+        return _default_filter_keeps_false(expr, nodes) and _carries_context_value(
+            expr.node, name, nodes
+        )
+    if isinstance(expr, nodes.CondExpr):
+        arm = _arm_taken_when_defined(expr.test, name, nodes)
+        if arm == "expr1":
+            return _carries_context_value(expr.expr1, name, nodes)
+        if arm == "expr2" and expr.expr2 is not None:
+            return _carries_context_value(expr.expr2, name, nodes)
+    return False
+
+
+def _context_reads(
+    node, bound: frozenset[str], nodes, reads: set[str], tests: set[str]
+) -> frozenset[str]:
+    """Collect the names ``node`` reads from the render context into ``reads``
+    and the ones it branches on as plain booleans while unbound into ``tests``.
+
+    Walks in evaluation order with Jinja scoping: a ``set`` binds its target
+    only after its value is evaluated, loop targets and macro / call-block
+    arguments shadow the context inside their body only, and a name bound
+    in only some branches of an ``if`` stays a context read afterwards. A
+    value-preserving self-rebinding (``set x = x | default(...)``, North's
+    ``set reasoning = reasoning if reasoning is not undefined else ...``)
+    does not shadow: the local still carries the context value, so a later
+    ``{% if reasoning %}`` is a test of the context knob. Attribute access
+    (``message.reasoning``) is never a context read. Returns the names bound
+    once ``node`` has run.
+    """
+    if isinstance(node, nodes.Name):
+        if node.ctx == "load" and node.name not in bound:
+            reads.add(node.name)
+        return bound
+    if isinstance(node, nodes.Assign):
+        _context_reads(node.node, bound, nodes, reads, tests)
+        target = node.target
+        if (
+            isinstance(target, nodes.Name)
+            and target.name not in bound
+            and _carries_context_value(node.node, target.name, nodes)
+        ):
+            return bound
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.AssignBlock):
+        _context_reads_all(node.body, bound, nodes, reads, tests)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.For):
+        _context_reads(node.iter, bound, nodes, reads, tests)
+        inner = bound | _bound_names(node, nodes)
+        body_tests: set[str] = set()
+        dead_reads: set[str] = set()
+        iterator_known = False
+        body_proven_nonempty = False
+        else_proven = False
+        try:
+            iterator_nonempty = bool(node.iter.as_const())
+            iterator_known = True
+            body_proven_nonempty = iterator_nonempty and node.test is None
+            else_proven = not iterator_nonempty
+        except Exception:
+            pass
+        if node.test is not None:
+            _context_reads(
+                node.test,
+                inner,
+                nodes,
+                dead_reads if iterator_known and not iterator_nonempty else reads,
+                body_tests,
+            )
+        _context_reads_all(
+            node.body,
+            inner,
+            nodes,
+            dead_reads if iterator_known and not iterator_nonempty else reads,
+            tests if body_proven_nonempty else body_tests,
+        )
+        # A loop ``else`` can establish a switch only when an unfiltered
+        # iterable is statically known to be empty.  Dynamic iteration may
+        # skip the else path for the current render.
+        _context_reads_all(
+            node.else_,
+            bound,
+            nodes,
+            dead_reads if body_proven_nonempty else reads,
+            tests if else_proven else body_tests,
+        )
+        return bound
+    if isinstance(node, nodes.If):
+        # Jinja stores each ``elif`` as an ``If`` node whose ``else_`` is
+        # empty, while the chain's real ``else`` stays on the outer node.
+        # Evaluate the chain in order so bindings are joined across actual
+        # terminal paths and constant-dead arms cannot prove a live switch.
+        after: list[frozenset[str]] = []
+        fallthrough_possible = True
+        if_deferred_tests: set[str] = set()
+        if_dead_reads: set[str] = set()
+        for branch in [node, *node.elif_]:
+            branch_tests = tests if fallthrough_possible else if_deferred_tests
+            branch_reads = reads if fallthrough_possible else if_dead_reads
+            _record_truthiness_test(branch.test, bound, nodes, branch_tests)
+            _context_reads(branch.test, bound, nodes, branch_reads, branch_tests)
+            truth = _constant_truthiness(branch.test, nodes)
+            if fallthrough_possible and truth is not False:
+                after.append(
+                    _context_reads_all(branch.body, bound, nodes, reads, tests)
+                )
+            else:
+                _context_reads_all(
+                    branch.body, bound, nodes, if_dead_reads, if_deferred_tests
+                )
+            if fallthrough_possible and truth is True:
+                fallthrough_possible = False
+        if fallthrough_possible:
+            after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
+        else:
+            _context_reads_all(
+                node.else_, bound, nodes, if_dead_reads, if_deferred_tests
+            )
+        return frozenset.intersection(*after)
+    if isinstance(node, nodes.Macro):
+        # A macro body is deferred until a call executes it.  Counting a
+        # branch in an uncalled macro as a live template switch can inject a
+        # context value that changes unrelated output.  Proving reachability
+        # would require a Jinja call graph, so fail closed: retain its possible
+        # context reads (notably an ``enable_thinking`` read must still veto an
+        # adapter), but do not infer a live boolean switch from its body.
+        macro_deferred_tests: set[str] = set()
+        for default in node.defaults:
+            _context_reads(default, bound, nodes, reads, macro_deferred_tests)
+        _context_reads_all(
+            node.body,
+            bound | {arg.name for arg in node.args},
+            nodes,
+            reads,
+            macro_deferred_tests,
+        )
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.CallBlock):
+        call_deferred_tests: set[str] = set()
+        for default in node.defaults:
+            _context_reads(default, bound, nodes, reads, call_deferred_tests)
+        _context_reads(node.call, bound, nodes, reads, tests)
+        # Whether the callee invokes ``caller`` is likewise not statically
+        # proven here.  Its body therefore cannot establish a live switch,
+        # though possible reads still participate in conservative vetoes.
+        _context_reads_all(
+            node.body,
+            bound | {arg.name for arg in node.args},
+            nodes,
+            reads,
+            call_deferred_tests,
+        )
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, (nodes.Import, nodes.FromImport)):
+        _context_reads(node.template, bound, nodes, reads, tests)
+        return bound | _bound_names(node, nodes)
+    if isinstance(node, nodes.With):
+        for value in node.values:
+            _context_reads(value, bound, nodes, reads, tests)
+        _context_reads_all(
+            node.body, bound | _bound_names(node, nodes), nodes, reads, tests
+        )
+        return bound
+    if isinstance(node, nodes.CondExpr):
+        _record_truthiness_test(node.test, bound, nodes, tests)
+        _context_reads(node.test, bound, nodes, reads, tests)
+        truth = _constant_truthiness(node.test, nodes)
+        cond_deferred_tests: set[str] = set()
+        cond_dead_reads: set[str] = set()
+        _context_reads(
+            node.expr1,
+            bound,
+            nodes,
+            reads if truth is not False else cond_dead_reads,
+            tests if truth is not False else cond_deferred_tests,
+        )
+        if node.expr2 is not None:
+            _context_reads(
+                node.expr2,
+                bound,
+                nodes,
+                reads if truth is not True else cond_dead_reads,
+                tests if truth is not True else cond_deferred_tests,
+            )
+        return bound
+    # Anything else (output, expressions, filter/scope blocks): evaluate the
+    # children in order; bindings made inside stay inside.
+    inner = bound | _bound_names(node, nodes)
+    for child in node.iter_child_nodes():
+        inner = _context_reads(child, inner, nodes, reads, tests)
+    return bound
+
+
+def _record_truthiness_test(
+    test, bound: frozenset[str], nodes, tests: set[str]
+) -> None:
+    name = _truthiness_tested_name(test, nodes)
+    if name is not None and name not in bound:
+        tests.add(name)
+
+
+def _constant_truthiness(expr, nodes) -> bool | None:
+    """Jinja's compile-time truth value for a condition; unknown otherwise."""
+    try:
+        # ``as_const`` is Jinja's own side-effect-free constant folder.  It
+        # handles literal boolean expressions (``not false``, comparisons,
+        # ``and`` / ``or``) and raises ``Impossible`` for context-dependent
+        # expressions, which must remain conservatively reachable.
+        return bool(expr.as_const())
+    except Exception:
+        return None
+
+
+def _block_guarantees_loop_exit(stmts, nodes) -> bool:
+    """Whether sequential statements must reach a break or continue."""
+    return any(_stmt_guarantees_loop_exit(stmt, nodes) for stmt in stmts)
+
+
+def _stmt_guarantees_loop_exit(stmt, nodes) -> bool:
+    """Whether a statement exits its containing loop on every live path."""
+    if isinstance(stmt, (nodes.Break, nodes.Continue)):
+        return True
+    if isinstance(stmt, nodes.If):
+        exits: list[bool] = []
+        fallthrough_possible = True
+        for branch in [stmt, *stmt.elif_]:
+            if not fallthrough_possible:
+                break
+            truth = _constant_truthiness(branch.test, nodes)
+            if truth is not False:
+                exits.append(_block_guarantees_loop_exit(branch.body, nodes))
+            if truth is True:
+                fallthrough_possible = False
+        if fallthrough_possible:
+            exits.append(_block_guarantees_loop_exit(stmt.else_, nodes))
+        return bool(exits) and all(exits)
+    if isinstance(stmt, nodes.With):
+        return _block_guarantees_loop_exit(stmt.body, nodes)
+    return False
+
+
+def _context_reads_all(
+    stmts, bound: frozenset[str], nodes, reads: set[str], tests: set[str]
+) -> frozenset[str]:
+    active_tests = tests
+    deferred_tests: set[str] = set()
+    active_reads = reads
+    dead_reads: set[str] = set()
+    for stmt in stmts:
+        bound = _context_reads(stmt, bound, nodes, active_reads, active_tests)
+        if _stmt_guarantees_loop_exit(stmt, nodes):
+            active_tests = deferred_tests
+            active_reads = dead_reads
+    return bound
+
+
+@functools.lru_cache(maxsize=64)
+def _template_context_facts_for_source(
+    template: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """``(names read from the render context, names branched on as plain
+    booleans while carrying the context value)``; see ``_context_reads``.
+    """
+    jinja2, nodes = _jinja_nodes()
+    env = _template_parser()
+    if jinja2 is None or env is None:
+        return frozenset(), frozenset()
+    try:
+        tree = env.parse(template)
+    except Exception:
+        return frozenset(), frozenset()
+    reads: set[str] = set()
+    tests: set[str] = set()
+    _context_reads_all(tree.body, frozenset(), nodes, reads, tests)
+    return frozenset(reads), frozenset(tests)
+
+
+_TEMPLATE_THINKING_SWITCHES = ("reasoning",)
+
+
+def template_thinking_switch(
+    template, *, tools: list[dict] | None = None
+) -> str | None:
+    """Name of a template's own on/off thinking variable when it is not
+    ``enable_thinking``; ``None`` when the template has no such switch.
+
+    Recognised switches: ``reasoning`` (Cohere's convention; North Mini Code
+    never consults ``enable_thinking``, reads a boolean ``reasoning`` that
+    defaults to on or to ``reasoning_effort != "none"``, and seeds an empty
+    thinking block when it is false). A name is a switch only when the
+    template reads it from the render context and branches on it as a plain
+    boolean while it still carries the context value in an eagerly evaluated
+    scope (a value-preserving
+    ``set reasoning = reasoning if reasoning is not undefined else ...``
+    keeps it; ``set reasoning = true`` makes the later branch a local one).
+    Deferred macro and call-block bodies are ignored unless a future detector
+    can prove their execution.
+    A template that renders ``{{ reasoning }}`` as data or only asks
+    ``reasoning is defined`` is left alone. A template that reads
+    ``enable_thinking`` keeps that switch and yields ``None`` even if it also
+    reads a recognised name.
+    """
+    reads: set[str] = set()
+    tested: set[str] = set()
+    for source in _chat_template_strings(template, tools=tools):
+        source_reads, source_tests = _template_context_facts_for_source(source)
+        reads |= source_reads
+        tested |= source_tests
+    if "enable_thinking" in reads:
+        return None
+    for switch in _TEMPLATE_THINKING_SWITCHES:
+        if switch in reads and switch in tested:
+            return switch
+    return None
+
+
 def detect_native_reasoning_effort_levels(
     template, *, tools: list[dict] | None = None
 ) -> tuple[str, ...] | None:
@@ -1823,6 +2198,12 @@ def apply_chat_template(
     if tools:
         template_kwargs["tools"] = tools
 
+    supplied_template_kwargs = chat_template_kwargs or {}
+    supplied_effort = supplied_template_kwargs.get("reasoning_effort")
+    supplied_effort_is_off = isinstance(supplied_effort, str) and (
+        supplied_effort.strip().lower() == "none"
+    )
+
     # Pass through client-supplied ``chat_template_kwargs`` keys (e.g.
     # ``reasoning_effort`` for Qwen3.8) into the template render. Server-
     # controlled keys (``tokenize``, ``add_generation_prompt``,
@@ -1831,7 +2212,7 @@ def apply_chat_template(
     # on templates that do not accept them; the error-driven fallback
     # below (and the ``reasoning_effort`` pop in the second retry) handles
     # that exactly as it does today.
-    for key, value in (chat_template_kwargs or {}).items():
+    for key, value in supplied_template_kwargs.items():
         if key in ("tokenize", "add_generation_prompt", "enable_thinking", "tools"):
             continue
         if key not in template_kwargs:
@@ -1850,6 +2231,25 @@ def apply_chat_template(
         )
     ):
         template_kwargs.setdefault("reasoning_effort", "low")
+
+    # Templates with their own boolean switch and no ``enable_thinking``
+    # (Cohere North Mini Code reads ``reasoning``, default on): a resolved off
+    # flag becomes that switch, so Desktop's default and ``rapid-mlx chat``
+    # without ``--think`` actually turn reasoning off (#3045). Detection is
+    # template-driven (the template reads the name from its context and
+    # branches on it as a boolean), not a model-name match. A client that
+    # already passed the switch keeps control. A non-``none``
+    # ``reasoning_effort`` also keeps control; ``none`` is the portable off
+    # value and must still seed a detected boolean switch for templates that
+    # do not derive the switch from effort themselves.
+    if enable_thinking is False and (
+        "reasoning_effort" not in supplied_template_kwargs or supplied_effort_is_off
+    ):
+        switch = template_thinking_switch(
+            getattr(template_applicator, "chat_template", None), tools=tools
+        )
+        if switch is not None:
+            template_kwargs.setdefault(switch, False)
 
     # Hy3 chat_template.jinja defaults ``reasoning_effort=no_think`` which
     # empirically returns "France" instead of "Paris" on factual-recall
