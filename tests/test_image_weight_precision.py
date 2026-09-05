@@ -1,10 +1,12 @@
 """Contracts for the explicit FLUX.2 Klein q4/bf16 selector (#3058)."""
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from vllm_mlx import model_sizes
+from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
 from vllm_mlx.cli import build_parser
 from vllm_mlx.image.engine import ImageGenerationEngine
 from vllm_mlx.image.precision import (
@@ -68,9 +70,12 @@ def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
         captured["model_name"] = model_name
         captured["alias"] = server._model_alias
 
+    def _ensure_model_downloaded(model_name, **_kwargs):
+        captured.setdefault("download_models", []).append(model_name)
+
     monkeypatch.setattr(server, "load_model", _load_model)
     monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", _ensure_model_downloaded)
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
@@ -102,6 +107,7 @@ def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
     assert captured == {
         "model_name": FLUX2_KLEIN_BF16_REPO,
         "alias": FLUX2_KLEIN_BF16_ALIAS,
+        "download_models": [FLUX2_KLEIN_BF16_REPO],
     }
 
 
@@ -133,3 +139,47 @@ def test_bf16_residency_charge_does_not_fall_through_to_q4():
     assert estimate_model_bytes(FLUX2_KLEIN_BF16_ALIAS) == 18 * gib
     assert estimate_model_bytes(FLUX2_KLEIN_BF16_REPO) == 18 * gib
     assert estimate_model_bytes(FLUX2_KLEIN_Q4_ALIAS) < 18 * gib
+
+
+def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatch):
+    """Do not download moving main and then the pinned 16 GB snapshot again."""
+
+    from vllm_mlx import cli
+
+    revision = IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]
+    observed = {}
+
+    monkeypatch.setattr(cli.os.path, "exists", lambda _path: False)
+    monkeypatch.setattr(cli, "_cache_runnability", lambda _model: False)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+
+    def _mirror(model_name, **kwargs):
+        observed["mirror"] = (model_name, kwargs.get("revision"))
+        return False
+
+    def _model_info(model_name, **kwargs):
+        observed["metadata"] = (model_name, kwargs.get("revision"))
+        return SimpleNamespace(sha=revision, siblings=[])
+
+    def _snapshot_download(model_name, **kwargs):
+        observed["download"] = (model_name, kwargs.get("revision"))
+        return "/cache/snapshot"
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", _mirror)
+    monkeypatch.setattr("huggingface_hub.model_info", _model_info)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.pin_main_ref",
+        lambda model_name, pinned: observed.setdefault("ref", (model_name, pinned)),
+    )
+
+    cli._ensure_model_downloaded(FLUX2_KLEIN_BF16_REPO)
+
+    expected = (FLUX2_KLEIN_BF16_REPO, revision)
+    assert observed == {
+        "mirror": expected,
+        "metadata": expected,
+        "download": expected,
+        "ref": expected,
+    }

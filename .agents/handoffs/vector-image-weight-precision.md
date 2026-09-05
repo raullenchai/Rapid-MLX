@@ -15,6 +15,9 @@
 - `--image-weight-precision bf16` resolves to that concrete alias before the
   download confirmation and disk checks. No automatic hardware policy exists.
 - The packaged bf16 source loads via `model_path` with `quantize=None`.
+- Cold prefetch carries the registered image revision through the mirror,
+  metadata, and Hub download layers, preventing a moving `main` snapshot from
+  being downloaded before the pinned 16 GB snapshot.
 - Relevant alias/image/download/CLI/residency tests pass; exact commands are in
   the eventual PR summary and the performance note.
 - Real M2 Pro dogfood through `rapid-mlx serve` and the image endpoint measured
