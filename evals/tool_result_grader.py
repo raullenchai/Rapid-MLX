@@ -112,6 +112,8 @@ _UNIT_TO_CANONICAL = {
     "celsius": _C,
     "degrees c": _C,
     "degrees celsius": _C,
+    "degree c": _C,
+    "degree celsius": _C,
     "deg c": _C,
     "deg celsius": _C,
     "°f": _F,
@@ -119,6 +121,8 @@ _UNIT_TO_CANONICAL = {
     "fahrenheit": _F,
     "degrees f": _F,
     "degrees fahrenheit": _F,
+    "degree f": _F,
+    "degree fahrenheit": _F,
     "deg f": _F,
     "deg fahrenheit": _F,
     "%": _PERCENT,
@@ -495,12 +499,17 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
         token = match.group("unit")
         if num is None:
             continue
-        # Reject a malformed incomplete numeric: "1e2" (exponent), "1,000"
-        # (thousands grouping) match only their leading "1", which would be read
-        # as a bare 1 and falsely satisfy a 1°C fact. If the digit run is
-        # immediately continued by an exponent/grouping char, the whole token is
-        # not a parseable scalar -- drop it rather than leak the prefix.
+        # Reject a numeric inside a malformed/incomplete token in EITHER
+        # direction. A trailing continuation (",eE") makes "1e2"/"1,000" leak
+        # their leading "1" as a bare value; a leading continuation means this
+        # match is a SUFFIX of a larger number (e.g. "21°C" inside "1e21°C" --
+        # the real value is huge, not 21). Either way the scalar is not cleanly
+        # parseable, so drop it rather than leak a prefix/suffix fragment.
+        start0 = match.start("num")
+        end0 = match.end("num")
         if match.end("num") < len(text) and text[match.end("num")] in ",eE":
+            continue
+        if start0 > 0 and text[start0 - 1] in "0123456789.,eE":
             continue
         value = float(num)
         start = match.start()
@@ -737,6 +746,36 @@ def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
     return False
 
 
+def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> bool:
+    """True if the answer affirmatively reports the fact's entity with a
+    UNIT-COMPATIBLE value that is OUT of tolerance.
+
+    This distinguishes a hallucinated WRONG-value report ("temperature is 5°C"
+    for an expected 21 °C) from a pure absence. Without it the model's false
+    claim is mere ``missing`` -- indistinguishable from never mentioning the
+    temperature at all. Both fail ``overall`` either way; this only fixes the
+    per-fact status so a mis-reported value is flagged for review rather than
+    read as a silent omission. Bare numbers are excluded (ambiguous metadata);
+    only a value that resolves into the fact's unit within an anchored window
+    counts, and an anchor label must be present to pin the fact.
+    """
+    anchors = fact.anchor_terms
+    if not anchors or not any(_term_matches(a, norm_answer) for a in anchors):
+        return False
+    key_spans = _salient_spans(norm_answer, anchors)
+    for value, unit, start in _numbered_in(norm_answer):
+        if unit is None:  # bare numbers are ambiguous metadata -- never a wrong value
+            continue
+        if not any(s <= start < e for s, e in key_spans):
+            continue
+        converted = _to_unit(value, unit, fact.unit)
+        if converted is None:
+            continue
+        if abs(converted - fact.value) > fact.tolerance + 1e-9:
+            return True
+    return False
+
+
 def _near_anchor(norm_answer: str, anchors: tuple[str, ...], start: int) -> bool:
     for anchor in anchors:
         if not anchor:
@@ -859,11 +898,16 @@ def _grade_fact(fact: Fact, norm_answer: str) -> FactEvidence:
         else:
             coverage, cov_ev = _relation_coverage(fact, norm_answer)
             kind = "relation"
-        # ALSO contradict on a second incompatible unit-qualified value reported
-        # for the same anchored fact (e.g. "18°C and 30°C" vs an 18°C fact, or
-        # "humidity 62% and 20%" vs a 62% fact).
-        value_conflict = _unit_fact_conflict(fact, norm_answer)
-        contradicted = _has_deny_marker(norm_answer, spans) or value_conflict
+        # Contradict on: a deny/hedge marker near the anchor, a second
+        # incompatible value for the same anchored fact (e.g. "18°C and 30°C"
+        # vs an 18°C fact), or a single WRONG anchored value ("temperature is
+        # 5°C" for an expected 21 °C -- a hallucinated mis-report, distinct
+        # from a mere absence).
+        contradicted = (
+            _has_deny_marker(norm_answer, spans)
+            or _unit_fact_conflict(fact, norm_answer)
+            or _wrong_value_present(fact, norm_answer)
+        )
     else:  # pragma: no cover - guarded by fact_from_dict
         raise TypeError(f"unexpected fact type: {type(fact).__name__}")
 
@@ -876,6 +920,10 @@ def _grade_fact(fact: Fact, norm_answer: str) -> FactEvidence:
                 f"{cov_ev}; multiple incompatible values reported near "
                 f"{fact.key or fact.value!r}"
             )
+        elif isinstance(fact, NumberFact | RelationFact) and _wrong_value_present(
+            fact, norm_answer
+        ):
+            evidence = f"{cov_ev}; wrong value reported near {fact.key or fact.value!r}"
         else:
             evidence = f"{cov_ev}; deny/hedge marker near {fact.key or fact.value!r}"
     elif coverage:
@@ -938,9 +986,15 @@ def grade_answer(
             # as missing so the failure is visible rather than silent/scored.
             # The empty value (and empty aliases -- see StringFact.search_terms)
             # guarantee it can never pass affirmation, so it fails as missing.
+            # ``key`` is best-effort: a dict has a two-arg ``.get``, but a plain
+            # non-dict entry (e.g. ``"bad"``) has none -- fall back to "?" rather
+            # than crash the whole report.
+            raw_key = (
+                f.get("key", "?") if isinstance(f, dict) else getattr(f, "key", "?")
+            )
             normalized.append(
                 StringFact(
-                    key=str(getattr(f, "get", lambda k: "")("key", "?")),
+                    key=str(raw_key),
                     value="",
                     aliases=(),
                 )
