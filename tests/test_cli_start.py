@@ -1503,3 +1503,256 @@ def test_reap_forwarded_child_waits_before_escalating():
 
     run_cli._reap_forwarded_child(FakeChild(), grace_s=0.01)
     assert calls == [("wait", 0.01)]
+
+
+# Coverage contracts for defensive orchestration branches.  These paths are
+# deliberately hermetic: they exercise ownership and exit-code semantics
+# without starting a server, touching an agent config, or reading the network.
+
+
+def test_start_dry_run_without_profile_never_attaches(monkeypatch):
+    args = _make_args(profile=None, dry_run=True)
+    _patch_profile_lookup(monkeypatch, None)
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda *a: False)
+    monkeypatch.setattr(
+        run_cli,
+        "_attach_and_configure",
+        lambda *a, **k: pytest.fail("generic dry-run must not configure an agent"),
+    )
+    assert run_cli.start_command(args) == 0
+
+
+def test_start_maps_forwarded_signal_to_shell_exit(monkeypatch):
+    args = _make_args()
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda *a: False)
+    monkeypatch.setattr(run_cli, "_confirm_download", lambda *a, **k: True)
+    monkeypatch.setattr(run_cli, "_spawn_foreground_serve", lambda *a: object())
+
+    class ForwardOnEnter:
+        def __init__(self, proc):
+            pass
+
+        def __enter__(self):
+            raise run_cli._ForwardedSignalError(signal.SIGTERM)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(run_cli, "_foreground_child", ForwardOnEnter)
+    assert run_cli.start_command(args) == 128 + signal.SIGTERM
+
+
+def test_fits_host_uses_alias_minimum(monkeypatch):
+    import vllm_mlx.model_aliases as aliases
+
+    monkeypatch.setattr(rec, "recommendation_footprint_gb", lambda alias: None)
+    monkeypatch.setattr(
+        aliases,
+        "resolve_profile",
+        lambda alias: types.SimpleNamespace(min_memory_gb=24),
+    )
+    assert run_cli._fits_host("agent-model", 32) is True
+
+
+def test_foreground_child_cleans_up_on_unrelated_exception(monkeypatch):
+    class FakeChild:
+        def poll(self):
+            return None
+
+    child = FakeChild()
+    terminated = []
+    monkeypatch.setattr(run_cli, "_terminate_child", terminated.append)
+    with pytest.raises(RuntimeError), run_cli._foreground_child(child):
+        raise RuntimeError("prompt failed")
+    assert terminated == [child]
+
+
+class _CleanupChild:
+    def __init__(self, *, exited=False, terminate_error=None, kill_error=None):
+        self.returncode = 0 if exited else None
+        self.terminate_error = terminate_error
+        self.kill_error = kill_error
+        self.wait_calls = 0
+        self.calls = []
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.calls.append("terminate")
+        if self.terminate_error:
+            raise self.terminate_error()
+
+    def kill(self):
+        self.calls.append("kill")
+        if self.kill_error:
+            raise self.kill_error()
+
+    def wait(self, timeout):
+        self.calls.append(("wait", timeout))
+        self.wait_calls += 1
+        if self.wait_calls == 1 and self.returncode is None:
+            raise run_cli.subprocess.TimeoutExpired("serve", timeout)
+        if self.returncode is None:
+            raise run_cli.subprocess.TimeoutExpired("serve", timeout)
+        return self.returncode
+
+
+def test_terminate_child_already_exited_and_graceful_paths():
+    exited = _CleanupChild(exited=True)
+    run_cli._terminate_child(exited)
+    assert exited.calls == []
+
+    child = _CleanupChild()
+    child.wait = lambda timeout: child.calls.append(("wait", timeout)) or 0
+    run_cli._terminate_child(child)
+    assert child.calls == ["terminate", ("wait", 5.0)]
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+def test_terminate_child_ignores_kill_races(error):
+    child = _CleanupChild(kill_error=error)
+    run_cli._terminate_child(child, grace_s=0.01)
+    assert child.calls == ["terminate", ("wait", 0.01), "kill"]
+
+
+def test_terminate_child_bounds_post_kill_wait():
+    child = _CleanupChild()
+    run_cli._terminate_child(child, grace_s=0.01)
+    assert child.calls == [
+        "terminate",
+        ("wait", 0.01),
+        "kill",
+        ("wait", 0.01),
+    ]
+
+
+def test_reap_forwarded_child_already_exited_and_escalates(monkeypatch):
+    run_cli._reap_forwarded_child(_CleanupChild(exited=True))
+
+    child = _CleanupChild()
+    escalated = []
+    monkeypatch.setattr(
+        run_cli,
+        "_terminate_child",
+        lambda proc, grace_s: escalated.append((proc, grace_s)),
+    )
+    run_cli._reap_forwarded_child(child, grace_s=0.01)
+    assert escalated == [(child, 0.01)]
+
+
+def test_attach_deepseek_dry_run_uses_cached_reasoning_profile(monkeypatch):
+    import vllm_mlx.agents.setup as setup_mod
+    import vllm_mlx.model_aliases as aliases
+
+    args = _make_args(dry_run=True)
+    prof = _FakeProfile(name="deepseek-harness")
+    prof.config = _FakeCfg()
+    monkeypatch.setattr(
+        aliases,
+        "resolve_profile",
+        lambda model: types.SimpleNamespace(reasoning_parser="deepseek_r1"),
+    )
+    planned = {}
+    monkeypatch.setattr(
+        setup_mod,
+        "build_setup_plan",
+        lambda *a, **kw: planned.update(kw) or _SetupPlanFake(changed=False),
+    )
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert planned["supports_reasoning"] is True
+
+
+def test_attach_first_class_dry_run_does_not_write(monkeypatch, capsys):
+    import vllm_mlx.agents.setup as setup_mod
+
+    args = _make_args(dry_run=True)
+    prof = _first_class_profile()
+    prof.config = _FakeCfg()
+    monkeypatch.setattr(
+        setup_mod, "build_setup_plan", lambda *a, **k: _SetupPlanFake(changed=True)
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "apply_setup_plan",
+        lambda plan: pytest.fail("dry-run must not apply the setup plan"),
+    )
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert "Dry run only" in capsys.readouterr().out
+
+
+def test_attach_generic_dry_run_and_cancel_paths(monkeypatch, capsys):
+    from vllm_mlx.agents import adapter as ad
+
+    prof = _FakeProfile(name="hermes", config=_FakeCfg())
+    calls = []
+    monkeypatch.setattr(
+        ad,
+        "setup_agent_config",
+        lambda *a, **k: calls.append(k["dry_run"]) or "preview",
+    )
+    assert (
+        run_cli._attach_and_configure("http://b", "m", prof, _make_args(dry_run=True))
+        == 0
+    )
+    assert calls == [True]
+
+    monkeypatch.setattr(run_cli, "_confirm_config_write", lambda: False)
+    assert run_cli._attach_and_configure("http://b", "m", prof, _make_args()) == 0
+    assert calls == [True, True]
+    assert "Setup cancelled" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "result", [RuntimeError("write failed"), "Cannot write config"]
+)
+def test_attach_generic_write_failure_paths(monkeypatch, capsys, result):
+    from vllm_mlx.agents import adapter as ad
+
+    prof = _FakeProfile(name="hermes", config=_FakeCfg())
+    calls = 0
+
+    def setup(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "preview"
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(ad, "setup_agent_config", setup)
+    assert (
+        run_cli._attach_and_configure("http://b", "m", prof, _make_args(yes=True)) == 1
+    )
+    assert "setup failed" in capsys.readouterr().out
+
+
+def test_confirm_config_write_noninteractive_yes_and_interrupt(monkeypatch):
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    assert run_cli._confirm_config_write() is False
+
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+    assert run_cli._confirm_config_write() is True
+
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError())
+    )
+    assert run_cli._confirm_config_write() is False
+
+
+def test_cached_context_window_rejects_invalid_candidates(monkeypatch):
+    import vllm_mlx.model_metadata as metadata_mod
+
+    monkeypatch.setattr(
+        metadata_mod,
+        "read_model_metadata",
+        lambda model: types.SimpleNamespace(
+            config={"max_position_embeddings": True, "text_config": {}}
+        ),
+    )
+    assert run_cli._cached_context_window("m") is None
