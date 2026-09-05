@@ -582,7 +582,8 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         print("  Nothing was written.")
         return 0
 
-    if cfg and getattr(cfg, "type", None) == "env":
+    is_first_class = profile.name in {"claude-code", "continue", "deepseek-harness"}
+    if cfg and getattr(cfg, "type", None) == "env" and not is_first_class:
         from vllm_mlx.agents.adapter import setup_agent_config
 
         instructions = setup_agent_config(
@@ -596,7 +597,6 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         print(instructions)
         return 0
 
-    is_first_class = profile.name in {"claude-code", "continue", "deepseek-harness"}
     if is_first_class:
         supports_reasoning = None
         if profile.name == "deepseek-harness" and not args.dry_run:
@@ -646,7 +646,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         if plan.changed:
             try:
                 apply_setup_plan(plan)
-            except RuntimeError as exc:
+            except (OSError, RuntimeError) as exc:
                 print(f"  {profile.display_name} setup failed: {exc}")
                 _print_instructions(profile, api_base_url, model)
                 return 0
@@ -709,7 +709,7 @@ def _cached_context_window(model: str) -> int | None:
     """Read a cached/local config context limit without network or weights."""
     from vllm_mlx.model_metadata import read_model_metadata
 
-    metadata = read_model_metadata(model)
+    metadata = read_model_metadata(_hf_id(model))
     config = metadata.config if metadata is not None else None
     if not isinstance(config, dict):
         return None

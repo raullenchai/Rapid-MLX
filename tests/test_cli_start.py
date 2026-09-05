@@ -1065,14 +1065,20 @@ def test_cached_context_window_reads_text_config(monkeypatch):
     """Dry-run can preview the eventual context value without network access."""
     import vllm_mlx.model_metadata as metadata_mod
 
+    requested = []
+    monkeypatch.setattr(run_cli, "_hf_id", lambda alias: "org/resolved-model")
     monkeypatch.setattr(
         metadata_mod,
         "read_model_metadata",
-        lambda model: types.SimpleNamespace(
-            config={"text_config": {"max_position_embeddings": 262_144}}
+        lambda model: (
+            requested.append(model)
+            or types.SimpleNamespace(
+                config={"text_config": {"max_position_embeddings": 262_144}}
+            )
         ),
     )
     assert run_cli._cached_context_window("cached-model") == 262_144
+    assert requested == ["org/resolved-model"]
 
 
 def test_print_instructions_first_class(monkeypatch, capsys):
