@@ -1120,6 +1120,70 @@ class TestInputIsDataNotInstructions:
         assert len(rep.facts) == 1
         assert rep.facts[0].status == "missing"
 
+    def test_cross_unit_bound_converts_threshold(self, g):
+        # Round-19 F66: a bound's threshold is converted into the fact's unit
+        # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C
+        # (≈20.6 °C), NOT raw 69 vs 21. 21 > 20.6 -> compatible (missing, not
+        # contradicted); "above 80°F" (≈26.7°C) -> 21 is NOT above -> contradicted.
+        for phrase in [
+            "temperature is above 69°F",  # ≈20.6 °C, 21 > 20.6 -> compatible bound
+            "temperature is below 72°F",  # ≈22.2 °C, 21 < 22.2 -> compatible bound
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        # Incompatible cross-unit bounds are CONTRADICTIONS.
+        for phrase in [
+            "temperature is above 80°F",  # ≈26.7 °C, 21 !above -> contradicted
+            "temperature is below 50°F",  # ≈10 °C, 21 !below -> contradicted
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert rep.facts[0].contradicted is True, phrase
+            assert rep.overall is False, phrase
+
+    def test_bound_threshold_is_not_a_second_measurement(self, g):
+        # Round-19 F67: a comparator-prefixed candidate ("below 30°C", "above
+        # 10°C") is a THRESHOLD/BOUND, not a second reported measurement -- "21°C
+        # and below 30°C" is a coherent correct report (present), NOT an
+        # incoherent "21°C and 30°C" contradiction.
+        for phrase in [
+            "temperature is 21°C and below 30°C",
+            "temperature 21°C but above 10°C",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "present", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is True, phrase
+        # A genuine SECOND unit-qualified measurement is still a contradiction.
+        rep = _grade(g, [TEMP21C], "temperature is 21°C and 30°C")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.overall is False
+
+    def test_warmer_colder_than_comparator(self, g):
+        # Round-19: "warmer/hotter than" is a > comparator, "colder/cooler than"
+        # a < comparator. For a 21 °C fact a compatible directional bound is a
+        # present report; an incompatible one is a contradiction.
+        for phrase in [
+            "temperature is 21°C, warmer than 15°C",  # 21 > 15 -> compatible
+            "temperature is 21°C, hotter than 15°C",
+            "temperature is 21°C, colder than 30°C",  # 21 < 30 -> compatible
+            "temperature is 21°C, cooler than 30°C",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "present", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is True, phrase
+        for phrase in [
+            "temperature is 21°C, warmer than 30°C",  # 21 !> 30 -> contradicted
+            "temperature is 21°C, colder than 15°C",  # 21 !< 15 -> contradicted
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert rep.facts[0].contradicted is True, phrase
+            assert rep.overall is False, phrase
+
 
 # --- Determinism across phrasings / reordering -----------------------------
 class TestDeterminismAcrossPhrasing:

@@ -833,6 +833,10 @@ _COMPARATIVES = (
     ("more than", ">"),
     ("greater than", ">"),
     ("higher than", ">"),
+    ("warmer than", ">"),
+    ("hotter than", ">"),
+    ("colder than", "<"),
+    ("cooler than", "<"),
     ("at most", "<="),
     ("at least", ">="),
     ("no more than", "<="),
@@ -910,7 +914,11 @@ def _comparative_present(norm_answer: str, start: int) -> bool:
 
 
 def _incompatible_comparison(
-    fact: FactEvidence | object, norm_answer: str, start: int, value: float
+    fact: FactEvidence | object,
+    norm_answer: str,
+    start: int,
+    value: float,
+    unit: str | None,
 ) -> bool:
     """True if the value at ``start`` is a strict comparison irreconcilable with
     the fact's exact value (e.g. "below 62%" for an expected 62).
@@ -918,25 +926,36 @@ def _incompatible_comparison(
     "above/over/…" is compatible when the exact accepted value actually lies on
     the asserted side of the threshold; only an assertion the fact's value
     contradicts is flagged. Approximation words ("about", "approximately",
-    "around") are NOT comparatives and never trip this.
+    "around") are NOT comparatives and never trip this. The candidate threshold
+    is converted to the fact's unit first, so "above 69°F" for a 21 °C fact
+    compares °C-to-°C, not raw 69 vs 21.
     """
     got = _comparative_at(norm_answer, start)
     if got is None:
         return False
     op, _surface = got
+    # Convert the threshold from the candidate's unit into the fact's unit so a
+    # cross-unit bound ("above 69°F") compares like-for-like. If the unit is
+    # unimplementable/incompatible, fall back to the raw number (already
+    # unit-agnostic best effort).
+    threshold = value
+    if unit is not None:
+        converted = _to_unit(value, unit, fact.unit)
+        if converted is not None:
+            threshold = converted
     # An inequality is compatible with the fact only when the fact's OWN value
     # lies on the asserted side of the threshold. Tolerance applies to roughly
     # matching an approximate VALUE, not to relocating a strict relational
     # threshold: "below 62%" still excludes the reported 62 regardless of ±2.
     v = fact.value
     if op == "<":
-        return not (v < value)
+        return not (v < threshold)
     if op == ">":
-        return not (v > value)
+        return not (v > threshold)
     if op == "<=":
-        return not (v <= value)
+        return not (v <= threshold)
     if op == ">=":
-        return not (v >= value)
+        return not (v >= threshold)
     return False
 
 
@@ -1012,6 +1031,11 @@ def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
             continue
         if not any(s <= start < e for s, e in key_spans):
             continue
+        # A comparator-prefixed candidate ("below 30°C", "above 40°C") is a
+        # BOUND/threshold, not a second reported measurement -- it must not
+        # fabricate a conflicting-value pair against the asserted value.
+        if _comparative_present(norm_answer, start):
+            continue
         converted = _to_unit(value, unit, fact.unit)
         if converted is None:
             continue
@@ -1061,8 +1085,13 @@ def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> b
         # A strict relational comparison irreconcilable with the expected value
         # ("humidity is below 62%" for humidity=62, "temperature above 30°C")
         # is a CONTRADICTION: the model reported an incompatible inequality.
-        if _incompatible_comparison(fact, norm_answer, start, value):
+        if _incompatible_comparison(fact, norm_answer, start, value, unit):
             return True
+        # ANY comparator-prefixed candidate is a BOUND/threshold, not a reported
+        # wrong value -- a compatible "below 30°C" next to "21°C" is not a second
+        # wrong measurement. (Incompatible bounds were handled above.)
+        if _comparative_present(norm_answer, start):
+            continue
         if unit is None:
             # Bare: only a lone value right at the anchor is a confident wrong
             # report; otherwise it's ambiguous metadata and not attributed. A
