@@ -260,6 +260,38 @@ struct ChatAttachmentDraftTests {
         #expect(!store[deletedConversation].isImportingFiles)
     }
 
+    @Test("dropping a draft reports its documents so their plaintext can be deleted")
+    func discardedDraftReportsItsAttachmentIDs() throws {
+        // The leak this closes: a SUCCESSFUL import registers the document's
+        // full text in the shared cache before any draft owns it. Once the
+        // draft holding the chip is dropped — the conversation was deleted, or
+        // a never-sent draft was replaced by New Chat — nothing on screen
+        // references it, so no chip and no `deleteConversation` can clean it
+        // up and the plaintext sits in Application Support until the sweep.
+        let discardedConversation = UUID()
+        let survivingConversation = UUID()
+        let dropped = try makeFile(name: "contract.txt", text: "indemnity clause")
+        let kept = try makeFile(name: "keep.txt", text: "still open")
+        var store = ChatAttachmentDraftStore()
+
+        for (conversation, file) in [
+            (discardedConversation, dropped), (survivingConversation, kept)
+        ] {
+            let started = store.beginFileImport(conversationID: conversation)
+            let request = try #require(started)
+            store.finishFileImport(
+                request: request,
+                [(file, URL(fileURLWithPath: "/tmp/\(file.filename)"))],
+                notice: nil
+            )
+        }
+
+        let released = store.retainDrafts(for: [survivingConversation])
+
+        #expect(released == [dropped.id])
+        #expect(store[survivingConversation].files == [kept])
+    }
+
     @Test("submission is an immutable snapshot of one composer turn")
     func submissionDoesNotFollowLaterDraftMutations() throws {
         let first = try makeImage(name: "first.png")
@@ -488,7 +520,13 @@ struct ChatAttachmentDraftTests {
             "letimportRequest=attachmentDrafts.beginFileImport(conversationID:viewModel.activeConversationID)"
         ))
         #expect(stripped.contains(
-            "attachmentDrafts.finishFileImport(request:importRequest,outcome.0,notice:notice)"
+            "letadopted=attachmentDrafts.finishFileImport(request:importRequest,outcome.0,notice:notice)"
+        ))
+        // A draft that never took ownership leaves the imported documents in
+        // the shared cache with no visible owner; the import path must delete
+        // them itself.
+        #expect(stripped.contains(
+            "if!adopted{DocumentContentCache.shared.remove(contentsOf:outcome.0.map(\\.attachment.id))}"
         ))
         #expect(stripped.contains(
             ".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()photoCapabilityNotice.dismiss()}"
