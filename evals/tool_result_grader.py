@@ -100,8 +100,10 @@ DENY_MARKERS = (
 )
 
 # Canonical temperature units. ``_UNIT_TO_CANONICAL`` resolves every surface
-# token (after NFC/casefold) to a canonical unit name used by NumberFact.
-_C, _F, _PERCENT = "c", "f", "%"
+# token (after NFC/casefold) to a canonical unit name used by NumberFact. ``_DEG``
+# is the bare "degrees" unit (temperature degree, unspecified C/F) -- it resolves
+# against a temperature fact's own unit and is incompatible with any other unit.
+_C, _F, _PERCENT, _DEG = "c", "f", "%", "deg"
 
 # Map surface unit tokens -> canonical unit. The temperature equivalents are
 # checked against the original text (which may be c/F-cased), so we key on the
@@ -116,6 +118,8 @@ _UNIT_TO_CANONICAL = {
     "degree celsius": _C,
     "deg c": _C,
     "deg celsius": _C,
+    "degree": _DEG,
+    "degrees": _DEG,
     "°f": _F,
     "f": _F,
     "fahrenheit": _F,
@@ -146,9 +150,9 @@ MAX_FACTS = 50
 # percent, "21 celsiusian" must not be Celsius). Symbolic units (°c/°f/%) and
 # single letters (already \b-guarded) are unaffected.
 _UNIT_RE = re.compile(
-    r"(?P<num>-?\d+(?:\.\d+)?)\s*"
+    r"(?P<num>[+-]?\d+(?:\.\d+)?)\s*"
     r"(?P<unit>celsius\b|fahrenheit\b|degrees?\s+c(?:elsius)?\b|degrees?\s+f(?:ahrenheit)?\b"
-    r"|deg\s*c(?:elsius)?\b|deg\s*f(?:ahrenheit)?\b|°c|°f|percent\b|[%]|c\b|f\b)?"
+    r"|deg\s*c(?:elsius)?\b|deg\s*f(?:ahrenheit)?\b|degrees?\b|°c|°f|percent\b|[%]|c\b|f\b)?"
 )
 
 
@@ -222,6 +226,12 @@ def _to_unit(value: float, unit: str | None, target: str) -> float | None:
     """
     if unit is None or unit == target:
         return value
+    if unit == _DEG:
+        # Bare "degrees" is the temperature-degree unit, unspecified C/F: it is
+        # the fact's OWN unit for a temperature-degree fact (no conversion; "21
+        # degrees" matches a 21 °C OR 21 °F fact) and is entirely incompatible
+        # with a non-degree unit ("55 degrees" must NOT satisfy humidity=55%).
+        return value if target in (_C, _F) else None
     if unit == _C and target == _F:
         return _celsius_to_fahrenheit(value)
     if unit == _F and target == _C:

@@ -652,6 +652,29 @@ class TestCodexRegressionFixes:
         assert _grade(g, [TEMP21C], "temperature 1e+21°C").overall is False
         assert _grade(g, [TEMP21C], "temperature 1e21°C").overall is False
 
+    def test_explicit_positive_sign_value_parses(self, g):
+        # An explicit "+" on a standalone value ("+21°C") is a legitimate sign,
+        # not an exponent fragment -- it must parse and satisfy the fact.
+        assert _grade(g, [TEMP21C], "temperature is +21°C").overall is True
+        # But it must not re-open the signed-exponent hole.
+        assert _grade(g, [TEMP21C], "temperature 1e+21°C").overall is False
+
+    def test_bare_degrees_is_temperature_specific(self, g):
+        # "degrees" is a temperature-degree unit: it must satisfy a temperature
+        # fact (its OWN unit, "21 degrees" = 21 °C) but be incompatible with a
+        # non-degree unit, so "55 degrees" must NOT satisfy humidity=55%.
+        assert _grade(g, [HUMIDITY], "humidity is 55 degrees").overall is False
+        assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
+        # Still resolves against a Fahrenheit fact without conversion.
+        temp_f = {
+            "type": "number",
+            "key": "temperature",
+            "value": 70,
+            "unit": "f",
+            "tolerance": 2,
+        }
+        assert _grade(g, [temp_f], "temperature is 70 degrees").overall is True
+
     def test_bare_wrong_value_is_contradiction_when_sole(self, g):
         # "the temperature is 5" (a lone bare value right at the anchor) is the
         # model asserting a wrong temperature -> contradicted, not missing.
